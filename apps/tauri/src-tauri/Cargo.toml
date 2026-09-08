@@ -25,6 +25,16 @@ path = "src/bin/probe.rs"
 name = "forge-tauri-latency"
 path = "src/bin/latency.rs"
 
+# `tauri`'s build script turns `custom-protocol` into `cargo:dev=false`, and
+# that flag is the whole difference between a bundle that carries the frontend
+# and one that does not: in dev mode `generate_context!` embeds nothing and the
+# webview is pointed at `devUrl` (http://localhost:1420). The Tauri CLI passes
+# the feature for you; `scripts/package-macos` calls cargo directly, so it has
+# to pass it itself — without it the packaged app opens a white window waiting
+# on a dev server that is not running.
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build.workspace = true
 

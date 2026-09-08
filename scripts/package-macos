@@ -258,9 +258,15 @@ for slice in "${slices[@]}"; do
   cargo build --release --locked --target "$rust_target" -p daemon --bin "$daemon_name"
 
   note "building $gui_bin (release) for $rust_target"
+  # --features custom-protocol is not optional: it is what makes tauri embed
+  # the frontend. Without it the build is a "dev" build whose webview loads
+  # devUrl, and the bundle opens a white window. `cargo tauri build` passes it
+  # for you; calling cargo directly does not.
+  #
   # A failure here on the non-host slice is almost always a missing SDK for
   # that architecture, so say so instead of leaving a bare cargo error.
   cargo build --release --locked --target "$rust_target" -p "$gui_crate" --bin "$gui_bin" \
+    --features custom-protocol \
     || die "cargo build failed for $rust_target — the toolchain must be able to \
 cross-compile that slice (check: xcode-select -p, and that the macOS SDK supports it); \
 build without --universal for a $host_slice-only bundle"
@@ -309,6 +315,27 @@ for slice in "${slices[@]}"; do
   daemon_src="target/$(rust_target_for "$slice")/release/$daemon_name"
   [ -f "$daemon_src" ] || die "missing $daemon_src — the release build produced no $daemon_name for $slice"
   daemon_sources+=("$daemon_src")
+done
+
+# The frontend is embedded, not a bundle resource, so nothing downstream can
+# notice it is missing: a dev-mode binary assembles, signs, notarizes and ships
+# exactly like a good one and then opens a white window. Assert that the asset
+# `pnpm build` just emitted is really inside the Mach-O.
+require_embedded_frontend() {
+  local binary="$1" entry
+  entry="$(sed -n 's/.*src="\/assets\/\(index-[A-Za-z0-9_-]*\.js\)".*/\1/p' "$tauri_app/dist/index.html" | head -1)"
+  [ -n "$entry" ] \
+    || die "cannot find the entry script in $tauri_app/dist/index.html — did pnpm build change its output?"
+  # grep reads the Mach-O directly: piping `strings` into `grep -q` trips
+  # `set -o pipefail`, because the early exit SIGPIPEs the producer on a match.
+  LC_ALL=C grep -aqF -- "$entry" "$binary" \
+    || die "$(basename "$binary") does not embed $entry — this is a dev-mode build \
+(tauri only embeds frontendDist when the 'custom-protocol' feature is on) and it \
+would open a white window pointed at devUrl"
+}
+
+for gui_src in "${gui_sources[@]}"; do
+  require_embedded_frontend "$gui_src"
 done
 
 merge_or_copy "$app/Contents/MacOS/$gui_name" "${gui_sources[@]}"
