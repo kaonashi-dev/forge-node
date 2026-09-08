@@ -18,7 +18,10 @@ env:
 jobs:
   macos:
     name: macOS (arm64)
-    runs-on: macos-14
+    # The same image `ci.yml` gates on. Pinned older images drift: macos-14
+    # fails a PTY scenario that macos-latest passes on the same commit, and a
+    # release gate that judges different code than CI is not a gate.
+    runs-on: macos-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
