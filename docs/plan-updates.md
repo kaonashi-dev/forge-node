@@ -132,6 +132,13 @@ Two constraints on the swap that are easy to get wrong:
 - **Signing must be consistent across releases.** If a release is signed and
   notarized, its replacement must be too — Gatekeeper kills an unsigned bundle
   that replaces a signed one. Unsigned → unsigned is fine for internal builds.
+- **The first install is not the update.** Without `FORGE_CODESIGN_IDENTITY`
+  the bundle is only ad-hoc, linker-signed, so a browser download carries
+  `com.apple.quarantine` and Gatekeeper refuses to open it until
+  `xattr -dr com.apple.quarantine "Forge Node.app"` clears it. That is a
+  first-install cost only: the updater fetches over its own HTTP client, which
+  sets no quarantine attribute, so a self-applied update never hits it. A
+  Developer ID identity removes the step for good.
 - **The app must be able to write its own bundle.** `/Applications` installed
   by the current user is fine; a root-owned install is not, and the updater
   will fail with a permission error the UI has to show rather than swallow.
