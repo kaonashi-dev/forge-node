@@ -1,0 +1,74 @@
+{
+  "TerminalDelta": {
+    "terminal_id": "00000000-0000-7000-8000-000000000005",
+    "delta": {
+      "seq": 5,
+      "rows": [
+        [
+          0,
+          {
+            "cells": [
+              {
+                "text": " ",
+                "fg": "Default",
+                "bg": "Default",
+                "flags": 0
+              },
+              {
+                "text": " ",
+                "fg": "Default",
+                "bg": "Default",
+                "flags": 0
+              }
+            ],
+            "wrapped": false
+          }
+        ],
+        [
+          7,
+          {
+            "cells": [
+              {
+                "text": " ",
+                "fg": "Default",
+                "bg": "Default",
+                "flags": 0
+              },
+              {
+                "text": "x",
+                "fg": {
+                  "Indexed": 2
+                },
+                "bg": {
+                  "Rgb": [
+                    9,
+                    9,
+                    9
+                  ]
+                },
+                "flags": 5
+              }
+            ],
+            "wrapped": true
+          }
+        ]
+      ],
+      "scrolled_lines": 3,
+      "cursor": {
+        "line": 3,
+        "col": 4,
+        "shape": "Beam",
+        "visible": true
+      },
+      "modes": {
+        "alt_screen": false,
+        "bracketed_paste": false,
+        "app_cursor_keys": false,
+        "app_keypad": false,
+        "mouse_mode": "Off",
+        "mouse_sgr": false,
+        "focus_events": false
+      }
+    }
+  }
+}

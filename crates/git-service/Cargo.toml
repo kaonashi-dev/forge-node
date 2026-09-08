@@ -1,0 +1,21 @@
+[package]
+name = "git-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# Needed only to SIGKILL a timed-out `git` child by pid: the thread +
+# `recv_timeout` design (ADR-008) owns the `Child` on the worker thread, so the
+# main thread cannot call `Child::kill`. `nix` is already a workspace dependency.
+nix.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

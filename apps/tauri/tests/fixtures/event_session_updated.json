@@ -1,0 +1,23 @@
+{
+  "SessionUpdated": {
+    "id": "00000000-0000-7000-8000-000000000004",
+    "workspace_id": "00000000-0000-7000-8000-000000000003",
+    "kind": "Shell",
+    "role": "Generic",
+    "parent_session_id": null,
+    "root_session_id": "00000000-0000-7000-8000-000000000004",
+    "terminal_id": "00000000-0000-7000-8000-000000000005",
+    "agent_provider_id": "claude",
+    "agent_profile_id": null,
+    "title": {
+      "user": "auth refactor",
+      "terminal": "~/forge"
+    },
+    "state": "Running",
+    "created_at": "2026-08-30T12:00:00Z",
+    "launch_command": null,
+    "last_activity_at": "2026-08-30T12:00:00Z",
+    "ended_at": null,
+    "base_commit": "4f2b1ac"
+  }
+}

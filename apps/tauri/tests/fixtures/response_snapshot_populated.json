@@ -1,0 +1,247 @@
+{
+  "Snapshot": {
+    "project_groups": [
+      {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "name": "Forge",
+        "created_at": "2026-08-30T12:00:00Z"
+      }
+    ],
+    "projects": [
+      {
+        "id": "00000000-0000-7000-8000-000000000001",
+        "project_group_id": "00000000-0000-7000-8000-000000000002",
+        "name": "forge",
+        "icon": "🦀",
+        "root_path": "/home/dev/forge",
+        "git_root": "/home/dev/forge",
+        "created_at": "2026-08-30T12:00:00Z",
+        "last_opened_at": "2026-08-30T12:00:00Z"
+      }
+    ],
+    "workspaces": [
+      {
+        "id": "00000000-0000-7000-8000-000000000003",
+        "project_id": "00000000-0000-7000-8000-000000000001",
+        "kind": "Main",
+        "path": "/home/dev/forge",
+        "branch": "main",
+        "display_name": null,
+        "managed_by_app": false,
+        "created_at": "2026-08-30T12:00:00Z",
+        "status": {
+          "dirty": false,
+          "ahead": null,
+          "behind": null,
+          "measured_at": null
+        }
+      }
+    ],
+    "sessions": [
+      {
+        "id": "00000000-0000-7000-8000-000000000004",
+        "workspace_id": "00000000-0000-7000-8000-000000000003",
+        "kind": "Shell",
+        "role": "Generic",
+        "parent_session_id": null,
+        "root_session_id": "00000000-0000-7000-8000-000000000004",
+        "terminal_id": "00000000-0000-7000-8000-000000000005",
+        "agent_provider_id": "claude",
+        "agent_profile_id": null,
+        "title": {
+          "user": "auth refactor",
+          "terminal": "~/forge"
+        },
+        "state": "Running",
+        "created_at": "2026-08-30T12:00:00Z",
+        "launch_command": null,
+        "last_activity_at": "2026-08-30T12:00:00Z",
+        "ended_at": null,
+        "base_commit": "4f2b1ac"
+      }
+    ],
+    "providers": [
+      {
+        "descriptor": {
+          "id": "claude",
+          "display_name": "Claude",
+          "binary_candidates": [
+            "claude"
+          ],
+          "default_args": [],
+          "version_probe": {
+            "args": [
+              "--version"
+            ],
+            "expect_substring": null,
+            "timeout_ms": 2000
+          },
+          "usage_source": null,
+          "resume": {
+            "Flag": {
+              "flag": "--resume"
+            }
+          },
+          "prompt": null,
+          "headless": null,
+          "review": {
+            "args": [
+              "--permission-mode",
+              "plan"
+            ],
+            "label": "plan mode"
+          },
+          "capabilities": {
+            "interactive_tui": true,
+            "supports_initial_prompt": true,
+            "supports_headless": false,
+            "supports_resume": true,
+            "supports_review": true
+          },
+          "profile_fields": []
+        },
+        "detection": {
+          "provider_id": "claude",
+          "status": {
+            "Installed": {
+              "executable": "/usr/local/bin/claude",
+              "version": "1.0.0"
+            }
+          },
+          "checked_at": "2026-08-30T12:00:00Z"
+        }
+      }
+    ],
+    "agent_profiles": [
+      {
+        "id": "00000000-0000-7000-8000-000000000006",
+        "provider_id": "claude",
+        "name": "Work",
+        "executable": null,
+        "args": [
+          "--model",
+          "opus"
+        ],
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/home/dev/.claude-work"
+          ]
+        ],
+        "created_at": "2026-08-30T12:00:00Z"
+      }
+    ],
+    "worktree_shares": [
+      {
+        "id": "00000000-0000-7000-8000-00000000000a",
+        "project_id": "00000000-0000-7000-8000-000000000001",
+        "path": ".env",
+        "strategy": {
+          "kind": "link"
+        },
+        "enabled": true,
+        "position": 0,
+        "created_at": "2026-08-30T12:00:00Z"
+      }
+    ],
+    "app_state": [
+      [
+        "ui.theme_base",
+        "gruvbox"
+      ]
+    ],
+    "external_agents": [],
+    "pull_requests": {
+      "pull_requests": [
+        {
+          "project_id": "00000000-0000-7000-8000-000000000001",
+          "repository": "forge/forge-node",
+          "host": "github.com",
+          "number": 42,
+          "title": "Add pull-request state",
+          "body": "Carries the complete remote state.",
+          "body_truncated": false,
+          "url": "https://github.com/forge/forge-node/pull/42",
+          "author": "octocat",
+          "base_ref": "main",
+          "head_ref": "feature/pull-requests",
+          "is_draft": false,
+          "review_decision": "ReviewRequired",
+          "labels": [
+            {
+              "name": "enhancement",
+              "color": "84b6eb"
+            }
+          ],
+          "assignees": [
+            "octocat"
+          ],
+          "review_requests": [
+            "reviewer"
+          ],
+          "additions": 120,
+          "deletions": 8,
+          "changed_files": 6,
+          "comment_count": 3,
+          "created_at": "2026-08-30T12:00:00Z",
+          "updated_at": "2026-08-30T12:00:00Z",
+          "relations": {
+            "assigned": true,
+            "review_requested": false,
+            "authored": true
+          }
+        }
+      ],
+      "viewers": [
+        {
+          "host": "github.com",
+          "login": "octocat"
+        }
+      ],
+      "sources": [
+        {
+          "project_id": "00000000-0000-7000-8000-000000000001",
+          "host": "github.com",
+          "repository": "forge/forge-node",
+          "status": "Ready"
+        }
+      ],
+      "failures": [],
+      "error": null,
+      "refreshed_at": "2026-08-30T12:00:00Z"
+    },
+    "jobs": [
+      {
+        "id": "00000000-0000-7000-8000-000000000007",
+        "provider_id": "claude",
+        "workspace_id": "00000000-0000-7000-8000-000000000003",
+        "role": "Executor",
+        "feature_id": 7,
+        "parent_session_id": "00000000-0000-7000-8000-000000000004",
+        "state": "Running",
+        "summary": "implement the spec",
+        "prompt": "implement the spec for feature 7",
+        "provider_session_id": "prov-1",
+        "exit_code": null,
+        "last_line": "editing apps/tauri/src/App.tsx",
+        "last_output_at": "2026-09-06T02:02:59.857036Z",
+        "started_at": "2026-08-30T12:00:00Z",
+        "finished_at": null,
+        "log_path": "/tmp/forge/jobs/7.jsonl"
+      }
+    ],
+    "usage": [
+      {
+        "provider_id": "claude",
+        "windows": [
+          {
+            "used_percent": 42,
+            "window": "5h",
+            "resets_at": "2026-08-30T12:00:00Z"
+          }
+        ],
+        "collected_at": "2026-08-30T12:00:00Z"
+      }
+    ]
+  }
+}

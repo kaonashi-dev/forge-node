@@ -1,0 +1,9 @@
+{
+  "JobOutput": {
+    "job_id": "00000000-0000-7000-8000-000000000007",
+    "from_line": 12,
+    "lines": [
+      "reading apps/tauri/src/App.tsx"
+    ]
+  }
+}

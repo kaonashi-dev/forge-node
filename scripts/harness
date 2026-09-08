@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Human interface of the subagent harness.
+#
+# Usage:
+#   scripts/harness              # alias of status
+#   scripts/harness status       # what there is, what is missing to move on
+#   scripts/harness list         # table of features
+#   scripts/harness show <id>    # detail of one feature
+#   scripts/harness resume <id>  # where a feature left off
+#   scripts/harness timeline <id># event log for one feature
+#   scripts/harness event <id> <type> [--data '{...}']
+#   scripts/harness from-issue <n>  # register from GitHub issue
+#   scripts/harness next         # one line: the next action
+#   scripts/harness active       # id|slug|status of the active feature
+#   scripts/harness root         # absolute path of the checkout that owns harness/
+#   scripts/harness doctor [id] # orchestrator link + events (no Forge needed)
+#   scripts/harness watch [id]  # poll doctor every 2s
+#   scripts/harness gate [--fast]# ./init.sh (full or --fast)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+exec bun harness/src/cli.ts "$@"

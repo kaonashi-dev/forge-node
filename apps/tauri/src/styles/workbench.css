@@ -1,0 +1,1279 @@
+/*
+ * The centre column: the stack itself, the empty state, the open-file strip,
+ * and the views inside it — editor, diff, PR, feature, job stream.
+ *
+ * Global rather than route-scoped even though the editor and the diff are
+ * lazily loaded (§3.2 P11): `.center-stack`, `.center-view` and the strip are
+ * painted by `CenterStack`, which is in the entry chunk, so splitting this
+ * file further would put the frame in one chunk and its contents in another.
+ */
+
+/* ----------------------------------------------------------- workbench --- */
+
+/* The single column is spelled out rather than left implicit. An implicit
+   `auto` track is sized to its content in WebKit, so the tab strip's own width
+   became the width of the editor under it and every file was cut off mid-line
+   with the rest of the column left black. Must stay in this file: the settings
+   chunk is lazy, and Code is painted before that route is ever opened. */
+.center-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+/* The terminal keeps its box while Code (or settings) is up: unmounting it
+   would resize the PTY down to nothing and cost a full resync on the way back.
+   Row 1 explicitly: a view claims that row by name, and an auto-placed slot
+   would be pushed into an implicit row 2 that takes the `1fr` with it. */
+.center-slot {
+  display: grid;
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.center-slot.hidden {
+  visibility: hidden;
+}
+.center-slot.hidden > * {
+  pointer-events: none;
+}
+/* Terminal, handle, changes. The terminal keeps its box and reflows: opening
+   this costs one debounced PTY resize, the same as dragging the inspector. */
+.center-slot.split {
+  grid-template-columns: minmax(0, 1fr) var(--forge-handle-w) var(--session-split-w);
+}
+/* The buttons overlay the grid, so the slot is the positioning context. */
+.terminal-slot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+/* ------------------------------------------------------ session actions --- */
+
+/* Off on the container and on for the buttons: a selection drag that starts
+   under the strip still has to reach the grid. */
+.session-actions {
+  display: flex;
+  gap: var(--space-1);
+  opacity: 0;
+  padding: var(--space-2);
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+  transition: opacity 120ms ease;
+  z-index: var(--z-strip);
+}
+.session-actions > * {
+  pointer-events: auto;
+}
+.terminal-slot:hover .session-actions,
+.session-actions:focus-within {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------ session changes --- */
+
+.session-changes {
+  border-left: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+}
+.session-changes-head {
+  align-items: center;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.session-changes-branch {
+  color: var(--fg-default);
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-changes-base {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.session-changes-commits,
+.session-changes-files,
+.review-sessions,
+.review-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+}
+.panel-subhead {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  margin: 0;
+  text-transform: uppercase;
+}
+.session-commit {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.session-commit-id {
+  color: var(--fg-muted);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.session-commit-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-change-row {
+  gap: var(--space-2);
+  text-align: left;
+  width: 100%;
+}
+.session-changes-foot {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: auto;
+  padding: var(--space-2) var(--space-3);
+}
+
+/* ---------------------------------------------------------------- review --- */
+
+.review-session-row {
+  gap: var(--space-2);
+}
+.review-summary-title {
+  font-weight: 500;
+  margin: 0;
+}
+.review-summary-body {
+  color: var(--fg-muted);
+  font-family: inherit;
+  margin: 0;
+  white-space: pre-wrap;
+}
+.handoff-source {
+  align-items: center;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.workbench-strip {
+  align-items: stretch;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  gap: var(--space-2);
+  grid-column: 1;
+  grid-row: 1;
+  height: var(--forge-tab-h);
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 var(--space-6);
+  scrollbar-width: none;
+  z-index: var(--z-strip);
+}
+.workbench-strip::-webkit-scrollbar {
+  display: none;
+}
+.center-stack:has(.workbench-strip) {
+  grid-template-rows: var(--forge-tab-h) minmax(0, 1fr);
+}
+.center-stack:has(.workbench-strip) > .center-slot,
+.center-stack:has(.workbench-strip) > .center-view {
+  grid-row: 2;
+}
+.workbench-tab {
+  align-items: center;
+  align-self: center;
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  display: flex;
+  flex: none;
+  font-size: var(--text-sm);
+  gap: var(--space-4);
+  max-width: 190px;
+  min-width: 0;
+  padding: 0 var(--space-4) 0 var(--space-8);
+}
+.workbench-tab.active {
+  background: var(--forge-term-bg);
+  color: var(--fg-default);
+}
+/* The label is a `.forge-row`, the close an `IconButton`; both already carry
+   the reset, so what is left is the tint they take from the tab. */
+.workbench-tab-label,
+.workbench-tab-close {
+  color: inherit;
+  font-size: inherit;
+  padding: var(--space-4) 0;
+}
+/* A tab is one line. Left to wrap, a long name doubles the strip's height and
+   pushes the editor down by a row that is not there a moment later. */
+.workbench-tab-label {
+  gap: var(--space-6);
+  min-width: 0;
+  overflow: hidden;
+}
+.workbench-tab-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workbench-tab-close {
+  align-items: center;
+  color: var(--fg-subtle);
+  display: flex;
+  flex: none;
+  padding: 0 var(--space-4);
+}
+.workbench-tab-close:hover {
+  color: var(--fg-default);
+}
+
+/* ------------------------------------------------------- empty centre --- */
+
+/*
+ * What the centre column shows with nothing open.
+ *
+ * A card rather than a full-bleed screen: the window still has a rail and an
+ * inspector with content in them, and a wall of centred text at that size
+ * competes with both. The rows are the same three actions the `+` menu and the
+ * palette carry, with their own chords read off the keymap.
+ */
+.empty-center {
+  align-items: center;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  padding: var(--space-24);
+}
+.empty-center-card {
+  max-width: 460px;
+  width: 100%;
+}
+.empty-center-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 var(--space-4);
+}
+.empty-center-copy {
+  color: var(--fg-muted);
+  margin: 0 0 var(--space-16);
+}
+.empty-center-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.empty-center-row {
+  border-radius: var(--radius-sm);
+  gap: var(--space-10);
+  height: var(--control-lg);
+  padding: 0 var(--space-10);
+  width: 100%;
+}
+.empty-center-row:hover {
+  background: var(--bg-hover);
+}
+.empty-center-label {
+  flex: none;
+  font-weight: 500;
+}
+.empty-center-note {
+  color: var(--fg-subtle);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.empty-center-foot {
+  border-top: 1px solid var(--border-subtle);
+  color: var(--fg-subtle);
+  margin: var(--space-16) 0 0;
+  padding-top: var(--space-12);
+}
+.empty-center-chord,
+.empty-center-foot kbd {
+  background: var(--bg-overlay);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-6);
+}
+
+/* ------------------------------------------------------------- views --- */
+
+.center-view {
+  background: var(--forge-editor);
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+}
+
+.diff-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  padding: var(--space-10) var(--space-12);
+}
+.diff-header {
+  align-items: center;
+  color: var(--fg-muted);
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-10);
+}
+.diff-file {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+/* D3: the header stays put while its patch scrolls under it, so the file a
+   hunk belongs to never leaves the screen. `.diff-view` is the scroller, and
+   the header sticks to its top edge. */
+.diff-file-head {
+  background: var(--bg-raised);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  font-size: var(--text-sm);
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-8);
+  position: sticky;
+  top: 0;
+  width: 100%;
+  z-index: var(--z-raised);
+}
+.diff-body {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  overflow-x: auto;
+  padding: var(--space-4) 0;
+}
+/* CodeMirror draws the patch itself (D1); everything below it in this file is
+   the box, not the rows. The row colours live in `PatchView`'s own theme,
+   which is where CM6 will accept them. */
+.diff-patch .cm-editor,
+.diff-split .cm-editor {
+  background: transparent;
+}
+.diff-split {
+  display: grid;
+  gap: 1px;
+  /* Two equal columns whose contents may both overflow: `minmax(0, 1fr)` and
+     not `1fr`, or a long line in either pane widens the whole grid. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  background: var(--border-subtle);
+}
+.diff-split-side {
+  background: var(--forge-editor);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.editor-head {
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-10);
+}
+.editor-dirty {
+  color: var(--warning-solid);
+  font-size: var(--text-xs);
+}
+/* Go to definition: a note while the search is out, a note when it found
+   nothing, and a list when it found several. The list is a list and not a jump
+   because the search is a heuristic — picking one of five silently is how a
+   guess starts reading as a fact. */
+.editor-note {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  margin: 0;
+  padding: var(--space-8) var(--space-10);
+}
+.editor-note code {
+  font-family: var(--font-mono);
+}
+.editor-definitions {
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-sm);
+  max-height: 40%;
+  overflow-y: auto;
+}
+.editor-definitions header {
+  align-items: center;
+  color: var(--fg-muted);
+  display: flex;
+  gap: var(--space-10);
+  justify-content: space-between;
+  padding: var(--space-8) var(--space-10);
+}
+.editor-definitions header code {
+  font-family: var(--font-mono);
+}
+.editor-definitions ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.editor-definitions button {
+  background: none;
+  border: 0;
+  color: var(--fg-default);
+  cursor: pointer;
+  display: flex;
+  gap: var(--space-10);
+  padding: var(--space-4) var(--space-10);
+  text-align: left;
+  width: 100%;
+}
+.editor-definitions button:hover {
+  background: var(--bg-hover);
+}
+.editor-definition-where {
+  color: var(--fg-muted);
+  flex: none;
+  font-family: var(--font-mono);
+}
+/* The matched line, clipped rather than wrapped: a wrapped declaration would
+   make the rows different heights and the list unreadable at a glance. */
+.editor-definition-text {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-conflict {
+  align-items: center;
+  background: var(--forge-diff-removed-bg);
+  color: var(--fg-default);
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-10);
+  padding: var(--space-8) var(--space-10);
+}
+/* The editor's host.
+   CodeMirror draws everything inside it and brings its own stylesheet, built
+   per theme base by `workbench/editor/theme.ts`. What is left here is the box
+   it fills and the two chrome pieces around it — so the metrics that used to
+   be duplicated between a `<pre>` and a `<textarea>`, and could drift apart by
+   a fraction of a pixel, now exist once, inside CM6. */
+.editor-code {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+.editor-code.hidden {
+  /* Hidden, not unmounted: tearing the view down would take the undo history
+     and the scroll offset with it. */
+  display: none;
+}
+.editor-code .cm-editor {
+  height: 100%;
+}
+.editor-code .cm-editor.cm-focused {
+  /* CM6 draws a UA focus ring on the editor box; the caret and the active
+     line already say where the keyboard is. */
+  outline: none;
+}
+/* A git gutter mark is a stripe on the inside edge of the line-number gutter
+   (`plan-ui-ux.md` A5). The colours come from the theme extension; only the
+   hit area is here, so the whole gutter row answers a click. */
+.editor-code .cm-gutterElement.forge-git-added,
+.editor-code .cm-gutterElement.forge-git-modified,
+.editor-code .cm-gutterElement.forge-git-deleted {
+  cursor: pointer;
+}
+
+/* A6's third answer, in the same pane rather than a dialog: the conflict is
+   about this file, and a modal would cover it. */
+.editor-compare {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* A7: the path, one clickable segment per directory. */
+.editor-breadcrumb {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow: hidden;
+}
+.editor-crumb {
+  color: var(--fg-muted);
+  padding: 0 var(--space-2);
+}
+.editor-crumb.current {
+  color: var(--fg-default);
+  /* The file itself is the one segment that is not a folder; it keeps the
+     truncation so a deep path loses its middle, not its name. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor-crumb-sep {
+  color: var(--fg-subtle);
+}
+
+/* --- Harness: job stream ------------------------------------------------- */
+/*
+ * Rows of text and not a cell grid: a job has no PTY, no cursor and nothing to
+ * type into, and rendering it as text is what keeps it selectable.
+ */
+.job-stream {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--forge-editor);
+}
+.job-stream-head,
+.job-stream-foot {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  padding: var(--space-4) var(--space-8);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-sm);
+}
+.job-stream-foot {
+  border-bottom: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.job-role {
+  flex: none;
+  color: var(--accent-solid);
+}
+.job-state {
+  color: var(--fg-muted);
+}
+.job-state.running {
+  color: var(--warning-solid);
+}
+.job-stream-head .forge-badge {
+  flex: none;
+}
+.job-stream-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--space-8);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+.job-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-muted);
+}
+/* Reading a stream is scanning for two things — what it ran, and what went
+   wrong — so those two are the ones that are not muted. The vocabulary is
+   `agents::summarize_stream_line`'s rendered prefix, not the provider's JSON. */
+.job-line.tone-error {
+  color: var(--danger-solid);
+}
+.job-line.tone-command {
+  color: var(--accent-solid);
+}
+.job-line.tone-edit {
+  color: var(--warning-solid);
+}
+.job-line.tone-message {
+  color: var(--fg-default);
+}
+.job-line.tone-thinking {
+  color: var(--fg-subtle);
+}
+.job-message {
+  color: var(--fg-default);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-message p,
+.job-think-body p,
+.job-edit p,
+.job-error p,
+.job-meta p {
+  margin: 0;
+}
+.job-cmd {
+  padding: var(--space-6) var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--forge-term-bg);
+  color: var(--forge-term-fg);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.job-cmd-line {
+  color: var(--accent-solid);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-cmd-result {
+  margin-top: var(--space-2);
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-cmd-result.is-ok {
+  color: var(--success-solid);
+}
+.job-cmd-result.is-fail,
+.job-cmd.is-fail .job-cmd-line {
+  color: var(--danger-solid);
+}
+.job-edit {
+  color: var(--warning-solid);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-error {
+  color: var(--danger-solid);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-meta {
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-think {
+  border-left: 2px solid var(--border-subtle);
+  padding-left: var(--space-8);
+  color: var(--fg-muted);
+}
+.job-think-head {
+  cursor: pointer;
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.job-think-body {
+  margin-top: var(--space-4);
+  color: var(--fg-muted);
+  font-style: italic;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-turn {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-base);
+}
+.job-turn.live {
+  border-color: var(--border-default);
+}
+.job-turn-head {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  padding: var(--space-4) var(--space-8);
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.job-turn-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-8);
+  border-top: 1px solid var(--border-subtle);
+}
+.job-gap {
+  height: var(--space-8);
+  border-top: 1px dashed var(--border-subtle);
+}
+
+/* No provider echoes its input, so without this the stream begins at the
+   agent's first sentence and the task it was given is nowhere on screen. */
+.job-prompt {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.job-prompt-head {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  padding: var(--space-4) var(--space-8);
+  cursor: pointer;
+}
+.job-prompt-body {
+  max-height: 12rem;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-8);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- Harness: preview terminal ------------------------------------------ */
+.feature-preview {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--forge-term-bg);
+}
+.feature-preview-head {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  padding: var(--space-4) var(--space-8);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+.feature-preview-body {
+  padding: var(--space-8);
+}
+.feature-preview-body:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* A9/A10: the mode pill, in CodeMirror's own bottom panel. Only drawn by the
+   Helix keymap — vim's own status line is part of that extension. */
+.editor-code .forge-editor-mode {
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  padding: var(--space-2) var(--space-8);
+}
+.editor-code .forge-editor-mode[data-mode="insert"] {
+  color: var(--accent-solid);
+}
+
+/* --------------------------------------------------------- pull requests --- */
+
+/*
+ * The three pull request tabs — detail, compose, review.
+ *
+ * A centre tab's rules belong in a sheet the shell always imports:
+ * `settings.css` is pulled in by the lazily loaded settings route, so a rule
+ * left there does not exist until someone opens Settings, and a tab styled
+ * from it opens raw.
+ */
+.pr-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.pr-detail-head {
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  padding: var(--space-16) var(--space-24) var(--space-12);
+}
+.pr-detail-trail {
+  align-items: center;
+  color: var(--fg-subtle);
+  display: flex;
+  font-size: var(--text-xs);
+  gap: var(--space-6);
+}
+.pr-trail-repo {
+  color: var(--fg-muted);
+}
+.pr-detail-tools {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.pr-detail-title-row {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--space-16);
+  justify-content: space-between;
+}
+.pr-detail-title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin: 0;
+}
+.pr-detail-number {
+  color: var(--fg-subtle);
+  font-weight: 400;
+}
+.pr-detail-facts {
+  align-items: center;
+  color: var(--fg-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  gap: var(--space-8);
+}
+.pr-state {
+  gap: var(--space-4);
+}
+.pr-fact-branches {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-4);
+}
+.pr-fact-branches code {
+  background: var(--bg-raised);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  padding: var(--space-1) var(--space-6);
+}
+/* The description gets the column, the row's own facts get the rail, and the
+   rail wraps under the description when the two no longer fit. Wrapping and
+   not a media query: this is a centre tab beside a rail and a panel, so the
+   window's width says nothing about how wide the tab is. */
+.pr-detail-main {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: var(--space-24);
+  overflow: auto;
+  padding: var(--space-20) var(--space-24) var(--space-32);
+}
+.pr-detail-body {
+  flex: 1 1 30rem;
+  max-width: 92ch;
+  min-width: 0;
+}
+.pr-detail-note {
+  border-left: 2px solid var(--warning-solid);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-20) 0 0;
+  padding: var(--space-4) var(--space-12);
+}
+.pr-detail-side {
+  display: flex;
+  flex: 0 1 16rem;
+  flex-direction: column;
+  gap: var(--space-20);
+  min-width: 0;
+}
+.pr-side-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.pr-side-section .forge-badge {
+  align-self: flex-start;
+}
+.pr-side-title {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  margin: 0;
+  text-transform: uppercase;
+}
+.pr-side-line {
+  font-size: var(--text-sm);
+  margin: 0;
+}
+.pr-side-empty {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  margin: 0;
+}
+.pr-side-people,
+.pr-side-labels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pr-person,
+.pr-label {
+  align-items: center;
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-8);
+}
+/* A monogram, because no avatar was downloaded: the tab is a read of the
+   cached row and must not reach the network to draw itself. */
+.pr-person-mark {
+  align-items: center;
+  background: var(--bg-overlay);
+  border-radius: var(--radius-full);
+  color: var(--fg-muted);
+  display: inline-flex;
+  flex: none;
+  font-size: var(--text-xs);
+  height: var(--control-sm);
+  justify-content: center;
+  width: var(--control-sm);
+}
+/* The host's own colour is a dot rather than a fill: it is unknown text off
+   the network, and nothing here can promise it contrasts with a label. */
+.pr-label-dot {
+  background: var(--fg-subtle);
+  border-radius: var(--radius-full);
+  flex: none;
+  height: var(--space-8);
+  width: var(--space-8);
+}
+.pr-added {
+  color: var(--forge-git-added);
+}
+.pr-removed {
+  color: var(--forge-git-deleted);
+}
+.pr-detail-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-8);
+}
+.pr-compose {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.pr-compose-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  padding: var(--space-8) var(--space-16);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.pr-compose-actions {
+  display: flex;
+  gap: var(--space-8);
+  flex-shrink: 0;
+}
+.pr-compose-body {
+  flex: 1;
+  overflow: auto;
+  padding: var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+.pr-compose-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+.pr-task-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-4) var(--space-12);
+  text-align: left;
+  padding: var(--space-12);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+}
+.pr-task-row[data-checked] {
+  border-color: var(--accent-solid);
+  background: var(--forge-accent-tint, var(--bg-hover));
+}
+.pr-task-name {
+  font-weight: 600;
+  grid-column: 1;
+}
+.pr-task-badge {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  grid-column: 2;
+}
+.pr-task-detail {
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  grid-column: 1 / -1;
+}
+.pr-prompt-preview {
+  max-height: 260px;
+  overflow: auto;
+  padding: var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+}
+.pr-compose-launch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+  align-items: center;
+}
+.pr-compose-hint {
+  flex: 1;
+  min-width: 12rem;
+  margin: 0;
+}
+.pr-compose-progress {
+  gap: var(--space-8);
+  width: 100%;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+  font-size: var(--text-md);
+}
+.pr-compose-progress:hover {
+  background: var(--bg-overlay);
+}
+.pr-compose-result {
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--success-solid);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+}
+.pr-compose-result-head {
+  display: flex;
+  gap: var(--space-8);
+  font-size: var(--text-md);
+  color: var(--fg-default);
+}
+.pr-compose-result-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The PR review tab reuses the compose tab's rows and launch strip: they are
+   the same arrangement — pick a wording, look at the prompt, press once — and
+   two stylesheets for it is how the two drift apart. */
+.pr-review {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: var(--space-16) var(--space-24) 0;
+}
+.pr-review-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-16);
+}
+.pr-review-head h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+.pr-review-body {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  padding: var(--space-16) 0;
+}
+.pr-review-agent {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-8);
+}
+.pr-review-agent .forge-select {
+  flex: 1;
+  min-width: 12rem;
+}
+
+/* ------------------------------------------------------------- markdown --- */
+
+/*
+ * Rendered Markdown, from `Markdown.tsx`.
+ *
+ * Sized off the prose scale rather than the shell's row rhythm: this is the
+ * one place in the app where someone reads paragraphs, and 13px at 1.35 is a
+ * line height for a tree, not for a description.
+ */
+.forge-md {
+  color: var(--fg-default);
+  font-size: var(--text-md);
+  line-height: 1.65;
+}
+.forge-md > *:first-child {
+  margin-top: 0;
+}
+.forge-md > *:last-child {
+  margin-bottom: 0;
+}
+.forge-md-heading {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: var(--space-24) 0 var(--space-10);
+}
+.forge-md-heading[data-level="1"],
+.forge-md-heading[data-level="2"] {
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-lg);
+  padding-bottom: var(--space-6);
+}
+.forge-md-heading[data-level="3"] {
+  font-size: var(--text-md);
+}
+.forge-md-heading[data-level="4"],
+.forge-md-heading[data-level="5"],
+.forge-md-heading[data-level="6"] {
+  color: var(--fg-muted);
+  font-size: var(--text-md);
+}
+/* A soft break is a break: a forge host renders one that way, and a checklist
+   written one item per line has to arrive as one item per line. */
+.forge-md-p {
+  margin: 0 0 var(--space-12);
+  white-space: pre-wrap;
+}
+.forge-md-list {
+  margin: 0 0 var(--space-12);
+  padding-left: var(--space-20);
+}
+.forge-md-item {
+  margin-bottom: var(--space-4);
+}
+.forge-md-item[data-depth="1"] {
+  margin-left: var(--space-20);
+}
+.forge-md-item[data-depth="2"] {
+  margin-left: var(--space-32);
+}
+.forge-md-item[data-task] {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--space-8);
+  list-style: none;
+}
+.forge-md-item-text {
+  min-width: 0;
+  white-space: pre-wrap;
+}
+/* Not a `Checkbox`: the box is the host's record of what someone else ticked,
+   and a control that looked pressable would offer an edit this tab cannot
+   make. `role="img"` is what says so. */
+.forge-md-box {
+  align-items: center;
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-2xs);
+  color: var(--accent-solid);
+  display: inline-flex;
+  flex: none;
+  height: var(--space-14);
+  justify-content: center;
+  margin-top: var(--space-3);
+  width: var(--space-14);
+}
+.forge-md-box[data-checked] {
+  background: var(--accent-soft);
+  border-color: var(--accent-solid);
+}
+.forge-md-inline-code {
+  background: var(--bg-raised);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-4);
+}
+.forge-md-pre {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  margin: 0 0 var(--space-12);
+  overflow-x: auto;
+  padding: var(--space-12);
+}
+.forge-md-quote {
+  border-left: 2px solid var(--border-default);
+  color: var(--fg-muted);
+  margin: 0 0 var(--space-12);
+  padding-left: var(--space-12);
+}
+.forge-md-rule {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  margin: var(--space-20) 0;
+}
+.forge-md-link {
+  color: var(--accent-solid);
+  text-decoration: none;
+}
+.forge-md-link:hover {
+  text-decoration: underline;
+}
+/* A table is the one block that can be wider than the column, so it scrolls
+   in its own box rather than pushing the description sideways. */
+.forge-md-table-scroll {
+  margin: 0 0 var(--space-12);
+  overflow-x: auto;
+}
+.forge-md-table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  width: 100%;
+}
+.forge-md-table th,
+.forge-md-table td {
+  border: 1px solid var(--border-subtle);
+  padding: var(--space-4) var(--space-8);
+  text-align: left;
+}
+.forge-md-table th {
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+  font-weight: 600;
+}

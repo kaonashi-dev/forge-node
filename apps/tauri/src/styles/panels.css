@@ -1,0 +1,298 @@
+/*
+ * The inspector: panel frames, the file tree, list cards and the shared
+ * filter header (§4.2 U12/U13).
+ */
+
+/* -------------------------------------------------------------- panels --- */
+
+.panel-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-10);
+}
+.panel-heading {
+  align-items: baseline;
+  color: var(--fg-muted);
+  display: flex;
+  font-size: var(--text-xs);
+  gap: var(--space-8);
+  letter-spacing: 0.06em;
+  margin-top: var(--space-6);
+  text-transform: uppercase;
+}
+.panel-note-inline {
+  color: var(--fg-subtle);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.panel-note {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  margin: var(--space-4) 0;
+}
+.panel-error {
+  background: var(--forge-diff-removed-bg);
+  border-radius: var(--radius-xs);
+  color: var(--danger-solid);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  margin: 0;
+  padding: var(--space-6) var(--space-8);
+}
+.file-tree {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.file-tree-spacer {
+  flex: none;
+}
+.tree-row.file {
+  font-size: var(--text-sm);
+}
+.tree-row.file.directory {
+  color: var(--fg-muted);
+}
+.tree-row.file.active {
+  background: var(--bg-selected);
+  color: var(--fg-default);
+}
+
+/* The branch line, or what git is in the middle of instead. */
+.git-head {
+  align-items: baseline;
+  display: flex;
+  gap: var(--space-8);
+  margin-bottom: var(--space-8);
+  min-width: 0;
+}
+.git-branch {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/*
+ * Amber, and spelled out rather than abbreviated.
+ *
+ * A detached HEAD during a replay is not pedantry — it is *why* nothing can be
+ * committed, so it takes the place of the branch name rather than sitting
+ * beside it.
+ */
+.git-detached {
+  background: color-mix(in srgb, var(--warning-solid) 16%, var(--bg-base));
+  border-radius: var(--radius-xs);
+  color: var(--warning-solid);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-8);
+}
+
+/*
+ * The one card that blocks everything else in the window.
+ *
+ * Amber-edged for the same reason the attention bar is: a rebase stopped on
+ * conflicts is the state where the agent cannot commit and the diff view is
+ * describing a tree half-way between two commits.
+ */
+.git-sequencer {
+  background: color-mix(in srgb, var(--warning-solid) 8%, var(--bg-raised));
+  border: 1px solid var(--warning-solid);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-8);
+  padding: var(--space-10);
+}
+.git-sequencer-head {
+  align-items: baseline;
+  display: flex;
+  gap: var(--space-8);
+}
+.git-sequencer-title {
+  font-weight: 600;
+}
+.git-sequencer .git-actions {
+  display: grid;
+  gap: var(--space-6);
+  grid-template-columns: 1fr;
+  margin: var(--space-8) 0;
+}
+.git-conflict {
+  border-top: 1px solid color-mix(in srgb, var(--warning-solid) 20%, transparent);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--text-sm);
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-6) 0 var(--space-4);
+}
+/* The end of a path is the part that identifies it, so the ellipsis goes at
+   the front. */
+.git-conflict-path {
+  direction: rtl;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-conflict-foot {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  justify-content: space-between;
+}
+.git-conflict-code {
+  color: var(--forge-git-conflict);
+  font-size: var(--text-xs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-actions {
+  display: flex;
+  gap: var(--space-6);
+  margin-top: var(--space-6);
+}
+.git-file {
+  align-items: center;
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-8);
+}
+.git-status {
+  color: var(--forge-git-modified);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  width: 10px;
+}
+.git-status[data-status="Added"],
+.git-status[data-status="Untracked"] {
+  color: var(--forge-git-added);
+}
+.git-status[data-status="Deleted"] {
+  color: var(--forge-git-deleted);
+}
+.git-counts {
+  display: flex;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  gap: var(--space-6);
+}
+.git-counts .added {
+  color: var(--forge-git-added);
+}
+.git-counts .deleted {
+  color: var(--forge-git-deleted);
+}
+
+/* §4.2 U8: git's verdict on a tree row. A single glyph rather than a full
+   status word — the row is 26px of a 320px panel, and the colour carries as
+   much of the meaning as the letter does. */
+.tree-git {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  width: var(--space-12);
+  text-align: center;
+}
+.tree-git-added {
+  color: var(--forge-git-added);
+}
+.tree-git-modified {
+  color: var(--forge-git-modified);
+}
+.tree-git-deleted {
+  color: var(--forge-git-deleted);
+}
+.tree-git-untracked {
+  color: var(--forge-git-untracked);
+}
+.tree-git-conflict {
+  color: var(--forge-git-conflict);
+}
+/* A folded directory says how much is changed under it; without the roll-up a
+   collapsed `src/` looks as clean as an untouched one. */
+.tree-git-count {
+  background: var(--bg-raised);
+  border-radius: var(--radius-full);
+  color: var(--fg-muted);
+  flex: none;
+  font-size: var(--text-xs);
+  padding: 0 var(--space-4);
+}
+
+/* ------------------------------------------------------ history / prs --- */
+
+/* §4.2 U12: one filter header, in every list panel. `.history-filters` is
+   kept as an alias for the two call sites that still spell it that way. */
+.filter-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.filter-chips,
+.history-filters {
+  display: flex;
+  gap: var(--space-4);
+}
+.filter-search {
+  align-items: center;
+  display: flex;
+  gap: var(--space-6);
+}
+.filter-search .panel-search {
+  flex: 1;
+}
+/* `.panel-search` and the other field classes name the wrapper `TextField`
+   renders, so what they set goes to the control inside it. */
+.panel-search {
+  min-width: 0;
+}
+.panel-search .forge-field {
+  border-color: var(--border-subtle);
+  height: var(--control-sm);
+  padding: 0 var(--space-8);
+}
+/* §4.2 U13: the box, the header and the metadata row all come from
+   `.list-card` in `ui/ui.css` now. What is left here is what makes a run
+   look like a run and a pull request like a pull request. */
+.history-provider,
+.pr-number {
+  color: var(--accent-solid);
+  flex: none;
+  font-size: var(--text-xs);
+}
+.history-provider {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-6);
+}
+.history-preview {
+  color: var(--fg-muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  margin: 0;
+  overflow: hidden;
+}
+.history-spacer {
+  flex: 1;
+}
+.pr-decision {
+  color: var(--warning-solid);
+}

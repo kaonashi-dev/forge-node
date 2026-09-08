@@ -1,0 +1,18 @@
+{
+  "WorkspaceUpdated": {
+    "id": "00000000-0000-7000-8000-000000000003",
+    "project_id": "00000000-0000-7000-8000-000000000001",
+    "kind": "Main",
+    "path": "/home/dev/forge",
+    "branch": "main",
+    "display_name": null,
+    "managed_by_app": false,
+    "created_at": "2026-08-30T12:00:00Z",
+    "status": {
+      "dirty": false,
+      "ahead": null,
+      "behind": null,
+      "measured_at": null
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{"ts":"2026-08-29T18:04:37.947861Z","type":"feature_registered","slug":"add-support-for-toher-themes","title":"Add support for toher themes"}
+{"ts":"2026-08-29T18:04:37.969689Z","type":"spec_started"}
+{"ts":"2026-08-29T18:07:51.156204Z","type":"human_gate_opened","gate":"spec_approval"}
+{"ts":"2026-08-30T23:55:52.426218Z","type":"human_gate_resolved","gate":"spec_approval","decision":"revise"}
+{"ts":"2026-09-01T18:43:01Z","type":"feature_blocked","reason":"test data"}

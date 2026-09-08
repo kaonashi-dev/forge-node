@@ -1,0 +1,19 @@
+/*
+ * The shell's stylesheet, split by what it paints (§5.2).
+ *
+ * The order below is the order `styles.css` was written in, and it is
+ * load-bearing exactly once — `late.css` has to come after `base.css` — but
+ * the split was checked for more than that: no two of these files declare the
+ * same property on the same selector, apart from that one pair. So the order
+ * here is a convention rather than a constraint, and a file can be moved into
+ * a route chunk without the cascade moving with it.
+ *
+ * `settings.css` is not imported here. `SettingsRoute` is lazily loaded and
+ * imports it itself, so it lands in that route's chunk.
+ */
+@import "./base.css";
+@import "./shell.css";
+@import "./workbench.css";
+@import "./panels.css";
+@import "./harness.css";
+@import "./late.css";

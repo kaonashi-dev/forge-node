@@ -1,0 +1,5 @@
+{"ts":"2026-08-29T12:59:42.180396Z","type":"feature_registered","slug":"add-suport-for-grokai","title":"Add suport for GrokAI"}
+{"ts":"2026-08-29T12:59:42.189168Z","type":"spec_started"}
+{"ts":"2026-08-29T13:01:58.229851Z","type":"human_gate_opened","gate":"spec_approval"}
+{"ts":"2026-08-29T13:03:01.573244Z","type":"human_gate_resolved","gate":"spec_approval","decision":"revise"}
+{"ts":"2026-09-01T18:43:01Z","type":"feature_blocked","reason":"test data"}

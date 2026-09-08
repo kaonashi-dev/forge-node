@@ -1,0 +1,26 @@
+[package]
+name = "terminal-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = ["engine-alacritty"]
+# Feature flag so an alternative VT engine can be evaluated without touching
+# SessionService or ui (§11.4).
+engine-alacritty = ["dep:alacritty_terminal"]
+
+[dependencies]
+domain.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+compact_str.workspace = true
+portable-pty.workspace = true
+nix.workspace = true
+alacritty_terminal = { workspace = true, optional = true }
+
+[dev-dependencies]
+insta.workspace = true

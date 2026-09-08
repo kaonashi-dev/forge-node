@@ -1,0 +1,17 @@
+{
+  "SharesApplied": {
+    "workspace_id": "00000000-0000-7000-8000-000000000003",
+    "trigger": "Created",
+    "actions": [
+      {
+        "rule_id": "00000000-0000-7000-8000-00000000000a",
+        "path": ".env",
+        "verb": "link",
+        "bytes": 412,
+        "fallback": false,
+        "note": null
+      }
+    ],
+    "error": null
+  }
+}

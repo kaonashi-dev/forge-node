@@ -1,0 +1,12 @@
+{
+  "Response": {
+    "request_id": 8,
+    "body": {
+      "Err": {
+        "code": "PreconditionFailed",
+        "message": "session is Running",
+        "details": "close it or kill it first"
+      }
+    }
+  }
+}

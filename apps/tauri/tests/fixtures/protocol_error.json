@@ -1,0 +1,5 @@
+{
+  "code": "PreconditionFailed",
+  "message": "session is Running",
+  "details": "close it or kill it first"
+}

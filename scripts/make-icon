@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# Build the app icon from its source vector.
+#
+#   scripts/make-icon
+#
+# Pipeline:
+#   1. downscale the 1024 master into a macOS .iconset with `sips`.
+#   2. pack it into assets/icon/forge.icns with `iconutil`.
+#
+# Outputs (checked into the repo so packaging needs no toolchain):
+#   assets/icon/forge.icns     <- FORGE_ICNS for scripts/package-macos
+#   assets/icon/forge-256.png  <- FORGE_ICON_PNG for scripts/package-linux
+#
+# macOS only (sips + iconutil are Apple tools). The PNGs render anywhere.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
+icon_dir="assets/icon"
+
+[ "$(uname -s)" = "Darwin" ] || {
+  echo "==> not macOS: PNGs written, skipping .icns (needs iconutil)"; exit 0;
+}
+command -v sips >/dev/null || { echo "sips not found" >&2; exit 1; }
+command -v iconutil >/dev/null || { echo "iconutil not found" >&2; exit 1; }
+
+master="$icon_dir/forge-1024.png"
+[ -f "$master" ] || { echo "missing $master" >&2; exit 1; }
+
+set="$(mktemp -d)/forge.iconset"
+mkdir -p "$set"
+echo "==> building iconset from $master"
+# (name, pixel size) pairs Apple's iconutil expects.
+for pair in "16x16 16" "16x16@2x 32" "32x32 32" "32x32@2x 64" \
+            "128x128 128" "128x128@2x 256" "256x256 256" "256x256@2x 512" \
+            "512x512 512" "512x512@2x 1024"; do
+  name="${pair% *}"; size="${pair#* }"
+  sips -z "$size" "$size" "$master" --out "$set/icon_${name}.png" >/dev/null
+done
+
+iconutil -c icns "$set" -o "$icon_dir/forge.icns"
+echo "==> wrote $icon_dir/forge.icns"
+ls -la "$icon_dir/forge.icns" "$icon_dir/forge-256.png" | awk '{print $5, $NF}'

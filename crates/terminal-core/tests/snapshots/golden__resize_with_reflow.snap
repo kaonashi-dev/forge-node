@@ -1,0 +1,11 @@
+---
+source: crates/terminal-core/tests/golden.rs
+expression: "format!(\"width10:\\n{narrow}\\nwidth20:\\n{wide}\")"
+---
+width10:
+abcdefghij
+klmnop
+
+
+width20:
+abcdefghijklmnop

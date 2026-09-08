@@ -1,0 +1,713 @@
+/*
+ * The ground everything else is painted on.
+ *
+ * `@font-face`, the document's own type and colour, the reset, the focus ring,
+ * the motion block, the scrollbars, the window's grid and its drag handles,
+ * the icon tint and the session-state markers. Nothing here belongs to one
+ * screen, which is the rule for what lives in this file.
+ */
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  src: url("/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-weight: 400;
+  src: url("/fonts/JetBrainsMono-Italic.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  src: url("/fonts/JetBrainsMono-Bold.ttf") format("truetype");
+}
+
+:root {
+  color-scheme: dark;
+  /*
+   * The chrome is set in the platform's own UI face; mono is reserved for the
+   * surfaces where the characters *are* the content — the grid, the editor, a
+   * patch, a path, a branch, a chord. A label set in mono costs a fifth more
+   * width to say the same thing and has no medium weight to say it with,
+   * which is what pushed half this file down to 10px.
+   */
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  color: var(--fg-default);
+  background: var(--bg-base);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+
+  /*
+   * Motion and elevation used to be authored here as constants, kept out of
+   * the token pipeline because `applyTheme` writes every variable it is handed
+   * as an inline style. They now live in `tokens.ts`'s `staticTokens()` — the
+   * one part of the pipeline `applyTheme` deliberately does *not* write inline —
+   * and reach the app through `tokens.css` as `--motion-*`, `--ease` and
+   * `--shadow-*`, with `--forge-*` bridges for the rules below that still name
+   * the old tokens. Nothing here to declare.
+   */
+}
+
+/* The face a code surface asks for by name. */
+.forge-mono,
+.terminal-canvas,
+.diff-view,
+.editor-view,
+.status-branch,
+.status-path,
+.settings-path-name,
+.workbench-tab-text,
+kbd {
+  font-family: var(--font-mono);
+}
+
+/*
+ * Motion, in one place.
+ *
+ * Every hover, selection and press in the app was a jump cut before this: the
+ * colour arrived in one frame, which reads as a repaint rather than as a
+ * response. 110ms is under the threshold where a transition starts to feel
+ * like lag on a control the pointer is being dragged across.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  button,
+  [role="tab"],
+  [role="option"],
+  /* A chip, a menu item and a checkbox were the three that had no transition:
+     `[role="radio"]`, `.context-item` and the two indicators below. Selecting
+     a history filter or arrowing down a menu was the jump cut this block was
+     written to remove everywhere else. */
+  [role="radio"],
+  .context-item,
+  .forge-chip,
+  .forge-checkbox-box,
+  .forge-radio-dot,
+  /* `.forge-row` covers the tree, file, job and empty-centre rows at once. */
+  .forge-row,
+  /* A `div`, so the shared row transition above never reaches its hover fill. */
+  .ws-card,
+  .session-tab,
+  .palette-row,
+  .inspector-tab,
+  .workbench-tab,
+  .forge-field,
+  .forge-textarea {
+    transition:
+      background-color var(--motion-fast) var(--ease),
+      border-color var(--motion-fast) var(--ease),
+      color var(--motion-fast) var(--ease),
+      opacity var(--motion-fast) var(--ease),
+      /* `transform` rides along so a press can dip a button without a second
+         `transition` declaration overriding this one. */
+      transform var(--motion-fast) var(--ease);
+  }
+
+  /*
+   * The two strips that arrive rather than appear.
+   *
+   * Both are rendered by a `Show`, so the animation fires on mount and never
+   * again. The notice keeps its centring translate in both keyframes: written
+   * as `translateY` alone it would jump to the left edge for the duration.
+   */
+  .attention-bar {
+    animation: forge-strip-in var(--motion-slow) var(--ease);
+  }
+  .notice {
+    animation: forge-notice-in var(--motion-slow) var(--ease);
+  }
+}
+@keyframes forge-strip-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes forge-notice-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+* {
+  box-sizing: border-box;
+  /* Scroll boundaries belong to each pane, never to the surrounding window. */
+  overscroll-behavior: none;
+}
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+button,
+input,
+textarea,
+select {
+  color: inherit;
+  font: inherit;
+}
+/*
+ * 2px, drawn inside the control rather than around it.
+ *
+ * A 3px halo with a positive offset is four pixels of ring on a 28px row: it
+ * collided with its neighbours in every dense list here, and on the palette's
+ * own input it read as an unstyled web form rather than as a focused field.
+ */
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+/*
+ * The third rung of `controls.rs`: hover is defined per surface, but *press*
+ * and *disabled* are the same everywhere, and a control that looks identical
+ * held down and released is one you cannot tell you clicked.
+ */
+button:not(:disabled):active {
+  background: var(--bg-pressed);
+}
+/*
+ * One rule for what the pointer says.
+ *
+ * This file had `cursor: default` on sixteen controls and `cursor: pointer` on
+ * fourteen, split *inside* the same widget families: a project row in the rail
+ * was a hand and the session row under it was an arrow; an inspector tab was a
+ * hand and a settings tab was an arrow; `Resume` in the history panel — a
+ * `Button`, so every button in the app — was an arrow while the amber action
+ * beside the attention bar was a hand.
+ *
+ * Clickable is a hand, and it is stated once here rather than per component.
+ * The app is a WebView and reads as one; the two references that are also
+ * WebViews do the same. Disabled goes back to an arrow because there is
+ * nothing to click, the grid keeps a caret because its content is selectable
+ * text, and the resize handles keep their own.
+ *
+ * The two `label` selectors are not redundant with the wrappers they sit in:
+ * `cursor` inherits, but the UA sheet sets its own value on a `label`, which
+ * outranks an inherited one — a radio chip in the history filter was an arrow
+ * over its text and a hand over the two pixels of padding around it.
+ */
+button:not(:disabled),
+summary,
+a[href],
+[role="button"],
+[role="tab"],
+[role="option"],
+[role="menuitem"],
+[role="menuitemcheckbox"],
+[role="menuitemradio"],
+[role="radio"],
+[role="checkbox"],
+[role="treeitem"],
+[role="switch"],
+.forge-radio,
+.forge-radio label,
+.forge-checkbox,
+.forge-checkbox label {
+  cursor: pointer;
+}
+button:disabled,
+[aria-disabled="true"],
+[data-disabled] {
+  cursor: default;
+}
+
+/*
+ * Disabled is a colour, not a veil.
+ *
+ * `opacity: .45` on a dark ground takes a muted label to roughly 2:1 against
+ * its own background — "Reveal config folder" and "Open patch" were legible
+ * as shapes and not as words. Dropping to the faint token holds them at the
+ * contrast the rest of the muted text already has.
+ */
+button:disabled,
+input:disabled,
+textarea:disabled {
+  color: var(--fg-subtle);
+  opacity: 0.7;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-base);
+}
+
+/*
+ * The window-control inset.
+ *
+ * A platform fact rather than a theme value, so it is deliberately *not* in
+ * the token pipeline: `applyTheme` writes every token as an inline style on
+ * the root element, and an inline default would outrank the macOS rule below
+ * it — collapsing the padding to 8px and putting the first button on top of
+ * the close button. `tokens.test.ts` holds that line.
+ *
+ * Zero everywhere else, and declared rather than left undefined: a `var()`
+ * with no value invalidates the whole `calc()` it sits in, which is a title
+ * bar with no left padding at all.
+ *
+ * 78px is the arithmetic of the lights themselves, at the position
+ * `tauri.conf.json` puts them: 9 left inset + three 12px buttons + two 8px
+ * gaps + 17px of air before the first interactive control = 78. Move
+ * `trafficLightPosition` and this moves with it.
+ */
+:root {
+  --forge-traffic-light-w: 0px;
+}
+
+html[data-platform="macos"] {
+  /* The lights are drawn by AppKit, not by us: this only reserves the room.
+     Their y lives in tauri.conf.json `trafficLightPosition` and is tied to
+     --forge-title-h — tao insets them from the window top, so the y there is
+     (title-h - 14) / 2 + 9, the 9 being the button frame's own offset. */
+  --forge-traffic-light-w: 78px;
+}
+
+.title-bar-inset {
+  display: none;
+  flex-shrink: 0;
+  width: var(--forge-traffic-light-w);
+}
+html[data-platform="macos"] .title-bar-inset {
+  display: block;
+}
+
+.title-bar {
+  align-items: center;
+  background: var(--forge-rail);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-8);
+  height: var(--forge-title-h);
+  padding: 0 var(--space-8);
+}
+/* `data-tauri-drag-region="false"` means *not* a drag region (tauri 2.11's
+   `drag.js` reads the value, not the attribute's presence). A bare presence
+   selector here painted `app-region: drag` on exactly the elements that opted
+   out — on a Chromium webview the tab strip would drag the window instead. */
+[data-tauri-drag-region]:not([data-tauri-drag-region="false"]) {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.title-bar button,
+.title-bar .tab-strip-host,
+.title-bar .session-tab-wrap,
+.title-bar .session-menu,
+.title-bar .open-split,
+.title-bar .connection-pill {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* What the tab strip leaves behind on the settings screen: the drag region
+   still has to reach across the bar, or the window stops moving. */
+.title-bar-spacer {
+  flex: 1;
+  height: 100%;
+  min-width: 0;
+}
+.title-bar-end {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-8);
+  margin-left: auto;
+}
+
+/* One control split in two: the label runs the remembered target, the chevron
+   picks a different one. The hairline between them is a border on the second
+   half, so the two hit areas stay adjacent with no gap to fall through. */
+.open-split {
+  align-items: stretch;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  display: flex;
+  overflow: hidden;
+}
+.open-split .open-split-main,
+.open-split .open-split-more {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.open-split .open-split-main {
+  padding-inline: var(--space-8) var(--space-6);
+}
+.open-split .open-split-more {
+  align-items: center;
+  border-left: 1px solid var(--border-subtle);
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  min-width: var(--control-sm);
+  padding: 0;
+  width: var(--control-sm);
+}
+
+.connection-pill {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--fg-muted);
+  display: flex;
+  font-size: var(--text-xs);
+  gap: var(--space-8);
+  max-width: 280px;
+  min-width: 0;
+  overflow: hidden;
+}
+/* `text-overflow` is ignored on the flex container itself, so a disconnect
+   reason has to ellipsize on its own child or it just gets clipped mid-glyph. */
+.connection-pill-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-dot {
+  background: var(--fg-subtle);
+  border-radius: 50%;
+  display: inline-block;
+  height: 6px;
+  width: 6px;
+}
+.status-dot.online,
+.status-dot.live {
+  background: var(--success-solid);
+}
+.status-dot.idle {
+  background: var(--warning-solid);
+}
+.status-dot.error {
+  background: var(--danger-solid);
+}
+
+/* Rail, handle, terminal, handle, inspector. The widths are inline custom
+   properties the drag handles write, falling back to the theme's metrics
+   before the daemon has answered with the stored layout. */
+.workspace-grid {
+  display: grid;
+  flex: 1;
+  grid-template-columns:
+    var(--rail-w, var(--forge-rail-w)) var(--forge-handle-w)
+    minmax(0, 1fr)
+    var(--forge-handle-w) var(--panel-w, var(--forge-panel-w));
+  min-height: 0;
+}
+.workspace-grid.rail-collapsed {
+  grid-template-columns: minmax(0, 1fr) var(--forge-handle-w) var(--panel-w, var(--forge-panel-w));
+}
+.workspace-grid.panel-collapsed {
+  grid-template-columns: var(--rail-w, var(--forge-rail-w)) var(--forge-handle-w) minmax(0, 1fr);
+}
+.workspace-grid.rail-collapsed.panel-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* A 4px column with a 9px hit area: the divider a pointer has to find is
+   wider than the line the eye should see. */
+.resize-handle {
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+  z-index: var(--z-handle);
+}
+.resize-handle::after {
+  content: "";
+  inset: 0 calc(var(--space-3) * -1);
+  position: absolute;
+}
+.resize-handle:hover,
+.resize-handle.dragging {
+  background: var(--accent-solid);
+}
+
+.sidebar,
+.inspector {
+  background: var(--bg-subtle);
+  min-height: 0;
+  overflow: auto;
+}
+.sidebar {
+  border-right: 1px solid var(--border-subtle);
+  padding: var(--space-8);
+}
+.inspector {
+  border-left: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+ * `muted`, not `faint`.
+ *
+ * A caption is the only text in the app set in caps at the smallest step, and
+ * it was also the dimmest: faint is calibrated for marks and separators, and
+ * under a hairline of tracking at 11px it fell under 4.5:1 on every ground
+ * here. The tracking stays — it is what makes caps readable at this size.
+ */
+.section-label {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  padding: var(--space-8);
+  text-transform: uppercase;
+}
+
+.needs-you {
+  align-items: center;
+  background: color-mix(in srgb, var(--attention-solid) 12%, transparent);
+  border-radius: var(--radius-xs);
+  color: var(--attention-solid);
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: var(--space-8);
+}
+
+.needs-you-count {
+  font-size: var(--text-xs);
+  padding-right: var(--space-8);
+}
+
+.project-card {
+  align-items: center;
+  border-radius: var(--radius-xs);
+  display: flex;
+  gap: var(--space-10);
+  height: var(--row-h);
+  padding: 0 var(--space-8);
+}
+.project-avatar {
+  align-items: center;
+  background: var(--bg-overlay);
+  border-radius: var(--radius-xs);
+  display: inline-flex;
+  font-size: var(--text-xs);
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+.project-card strong,
+.project-card small {
+  display: block;
+}
+.project-card strong {
+  font-size: var(--text-sm);
+}
+.project-card small {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+
+.sidebar-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  display: flex;
+  gap: var(--space-8);
+  height: var(--row-h);
+  padding: 0 var(--space-8) 0 var(--space-28);
+  text-align: left;
+  width: 100%;
+}
+.sidebar-row:hover {
+  background: var(--bg-hover);
+}
+.sidebar-row.active {
+  background: var(--bg-selected);
+}
+
+/* Icons — mask tint glyphs */
+/* A lucide glyph is an inline SVG whose stroke is `currentColor`; the colour
+   classes below set `color`, and the stroke follows. */
+.forge-icon {
+  color: currentColor;
+  display: inline-flex;
+  flex-shrink: 0;
+  line-height: 0;
+}
+.forge-icon-box {
+  align-items: center;
+  display: inline-flex;
+  flex-shrink: 0;
+  justify-content: center;
+  line-height: 0;
+}
+.forge-icon-dim {
+  opacity: 0.55;
+}
+/* Shares `@keyframes forge-spin` with `.forge-btn-spinner`. */
+.forge-icon-spin {
+  animation: forge-spin 0.7s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .forge-icon-spin {
+    animation-duration: 1.6s;
+  }
+}
+/* A brand mark has no lucide glyph, so it keeps the mask-tint the whole set
+   used before: the SVG is the mask, `currentColor` is the fill. */
+.forge-brand-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask-image: var(--icon-url);
+  mask-image: var(--icon-url);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+/* A language mark is the one thing in the shell drawn in its own colours, so
+   it is a background and not the mask above: a mask would flatten every file
+   type to one hue, which is the whole of what these say. */
+.forge-lang-icon {
+  background-image: var(--icon-url);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.forge-icon-accent {
+  color: var(--accent-solid);
+}
+.forge-icon-blue {
+  color: var(--forge-blue);
+}
+.forge-icon-muted {
+  color: var(--fg-muted);
+}
+.forge-icon-faint {
+  color: var(--fg-subtle);
+}
+.forge-icon-green {
+  color: var(--success-solid);
+}
+.forge-icon-amber {
+  color: var(--warning-solid);
+}
+.forge-icon-red {
+  color: var(--danger-solid);
+}
+.forge-icon-needs-you {
+  color: var(--attention-solid);
+}
+
+/* Session state as geometry rather than an icon. The colour class above says
+   which state; the shape here says settled (filled dot), in motion (hollow
+   ring) or waiting on a person (a ring that breathes). The pulse is a
+   transform, never a `box-shadow`, so it stays off the perf note's list. */
+.forge-state-marker {
+  --marker-size: 8px;
+  align-items: center;
+  color: var(--fg-muted);
+  display: inline-flex;
+  flex: none;
+  height: 14px;
+  justify-content: center;
+  width: 14px;
+}
+.forge-state-marker::before {
+  border-radius: var(--radius-full);
+  content: "";
+  height: var(--marker-size);
+  width: var(--marker-size);
+}
+.forge-state-lg {
+  --marker-size: 10px;
+}
+.forge-state-dot::before {
+  background: currentColor;
+}
+.forge-state-ring::before,
+.forge-state-pulse::before {
+  border: 1.5px solid currentColor;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .forge-state-pulse::before {
+    animation: forge-state-pulse 1.8s ease-in-out infinite;
+  }
+}
+@keyframes forge-state-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.78);
+  }
+}
+
+.attention-pulse {
+  animation: attention-breathe 2.4s ease-in-out infinite;
+}
+@keyframes attention-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}
+
+/* Rows, hints and tones shared by settings, the panels and the pull request
+   tabs. Here because no one screen owns them, and the settings sheet they
+   were in is a lazily loaded route chunk. */
+.settings-hint {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  margin: 0 0 var(--space-16);
+  max-width: 60ch;
+}
+.settings-row {
+  align-items: center;
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-8);
+  height: var(--row-h);
+}
+.settings-row-label {
+  color: var(--fg-default);
+}
+.settings-row-note {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.tone-muted {
+  color: var(--fg-muted);
+}
+.tone-error {
+  color: var(--danger-solid);
+}

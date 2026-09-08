@@ -1,0 +1,14 @@
+---
+source: crates/terminal-core/tests/golden.rs
+expression: "format!(\"main_before(alt={alt_off}):\\n{main_before}\\n\\\n         alt_view(alt={alt_on}):\\n{alt_view}\\n\\\n         main_after(alt={alt_off_again}):\\n{main_after}\")"
+---
+main_before(alt=false):
+main
+
+
+alt_view(alt=true):
+    ALT
+
+
+main_after(alt=false):
+main

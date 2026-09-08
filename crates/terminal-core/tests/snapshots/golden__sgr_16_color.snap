@@ -1,0 +1,10 @@
+---
+source: crates/terminal-core/tests/golden.rs
+expression: render_styled(&e)
+---
+(0,0) "R" fg=Indexed(1) bg=Default flags=0b000000000
+(0,1) "E" fg=Indexed(1) bg=Default flags=0b000000000
+(0,2) "D" fg=Indexed(1) bg=Default flags=0b000000000
+(0,3) "G" fg=Default bg=Indexed(2) flags=0b000000000
+(0,4) "R" fg=Default bg=Indexed(2) flags=0b000000000
+(0,5) "N" fg=Default bg=Indexed(2) flags=0b000000000

@@ -1,0 +1,9 @@
+{
+  "alt_screen": true,
+  "bracketed_paste": true,
+  "app_cursor_keys": false,
+  "app_keypad": false,
+  "mouse_mode": "ButtonEvent",
+  "mouse_sgr": true,
+  "focus_events": false
+}

@@ -1,0 +1,25 @@
+{
+  "workspace_id": "00000000-0000-7000-8000-000000000003",
+  "branch": "main",
+  "files": [
+    {
+      "path": "src/main.rs",
+      "status": "Modified",
+      "additions": 2,
+      "deletions": 1,
+      "patch": "@@ -1,3 +1,4 @@\n fn main() {\n-    println!(\"hi\");\n+    println!(\"hello\");\n+    println!(\"world\");\n }\n",
+      "binary": false,
+      "truncated": false
+    },
+    {
+      "path": "assets/logo.png",
+      "status": "Added",
+      "additions": 0,
+      "deletions": 0,
+      "patch": "",
+      "binary": true,
+      "truncated": true
+    }
+  ],
+  "truncated": true
+}

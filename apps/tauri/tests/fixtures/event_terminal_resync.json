@@ -1,0 +1,114 @@
+{
+  "TerminalResync": {
+    "terminal_id": "00000000-0000-7000-8000-000000000005",
+    "snapshot": {
+      "seq": 42,
+      "size": {
+        "cols": 80,
+        "rows": 24,
+        "pixel_width": 0,
+        "pixel_height": 0
+      },
+      "visible": [
+        {
+          "cells": [
+            {
+              "text": " ",
+              "fg": "Default",
+              "bg": "Default",
+              "flags": 0
+            },
+            {
+              "text": " ",
+              "fg": "Default",
+              "bg": "Default",
+              "flags": 0
+            },
+            {
+              "text": " ",
+              "fg": "Default",
+              "bg": "Default",
+              "flags": 0
+            },
+            {
+              "text": " ",
+              "fg": "Default",
+              "bg": "Default",
+              "flags": 0
+            }
+          ],
+          "wrapped": false
+        },
+        {
+          "cells": [
+            {
+              "text": " ",
+              "fg": "Default",
+              "bg": "Default",
+              "flags": 0
+            },
+            {
+              "text": "x",
+              "fg": {
+                "Indexed": 2
+              },
+              "bg": {
+                "Rgb": [
+                  9,
+                  9,
+                  9
+                ]
+              },
+              "flags": 5
+            }
+          ],
+          "wrapped": true
+        }
+      ],
+      "scrollback_tail": [
+        {
+          "cells": [
+            {
+              "text": " ",
+              "fg": "Default",
+              "bg": "Default",
+              "flags": 0
+            },
+            {
+              "text": "x",
+              "fg": {
+                "Indexed": 2
+              },
+              "bg": {
+                "Rgb": [
+                  9,
+                  9,
+                  9
+                ]
+              },
+              "flags": 5
+            }
+          ],
+          "wrapped": true
+        }
+      ],
+      "scrollback_len": 7,
+      "cursor": {
+        "line": 3,
+        "col": 4,
+        "shape": "Beam",
+        "visible": true
+      },
+      "modes": {
+        "alt_screen": true,
+        "bracketed_paste": true,
+        "app_cursor_keys": false,
+        "app_keypad": false,
+        "mouse_mode": "ButtonEvent",
+        "mouse_sgr": true,
+        "focus_events": false
+      },
+      "title": "vim"
+    }
+  }
+}

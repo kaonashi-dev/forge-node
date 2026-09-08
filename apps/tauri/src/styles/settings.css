@@ -1,0 +1,806 @@
+/*
+ * The settings screen — every section of it, plus the stats surfaces.
+ *
+ * The one genuinely route-scoped stylesheet (§5.2). `SettingsRoute` is loaded
+ * lazily and imports this, so a window that never opens settings never
+ * downloads it; every other file here is chrome the first frame needs.
+ */
+
+/* ------------------------------------------------------------ settings --- */
+
+/*
+ * A screen, not a third column.
+ *
+ * Fixed to the window under the title bar rather than placed in the centre
+ * grid: settings framed by the project rail on one side and the inspector on
+ * the other reads as a panel whose terminal went missing. The title bar stays
+ * uncovered because it carries the window controls and the drag region.
+ */
+.settings-layer {
+  background: var(--bg-base);
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr);
+  inset: var(--forge-title-h) 0 0 0;
+  position: fixed;
+  z-index: var(--z-route);
+}
+.settings-header {
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  gap: var(--space-8);
+  padding: 0 var(--space-12) 0 var(--space-20);
+}
+.settings-header-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.settings-header .forge-icon-button {
+  margin-left: auto;
+}
+.settings-route {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  min-height: 0;
+}
+.settings-rail {
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-12) var(--space-8);
+}
+.settings-nav {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  display: flex;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  gap: var(--space-8);
+  height: var(--row-h);
+  padding: 0 var(--space-10);
+  text-align: left;
+}
+.settings-nav:hover {
+  background: var(--bg-hover);
+}
+.settings-nav[data-selected] {
+  background: var(--bg-selected);
+  color: var(--fg-default);
+}
+.settings-nav-label {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+}
+.settings-nav-icon {
+  flex: none;
+  opacity: 0.9;
+}
+.settings-nav[data-selected] .settings-nav-icon {
+  opacity: 1;
+}
+/* One measure for the whole screen: at 1600px the fact lists were running the
+   full width of the window with a two-word label at one end. */
+.settings-body {
+  overflow-y: auto;
+  padding: var(--space-24) var(--space-28);
+}
+
+/* --- Settings: page, group, row ------------------------------------------ */
+/*
+ * Three levels and no more: a page has a heading and a summary, a group is a
+ * card of related settings, a row is one label with its control. The sections
+ * were five different arrangements of `h2`/`h3`/`p` before, so a reader had to
+ * work out the hierarchy again on every screen.
+ */
+.settings-page-head {
+  margin: 0 0 var(--space-20);
+  max-width: 68ch;
+}
+.settings-page-title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.settings-page-summary {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  margin: var(--space-6) 0 0;
+}
+.settings-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+.settings-group {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-16) var(--space-20);
+}
+.settings-group-head {
+  align-items: center;
+  display: flex;
+  gap: var(--space-10);
+}
+.settings-group-title {
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin: 0;
+}
+/* Pushed to the far end so a count and a refresh read as belonging to the
+   group's title rather than as the first of its settings. */
+.settings-group-aside {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  margin-left: auto;
+}
+.settings-group-description {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  margin: calc(var(--space-4) * -1) 0 0;
+  max-width: 68ch;
+}
+.settings-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+.settings-item-head {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--space-16);
+}
+.settings-item-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.settings-item-label {
+  font-size: var(--text-sm);
+}
+.settings-item-description {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+.settings-item-control {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: var(--space-8);
+}
+
+/* --- Settings: the default-agent pills ----------------------------------- */
+/*
+ * A choice of ten read as a column of ten radio rows, which is a list to scan
+ * rather than a set to pick from. Wrapped pills put the whole set in three
+ * lines and give each one its provider's mark.
+ */
+.agent-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+.agent-choice {
+  align-items: center;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  cursor: default;
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-10);
+}
+.agent-choice:hover {
+  border-color: var(--border-default);
+}
+.agent-choice[data-checked] {
+  background: var(--bg-selected);
+  border-color: var(--accent-solid);
+  color: var(--fg-default);
+}
+.agent-choice[data-disabled] {
+  color: var(--fg-subtle);
+  opacity: 0.55;
+}
+.agent-choice-label {
+  white-space: nowrap;
+}
+
+/* --- Settings: a provider row -------------------------------------------- */
+.provider-row + .provider-row {
+  border-top: 1px solid var(--border-subtle);
+}
+.provider-name {
+  font-size: var(--text-sm);
+}
+.provider-id {
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.provider-command {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+}
+.provider-command-field {
+  flex: 1;
+  min-width: 0;
+}
+.provider-args {
+  background: var(--bg-overlay);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-4) var(--space-8);
+}
+/* 860 rather than a prose measure: the widest thing on these screens is a grid
+   of tiles, not a paragraph, and the paragraphs set their own narrower width. */
+.settings-body > * {
+  max-width: 860px;
+}
+.settings-body h2:not(.settings-page-title) {
+  font-size: var(--text-lg);
+  letter-spacing: -0.02em;
+  margin: 0 0 var(--space-4);
+}
+.settings-facts {
+  display: grid;
+  gap: var(--space-4) var(--space-16);
+  grid-template-columns: max-content minmax(0, 1fr);
+  margin: var(--space-12) 0 var(--space-20);
+}
+.settings-facts dt {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.settings-facts dd {
+  font-size: var(--text-sm);
+  margin: 0;
+}
+/*
+ * Section headings inside a settings page, between the page title and a group
+ * of controls. The pages are long enough that "Files" and "Daemon" need to be
+ * findable without reading the buttons.
+ */
+/*
+ * A path is read, not clicked: the row shows what it is, where it is, and one
+ * word about its state. `overflow-wrap` rather than truncation — a home
+ * directory the user cannot see the end of answers nothing.
+ */
+.settings-paths {
+  display: grid;
+  gap: var(--space-12);
+  list-style: none;
+  margin: 0 0 var(--space-16);
+  padding: 0;
+}
+.settings-paths li {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.settings-path-name {
+  align-items: baseline;
+  color: var(--fg-default);
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-6);
+}
+.settings-path-value {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.theme-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-10);
+}
+.theme-choice {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  display: flex;
+  flex-direction: column;
+  font-family: inherit;
+  font-size: var(--text-xs);
+  gap: var(--space-8);
+  padding: var(--space-10);
+  width: 132px;
+}
+.theme-choice {
+  align-items: stretch;
+}
+.theme-choice[data-checked] {
+  border-color: var(--accent-solid);
+  color: var(--fg-default);
+}
+.theme-swatches {
+  display: flex;
+  gap: var(--space-3);
+}
+.theme-swatch {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  height: 20px;
+  width: 20px;
+}
+.theme-name {
+  text-align: left;
+}
+
+/* ------------------------------------------------------ stats & usage --- */
+
+.stats-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+.stats-headline,
+.stats-overview {
+  display: grid;
+  gap: var(--space-8);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.stats-tile {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-12) var(--space-14);
+}
+.stats-tile-value {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.stats-tile-label {
+  color: var(--fg-muted);
+}
+.stats-tile-note {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.stats-since {
+  margin: 0;
+}
+
+.stats-panels {
+  /* `start`, so the calendar does not grow to the height of the legend beside
+     it and leave a hand's width of empty card under the last row. */
+  align-items: start;
+  display: grid;
+  gap: var(--space-12);
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.stats-panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-14);
+}
+.stats-panel-head {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  justify-content: space-between;
+}
+.stats-panel h4 {
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin: 0;
+}
+.stats-panel .settings-hint {
+  margin: 0;
+}
+.stats-badge {
+  background: var(--bg-overlay);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  flex: none;
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-8);
+}
+
+/*
+ * The calendar.
+ *
+ * Seven columns because a week is the unit anyone reading a run of days is
+ * counting in, and the quiet days are drawn rather than skipped — a gap in a
+ * calendar has to look like a quiet day, not like a missing one.
+ */
+.stats-heat-grid {
+  display: grid;
+  gap: var(--space-3);
+  /* Fixed cells that wrap, not a fixed column count: a 30-day window in a
+     narrow panel is two rows of fifteen, and the same rule draws a 90-day one
+     without turning each day into a tile the size of a button. */
+  grid-template-columns: repeat(auto-fill, 12px);
+}
+.stats-heat-cell {
+  border-radius: var(--radius-2xs);
+  display: block;
+  height: 12px;
+  width: 12px;
+}
+.stats-heat-cell.level-0 {
+  background: var(--bg-overlay);
+}
+.stats-heat-cell.level-1 {
+  background: color-mix(in srgb, var(--accent-solid) 25%, var(--bg-raised));
+}
+.stats-heat-cell.level-2 {
+  background: color-mix(in srgb, var(--accent-solid) 50%, var(--bg-raised));
+}
+.stats-heat-cell.level-3 {
+  background: color-mix(in srgb, var(--accent-solid) 75%, var(--bg-raised));
+}
+.stats-heat-cell.level-4 {
+  background: var(--accent-solid);
+}
+.stats-heat-foot {
+  align-items: center;
+  color: var(--fg-subtle);
+  display: flex;
+  font-size: var(--text-xs);
+  gap: var(--space-8);
+  justify-content: space-between;
+}
+.stats-heat-scale {
+  align-items: center;
+  display: flex;
+  gap: var(--space-3);
+}
+.stats-heat-scale .stats-heat-cell {
+  height: 9px;
+  width: 9px;
+}
+
+/* The mix bar and its key. */
+.stats-mix {
+  border-radius: var(--radius-xs);
+  display: flex;
+  height: 8px;
+  overflow: hidden;
+  width: 100%;
+}
+.stats-mix-part {
+  display: block;
+  height: 100%;
+}
+.stats-mix-part.kind-input,
+.stats-swatch.kind-input {
+  background: var(--accent-solid);
+}
+.stats-mix-part.kind-output,
+.stats-swatch.kind-output {
+  background: var(--forge-blue);
+}
+.stats-mix-part.kind-cache_read,
+.stats-swatch.kind-cache_read {
+  background: var(--success-solid);
+}
+.stats-mix-part.kind-cache_write,
+.stats-swatch.kind-cache_write {
+  background: var(--warning-solid);
+}
+.stats-legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.stats-legend li {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+}
+.stats-swatch {
+  border-radius: var(--radius-2xs);
+  flex: none;
+  height: 8px;
+  width: 8px;
+}
+.stats-legend-label {
+  color: var(--fg-muted);
+  flex: 1;
+  min-width: 0;
+}
+.stats-legend-value {
+  color: var(--fg-default);
+  font-variant-numeric: tabular-nums;
+}
+
+/* One card per provider that reported anything. */
+.stats-providers {
+  display: grid;
+  gap: var(--space-8);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.stats-provider {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-10) var(--space-12);
+}
+.stats-provider-head {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  justify-content: space-between;
+}
+.stats-provider-name {
+  font-weight: 600;
+}
+.stats-provider-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stats-provider-facts {
+  color: var(--fg-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  gap: var(--space-4) var(--space-12);
+}
+.stats-provider-bar {
+  background: var(--bg-overlay);
+  border-radius: var(--radius-full);
+  display: block;
+  height: 4px;
+  overflow: hidden;
+}
+.stats-provider-fill {
+  background: var(--accent-solid);
+  display: block;
+  height: 100%;
+}
+.stats-meter-row {
+  align-items: baseline;
+  display: flex;
+  gap: var(--space-10);
+}
+
+/* --- Settings: launch profiles ------------------------------------------- */
+.settings-profiles {
+  gap: var(--space-8);
+}
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+}
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-12);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+}
+.settings-form h4 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+.settings-field {
+  font-size: var(--text-sm);
+  gap: var(--space-4);
+}
+.settings-field .forge-field,
+.settings-field .forge-textarea {
+  background: var(--forge-editor);
+  border-color: var(--border-subtle);
+  height: auto;
+  padding: var(--space-4) var(--space-6);
+}
+.settings-field .forge-field {
+  font: inherit;
+}
+.profile-row {
+  gap: var(--space-8);
+}
+
+/* --- Settings: keyboard --------------------------------------------------- */
+/*
+ * §4.1 U2. Every action and the chord it answers to, rebindable in place.
+ * A table rather than a list of rows: four columns that have to line up down
+ * the page is what a table is for, and a grid of `div`s would be one.
+ */
+.keymap-table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  width: 100%;
+}
+.keymap-table th,
+.keymap-table td {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-4) var(--space-6);
+  text-align: left;
+  vertical-align: middle;
+}
+.keymap-table thead th {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.keymap-action {
+  color: var(--fg-default);
+  font-weight: 400;
+}
+.keymap-context {
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+/* A row the person has changed, so "what have I moved?" is answerable by
+   looking rather than by remembering. */
+.keymap-table tr.overridden .keymap-action {
+  box-shadow: inset 2px 0 0 var(--accent-solid);
+  padding-left: var(--space-6);
+}
+.keymap-chord {
+  border-radius: var(--radius-xs);
+  gap: var(--space-4);
+  min-height: var(--control-sm);
+  padding: 0 var(--space-4);
+}
+.keymap-chord:hover {
+  background: var(--bg-hover);
+}
+/* Listening for a keystroke. The ring is the same one focus draws, because
+   that is exactly what this is: the row has the keyboard. */
+.keymap-chord.listening {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+.keymap-listening {
+  color: var(--accent-solid);
+}
+.keymap-unbound {
+  color: var(--fg-subtle);
+}
+
+/* Shared files (§14.2): a list of rules, each one a path, a strategy and what
+   it currently looks like in every checkout. */
+.share-rules,
+.share-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.share-rule,
+.share-candidate {
+  align-items: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-8);
+}
+.share-rule.off {
+  opacity: 0.55;
+}
+.share-rule-main {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  gap: var(--space-8);
+  min-width: 0;
+}
+.share-rule-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-rule-strategy {
+  flex-shrink: 0;
+  min-width: 132px;
+}
+.share-rule-command {
+  flex: 1;
+  min-width: 120px;
+}
+.share-rule-state {
+  flex-shrink: 0;
+}
+.share-rule-actions {
+  align-items: center;
+  display: flex;
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+.share-candidate-class {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+.share-candidate-size {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  margin-left: auto;
+}
+.share-candidate .share-rule-path {
+  flex-shrink: 1;
+}
+.share-add {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--space-6);
+}
+.share-add > :first-child {
+  flex: 1;
+}
+
+.theme-choice:focus-within {
+  outline: 2px solid var(--accent-solid);
+  outline-offset: 2px;
+}
+.theme-choice {
+  padding: 0;
+}
+.theme-choice .forge-radio-custom {
+  box-sizing: border-box;
+  padding: var(--space-10);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  width: 100%;
+  cursor: pointer;
+}
+.theme-choice[data-checked] {
+  background: var(--bg-selected);
+  box-shadow: inset 0 0 0 1px var(--accent-solid);
+}
+.theme-active {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+.theme-import {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-10);
+}
+
+.theme-json {
+  width: 100%;
+}

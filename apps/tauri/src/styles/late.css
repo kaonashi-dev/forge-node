@@ -1,0 +1,80 @@
+/*
+ * Loaded last, on purpose.
+ *
+ * Two kinds of rule live here, and both only work from the end of the cascade:
+ * the controls that come out of `src/ui/` carrying a base height and padding
+ * and have to define their own box, and the disconnected state, which has to
+ * win over whatever the pane it covers was drawing.
+ *
+ * `.connection-pill { min-width }` is the one declaration in the whole
+ * stylesheet that is set twice across two files, and this is the copy that
+ * must win — which is the whole reason this file is not merged into another.
+ */
+
+/* --- Controls that size themselves --------------------------------------- */
+/*
+ * These are `Button`/`IconButton` from `src/ui/`, so they arrive carrying the
+ * base height, padding and `min-width`. Each one below defines its own box —
+ * a 20px tab close, a pill that ellipsizes, a `+` that appears on row hover —
+ * so the base contribution is dropped here rather than a variant being added
+ * for every one-off.
+ */
+.tab-step,
+.session-tab-close {
+  min-width: 0;
+  padding: 0;
+}
+.connection-pill,
+.notice-close,
+.tree-add,
+.workbench-tab-close,
+.attention-action {
+  height: auto;
+  min-width: 0;
+}
+.connection-pill {
+  padding: 0;
+}
+
+/* --- Disconnected -------------------------------------------------------- */
+/*
+ * The grid keeps painting the last frame it received, so a dead terminal looks
+ * exactly like an idle one. This is the only thing that says otherwise where
+ * the typing is happening.
+ */
+.disconnected-banner {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-12);
+  border-bottom: 1px solid var(--danger-solid);
+  background: color-mix(in srgb, var(--danger-solid) 12%, var(--bg-base));
+  font-size: var(--text-sm);
+}
+.disconnected-reason {
+  color: var(--fg-default);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keymap-conflict {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-4) 0;
+}
+.keymap-conflict-context {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.keymap-conflict-actions {
+  color: var(--fg-default);
+}
+
+.file-tree:focus-visible,
+.sidebar [role="tree"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
