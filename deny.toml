@@ -13,8 +13,25 @@ targets = [
 version = 2
 yanked = "deny"
 # cargo-deny >=0.17 took a severity here and made it a scope: "all" is every
-# crate in the graph, which is what "deny" used to mean.
+# crate in the graph, which is what "deny" used to mean. Kept at "all" so a new
+# unmaintained crate still fails; what is accepted is listed below, one line
+# each, rather than waved through by narrowing the scope to the workspace.
 unmaintained = "all"
+
+# All six are build-time and reach us through Tauri, which is not a dependency
+# this workspace can drop or route around: `proc-macro-error` through
+# glib-macros/gtk3-macros (the WebKitGTK backend Linux needs), the `unic-*`
+# family through urlpattern -> tauri-utils. None runs in a shipped binary.
+# Delete an entry the day Tauri stops pulling it, and never add one for a crate
+# whose code we actually execute.
+ignore = [
+    "RUSTSEC-2024-0370", # proc-macro-error
+    "RUSTSEC-2025-0075", # unic-char-range
+    "RUSTSEC-2025-0080", # unic-common
+    "RUSTSEC-2025-0081", # unic-char-property
+    "RUSTSEC-2025-0098", # unic-ucd-version
+    "RUSTSEC-2025-0100", # unic-ucd-ident
+]
 
 [licenses]
 version = 2
@@ -32,6 +49,11 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "OFL-1.1",
+    # webpki-roots, which the updater's TLS stack pulls in: it is Mozilla's CA
+    # root bundle, so the licensed artifact is certificate *data* rather than
+    # code, and CDLA-Permissive-2.0 grants use and redistribution without
+    # conditions on what ships beside it.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
