@@ -1,5 +1,6 @@
 import { DropdownMenu } from "@kobalte/core/dropdown-menu";
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { getVersion } from "@tauri-apps/api/app";
 import { forgeStore } from "../store/forgeStore";
 import { terminalStore } from "../store/terminalStore";
 import { LATENCY_BUDGET_MS } from "../terminal/latency";
@@ -16,6 +17,8 @@ import { Icon } from "../theme/icons/Icon";
 import { SessionGlyph } from "../theme/icons/SessionGlyph";
 import { Button, IconButton, Tooltip } from "../ui";
 import { refreshSnapshot } from "../runtime/api";
+import { applyUpdate, updateState, updateWasRequested } from "../store/updateStore";
+import { updatePill } from "./updatePill";
 import { workspaceFolderLabel, workspacePathSegment } from "./workspaceLabel";
 import { currentCheckout } from "./sessionActions";
 
@@ -26,6 +29,8 @@ type StatusBarProps = {
 
 export function StatusBar(props: StatusBarProps) {
   const [now, setNow] = createSignal(Date.now());
+  const [version, setVersion] = createSignal("");
+  const pill = createMemo(() => updatePill(updateState(), updateWasRequested()));
   const [open, setOpen] = createSignal(false);
   const [expanded, setExpanded] = createSignal<string | null>(null);
   const [mode, setMode] = createSignal<"detailed" | "compact">("detailed");
@@ -37,6 +42,12 @@ export function StatusBar(props: StatusBarProps) {
   onMount(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     onCleanup(() => window.clearInterval(timer));
+    // The bundle's own version, not a literal: `tauri.conf.json` has no
+    // `version` of its own so this is the workspace `Cargo.toml`, which is the
+    // number a release is cut from.
+    void getVersion()
+      .then(setVersion)
+      .catch(() => undefined);
   });
 
   // The checkout the window is pointed at, which is what the strip, the
@@ -206,9 +217,38 @@ export function StatusBar(props: StatusBarProps) {
           agents {forgeStore.installed_agents}/{forgeStore.provider_count}
         </span>
       </span>
-      <Tooltip label="Forge Node v0.1.0" placement="top" contents>
-        <span class="status-version">v0.1.0</span>
-      </Tooltip>
+      <Show when={pill()}>
+        {(shown) => (
+          <Tooltip label={shown().title} placement="top" contents>
+            <span
+              class="status-update"
+              classList={{
+                [`tone-${shown().tone}`]: true,
+                actionable: shown().actionable,
+              }}
+              role={shown().actionable ? "button" : undefined}
+              tabIndex={shown().actionable ? 0 : undefined}
+              onClick={() => {
+                if (shown().actionable) void applyUpdate();
+              }}
+              onKeyDown={(event) => {
+                if (!shown().actionable) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  void applyUpdate();
+                }
+              }}
+            >
+              {shown().label}
+            </span>
+          </Tooltip>
+        )}
+      </Show>
+      <Show when={version()}>
+        <Tooltip label={`Forge Node v${version()}`} placement="top" contents>
+          <span class="status-version">v{version()}</span>
+        </Tooltip>
+      </Show>
     </footer>
   );
 }

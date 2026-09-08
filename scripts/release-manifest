@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# Write the `latest.json` that `tauri-plugin-updater` polls.
+#
+#   scripts/release-manifest <version> <tag> <artifact.app.tar.gz> [notes-file]
+#
+# The manifest is the only channel between a release and a running app, and the
+# plugin surfaces exactly one field we control — `notes`. So the protocol
+# version rides in its first line as `protocol: <n>`: the app compares it with
+# its own and refuses to swap a bundle whose daemon it could not talk to
+# (apps/tauri/src-tauri/src/updates.rs). Omitting it is read as "unknown",
+# which is treated as protocol-breaking rather than assumed compatible.
+set -euo pipefail
+
+die() { printf 'release-manifest: %s\n' "$*" >&2; exit 1; }
+
+[ $# -ge 3 ] || die "usage: release-manifest <version> <tag> <artifact.app.tar.gz> [notes-file]"
+
+version="$1"
+tag="$2"
+artifact="$3"
+notes_file="${4:-}"
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+repo_slug="${FORGE_RELEASE_REPO:-kaonashi-dev/forge-node}"
+
+[ -f "$artifact" ]      || die "no artifact at $artifact"
+[ -f "$artifact.sig" ]  || die "no signature at $artifact.sig — run package-macos --updater"
+
+protocol="$(awk '/pub const PROTOCOL_VERSION/{gsub(/[^0-9]/,"",$NF); print $NF; exit}' \
+  "$repo_root/crates/protocol/src/lib.rs")"
+[ -n "$protocol" ] || die "could not read PROTOCOL_VERSION from crates/protocol/src/lib.rs"
+
+body=""
+[ -n "$notes_file" ] && [ -f "$notes_file" ] && body="$(cat "$notes_file")"
+
+# The updater keys platforms by "<os>-<arch>"; the arch spelling is Rust's, not
+# uname's, which is why the artifact name carries aarch64 rather than arm64.
+case "$(basename "$artifact")" in
+  *darwin-aarch64*)   platform="darwin-aarch64" ;;
+  *darwin-x86_64*)    platform="darwin-x86_64" ;;
+  *darwin-universal*) platform="darwin-universal" ;;
+  *linux-x86_64*)     platform="linux-x86_64" ;;
+  *) die "cannot derive an updater platform key from $(basename "$artifact")" ;;
+esac
+
+url="https://github.com/${repo_slug}/releases/download/${tag}/$(basename "$artifact")"
+
+PROTOCOL="$protocol" VERSION="$version" BODY="$body" PLATFORM="$platform" URL="$url" \
+SIG="$(cat "$artifact.sig")" python3 - <<'PY'
+import json, os, datetime
+notes = f"protocol: {os.environ['PROTOCOL']}"
+body = os.environ.get("BODY", "").strip()
+if body:
+    notes += "\n" + body
+print(json.dumps({
+    "version": os.environ["VERSION"],
+    "notes": notes,
+    "pub_date": datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "platforms": {
+        os.environ["PLATFORM"]: {
+            "signature": os.environ["SIG"].strip(),
+            "url": os.environ["URL"],
+        }
+    },
+}, indent=2))
+PY

@@ -1017,12 +1017,42 @@
   flex-shrink: 0;
 }
 .status-group + .status-group,
+.status-group + .status-update,
 .status-group + .status-version {
   border-left: 1px solid var(--border-subtle);
   padding-left: var(--space-16);
 }
 .status-version {
   color: var(--fg-subtle);
+}
+
+/*
+ * The update notice. It sits in the bar because an update is never urgent
+ * enough to take the window: it waits where the user can see it and reach it,
+ * and never steals focus.
+ */
+.status-update {
+  border-radius: var(--radius-full);
+  padding: 1px var(--space-8);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.status-update.tone-neutral {
+  color: var(--fg-subtle);
+}
+.status-update.tone-accent {
+  background: var(--accent-solid);
+  color: var(--accent-fg);
+}
+.status-update.tone-warn {
+  background: var(--warning-solid);
+  color: var(--warning-fg);
+}
+.status-update.actionable {
+  cursor: pointer;
+}
+.status-update.actionable:hover {
+  background: var(--accent-solid-hover);
 }
 
 /*

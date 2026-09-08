@@ -22,6 +22,7 @@ import {
   runtimeStore,
   setRuntimeStore,
 } from "../store/runtimeStore";
+import { listenForUpdates, requestUpdateCheck } from "../store/updateStore";
 import { sessionIsActive, sessionTitle } from "../runtime/types";
 import { terminalStore } from "../store/terminalStore";
 import { focusWorkspace, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
@@ -359,6 +360,7 @@ export function AppShell() {
   onMount(() => {
     let unlisten: (() => void) | undefined;
     let menuUnlisten: (() => void) | undefined;
+    let updateUnlisten: (() => void) | undefined;
     void (async () => {
       try {
         unlisten = await bindRuntimeEvents();
@@ -441,6 +443,9 @@ export function AppShell() {
         setSettingsSection("General");
         setSettings(true);
       }),
+      registerAction("check_for_update", () => {
+        void requestUpdateCheck();
+      }),
       registerAction("open_command_palette", () => openPalette("everything")),
       registerAction("go_to", () => openPalette("places")),
       registerAction("find_command", () => openPalette("commands")),
@@ -456,7 +461,14 @@ export function AppShell() {
       for (const unbind of bound) unbind();
       unlisten?.();
       menuUnlisten?.();
+      updateUnlisten?.();
     });
+
+    void listenForUpdates()
+      .then((fn) => {
+        updateUnlisten = fn;
+      })
+      .catch(() => undefined);
 
     void listen<string>("shell:menu", (event) => {
       invokeAction(event.payload as import("../actions/actions").ActionId);

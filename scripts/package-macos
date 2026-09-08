@@ -12,6 +12,7 @@
 #   scripts/package-macos --universal     # arm64 + x86_64 merged with lipo
 #   scripts/package-macos --zip           # also produce dist/macos/ForgeNode-<ver>.zip
 #   scripts/package-macos --dry-run       # preflight only: no build, no sign, no zip
+#   scripts/package-macos --updater       # also emit the signed in-app-update artifact
 #
 # Layout produced (the GUI locates the runtime with the `forge-daemon` sibling
 # of its own executable — `apps/tauri/src-tauri/src/daemon/locator.rs` — so the
@@ -44,7 +45,8 @@
 #                             unsigned submissions.
 #
 # Other knobs:
-#   FORGE_BUNDLE_ID   default dev.forgenode.forge
+#   FORGE_BUNDLE_ID   default dev.forgenode.forge.tauri (must match tauri.conf.json
+#                     `identifier`: the updater swaps a bundle by identity)
 #   FORGE_VERSION     default: [workspace.package] version from Cargo.toml
 #   FORGE_ICNS        path to an .icns file to embed as Contents/Resources.
 #                     Defaults to assets/icon/forge.icns.
@@ -84,10 +86,12 @@ print_help() {
 universal=0
 make_zip=0
 dry_run=0
+make_updater=0
 for arg in "$@"; do
   case "$arg" in
     --universal)        universal=1 ;;
     --zip)              make_zip=1 ;;
+    --updater)          make_updater=1 ;;
     --dry-run|--check)  dry_run=1 ;;
     -h|--help)          print_help; exit 0 ;;
     *)                  die "unknown argument '$arg' (see --help)" ;;
@@ -101,7 +105,7 @@ require_cmd rustup
 require_cmd pnpm "the frontend package manager: corepack enable pnpm"
 require_cmd plutil "part of the Xcode Command Line Tools: xcode-select --install"
 
-bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge}"
+bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge.tauri}"
 out_dir="${FORGE_OUT_DIR:-$repo_root/dist/macos}"
 app="$out_dir/Forge Node.app"
 
@@ -377,11 +381,52 @@ else
   note "not notarized (set FORGE_NOTARY_PROFILE to notarize)"
 fi
 
+# --------------------------------------------------------------- updater ----
+
+# What `tauri-plugin-updater` downloads and swaps in: a gzipped tar whose single
+# top-level entry is the .app, plus its detached minisign signature. Built after
+# notarization so the archived bundle carries the stapled ticket — an unstapled
+# replacement fails Gatekeeper on the machine that installs it.
+if [ "$make_updater" -eq 1 ]; then
+  key="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/forge-updater.key}"
+  [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] || [ -f "$key" ] \
+    || die "no updater signing key: set TAURI_SIGNING_PRIVATE_KEY, or generate one with 'pnpm tauri signer generate -w $key'"
+
+  if [ "$universal" -eq 1 ]; then
+    updater_arch="universal"
+  else
+    case "$host_slice" in
+      arm64)  updater_arch="aarch64" ;;
+      x86_64) updater_arch="x86_64" ;;
+    esac
+  fi
+  updater_dir="${FORGE_DIST_OUT_DIR:-$repo_root/dist/release}"
+  tarball="$updater_dir/ForgeNode-${version}-darwin-${updater_arch}.app.tar.gz"
+
+  mkdir -p "$updater_dir"
+  rm -f "$tarball" "$tarball.sig"
+  note "creating $tarball"
+  # COPYFILE_DISABLE keeps AppleDouble ._ files out of the tar; the updater
+  # extracts the archive verbatim and would install them beside the bundle.
+  COPYFILE_DISABLE=1 tar -czf "$tarball" -C "$out_dir" "$(basename "$app")"
+
+  note "signing the updater artifact"
+  if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+    (cd "$tauri_app" && pnpm exec tauri signer sign "$tarball")
+  else
+    (cd "$tauri_app" && pnpm exec tauri signer sign --private-key-path "$key" "$tarball")
+  fi
+  [ -f "$tarball.sig" ] || die "tauri signer produced no $tarball.sig"
+fi
+
 # ---------------------------------------------------------------- summary ---
 
 note "done: $app ($(lipo -archs "$app/Contents/MacOS/$gui_name"))"
 if [ -f "$zip_path" ]; then
   note "archive: $zip_path"
+fi
+if [ "$make_updater" -eq 1 ]; then
+  note "updater: $tarball (+ .sig)"
 fi
 cat <<'EOS'
 

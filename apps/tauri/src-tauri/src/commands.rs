@@ -125,3 +125,21 @@ pub fn config_paths() -> ConfigPaths {
         logs_dir: crate::paths::logs_dir().map(|path| path.display().to_string()),
     }
 }
+
+/// Force a check, for the `Check for Updates…` menu item.
+///
+/// The background schedule stays quiet when there is nothing; a check the user
+/// asked for reports either way, which is what the `Ok(None)` here means.
+#[tauri::command]
+pub async fn check_for_update(
+    app: AppHandle,
+) -> Result<Option<crate::updates::UpdateInfo>, String> {
+    crate::updates::check(app, true).await
+}
+
+/// Download the pending update, swap the bundle and relaunch. Never returns on
+/// success: the process is replaced.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    crate::updates::install(app).await
+}

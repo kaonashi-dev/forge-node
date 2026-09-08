@@ -43,6 +43,7 @@ client = { path = "crates/client" }
 tauri = { version = "2", features = [] }
 tauri-build = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
 
 objc = "0.2"
 

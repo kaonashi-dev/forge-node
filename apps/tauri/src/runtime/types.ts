@@ -605,3 +605,29 @@ export function jobIsFinal(state: JobState): boolean {
 export function jobIsRunning(state: JobState): boolean {
   return state === "Queued" || state === "Running";
 }
+
+/**
+ * What a pending release costs, decided by the host from the release notes'
+ * `protocol:` header (`src-tauri/src/updates.rs`).
+ *
+ * `soft` relaunches the GUI only: the daemon is a separate process, so live
+ * sessions and their scrollback survive. `hard` cannot reuse the running
+ * daemon, and this build refuses to apply one in place.
+ */
+export type UpdateKind = "soft" | "hard";
+
+export type UpdateInfo = {
+  version: string;
+  current_version: string;
+  notes: string;
+  kind: UpdateKind;
+};
+
+/** The `shell:update` event payload — one state, never a partial one. */
+export type UpdateState =
+  | { state: "checking" }
+  | { state: "uptodate" }
+  | ({ state: "available" } & UpdateInfo)
+  | { state: "downloading"; percent: number }
+  | { state: "installing" }
+  | { state: "failed"; message: string };

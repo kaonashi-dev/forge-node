@@ -1,0 +1,100 @@
+name: Release
+
+# A tag is the trigger and the version is the workspace's: the tag only has to
+# agree with it, which step "Version agrees with the tag" enforces before
+# anything is built. `ci.yml` still owns pull requests and pushes to main.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  macos:
+    name: macOS (arm64)
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-arm64
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/tauri/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: apps/tauri
+
+      # A mislabelled release is worse than a failed one: every installed app
+      # compares the manifest's version against its own bundle.
+      - name: Version agrees with the tag
+        run: |
+          version="$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version *=/{gsub(/[",]/,"",$3); print $3; exit}' Cargo.toml)"
+          tag="${GITHUB_REF_NAME#v}"
+          [ "$version" = "$tag" ] || {
+            echo "tag $GITHUB_REF_NAME does not match [workspace.package] version $version" >&2
+            exit 1
+          }
+          echo "version=$version" >>"$GITHUB_ENV"
+
+      - name: Gate
+        run: scripts/dev check
+
+      - name: Build the signed bundle and updater artifact
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          FORGE_CODESIGN_IDENTITY: ${{ secrets.FORGE_CODESIGN_IDENTITY }}
+          FORGE_NOTARY_PROFILE: ${{ secrets.FORGE_NOTARY_PROFILE }}
+        run: scripts/package-macos --updater --zip
+
+      - name: Write latest.json
+        run: |
+          git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$GITHUB_REF_NAME" >/tmp/notes.md
+          scripts/release-manifest \
+            "$version" "$GITHUB_REF_NAME" \
+            "dist/release/ForgeNode-${version}-darwin-aarch64.app.tar.gz" \
+            /tmp/notes.md >dist/release/latest.json
+          cat dist/release/latest.json
+
+      # The tarball is what a running app swaps in; the zip is what a person
+      # downloads to install Forge Node the first time.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=(
+            "dist/release/ForgeNode-${version}-darwin-aarch64.app.tar.gz"
+            "dist/release/ForgeNode-${version}-darwin-aarch64.app.tar.gz.sig"
+            "dist/release/latest.json"
+            "dist/macos/ForgeNode-${version}.zip"
+          )
+          # A release cut by hand for the same tag must not fail the pipeline:
+          # re-uploading is the idempotent half of "publish".
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber "${assets[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "Forge Node $GITHUB_REF_NAME" \
+              --notes-file /tmp/notes.md \
+              "${assets[@]}"
+          fi
