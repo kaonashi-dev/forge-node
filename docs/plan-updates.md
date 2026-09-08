@@ -278,6 +278,14 @@ git push origin main v0.2.0
 CI does the rest. Within a few minutes every running Forge Node that checks in
 sees the pill.
 
+**Never delete a tag that already has a release.** GitHub demotes the release
+to a draft when its tag disappears, a draft is not `latest`, and
+`releases/latest/download/latest.json` silently falls back to the previous
+version — so every installed app stops being offered the update and nothing
+anywhere reports an error. Re-pushing the tag does not undo it; the release has
+to be published again (`gh release edit <tag> --draft=false --latest`). To move
+a release, cut the next version instead.
+
 ## 11. Phases
 
 **Phase 1 — the plumbing, no UI.** Single-source the version (§4), unify the
