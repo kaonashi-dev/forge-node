@@ -13,6 +13,24 @@ spawn other sessions).
   ungrouped directories stay available under General.
 - **Worktree = isolated workspace.** The main checkout is just another workspace.
 
+## Install
+
+Grab the newest build from
+[Releases](https://github.com/kaonashi-dev/forge-node/releases/latest) —
+`ForgeNode-<version>.zip`, macOS 11+ on Apple Silicon — and:
+
+```sh
+unzip ForgeNode-<version>.zip
+xattr -dr com.apple.quarantine "Forge Node.app"
+mv "Forge Node.app" /Applications/
+```
+
+The `xattr` line is needed once: these builds are ad-hoc signed rather than
+signed with a Developer ID, so macOS quarantines what a browser downloaded.
+From then on the app updates itself — it offers a new release in the status bar
+and applies it on one click, without disturbing the sessions the daemon is
+running. See [`docs/plan-updates.md`](./docs/plan-updates.md).
+
 Start with [`docs/README.md`](./docs/README.md) (index of the implementation
 docs: architecture, domain, protocol, terminal, agents, worktrees,
 persistence, development). [`plan.md`](./plan.md) is the full target design
