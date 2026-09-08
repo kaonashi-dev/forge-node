@@ -12,7 +12,9 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
-unmaintained = "deny"
+# cargo-deny >=0.17 took a severity here and made it a scope: "all" is every
+# crate in the graph, which is what "deny" used to mean.
+unmaintained = "all"
 
 [licenses]
 version = 2

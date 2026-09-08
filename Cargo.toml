@@ -83,7 +83,7 @@ portable-pty = "0.9"
 compact_str = { version = "0.10", features = ["serde"] }
 
 # System
-nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user"] }
+nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user", "socket"] }
 directories = "6"
 
 # CLI

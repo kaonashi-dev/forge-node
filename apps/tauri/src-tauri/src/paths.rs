@@ -57,8 +57,14 @@ mod tests {
         let file = config_file().expect("a config path should resolve");
         assert!(file.ends_with("config.toml"));
         assert_eq!(file.parent(), config_dir().as_deref());
+        // Case-insensitively: `directories` keeps the name as given on macOS
+        // but lowercases it for XDG, so the same triple yields `.../Forge/` on
+        // one platform and `.../forge/` on the other. What must hold is the
+        // namespace, not its spelling.
         assert!(
-            file.to_string_lossy().contains(APP_NAME),
+            file.to_string_lossy()
+                .to_lowercase()
+                .contains(&APP_NAME.to_lowercase()),
             "{} should be namespaced under {APP_NAME}",
             file.display()
         );
