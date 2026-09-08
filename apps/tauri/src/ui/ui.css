@@ -1,0 +1,1310 @@
+/* ------------------------------------------------------------------ base --
+ *
+ * The paint for `src/ui/`. Loaded before `src/styles/` so a feature stylesheet
+ * can still override a primitive, but every default lives here.
+ *
+ * Kobalte exposes state as data attributes (`data-expanded`, `data-highlighted`,
+ * `data-disabled`, `data-closed`), so the hover/active rules key off those
+ * rather than off `:hover`, which is what makes a menu look the same whether
+ * it is being driven by the mouse or by the arrow keys.
+ */
+
+.forge-visually-hidden {
+  border: 0;
+  clip-path: inset(50%);
+  height: 1px;
+  margin: calc(var(--space-1) * -1);
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+/* ------------------------------------------------------------- buttons --- */
+
+.forge-control {
+  align-items: center;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  justify-content: center;
+}
+.forge-control-xs {
+  height: var(--control-xs);
+}
+.forge-control-sm {
+  height: var(--control-sm);
+}
+.forge-control-md {
+  height: var(--control-md);
+}
+.forge-control-lg {
+  height: var(--control-lg);
+}
+
+.forge-btn {
+  background: transparent;
+  border: 0;
+  color: var(--fg-default);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  gap: var(--space-6);
+  padding: 0 var(--space-8);
+  white-space: nowrap;
+}
+.forge-btn:disabled {
+  color: var(--fg-subtle);
+}
+.forge-btn-icon {
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  line-height: 0;
+}
+/* The focus ring is the global one in `styles/base.css`; nothing here redefines it. */
+
+/* ghost — transparent, a wash on hover. Absorbs the old `quiet`. */
+.forge-btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.forge-btn-ghost[aria-pressed="true"] {
+  background: var(--bg-selected);
+}
+
+/* secondary — an elevated surface, no border. The ordinary button. */
+.forge-btn-secondary {
+  background: var(--bg-raised);
+}
+.forge-btn-secondary:hover:not(:disabled) {
+  background: var(--bg-overlay);
+}
+.forge-btn-secondary[aria-pressed="true"] {
+  background: var(--bg-selected);
+}
+
+/* primary — solid accent, foreground `on()` picks. */
+.forge-btn-primary {
+  background: var(--accent-solid);
+  color: var(--accent-fg);
+}
+.forge-btn-primary:hover:not(:disabled) {
+  background: var(--accent-solid-hover);
+}
+
+/* danger — a solid red destructive action. */
+.forge-btn-danger {
+  background: var(--danger-solid);
+  color: var(--danger-fg);
+}
+.forge-btn-danger:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+/* danger-ghost — the quiet destructive: red text, a red wash on hover. */
+.forge-btn-danger-ghost {
+  color: var(--danger-solid);
+}
+.forge-btn-danger-ghost:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+/* A filled button sits on its own colour, so the global `:active` press — a
+   dark `--forge-pressed` wash — would wrong it. Keep the fill, deepen it. */
+.forge-btn-primary:not(:disabled):active {
+  background: var(--accent-solid-hover);
+}
+.forge-btn-danger:not(:disabled):active {
+  background: var(--danger-solid);
+  filter: brightness(1.12);
+}
+.forge-btn-primary:disabled,
+.forge-btn-danger:disabled {
+  color: var(--accent-fg);
+  opacity: 0.5;
+}
+.forge-btn-danger:disabled {
+  color: var(--danger-fg);
+}
+
+/* The spinner a `loading` button shows in place of its leading glyph. */
+.forge-btn-spinner {
+  animation: forge-spin 0.6s linear infinite;
+  border: 1.5px solid currentColor;
+  border-radius: var(--radius-full);
+  border-top-color: transparent;
+  flex: none;
+  height: 12px;
+  opacity: 0.8;
+  width: 12px;
+}
+@keyframes forge-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .forge-btn-spinner {
+    animation-duration: 1.4s;
+  }
+}
+
+.forge-icon-button {
+  align-items: center;
+  justify-content: center;
+  min-width: var(--control-sm);
+  padding: 0;
+  width: var(--control-sm);
+}
+.forge-icon-button.forge-control-xs {
+  min-width: var(--control-xs);
+  width: var(--control-xs);
+}
+.forge-icon-button.forge-control-md {
+  min-width: var(--control-md);
+  width: var(--control-md);
+}
+.forge-icon-button.forge-control-lg {
+  min-width: var(--control-lg);
+  width: var(--control-lg);
+}
+
+/* -------------------------------------------------------------- fields --- */
+
+.forge-textfield {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.forge-label {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+.forge-hint {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  margin: 0;
+}
+
+/*
+ * `.forge-field` is the bordered box now, not the input.
+ *
+ * It holds an optional leading/trailing affix and the input between them, so a
+ * search glyph, a clear button or a spinner sits *inside* the control instead
+ * of beside it. `Select`'s trigger wears the same class — it is the one field
+ * that is a single element — which is why the focus and disabled rules key off
+ * `:focus-within` and a data attribute rather than off the input itself.
+ */
+.forge-field {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  color: var(--fg-default);
+  gap: var(--space-4);
+  outline: none;
+  padding: 0 var(--space-8);
+  width: 100%;
+}
+.forge-field:focus-within {
+  border-color: var(--accent-solid);
+}
+.forge-field[data-invalid="true"] {
+  border-color: var(--danger-solid);
+}
+.forge-field-plain,
+.forge-field-plain:focus-within {
+  background: transparent;
+  border-color: transparent;
+  padding: 0;
+}
+.forge-field-input {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  flex: 1;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  min-width: 0;
+  outline: none;
+  padding: 0;
+  /* A parent with `user-select: none` (the terminal pane, a tab) must not
+     inherit onto a field sitting inside it — WKWebView then ignores ⌘A. */
+  user-select: text;
+}
+.forge-field-input::placeholder {
+  color: var(--fg-subtle);
+}
+.forge-field-input:disabled,
+.forge-field[data-disabled] {
+  color: var(--fg-subtle);
+}
+/* `SearchField` is `type="search"`, and WebKit draws its own cancel button
+   inside one — a second clear beside the shell's own. */
+.forge-field-input::-webkit-search-cancel-button {
+  appearance: none;
+  display: none;
+}
+.forge-field-input:focus-visible {
+  /* The box shows focus with its border; a second ring inside it reads as an
+     unstyled web form, which is what the palette's query field looked like. */
+  outline: none;
+}
+.forge-field-affix {
+  align-items: center;
+  color: var(--fg-muted);
+  display: inline-flex;
+  flex: none;
+}
+.forge-field-clear {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--fg-muted);
+  display: inline-flex;
+  padding: var(--space-2);
+}
+.forge-field-clear:hover {
+  color: var(--fg-default);
+}
+.forge-error {
+  color: var(--danger-solid);
+  font-size: var(--text-xs);
+  margin: 0;
+}
+
+.forge-textarea {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  color: var(--fg-default);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  outline: none;
+  padding: var(--space-8) var(--space-10);
+  resize: vertical;
+  user-select: text;
+  width: 100%;
+}
+.forge-textarea:focus {
+  border-color: var(--accent-solid);
+}
+.forge-textarea:disabled {
+  color: var(--fg-subtle);
+}
+
+/* ------------------------------------------------------------ checkbox --- */
+
+.forge-checkbox {
+  align-items: center;
+  display: inline-flex;
+  font-size: var(--text-sm);
+  gap: var(--space-8);
+}
+.forge-checkbox-box {
+  align-items: center;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  color: var(--accent-solid);
+  display: inline-flex;
+  flex: none;
+  height: 14px;
+  justify-content: center;
+  width: 14px;
+}
+.forge-checkbox-box[data-checked] {
+  border-color: var(--accent-solid);
+}
+.forge-checkbox[data-disabled] {
+  color: var(--fg-subtle);
+}
+.forge-checkbox:focus-within .forge-checkbox-box {
+  border-color: var(--accent-solid);
+}
+
+/* -------------------------------------------------------------- select --- */
+
+.forge-select {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.forge-select-trigger {
+  gap: var(--space-8);
+  justify-content: space-between;
+  text-align: left;
+}
+.forge-select-value {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-8);
+  min-width: 0;
+}
+.forge-select-icon {
+  display: inline-flex;
+  flex: none;
+}
+.forge-select-icon[data-expanded] {
+  transform: rotate(180deg);
+}
+.forge-select-content {
+  /* Above the dialog it may be opened from.
+     The ladder, low to high: context 40 → scrim 50 → dialog 51 → popup 55 →
+     tooltip 60. A select carried no z-index at all, so the dialog's own 51 won
+     and its list opened *behind* the card — two of three options invisible. */
+  z-index: var(--z-popup);
+  max-height: 280px;
+  min-width: var(--kb-select-trigger-width, 160px);
+  overflow-y: auto;
+}
+.forge-select-check {
+  display: inline-flex;
+  margin-left: auto;
+  color: var(--accent-solid);
+}
+
+/* --------------------------------------------------------------- menus --- */
+
+/* The menu is an elevated surface, so a shadow carries it and the border is a
+   hairline for definition rather than the frame. Moved here from the shell sheet
+   to sit with the `[data-highlighted]` states below. */
+.context-menu {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+  padding: var(--space-4);
+  /* Placement is the popper's; `z-index` is read off this element and copied
+     onto the positioner. Popup sits above a dialog opened from within it. */
+  z-index: var(--z-popup);
+}
+.context-item {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--fg-default);
+  display: flex;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  gap: var(--space-12);
+  height: var(--control-sm);
+  justify-content: space-between;
+  padding: 0 var(--space-8);
+  text-align: left;
+  width: 100%;
+}
+.context-item:hover:not(:disabled) {
+  background: var(--bg-selected);
+}
+.context-item:disabled {
+  color: var(--fg-subtle);
+}
+.context-item.destructive {
+  color: var(--danger-solid);
+}
+.context-item-main {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  gap: var(--space-8);
+  min-width: 0;
+}
+.context-detail {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.context-heading {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: var(--space-6) var(--space-8) var(--space-3);
+  text-transform: uppercase;
+}
+.context-rule {
+  border-top: 1px solid var(--border-subtle);
+  margin: var(--space-4) var(--space-2);
+}
+
+/* Kobalte highlights the item the keyboard is on; without this only `:hover`
+   would show, so arrow keys would move an invisible cursor. */
+.context-item[data-highlighted] {
+  background: var(--bg-selected);
+  outline: none;
+}
+.context-item[data-disabled] {
+  color: var(--fg-subtle);
+  pointer-events: none;
+}
+.context-item[data-expanded] {
+  background: var(--bg-selected);
+}
+/* The card takes focus when the menu opens, but the ring belongs on the item
+   the keyboard is on — `[data-highlighted]` above — not around the whole menu.
+   Doubled to beat the global `[tabindex]:focus-visible` ring. */
+.context-menu.context-menu:focus-visible {
+  outline: none;
+}
+
+/* ------------------------------------------------------------- tooltip --- */
+
+.forge-tooltip-trigger {
+  display: inline-flex;
+}
+/* See `Tooltip`'s `contents` prop: a trigger that is not allowed to be a box. */
+.forge-tooltip-contents {
+  display: contents;
+}
+.forge-tooltip {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  box-shadow: var(--shadow-sm);
+  color: var(--fg-default);
+  font-size: var(--text-xs);
+  max-width: 280px;
+  padding: var(--space-4) var(--space-8);
+  z-index: var(--z-tooltip);
+}
+[data-popper-positioner]:has(.forge-tooltip) {
+  z-index: var(--z-tooltip);
+}
+
+/* -------------------------------------------------------------- dialog --- */
+
+.forge-scrim {
+  background: rgb(0 0 0 / 42%);
+  inset: 0;
+  position: fixed;
+  z-index: var(--z-scrim);
+}
+.forge-dialog-positioner {
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  pointer-events: none;
+  position: fixed;
+  z-index: var(--z-dialog);
+}
+.forge-dialog-positioner[data-align="top"] {
+  align-items: flex-start;
+  padding-top: 14vh;
+}
+.forge-dialog-positioner[data-align="center"] {
+  align-items: center;
+}
+
+/* The card: sized from a token, height-capped so the body scrolls rather than
+   the whole card growing past the viewport. */
+.forge-dialog-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  max-height: min(85vh, 720px);
+  max-width: calc(100vw - 48px);
+  overflow: hidden;
+  pointer-events: auto;
+}
+.forge-dialog-card:focus-visible {
+  outline: none;
+}
+.forge-dialog-sm {
+  width: min(420px, 92vw);
+}
+.forge-dialog-md {
+  width: min(520px, 92vw);
+}
+.forge-dialog-lg {
+  width: min(680px, 92vw);
+}
+.forge-dialog-header {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: var(--space-6);
+  padding: var(--space-16) var(--space-16) 0;
+}
+.forge-dialog-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 0;
+}
+.forge-dialog-copy {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  margin: 0;
+}
+.forge-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  overflow-y: auto;
+  padding: var(--space-12) var(--space-16);
+}
+/* Title + one paragraph + footer — the usual confirmation shape. */
+.forge-dialog-body-compact {
+  padding-bottom: var(--space-4);
+  padding-top: var(--space-8);
+}
+/* A full-bleed body: the palette and the branch picker draw their own seams
+   edge to edge, so the card must not inset them. */
+.forge-dialog-body-flush {
+  gap: 0;
+  padding: 0;
+}
+.forge-dialog-footer {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: var(--space-8);
+  justify-content: flex-end;
+  padding: var(--space-12) var(--space-16) var(--space-16);
+}
+.forge-dialog-footer .panel-error {
+  margin-right: auto;
+}
+
+/* In and out off the state Kobalte already emits. Held to a scale-and-fade so
+   nothing here animates `box-shadow`, which the perf note keeps off the path. */
+@media (prefers-reduced-motion: no-preference) {
+  .forge-scrim[data-expanded] {
+    animation: forge-fade-in var(--motion-fast) var(--ease);
+  }
+  .forge-scrim[data-closed] {
+    animation: forge-fade-out var(--motion-fast) var(--ease);
+  }
+  .forge-dialog-card[data-expanded] {
+    animation: forge-dialog-in var(--motion-slow) var(--ease);
+  }
+  .forge-dialog-card[data-closed] {
+    animation: forge-dialog-out var(--motion-fast) var(--ease);
+  }
+}
+@keyframes forge-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes forge-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes forge-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+@keyframes forge-dialog-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+/* ----------------------------------------------------------------- row --- */
+
+/*
+ * A list row: a tree row, a file row, a job row, a tab's own label.
+ *
+ * Not a `Button` — a row carries a `treeitem`/`tab` role, spans its container
+ * and owns its height — but nine of them were each re-declaring the same
+ * reset, which is how one ended up in the UA's font and another centred its
+ * text. The reset lives here once; what a particular row *is* — its radius,
+ * gap, height, indent and hover — stays with that row.
+ *
+ * Width is deliberately absent: most rows want `width: 100%`, a tab label and
+ * the attention strip want `flex: 1`, and a base that picks one would make the
+ * other two fight it. `padding` too, for the same reason.
+ */
+.forge-row {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--fg-default);
+  display: flex;
+  font: inherit;
+  text-align: left;
+}
+
+/* ----------------------------------------------------------- separator --- */
+
+.forge-separator {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  margin: var(--space-4) 0;
+}
+.forge-separator[data-orientation="vertical"] {
+  align-self: stretch;
+  border-left: 1px solid var(--border-subtle);
+  border-top: 0;
+  margin: 0 var(--space-4);
+}
+
+/* ---------------------------------------------------------------- card --- */
+
+.forge-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-12);
+}
+
+/* ---------------------------------------------------------- radiogroup --- */
+
+.forge-radio-group {
+  display: flex;
+  flex-direction: column;
+}
+.forge-radio-group[aria-orientation="horizontal"] {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+.forge-radio {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+}
+.forge-radio[data-disabled] {
+  color: var(--fg-subtle);
+}
+.forge-radio-dot {
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  display: inline-flex;
+  flex: none;
+  height: 12px;
+  padding: var(--space-2);
+  width: 12px;
+}
+.forge-radio-dot[data-checked] {
+  border-color: var(--accent-solid);
+}
+.forge-radio-dot[data-checked] > * {
+  background: var(--accent-solid);
+  border-radius: 50%;
+  flex: 1;
+}
+.forge-radio:focus-within .forge-radio-dot {
+  border-color: var(--accent-solid);
+}
+/* A rich choice supplies its own layout, so the label must not add a box. */
+.forge-radio-custom {
+  display: contents;
+}
+
+/* ----------------------------------------------------------------- tabs --- */
+
+.forge-tab-list {
+  display: flex;
+  gap: var(--space-2);
+}
+.forge-tab-list[aria-orientation="vertical"] {
+  flex-direction: column;
+}
+
+/* --------------------------------------------------------------- badge --- */
+
+.forge-badge {
+  align-items: center;
+  background: var(--bg-overlay);
+  border-radius: var(--radius-full);
+  color: var(--fg-muted);
+  display: inline-flex;
+  flex: none;
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-8);
+  white-space: nowrap;
+}
+.forge-badge[data-tone="good"] {
+  color: var(--success-solid);
+}
+.forge-badge[data-tone="warn"] {
+  color: var(--warning-solid);
+}
+.forge-badge[data-tone="bad"] {
+  color: var(--danger-solid);
+}
+
+/* The `Badge`'s selectable twin: a `RadioGroup` item drawn as a pill, for the
+   filter strips over history, features and runs. Same shape as `.forge-badge`,
+   with the checked state a radio has and a badge does not. */
+.forge-chip {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-8);
+}
+.forge-chip[data-checked] {
+  background: var(--bg-selected);
+  color: var(--fg-default);
+}
+
+/* -------------------------------------------------------------- motion --- */
+
+/*
+ * The base layer's motion, minus the dialog's own in-and-out, which stays with
+ * the dialog above because it needs the card's geometry to read.
+ *
+ * Three rules hold for all of it. It is inside `prefers-reduced-motion`, so a
+ * machine that asked for stillness gets it. It moves only `opacity` and
+ * `transform` — never a shadow, never a size — so a frame is a composite and
+ * not a layout; the one exception is the disclosure, which has to animate a
+ * height and says so. And nothing runs past 180ms: beyond that a control stops
+ * reading as having answered and starts reading as having lagged.
+ *
+ * Kobalte keeps a popover mounted while `data-closed` is set, which is the
+ * only reason an exit is visible at all.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  /* Menus and the select's listbox grow a little out of their trigger. */
+  .context-menu[data-expanded],
+  .forge-select-content[data-expanded] {
+    animation: forge-popover-in var(--motion-fast) var(--ease);
+  }
+  .context-menu[data-closed],
+  .forge-select-content[data-closed] {
+    animation: forge-popover-out var(--motion-fast) var(--ease);
+  }
+
+  /* A tooltip only fades: it is small enough that a scale reads as a twitch. */
+  .forge-tooltip[data-expanded] {
+    animation: forge-fade-in var(--motion-fast) var(--ease);
+  }
+  .forge-tooltip[data-closed] {
+    animation: forge-fade-out var(--motion-fast) var(--ease);
+  }
+
+  /* The two chevrons that turn. Both already rotated — in one frame, which
+     read as the glyph being swapped for a different glyph. */
+  .forge-select-icon,
+  .forge-disclosure-chevron {
+    transition: transform var(--motion-fast) var(--ease);
+  }
+
+  /* A press. The colour alone is easy to miss on a control the pointer is
+     already sitting on; a 3% dip is felt rather than seen. The `transition`
+     that carries it back is the shared one in `styles/base.css` — declaring a
+     second one here would replace it and take the colours with it. */
+  .forge-btn:not(:disabled):active {
+    transform: scale(0.97);
+  }
+
+  /* The tick and the dot arrive rather than appear. Both indicators are
+     mounted only while checked, so this is an entrance with no exit. */
+  .forge-checkbox-box > *,
+  .forge-radio-dot[data-checked] > * {
+    animation: forge-pop-in var(--motion-fast) var(--ease);
+  }
+
+  /*
+   * The one animation that moves a size.
+   *
+   * A disclosure has no other honest option: the whole gesture is the height
+   * changing. Kobalte measures the content and publishes it as
+   * `--kb-collapsible-content-height`, so the keyframe interpolates to a real
+   * pixel value rather than to `auto`, which does not animate. `overflow` has
+   * to be hidden for the clip to happen; every popover that could be opened
+   * from inside a disclosure is portaled, so nothing that needs to escape is
+   * caught by it.
+   */
+  .forge-disclosure-body {
+    overflow: hidden;
+  }
+  .forge-disclosure-body[data-expanded] {
+    animation: forge-collapse-down var(--motion-slow) var(--ease);
+  }
+  .forge-disclosure-body[data-closed] {
+    animation: forge-collapse-up var(--motion-fast) var(--ease);
+  }
+}
+
+@keyframes forge-popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-2px);
+  }
+}
+@keyframes forge-popover-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+@keyframes forge-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+}
+@keyframes forge-collapse-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--kb-collapsible-content-height);
+  }
+}
+@keyframes forge-collapse-up {
+  from {
+    height: var(--kb-collapsible-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+/* ---------------------------------------------------------- disclosure --- */
+
+.forge-disclosure {
+  display: flex;
+  flex-direction: column;
+}
+.forge-disclosure-head {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+}
+/* The summary is the click target for the whole row, so it takes the width
+   the actions beside it do not. */
+.forge-disclosure-trigger {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: default;
+  display: flex;
+  flex: 1;
+  font: inherit;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: var(--space-10) 0;
+  text-align: left;
+}
+.forge-disclosure-trigger:hover {
+  color: var(--fg-default);
+}
+.forge-disclosure-chevron {
+  align-items: center;
+  background: none;
+  border: 0;
+  cursor: default;
+  display: inline-flex;
+  flex: none;
+  padding: var(--space-4);
+}
+.forge-disclosure-chevron[data-expanded] {
+  transform: rotate(180deg);
+}
+.forge-disclosure-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-4) 0 var(--space-14) var(--space-24);
+}
+
+/* ------------------------------------------------------------------ kbd --- */
+
+/* §4.1 U7. One chord, drawn once, from the merged binding table — never from
+   a string in a tooltip that a rebind cannot reach. */
+.forge-kbd {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-2xs);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  padding: 0 var(--space-4);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- switch --- */
+
+/* §5.3. One answer for a boolean setting: the change takes effect at once, so
+   it is a switch and not a checkbox — a checkbox promises a form to submit. */
+.forge-switch {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  justify-content: space-between;
+}
+.forge-switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.forge-switch-label {
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+}
+.forge-switch-input {
+  /* Kobalte's real input, kept in the layout so focus lands somewhere. */
+  height: 1px;
+  opacity: 0;
+  position: absolute;
+  width: 1px;
+}
+.forge-switch-track {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  flex: none;
+  height: 18px;
+  padding: 1px;
+  transition:
+    background-color var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+  width: 32px;
+}
+.forge-switch[data-checked] .forge-switch-track {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+}
+.forge-switch[data-disabled] {
+  opacity: 0.5;
+}
+.forge-switch-thumb {
+  background: var(--fg-default);
+  border-radius: var(--radius-full);
+  display: block;
+  height: 14px;
+  transition: transform var(--motion-fast) var(--ease);
+  width: 14px;
+}
+.forge-switch[data-checked] .forge-switch-thumb {
+  background: var(--accent-fg);
+  transform: translateX(14px);
+}
+.forge-switch-input:focus-visible + .forge-switch-track {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+.forge-switch-sm .forge-switch-track {
+  height: 14px;
+  width: 26px;
+}
+.forge-switch-sm .forge-switch-thumb {
+  height: 10px;
+  width: 10px;
+}
+.forge-switch-sm[data-checked] .forge-switch-thumb {
+  transform: translateX(12px);
+}
+
+/* ------------------------------------------------------------- progress --- */
+
+.forge-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.forge-progress-head {
+  display: flex;
+  gap: var(--space-8);
+  justify-content: space-between;
+}
+.forge-progress-label {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+.forge-progress-track {
+  background: var(--bg-overlay);
+  border-radius: var(--radius-full);
+  height: 4px;
+  overflow: hidden;
+}
+.forge-progress-fill {
+  background: var(--accent-solid);
+  height: 100%;
+  transition: width var(--motion-slow) var(--ease);
+}
+/* Indeterminate: a shuttle rather than a fill, because there is no proportion
+   to show and a bar sitting at 30% would be claiming one. */
+.forge-progress[data-indeterminate] .forge-progress-fill {
+  animation: forge-progress-shuttle 1.2s ease-in-out infinite;
+  width: 35%;
+}
+@keyframes forge-progress-shuttle {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+/* ------------------------------------------------------------- skeleton --- */
+
+.forge-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) 0;
+}
+.forge-skeleton-row {
+  background: var(--bg-raised);
+  border-radius: var(--radius-2xs);
+  display: block;
+  height: var(--row-h);
+  /* The pulse is what says "on its way" rather than "empty". Kept slow: a
+     fast shimmer beside a live terminal is two things competing to be read. */
+  animation: forge-skeleton-pulse 1.6s ease-in-out infinite;
+}
+.forge-skeleton-row:nth-child(even) {
+  /* Even rows a touch shorter, so the block reads as text rather than a table. */
+  width: 78%;
+}
+@keyframes forge-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------- breadcrumbs --- */
+
+.forge-breadcrumbs {
+  min-width: 0;
+  overflow: hidden;
+}
+.forge-breadcrumb-list {
+  align-items: center;
+  display: flex;
+  gap: var(--space-1);
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+.forge-breadcrumb-item {
+  align-items: center;
+  display: flex;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.forge-breadcrumb-link {
+  background: none;
+  border: 0;
+  border-radius: var(--radius-2xs);
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 var(--space-2);
+  white-space: nowrap;
+}
+.forge-breadcrumb-link:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}
+.forge-breadcrumb-current {
+  color: var(--fg-default);
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 var(--space-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forge-breadcrumb-sep {
+  color: var(--fg-subtle);
+}
+
+/* ---------------------------------------------------------------- toast --- */
+
+/* §4.2 U16. Bottom-right, above the status bar: top-centre would sit over the
+   title bar and the tab strip, which is where the pointer usually is. */
+.forge-toast-list {
+  bottom: calc(var(--forge-status-h) + var(--space-8));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: fixed;
+  right: var(--space-12);
+  width: 320px;
+  z-index: var(--z-tooltip);
+}
+.forge-toast {
+  align-items: flex-start;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-10);
+}
+.forge-toast-icon {
+  flex: none;
+  margin-top: 2px;
+}
+.forge-toast-success .forge-toast-icon {
+  color: var(--success-solid);
+}
+.forge-toast-danger .forge-toast-icon {
+  color: var(--danger-solid);
+}
+.forge-toast-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.forge-toast-title {
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+}
+.forge-toast-detail {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+.forge-toast-close {
+  background: none;
+  border: 0;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  flex: none;
+  padding: 0;
+}
+.forge-toast-close:hover {
+  color: var(--fg-default);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .forge-toast[data-opened] {
+    animation: forge-toast-in var(--motion-slow) var(--motion-enter);
+  }
+  .forge-toast[data-closed] {
+    animation: forge-toast-out var(--motion-fast) var(--motion-exit);
+  }
+}
+@keyframes forge-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--space-16));
+  }
+}
+@keyframes forge-toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(var(--space-16));
+  }
+}
+
+/* ------------------------------------------------------------- listcard --- */
+
+/* §4.2 U13. One card for a run, a feature and a pull request — three copies
+   that had already drifted in padding, gap and where the metadata sat. */
+.list-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-8);
+}
+.list-card-head {
+  align-items: center;
+  display: flex;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.list-card-open {
+  background: none;
+  border: 0;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  font: inherit;
+  margin: calc(var(--space-2) * -1);
+  padding: var(--space-2);
+  text-align: left;
+  width: calc(100% + var(--space-4));
+}
+.list-card-open:hover {
+  background: var(--bg-hover);
+}
+.list-card-title {
+  color: var(--fg-default);
+  flex: 1;
+  font-size: var(--text-sm);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list-card-meta {
+  color: var(--fg-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  gap: var(--space-8);
+}
+.list-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.list-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+/* ---------------------------------------------------------- empty state --- */
+
+/* §4.3 U18. An empty panel that says what to do about it, with the chord read
+   off the binding table rather than written into the copy. */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-8) 0;
+}
+.empty-state-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.empty-state-row {
+  border-radius: var(--radius-xs);
+  gap: var(--space-6);
+  padding: 0 var(--space-6);
+  width: 100%;
+}
+.empty-state-row:hover {
+  background: var(--bg-hover);
+}
+.empty-state-label {
+  color: var(--fg-default);
+  flex: 1;
+  font-size: var(--text-sm);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+#
+# Build distributable Linux artifacts for Forge Node (§17, §18 Fase 9).
+#
+# This script is NEVER run automatically — not by `scripts/dev`, not by CI.
+# Run it by hand, on the oldest distro you intend to support (the produced
+# binaries link glibc dynamically, so they run forward, not backward):
+#
+#   scripts/package-linux deb        # dist/linux/forge_<ver>_<arch>.deb
+#   scripts/package-linux appimage   # dist/linux/ForgeNode-<ver>-<arch>.AppImage
+#   scripts/package-linux all        # both (default)
+#
+# The Solid frontend is not a packaged file: `tauri-build` embeds the Vite
+# output (apps/tauri/dist, the `frontendDist` of src-tauri/tauri.conf.json)
+# into the host binary, so `pnpm build` has to run *before* cargo does.
+#
+# ---------------------------------------------------------------------------
+# RUNTIME DEPENDENCIES
+# ---------------------------------------------------------------------------
+# Tauri renders through WebKitGTK, which is what the .deb depends on. They are
+# declared in the control file and documented here for AppImage users, who get
+# no dependency resolution at all:
+#
+#   libwebkit2gtk-4.1-0         the WebView itself
+#   libgtk-3-0                  the window and menu bar around it
+#   libayatana-appindicator3-1  tray/indicator support Tauri links against
+#   librsvg2-2                  SVG rendering inside the WebView
+#   libfontconfig1, libfreetype6  font enumeration and rasterisation
+#   fonts-dejavu-core           a monospace fallback behind the bundled font
+#   git                         Forge Node shells out to the git CLI (ADR-008)
+#
+# SQLite is bundled into the binary (rusqlite `bundled`), so there is no
+# libsqlite3 dependency. Verify the real list on your build host with:
+#   ldd target/release/forge-tauri | awk '{print $1}' | sort
+#   dpkg-shlibdeps -O target/release/forge-tauri target/release/forge-daemon
+#
+# Knobs:
+#   FORGE_VERSION      default: [workspace.package] version from Cargo.toml
+#   FORGE_TARGET       default: the host triple (pass e.g. x86_64-unknown-linux-gnu)
+#   FORGE_ICON_PNG     256x256 PNG. REQUIRED for the AppImage (appimagetool
+#                      refuses a directory without an icon), optional for .deb.
+#   FORGE_MAINTAINER   default: "ForgeNode contributors <forge@example.invalid>"
+#   FORGE_OUT_DIR      default: <repo>/dist/linux
+#   FORGE_SKIP_PNPM_INSTALL  set to 1 to reuse an existing apps/tauri/node_modules
+#   APPIMAGETOOL       path to appimagetool if it is not on PATH
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
+
+# Default the app icon to the 256px PNG checked into the repo; an explicit
+# FORGE_ICON_PNG still wins, and a missing default just falls through to the
+# existing "AppImage needs an icon" guard rather than surprising anyone.
+if [ -z "${FORGE_ICON_PNG:-}" ]; then
+  default_icon_png="$repo_root/assets/icon/forge-256.png"
+  [ -f "$default_icon_png" ] && FORGE_ICON_PNG="$default_icon_png"
+fi
+
+# ---------------------------------------------------------------- helpers ---
+
+die() {
+  printf 'package-linux: %s\n' "$*" >&2
+  exit 1
+}
+
+note() { printf '==> %s\n' "$*"; }
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not found in PATH${2:+ — $2}"
+}
+
+# ------------------------------------------------------------------ setup ---
+
+what="${1:-all}"
+case "$what" in
+  deb|appimage|all) ;;
+  -h|--help) sed -n '2,46p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
+  *) die "unknown argument '$what' — expected deb, appimage or all" ;;
+esac
+
+[ "$(uname -s)" = "Linux" ] || die "this script only runs on Linux (uname is $(uname -s))"
+
+require_cmd cargo
+
+# One staging root for every artifact, cleaned up on any exit path.
+tmp_root="$(mktemp -d)"
+trap 'rm -rf "$tmp_root"' EXIT
+
+out_dir="${FORGE_OUT_DIR:-$repo_root/dist/linux}"
+maintainer="${FORGE_MAINTAINER:-ForgeNode contributors <forge@example.invalid>}"
+
+version="${FORGE_VERSION:-$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version *=/{gsub(/[",]/,"",$3); print $3; exit}' Cargo.toml)}"
+[ -n "$version" ] || die "could not determine the version — set FORGE_VERSION"
+
+target="${FORGE_TARGET:-}"
+if [ -n "$target" ]; then
+  rustup target list --installed 2>/dev/null | grep -qx "$target" \
+    || die "rust target '$target' is not installed — run: rustup target add $target"
+  bin_dir="target/$target/release"
+  cargo_target_args=(--target "$target")
+else
+  bin_dir="target/release"
+  cargo_target_args=()
+fi
+
+case "$(uname -m)" in
+  x86_64)  deb_arch="amd64"; appimage_arch="x86_64" ;;
+  aarch64) deb_arch="arm64"; appimage_arch="aarch64" ;;
+  *)       die "unsupported machine architecture: $(uname -m)" ;;
+esac
+
+gui_crate="forge-tauri"
+gui_bin="forge-tauri"
+gui_depends="\
+ libwebkit2gtk-4.1-0,
+ libgtk-3-0,
+ libayatana-appindicator3-1,
+ librsvg2-2,"
+
+# ------------------------------------------------------------------ build ---
+
+require_cmd pnpm "install it with: corepack enable && corepack prepare pnpm@latest --activate"
+if [ "${FORGE_SKIP_PNPM_INSTALL:-0}" != "1" ]; then
+  note "installing frontend dependencies"
+  (cd "$repo_root/apps/tauri" && pnpm install --frozen-lockfile)
+fi
+note "building the Solid frontend"
+(cd "$repo_root/apps/tauri" && pnpm build)
+
+note "building release binaries${target:+ for $target}"
+cargo build --release --locked "${cargo_target_args[@]}" -p "$gui_crate" -p daemon
+
+for bin in "$gui_bin" forge-daemon; do
+  [ -x "$bin_dir/$bin" ] || die "expected binary not found: $bin_dir/$bin"
+done
+
+mkdir -p "$out_dir"
+
+# The GUI locates the runtime as a sibling of its own executable
+# (`apps/tauri/src-tauri/src/daemon/locator.rs`), so every layout below MUST
+# keep the two binaries in the same directory. /usr/bin for the .deb,
+# AppDir/usr/bin for the AppImage.
+
+desktop_entry() {
+  cat <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Forge Node
+GenericName=Agent Terminal
+Comment=Terminals and coding agents across Git repositories and worktrees
+Exec=${gui_bin}
+Icon=forge
+Terminal=false
+Categories=Development;Utility;TerminalEmulator;
+Keywords=terminal;agent;git;worktree;
+StartupWMClass=${gui_bin}
+DESKTOP
+}
+
+# --------------------------------------------------------------------- deb ---
+
+build_deb() {
+  require_cmd dpkg-deb "install the 'dpkg' / 'dpkg-dev' package"
+  require_cmd fakeroot "install the 'fakeroot' package (needed for root-owned files)"
+
+  local stage deb_path deb_recommends
+  deb_recommends="Recommends: libnotify4"
+  stage="$tmp_root/deb"
+  rm -rf "$stage"
+  deb_path="$out_dir/forge_${version}_${deb_arch}.deb"
+
+  mkdir -p "$stage/DEBIAN" \
+           "$stage/usr/bin" \
+           "$stage/usr/share/applications" \
+           "$stage/usr/share/doc/forge"
+
+  install -m 755 "$bin_dir/$gui_bin"     "$stage/usr/bin/$gui_bin"
+  install -m 755 "$bin_dir/forge-daemon" "$stage/usr/bin/forge-daemon"
+  desktop_entry >"$stage/usr/share/applications/forge.desktop"
+  install -m 644 README.md "$stage/usr/share/doc/forge/README.md"
+
+  if [ -n "${FORGE_ICON_PNG:-}" ]; then
+    [ -f "$FORGE_ICON_PNG" ] || die "FORGE_ICON_PNG points at a missing file: $FORGE_ICON_PNG"
+    mkdir -p "$stage/usr/share/icons/hicolor/256x256/apps"
+    install -m 644 "$FORGE_ICON_PNG" "$stage/usr/share/icons/hicolor/256x256/apps/forge.png"
+  fi
+
+  # Depends: see the RUNTIME DEPENDENCIES block at the top of this file.
+  # Re-derive with `dpkg-shlibdeps` on the build host when the dependency graph
+  # changes; this list is the audited minimum, not a generated one.
+  cat >"$stage/DEBIAN/control" <<CONTROL
+Package: forge
+Version: ${version}
+Section: devel
+Priority: optional
+Architecture: ${deb_arch}
+Maintainer: ${maintainer}
+Depends: libc6,${gui_depends}
+ libfontconfig1,
+ libfreetype6,
+ fonts-dejavu-core,
+ git
+${deb_recommends}
+Description: Terminals and coding agents across Git repositories
+ Forge Node runs many terminal sessions and CLI coding agents (claude, codex,
+ opencode, cursor-agent) across one or more Git repositories, with first-class
+ worktree support. A per-user daemon owns the PTYs, so closing the window never
+ kills a running agent.
+CONTROL
+
+  note "building $deb_path"
+  fakeroot dpkg-deb --build --root-owner-group "$stage" "$deb_path"
+  dpkg-deb --info "$deb_path" >/dev/null
+}
+
+# ---------------------------------------------------------------- AppImage ---
+
+build_appimage() {
+  local tool
+  tool="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
+  [ -n "$tool" ] || die "appimagetool not found — download it from https://github.com/AppImage/AppImageKit/releases, chmod +x it, and either put it on PATH or set APPIMAGETOOL=/path/to/appimagetool"
+  [ -x "$tool" ] || die "APPIMAGETOOL is not executable: $tool"
+
+  [ -n "${FORGE_ICON_PNG:-}" ] \
+    || die "AppImage needs an icon: set FORGE_ICON_PNG to a 256x256 PNG (appimagetool refuses an AppDir without one)"
+  [ -f "$FORGE_ICON_PNG" ] || die "FORGE_ICON_PNG points at a missing file: $FORGE_ICON_PNG"
+
+  local appdir out_path
+  appdir="$tmp_root/ForgeNode.AppDir"
+  rm -rf "$appdir"
+  out_path="$out_dir/ForgeNode-${version}-${appimage_arch}.AppImage"
+
+  mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" \
+           "$appdir/usr/share/icons/hicolor/256x256/apps"
+
+  install -m 755 "$bin_dir/$gui_bin"     "$appdir/usr/bin/$gui_bin"
+  install -m 755 "$bin_dir/forge-daemon" "$appdir/usr/bin/forge-daemon"
+
+  desktop_entry >"$appdir/usr/share/applications/forge.desktop"
+  cp "$appdir/usr/share/applications/forge.desktop" "$appdir/forge.desktop"
+  install -m 644 "$FORGE_ICON_PNG" "$appdir/usr/share/icons/hicolor/256x256/apps/forge.png"
+  cp "$FORGE_ICON_PNG" "$appdir/forge.png"
+
+  # AppRun keeps $APPDIR/usr/bin first on PATH so the GUI's sibling lookup
+  # finds the bundled forge-daemon rather than one installed system-wide.
+  cat >"$appdir/AppRun" <<APPRUN
+#!/usr/bin/env bash
+set -euo pipefail
+here="\$(dirname "\$(readlink -f "\$0")")"
+export PATH="\$here/usr/bin:\${PATH:-}"
+exec "\$here/usr/bin/${gui_bin}" "\$@"
+APPRUN
+  chmod 755 "$appdir/AppRun"
+
+  note "building $out_path"
+  # ARCH is what appimagetool stamps into the runtime; it does not infer it.
+  ARCH="$appimage_arch" "$tool" "$appdir" "$out_path"
+}
+
+# ------------------------------------------------------------------- main ---
+
+case "$what" in
+  deb)      build_deb ;;
+  appimage) build_appimage ;;
+  all)      build_deb; build_appimage ;;
+esac
+
+note "done — artifacts in $out_dir"
+cat <<'EOS'
+
+Next steps (manual):
+  cargo deny check licenses     # ADR-002: required before distributing
+EOS

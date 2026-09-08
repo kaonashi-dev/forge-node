@@ -1,0 +1,392 @@
+#!/usr/bin/env bash
+#
+# Build a distributable `Forge Node.app` bundle for macOS (§17, §18 Fase 9).
+#
+# The GUI is the Tauri app in `apps/tauri` (Rust host crate `forge-tauri`); the
+# runtime is the Rust `forge-daemon`.
+#
+# This script is NEVER run automatically — not by `scripts/dev`, not by CI.
+# Run it by hand when you want a bundle:
+#
+#   scripts/package-macos                 # host-arch bundle in dist/macos/Forge Node.app
+#   scripts/package-macos --universal     # arm64 + x86_64 merged with lipo
+#   scripts/package-macos --zip           # also produce dist/macos/ForgeNode-<ver>.zip
+#   scripts/package-macos --dry-run       # preflight only: no build, no sign, no zip
+#
+# Layout produced (the GUI locates the runtime with the `forge-daemon` sibling
+# of its own executable — `apps/tauri/src-tauri/src/daemon/locator.rs` — so the
+# two binaries MUST stay siblings inside Contents/MacOS):
+#
+#   Forge Node.app/Contents/Info.plist
+#   Forge Node.app/Contents/PkgInfo
+#   Forge Node.app/Contents/MacOS/Forge          <- CFBundleExecutable (no spaces)
+#   Forge Node.app/Contents/MacOS/forge-daemon   <- runtime, spawned by the GUI
+#   Forge Node.app/Contents/Resources/forge.icns <- repo icon by default; FORGE_ICNS overrides
+#
+# The Solid frontend is not a bundle resource: `tauri-build` embeds the Vite
+# output (`apps/tauri/dist`, the `frontendDist` of src-tauri/tauri.conf.json)
+# into the host binary at compile time. So `pnpm build` must run BEFORE cargo,
+# once — the assets are architecture-independent.
+#
+# Optional signing / notarization — all parameterised by environment variables,
+# no credentials are stored or invented here. Both steps are skipped silently
+# when their variables are unset, so an unsigned local bundle is the default.
+#
+#   FORGE_CODESIGN_IDENTITY   Developer ID Application identity, exactly as it
+#                             appears in `security find-identity -v -p codesigning`.
+#                             e.g. "Developer ID Application: Your Name (TEAMID)"
+#   FORGE_ENTITLEMENTS        optional path to an entitlements .plist passed to
+#                             `codesign --entitlements`.
+#   FORGE_NOTARY_PROFILE      keychain profile name previously created with
+#                             `xcrun notarytool store-credentials <name>
+#                              --apple-id … --team-id … --password <app-specific>`.
+#                             Requires FORGE_CODESIGN_IDENTITY: Apple rejects
+#                             unsigned submissions.
+#
+# Other knobs:
+#   FORGE_BUNDLE_ID   default dev.forgenode.forge
+#   FORGE_VERSION     default: [workspace.package] version from Cargo.toml
+#   FORGE_ICNS        path to an .icns file to embed as Contents/Resources.
+#                     Defaults to assets/icon/forge.icns.
+#   FORGE_OUT_DIR     default: <repo>/dist/macos
+#   FORGE_SKIP_PNPM_INSTALL  set to 1 to reuse an existing apps/tauri/node_modules
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
+
+# ---------------------------------------------------------------- helpers ---
+
+die() {
+  printf 'package-macos: %s\n' "$*" >&2
+  exit 1
+}
+
+note() { printf '==> %s\n' "$*"; }
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not found in PATH${2:+ — $2}"
+}
+
+require_target() {
+  rustup target list --installed 2>/dev/null | grep -qx "$1" \
+    || die "rust target '$1' is not installed — run: rustup target add $1"
+}
+
+# The leading comment block, so `--help` can never drift out of sync with it.
+print_help() {
+  awk 'NR == 1 {next} !/^#/ {exit} {sub(/^# ?/, ""); print}' "$0"
+}
+
+# ------------------------------------------------------------------ setup ---
+
+universal=0
+make_zip=0
+dry_run=0
+for arg in "$@"; do
+  case "$arg" in
+    --universal)        universal=1 ;;
+    --zip)              make_zip=1 ;;
+    --dry-run|--check)  dry_run=1 ;;
+    -h|--help)          print_help; exit 0 ;;
+    *)                  die "unknown argument '$arg' (see --help)" ;;
+  esac
+done
+
+[ "$(uname -s)" = "Darwin" ] || die "this script only runs on macOS (uname is $(uname -s))"
+
+require_cmd cargo
+require_cmd rustup
+require_cmd pnpm "the frontend package manager: corepack enable pnpm"
+require_cmd plutil "part of the Xcode Command Line Tools: xcode-select --install"
+
+bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge}"
+out_dir="${FORGE_OUT_DIR:-$repo_root/dist/macos}"
+app="$out_dir/Forge Node.app"
+
+tauri_app="$repo_root/apps/tauri"
+[ -f "$tauri_app/package.json" ] \
+  || die "no Tauri app at $tauri_app — the GUI lives in apps/tauri"
+
+# Cargo package/binary name vs. the names users see. CFBundleExecutable stays
+# "Forge" (no spaces — Activity Monitor / force-quit). CFBundleDisplayName and
+# the .app folder are "Forge Node".
+gui_crate="forge-tauri"
+gui_bin="forge-tauri"
+gui_name="Forge"
+display_name="Forge Node"
+daemon_name="forge-daemon"
+
+# WKWebView (Tauri's renderer) and the workspace's own floor. It is both the
+# Info.plist minimum and what we promise installers.
+macos_min="11.0"
+
+# [workspace.package] version, unless overridden.
+version="${FORGE_VERSION:-$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version *=/{gsub(/[",]/,"",$3); print $3; exit}' Cargo.toml)}"
+[ -n "$version" ] || die "could not determine the version — set FORGE_VERSION"
+
+# Slices are named the way `lipo -archs` and `uname -m` name them; the Rust
+# target is derived from that single spelling.
+case "$(uname -m)" in
+  arm64|aarch64) host_slice="arm64" ;;
+  x86_64)        host_slice="x86_64" ;;
+  *)             die "unsupported host architecture: $(uname -m)" ;;
+esac
+
+rust_target_for() {
+  case "$1" in
+    arm64)  printf 'aarch64-apple-darwin' ;;
+    x86_64) printf 'x86_64-apple-darwin' ;;
+    *)      die "no rust target mapping for slice '$1'" ;;
+  esac
+}
+
+if [ "$universal" -eq 1 ]; then
+  slices=(arm64 x86_64)
+  require_cmd lipo "part of the Xcode Command Line Tools"
+else
+  slices=("$host_slice")
+fi
+
+# Resolve the icon before any build so --dry-run catches a bad FORGE_ICNS.
+# Default to the icon checked into the repo; an explicit FORGE_ICNS still wins,
+# and a bad explicit path is an error while a missing default just means no icon.
+if [ -z "${FORGE_ICNS:-}" ]; then
+  default_icns="$repo_root/assets/icon/forge.icns"
+  [ -f "$default_icns" ] && FORGE_ICNS="$default_icns"
+fi
+if [ -n "${FORGE_ICNS:-}" ]; then
+  [ -f "$FORGE_ICNS" ] || die "FORGE_ICNS points at a missing file: $FORGE_ICNS"
+fi
+
+# ------------------------------------------------------------- Info.plist ---
+
+# LSMinimumSystemVersion tracks $macos_min.
+# NSHighResolutionCapable + no LSUIElement: Forge Node is a normal windowed app.
+write_info_plist() {
+  local contents="$1"
+  cat >"$contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>       <string>en</string>
+    <key>CFBundleExecutable</key>              <string>${gui_name}</string>
+    <key>CFBundleIdentifier</key>              <string>${bundle_id}</string>
+    <key>CFBundleInfoDictionaryVersion</key>   <string>6.0</string>
+    <key>CFBundleName</key>                    <string>${display_name}</string>
+    <key>CFBundleDisplayName</key>             <string>${display_name}</string>
+    <key>CFBundlePackageType</key>             <string>APPL</string>
+    <key>CFBundleShortVersionString</key>      <string>${version}</string>
+    <key>CFBundleVersion</key>                 <string>${version}</string>
+    <key>CFBundleSignature</key>               <string>????</string>$( [ -n "${FORGE_ICNS:-}" ] && printf '\n    <key>CFBundleIconFile</key>                <string>forge.icns</string>' )
+    <key>LSMinimumSystemVersion</key>          <string>${macos_min}</string>
+    <key>NSHighResolutionCapable</key>         <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key> <true/>
+</dict>
+</plist>
+PLIST
+
+  plutil -lint "$contents/Info.plist" >/dev/null || die "generated Info.plist is not valid"
+
+  # The bundle only launches if CFBundleExecutable names a file that is really
+  # in Contents/MacOS. Assert the two agree here rather than discovering it as
+  # a silent Finder bounce.
+  local declared
+  declared="$(plutil -extract CFBundleExecutable raw -o - "$contents/Info.plist")"
+  [ "$declared" = "$gui_name" ] \
+    || die "Info.plist CFBundleExecutable is '$declared' but the GUI is installed as '$gui_name'"
+}
+
+# ---------------------------------------------------------------- dry run ---
+
+if [ "$dry_run" -eq 1 ]; then
+  for slice in "${slices[@]}"; do
+    require_target "$(rust_target_for "$slice")"
+  done
+
+  probe="$(mktemp -d)"
+  trap 'rm -rf "$probe"' EXIT
+  write_info_plist "$probe"
+
+  note "dry run — nothing was built, signed, zipped or notarized"
+  printf '    version        %s\n' "$version"
+  printf '    bundle id      %s\n' "$bundle_id"
+  printf '    macOS minimum  %s\n' "$macos_min"
+  printf '    slices         %s\n' "${slices[*]}"
+  for slice in "${slices[@]}"; do
+    printf '    %-14s cargo --target %s\n' "$slice" "$(rust_target_for "$slice")"
+  done
+  printf '    frontend       pnpm build in %s -> dist (embedded by tauri-build)\n' "$tauri_app"
+  printf '    gui            cargo -p %s --bin %s -> Contents/MacOS/%s\n' \
+    "$gui_crate" "$gui_bin" "$gui_name"
+  printf '    daemon         cargo -p daemon --bin %s -> Contents/MacOS/%s\n' \
+    "$daemon_name" "$daemon_name"
+  printf '    icon           %s\n' "${FORGE_ICNS:-<none>}"
+  printf '    bundle         %s\n' "$app"
+  [ "$make_zip" -eq 1 ] && printf '    archive        %s/ForgeNode-%s.zip\n' "$out_dir" "$version"
+  printf '    signing        %s\n' "${FORGE_CODESIGN_IDENTITY:-<unsigned>}"
+  printf '    notarization   %s\n' "${FORGE_NOTARY_PROFILE:-<skipped>}"
+  exit 0
+fi
+
+# ------------------------------------------------------------------ build ---
+
+# The frontend is architecture-independent and is compiled INTO the host binary
+# by tauri-build, so it must exist before the first cargo build and only needs
+# building once.
+if [ "${FORGE_SKIP_PNPM_INSTALL:-0}" != "1" ]; then
+  note "installing frontend dependencies (pnpm install --frozen-lockfile)"
+  ( cd "$tauri_app" && pnpm install --frozen-lockfile )
+fi
+
+note "building the Solid frontend (pnpm build)"
+( cd "$tauri_app" && pnpm build ) || die "pnpm build failed — the Tauri host cannot embed a frontend that did not compile"
+[ -d "$tauri_app/dist" ] \
+  || die "pnpm build produced no $tauri_app/dist — check frontendDist in src-tauri/tauri.conf.json"
+
+for slice in "${slices[@]}"; do
+  rust_target="$(rust_target_for "$slice")"
+  require_target "$rust_target"
+
+  note "building $daemon_name (release) for $rust_target"
+  cargo build --release --locked --target "$rust_target" -p daemon --bin "$daemon_name"
+
+  note "building $gui_bin (release) for $rust_target"
+  # A failure here on the non-host slice is almost always a missing SDK for
+  # that architecture, so say so instead of leaving a bare cargo error.
+  cargo build --release --locked --target "$rust_target" -p "$gui_crate" --bin "$gui_bin" \
+    || die "cargo build failed for $rust_target — the toolchain must be able to \
+cross-compile that slice (check: xcode-select -p, and that the macOS SDK supports it); \
+build without --universal for a $host_slice-only bundle"
+done
+
+note "assembling $app (version $version, bundle id $bundle_id)"
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+# One source per slice -> copy; several -> lipo. Never a silent single-arch
+# copy when --universal was asked for.
+merge_or_copy() {
+  local dest="$1"
+  shift
+  if [ "$#" -gt 1 ]; then
+    lipo -create -output "$dest" "$@"
+  else
+    cp "$1" "$dest"
+  fi
+  chmod 755 "$dest"
+}
+
+# Fail loudly if the finished Mach-O is missing a slice we promised. `lipo
+# -archs` also covers the thin case, so this guards a wrong --target too.
+require_slices() {
+  local path="$1"
+  shift
+  local archs want
+  archs="$(lipo -archs "$path" 2>/dev/null || true)"
+  [ -n "$archs" ] || die "cannot read the architectures of $path"
+  for want in "$@"; do
+    case " $archs " in
+      *" $want "*) ;;
+      *) die "$(basename "$path") has slices [$archs] but $want is missing — refusing to ship a partial bundle" ;;
+    esac
+  done
+}
+
+gui_sources=()
+daemon_sources=()
+for slice in "${slices[@]}"; do
+  gui_src="target/$(rust_target_for "$slice")/release/$gui_bin"
+  [ -f "$gui_src" ] || die "missing $gui_src — the release build produced no $gui_bin for $slice"
+  gui_sources+=("$gui_src")
+
+  daemon_src="target/$(rust_target_for "$slice")/release/$daemon_name"
+  [ -f "$daemon_src" ] || die "missing $daemon_src — the release build produced no $daemon_name for $slice"
+  daemon_sources+=("$daemon_src")
+done
+
+merge_or_copy "$app/Contents/MacOS/$gui_name" "${gui_sources[@]}"
+merge_or_copy "$app/Contents/MacOS/$daemon_name" "${daemon_sources[@]}"
+
+require_cmd lipo "part of the Xcode Command Line Tools"
+require_slices "$app/Contents/MacOS/$gui_name" "${slices[@]}"
+require_slices "$app/Contents/MacOS/$daemon_name" "${slices[@]}"
+
+[ -n "${FORGE_ICNS:-}" ] && cp "$FORGE_ICNS" "$app/Contents/Resources/forge.icns"
+
+write_info_plist "$app/Contents"
+printf 'APPL????' >"$app/Contents/PkgInfo"
+
+# ---------------------------------------------------------------- signing ---
+
+if [ -n "${FORGE_CODESIGN_IDENTITY:-}" ]; then
+  require_cmd codesign "part of the Xcode Command Line Tools"
+  note "code signing with identity: $FORGE_CODESIGN_IDENTITY"
+
+  sign_args=(--force --timestamp --options runtime --sign "$FORGE_CODESIGN_IDENTITY")
+  if [ -n "${FORGE_ENTITLEMENTS:-}" ]; then
+    [ -f "$FORGE_ENTITLEMENTS" ] || die "FORGE_ENTITLEMENTS points at a missing file: $FORGE_ENTITLEMENTS"
+    sign_args+=(--entitlements "$FORGE_ENTITLEMENTS")
+  fi
+
+  # Inside out: the nested runtime binary first, then the bundle. Signing the
+  # bundle alone leaves forge-daemon unsigned and Gatekeeper kills it the first
+  # time the GUI spawns it.
+  codesign "${sign_args[@]}" "$app/Contents/MacOS/$daemon_name"
+  codesign "${sign_args[@]}" "$app/Contents/MacOS/$gui_name"
+  codesign "${sign_args[@]}" "$app"
+  codesign --verify --deep --strict --verbose=2 "$app"
+else
+  note "unsigned bundle (set FORGE_CODESIGN_IDENTITY to sign)"
+fi
+
+# ------------------------------------------------------------------- zip ----
+
+zip_path="$out_dir/ForgeNode-${version}.zip"
+make_archive() {
+  require_cmd ditto
+  rm -f "$zip_path"
+  # ditto --keepParent preserves the bundle structure and extended attributes;
+  # `zip -r` mangles both and Apple's notary service rejects the result.
+  ditto -c -k --keepParent "$app" "$zip_path"
+}
+
+if [ "$make_zip" -eq 1 ] || [ -n "${FORGE_NOTARY_PROFILE:-}" ]; then
+  note "creating $zip_path"
+  make_archive
+fi
+
+# ----------------------------------------------------------- notarization ---
+
+if [ -n "${FORGE_NOTARY_PROFILE:-}" ]; then
+  [ -n "${FORGE_CODESIGN_IDENTITY:-}" ] \
+    || die "FORGE_NOTARY_PROFILE is set but FORGE_CODESIGN_IDENTITY is not — Apple only notarizes signed, hardened-runtime bundles"
+  require_cmd xcrun "part of the Xcode Command Line Tools"
+
+  note "submitting to Apple notary service with profile '$FORGE_NOTARY_PROFILE' (this waits)"
+  xcrun notarytool submit "$zip_path" --keychain-profile "$FORGE_NOTARY_PROFILE" --wait
+  note "stapling the ticket to the bundle"
+  xcrun stapler staple "$app"
+  xcrun stapler validate "$app"
+  # The zip was made before stapling, so refresh it or you ship an unstapled app.
+  note "re-zipping the stapled bundle"
+  make_archive
+else
+  note "not notarized (set FORGE_NOTARY_PROFILE to notarize)"
+fi
+
+# ---------------------------------------------------------------- summary ---
+
+note "done: $app ($(lipo -archs "$app/Contents/MacOS/$gui_name"))"
+if [ -f "$zip_path" ]; then
+  note "archive: $zip_path"
+fi
+cat <<'EOS'
+
+Next steps (manual):
+  open "dist/macos/Forge Node.app"                     # smoke the bundle
+  spctl --assess --type execute -vv "dist/macos/Forge Node.app"   # Gatekeeper verdict
+  cargo deny check licenses                     # ADR-002: required before distributing
+EOS

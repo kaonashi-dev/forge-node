@@ -1,0 +1,117 @@
+# Forge config.toml (§15.4). Copy to your platform config dir and edit:
+#   macOS  ~/Library/Application Support/Forge/config.toml
+#   Linux  $XDG_CONFIG_HOME/forge/config.toml  (default ~/.config/forge/)
+# A missing file uses these defaults. Changes require a restart in the MVP
+# (no hot reload). `forge-daemon info` prints the resolved socket, lockfile,
+# database, worktrees and log paths plus the effective settings — note it does
+# not currently print this file's own path.
+
+[terminal]
+scrollback_lines = 10000        # per terminal; hard max 100000
+font_family = "JetBrains Mono"
+font_size = 13.0
+
+[sessions]
+kill_grace_ms = 3000            # SIGTERM/SIGHUP → wait → SIGKILL
+shell = ""                      # empty = $SHELL
+login_shell = true              # run the shell with -l, so it sources the login
+                                # profile like your own terminal does; set false
+                                # for a shell that rejects -l
+term = "xterm-ghostty"          # TERM advertised to shell sessions; falls back
+                                # to xterm-256color when the terminfo entry is
+                                # missing on this machine
+terminfo_dir = ""               # empty = find the terminfo database for `term`
+                                # automatically; set it to export TERMINFO
+persist_history = false         # true = keep session rows across a daemon
+                                # restart (Orphaned, restartable); false drops
+                                # them, so the app starts on a clean tree
+
+# Idle sessions. An agent left running holds a PTY, a thread and a full
+# scrollback grid; these rules decide what the daemon says (and, if you ask it
+# to, does) about the ones nobody is using. Every duration is in seconds and
+# 0 means off. "Idle" is no terminal output *and* no input; "open" is time since
+# the session started, however busy it has been.
+idle_warn_after_secs = 1800     # report a quiet session once per quiet spell
+idle_stop_after_secs = 0        # 0 = never stop one. When set, the session is
+                                # ended through the normal kill path (SIGTERM to
+                                # the process group, SIGKILL after
+                                # kill_grace_ms) and stays restartable. Raised
+                                # to idle_warn_after_secs if set below it.
+idle_stop_attached = false      # true = stop even a terminal you have open
+idle_include_shells = false     # true = apply the rules to shells too; a shell
+                                # sitting at a prompt is normally not a leak
+long_running_warn_after_secs = 0  # report a session this old once, however busy
+                                  # it is. Never stops anything.
+
+[worktrees]
+root = ""                       # empty = <data-dir>/worktrees
+
+# A managed worktree lives under `root`, not next to your repository, so it
+# starts without the untracked files a project needs to actually run. Without
+# something here an agent launched in a brand-new worktree fails on its first
+# command, and nothing about that failure points at the missing file.
+#
+# These two are the **global default layer**: they apply to a project that has
+# no rules of its own. Per-project rules live in Settings → "Shared files"
+# (§14.2), take effect without a restart, and can also link a file into a
+# shared store, copy-on-write clone a directory the size of node_modules, or
+# run a command to produce one. A project with its own rules ignores the list
+# below entirely — merging the two would make it impossible to remove an
+# inherited entry.
+copy = []                       # e.g. [".env", ".env.local"] — copied from the
+                                # main checkout after `git worktree add`.
+                                # Relative to the repository root, no "..",
+                                # plain files only (never directories: this is
+                                # for secrets and settings, not node_modules —
+                                # a per-project `clone` rule is what handles
+                                # those). A file that is not there is skipped
+                                # silently.
+setup_script = ""               # e.g. "npm ci" — run through `sh -c` from the
+                                # worktree root once, after `copy`. Its output
+                                # goes to the daemon log; a failure is reported
+                                # as a notice and never blocks the worktree,
+                                # which by then exists and is usable.
+setup_timeout_secs = 120        # the script is SIGKILLed past this
+
+[git]
+# Commands that open a socket get their own budget, separate from the 30 s
+# ADR-008 timeout for local commands: for `rev-parse` 30 s means something is
+# broken, for the first fetch of a large monorepo it means the repo is large.
+fetch_timeout_secs = 0          # 0 = the built-in default of 120 s
+auto_fetch_secs = 0             # 0 = never fetch on a timer. Off deliberately:
+                                # background traffic nobody asked for costs
+                                # battery, and on a repo whose credentials have
+                                # expired it is a failure that repeats forever.
+                                # Forge already fetches when you open the
+                                # branch picker, which is when a fresh list is
+                                # worth something.
+
+[github]
+executable = ""                 # empty = gh from the login-shell PATH (a GUI
+                                # launched from Finder does not inherit yours,
+                                # so the daemon's resolved PATH is searched);
+                                # set an absolute path to select a particular
+                                # installation/account setup
+timeout_secs = 0                # 0 = the built-in gh timeout of 60 s
+include_all_repos = false       # true = also search open PRs assigned to you,
+                                # requesting your review, or authored by you in
+                                # repositories not registered in Forge
+refresh_secs = 0                # 0 = no polling. Manual refresh and successful
+                                # PR creation still update the cached list.
+enterprise_hosts = []           # GHES hostnames, e.g. ["github.example.com"].
+                                # github.com is always supported; other hosts
+                                # are never guessed from Git remote syntax.
+
+[juva]
+# Where Juva gets its prose. Off by default, and it stays useful off: every
+# draft falls back to the deterministic local one, so a missing key or a hung
+# endpoint costs the wording and never the answer.
+enabled = false
+endpoint = ""                   # an OpenAI-compatible chat-completions URL
+model = ""                      # the model to ask for
+api_key_env = ""                # NAME of the env var holding the key. The key
+                                # itself is never stored here or in the database.
+timeout_secs = 0                # 0 = the built-in 30 s budget
+
+[daemon]
+log_level = "info"             # trace | debug | info | warn | error (RUST_LOG overrides)

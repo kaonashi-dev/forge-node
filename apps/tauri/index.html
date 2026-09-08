@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en" data-theme="gruvbox-hard">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forge Node</title>
+    <!--
+      P12. `TerminalPane` waits on `document.fonts.ready` before it measures a
+      cell, which is correct and is also the whole of first paint: without this
+      the request for the face does not start until the stylesheet has been
+      fetched and parsed. Regular alone — Bold and Italic are wanted by the
+      time something is on screen, not before it.
+    -->
+    <link
+      rel="preload"
+      href="/fonts/JetBrainsMono-Regular.ttf"
+      as="font"
+      type="font/ttf"
+      crossorigin="anonymous"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "workspace_id": "00000000-0000-7000-8000-000000000003",
+  "path": "src/main.rs",
+  "text": "fn main() {}\n",
+  "revision": "sha256:1f0a",
+  "language": "rust",
+  "binary": false,
+  "too_large": false
+}

@@ -1,0 +1,45 @@
+[package]
+name = "forge-tauri"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Tauri desktop host for Forge Node"
+build = "build.rs"
+default-run = "forge-tauri"
+
+[lib]
+name = "forge_tauri"
+path = "src/lib.rs"
+
+[[bin]]
+name = "forge-tauri"
+path = "src/main.rs"
+
+[[bin]]
+name = "forge-tauri-probe"
+path = "src/bin/probe.rs"
+
+[[bin]]
+name = "forge-tauri-latency"
+path = "src/bin/latency.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+client.workspace = true
+directories.workspace = true
+domain.workspace = true
+flume.workspace = true
+nix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+compact_str.workspace = true

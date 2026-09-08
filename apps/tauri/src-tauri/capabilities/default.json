@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "Main window: invoke the runtime bridge and listen for events.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open"
+  ]
+}

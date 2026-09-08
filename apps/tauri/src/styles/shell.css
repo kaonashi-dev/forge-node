@@ -1,0 +1,1255 @@
+/*
+ * The chrome around whatever is on screen.
+ *
+ * Title bar, session tab strip, the terminal pane's own box, notices, and the
+ * project rail with its checkout cards. Loaded for every window: the shell is
+ * what a window *is*, and none of it is behind a route.
+ */
+
+.tab-strip-host {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.tab-strip-scroll {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow-x: auto;
+  position: relative;
+  scrollbar-width: none;
+}
+.tab-strip-scroll::-webkit-scrollbar {
+  display: none;
+}
+.tab-strip-scroll.fade-right {
+  mask-image: linear-gradient(to right, #000 92%, transparent);
+  -webkit-mask-image: linear-gradient(to right, #000 92%, transparent);
+}
+.tab-strip-scroll.fade-left.fade-right {
+  mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
+}
+.tab-strip-scroll.fade-left:not(.fade-right) {
+  mask-image: linear-gradient(to right, transparent, #000 8%);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 8%);
+}
+
+.tab-strip {
+  align-items: center;
+  display: flex;
+  gap: var(--space-4);
+  min-width: min-content;
+  padding: 0 var(--space-2);
+}
+
+.tab-strip-trailing {
+  flex-shrink: 0;
+  padding: 0 var(--space-2);
+}
+.tab-strip-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.tab-step {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  display: inline-flex;
+  flex-shrink: 0;
+  height: var(--control-sm);
+  justify-content: center;
+  width: var(--control-sm);
+}
+.tab-step:hover {
+  background: var(--bg-hover);
+}
+
+.tab-divider {
+  background: var(--border-subtle);
+  flex-shrink: 0;
+  height: 16px;
+  width: 1px;
+}
+
+.session-tab-wrap.hides-close .session-tab-close {
+  opacity: 0;
+  pointer-events: none;
+}
+.session-tab-wrap {
+  cursor: grab;
+  position: relative;
+  touch-action: none;
+  -webkit-user-drag: none;
+}
+.session-tab-wrap.code-tab-wrap {
+  cursor: default;
+  touch-action: auto;
+}
+.session-tab-wrap.dragging {
+  cursor: grabbing;
+  opacity: 0.45;
+}
+.tab-strip-scroll.reordering {
+  cursor: grabbing;
+  user-select: none;
+}
+.session-tab-wrap.drop-before::before,
+.session-tab-wrap.drop-after::after {
+  background: var(--accent-solid);
+  border-radius: var(--radius-2xs);
+  content: "";
+  height: 20px;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  z-index: var(--z-over);
+}
+.session-tab-wrap.drop-before::before {
+  left: -2px;
+}
+.session-tab-wrap.drop-after::after {
+  right: -2px;
+}
+.session-tab-wrap.hides-close:hover .session-tab-close,
+.session-tab-wrap:not(.hides-close) .session-tab-close {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.session-tab {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: var(--text-sm);
+  gap: var(--space-6);
+  height: var(--control-sm);
+  max-width: 200px;
+  min-width: 120px;
+  padding: 0 var(--space-8);
+  user-select: none;
+}
+.session-tab:hover {
+  background: var(--bg-hover);
+}
+.session-tab.ground-current {
+  background: var(--bg-raised);
+  border-color: var(--border-default);
+  color: var(--fg-default);
+}
+.session-tab.ground-needs-you {
+  background: var(--attention-soft);
+  border-color: var(--attention-solid);
+  color: var(--fg-default);
+}
+.session-tab.ground-unread {
+  background: var(--forge-activity-tint);
+  color: var(--fg-muted);
+}
+.code-tab-count {
+  background: var(--bg-hover);
+  border-radius: var(--radius-full);
+  color: var(--fg-subtle);
+  flex: none;
+  font-size: var(--text-xs);
+  line-height: 1;
+  padding: var(--space-2) var(--space-6);
+}
+.session-tab.ground-current .code-tab-count {
+  color: var(--fg-muted);
+}
+.session-tab.ground-quiet {
+  color: var(--fg-muted);
+}
+.session-tab-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-tab-close {
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  flex-shrink: 0;
+  height: 20px;
+  opacity: 1;
+  width: 20px;
+}
+
+.tab-empty {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  padding: 0 var(--space-8);
+}
+
+.session-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.terminal-pane {
+  background: var(--forge-term-bg);
+  cursor: text;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: var(--space-8);
+  position: relative;
+  /* The pane runs its own selection against the grid; the browser's would
+     select a canvas element, which is nothing. */
+  user-select: none;
+}
+.terminal-canvas {
+  display: block;
+}
+/* The input surface. Kept in the layout rather than hidden: a display:none or
+   zero-size element cannot take focus, and an input method needs a caret it can
+   put its candidate window beside. */
+.terminal-keys {
+  background: transparent;
+  border: 0;
+  caret-color: transparent;
+  color: transparent;
+  height: 1px;
+  left: 8px;
+  opacity: 0;
+  outline: none;
+  overflow: hidden;
+  padding: 0;
+  /* Focusable but not clickable: it rides on the cursor cell so an input method
+     has a caret to anchor to, and a 1px box sitting over the grid must not eat
+     the click that starts a selection. */
+  pointer-events: none;
+  position: absolute;
+  resize: none;
+  top: 8px;
+  width: 1px;
+  z-index: var(--z-raised);
+}
+.terminal-scrolled {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  padding: var(--space-3) var(--space-8);
+  pointer-events: none;
+  position: absolute;
+  right: 12px;
+  top: 8px;
+  z-index: var(--z-over);
+}
+.terminal-debug {
+  /* Two lines now — the round trip and the paint — and a `\n` in a text node
+     is collapsed without this. */
+  white-space: pre;
+  text-align: right;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  bottom: 8px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-3) var(--space-8);
+  pointer-events: none;
+  position: absolute;
+  right: 12px;
+  z-index: var(--z-over);
+}
+
+/* ---------------------------------------------------------- notices --- */
+
+/* The menu surface (`.context-menu` / `.context-item`) lives in `ui/ui.css`
+   now, next to the `[data-highlighted]` states Kobalte drives it with. */
+
+.notice {
+  align-items: center;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  bottom: calc(var(--forge-status-h) + 12px);
+  box-shadow: var(--shadow-md);
+  color: var(--fg-default);
+  display: flex;
+  font-size: var(--text-sm);
+  gap: var(--space-10);
+  left: 50%;
+  max-width: 520px;
+  padding: var(--space-8) var(--space-10) var(--space-8) var(--space-12);
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: var(--z-notice);
+}
+.notice-close {
+  background: none;
+  border: 0;
+  color: var(--fg-subtle);
+  font-size: var(--text-md);
+  padding: 0 var(--space-2);
+}
+.notice-close:hover {
+  color: var(--fg-default);
+}
+
+/* ------------------------------------------------------------- palette --- */
+
+/* ---------------------------------------------------------------- rail --- */
+
+.needs-you-block {
+  margin-bottom: var(--space-8);
+}
+.tree-group {
+  margin-bottom: var(--space-2);
+}
+/* The reset — background, border, colour, font, alignment — is `.forge-row`
+   in `ui/ui.css`. What is left here is what makes this row a *tree* row. */
+.tree-row {
+  border-radius: var(--radius-xs);
+  /* A row keeps its height. Left shrinkable inside the column flex box that
+     holds it, every row squashed from `--forge-row-h` down towards its text —
+     and the virtualiser, which places its spacers in units of `--forge-row-h`,
+     then ran out of rows a third of the way down a full panel. */
+  flex: none;
+  font-size: var(--text-sm);
+  gap: var(--space-6);
+  height: var(--row-h);
+  padding: 0 var(--space-8) 0 calc(var(--space-8) + var(--depth, 0) * var(--space-12));
+  width: 100%;
+}
+.tree-row.group {
+  --depth: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+.tree-row.project {
+  --depth: 0;
+  font-weight: 600;
+}
+.tree-row.session {
+  --depth: 0;
+}
+.tree-row:hover {
+  background: var(--forge-sidebar-hi);
+}
+.tree-row.session.active {
+  background: var(--bg-hover);
+  border-radius: var(--radius-md);
+  color: var(--fg-default);
+}
+/* A folded row carries what is under it: collapsing a checkout must never be
+   able to hide a question (§16.3). */
+.tree-row.wants-you {
+  color: var(--attention-solid);
+}
+.tree-row.unread .tree-label {
+  color: var(--fg-default);
+  font-weight: 600;
+}
+.tree-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-twisty {
+  color: var(--fg-subtle);
+  display: inline-block;
+  flex: none;
+  transition: transform var(--motion-fast) var(--ease);
+  width: 8px;
+}
+.tree-twisty.open {
+  transform: rotate(90deg);
+}
+.tree-add {
+  background: none;
+  border: 0;
+  color: var(--fg-subtle);
+  flex: none;
+  opacity: 1;
+  padding: 0 var(--space-2);
+}
+.tree-add:hover {
+  color: var(--fg-default);
+}
+/* --- Checkout card ------------------------------------------------------- *
+ *
+ * A checkout is a card, not a row: a rail of identical rows could say a
+ * worktree existed and nothing else, and the three answers a click actually
+ * needs — what is running, whether the tree is clean and pushed, whether a PR
+ * is open — do not fit on one 26px line.
+ */
+.ws-card {
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  margin: var(--space-3) 0 var(--space-6) var(--space-14);
+  padding: var(--space-4) var(--space-3) var(--space-6);
+  position: relative;
+}
+.ws-card.dragging {
+  opacity: 0.45;
+}
+.ws-card.drop-before::before,
+.ws-card.drop-after::after {
+  background: var(--accent-solid);
+  border-radius: var(--radius-2xs);
+  content: "";
+  height: 2px;
+  left: var(--space-3);
+  position: absolute;
+  right: var(--space-3);
+  z-index: var(--z-over);
+}
+.ws-card.drop-before::before {
+  top: -3px;
+}
+.ws-card.drop-after::after {
+  bottom: -3px;
+}
+.ws-card:hover {
+  background: var(--forge-sidebar-hi);
+}
+/* The card holding the focused session is outlined rather than filled: a fill
+   competes with the selected session row inside it. */
+.ws-card.active {
+  background: var(--forge-sidebar-hi);
+  border-color: var(--border-default);
+}
+.ws-card.wants-you {
+  border-color: var(--attention-solid);
+}
+
+.ws-head {
+  border-radius: var(--radius-xs);
+  cursor: grab;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  gap: var(--space-4);
+  height: 24px;
+  padding: 0 var(--space-6);
+  touch-action: none;
+  width: 100%;
+}
+.ws-card.dragging .ws-head {
+  cursor: grabbing;
+}
+/* The badge belongs to the name, not to the rail's right edge, so the label
+   takes only the width it has. */
+.ws-head .tree-label {
+  flex: 0 1 auto;
+}
+.ws-card.wants-you .ws-head {
+  color: var(--attention-solid);
+}
+.ws-badge {
+  background: var(--bg-raised);
+  border-radius: var(--radius-full);
+  color: var(--fg-muted);
+  flex: none;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: var(--space-1) var(--space-6);
+}
+/* A checkout with nothing running still needs a mark, or its title sits a
+   marker's width left of every other card's. */
+.ws-quiet-dot {
+  border: 1.5px solid var(--forge-step);
+  border-radius: var(--radius-full);
+  flex: none;
+  height: 6px;
+  margin: 0 var(--space-4);
+  width: 6px;
+}
+
+.ws-meta {
+  align-items: center;
+  color: var(--fg-subtle);
+  display: flex;
+  font-size: var(--text-xs);
+  gap: var(--space-6);
+  padding: 0 var(--space-6) 0 var(--space-24);
+}
+.ws-branch {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-marks {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: var(--space-6);
+}
+.ws-meta-actions {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.ws-dirty {
+  color: var(--forge-git-modified);
+  font-size: var(--text-xs);
+}
+.ws-sync {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ws-chips {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-4) 0 var(--space-24);
+}
+/* The pill is the grouping: agents in one, terminals in the other, so "who is
+   working here" is not a search through a row of mixed marks. */
+.ws-chip-group {
+  align-items: center;
+  background: var(--bg-raised);
+  border-radius: var(--radius-sm);
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+.ws-chip {
+  border-radius: var(--radius-xs);
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+}
+.ws-chip:hover {
+  background: var(--bg-hover);
+}
+.ws-chip.active {
+  background: var(--bg-selected);
+}
+.ws-chip.wants-you {
+  background: var(--attention-soft);
+}
+.ws-chip.unread {
+  background: var(--forge-activity-tint);
+}
+.ws-quiet {
+  color: var(--fg-subtle);
+  flex: 1;
+  font-size: var(--text-xs);
+}
+.ws-expand {
+  align-items: center;
+  color: var(--fg-subtle);
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  min-height: var(--control-xs);
+  padding: 0 var(--space-2);
+}
+.ws-expand:hover {
+  color: var(--fg-default);
+}
+.ws-sessions {
+  padding: var(--space-8) 0 0 var(--space-16);
+}
+/* Mount-only entrance: the list is a `Show`, so collapse unmounts with no exit. */
+@media (prefers-reduced-motion: no-preference) {
+  .ws-sessions,
+  .ws-chips {
+    animation: ws-list-in var(--motion-fast) var(--ease);
+  }
+}
+@keyframes ws-list-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+/* The scrim, the card and its width are `Dialog`'s now; what is left here is
+   the palette's own inside — the query seam, the list and the rows. */
+.palette-query {
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  gap: var(--space-8);
+  height: var(--control-lg);
+  padding: 0 var(--space-12);
+}
+.palette-scope {
+  background: var(--bg-selected);
+  border-radius: var(--radius-xs);
+  color: var(--accent-solid);
+  flex: none;
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-8);
+}
+/* The query field is `.forge-field-input` from the base layer — the same box
+   `TextField` puts inside `.forge-field`, which is what `.palette-query` is
+   here. All that is left of it is the larger type a query is set in. */
+.palette-input {
+  font-size: var(--text-md);
+}
+/* `.palette-note` grows inside a row, where it is the last column. In the
+   query seam it sits *before* the input, and growing there splits the row in
+   half and pushes the query to the middle of the card. */
+.palette-query > .palette-note {
+  flex: none;
+}
+.palette-list {
+  /* Plus one group heading: without it the heading ate the ninth row and the
+     list cut a row in half at the bottom edge on every open. */
+  max-height: calc(var(--palette-rows, 9) * var(--row-h) + 30px);
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+.palette-group {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  padding: var(--space-8) var(--space-8) var(--space-4);
+  text-transform: uppercase;
+}
+.palette-row {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: var(--fg-default);
+  display: flex;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  gap: var(--space-8);
+  height: var(--row-h);
+  padding: 0 var(--space-8);
+  text-align: left;
+  width: 100%;
+}
+.palette-row.selected {
+  background: var(--bg-selected);
+}
+/* Held even when it is empty, so a command's label starts where a session's
+   label starts and the list reads as one column rather than two. */
+.palette-glyph {
+  flex: none;
+  height: 14px;
+  width: 14px;
+}
+/* Dimmed but still listed, so the palette also answers "what could run here?" */
+.palette-row.disabled {
+  color: var(--fg-subtle);
+}
+/*
+ * Shrinkable, not fixed: `⌘⇧O` lists files, and a row whose label and path
+ * both refuse to give ground pushes the shortcut column off the card instead
+ * of ellipsing. The label yields last — it is the part being read.
+ */
+.palette-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-note {
+  color: var(--fg-subtle);
+  flex: 1 1 auto;
+  font-size: var(--text-xs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-hint {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-6);
+}
+
+.status-latency {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* Past the §2 gate. Coloured rather than hidden: a slow terminal is a fact
+   about this machine the person using it should be able to see. */
+.status-latency.over {
+  color: var(--warning-solid);
+}
+.status-usage {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-12);
+}
+.status-usage-trigger {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: inherit;
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: var(--space-6);
+  padding: var(--space-2) var(--space-4);
+}
+.status-usage-trigger:hover {
+  background: var(--bg-hover);
+}
+.status-usage-trigger:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+.status-usage-trigger:disabled:hover {
+  background: transparent;
+}
+.status-usage-group {
+  align-items: center;
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: var(--space-6);
+}
+.status-usage-empty {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.status-usage-refresh {
+  flex-shrink: 0;
+}
+.status-usage-meter {
+  align-items: center;
+  color: var(--fg-muted);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  gap: var(--space-6);
+  white-space: nowrap;
+}
+.status-usage-track {
+  background: var(--bg-overlay);
+  border-radius: var(--radius-full);
+  display: inline-block;
+  height: 4px;
+  overflow: hidden;
+  width: 34px;
+}
+.status-usage-fill {
+  background: var(--accent-solid);
+  display: block;
+  height: 100%;
+}
+.status-usage-fill.warning {
+  background: var(--warning-solid);
+}
+.status-usage-fill.full {
+  background: var(--attention-solid);
+}
+.status-usage-fill.stale {
+  background: var(--fg-subtle);
+}
+.status-usage-meter.stale {
+  color: var(--fg-subtle);
+}
+
+/* --- Usage popover (from status bar) ------------------------------------ */
+
+.usage-popover {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  color: var(--fg-default);
+  display: flex;
+  flex-direction: column;
+  max-height: 480px;
+  overflow: hidden;
+  width: 380px;
+}
+.usage-popover-header {
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-10) var(--space-12);
+}
+.usage-popover-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.usage-popover-subtitle {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  margin-left: auto;
+}
+.usage-popover-toggle {
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-8);
+}
+.usage-popover-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4) 0;
+}
+.usage-popover-empty {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  padding: var(--space-12);
+  text-align: center;
+}
+.usage-provider {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-6) var(--space-12);
+}
+.usage-provider:last-child {
+  border-bottom: 0;
+}
+.usage-provider-head {
+  justify-content: space-between;
+  text-align: left;
+  width: 100%;
+}
+
+.usage-provider-name {
+  font-weight: 600;
+}
+.usage-provider-reset {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  margin-left: auto;
+}
+.usage-provider-chevron {
+  flex-shrink: 0;
+  transition: transform var(--motion-fast) var(--ease);
+}
+.usage-provider.expanded .usage-provider-chevron {
+  transform: rotate(90deg);
+}
+.usage-provider-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  padding: var(--space-6) 0 0 var(--space-28);
+}
+.usage-summary-meter {
+  align-items: center;
+  color: var(--fg-muted);
+  display: inline-flex;
+  font-size: var(--text-xs);
+  gap: var(--space-4);
+}
+.usage-summary-meter.stale {
+  color: var(--fg-subtle);
+}
+.usage-summary-track {
+  background: var(--bg-base);
+  border-radius: var(--radius-full);
+  display: inline-block;
+  height: 4px;
+  overflow: hidden;
+  width: 28px;
+}
+.usage-summary-fill {
+  display: block;
+  height: 100%;
+}
+.usage-summary-fill.normal {
+  background: var(--accent-solid);
+}
+.usage-summary-fill.warning {
+  background: var(--warning-solid);
+}
+.usage-summary-fill.full {
+  background: var(--danger-solid);
+}
+.usage-summary-fill.stale {
+  background: var(--fg-subtle);
+}
+.usage-summary-label {
+  white-space: nowrap;
+}
+.usage-provider-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-8) 0 0 var(--space-28);
+}
+.usage-provider-updated {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.usage-window-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.usage-window-head {
+  align-items: baseline;
+  display: flex;
+  font-size: var(--text-xs);
+  gap: var(--space-8);
+}
+.usage-window-name {
+  color: var(--fg-default);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.usage-window-percent {
+  color: var(--fg-muted);
+}
+.usage-window-percent.stale {
+  color: var(--fg-subtle);
+}
+.usage-window-reset {
+  color: var(--fg-subtle);
+  margin-left: auto;
+}
+.usage-window-track {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  height: 6px;
+  overflow: hidden;
+}
+.usage-window-fill {
+  display: block;
+  height: 100%;
+}
+.usage-window-fill.normal {
+  background: var(--accent-solid);
+}
+.usage-window-fill.warning {
+  background: var(--warning-solid);
+}
+.usage-window-fill.full {
+  background: var(--danger-solid);
+}
+.usage-window-fill.stale {
+  background: var(--fg-subtle);
+}
+.usage-account-row {
+  align-items: center;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--fg-muted);
+  display: flex;
+  font-size: var(--text-xs);
+  gap: var(--space-8);
+  margin-top: var(--space-4);
+  padding-top: var(--space-8);
+}
+.usage-account-value {
+  color: var(--fg-default);
+  margin-left: auto;
+}
+.usage-popover-footer {
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-8);
+}
+.usage-popover-link {
+  justify-content: space-between;
+  text-align: left;
+  width: 100%;
+}
+
+.status-bar {
+  align-items: center;
+  background: var(--forge-rail);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--fg-muted);
+  display: flex;
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  gap: var(--space-12);
+  height: var(--forge-status-h);
+  line-height: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 var(--space-14);
+}
+/* The bar is one line tall by construction. Anything that wraps overflows the
+   fixed height instead of pushing it, so nothing in here is allowed to wrap:
+   the two path-ish spans ellipsize, everything else holds its width. */
+.status-bar > * {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.status-branch,
+.status-path {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-spacer {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.status-group {
+  align-items: center;
+  display: flex;
+  gap: var(--space-10);
+  line-height: 1;
+}
+.status-group > span {
+  font-variant-numeric: tabular-nums;
+}
+.status-usage-refresh {
+  flex-shrink: 0;
+}
+.status-group + .status-group,
+.status-group + .status-version {
+  border-left: 1px solid var(--border-subtle);
+  padding-left: var(--space-16);
+}
+.status-version {
+  color: var(--fg-subtle);
+}
+
+/*
+ * Six tabs in a 288px panel.
+ *
+ * They used to wrap: `Lieutenant` pushed `Files` and `Git` onto a second row,
+ * so the inspector opened two rows of chrome deep and the row a tab sat on
+ * moved as the panel was dragged. One row that scrolls instead — the same
+ * answer the session strip already gives — with the edges faded so a tab cut
+ * off at the boundary reads as more rather than as clipped.
+ */
+.inspector-tabs {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-6) var(--space-8);
+}
+.inspector-tabs .forge-tab-list {
+  flex-wrap: nowrap;
+  /* Both edges: dragged narrow enough, the strip scrolls in either direction,
+     and a tab cut off at a hard boundary reads as clipped rather than as
+     more. Ten pixels is under a character, so it costs nothing when the six
+     tabs do fit. */
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 10px,
+    #000 calc(100% - 10px),
+    transparent
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 10px,
+    #000 calc(100% - 10px),
+    transparent
+  );
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.inspector-tabs .forge-tab-list::-webkit-scrollbar {
+  display: none;
+}
+.inspector-tab {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  flex: none;
+  font-size: var(--text-xs);
+  height: 24px;
+  padding: 0 var(--space-8);
+}
+.inspector-tab[data-selected] {
+  color: var(--fg-default);
+}
+.inspector-tab:hover {
+  background: var(--bg-hover);
+}
+.inspector-tab[data-selected] {
+  background: var(--bg-selected);
+}
+.inspector-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--space-8) var(--space-12);
+}
+.empty-copy {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+.rail-empty {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  padding: var(--space-4) var(--space-8) var(--space-8);
+}
+
+.lieutenant-panel {
+  flex: 1;
+  min-height: 0;
+}
+.lieutenant-transcript {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-8);
+}
+.lieutenant-turn + .lieutenant-turn {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--space-10);
+  padding-top: var(--space-10);
+}
+.lieutenant-question {
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+.lieutenant-answer {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  padding-left: var(--space-8);
+  white-space: pre-wrap;
+}
+.lieutenant-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.lieutenant-input {
+  min-width: 0;
+}
+.lieutenant-input .forge-textarea {
+  font-family: inherit;
+  line-height: 1.5;
+  min-height: var(--control-md);
+  padding: var(--space-8) var(--space-8);
+}
+.lieutenant-clear {
+  margin-left: auto;
+}
+
+/* Controls, fields and cards now live in `ui/ui.css`, next to `src/ui/`. */
+
+/* Phase 3–4 shell additions */
+/* The two answers under the list: what to call it, and what to start in it. */
+.branch-picker-fields {
+  border-top: 1px solid var(--border-subtle);
+  display: grid;
+  gap: var(--space-10);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  padding: var(--space-12);
+}
+.branch-picker .forge-dialog-footer {
+  border-top: 1px solid var(--border-subtle);
+}
+.juva-editor .forge-textarea {
+  background: var(--forge-term-bg);
+  border-color: var(--border-subtle);
+  color: var(--forge-term-fg);
+  font-size: var(--text-md);
+  min-height: 200px;
+}
+/* The three policies read as one block of choices rather than as three rows of
+   settings: the note under each is the consequence, so it carries as much
+   weight as the label above it. */
+.remove-project-policies {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 var(--space-12);
+}
+.remove-project-policies .forge-radio {
+  align-items: baseline;
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: var(--space-2) var(--space-8);
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: var(--space-6) var(--space-8);
+}
+/* The note goes under its label, not after it: the longest of the three runs
+   the width of the card on one line, and the first thing a narrower window
+   does to it is wrap it under the radio dot. */
+.remove-project-policies .settings-row-label,
+.remove-project-policies .settings-row-note {
+  grid-column: 2;
+}
+.remove-project-policies .forge-radio:hover:not([data-disabled]) {
+  background: var(--bg-hover);
+}
+.remove-project-policies .forge-radio[data-disabled] {
+  opacity: 0.55;
+}
+/* The consequences of whatever is selected, kept apart from the choosing. */
+.remove-project-consequences {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-10);
+}
+.remove-project-consequences .section-label {
+  padding: 0 0 var(--space-2);
+}
+.remove-project-consequences .remove-worktree-reasons {
+  margin: 0;
+}
+.remove-worktree-title {
+  font-size: var(--text-lg);
+  margin: 0 0 var(--space-10);
+}
+.remove-worktree-copy {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  margin: 0;
+}
+.remove-worktree-reasons {
+  color: var(--fg-default);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  margin: 0;
+  padding-left: var(--space-20);
+}
+/* --- Rail header --------------------------------------------------------- */
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.rail-head .section-label {
+  flex: 1;
+}
+
+/* What a new checkout will arrive with (§14.2): one line, under the fields. */
+.branch-picker-shares {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  margin: 0;
+  padding: 0 var(--space-12) var(--space-8);
+}
+
+/* A count or a note at the end of a tree row. */
+.tree-note {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}

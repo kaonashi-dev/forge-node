@@ -1,0 +1,10 @@
+---
+source: crates/terminal-core/tests/golden.rs
+expression: "format!(\"{}\\nwrapped={:?}\", render_plain(&e), wrapped_flags)"
+---
+abcdefghij
+klmnop
+
+
+
+wrapped=[true, false, false, false]

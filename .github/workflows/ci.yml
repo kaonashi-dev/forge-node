@@ -1,0 +1,156 @@
+name: CI
+
+# §18 Fase 1: "CI (macOS + Linux headless)". The gate is the same one
+# `scripts/dev check` runs locally: fmt → clippy → test, on both platforms,
+# plus the `cargo deny` policy job ADR-002 requires before any distribution.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A superseded PR run has nothing to say; cancel it instead of paying twice.
+# Pushes to main are never cancelled.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Incremental artifacts are pure overhead on a cold, cached-from-scratch CI
+  # runner.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  workspace:
+    name: workspace (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            libzstd-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --workspace --locked
+
+      - name: Test (Linux)
+        if: runner.os == 'Linux'
+        run: cargo test --workspace --locked
+
+  # ADR-002 / §32 require `cargo deny check licenses` to pass before any
+  # distribution; §31 lists cargo-deny as a project dependency. The action
+  # ships a prebuilt cargo-deny, so this job compiles nothing and stays fast
+  # even when the matrix job above is cold.
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # All four checks (advisories, bans, licenses, sources); the policy
+          # itself lives in deny.toml.
+          command: check
+          arguments: --all-features
+
+  # Tauri Phase 0 gate: keep the browser shell and its Rust host independently
+  # verifiable before the daemon bridge lands in Phase 1.
+  tauri:
+    name: tauri scaffold
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        run: rustup show
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/tauri/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: apps/tauri
+        run: pnpm install --frozen-lockfile
+
+      - name: Test frontend
+        working-directory: apps/tauri
+        run: pnpm test
+
+      # `pnpm build` is `tsc --noEmit && vite build`: the typecheck is the half
+      # that catches a rename landing in one module and not its callers, which
+      # unit tests cannot see.
+      - name: Build frontend (typecheck + bundle)
+        working-directory: apps/tauri
+        run: pnpm build
+
+      - name: Check Tauri host
+        run: cargo test -p forge-tauri --lib --locked
+
+      # `--lib` above builds the library alone. The probe and latency binaries
+      # are how the phase gates are measured, so they have to keep compiling.
+      - name: Check Tauri host binaries
+        run: cargo check -p forge-tauri --all-targets --locked
+
+      # The committed wire fixtures are generated, not hand-written. Re-export
+      # them and fail on drift so a protocol change cannot land without them.
+      - name: Check protocol fixtures are current
+        run: |
+          cargo run -p protocol --bin export-fixtures --locked
+          git diff --exit-code -- apps/tauri/tests/fixtures

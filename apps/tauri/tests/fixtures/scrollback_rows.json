@@ -1,0 +1,47 @@
+{
+  "from_line": 5,
+  "rows": [
+    {
+      "cells": [
+        {
+          "text": " ",
+          "fg": "Default",
+          "bg": "Default",
+          "flags": 0
+        },
+        {
+          "text": " ",
+          "fg": "Default",
+          "bg": "Default",
+          "flags": 0
+        }
+      ],
+      "wrapped": false
+    },
+    {
+      "cells": [
+        {
+          "text": " ",
+          "fg": "Default",
+          "bg": "Default",
+          "flags": 0
+        },
+        {
+          "text": "x",
+          "fg": {
+            "Indexed": 2
+          },
+          "bg": {
+            "Rgb": [
+              9,
+              9,
+              9
+            ]
+          },
+          "flags": 5
+        }
+      ],
+      "wrapped": true
+    }
+  ]
+}

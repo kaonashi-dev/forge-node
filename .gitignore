@@ -1,0 +1,42 @@
+# Build output
+/target
+# Release bundles produced by scripts/package-macos and scripts/package-linux
+/dist
+
+# Rust / Cargo (Cargo.lock IS committed: this workspace ships binaries)
+**/*.rs.bk
+Cargo.lock.orig
+
+# Coverage instrumentation (cargo-llvm-cov / grcov)
+*.profraw
+*.profdata
+
+# insta: accepted snapshots under crates/*/tests/snapshots/ are committed,
+# pending ones from `cargo insta` are not
+*.snap.new
+.insta/
+
+# macOS
+.DS_Store
+
+# Local dev
+*.log
+/scratch
+
+# Local SQLite databases. The real one lives under the per-user data dir
+# (see docs/development.md), but hand runs and stray tests can drop one here.
+*.db
+*.db-shm
+*.db-wal
+
+# Per-developer AI-agent tool settings (AGENTS.md itself is committed)
+.claude/settings.local.json
+
+# Harness TS (bun): dependencies of the harness CLI. bun.lock IS committed.
+harness/node_modules
+
+# Tauri frontend build output and dependencies
+apps/tauri/node_modules
+apps/tauri/dist
+apps/tauri/src-tauri/target
+apps/tauri/src-tauri/gen

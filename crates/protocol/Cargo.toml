@@ -1,0 +1,23 @@
+[package]
+name = "protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+thiserror.workspace = true
+
+# Additive tool: exports wire fixtures (MessagePack + JSON) into
+# apps/tauri/tests/fixtures for the frontend's round-trip tests.
+# `cargo run -p protocol --bin export-fixtures`.
+[[bin]]
+name = "export-fixtures"
+path = "src/bin/export_fixtures.rs"
+
+[dev-dependencies]

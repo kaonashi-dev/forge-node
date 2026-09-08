@@ -1,0 +1,18 @@
+{
+  "ProjectSharesChanged": {
+    "project_id": "00000000-0000-7000-8000-000000000001",
+    "rules": [
+      {
+        "id": "00000000-0000-7000-8000-00000000000a",
+        "project_id": "00000000-0000-7000-8000-000000000001",
+        "path": ".env",
+        "strategy": {
+          "kind": "link"
+        },
+        "enabled": true,
+        "position": 0,
+        "created_at": "2026-08-30T12:00:00Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+---
+source: crates/terminal-core/tests/golden.rs
+expression: "format!(\"{}\\ncursor: line={} col={} shape={:?} visible={}\", render_plain(&e),\ncur.line, cur.col, cur.shape, cur.visible)"
+---
+abc
+  xy
+
+
+
+cursor: line=1 col=4 shape=Block visible=true

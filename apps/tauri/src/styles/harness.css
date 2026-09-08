@@ -1,0 +1,572 @@
+/*
+ * The harness: the attention bar, the features panel, the feature tab and the
+ * preview terminal.
+ */
+
+/* --- Harness: attention bar --------------------------------------------- */
+/*
+ * Amber, and the only strip that crosses the whole centre column: it is the
+ * one thing that stops the machine and waits for a person, so it is the one
+ * thing allowed to interrupt whatever view is open.
+ */
+.attention-bar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-12);
+  border-bottom: 1px solid var(--warning-solid);
+  background: color-mix(in srgb, var(--warning-solid) 12%, var(--bg-base));
+  font-size: var(--text-sm);
+}
+.attention-label {
+  color: var(--fg-subtle);
+  letter-spacing: 0.06em;
+}
+.attention-badge {
+  padding: var(--space-1) var(--space-6);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--warning-solid) 28%, var(--bg-base));
+  color: var(--fg-default);
+}
+.attention-feature {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attention-feature:hover {
+  text-decoration: underline;
+}
+.attention-more {
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+.attention-action {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--accent-solid);
+  font: inherit;
+}
+.attention-action:hover:not(:disabled) {
+  background: var(--bg-selected);
+}
+.attention-action:disabled {
+  opacity: 0.5;
+}
+
+/* --- Harness: features panel -------------------------------------------- */
+/* The box comes from `.list-card` (§4.2 U13); what is the feature card's own
+   is the phase edge below, and a tighter gap — these cards carry two nested
+   lists and the card gap would double every separation inside them. */
+.feature-card {
+  border-left-width: 2px;
+  gap: var(--space-4);
+}
+/* The phase is the first thing read off the card, so it is the edge colour
+   rather than only a word inside it. */
+.feature-card.phase-gate {
+  border-left-color: var(--warning-solid);
+}
+.feature-card.phase-running {
+  border-left-color: var(--forge-blue);
+}
+.feature-card.phase-done {
+  border-left-color: var(--success-solid);
+}
+.feature-card.phase-blocked {
+  border-left-color: var(--danger-solid);
+}
+.feature-card.phase-idle {
+  border-left-color: var(--border-subtle);
+}
+.feature-card .list-card-title {
+  /* A feature's title is a sentence, not a path: it wraps rather than
+     ellipsizing, because the end of it is the part that says what it is. */
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+.feature-id {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.feature-status {
+  flex-shrink: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+.feature-job {
+  display: flex;
+  gap: var(--space-6);
+  margin: 0;
+  font-size: var(--text-xs);
+  min-width: 0;
+}
+.feature-job-role {
+  flex-shrink: 0;
+  color: var(--accent-solid);
+}
+.feature-job-line {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+}
+/* One indent mechanism in the app (§4.2 U14): a `--depth` custom property the
+   row multiplies, not `padding-left` arithmetic in three components' JSX. The
+   step is the same `--space-12` the sidebar and file tree indent by, so a
+   nested agent lines up with a nested session. */
+.feature-agent {
+  gap: var(--space-6);
+  width: 100%;
+  padding: var(--space-2) var(--space-4) var(--space-2)
+    calc(var(--space-4) + var(--depth, 0) * var(--space-12));
+  border-radius: var(--radius-xs);
+  font-size: var(--text-sm);
+}
+.feature-agent:hover {
+  background: var(--bg-hover);
+}
+
+/* --- Harness: feature tab ------------------------------------------------ */
+.feature-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.feature-view-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: baseline;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-16);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.feature-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.feature-view-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+.feature-isolation {
+  margin: 0;
+  padding: var(--space-6) var(--space-10);
+  border-left: 2px solid var(--forge-blue);
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+.feature-gate {
+  padding: var(--space-12);
+  border: 1px solid var(--warning-solid);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning-solid) 8%, var(--bg-raised));
+}
+.feature-gate h3 {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-md);
+}
+.feature-gate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+  margin-top: var(--space-8);
+}
+.feature-block-reason {
+  flex: 1;
+  min-width: 10rem;
+}
+.feature-agents h3,
+.feature-docs h3,
+.feature-jobs h3,
+.feature-timeline h3 {
+  margin: 0 0 var(--space-6);
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.feature-agent-row {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  padding-left: calc(var(--depth, 0) * var(--space-12));
+}
+.feature-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+}
+.feature-artifact,
+.feature-validate-output {
+  max-height: 32rem;
+  overflow: auto;
+  margin: var(--space-8) 0 0;
+  padding: var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--forge-editor);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+}
+.feature-validate.ok {
+  border-left: 2px solid var(--success-solid);
+  padding-left: var(--space-8);
+}
+.feature-validate.bad {
+  border-left: 2px solid var(--danger-solid);
+  padding-left: var(--space-8);
+}
+.feature-validate h3 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+.feature-job-row {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  min-height: var(--row-h);
+  width: 100%;
+  padding: var(--space-2) var(--space-6);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-sm);
+}
+.feature-job-row .feature-job-role,
+.feature-job-row .forge-badge,
+.feature-job-row .forge-btn {
+  flex: none;
+}
+.feature-job-row .feature-job-role {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feature-job-row > .history-spacer {
+  flex: 1;
+}
+.feature-job-row:hover {
+  background: var(--bg-hover);
+}
+.feature-job-row.active {
+  background: var(--bg-selected);
+}
+.feature-timeline-row {
+  display: flex;
+  gap: var(--space-8);
+  align-items: baseline;
+  padding: var(--space-2) 0;
+  font-size: var(--text-sm);
+}
+.feature-timeline-ts {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.feature-timeline-kind {
+  flex-shrink: 0;
+  color: var(--accent-solid);
+}
+.feature-timeline-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+
+/* --- Harness: feature draft ---------------------------------------------- */
+.feature-compose-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  max-width: 52rem;
+}
+.feature-compose-form h3 {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.feature-draft-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  align-items: flex-start;
+  padding: var(--space-8);
+  border: 1px solid var(--danger-solid);
+  border-radius: var(--radius-sm);
+}
+
+/* --- Harness: card meta and roster --------------------------------------- */
+.features-counts {
+  padding: 0 var(--space-8) var(--space-4);
+}
+.feature-expand {
+  flex-shrink: 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-xs);
+}
+.feature-expand:hover {
+  background: var(--bg-hover);
+}
+.feature-fact {
+  display: inline-flex;
+  gap: var(--space-4);
+  align-items: center;
+}
+.feature-fact-sep {
+  color: var(--border-strong);
+}
+.feature-roster {
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border-subtle);
+}
+.feature-roster h4,
+.feature-jobs-sub {
+  margin: var(--space-8) 0 var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--fg-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.feature-jobs-sub:first-of-type {
+  margin-top: 0;
+}
+.feature-step {
+  gap: var(--space-6);
+  min-height: var(--row-h);
+  width: 100%;
+  padding: var(--space-2) var(--space-4) var(--space-2)
+    calc(var(--space-4) + var(--depth, 0) * var(--space-12));
+  border-radius: var(--radius-xs);
+  font-size: var(--text-sm);
+}
+.feature-step .forge-badge {
+  flex: none;
+}
+.feature-step:hover {
+  background: var(--bg-hover);
+}
+.feature-step-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+/* The outcome, so a failed step is visible without reading it. */
+.job-glyph.state-queued {
+  color: var(--fg-subtle);
+}
+.job-glyph.state-running {
+  color: var(--warning-solid);
+}
+.job-glyph.state-succeeded {
+  color: var(--success-solid);
+}
+.job-glyph.state-failed {
+  color: var(--danger-solid);
+}
+.job-glyph.state-cancelled {
+  color: var(--fg-muted);
+}
+.feature-details {
+  display: grid;
+  grid-template-columns: 6rem 1fr;
+  gap: var(--space-2) var(--space-8);
+  margin: 0;
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--text-xs);
+}
+.feature-details dt {
+  color: var(--fg-subtle);
+}
+.feature-details dd {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+/* --- Harness: documents and steps in the tab ----------------------------- */
+.feature-doc-reader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+/* "The gate file is not there" is a fact about the run, not a caption: the
+   note names the path so it is the thing a reader greps for. */
+.feature-doc-missing {
+  margin: 0;
+  color: var(--warning-solid);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.feature-blocked {
+  margin: 0;
+  padding: var(--space-6) var(--space-10);
+  border-left: 2px solid var(--danger-solid);
+  background: var(--bg-raised);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+.feature-agent-row.pinned {
+  background: var(--bg-selected);
+  border-radius: var(--radius-xs);
+}
+
+.harness-progress {
+  padding: var(--space-12);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+}
+.harness-progress-summary {
+  margin: 0 0 var(--space-12);
+  font-size: var(--text-sm);
+  color: var(--fg-default);
+}
+.harness-stages {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-8);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.harness-stage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6);
+  padding-top: var(--space-8);
+  border-top: 2px solid var(--border-subtle);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+.harness-stage[data-state="complete"] {
+  border-color: var(--success-solid);
+}
+.harness-stage[data-state="running"],
+.harness-stage[data-state="ready"] {
+  border-color: var(--accent-solid);
+}
+.harness-stage[data-state="waiting"] {
+  border-color: var(--warning-solid);
+}
+.harness-stage[data-state="blocked"] {
+  border-color: var(--danger-solid);
+}
+.harness-stage-number {
+  font-family: var(--font-mono);
+  color: var(--fg-default);
+}
+.harness-stage-label {
+  overflow-wrap: anywhere;
+}
+.harness-stage-label small {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--fg-subtle);
+}
+.harness-progress.compact {
+  padding: var(--space-6) 0;
+  border: 0;
+  background: none;
+}
+.harness-progress.compact .harness-progress-summary {
+  margin-bottom: var(--space-4);
+  font-size: var(--text-xs);
+}
+.harness-progress.compact .harness-stage {
+  padding-top: var(--space-4);
+}
+.harness-progress.compact .harness-stage-number,
+.harness-progress.compact .harness-stage-label {
+  display: none;
+}
+.harness-run {
+  margin-top: var(--space-8);
+  padding: var(--space-12);
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+}
+.harness-run[data-tone="good"] {
+  border-left-color: var(--success-solid);
+}
+.harness-run[data-tone="warn"] {
+  border-left-color: var(--warning-solid);
+}
+.harness-run[data-tone="bad"] {
+  border-left-color: var(--danger-solid);
+}
+.harness-run-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  font-size: var(--text-sm);
+}
+.harness-run-provider {
+  flex: 1;
+  color: var(--fg-muted);
+}
+.harness-run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-12);
+  margin: var(--space-8) 0;
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.harness-run-note {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: var(--space-8) 0;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+.feature-timeline-row {
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-8) 0;
+}
+.feature-timeline-detail {
+  white-space: normal;
+  min-width: 12rem;
+}
+.feature-timeline-detail summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.feature-timeline-detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-xs);
+}

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Local development helper for Forge Node.
+#
+# Usage:
+#   scripts/dev daemon      # build + run the daemon in the foreground (verbose logs)
+#                           # isolated socket/db/config per run; the daily daemon is untouched
+#   scripts/dev check       # fmt-check + clippy + test the whole workspace
+#   scripts/dev dump        # stream the daemon protocol as JSON (forge-daemon dump --json)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+cmd="${1:-check}"
+case "$cmd" in
+  daemon)
+    # Isolated by default: a dev daemon gets a scratch socket, database and
+    # config under $FORGE_DEV_DIR (fresh mktemp per run unless already set),
+    # so it never contends with the daily daemon's lock or wipes its tabs.
+    # Point a dev GUI at it with the export line this prints on stderr.
+    : "${FORGE_DEV_DIR:=$(mktemp -d "${TMPDIR:-/tmp}/forge-dev-XXXXXX")}"
+    export FORGE_SOCKET="$FORGE_DEV_DIR/daemon.sock"
+    export FORGE_DATA_DIR="$FORGE_DEV_DIR/data"
+    export FORGE_CONFIG_DIR="$FORGE_DEV_DIR/config"
+    {
+      echo "forge-dev: isolated runtime in $FORGE_DEV_DIR"
+      echo "forge-dev: GUI/devtools join it with:"
+      echo "forge-dev:   export FORGE_SOCKET='$FORGE_SOCKET' FORGE_DATA_DIR='$FORGE_DATA_DIR' FORGE_CONFIG_DIR='$FORGE_CONFIG_DIR'"
+    } >&2
+    RUST_LOG="${RUST_LOG:-forge=debug,daemon=debug,info}" \
+      exec cargo run -p daemon --bin forge-daemon -- "${@:2}"
+    ;;
+  dump)
+    exec cargo run -p daemon --bin forge-daemon -- dump --json
+    ;;
+  check)
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "usage: scripts/dev {daemon|check|dump}" >&2
+    exit 2
+    ;;
+esac

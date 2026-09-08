@@ -1,0 +1,19 @@
+{
+  "ShareCandidates": {
+    "project_id": "00000000-0000-7000-8000-000000000001",
+    "candidates": [
+      {
+        "path": "node_modules",
+        "class": "Dependencies",
+        "is_dir": true,
+        "size_bytes": 912384000,
+        "entries": 48211,
+        "suggested": {
+          "kind": "clone"
+        },
+        "already_ruled": false
+      }
+    ],
+    "truncated": false
+  }
+}

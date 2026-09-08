@@ -1,0 +1,10 @@
+---
+source: crates/terminal-core/tests/golden.rs
+expression: "format!(\"plain:\\n{}\\nstyled:\\n{}\", render_plain(&e), render_styled(&e))"
+---
+plain:
+a世b
+
+styled:
+(0,1) "世" fg=Default bg=Default flags=0b010000000
+(0,2) "" fg=Default bg=Default flags=0b100000000

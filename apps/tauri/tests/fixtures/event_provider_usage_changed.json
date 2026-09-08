@@ -1,0 +1,17 @@
+{
+  "ProviderUsageChanged": {
+    "usage": [
+      {
+        "provider_id": "claude",
+        "windows": [
+          {
+            "used_percent": 42,
+            "window": "5h",
+            "resets_at": "2026-08-30T12:00:00Z"
+          }
+        ],
+        "collected_at": "2026-08-30T12:00:00Z"
+      }
+    ]
+  }
+}

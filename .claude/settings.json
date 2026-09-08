@@ -1,0 +1,61 @@
+{
+  "$schema_comment": "Subagent harness — see docs/plan-subagent-harness.md. The hooks are run by the harness, not by the agent, so they cannot be skipped with an optimistic report.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/fmt-and-check.sh",
+            "timeout": 180,
+            "statusMessage": "fmt + cargo check of the touched crate…"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "implementer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/init.sh --fast",
+            "timeout": 120,
+            "statusMessage": "validating the harness state…"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-guard.sh",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(./init.sh*)",
+      "Bash(scripts/harness*)",
+      "Bash(scripts/dev*)",
+      "Bash(cargo fmt*)",
+      "Bash(cargo clippy*)",
+      "Bash(cargo test*)",
+      "Bash(cargo check*)",
+      "Bash(bun harness/src/validate.ts)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git rev-parse*)"
+    ],
+    "deny": [
+      "Bash(cargo publish*)"
+    ]
+  }
+}

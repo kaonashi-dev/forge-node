@@ -1,0 +1,23 @@
+{
+  "AgentProfilesChanged": {
+    "profiles": [
+      {
+        "id": "00000000-0000-7000-8000-000000000006",
+        "provider_id": "claude",
+        "name": "Work",
+        "executable": null,
+        "args": [
+          "--model",
+          "opus"
+        ],
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/home/dev/.claude-work"
+          ]
+        ],
+        "created_at": "2026-08-30T12:00:00Z"
+      }
+    ]
+  }
+}

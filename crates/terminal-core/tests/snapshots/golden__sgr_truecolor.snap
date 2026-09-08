@@ -1,0 +1,5 @@
+---
+source: crates/terminal-core/tests/golden.rs
+expression: render_styled(&e)
+---
+(0,0) "Z" fg=Rgb(10, 20, 30) bg=Default flags=0b000000000

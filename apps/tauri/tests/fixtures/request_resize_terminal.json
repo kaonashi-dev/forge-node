@@ -1,0 +1,11 @@
+{
+  "ResizeTerminal": {
+    "terminal_id": "00000000-0000-7000-8000-000000000005",
+    "size": {
+      "cols": 80,
+      "rows": 24,
+      "pixel_width": 0,
+      "pixel_height": 0
+    }
+  }
+}

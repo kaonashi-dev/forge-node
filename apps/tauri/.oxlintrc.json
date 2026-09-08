@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    // Solid refs: `let el!: HTMLDivElement` is assigned via `ref={el}` callback,
+    // not via a direct assignment — oxlint flags it as `no-unassigned-vars`.
+    "no-unassigned-vars": "off",
+    "eslint/no-unassigned-vars": "off",
+    // `For`/`Show` are used as JSX components; the unused-vars rule does not
+    // understand Solid's JSX transform and flags them as unused when run
+    // without type-aware context. Keep both variants off for now; `tsc --noEmit`
+    // already covers genuine unused locals.
+    "no-unused-vars": "off",
+    "eslint/no-unused-vars": "off",
+    "typescript/no-unused-vars": "off",
+    // `new Array(n)` is idiomatic for viewport/terminal grids; the unicorn
+    // suggestion `Array.from({length: n})` is noisier than the status quo.
+    "unicorn/no-new-array": "off",
+    // `a && b()` / `x ?? y` used as statements in Solid event handlers.
+    "no-unused-expressions": "off",
+    "eslint/no-unused-expressions": "off"
+  },
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "ignorePatterns": ["dist", "node_modules", "src-tauri/target", "src-tauri/gen", "tests/fixtures"],
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.test.tsx", "tests/**"],
+      "plugins": ["vitest", "typescript", "unicorn", "oxc"],
+      "env": {
+        "browser": true
+      }
+    }
+  ]
+}

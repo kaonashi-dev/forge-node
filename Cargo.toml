@@ -1,0 +1,98 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/domain",
+    "crates/protocol",
+    "crates/terminal-input",
+    "crates/terminal-core",
+    "crates/agents",
+    "crates/git-service",
+    "crates/fs-service",
+    "crates/harness-service",
+    "crates/persistence",
+    "crates/test-support",
+    "crates/client",
+    "crates/daemon",
+    "apps/tauri/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+authors = ["ForgeNode contributors"]
+repository = "https://github.com/forge-node/forge"
+
+[workspace.dependencies]
+# Internal crates
+domain = { path = "crates/domain" }
+protocol = { path = "crates/protocol" }
+terminal-input = { path = "crates/terminal-input" }
+terminal-core = { path = "crates/terminal-core" }
+agents = { path = "crates/agents" }
+git-service = { path = "crates/git-service" }
+fs-service = { path = "crates/fs-service" }
+harness-service = { path = "crates/harness-service" }
+persistence = { path = "crates/persistence" }
+test-support = { path = "crates/test-support" }
+client = { path = "crates/client" }
+
+# Tauri desktop shell. The web frontend is kept outside the Rust workspace;
+# this host owns the boundary to the daemon-facing client crate.
+tauri = { version = "2", features = [] }
+tauri-build = "2"
+tauri-plugin-dialog = "2"
+
+objc = "0.2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP (agents only: OAuth usage endpoints, §16.2). Short timeouts, blocking.
+ureq = "2"
+rmp-serde = "1"
+toml = "0.8"
+
+# IDs / time
+uuid = { version = "1.25", features = ["v7", "serde"] }
+time = { version = "0.3", features = ["serde", "serde-well-known", "formatting", "parsing", "macros"] }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Async (daemon + IPC bridge)
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal", "process"] }
+flume = "0.11"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# Persistence
+rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite_migration = "2.3"
+
+# Terminal
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+compact_str = { version = "0.10", features = ["serde"] }
+
+# System
+nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user"] }
+directories = "6"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Testing
+tempfile = "3"
+resvg = "0.45.1"
+insta = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
