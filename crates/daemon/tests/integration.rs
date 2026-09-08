@@ -1242,6 +1242,15 @@ impl SlowClient {
     /// Connect and perform the §9.2 handshake.
     fn connect(socket: &Path) -> SlowClient {
         let stream = UnixStream::connect(socket).expect("connect");
+        // Pin the receive buffer so the *daemon's* queue is what overflows.
+        // Left to the platform, the kernel absorbs however much it feels like
+        // — enough on a GitHub macOS runner to swallow more deltas than the
+        // 256-deep queue holds, so the reader below walks past its cap before
+        // reaching the resync and the test reads a backpressure bug that is
+        // not there. 8 KiB is tens of deltas and still far more than the
+        // handshake needs.
+        nix::sys::socket::setsockopt(&stream, nix::sys::socket::sockopt::RcvBuf, &(8 * 1024))
+            .expect("pin SO_RCVBUF");
         let mut slow = SlowClient {
             stream,
             decoder: protocol::FrameDecoder::new(),
