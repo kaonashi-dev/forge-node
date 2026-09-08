@@ -1242,15 +1242,6 @@ impl SlowClient {
     /// Connect and perform the §9.2 handshake.
     fn connect(socket: &Path) -> SlowClient {
         let stream = UnixStream::connect(socket).expect("connect");
-        // Pin the receive buffer so the *daemon's* queue is what overflows.
-        // Left to the platform, the kernel absorbs however much it feels like
-        // — enough on a GitHub macOS runner to swallow more deltas than the
-        // 256-deep queue holds, so the reader below walks past its cap before
-        // reaching the resync and the test reads a backpressure bug that is
-        // not there. 8 KiB is tens of deltas and still far more than the
-        // handshake needs.
-        nix::sys::socket::setsockopt(&stream, nix::sys::socket::sockopt::RcvBuf, &(8 * 1024))
-            .expect("pin SO_RCVBUF");
         let mut slow = SlowClient {
             stream,
             decoder: protocol::FrameDecoder::new(),
@@ -1360,14 +1351,23 @@ fn slow_subscriber_gets_a_resync_instead_of_an_unbounded_backlog() {
 
     // Let the flood run while the slow client ignores its socket. This is the
     // one place a fixed pause is inherent: the test *is* the paused GUI of
-    // scenario H. Filling the 256-deep queue at the ~8 ms delta floor of §10.5
-    // takes ~2 s, so this leaves a wide margin on a slow CI machine.
-    std::thread::sleep(Duration::from_secs(8));
+    // scenario H.
+    //
+    // What has to overflow is the daemon's queue, and ahead of it sits a
+    // kernel socket buffer whose size is the platform's business — a GitHub
+    // macOS runner absorbs several hundred deltas there. So the pause is not
+    // sized to fill the 256-deep queue (~2 s at the §10.5 delta floor) but to
+    // out-produce buffer *and* queue together by a wide margin, because a
+    // pause that only just fills them leaves nothing to drop and the resync
+    // never comes. `yes` also stops the moment the drain below keeps up, so
+    // the overflow has to happen here or not at all.
+    std::thread::sleep(Duration::from_secs(30));
 
-    // Now drain. The daemon must hand us one fresh snapshot, not the backlog:
-    // reading more than a couple of queues' worth of messages without a resync
-    // means the daemon buffered without bound.
-    let cap = CLIENT_QUEUE_CAPACITY * 2;
+    // Now drain. The daemon must hand us one fresh snapshot, not the backlog.
+    // The cap is only a "do not loop forever" bound and has to clear the
+    // kernel's buffered prefix before the resync can appear; the assertion that
+    // the backlog was *discarded* is the seq gap below, not this number.
+    let cap = CLIENT_QUEUE_CAPACITY * 16;
     let mut messages = 0usize;
     let mut last_delta_seq = 0u64;
     let mut resync_seq = None;
@@ -1389,7 +1389,7 @@ fn slow_subscriber_gets_a_resync_instead_of_an_unbounded_backlog() {
     let Some(resync_seq) = resync_seq else {
         panic!(
             "a slow subscriber must receive a TerminalResync (§10.5); \
-             read {messages} message(s) without one"
+             read {messages} message(s) without one (last delta seq {last_delta_seq})"
         );
     };
     assert!(
