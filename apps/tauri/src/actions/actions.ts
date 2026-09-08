@@ -59,6 +59,7 @@ export const CONTEXT_ORDER: ContextId[] = [COMMAND_PALETTE, EDITOR, FILES, TERMI
 
 export type ActionId =
   | "about"
+  | "check_for_update"
   | "open_command_palette"
   | "go_to"
   | "find_command"
@@ -447,6 +448,12 @@ export const ACTIONS: Action[] = [
     id: "about",
     label: "About Forge Node",
     detail: "Version and daemon information",
+    palette: true,
+  },
+  {
+    id: "check_for_update",
+    label: "Check for Updates",
+    detail: "Ask whether a newer release exists",
     palette: true,
   },
 ];

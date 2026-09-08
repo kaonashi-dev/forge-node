@@ -28,6 +28,7 @@ pub use store::{CellGrid, DeltaOutcome, EventOutcome, Store};
 // (§17: the client is the GUI's gateway to the wire types).
 pub use protocol::{
     DaemonEvent, DaemonStats, ErrorCode, ProtocolError, ProviderInfo, RemoveProjectPolicy,
+    PROTOCOL_VERSION,
 };
 pub use terminal_input::{
     encode_key, encode_mouse, paste, Key, Modifiers, MouseButton, MouseEventKind,

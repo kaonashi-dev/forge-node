@@ -6,6 +6,7 @@ import type {
   ProjectRemovalPolicy,
   ShareCleanup,
   ShareRule,
+  UpdateInfo,
 } from "./types";
 
 export async function hostStatus(): Promise<HostStatus> {
@@ -410,4 +411,24 @@ export async function copySelection(
     head_line: head.line,
     head_col: head.col,
   });
+}
+
+/**
+ * Force an update check, for the `Check for Updates…` menu item.
+ *
+ * `null` means "already the newest". The background schedule in the host stays
+ * quiet about that; a check the user asked for is the one case worth saying.
+ */
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  return invoke<UpdateInfo | null>("check_for_update");
+}
+
+/**
+ * Download the pending update, swap the bundle and relaunch.
+ *
+ * Resolves only on failure: on success the process is replaced. Progress
+ * arrives on `shell:update`, not here.
+ */
+export async function installUpdate(): Promise<void> {
+  await invoke("install_update");
 }

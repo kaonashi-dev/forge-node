@@ -1,7 +1,7 @@
 # Plan — In-app updates
 
-> **Not built.** This is the plan as approved at the human gate; §0 records the
-> decisions and they are not re-opened here.
+> **Phases 1 and 2 are built.** §0 records the decisions taken at the human
+> gate; §11 says what each phase covers and which are still open (3 and 4).
 
 One release ritual, one notification, one click. A running Forge Node learns a
 new version exists, downloads it in the background, and swaps itself in without
@@ -11,7 +11,7 @@ the user losing a session.
 
 | # | Question | Decision |
 | --- | --- | --- |
-| D1 | Where releases live | GitHub Releases, on a `github.com` mirror of this repo. The `origin.cursor.com` remote stays the working remote |
+| D1 | Where releases live | GitHub Releases on `kaonashi-dev/forge-node`, which is `origin`. The `origin.cursor.com` remote is kept as `cursor` |
 | D2 | How far "no restart" goes | The **GUI** relaunches; the **daemon** does not. Sessions, PTYs and scrollback survive |
 | D3 | First platform | macOS arm64. Universal and Linux are later, same pipeline |
 | D4 | What signs an update | minisign, through `tauri signer`. The private key is a CI secret; the public key ships in `tauri.conf.json` |
@@ -154,7 +154,7 @@ One `latest.json` per release, attached to the release, reachable at a stable
 URL that always points at the newest one:
 
 ```
-https://github.com/<org>/forge/releases/latest/download/latest.json
+https://github.com/kaonashi-dev/forge-node/releases/latest/download/latest.json
 ```
 
 ```json
@@ -165,7 +165,7 @@ https://github.com/<org>/forge/releases/latest/download/latest.json
   "platforms": {
     "darwin-aarch64": {
       "signature": "<contents of the .sig file>",
-      "url": "https://github.com/<org>/forge/releases/download/v0.2.0/ForgeNode-0.2.0-darwin-aarch64.app.tar.gz"
+      "url": "https://github.com/kaonashi-dev/forge-node/releases/download/v0.2.0/ForgeNode-0.2.0-darwin-aarch64.app.tar.gz"
     }
   }
 }
@@ -251,9 +251,9 @@ matching `v*`. `ci.yml` is untouched.
    the tag's annotation message.
 6. `gh release create` with the tarball, the `.sig` and `latest.json`.
 
-The mirror is a second remote (`git remote add github …`) and a release is
-`git push github v0.2.0`. Nothing about the day-to-day `origin` workflow
-changes.
+`origin` is GitHub, so a release is `git push origin v0.2.0` and nothing else.
+The tag's annotation message becomes the release notes, under the `protocol:`
+line `scripts/release-manifest` puts there.
 
 ## 10. Cutting a release
 
@@ -265,8 +265,7 @@ git commit -am "Release 0.2.0"
 
 # 2. tag and push to the mirror
 git tag -a v0.2.0 -m "Drag-reorderable session tabs, safer agent profiles."
-git push origin main
-git push github main v0.2.0
+git push origin main v0.2.0
 ```
 
 CI does the rest. Within a few minutes every running Forge Node that checks in

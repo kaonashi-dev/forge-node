@@ -9,6 +9,7 @@ mod daemon;
 mod open;
 mod paths;
 mod runtime;
+mod updates;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager};
@@ -34,6 +35,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let menu = app_menus(app.handle())?;
             app.set_menu(menu)?;
@@ -43,6 +45,8 @@ pub fn run() {
 
             let runtime = Runtime::start(app.handle().clone());
             app.manage(runtime);
+
+            updates::spawn_schedule(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -54,6 +58,8 @@ pub fn run() {
             commands::pick_directory,
             commands::pick_file,
             commands::config_paths,
+            commands::check_for_update,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Forge Node host");
@@ -66,6 +72,7 @@ fn app_menus(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         &[
             &item(app, "about", "About Forge Node")?,
+            &item(app, "check_for_update", "Check for Updates…")?,
             &PredefinedMenuItem::separator(app)?,
             &item(app, "open_settings", "Settings…")?,
             &PredefinedMenuItem::separator(app)?,
