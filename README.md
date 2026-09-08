@@ -15,6 +15,13 @@
   <b><a href="https://github.com/kaonashi-dev/forge-node/releases/latest/download/ForgeNode-macos-arm64.zip">Download for macOS (Apple Silicon)</a></b>
 </p>
 
+> [!NOTE]
+> **A personal, experimental project.** Built for the way I work and published
+> in case it is useful to someone else — not a product. There is no support and
+> no roadmap, the surface moves without deprecation periods, and a release can
+> break what the last one did. Read it, fork it, take ideas from it; depend on
+> it only with that in mind.
+
 ## Install
 
 macOS 11 or newer, Apple Silicon. `git` on `PATH`.
@@ -167,7 +174,8 @@ draft, and the updater endpoint silently falls back to the previous version.
 
 ## Status
 
-MVP in progress. The backend is implemented and covered by `scripts/dev check`:
+MVP in progress, and experimental in the sense above: the pieces below work and
+are tested, but nothing here is settled. The backend is implemented and covered by `scripts/dev check`:
 `domain`, `protocol` (framing, handshake, ~30 requests, events, errors),
 `terminal-core` (PTY, alacritty engine, deltas), `terminal-input`, `agents`
 (registry, verified detection, four built-ins), `git-service`, `persistence`
