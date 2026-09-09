@@ -39,6 +39,18 @@ Do not regenerate as part of the build — an auto-updated fixture asserts nothi
 the `?gallery` surface) changes the running preference; persistence goes through
 app state like any other UI preference.
 
+## Fonts
+
+The UI bundles plain JetBrains Mono under `apps/tauri/public/fonts/` for the
+terminal canvas and other mono surfaces. Prompt icon glyphs (Nerd Font /
+powerline codepoints such as U+E718) are **not** in that bundle — shipping a
+Nerd Font patch would roughly 10× the font payload.
+
+Install [JetBrainsMono Nerd Font](https://github.com/ryanoasis/nerd-fonts)
+(the Mono variant) on the machine that runs the GUI. The mono stack prefers
+`JetBrainsMono Nerd Font Mono` when present and falls back to the bundled
+face for everything else.
+
 ## Controls and chrome
 
 Control heights and radii come from the same token module (`CONTROL_XS`…`LG`).

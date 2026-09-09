@@ -4,7 +4,7 @@
 
 - This is a virtual Cargo workspace on Rust 2021, pinned to Rust 1.89.0. Current code depends directly on Unix sockets, PTYs, and signals, so development and CI target macOS/Linux, not Windows.
 - The canonical test gate needs `git`, and builds need a C toolchain for bundled SQLite. There is no external database service.
-- Use `Cargo.toml`, crate-level module docs, `scripts/dev`, and current source as truth. `plan.md` is target design, while `execution.md` contains historical checkpoints that can contradict later implementation.
+- Use `Cargo.toml`, crate-level module docs, `scripts/dev`, and current source as truth. Working plans and historical checkpoints live in a local `plan/` (not published); they can contradict later implementation and are never the gate.
 - `docs/performance.md` is the cost model, and it is not optional reading before touching the delta path, the Tauri render path, the core lock, or anything that spawns a process. This repository has rungs a normal request handler does not: per cell (~10 000 per frame), per delta (≤125/s **per attached terminal**), per frame (the whole window). Work priced for a request handler is ruinous three rungs down.
 - `docs/architecture.md` is the shortest current system map. Tauri + Solid is the GUI; it connects or starts the daemon and renders a passive `CellGrid`. Daemon `dump`/`stats` are unwired no-ops.
 
@@ -29,13 +29,13 @@
 
 ## Comments And Code
 
-A comment carries a constraint the types cannot. It is not narration, history, or a second copy of `plan.md`. This applies to Rust (`//!` / `///` / `//`) and TypeScript (`/**` / `//`) the same way.
+A comment carries a constraint the types cannot. It is not narration, history, or a second copy of a plan doc. This applies to Rust (`//!` / `///` / `//`) and TypeScript (`/**` / `//`) the same way.
 
 - Write the *why that is not in the next line*: a rejected alternative, a unit, a lock/IO exception, a protocol quirk, a budget. If a reader who knows the language already has it, delete the comment.
 - One sentence is the default. A block comment must name a constraint. Essays belong in `docs/` or an ADR, with at most a pointer from the code (`ADR-008`, `docs/performance.md`).
 - Do not restate the identifier (`/// All known projects` on `projects`, `/// Create an empty store` on `new()`, `/** The project rail. */` on `SIDEBAR`).
-- Do not keep history in comments (`used to`, `the Feature tab could not answer before`, brand-hue archaeology). Git and `execution.md` hold that.
-- Do not cite `plan.md` section numbers (`§11.5`) as if they were current truth. Point at the type, the ADR, or this file. `plan.md` is target design and can contradict the code.
+- Do not keep history in comments (`used to`, `the Feature tab could not answer before`, brand-hue archaeology). Git holds that.
+- Do not cite old plan section numbers (`§11.5`) as if they were current truth. Point at the type, the ADR, or this file.
 - Crate/module `//!` (and a TS file header) is a map: what this module owns, what it must not do, where the rest lives. Not a retelling of `docs/architecture.md`. Two to six lines; the rest is a doc.
 - Public `///` / JSDoc is for the *caller*: contract, error, units, non-obvious ordering. Private `//` is for the *next editor*: the trap. Do not paste the same paragraph in both.
 - A name beats a comment. Extract a function, a type, or a constant (`RESIZE_DEBOUNCE_MS`) rather than explaining a magic block. Ambiguous pronouns (`this`, `the whole point`) without a referent are a defect — name the thing.
@@ -53,7 +53,7 @@ Existing code has a lot of the anti-pattern (file-level essays, field restatemen
 - `domain` owns shared serializable state and terminal wire types; `protocol` owns transport-independent framing/messages. Protocol enums are `#[non_exhaustive]`, so cross-crate matches need conservative wildcard arms.
 - The daemon owns every PTY and the only VT engine. `client` keeps a passive snapshot/delta replica; never add `terminal-core` or a second emulator to GUI code.
 - `client::Client` deliberately uses blocking `std` Unix sockets and a reader thread, not Tokio. `Client::request` blocks and must be bridged off the UI thread (Tauri's runtime thread); its event channel is unbounded and must be drained promptly.
-- Current daemon orchestration lives in `crates/daemon/src/core.rs` behind one `Mutex<Inner>`, not the service-per-struct layout in `plan.md`. Keep lock order `inner -> registry` and never hold the core lock across `.await`.
+- Current daemon orchestration lives in `crates/daemon/src/core.rs` behind one `Mutex<Inner>`. Keep lock order `inner -> registry` and never hold the core lock across `.await`.
 - `TerminalRuntime::emit_seq` advances once per emitted delta, not once per engine feed. Preserve this distinction or clients will detect false sequence gaps; bounded daemon queues recover lagging subscribers with a fresh resync rather than replaying backlog.
 - One PTY chunk is one core-lock acquisition: `Daemon::pump_terminal` feeds the engine, routes the delta or the activity note, and advances the idle clock in a single critical section, and returns whether anyone was watching so `pty_loop` can pick `FRAME` (8 ms, attached) or `IDLE_FRAME` (50 ms, unwatched). Do not split it back into feed/`has_subscribers`/emit calls.
 - `Session::base_commit` **is** a column (migration 9), unlike `terminal_id` and `last_activity_at`: it is resolved once with `git rev-parse HEAD` when the session is created — between two lock sections, never inside one — and never again, because a restart continues the same unit of work. `Db::purge_sessions` still drops the row on startup unless `sessions.persist_history` is set, so it earns its keep across a session's life rather than across a daemon restart.

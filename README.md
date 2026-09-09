@@ -42,8 +42,7 @@ Every other build after that arrives on its own: the app checks for a release
 shortly after launch and every six hours, offers it as a pill in the status bar,
 and applies it on one click. The runtime is a separate process that an update
 never touches, so your sessions, terminals and scrollback survive the reload.
-See [`docs/plan-updates.md`](./docs/plan-updates.md) for how that works and what
-it refuses to do in place.
+It will not replace a running daemon in place — that stays a deliberate restart.
 
 Intel Macs and Linux are not published yet — build them from source with
 [`scripts/package-macos --universal`](#packaging) or `scripts/package-linux`.
@@ -85,9 +84,8 @@ workspace is allowed to branch on a provider id.
 
 [`docs/README.md`](./docs/README.md) indexes the implementation docs —
 architecture, domain, protocol, terminal, agents, worktrees, persistence,
-development. [`plan.md`](./plan.md) is the target design and
-[`execution.md`](./execution.md) the implementation log; both can contradict the
-code, which is why [`AGENTS.md`](./AGENTS.md) is the invariant list that cannot.
+development. Working plans stay in a local `plan/` directory (not published).
+[`AGENTS.md`](./AGENTS.md) is the invariant list that must match the code.
 
 ## Developing
 
@@ -182,8 +180,7 @@ are tested, but nothing here is settled. The backend is implemented and covered 
 (SQLite, migrations, orphan reconciliation), `client` and `daemon` — including
 end-to-end tests that drive a real daemon over a real socket with a real shell.
 
-`forge-daemon dump` is the one command still unwired. Track progress in
-[`execution.md`](./execution.md).
+`forge-daemon dump` is the one command still unwired.
 
 ## License
 

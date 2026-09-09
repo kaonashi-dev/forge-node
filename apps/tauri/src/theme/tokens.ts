@@ -361,7 +361,8 @@ export const metrics = {
   radiusMD: 8,
   radiusLG: 10,
   radiusXL: 999,
-  mono: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
+  // Prefer a system Nerd Font install for prompt icons; bundled JetBrains Mono is the fallback (docs/theming.md).
+  mono: "JetBrainsMono Nerd Font Mono, JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
   monoSize: 13,
   monoLineHeight: 1.35,
   /*

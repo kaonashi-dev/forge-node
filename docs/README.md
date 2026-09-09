@@ -2,9 +2,10 @@
 
 Forge (ForgeNode) is a native desktop app for running many terminals and
 coding agents across Git repositories and worktrees. These pages describe
-**what is implemented**; [`../plan.md`](../plan.md) is the target design
-(with the ADRs and the section numbers referenced as `§n` throughout) and
-[`../execution.md`](../execution.md) is the implementation log.
+**what is implemented**. Working plans and historical notes live in a local
+`plan/` directory (gitignored via `.git/info/exclude`); they are not part of
+this published tree. [`AGENTS.md`](../AGENTS.md) is the invariant list that
+must match the code.
 
 | Page | Read it when you need… |
 |------|------------------------|
