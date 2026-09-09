@@ -45,6 +45,11 @@ and on the target machine `tar xzf` + the bundled `./install.sh` installs it
 `scripts/dist ship <user@host>` builds, copies over scp and prints the remote
 one-liner. The receiving machine needs only `tar` — no checkout, no Rust.
 
+For the development Mac, `make install-local` builds the release archive,
+closes the running GUI, installs it into `/Applications` (or `~/Applications`
+when needed), and relaunches it. The daemon stays up so live sessions survive;
+do not use this as a daemon restart after a protocol change.
+
 Useful exact invocations:
 
 ```sh

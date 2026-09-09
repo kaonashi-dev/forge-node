@@ -7,6 +7,7 @@
 #   make install-ui     # pnpm install in apps/tauri
 #   make dev            # forge-daemon (debug) + Tauri dev shell
 #   make build-release  # release workspace + installable Tauri bundle
+#   make install-local  # release bundle -> Applications, then relaunch
 #
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -28,7 +29,7 @@ IS_DARWIN := $(if $(filter Darwin,$(UNAME_S)),1,)
         build-rust build-rust-release build-daemon \
         test test-rust test-tauri check check-fast \
         codegen tokens fixtures fmt clippy clean clean-rust clean-ui clean-tauri \
-        package package-linux dist info
+        package package-linux dist install-local info
 
 help: ## Show this help
 	@printf 'Forge make targets (macOS=%s)\n\n' "$(UNAME_S)"
@@ -42,6 +43,7 @@ help: ## Show this help
 	@printf '  make build-tauri           # debug installable bundle\n'
 	@printf '  make build-release         # release workspace + bundle\n'
 	@printf '  make package               # macOS Forge.app (scripts/package-macos)\n'
+	@printf '  make install-local         # rebuild, replace /Applications app, relaunch\n'
 	@printf '\nGate:\n'
 	@printf '  make check                 # fmt + clippy + rust + vitest + tsc\n'
 
@@ -184,6 +186,12 @@ ifndef IS_DARWIN
 	$(error dist requires macOS)
 endif
 	"$(ROOT)/scripts/dist" build
+
+install-local: ## Build release, replace the local app, and relaunch it
+ifndef IS_DARWIN
+	$(error install-local requires macOS)
+endif
+	"$(ROOT)/scripts/dist" local
 
 # --------------------------------------------------------- Rust utilities ---
 

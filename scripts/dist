@@ -16,6 +16,8 @@
 #       -> build (or reuse an existing archive), scp it, print install steps
 #   scripts/dist install <archive.tar.gz> [DEST_DIR]
 #       -> unpack and install on THIS machine
+#   scripts/dist local [--universal] [DEST_DIR]
+#       -> build, replace the local macOS app, and relaunch it
 #   scripts/dist --help
 #
 # The receiving machine needs no checkout and no Rust: untar the archive and
@@ -316,6 +318,60 @@ cmd_install() {
   "$topdir/install.sh" "$@"
 }
 
+# ------------------------------------------------------------ local install --
+
+default_macos_destination() {
+  if [ -w /Applications ]; then
+    printf '%s' /Applications
+  else
+    printf '%s' "$HOME/Applications"
+  fi
+}
+
+quit_running_gui() {
+  # CFBundleExecutable is Forge, not the display-name folder with a space.
+  if ! pgrep -x Forge >/dev/null 2>&1; then
+    return
+  fi
+
+  require_cmd osascript
+  local bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge.tauri}"
+  note "closing the running Forge Node application"
+  osascript - "$bundle_id" <<'APPLESCRIPT'
+on run argv
+  tell application id (item 1 of argv) to quit
+end run
+APPLESCRIPT
+}
+
+cmd_local() {
+  [ "$(uname -s)" = Darwin ] || die "local installation requires macOS"
+
+  local destination="" arg
+  local build_args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --universal) build_args+=("$arg") ;;
+      *)
+        [ -z "$destination" ] || die "usage: scripts/dist local [--universal] [DEST_DIR]"
+        destination="$arg"
+        ;;
+    esac
+  done
+  [ -n "$destination" ] || destination="$(default_macos_destination)"
+
+  local archive
+  archive="$(build_archive ${build_args[@]+"${build_args[@]}"})"
+  quit_running_gui
+  cmd_install "$archive" "$destination"
+
+  local app="$destination/Forge Node.app"
+  [ -d "$app" ] || die "installation produced no $app"
+  require_cmd open
+  note "launching $app"
+  open "$app"
+}
+
 # ------------------------------------------------------------------- ship ---
 
 cmd_ship() {
@@ -368,6 +424,7 @@ case "$cmd" in
     note "  tar xzf $(basename "$archive") && ./$(basename "$archive" .tar.gz)/install.sh"
     ;;
   install)  cmd_install "$@" ;;
+  local)    cmd_local "$@" ;;
   ship)     cmd_ship "$@" ;;
   -h|--help|help|"") print_help ;;
   *) die "unknown command '$cmd' (see --help)" ;;
