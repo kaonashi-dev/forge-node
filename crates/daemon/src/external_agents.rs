@@ -42,15 +42,15 @@
 //! and only the [`SCAN_LIMIT`] most recently touched transcripts per directory
 //! are read — a year of history must not make opening the panel slower.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use domain::{
-    AgentProfile, AgentProfileId, ExternalAgentSession, Project, ProjectId, Timestamp, Workspace,
-    WorkspaceId,
+    AgentProfile, AgentProfileId, ExternalAgentSession, ExternalTranscript, Project, ProjectId,
+    Timestamp, TranscriptStore, Workspace, WorkspaceId,
 };
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
@@ -119,6 +119,29 @@ impl Cache {
             self.fingerprint = fingerprint;
         }
         self.sessions.clone()
+    }
+
+    /// The discovered run matching an identity, or `None`.
+    ///
+    /// Answers from the last pass rather than rescanning, so a client can only
+    /// name a run the daemon itself found — which is what keeps a path off the
+    /// wire. A cache that has never run answers `None`, and the caller reports
+    /// it as a run that is not there.
+    #[must_use]
+    pub fn find(
+        &self,
+        session_id: &str,
+        provider: &str,
+        profile_id: Option<AgentProfileId>,
+    ) -> Option<ExternalAgentSession> {
+        self.sessions
+            .iter()
+            .find(|session| {
+                session.session_id == session_id
+                    && session.provider == provider
+                    && session.profile_id == profile_id
+            })
+            .cloned()
     }
 
     /// Drop the cached pass, so the next call rescans.
@@ -384,6 +407,7 @@ fn parse_transcript(path: &Path, root: &Root) -> Option<ExternalAgentSession> {
         message_count: scan.messages,
         subagent_count: claude_subagent_count(path, &session_id),
         transcript_path: path.to_owned(),
+        store: TranscriptStore::File,
         started_at: Timestamp(started_at),
         last_activity: Timestamp(last_activity),
     })
@@ -629,6 +653,7 @@ fn opencode_db_session(
         // There is no per-session file any more; the database is where this run
         // is recorded, and it is what "reveal the transcript" has to point at.
         transcript_path: db.to_path_buf(),
+        store: TranscriptStore::SharedDatabase,
         started_at: Timestamp(started_at),
         last_activity: Timestamp(last_activity),
     }
@@ -738,6 +763,7 @@ fn parse_opencode_session(
         message_count: conversation.messages,
         subagent_count: subagents.get(&session_id).copied().unwrap_or(0),
         transcript_path: path.to_owned(),
+        store: TranscriptStore::File,
         started_at: Timestamp(started_at),
         last_activity: Timestamp(last_activity),
     })
@@ -832,6 +858,249 @@ fn opencode_data_dir(home: &Path) -> PathBuf {
     match std::env::var_os("XDG_DATA_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("opencode"),
         _ => home.join(".local").join("share").join("opencode"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reading and removing one discovered run
+// ---------------------------------------------------------------------------
+
+/// Turns a transcript read returns when the caller names no number.
+pub const DEFAULT_EXTERNAL_TURNS: u32 = 80;
+/// Hard cap on one read, so a wire `u32` cannot fold a year of history.
+pub const MAX_EXTERNAL_TURNS: u32 = 400;
+
+/// Who spoke, as the folded text labels it. Matches the terminal capture's own
+/// prose so a handoff prompt reads the same whichever side it came from.
+const USER_SPEAKER: &str = "You";
+const AGENT_SPEAKER: &str = "Agent";
+
+/// One turn, before the byte budget decides how many survive.
+struct Turn {
+    speaker: &'static str,
+    text: String,
+}
+
+/// Fold a discovered run's transcript to plain text, newest turns first to
+/// survive the budget.
+///
+/// Best-effort like every other read in this module: an unreadable file is an
+/// empty transcript with `turns: 0`, not an error — the GUI already handles the
+/// "nothing to carry" case.
+///
+/// `max_bytes` bounds what is *built*, not what is trimmed: the turns are
+/// walked backwards and the fold stops at the budget, the same way
+/// `get_session_transcript` walks rows.
+#[must_use]
+pub fn read_transcript(
+    session: &ExternalAgentSession,
+    max_turns: u32,
+    max_bytes: usize,
+) -> ExternalTranscript {
+    let limit = max_turns as usize;
+    // One more than the caller asked for: a reader that stops exactly at the
+    // limit cannot tell a conversation that fit from one that was cut, and
+    // `truncated` would always read false.
+    let probe = limit.saturating_add(1);
+    let turns = match (session.provider.as_str(), session.store) {
+        (CLAUDE_PROVIDER, _) => claude_turns(&session.transcript_path, probe),
+        (OPENCODE_PROVIDER, TranscriptStore::SharedDatabase) => {
+            opencode_db_turns(&session.transcript_path, &session.session_id, probe)
+        }
+        (OPENCODE_PROVIDER, _) => opencode_turns(&session.transcript_path, &session.session_id),
+        _ => Vec::new(),
+    };
+
+    // Keep the *last* `limit`: a handoff carries where the conversation got to,
+    // not where it started.
+    let from = turns.len().saturating_sub(limit);
+    let turns = &turns[from..];
+
+    let mut kept = 0usize;
+    let mut size = 0usize;
+    for turn in turns.iter().rev() {
+        let next = size + turn.speaker.len() + 2 + turn.text.len() + 2;
+        if kept > 0 && next > max_bytes {
+            break;
+        }
+        size = next;
+        kept += 1;
+    }
+
+    let text = turns[turns.len() - kept..]
+        .iter()
+        .map(|turn| format!("{}: {}", turn.speaker, turn.text))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    ExternalTranscript {
+        session_id: session.session_id.clone(),
+        text,
+        turns: u32::try_from(kept).unwrap_or(u32::MAX),
+        truncated: kept < turns.len() || from > 0,
+    }
+}
+
+/// The last `limit` turns of a Claude `.jsonl`, oldest first.
+fn claude_turns(path: &Path, limit: usize) -> Vec<Turn> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let mut turns: VecDeque<Turn> = VecDeque::new();
+    // Streamed and bounded to a sliding window: a long run's transcript is
+    // megabytes, and only the tail is ever returned.
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let speaker = if line.contains(r#""type":"user""#) {
+            USER_SPEAKER
+        } else if line.contains(r#""type":"assistant""#) {
+            AGENT_SPEAKER
+        } else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let text = match speaker {
+            USER_SPEAKER if is_typed_prompt(&value) => user_text(&value),
+            AGENT_SPEAKER => assistant_text(&value),
+            _ => None,
+        };
+        let Some(text) = text else { continue };
+        turns.push_back(Turn { speaker, text });
+        if turns.len() > limit {
+            turns.pop_front();
+        }
+    }
+    turns.into()
+}
+
+/// Every readable turn of a legacy opencode session, oldest first.
+///
+/// `transcript_path` is `<base>/session/<hash>/<id>.json`, so the message store
+/// is three levels up — the same layout [`opencode_conversation`] walks.
+fn opencode_turns(transcript: &Path, session_id: &str) -> Vec<Turn> {
+    let Some(base) = opencode_base(transcript) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = json_files(&base.join("message").join(session_id))
+        .iter()
+        .filter_map(|path| path.file_stem()?.to_str().map(str::to_owned))
+        .collect();
+    // Message ids are time-ordered, so sorting them sorts the conversation.
+    ids.sort();
+
+    let mut turns = Vec::new();
+    for id in &ids {
+        let path = base
+            .join("message")
+            .join(session_id)
+            .join(format!("{id}.json"));
+        let Some(value) = read_json(&path) else {
+            continue;
+        };
+        let speaker = match value.get("role").and_then(Value::as_str) {
+            Some("user") => USER_SPEAKER,
+            Some("assistant") => AGENT_SPEAKER,
+            _ => continue,
+        };
+        let Some(text) = opencode_message_text(&base, id) else {
+            continue;
+        };
+        turns.push(Turn { speaker, text });
+    }
+    turns
+}
+
+/// Every readable turn recorded for a run in an opencode database, oldest
+/// first. Read-only, like every other query against that file.
+fn opencode_db_turns(db: &Path, session_id: &str, limit: usize) -> Vec<Turn> {
+    crate::opencode_db::conversation(db, session_id, limit)
+        .into_iter()
+        .map(|turn| Turn {
+            speaker: if turn.role == "assistant" {
+                AGENT_SPEAKER
+            } else {
+                USER_SPEAKER
+            },
+            text: turn.text,
+        })
+        .collect()
+}
+
+/// The legacy opencode storage root a session file sits under.
+fn opencode_base(transcript: &Path) -> Option<PathBuf> {
+    Some(transcript.parent()?.parent()?.parent()?.to_path_buf())
+}
+
+/// Why a run's transcript cannot be removed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeleteError {
+    /// The run is recorded in a store holding every other run of its provider.
+    Shared,
+    /// The transcript could not be removed from disk.
+    Io(String),
+}
+
+/// Remove a discovered run's transcript and the artifacts recorded beside it.
+///
+/// Never the checkout, never a daemon session row, and never a shared store:
+/// [`crate::opencode_db`] opens opencode's database read-only and says why, so
+/// a run recorded there is refused rather than deleted one row at a time.
+///
+/// Sibling artifacts are best effort — a run with no subagents has no directory
+/// — but the transcript itself is not: failing to remove it and reporting
+/// success would leave the row on the next scan with nothing to explain it.
+pub fn delete_transcript(session: &ExternalAgentSession) -> Result<(), DeleteError> {
+    if session.store == TranscriptStore::SharedDatabase {
+        return Err(DeleteError::Shared);
+    }
+    let path = &session.transcript_path;
+    match session.provider.as_str() {
+        OPENCODE_PROVIDER => delete_opencode_siblings(path, &session.session_id),
+        _ => delete_claude_siblings(path, &session.session_id),
+    }
+    std::fs::remove_file(path).map_err(|error| DeleteError::Io(error.to_string()))
+}
+
+/// `<parent>/<sessionId>/subagents/` and the now-empty directory holding it.
+fn delete_claude_siblings(transcript: &Path, session_id: &str) {
+    let Some(parent) = transcript.parent() else {
+        return;
+    };
+    let run = parent.join(session_id);
+    remove_tree(&run.join("subagents"));
+    // Only when nothing else was recorded under it; `remove_dir` refuses a
+    // directory that still holds something we did not put there.
+    let _ = std::fs::remove_dir(&run);
+}
+
+/// `message/<sessionId>/` and the `part/<messageId>/` directories its messages
+/// named. The ids are read *before* the message directory goes.
+fn delete_opencode_siblings(transcript: &Path, session_id: &str) {
+    let Some(base) = opencode_base(transcript) else {
+        return;
+    };
+    let messages = base.join("message").join(session_id);
+    let ids: Vec<String> = json_files(&messages)
+        .iter()
+        .filter_map(|path| path.file_stem()?.to_str().map(str::to_owned))
+        .collect();
+    remove_tree(&messages);
+    for id in ids {
+        remove_tree(&base.join("part").join(id));
+    }
+}
+
+/// Remove a directory tree, ignoring one that was never there.
+fn remove_tree(dir: &Path) {
+    if let Err(error) = std::fs::remove_dir_all(dir) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::debug!(dir = %dir.display(), %error, "transcript artifact not removed");
+        }
     }
 }
 
@@ -1048,6 +1317,143 @@ mod tests {
             fingerprint(&[b, a], &[], &[]),
             "projects come out of a HashMap, so the order varies run to run"
         );
+    }
+
+    /// A Claude run on disk, with `turns` alternating prompt and reply.
+    fn claude_run(dir: &Path, session_id: &str, turns: usize) -> ExternalAgentSession {
+        let transcript = dir.join(format!("{session_id}.jsonl"));
+        let mut lines = String::new();
+        for turn in 0..turns {
+            lines.push_str(&format!(
+                "{{\"type\":\"user\",\"message\":{{\"content\":\"ask {turn}\"}},\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n"
+            ));
+            lines.push_str(&format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"answer {turn}\"}}]}},\"timestamp\":\"2026-01-01T00:00:01Z\"}}\n"
+            ));
+        }
+        std::fs::write(&transcript, lines).unwrap();
+        ExternalAgentSession {
+            session_id: session_id.to_owned(),
+            project_id: ProjectId::new(),
+            workspace_id: None,
+            provider: CLAUDE_PROVIDER.to_owned(),
+            profile_id: None,
+            title: "t".into(),
+            branch: None,
+            preview: None,
+            model: None,
+            message_count: 0,
+            subagent_count: 0,
+            transcript_path: transcript,
+            store: TranscriptStore::File,
+            started_at: Timestamp::now(),
+            last_activity: Timestamp::now(),
+        }
+    }
+
+    #[test]
+    fn a_claude_transcript_folds_to_labelled_turns_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = claude_run(dir.path(), "ses-1", 2);
+
+        let read = read_transcript(&session, 80, 36_000);
+
+        assert_eq!(read.session_id, "ses-1");
+        assert_eq!(read.turns, 4);
+        assert!(!read.truncated);
+        assert_eq!(
+            read.text,
+            "You: ask 0\n\nAgent: answer 0\n\nYou: ask 1\n\nAgent: answer 1"
+        );
+    }
+
+    #[test]
+    fn the_turn_cap_keeps_the_end_of_the_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = claude_run(dir.path(), "ses-1", 5);
+
+        let read = read_transcript(&session, 2, 36_000);
+
+        assert_eq!(read.turns, 2);
+        assert!(read.truncated, "older turns were dropped");
+        assert_eq!(read.text, "You: ask 4\n\nAgent: answer 4");
+    }
+
+    #[test]
+    fn the_byte_budget_bounds_the_text_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = claude_run(dir.path(), "ses-1", 20);
+
+        let read = read_transcript(&session, 80, 60);
+
+        assert!(read.truncated);
+        assert!(read.text.len() <= 60, "budget bounds what is built");
+        // Whatever survived is the tail, not the head.
+        assert!(read.text.ends_with("Agent: answer 19"));
+    }
+
+    #[test]
+    fn an_unreadable_transcript_is_empty_rather_than_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = claude_run(dir.path(), "ses-1", 1);
+        session.transcript_path = dir.path().join("gone.jsonl");
+
+        let read = read_transcript(&session, 80, 36_000);
+
+        assert_eq!(read.turns, 0);
+        assert_eq!(read.text, "");
+        assert!(!read.truncated);
+    }
+
+    #[test]
+    fn deleting_a_claude_run_takes_its_subagents_and_leaves_its_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = claude_run(dir.path(), "ses-1", 1);
+        let neighbour = claude_run(dir.path(), "ses-2", 1);
+        let subagents = dir.path().join("ses-1").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        std::fs::write(subagents.join("agent-a.jsonl"), "{}\n").unwrap();
+
+        delete_transcript(&session).expect("removed");
+
+        assert!(!session.transcript_path.exists());
+        assert!(!dir.path().join("ses-1").exists(), "the run directory goes");
+        assert!(
+            neighbour.transcript_path.exists(),
+            "another run's transcript is not ours to remove"
+        );
+    }
+
+    #[test]
+    fn a_shared_store_is_refused_and_left_byte_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("opencode.db");
+        std::fs::write(&db, b"not really sqlite, but bytes are bytes").unwrap();
+        let before = std::fs::read(&db).unwrap();
+
+        let mut session = claude_run(dir.path(), "ses-1", 1);
+        session.provider = OPENCODE_PROVIDER.to_owned();
+        session.store = TranscriptStore::SharedDatabase;
+        session.transcript_path = db.clone();
+
+        assert_eq!(delete_transcript(&session), Err(DeleteError::Shared));
+        assert_eq!(std::fs::read(&db).unwrap(), before);
+    }
+
+    #[test]
+    fn the_cache_only_resolves_a_run_it_discovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache {
+            sessions: vec![claude_run(dir.path(), "ses-1", 1)],
+            ..Cache::default()
+        };
+
+        assert!(cache.find("ses-1", CLAUDE_PROVIDER, None).is_some());
+        assert!(
+            cache.find("ses-1", OPENCODE_PROVIDER, None).is_none(),
+            "a session id is only unique within a provider"
+        );
+        assert!(cache.find("never-scanned", CLAUDE_PROVIDER, None).is_none());
     }
 
     #[test]

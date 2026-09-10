@@ -26,6 +26,10 @@ pub struct FileEntry {
     pub path: String,
     /// File or directory.
     pub kind: FileKind,
+    /// Excluded by `.gitignore`. Listed so a build directory is reachable, and
+    /// flagged so the tree can grey it and keep it collapsed: an ignored path
+    /// is not part of the work, but it is still a file someone opens.
+    pub ignored: bool,
 }
 
 /// A bounded listing of paths under a workspace.
@@ -34,7 +38,8 @@ pub struct FileTree {
     /// Which checkout this describes.
     pub workspace_id: WorkspaceId,
     /// Relative paths. From `git ls-files` these are files only; the GUI
-    /// synthesises directory rows when it builds the tree.
+    /// synthesises directory rows when it builds the tree. Tracked paths come
+    /// first, then the ignored ones, each group sorted.
     pub entries: Vec<FileEntry>,
     /// Whether entries were dropped for exceeding the service budget.
     pub truncated: bool,

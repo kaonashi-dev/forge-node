@@ -28,6 +28,18 @@ const DIM_ALPHA = 0.62;
 /** Thickness of an underline, a strikeout, and a beam cursor. */
 const RULE = 2;
 
+/**
+ * The columns of one row a hovered link covers, `to` inclusive.
+ *
+ * A reference that soft-wraps is one link across two rows, so it is a list of
+ * spans rather than a single range.
+ */
+export type LinkSpan = {
+  row: number;
+  from: number;
+  to: number;
+};
+
 export class TerminalRenderer {
   private context: CanvasRenderingContext2D | null;
   private fonts = new Map<number, string>();
@@ -38,6 +50,10 @@ export class TerminalRenderer {
   metrics: CellMetrics;
   selection: Selection | null = null;
   focused = false;
+  /** The path under the pointer, underlined while a modifier is held. */
+  link: LinkSpan[] = [];
+  /** Held steady while unfocused or under reduced motion; see `cursorBlink`. */
+  cursorVisible = true;
 
   /** P4: one `#rrggbb` per colour rather than one per run per frame. */
   private colors: ColorCache;
@@ -157,7 +173,23 @@ export class TerminalRenderer {
       }
     }
 
+    this.paintLink(context, row);
     this.paintCursor(context, viewport, row);
+  }
+
+  /** The rule under a hovered path, in the cursor's colour so it reads as live. */
+  private paintLink(context: CanvasRenderingContext2D, row: number): void {
+    const { width: cellWidth, height: cellHeight } = this.metrics;
+    for (const span of this.link) {
+      if (span.row !== row) continue;
+      context.fillStyle = this.palette.cursor;
+      context.fillRect(
+        span.from * cellWidth,
+        row * cellHeight + cellHeight - RULE,
+        (span.to - span.from + 1) * cellWidth,
+        1,
+      );
+    }
   }
 
   private paintRun(
@@ -202,7 +234,7 @@ export class TerminalRenderer {
    */
   private paintCursor(context: CanvasRenderingContext2D, viewport: Viewport, row: number): void {
     const cursor = viewport.cursor;
-    if (!this.focused || viewport.scrollOffset !== 0) return;
+    if (!this.focused || viewport.scrollOffset !== 0 || !this.cursorVisible) return;
     if (!cursor.visible || cursor.shape === "hidden" || cursor.line !== row) return;
 
     const { width: cellWidth, height: cellHeight } = this.metrics;

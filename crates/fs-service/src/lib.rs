@@ -93,6 +93,9 @@ pub struct FileEntry {
     pub path: String,
     /// File or directory.
     pub kind: EntryKind,
+    /// Excluded by `.gitignore`. Always `false` from the `read_dir` fallback,
+    /// which has no exclude rules to consult.
+    pub ignored: bool,
 }
 
 /// A bounded listing of paths under a workspace.
@@ -449,9 +452,49 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
         entries.push(FileEntry {
             path,
             kind: EntryKind::File,
+            ignored: false,
         });
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+    /*
+     * A third pass rather than a fourth flag on the second: `--others -i` is
+     * the only `ls-files` spelling that reports *excluded* untracked files, and
+     * it cannot be combined with the un-excluded `--others` above — the two
+     * are complementary halves of the same set, not a superset and a subset.
+     *
+     * Appended after the tracked rows and never interleaved, so the budget is
+     * spent on the work first: a `node_modules` that alone exceeds
+     * `MAX_TREE_ENTRIES` truncates itself instead of the source tree.
+     */
+    if !truncated {
+        let ignored = run_git(
+            Some(root),
+            &["ls-files", "--others", "-i", "--exclude-standard", "-z"],
+        )?;
+        let mut extra = Vec::new();
+        for path in ignored.stdout.split('\0') {
+            if path.is_empty() || path.ends_with('/') {
+                continue;
+            }
+            if entries.len() + extra.len() >= MAX_TREE_ENTRIES {
+                truncated = true;
+                break;
+            }
+            let path = normalize_rel(path);
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            extra.push(FileEntry {
+                path,
+                kind: EntryKind::File,
+                ignored: true,
+            });
+        }
+        extra.sort_by(|a, b| a.path.cmp(&b.path));
+        entries.append(&mut extra);
+    }
+
     Ok(FileTree { entries, truncated })
 }
 
@@ -500,6 +543,7 @@ fn walk(
             entries.push(FileEntry {
                 path: rel,
                 kind: EntryKind::File,
+                ignored: false,
             });
         }
     }
@@ -510,6 +554,11 @@ fn search_by_name(root: &Path, query: &str, limit: usize) -> Result<SearchResult
     let tree = list_files(root)?;
     let mut scored: Vec<(i32, usize, SearchMatch)> = Vec::new();
     for (order, entry) in tree.entries.into_iter().enumerate() {
+        // The tree lists ignored files so they can be opened; a name search is
+        // for the work, and `git grep` below already excludes them.
+        if entry.ignored {
+            continue;
+        }
         let Some(score) = fuzzy_score(&entry.path, query) else {
             continue;
         };
@@ -1351,15 +1400,45 @@ mod tests {
     }
 
     #[test]
-    fn respects_gitignore() {
+    fn lists_an_ignored_file_but_flags_it() {
         let tmp = git_repo();
-        fs::write(tmp.path().join(".gitignore"), "secret.txt\n").unwrap();
+        fs::write(tmp.path().join(".gitignore"), "secret.txt\ndist/\n").unwrap();
         fs::write(tmp.path().join("secret.txt"), "nope").unwrap();
+        fs::create_dir(tmp.path().join("dist")).unwrap();
+        fs::write(tmp.path().join("dist/app.js"), "built").unwrap();
         fs::write(tmp.path().join("ok.txt"), "yes").unwrap();
+
         let tree = list_files(tmp.path()).unwrap();
-        let paths: Vec<_> = tree.entries.iter().map(|e| e.path.as_str()).collect();
-        assert!(paths.contains(&"ok.txt"));
-        assert!(!paths.contains(&"secret.txt"));
+        let flagged: Vec<_> = tree
+            .entries
+            .iter()
+            .map(|e| (e.path.as_str(), e.ignored))
+            .collect();
+
+        // The tracked group comes first, so the budget is spent on the work
+        // before a build directory gets any of it.
+        assert_eq!(
+            flagged,
+            vec![
+                (".gitignore", false),
+                ("ok.txt", false),
+                ("dist/app.js", true),
+                ("secret.txt", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_search_does_not_offer_ignored_files() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join(".gitignore"), "build/\n").unwrap();
+        fs::create_dir(tmp.path().join("build")).unwrap();
+        fs::write(tmp.path().join("build/widget.rs"), "built").unwrap();
+        fs::write(tmp.path().join("widget.rs"), "source").unwrap();
+
+        let hits = search_files(tmp.path(), "widget", SearchKind::Name, 10).unwrap();
+        let paths: Vec<_> = hits.matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, vec!["widget.rs"]);
     }
 
     #[test]

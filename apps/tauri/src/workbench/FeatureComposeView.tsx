@@ -19,6 +19,13 @@ import { FEATURE_COMPOSE_VIEW } from "./views";
  * spec under `harness/specs/` and starts the spec step; the moment it answers,
  * this tab is replaced by the feature's own, which is where the cycle is
  * driven.
+ *
+ * Pasting a screenshot is deliberately *not* offered yet. `./specImages` holds
+ * the half with a right and a wrong answer — the limits, the `[Image #N]`
+ * markers and their renumbering — but the other half is the daemon's: bytes on
+ * `RegisterHarnessFeature`, files written beside the spec, and `harness_runner`
+ * resolving a marker to a path. Until that exists a paste would insert a marker
+ * pointing at nothing, which is worse than a box that does not take images.
  */
 export function FeatureComposeView() {
   const [title, setTitle] = createSignal("");

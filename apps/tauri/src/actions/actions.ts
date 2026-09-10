@@ -71,6 +71,8 @@ export type ActionId =
   | "close_session"
   | "next_session"
   | "previous_session"
+  | "switch_tab_next"
+  | "switch_tab_previous"
   | "focus_session"
   | "toggle_sidebar"
   | "toggle_right_panel"
@@ -170,6 +172,20 @@ export const ACTIONS: Action[] = [
     label: "Previous Session",
     detail: "Select the previous tab",
     palette: true,
+  },
+  /* Not in the palette: the gesture *is* the hold, and a click on a menu entry
+     releases nothing to commit. */
+  {
+    id: "switch_tab_next",
+    label: "Switch Tab",
+    detail: "Walk the recent-session ring",
+    palette: false,
+  },
+  {
+    id: "switch_tab_previous",
+    label: "Switch Tab (Backward)",
+    detail: "Walk the recent-session ring backward",
+    palette: false,
   },
   {
     id: "toggle_sidebar",
@@ -543,13 +559,14 @@ export function defaultBindings(): Binding[] {
     bind("right", "file_tree_expand", FILES),
     bind("l", "file_tree_expand", FILES),
     bind("enter", "file_tree_open", FILES),
-    // Bracket chords match Chrome/Safari on macOS; `ctrl-tab` is the
-    // cross-platform browser habit, hardcoded `ctrl` because on macOS
-    // `cmd-tab` is the OS app switcher.
+    // Two gestures, deliberately different. The bracket chords are discrete
+    // presses and walk the strip in its drag order; `ctrl-tab` is held, walks
+    // the focus ring, and shows the switcher if the hold lasts. `ctrl` is
+    // hardcoded because on macOS `cmd-tab` is the OS app switcher.
     bind(`${MOD}-shift-]`, "next_session", APP),
     bind(`${MOD}-shift-[`, "previous_session", APP),
-    bind("ctrl-tab", "next_session", APP),
-    bind("ctrl-shift-tab", "previous_session", APP),
+    bind("ctrl-tab", "switch_tab_next", APP),
+    bind("ctrl-shift-tab", "switch_tab_previous", APP),
     // Copy stays ours on every platform: the selection is drawn on a canvas,
     // so the WebView's own copy would take the hidden textarea's selection,
     // which is empty. Paste is the opposite — see `PASTE_CHORD`.

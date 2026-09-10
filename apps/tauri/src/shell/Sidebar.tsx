@@ -1,4 +1,6 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createComputed, createMemo, createSignal } from "solid-js";
+import { createStore } from "solid-js/store";
+import { applyRailTree } from "./railTree";
 import { SIDEBAR } from "../actions/actions";
 import { enterContext, registerAction } from "../actions/dispatch";
 import { onCleanup, onMount } from "solid-js";
@@ -421,7 +423,13 @@ export function Sidebar(props: SidebarProps) {
     );
   }
 
-  const tree = createMemo(() => buildTree(forgeStore, workspaceOrder()));
+  /*
+   * A store rather than a memo: `buildTree` allocates new wrappers every time,
+   * and `<For>` keys by identity, so a memo remounted every card on any OSC
+   * title change and replayed `ws-list-in`. `applyRailTree` reconciles by `id`.
+   */
+  const [tree, setTree] = createStore<GroupNode[]>([]);
+  createComputed(() => applyRailTree(setTree, buildTree(forgeStore, workspaceOrder())));
 
   function persistProjectOrder(projectId: string, ids: string[]): void {
     const next = { ...workspaceOrder(), [projectId]: ids };
@@ -437,7 +445,7 @@ export function Sidebar(props: SidebarProps) {
    * four nested `For`s, so "the row after this one" is not a sibling — hence a
    * flat list beside the markup rather than a rewrite of it.
    */
-  const rows = createMemo(() => railRows(tree(), collapsed()));
+  const rows = createMemo(() => railRows(tree, collapsed()));
   const [selected, setSelected] = createSignal<string | null>(null);
   const cursor = createMemo(() => {
     const id = selected();
@@ -641,7 +649,7 @@ export function Sidebar(props: SidebarProps) {
           to do here is the button, rather than a line of prose about a menu
           somewhere else. */}
         <For
-          each={tree()}
+          each={tree}
           fallback={
             <div class="rail-empty">
               <p class="empty-copy">No projects yet.</p>

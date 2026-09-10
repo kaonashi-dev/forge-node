@@ -18,10 +18,15 @@ import { TERMINAL_ZOOM_KEY, readScale, seedFromAppState, writeChoice } from "../
 import { LatencyProbe, PaintProbe, PAINT_BUDGET_MS } from "./latency";
 import { gridSize, measureCell, type CellMetrics } from "./metrics";
 import { readPalette } from "./palette";
-import { TerminalRenderer } from "./renderer";
+import { TerminalRenderer, type LinkSpan } from "./renderer";
 import { cellAtPoint, ends, isEmpty, wordAt, type CellPoint, type Selection } from "./selection";
 import type { CellsPayload } from "./types";
 import { Viewport } from "./viewport";
+import { CursorBlink, prefersReducedMotion } from "./cursorBlink";
+import { indexOfCell, lineTextAt, spansOfRange } from "./links";
+import { isMac } from "../actions/keys";
+import { linkedRefs, openPathRef, warmPathIndex } from "../workbench/pathLinks";
+import { refAt, type PathRef } from "../workbench/pathref";
 import { clipboardPaste } from "./clipboard";
 import { mayTakeCaret, registerTerminalFocus } from "./focus";
 import { runtimeStore } from "../store/runtimeStore";
@@ -146,6 +151,19 @@ export function TerminalPane() {
   let leaveContext: (() => void) | undefined;
   const showOverlay = debugEnabled();
 
+  /**
+   * The path under the pointer while a modifier is held, and the caret's
+   * blink phase — both presentation, so both live on this side of the wire.
+   */
+  let hovered: { ref: PathRef; spans: LinkSpan[] } | null = null;
+  let hoveredCell = { row: -1, col: -1 };
+  const blink = new CursorBlink((visible) => {
+    if (!renderer) return;
+    renderer.cursorVisible = visible;
+    dirty.add(viewport.cursor.line);
+    schedule();
+  });
+
   // --- painting -------------------------------------------------------------
 
   function schedule(): void {
@@ -160,6 +178,7 @@ export function TerminalPane() {
     if (!renderer) return;
     renderer.selection = selection;
     renderer.focused = focused;
+    renderer.link = hovered?.spans ?? [];
     placeCaret();
     if (repaintAll) {
       // Timed here and not around the whole callback: `placeCaret` touches the
@@ -261,6 +280,11 @@ export function TerminalPane() {
     // pre-`isComposing` spelling of the same thing and some WebViews still
     // only send that.
     if (event.isComposing || event.keyCode === 229) return;
+
+    // Typing restarts the phase *shown*: a burst of keys would otherwise spend
+    // half its frames with the caret hidden under the character about to be
+    // placed, which reads as dropped input.
+    blink.wake();
 
     // Bound chords never reach here: the keymap runs in the capture phase and
     // stops propagation on a match (`actions/dispatch.ts`). This is the guard
@@ -448,6 +472,13 @@ export function TerminalPane() {
   }
 
   function onMouseDown(event: MouseEvent): void {
+    // Before mouse reporting: the modifier is the user overriding whatever the
+    // program asked for, the same way `shift` overrides it for selection.
+    if (event.button === 0 && hovered && openModifier(event)) {
+      event.preventDefault();
+      openPathRef(hovered.ref);
+      return;
+    }
     // Reporting comes first, and takes every button: a program that asked for
     // the mouse wants the right-click too, and selection is what `shift` is
     // for while it is running.
@@ -493,7 +524,59 @@ export function TerminalPane() {
     markSelection(previous, selection);
   }
 
+  /**
+   * The path the pointer is over, while the open-modifier is held.
+   *
+   * Behind a modifier so an ordinary drag over output never underlines
+   * anything, and so a click on a path is a deliberate gesture rather than
+   * something a mis-aimed selection can trigger. Recomputed only when the cell
+   * changes: a pointer crossing one cell fires dozens of moves, and each one
+   * would otherwise join a wrapped line into a string and re-scan it.
+   */
+  function trackLink(event: MouseEvent): void {
+    if (!openModifier(event)) {
+      clearLink();
+      return;
+    }
+    const point = pointAt(event);
+    const row = point.line + viewport.scrollOffset;
+    if (hovered && hoveredCell.row === row && hoveredCell.col === point.col) return;
+    hoveredCell = { row, col: point.col };
+
+    const line = lineTextAt(viewport.rows, row, viewport.cols);
+    const index = indexOfCell(line, row, point.col);
+    const ref = index < 0 ? null : refAt(linkedRefs(line.text), index);
+    const previous = hovered;
+    hovered = ref ? { ref, spans: spansOfRange(line, ref.from, ref.to) } : null;
+    markLink(previous, hovered);
+  }
+
+  /** The platform's "follow this" chord — the same one a browser link takes. */
+  function openModifier(event: MouseEvent): boolean {
+    return isMac() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  }
+
+  function clearLink(): void {
+    if (!hovered) return;
+    const previous = hovered;
+    hovered = null;
+    hoveredCell = { row: -1, col: -1 };
+    markLink(previous, null);
+  }
+
+  /** Repaint only the rows the underline moved on or off. */
+  function markLink(
+    previous: { spans: LinkSpan[] } | null,
+    next: { spans: LinkSpan[] } | null,
+  ): void {
+    for (const span of [...(previous?.spans ?? []), ...(next?.spans ?? [])]) {
+      if (span.row >= 0 && span.row < viewport.rows.length) dirty.add(span.row);
+    }
+    schedule();
+  }
+
   function onMouseMove(event: MouseEvent): void {
+    trackLink(event);
     if (reporting !== null) {
       // Only on a cell boundary: a pointer crossing one cell fires dozens of
       // moves, and each one is a write to the PTY. The encoder drops motion in
@@ -573,6 +656,10 @@ export function TerminalPane() {
     // nowhere to go. Ask for it rather than wait for output.
     void repaintTerminal().catch(() => undefined);
 
+    // Path links resolve a guessed reference against the checkout's listing;
+    // without one every `App.tsx` in output would be a link to nothing.
+    warmPathIndex();
+
     // The only thing that moves the caret across a session switch; `./focus`
     // has why the pane cannot do it on mount alone.
     const takeCaret = () => keys.focus({ preventScroll: true });
@@ -626,6 +713,7 @@ export function TerminalPane() {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       window.clearTimeout(resizeTimer);
+      blink.dispose();
       if (frame !== 0) cancelAnimationFrame(frame);
       if (scrollFrame !== 0) cancelAnimationFrame(scrollFrame);
       leaveContext?.();
@@ -666,6 +754,9 @@ export function TerminalPane() {
           focused = true;
           // The grid holds the keyboard, so its own chords outbid the shell's.
           leaveContext = enterContext(TERMINAL);
+          // A blink is an invitation to type, and an unfocused pane is not
+          // taking any. Reduced motion parks it too.
+          blink.run(!prefersReducedMotion());
           dirty.add(viewport.cursor.line);
           schedule();
         }}
@@ -673,6 +764,7 @@ export function TerminalPane() {
           focused = false;
           leaveContext?.();
           leaveContext = undefined;
+          blink.run(false);
           dirty.add(viewport.cursor.line);
           schedule();
         }}

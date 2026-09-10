@@ -4,15 +4,23 @@
     "entries": [
       {
         "path": "README.md",
-        "kind": "File"
+        "kind": "File",
+        "ignored": false
       },
       {
         "path": "src/main.rs",
-        "kind": "File"
+        "kind": "File",
+        "ignored": false
       },
       {
         "path": "src/util/mod.rs",
-        "kind": "File"
+        "kind": "File",
+        "ignored": false
+      },
+      {
+        "path": "target/debug/app",
+        "kind": "File",
+        "ignored": true
       }
     ],
     "truncated": false

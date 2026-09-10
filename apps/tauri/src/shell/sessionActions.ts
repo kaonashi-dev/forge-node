@@ -12,12 +12,18 @@ import { setSplitOpen, splitOpen } from "../store/sessionChangesStore";
 import { openReview, showSession } from "../store/viewsStore";
 import { focusWorkspace, workbenchStore } from "../store/workbenchStore";
 import { newAgent, newShell, selectSession } from "../runtime/api";
-import { draftWithJuva, loadSessionTranscript, loadWorkspaceReview } from "../workbench/api";
+import {
+  draftWithJuva,
+  loadExternalTranscript,
+  loadSessionTranscript,
+  loadWorkspaceReview,
+} from "../workbench/api";
 import { sessionTabLabel } from "../runtime/attention";
 import { focusTerminal } from "../terminal/focus";
-import type { Session, Workspace } from "../runtime/types";
+import type { ExternalAgentSession, Session, Workspace } from "../runtime/types";
 import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "./layout";
 import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
+import { recordTabFocus } from "./tabSwitcher";
 
 export function activeSession(): Session | null {
   return forgeStore.sessions.find((item) => item.id === runtimeStore.activeSession) ?? null;
@@ -68,6 +74,9 @@ export function currentCheckout(): Workspace | null {
  */
 export function focusSession(session: string): void {
   showSession();
+  // The focus ring Ctrl+Tab walks. Every user-driven focus goes through here,
+  // which is what makes "the tab you just left" mean anything.
+  recordTabFocus(session);
   const workspace = forgeStore.sessions.find((item) => item.id === session)?.workspace_id;
   if (workspace) focusWorkspace(workspace);
   void selectSession(session).catch(() => undefined);
@@ -119,6 +128,7 @@ export function startHandoff(): void {
   const checkout = activeCheckout();
   if (!session || !checkout) return;
   requestHandoff({
+    kind: "session",
     session: session.id,
     // Numbered within its checkout, exactly as the tab strip numbers it: a
     // dialog that calls the session "Terminal 3" while its tab says
@@ -130,6 +140,35 @@ export function startHandoff(): void {
     sourceAgent: session.agent_provider_id,
   });
   void loadSessionTranscript(session.id).catch(() => undefined);
+}
+
+/**
+ * The same dialog for a run found on disk (§13.5).
+ *
+ * The sibling of `startHandoff`, which reads a live terminal. Here the capture
+ * is the transcript file, so the daemon reads it rather than the VT engine —
+ * but the dialog, the prompt and the launch are the same.
+ *
+ * A run recorded in a directory Forge maps to a project but not to a workspace
+ * row has no checkout to start in, so nothing happens: `handoffBlocked` is what
+ * greys the gesture before it is reached.
+ */
+export function startExternalHandoff(session: ExternalAgentSession): void {
+  const checkout = forgeStore.workspaces.find((item) => item.id === session.workspace_id);
+  if (!checkout) return;
+  requestHandoff({
+    kind: "external",
+    session: session.session_id,
+    title: session.title,
+    workspace: checkout.id,
+    workingDirectory: checkout.path,
+    branch: session.branch ?? checkout.branch,
+    sourceAgent: session.provider,
+    profile: session.profile_id,
+  });
+  void loadExternalTranscript(session.session_id, session.provider, session.profile_id).catch(
+    () => undefined,
+  );
 }
 
 /**

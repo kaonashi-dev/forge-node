@@ -1,10 +1,13 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
-import { newAgent } from "../runtime/api";
+import { newAgent, refreshSnapshot } from "../runtime/api";
 import type { ExternalAgentSession } from "../runtime/types";
+import { historyMenuItems } from "../shell/historyMenuItems";
 import { forgeStore } from "../store/forgeStore";
+import { requestConfirm } from "../store/runtimeStore";
 import { workbenchStore } from "../store/workbenchStore";
-import { SessionGlyph } from "../theme/icons";
-import { Button, FilterHeader, ListCard, Tooltip } from "../ui";
+import { Icon, SessionGlyph } from "../theme/icons";
+import { Button, FilterHeader, ListCard, Menu, Tooltip, toast } from "../ui";
+import { deleteExternalSession } from "../workbench/api";
 
 type Scope = "checkout" | "project" | "everywhere";
 
@@ -88,6 +91,35 @@ export function HistoryPanel() {
     ).catch(() => undefined);
   }
 
+  /**
+   * The description names what is *not* lost: someone reading "delete" in a
+   * tool that manages git worktrees has every reason to fear the checkout.
+   */
+  function confirmDelete(session: ExternalAgentSession): void {
+    requestConfirm({
+      title: `Delete "${session.title}"?`,
+      description:
+        `Removes ${session.provider}'s transcript for this run from disk. ` +
+        "The conversation cannot be resumed or read afterwards. " +
+        "Your code and branches are untouched.",
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: () => {
+        void deleteExternalSession(session.session_id, session.provider, session.profile_id)
+          // History reaches the GUI only on the snapshot: there is no
+          // `ExternalAgentsChanged` event to wait for.
+          .then(() => refreshSnapshot())
+          .catch((error: unknown) =>
+            toast({
+              title: "Could not delete the transcript.",
+              detail: error instanceof Error ? error.message : undefined,
+              tone: "danger",
+            }),
+          );
+      },
+    });
+  }
+
   return (
     <div class="panel-body">
       <FilterHeader
@@ -124,16 +156,24 @@ export function HistoryPanel() {
               </>
             }
             actions={
-              <Tooltip label={blockedReason(session) ?? "Re-enter this conversation"}>
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  disabled={Boolean(blockedReason(session))}
-                  onClick={() => resume(session)}
-                >
-                  Resume
-                </Button>
-              </Tooltip>
+              <>
+                <Tooltip label={blockedReason(session) ?? "Re-enter this conversation"}>
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    disabled={Boolean(blockedReason(session))}
+                    onClick={() => resume(session)}
+                  >
+                    Resume
+                  </Button>
+                </Tooltip>
+                <Menu
+                  triggerClass="history-more"
+                  triggerLabel={`More actions for ${session.title}`}
+                  trigger={<Icon name="more-horizontal" size={14} />}
+                  items={historyMenuItems(session, () => confirmDelete(session))}
+                />
+              </>
             }
           >
             <Show when={session.preview}>

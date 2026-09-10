@@ -105,18 +105,28 @@ export class Viewport {
 
   /** One row as a per-column array, which is what a word boundary needs. */
   columns(row: number): string[] {
-    const out = new Array<string>(this.cols).fill(" ");
-    const line = this.rows[row];
-    if (!line) return out;
-    let start = 0;
-    for (const [text, cols] of line.r) {
-      for (let offset = 0; offset < cols && start + offset < out.length; offset += 1) {
-        out[start + offset] = glyphAt(text, cols, offset);
-      }
-      start += cols;
-    }
-    return out;
+    return rowColumns(this.rows[row] ?? null, this.cols);
   }
+}
+
+/**
+ * One row as a per-column array.
+ *
+ * A free function as well as a method because the path-link reader walks rows
+ * out of a buffer rather than a live `Viewport`, and a second decoder of the
+ * run encoding is a second place for a wide glyph to be counted wrong.
+ */
+export function rowColumns(line: WireRow | null, cols: number): string[] {
+  const out = new Array<string>(cols).fill(" ");
+  if (!line) return out;
+  let start = 0;
+  for (const [text, runCols] of line.r) {
+    for (let offset = 0; offset < runCols && start + offset < out.length; offset += 1) {
+      out[start + offset] = glyphAt(text, runCols, offset);
+    }
+    start += runCols;
+  }
+  return out;
 }
 
 /**

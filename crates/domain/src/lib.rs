@@ -54,7 +54,7 @@ pub use diff::{
     BaseOrigin, ChangeSummary, ChangeSummaryFile, CommitLine, DiffFile, DiffStatus, ReviewSession,
     SessionChanges, WorkspaceDiff, WorkspaceReview,
 };
-pub use external::ExternalAgentSession;
+pub use external::{ExternalAgentSession, ExternalTranscript, TranscriptStore};
 pub use file::{
     FileContents, FileEntry, FileKind, FileTree, SearchKind, SearchMatch, SearchResults,
 };

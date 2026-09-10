@@ -13,15 +13,36 @@ const tree: FileTree = {
   workspace_id: "w1",
   truncated: false,
   entries: [
-    { path: "Cargo.toml", kind: "File" },
-    { path: "crates/client/src/app_shell.rs", kind: "File" },
-    { path: "crates/client/src/lib.rs", kind: "File" },
-    { path: "crates/domain/lib.rs", kind: "File" },
-    { path: "README.md", kind: "File" },
+    { path: "Cargo.toml", kind: "File", ignored: false },
+    { path: "crates/client/src/app_shell.rs", kind: "File", ignored: false },
+    { path: "crates/client/src/lib.rs", kind: "File", ignored: false },
+    { path: "crates/domain/lib.rs", kind: "File", ignored: false },
+    { path: "README.md", kind: "File", ignored: false },
   ],
 };
 
 const paths = (collapsed: string[]) => treeRows(tree, new Set(collapsed)).map((row) => row.path);
+
+describe("ignored rows", () => {
+  const mixed: FileTree = {
+    workspace_id: "w1",
+    truncated: false,
+    entries: [
+      { path: "src/main.rs", kind: "File", ignored: false },
+      { path: "src/main.rs.orig", kind: "File", ignored: true },
+      { path: "target/debug/app", kind: "File", ignored: true },
+    ],
+  };
+
+  it("marks a directory only when everything under it is ignored", () => {
+    const marked = new Map(treeRows(mixed, new Set()).map((row) => [row.path, row.ignored]));
+    expect(marked.get("target/debug")).toBe(true);
+    // One build artifact does not make the source directory holding it ignored.
+    expect(marked.get("src")).toBe(false);
+    expect(marked.get("src/main.rs")).toBe(false);
+    expect(marked.get("src/main.rs.orig")).toBe(true);
+  });
+});
 
 describe("treeRows", () => {
   it("synthesizes directories and collapses only-child chains", () => {
@@ -36,6 +57,7 @@ describe("treeRows", () => {
       "Cargo.toml",
       "README.md",
     ]);
+    expect(rows.every((row) => !row.ignored)).toBe(true);
     expect(rows.find((row) => row.path === "client/src")).toBeUndefined();
     expect(rows.find((row) => row.path === "crates/client/src")?.label).toBe("client/src");
   });
@@ -65,10 +87,10 @@ describe("treeRows", () => {
       {
         ...tree,
         entries: [
-          { path: "z-file", kind: "File" },
-          { path: "Alpha/file", kind: "File" },
-          { path: "beta/file", kind: "File" },
-          { path: "a-file", kind: "File" },
+          { path: "z-file", kind: "File", ignored: false },
+          { path: "Alpha/file", kind: "File", ignored: false },
+          { path: "beta/file", kind: "File", ignored: false },
+          { path: "a-file", kind: "File", ignored: false },
         ],
       },
       new Set(),
@@ -88,8 +110,8 @@ describe("treeRows", () => {
       {
         ...tree,
         entries: [
-          { path: "src", kind: "Directory" },
-          { path: "src/main.rs", kind: "File" },
+          { path: "src", kind: "Directory", ignored: false },
+          { path: "src/main.rs", kind: "File", ignored: false },
         ],
       },
       new Set(),
@@ -157,7 +179,7 @@ describe("expandTarget", () => {
     const list = treeRows(
       {
         ...tree,
-        entries: [{ path: "empty", kind: "Directory" }],
+        entries: [{ path: "empty", kind: "Directory", ignored: false }],
       },
       new Set(),
     );
@@ -172,9 +194,9 @@ describe("directoryPaths", () => {
       workspace_id: "w1",
       truncated: false,
       entries: [
-        { path: ".claude/skills/feature/SKILL.md", kind: "File" },
-        { path: "src/main.ts", kind: "File" },
-        { path: "docs", kind: "Directory" },
+        { path: ".claude/skills/feature/SKILL.md", kind: "File", ignored: false },
+        { path: "src/main.ts", kind: "File", ignored: false },
+        { path: "docs", kind: "Directory", ignored: false },
       ],
     });
     expect(dirs.sort()).toEqual([
@@ -236,9 +258,9 @@ describe("filterTree", () => {
     workspace_id: "w",
     truncated: true,
     entries: [
-      { path: "src/store/a.ts", kind: "File" },
-      { path: "src/ui/b.ts", kind: "File" },
-      { path: "README.md", kind: "File" },
+      { path: "src/store/a.ts", kind: "File", ignored: false },
+      { path: "src/ui/b.ts", kind: "File", ignored: false },
+      { path: "README.md", kind: "File", ignored: false },
     ],
   };
 

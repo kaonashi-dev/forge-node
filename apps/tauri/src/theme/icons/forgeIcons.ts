@@ -29,9 +29,12 @@ import {
   FolderOpen,
   GitBranch,
   GitPullRequest,
+  History,
+  LayoutGrid,
   ListChecks,
   Loader2,
   MessageSquarePlus,
+  MoreHorizontal,
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
@@ -80,7 +83,10 @@ export type ForgeIconName =
   | "search"
   | "message-square-plus"
   | "columns-2"
-  | "list-checks";
+  | "list-checks"
+  | "history"
+  | "layout-grid"
+  | "more-horizontal";
 
 export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "git-branch": GitBranch,
@@ -115,4 +121,7 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "message-square-plus": MessageSquarePlus,
   "columns-2": Columns2,
   "list-checks": ListChecks,
+  history: History,
+  "layout-grid": LayoutGrid,
+  "more-horizontal": MoreHorizontal,
 };

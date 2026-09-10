@@ -301,8 +301,29 @@ export type ExternalAgentSession = {
   message_count: number;
   subagent_count: number;
   transcript_path: string;
+  /**
+   * Whether `transcript_path` is this run's alone. A `SharedDatabase` is
+   * opencode's whole history, so `Delete` is greyed rather than refused on
+   * confirm.
+   */
+  store: TranscriptStore;
   started_at: string;
   last_activity: string;
+};
+
+export type TranscriptStore = "File" | "SharedDatabase";
+
+/**
+ * A discovered run's conversation, folded to plain text.
+ *
+ * `SessionTranscript`'s on-disk twin: a transcript file has no terminal rows,
+ * so it counts `turns`. `asSessionTranscript` maps the two.
+ */
+export type ExternalTranscript = {
+  session_id: string;
+  text: string;
+  turns: number;
+  truncated: boolean;
 };
 
 export type ReviewDecision = "Approved" | "ChangesRequested" | "ReviewRequired" | string;

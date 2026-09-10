@@ -108,6 +108,13 @@ export const [runtimeStore, setRuntimeStore] = createStore({
 });
 
 export type HandoffRequest = {
+  /**
+   * Which kind of run this came from. A live session's capture is its
+   * terminal; a discovered one's is a transcript file, and the two arrive on
+   * different events into this one slot.
+   */
+  kind: "session" | "external";
+  /** Correlation key: the daemon session id, or the provider's own id. */
   session: string;
   /** Resolved title of the source session, as the tab strip shows it. */
   title: string;
@@ -115,6 +122,8 @@ export type HandoffRequest = {
   workingDirectory: string;
   branch: string | null;
   sourceAgent: string | null;
+  /** The account a `kind: "external"` run was found in (§13.4). */
+  profile?: string | null;
   /** `null` while the capture is in flight. */
   transcript: SessionTranscript | null;
   error: string | null;

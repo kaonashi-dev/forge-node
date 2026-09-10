@@ -32,6 +32,8 @@ import { grammarFor } from "./language";
 import { actionForDiskRead } from "./editor/conflict";
 import { createEditor, type EditorHandle } from "./editor/createEditor";
 import { gitMarksFor, patchFor } from "./editor/gitMarks";
+import { lineAt, rulerTicks } from "./editor/overviewRuler";
+import { refreshDiff } from "./decorations";
 import { languageFor } from "./editor/language";
 import { CompareView } from "./editor/CompareView";
 import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
@@ -106,6 +108,17 @@ export function EditorView(props: { path: string }) {
     return patch === null ? new Map() : gitMarksFor(patch);
   });
 
+  /*
+   * The ruler's geometry, from the file the daemon read rather than from the
+   * live buffer: the marks are the patch's, so measuring against a dirty
+   * document would put a tick at a line the diff never named.
+   */
+  const totalLines = createMemo(() => {
+    const contents = file();
+    return contents ? contents.text.split("\n").length : 0;
+  });
+  const ticks = createMemo(() => rulerTicks(marks(), totalLines()));
+
   function requestFile(workspace: string, path: string): void {
     beginWorkbenchRequest("file");
     void openFile(workspace, path).catch((error) => failWorkbenchRequest("file", error));
@@ -118,9 +131,11 @@ export function EditorView(props: { path: string }) {
     beginWorkbenchRequest("file");
     // Dirty and conflict wait for the re-read: sending the command is not a
     // save. A `PreconditionFailed` must leave the draft marked unsaved.
-    void saveFile(workspace, props.path, handle.text(), contents.revision).catch((error) =>
-      failWorkbenchRequest("file", error),
-    );
+    void saveFile(workspace, props.path, handle.text(), contents.revision)
+      // A write moves the decorations: the gutter, the ruler and the tree all
+      // read the same diff, and nothing else re-reads it after a save.
+      .then(() => refreshDiff())
+      .catch((error: unknown) => failWorkbenchRequest("file", error));
   }
 
   /** A6 "Take disk": throw the draft away and re-read. */
@@ -466,10 +481,33 @@ export function EditorView(props: { path: string }) {
           down and building it again on every read would throw away the undo
           history and the scroll position with it. It is hidden instead. */}
       <div
-        ref={host}
-        class="editor-code"
+        class="editor-code-row"
         classList={{ hidden: comparing() || unopenable() !== null || !file() }}
-      />
+      >
+        <div ref={host} class="editor-code" />
+        {/* A5: the gutter answers "did this line change" for the lines on
+            screen; the ruler answers "where else" for the ones that are not. */}
+        <Show when={ticks().length > 0}>
+          <div
+            class="editor-ruler"
+            aria-hidden="true"
+            onClick={(event) => {
+              const box = event.currentTarget.getBoundingClientRect();
+              const line = lineAt(ticks(), (event.clientY - box.top) / box.height, totalLines());
+              if (line !== null) handle?.revealLine(line);
+            }}
+          >
+            <For each={ticks()}>
+              {(tick) => (
+                <span
+                  class={`editor-ruler-tick ${tick.mark}`}
+                  style={{ top: `${tick.top}%`, height: `${tick.height}%` }}
+                />
+              )}
+            </For>
+          </div>
+        </Show>
+      </div>
     </div>
   );
 }

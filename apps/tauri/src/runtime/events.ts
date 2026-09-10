@@ -14,8 +14,10 @@ import {
   setLieutenantError,
 } from "../store/lieutenantStore";
 import { applyTranscript, failTranscript, setRuntimeStore } from "../store/runtimeStore";
+import { asSessionTranscript } from "./externalTranscript";
 import { applySessionChanges, failSessionChanges } from "../store/sessionChangesStore";
 import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
+import { refreshDiff } from "../workbench/decorations";
 import type {
   Branches,
   FileContents,
@@ -44,6 +46,7 @@ import { cellsChannel, clipboardChannel, previewCellsChannel } from "./bus";
 import type {
   ConnectedPayload,
   DisconnectedPayload,
+  ExternalTranscript,
   Job,
   ShareAction,
   ShareCandidate,
@@ -139,6 +142,15 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
     listen<SessionFailure>("workbench:session_transcript_failed", ({ payload }) =>
       failTranscript(payload.session, payload.error),
     ),
+    /* A discovered run resolves into the same handoff slot as a live one: both
+       are keyed by the correlation id the request carried, and only the shape
+       of the capture differs. */
+    sessionAnswer<ExternalTranscript>("workbench:external_transcript", (session, transcript) =>
+      applyTranscript(session, asSessionTranscript(transcript)),
+    ),
+    listen<SessionFailure>("workbench:external_transcript_failed", ({ payload }) =>
+      failTranscript(payload.session, payload.error),
+    ),
     answer<FileTree>("workbench:file_tree", "tree", (tree) =>
       setWorkbenchStore({ tree, treeError: null }),
     ),
@@ -148,6 +160,8 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
     ),
     answer<FileContents>("workbench:file_saved", "file", (file) => {
       setWorkbenchStore({ file, fileError: null });
+      // The write may have changed marks the gutter already shows.
+      refreshDiff();
     }),
     failure("workbench:file_failed", "file", "fileError"),
     failure("workbench:save_failed", "file", "fileError"),

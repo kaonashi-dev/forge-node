@@ -687,6 +687,24 @@ impl Daemon {
                 max_lines,
                 max_bytes,
             } => self.get_session_transcript(session_id, max_lines, max_bytes),
+            Request::GetExternalTranscript {
+                session_id,
+                provider,
+                profile_id,
+                max_turns,
+                max_bytes,
+            } => self.get_external_transcript(
+                &session_id,
+                &provider,
+                profile_id,
+                max_turns,
+                max_bytes,
+            ),
+            Request::DeleteExternalSession {
+                session_id,
+                provider,
+                profile_id,
+            } => self.delete_external_session(&session_id, &provider, profile_id),
             Request::ListFiles { workspace_id } => self.list_files(workspace_id),
             Request::ReadFile { workspace_id, path } => self.read_file(workspace_id, &path),
             Request::WriteFile {
@@ -2070,6 +2088,76 @@ impl Daemon {
         }))
     }
 
+    /// A discovered run's conversation, read off disk.
+    ///
+    /// The core lock is never taken: the run is resolved against the external
+    /// scanner's own cache, and the transcript read is filesystem IO.
+    fn get_external_transcript(
+        &self,
+        session_id: &str,
+        provider: &str,
+        profile_id: Option<domain::AgentProfileId>,
+        max_turns: Option<u32>,
+        max_bytes: Option<u32>,
+    ) -> Result<Response, ProtocolError> {
+        // Clamped before the read, not after: an unclamped wire `u32` would
+        // otherwise fold a year of history into one allocation.
+        let turns = max_turns
+            .unwrap_or(crate::external_agents::DEFAULT_EXTERNAL_TURNS)
+            .min(crate::external_agents::MAX_EXTERNAL_TURNS);
+        let budget = max_bytes
+            .unwrap_or(DEFAULT_TRANSCRIPT_BYTES)
+            .min(MAX_TRANSCRIPT_BYTES) as usize;
+
+        let session = self.find_external(session_id, provider, profile_id)?;
+        Ok(Response::ExternalTranscript(
+            crate::external_agents::read_transcript(&session, turns, budget),
+        ))
+    }
+
+    /// Remove a discovered run's transcript from disk.
+    ///
+    /// No event: `external_agents` reaches a client only through
+    /// `Response::Snapshot`, so the GUI re-reads the snapshot rather than
+    /// waiting for a broadcast that does not exist. The cache is invalidated so
+    /// that re-read does not answer from the pass taken before the delete.
+    fn delete_external_session(
+        &self,
+        session_id: &str,
+        provider: &str,
+        profile_id: Option<domain::AgentProfileId>,
+    ) -> Result<Response, ProtocolError> {
+        let session = self.find_external(session_id, provider, profile_id)?;
+        crate::external_agents::delete_transcript(&session).map_err(|error| match error {
+            crate::external_agents::DeleteError::Shared => ProtocolError::invalid_request(
+                "this run is recorded in a database shared with every other opencode session",
+            ),
+            crate::external_agents::DeleteError::Io(message) => {
+                ProtocolError::internal(format!("could not remove the transcript: {message}"))
+            }
+        })?;
+
+        self.external_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .invalidate();
+        Ok(Response::Ack)
+    }
+
+    /// Resolve an external run by identity against the last discovery pass.
+    fn find_external(
+        &self,
+        session_id: &str,
+        provider: &str,
+        profile_id: Option<domain::AgentProfileId>,
+    ) -> Result<domain::ExternalAgentSession, ProtocolError> {
+        self.external_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .find(session_id, provider, profile_id)
+            .ok_or_else(|| ProtocolError::not_found("session"))
+    }
+
     /// Core lock released before git runs.
     fn get_rebase_state(&self, workspace_id: WorkspaceId) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
@@ -2141,6 +2229,7 @@ impl Daemon {
                         fs_service::EntryKind::File => domain::FileKind::File,
                         fs_service::EntryKind::Directory => domain::FileKind::Directory,
                     },
+                    ignored: e.ignored,
                 })
                 .collect(),
             truncated: tree.truncated,

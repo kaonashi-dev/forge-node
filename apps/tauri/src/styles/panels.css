@@ -55,6 +55,12 @@
   background: var(--bg-selected);
   color: var(--fg-default);
 }
+/* Listed so it can be opened, dimmed because it is not part of the work.
+   Opacity rather than a colour: it has to read as faded under `.active` too,
+   which sets its own foreground. */
+.tree-row.file.ignored {
+  opacity: 0.55;
+}
 
 /* The branch line, or what git is in the middle of instead. */
 .git-head {
@@ -270,6 +276,23 @@
   align-items: center;
   display: inline-flex;
   gap: var(--space-6);
+}
+/* The `⋯` trigger, square beside `Resume` rather than pushed to the far edge:
+   at the panel's 288px minimum the two read as one control group. */
+.history-more {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  display: inline-flex;
+  height: var(--forge-control-xs);
+  justify-content: center;
+  width: var(--forge-control-xs);
+}
+.history-more:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
 }
 /* The account a run belongs to, when it is not the provider's default one. */
 .history-account {
