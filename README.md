@@ -94,6 +94,7 @@ bundled SQLite.
 
 ```sh
 make dev             # daemon + Tauri/Solid shell, hot reload
+make install-local   # release build -> /Applications (or ~/Applications) -> relaunch
 scripts/dev check    # fmt --check + clippy -D warnings + test — the CI gate
 make test-tauri      # vitest + cargo test -p forge-tauri
 scripts/dev daemon   # run the runtime alone
@@ -151,7 +152,13 @@ embedded `install.sh`, for copying a build to a machine that has no checkout:
 ```sh
 scripts/dist build                  # dist/release/forge-<ver>-<os>-<arch>.tar.gz
 scripts/dist ship <user@host>       # build + scp + print the remote install line
+make install-local                  # build, replace the local app, and relaunch it
 ```
+
+`make install-local` is for the development Mac: it closes the running GUI,
+replaces `Forge Node.app`, and opens the replacement. The daemon is left running
+so active terminals and sessions survive; a protocol-changing build still needs
+a deliberate daemon restart because that would terminate its PTYs.
 
 `cargo deny check licenses` must pass before anything is distributed (ADR-002).
 

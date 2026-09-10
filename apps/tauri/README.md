@@ -54,6 +54,7 @@ the cell count, marked `OVER` past the 8 ms budget.
 
 ```sh
 make package            # macOS Forge.app  (scripts/package-macos)
+make install-local      # release build, replace the installed app, relaunch it
 make package-linux      # .deb + AppImage  (scripts/package-linux, on Linux)
 ```
 
