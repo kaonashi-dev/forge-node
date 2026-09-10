@@ -66,16 +66,6 @@ export type GitMark = "added" | "modified" | "deleted";
 /** Line number (1-based, as git counts) to the mark that line carries. */
 export type GitMarks = ReadonlyMap<number, GitMark>;
 
-/**
- * Which editing model the keyboard follows (A9 / A10).
- *
- * `default` is CodeMirror's own — the platform's chords, which is what someone
- * who has never used a modal editor expects. The other two are opt-in and
- * load their own chunk: nobody who is not asking for vim should download it.
- */
-export const EDITOR_KEYMAPS = ["default", "vim", "helix"] as const;
-export type EditorKeymap = (typeof EDITOR_KEYMAPS)[number];
-
 export type EditorOptions = {
   doc: string;
   base: ThemeBaseId;
@@ -93,7 +83,6 @@ export type EditorOptions = {
   onOpenDefinition?: (symbol: string, line: number) => void;
   /** The view lost focus. Autosave's stronger signal than a pause (A8). */
   onBlur?: () => void;
-  keymap?: EditorKeymap;
   readOnly?: boolean;
 };
 
@@ -106,8 +95,6 @@ export type EditorHandle = {
   setLanguage: (support: LanguageSupport | null) => void;
   setBase: (base: ThemeBaseId) => void;
   setGitMarks: (marks: GitMarks) => void;
-  /** Swap the editing model. Loads the chunk on first use of vim or helix. */
-  setKeymap: (next: EditorKeymap) => Promise<void>;
   /** Put the caret on a 1-based line and scroll it into view. */
   revealLine: (line: number) => void;
   /** The name under the caret and the 1-based line it is on, or `null`. */
@@ -203,34 +190,10 @@ function keys(): Extension {
   ]);
 }
 
-/**
- * The extension a modal keymap installs, loaded on demand.
- *
- * A failed chunk falls back to `default` rather than throwing: an editor with
- * the platform's chords is a working editor, and one that failed to open is
- * not.
- */
-async function modalKeymap(which: EditorKeymap): Promise<Extension> {
-  try {
-    if (which === "vim") return (await import("@replit/codemirror-vim")).vim();
-    if (which === "helix") return (await import("./helix")).helixKeymap();
-  } catch {
-    return [];
-  }
-  return [];
-}
-
 export function createEditor(host: HTMLElement, options: EditorOptions): EditorHandle {
   const language = new Compartment();
   const theme = new Compartment();
   const editable = new Compartment();
-  /*
-   * The modal keymaps go in a compartment *before* everything else, because
-   * CM6 resolves a chord against the first keymap that claims it: `d` has to
-   * reach helix's delete rather than CodeMirror's own input handling, and
-   * `Escape` has to reach vim before it reaches the search panel's close.
-   */
-  const modal = new Compartment();
 
   /**
    * Suppresses `onChange` while the document is being replaced from outside.
@@ -268,7 +231,6 @@ export function createEditor(host: HTMLElement, options: EditorOptions): EditorH
         highlightSelectionMatches(),
         findBar(),
         gitGutter,
-        modal.of([]),
         keys(),
         language.of([]),
         theme.of(editorTheme(options.base)),
@@ -348,9 +310,6 @@ export function createEditor(host: HTMLElement, options: EditorOptions): EditorH
       view.dispatch({ effects: language.reconfigure(support ? [support] : []) }),
     setBase: (base) => view.dispatch({ effects: theme.reconfigure(editorTheme(base)) }),
     setGitMarks: (marks) => view.dispatch({ effects: applyGitMarks.of(marks) }),
-    setKeymap: async (next) => {
-      view.dispatch({ effects: modal.reconfigure(await modalKeymap(next)) });
-    },
     revealLine: (line) => {
       if (line < 1 || line > view.state.doc.lines) return;
       const at = view.state.doc.line(line);
