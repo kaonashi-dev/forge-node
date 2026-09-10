@@ -140,6 +140,9 @@ Dependency direction is one-way and enforced by `Cargo.toml`:
 
 ## Conventions
 
+- Commit subjects and bodies, and pull-request titles and descriptions, follow
+  [commits.md](./commits.md). Agents use the same rules via
+  [`.agents/commits.md`](../.agents/commits.md).
 - `rustfmt` defaults and `clippy -D warnings` are mandatory (the gate).
   TypeScript in `apps/tauri` uses the same idea: `oxlint` (correctness),
   `oxfmt`, and `tsc --noEmit`. Do not add `any`.

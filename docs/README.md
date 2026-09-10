@@ -19,6 +19,7 @@ must match the code.
 | [ui.md](./ui.md) | the window layout, theme tokens, terminal rendering and the keyboard map |
 | [performance.md](./performance.md) | the cost model — what runs per cell, per delta, per frame; the memory, CPU, process and lock rules and the defects behind them |
 | [development.md](./development.md) | prerequisites, commands, running the daemon, testing notes |
+| [commits.md](./commits.md) | commit subject/body and pull-request title/description |
 | [harness.md](./harness.md) | subagent orchestrator cycle: `/feature` → spec gate → `/feature-go`, plus `scripts/harness` |
 | [config.example.toml](./config.example.toml) | every `config.toml` key with its default |
 
