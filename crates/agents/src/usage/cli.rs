@@ -54,6 +54,8 @@ pub(super) fn collect(
 
     Some(ProviderUsage {
         provider_id: descriptor.id.clone(),
+        // Stamped by `super::collect`, which is what knows the account.
+        profile_id: None,
         windows: vec![UsageWindow {
             // Rounded to a whole percent on the way in, so every consumer sees
             // the same number the probe implied.

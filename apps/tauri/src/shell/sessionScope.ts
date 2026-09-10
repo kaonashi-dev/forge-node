@@ -81,6 +81,22 @@ export function projectOfWorkspace(
 }
 
 /**
+ * The remembered checkout, if it is still one.
+ *
+ * Validated against the snapshot rather than trusted: a worktree can be
+ * removed between two launches, and a window that opened pointed at a row
+ * that is gone shows a tab strip and a rail scoped to nothing at all. An
+ * unknown id falls back to the same first-checkout rule a fresh install gets.
+ */
+export function storedWorkspaceId(
+  stored: string | undefined,
+  workspaces: readonly Workspace[],
+): string | null {
+  if (!stored) return null;
+  return workspaces.some((item) => item.id === stored) ? stored : null;
+}
+
+/**
  * Read the persisted tab order.
  *
  * A stored value from before the order was split per checkout is a flat array

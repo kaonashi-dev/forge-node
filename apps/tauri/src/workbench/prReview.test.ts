@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Launchable, ProviderInfo, PullRequest } from "../runtime/types";
 import {
   CUSTOM_RECIPE,
   adoptLaunched,
@@ -11,7 +12,6 @@ import {
   reviewAgents,
   reviewWorkspace,
 } from "./prReview";
-import type { ProviderInfo, PullRequest } from "../runtime/types";
 
 function pr(extra: Partial<PullRequest> = {}): PullRequest {
   return {
@@ -56,8 +56,28 @@ function provider(id: string, extra: Partial<ProviderInfo["descriptor"]> = {}): 
   };
 }
 
+function launchable(providerId: string, extra: Partial<Launchable> = {}): Launchable {
+  return {
+    kind: "agent",
+    label: providerId,
+    detail: null,
+    provider: providerId,
+    profile: null,
+    enabled: true,
+    key: providerId,
+    supports_initial_prompt: true,
+    ...extra,
+  };
+}
+
 const standard = recipeOrDefault("standard");
-const agent = { id: "claude", name: "Claude Code", mode: "plan mode" };
+const agent = {
+  id: "claude",
+  provider: "claude",
+  profile: null,
+  name: "Claude Code",
+  mode: "plan mode",
+};
 
 describe("review recipes", () => {
   /** The Rust side ships the same ids; a drift here is a prompt nobody meant. */
@@ -115,16 +135,53 @@ describe("review agents", () => {
       provider("noprompt", { capabilities: { supports_initial_prompt: false }, prompt: undefined }),
       { descriptor: { id: "missing" }, detection: { status: "NotFound" as const } },
     ];
-    expect(reviewAgents(providers).map((item) => item.id)).toEqual(["claude"]);
+    const launchables = [
+      launchable("claude"),
+      launchable("nowrite"),
+      launchable("noprompt", { supports_initial_prompt: false }),
+      launchable("missing", { enabled: false }),
+    ];
+    expect(reviewAgents(providers, launchables).map((item) => item.id)).toEqual(["claude"]);
+  });
+
+  it("lists custom profiles of a reviewable provider next to the bare provider", () => {
+    const providers = [provider("claude", { display_name: "Claude Code" })];
+    const launchables = [
+      launchable("claude", { label: "Claude Code", key: "claude" }),
+      launchable("claude", {
+        label: "Monato",
+        key: "profile:monato",
+        profile: "monato",
+      }),
+    ];
+    expect(reviewAgents(providers, launchables)).toEqual([
+      {
+        id: "claude",
+        provider: "claude",
+        profile: null,
+        name: "Claude Code",
+        mode: "plan mode",
+      },
+      {
+        id: "profile:monato",
+        provider: "claude",
+        profile: "monato",
+        name: "Monato",
+        mode: "plan mode",
+      },
+    ]);
   });
 
   it("names the provider's own mode so the menu can say which posture it is", () => {
-    expect(reviewAgents([provider("claude")])[0].mode).toBe("plan mode");
+    expect(reviewAgents([provider("claude")], [launchable("claude")])[0].mode).toBe("plan mode");
   });
 
   /** A preference pointing at an uninstalled agent is stale, not a refusal. */
   it("falls back to the first agent when the remembered one is gone", () => {
-    const agents = [agent, { id: "codex", name: "Codex", mode: "read-only sandbox" }];
+    const agents = [
+      agent,
+      { id: "codex", provider: "codex", profile: null, name: "Codex", mode: "read-only sandbox" },
+    ];
     expect(preferredAgent(agents, "codex")?.id).toBe("codex");
     expect(preferredAgent(agents, "gone")?.id).toBe("claude");
     expect(preferredAgent([], "claude")).toBeNull();

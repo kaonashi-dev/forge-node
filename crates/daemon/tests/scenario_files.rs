@@ -243,3 +243,72 @@ fn create_rename_and_delete_paths() {
     }
     assert!(repo.path().join("keep.rs").is_file());
 }
+
+/// A tracked path that has been deleted is gone from the listing.
+///
+/// `git ls-files --cached` answers from the index, and nothing that removes a
+/// file updates the index: `DeletePath` on a committed folder left every file
+/// under it named by the next `ListFiles`, so the Files panel went on painting
+/// a folder that was not on disk. The same held for a `plan.md` an agent had
+/// removed in its own terminal.
+#[test]
+fn listing_drops_tracked_paths_deleted_from_the_worktree() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    fs::create_dir_all(repo.path().join("docs/orca")).unwrap();
+    fs::write(repo.path().join("docs/orca/worktrees.md"), "notes\n").unwrap();
+    fs::write(repo.path().join("plan.md"), "notes\n").unwrap();
+    repo.commit_file("keep.rs", "fn main() {}\n")
+        .expect("commit keep");
+    // `commit_file` only stages the one name it wrote, so the nested pair are
+    // staged here; what matters is that all three are in the index.
+    assert!(std::process::Command::new("git")
+        .args(["-C", repo.path().to_str().unwrap(), "add", "-A"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "commit",
+            "-m",
+            "seed the tree"
+        ])
+        .status()
+        .unwrap()
+        .success());
+
+    let daemon = harness.boot();
+    let client = daemon.connect("deleted-paths");
+    let workspace = common::add_main_workspace(&client, repo.path());
+
+    client
+        .request(Request::DeletePath {
+            workspace_id: workspace,
+            path: "plan.md".into(),
+        })
+        .expect("DeletePath file");
+    client
+        .request(Request::DeletePath {
+            workspace_id: workspace,
+            path: "docs".into(),
+        })
+        .expect("DeletePath directory");
+
+    let Response::FileTree(tree) = client
+        .request(Request::ListFiles {
+            workspace_id: workspace,
+        })
+        .expect("ListFiles")
+    else {
+        panic!("expected FileTree");
+    };
+    let paths: Vec<_> = tree.entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(!paths.contains(&"plan.md"), "got {paths:?}");
+    assert!(
+        !paths.iter().any(|path| path.starts_with("docs/")),
+        "got {paths:?}"
+    );
+    assert!(paths.contains(&"keep.rs"), "got {paths:?}");
+}

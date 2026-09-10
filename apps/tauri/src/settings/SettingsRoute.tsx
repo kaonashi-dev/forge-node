@@ -58,13 +58,11 @@ import { DENSITIES, applyDensity, type Density } from "../theme/density";
 import {
   AUTOSAVE_KEY,
   DENSITY_KEY,
-  EDITOR_KEYMAP_KEY,
   readChoice,
   readFlag,
   writeChoice,
   writeFlag,
 } from "../shell/layout";
-import { EDITOR_KEYMAPS } from "../workbench/editor/createEditor";
 
 /** Sections, in `apps/tauri order. */
 const SECTIONS = [
@@ -94,20 +92,6 @@ export type SettingsRouteProps = {
   section?: Section;
 };
 
-/**
- * The settings screen.
- *
- * Replaces the body rather than floating over it: these are decisions taken
- * away from the terminal, and a dialog over a live grid invites reading the
- * output behind it instead of the choice in front.
- *
- * *The whole body*, though — it used to replace the centre column alone, which
- * left the project rail and the inspector framing it. That reads as a panel
- * that lost its terminal rather than as a screen, and it left the way out at
- * the bottom of the section rail, under five section names, where nothing else
- * in the app puts a close. The layer covers everything below the title bar and
- * the close sits in its own header, top right, where a screen's close lives.
- */
 export function SettingsRoute(props: SettingsRouteProps) {
   const [section, setSection] = createSignal<Section>(props.section ?? "General");
 
@@ -184,8 +168,8 @@ function General() {
   }
 
   return (
-    <Page title="General" summary="What this install is running, and where it keeps its files.">
-      <Group title="Status">
+    <Page title="General" summary="Application details, configuration files, and daemon controls.">
+      <Group title="Overview">
         <dl class="settings-facts">
           <dt>Version</dt>
           <dd>{paths()?.app_version ? `v${paths()?.app_version}` : "—"}</dd>
@@ -214,8 +198,8 @@ function General() {
       </Group>
 
       <Group
-        title="Files"
-        description="Forge Node only ever reads these; edit them with your own editor. Changes need a restart — nothing here hot-reloads."
+        title="Configuration & logs"
+        description="Edit config.toml in your editor, then restart Forge Node to apply changes."
       >
         <ul class="settings-paths">
           <li>
@@ -290,6 +274,7 @@ function General() {
 
       <Group
         title="Danger zone"
+        class="settings-danger"
         description="Reset Forge Node's own state without modifying your repositories, configuration file, or logs."
       >
         <Row
@@ -322,7 +307,7 @@ function Agents() {
   >(() => [
     {
       value: { kind: "ask" } as DefaultAgent,
-      label: "Ask",
+      label: "Ask each time",
       note: "Open the launch palette and pick.",
       enabled: true,
       provider: null,
@@ -333,7 +318,7 @@ function Agents() {
         : item.profile
           ? { kind: "profile", id: item.profile }
           : { kind: "provider", id: item.provider ?? "" }) as DefaultAgent,
-      label: item.kind === "shell" ? "No agent (blank terminal)" : item.label,
+      label: item.kind === "shell" ? "Blank terminal" : item.label,
       note: item.detail,
       enabled: item.enabled,
       provider: item.kind === "shell" ? null : item.provider,
@@ -349,14 +334,10 @@ function Agents() {
   }
 
   return (
-    <Page title="Agents" summary="Pick what ⌘⇧A starts, and how each provider is run.">
+    <Page title="Agents" summary="Choose your default agent and customize how it launches.">
       <Group
         title="Default agent"
-        description={
-          "Detection is the daemon's: a provider counts as installed when its CLI answered a " +
-          "version probe. Providers that are not installed stay listed, so this also answers " +
-          '"what could run here?".'
-        }
+        description="Start this agent with ⌘⇧A. Choose Ask to pick an agent each time."
       >
         <RadioGroup
           label="Default agent"
@@ -388,7 +369,8 @@ function Agents() {
       </Group>
 
       <Group
-        title="Installed"
+        title="Available providers"
+        description="Expand a provider to configure its executable and view launch arguments."
         aside={
           <>
             <Badge label={`${installed()} of ${forgeStore.providers.length} detected`}>
@@ -418,15 +400,6 @@ function Agents() {
   );
 }
 
-/**
- * One provider: what detection found, and the binary it is pinned to.
- *
- * The executable override used to live in a separate list further down the
- * page, keyed by a name that also appeared up here — two rows for one
- * provider, and the field was write-only: it opened blank whether or not
- * anything was pinned. Folded into the row it belongs to, the field can show
- * the binary that is actually resolved.
- */
 function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent }) {
   const [path, setPath] = createSignal("");
   const id = () => providerId(props.provider);
@@ -440,8 +413,10 @@ function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent })
       summary={
         <>
           <SessionGlyph providerId={id()} size={16} />
-          <span class="provider-name">{providerName(props.provider)}</span>
-          <span class="provider-id">{id()}</span>
+          <span class="provider-identity">
+            <span class="provider-name">{providerName(props.provider)}</span>
+            <span class="provider-id">{id()}</span>
+          </span>
           <Badge tone={providerInstalled(props.provider) ? "good" : "warn"}>
             {providerDetectionLabel(props.provider)}
           </Badge>
@@ -529,25 +504,6 @@ function Personalization() {
               hideLabel
               checked={readFlag(AUTOSAVE_KEY, false)}
               onChange={(on) => writeFlag(AUTOSAVE_KEY, on)}
-            />
-          }
-        />
-        <Row
-          label="Editing model"
-          description="Vim is the `@replit/codemirror-vim` keymap. Helix is this repository's own, over CodeMirror's selection model — the motions select and the verbs act on what is selected."
-          control={
-            <RadioGroup
-              label="Editing model"
-              class="theme-choices"
-              orientation="horizontal"
-              itemClass="forge-chip"
-              value={readChoice(EDITOR_KEYMAP_KEY, EDITOR_KEYMAPS, "default")}
-              onChange={(next) => writeChoice(EDITOR_KEYMAP_KEY, next)}
-              options={EDITOR_KEYMAPS.map((value) => ({
-                value,
-                label: value,
-                render: () => value,
-              }))}
             />
           }
         />

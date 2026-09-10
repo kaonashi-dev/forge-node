@@ -19,6 +19,8 @@
 //! 7. [`SESSION_LAUNCH_COMMAND`] — foreground command a shell ran, for resurrect.
 //! 8. [`WORKTREE_SHARES`] — per-project rules for provisioning a worktree.
 //! 9. [`SESSION_BASE_COMMIT`] — the commit a session started from.
+//! 10. [`PROFILE_CONFIG_DIR`] — a profile's config directory, replacing its
+//!     free-form environment.
 
 use rusqlite_migration::{Migrations, M};
 
@@ -280,6 +282,32 @@ pub const SESSION_BASE_COMMIT: &str = "\
 ALTER TABLE sessions ADD COLUMN base_commit TEXT;
 ";
 
+/// Migration 10: a profile is a directory, not an environment (§13.4).
+///
+/// A profile could set any variable it liked; what every real one actually set
+/// was the provider's config directory, and the rest was a second, worse copy
+/// of the agent's own configuration file. The column replaces `env_json`, and
+/// the backfill keeps the one value that survives the change.
+///
+/// The variable names are listed here rather than read from the descriptors:
+/// a migration is a statement about the rows as they were when it ran, so it
+/// must not shift under a later edit to the `agents` crate. Whichever of them a
+/// profile set is now simply "the directory" — for OpenCode, which used two,
+/// the first one wins and the second is dropped rather than guessed at.
+pub const PROFILE_CONFIG_DIR: &str = "\
+ALTER TABLE agent_profiles ADD COLUMN config_dir TEXT;
+
+UPDATE agent_profiles SET config_dir = (
+    SELECT json_extract(pair.value, '$[1]')
+      FROM json_each(agent_profiles.env_json) AS pair
+     WHERE json_extract(pair.value, '$[0]') IN
+           ('CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'OPENCODE_CONFIG_DIR', 'XDG_DATA_HOME')
+     LIMIT 1
+);
+
+ALTER TABLE agent_profiles DROP COLUMN env_json;
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -293,5 +321,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(SESSION_LAUNCH_COMMAND),
         M::up(WORKTREE_SHARES),
         M::up(SESSION_BASE_COMMIT),
+        M::up(PROFILE_CONFIG_DIR),
     ])
 }

@@ -9,14 +9,15 @@ Plan references: §7.5, §7.6, §13. ADR-007 (declarative provider registry).
 
 ## Built-in providers (`builtins.rs`)
 
-| id | Display name | Binary candidates (in order) | Probe | Marker | Profile fields | Resume | Prompt | Read-only |
-|----|--------------|------------------------------|-------|--------|----------------|--------|--------|-----------|
-| `claude` | Claude Code | `claude` | `--version`, 3 s | — | `CLAUDE_CONFIG_DIR` (directory), `--model`, `--agent` | `--resume <id>` | positional | `--permission-mode plan` |
-| `codex` | Codex CLI | `codex` | `--version`, 3 s | — | `CODEX_HOME` (directory), `--model`, `--profile` | `resume <id>` (subcommand) | positional | `-s read-only` |
-| `opencode` | OpenCode | `opencode`, `opencode2` | `--version`, 3 s | — | `OPENCODE_CONFIG_DIR` (directory), `XDG_DATA_HOME` (directory), `--model`, `--agent` | `--session <id>` | `--prompt <text>` | `--agent plan` |
+| id | Display name | Binary candidates (in order) | Probe | Marker | Config directory | Resume | Prompt | Read-only |
+|----|--------------|------------------------------|-------|--------|------------------|--------|--------|-----------|
+| `claude` | Claude Code | `claude` | `--version`, 3 s | — | `CLAUDE_CONFIG_DIR` | `--resume <id>` | positional | `--permission-mode plan` |
+| `codex` | Codex CLI | `codex` | `--version`, 3 s | — | `CODEX_HOME` | `resume <id>` (subcommand) | positional | `-s read-only` |
+| `opencode` | OpenCode | `opencode`, `opencode2` | `--version`, 3 s | — | `OPENCODE_CONFIG_DIR` + `XDG_DATA_HOME` | `--session <id>` | `--prompt <text>` | `--agent plan` |
 | `cursor` | Cursor CLI | `agent`, `cursor-agent` | `--version`, 3 s | output or unambiguous basename must contain `cursor` | — | — | positional | `--mode ask` |
+| `grok` | Grok | `grok` | `--version`, 3 s | output must contain `grok` | `GROK_HOME` | `--resume <id>` | positional | `--permission-mode plan` |
 
-All four are interactive TUIs and take no `default_args`. Each capability flag
+All five are interactive TUIs and take no `default_args`. Each capability flag
 restates whether the matching spelling is declared — `supports_resume` a
 `ResumeStyle`, `supports_initial_prompt` a `PromptStyle`, `supports_review` a
 `ReviewStyle` — so the GUI can read the flag and the launch builder the
@@ -63,8 +64,11 @@ Cursor history to hand it an id (`external_agents` reads Claude and opencode).
 
 The id is the provider's own — the one its transcript records — and every CLI
 resolves it relative to its working directory, so a resumed session is launched
-in the directory the original run happened in. See `docs/ui.md` for the history
-panel that sends them.
+in the directory the original run happened in. It is also scoped to an
+*account*: `ExternalAgentSession::profile_id` names the profile whose store the
+transcript was read from, and the history panel launches with that profile,
+because the default account has never heard of an id recorded under a profile's
+config directory. See `docs/ui.md` for the history panel that sends them.
 
 The `cursor` marker exists because `agent` is an ambiguous name — on many
 machines it is the Grok CLI. That generic candidate is `Rejected` when its
@@ -106,13 +110,13 @@ provider gains them for free.
 
 ## Launch profiles (§13.4)
 
-A **profile** is a named way to start a known provider — its own command,
-arguments and environment. It replaces the hand-written shell wrapper people
-write to run two accounts:
+A **profile** is a named way to start a known provider — its own binary, its
+own account and its own arguments. It replaces the hand-written shell wrapper
+people write to run two accounts:
 
 ```fish
-function claude-work
-    set -lx CLAUDE_CONFIG_DIR "$HOME/.claude-work"
+function claude-personal
+    set -lx CLAUDE_CONFIG_DIR "$HOME/.claude-personal"
     mkdir -p "$CLAUDE_CONFIG_DIR"
     command claude $argv
 end
@@ -120,51 +124,78 @@ end
 
 A profile is *not* a provider: it borrows the descriptor's icon, detection,
 binary candidates and usage source, and overrides only how the process starts.
-`domain::AgentProfile` carries `{ provider_id, name, executable, args, env }`;
-the bare provider is the implicit profile (`profile_id: None`).
+`domain::AgentProfile` carries `{ provider_id, name, executable, config_dir,
+args }` — four fields, because a profile that could set anything was a second,
+worse copy of the agent's own configuration file. The bare provider is the
+implicit profile (`profile_id: None`).
 
-**Provider-specific knowledge stays here** (P2): each descriptor declares the
-fields its profile editor should offer, as data.
+**Provider-specific knowledge stays here** (P2): each descriptor declares how
+it is pointed at a directory, as data.
 
 ```rust
-ProfileField {
-    label: "Config directory",
-    help:  "A separate account: its own login, settings, history and plugins.",
-    effect: ProfileFieldEffect::Env { name: "CLAUDE_CONFIG_DIR", is_directory: true },
+ConfigDirSpec {
+    vars: vec!["CLAUDE_CONFIG_DIR"],
+    help: "A separate account: its own login, settings, history and plugins.",
 }
 ```
 
-`is_directory` is what makes the daemon run the wrapper's `mkdir -p`:
-`ensure_profile_dirs(descriptor, env)` creates those directories with `0700`
-before the launch. Nothing matches on a provider id to do it.
-
 `CLAUDE_CONFIG_DIR` is the documented account switch for Claude Code (settings,
 session history and plugins move with it); `CODEX_HOME` is its Codex
-equivalent, and `usage/codex.rs` already reads credentials through it.
+equivalent, and `usage/codex.rs` already reads credentials through it. OpenCode
+needs two variables for the one directory, because it splits what the other two
+keep together: `OPENCODE_CONFIG_DIR` moves the directory `opencode.json` is
+read from — and with it the agents, commands and plugins declared beside it —
+while `XDG_DATA_HOME` is what moves `opencode/auth.json` and the session
+storage. Setting only one would switch half an account, so a profile sets both.
+Cursor CLI declares none: it documents no configuration switch, so its profiles
+change the binary and the arguments only, and a directory saved for it is
+refused rather than stored where nothing would read it.
 
-OpenCode is the one that needs two directories, because it splits what the
-other two keep together: `OPENCODE_CONFIG_DIR` moves the directory
-`opencode.json` is read from — and with it the agents, commands and plugins
-declared beside it — while credentials and session storage stay where they
-were. The account switch is `XDG_DATA_HOME`, under which OpenCode keeps
-`opencode/auth.json` and `opencode/storage`. It is a standard XDG variable
-rather than an OpenCode one, so the field's help says as much: every process
-OpenCode itself starts inherits it. Its two flags are `--model`, which takes a
-`provider/model` pair rather than a bare alias, and `--agent`, which picks the
-configured agent the TUI starts on.
+**Where the directory actually is** is a runtime question, so it is resolved at
+launch and not at save (`AgentProfile::resolve_config_dir`): an absolute path is
+used as typed, `~/…` is expanded, and anything else is relative to the
+launching user's `$HOME`. That last rule is the whole point — the daemon's own
+working directory is `/` under launchd, where a `.claude-personal` created
+relative to it fails on a read-only file system. `ensure_config_dir` then runs
+the wrapper's `mkdir -p` with mode `0700` before the launch. Nothing matches on
+a provider id to do either.
 
-Because the suggested path is derived from the provider id rather than from the
-variable name (`settings::directory_base`), a generic variable still reads as
-the provider's: `XDG_DATA_HOME` suggests `~/.opencode-data-work`, never the
-same stem as `~/.opencode-work`.
+A profile's `executable` is resolved the same way a shell would resolve it
+(`agents::resolve_executable`): an absolute path as given, a bare name looked up
+on the resolved login-shell PATH. That is the second shape a personal profile
+takes — no directory at all, because a `claude-personal` wrapper on `PATH`
+already carries the account. A shell *alias* is not a program and cannot be
+launched: what runs is the script or symlink it stands for.
 
-Two consequences of the account switch are worth stating. A profile that moves
-`XDG_DATA_HOME` moves the transcripts the history panel scans, and discovery
-reads the daemon's own environment (`external_agents::opencode_storage`), so
-those sessions do not appear there — the same gap Claude profiles have with
-`CLAUDE_CONFIG_DIR`. And Cursor declares no fields at all: it documents no
-configuration switch, so there is nothing honest to suggest; a profile for it
-is still writable by hand.
+**A profile is an account, and everything that reads a provider's own
+directories reads all of them.** Moving the config directory moves the
+transcripts with it, so both scans take the profile list and walk one store per
+account, dropping duplicates by canonical path:
+
+- `external_agents::discover` (the history panel) scans `<config dir>/projects`
+  for Claude Code and `<config dir>/opencode` for OpenCode — the latter because
+  the directory *is* `XDG_DATA_HOME` for the launch — alongside `~/.claude` and
+  `~/.local/share/opencode`. Its cache fingerprint includes the profile
+  directories, so a saved profile shows its history at once.
+- `agents::collect_analytics` (the usage page) sums `<config dir>/projects` for
+  Claude and `<config dir>/sessions` for Codex with the default account's. The
+  page is what the machine spent, not what one login did, so the totals are the
+  sum; saving or deleting a profile drops the cached scan.
+
+The allowance meter (`usage::collect`) reads one account at a time, and the
+daemon sweeps all of them: the default login plus every profile that moved the
+config directory, each probed against an environment whose `ConfigDirSpec`
+variables point at that account (`agents::env_for_config_dir`, the same helper
+the launch uses, so a reading and a launch cannot disagree about which login
+they mean). Every reading carries the `profile_id` it came from, and the status
+bar draws one meter per account rather than one per provider.
+
+On macOS the Keychain holds a single Claude login — the default account's — so a
+profile whose own directory has no `.credentials.json` reports **nothing**
+rather than falling back to it. A meter under a profile's name showing the
+default account's numbers is the failure this split exists to prevent; note
+that a fresh `CLAUDE_CONFIG_DIR` also means the CLI itself starts logged out
+until that account is signed in.
 
 ### Rules
 
@@ -172,10 +203,13 @@ is still writable by hand.
   `InvalidRequest`, not a silently ignored field.
 - Names are unique per provider, case-insensitively (a unique index in SQLite,
   surfaced as `Conflict`): two profiles cannot render as the same menu entry.
-- A profile may not set `TERM`, `TERMINFO`, `COLORTERM`, `FORGE_SESSION_ID` or
-  `FORGE_WORKSPACE` (`domain::RESERVED_PROFILE_VARS`) — Forge owns the terminal
-  contract with the child. The builder drops such a variable with a warning;
-  the daemon refuses to store one at all.
+- A config directory for a provider that declares no `ConfigDirSpec` is
+  `InvalidRequest`: a directory nothing is ever told about would look saved and
+  change nothing.
+- `domain::RESERVED_PROFILE_VARS` (`TERM`, `TERMINFO`, `COLORTERM`,
+  `FORGE_SESSION_ID`, `FORGE_WORKSPACE`) is what Forge owns of the child's
+  environment. A profile can no longer name a variable at all; the constant is
+  the contract every descriptor's `ConfigDirSpec` is tested against.
 - A profile with its own `executable` is version-probed when it is **saved**,
   exactly like a `SetProviderExecutable` override, so the daemon still never
   launches a binary no probe accepted. At launch time only its presence and
@@ -183,9 +217,14 @@ is still writable by hand.
 - Deleting a profile never touches sessions it already started; `RestartSession`
   re-applies the profile, and refuses if it is gone rather than silently
   restarting under a different account.
-- `env` values are stored in clear text like every other row (ADR-009). The
-  editor says so and steers users towards a config directory rather than an
-  API key.
+- Arguments are stored as a list and passed one by one; the editor parses its
+  text like a command line (whitespace separates — a newline is just more
+  whitespace — quotes group, backslash escapes), so `--model opus` is two
+  arguments. It writes them back one flag per line, quoting only an argument
+  that really contains whitespace and giving that one a line of its own.
+  `normalizeArgs` repairs the profiles the previous editor saved, where a whole
+  line became one argument. No shell ever runs any of it: `$HOME`, `*` and `;`
+  reach the agent as characters.
 
 ## Detection (`detection.rs`, §13.1)
 
@@ -257,14 +296,39 @@ registry state.
 - `env` — the complete resolved environment plus `TERM=xterm-256color` and
   `COLORTERM=truecolor`.
 
-`build_launch_with_env_overlay(descriptor, req, env, overlay)` is the same
-builder plus a profile's environment, applied *after* the terminal hints and
-skipping any reserved variable. `build_launch` is that function with an empty
-overlay, so there is one code path.
+`build_launch_with_config_dir(descriptor, req, env, config_dir)` is the same
+builder plus a profile's directory, written to every variable the descriptor's
+`ConfigDirSpec` names, *after* the terminal hints. `build_launch` is that
+function with no directory, so there is one code path.
 
 `FORGE_SESSION_ID` and `FORGE_WORKSPACE` are deliberately **not** added here:
 the crate has no `SessionId`. The daemon injects them when it spawns the PTY
 (`core.rs`), keeping this builder pure.
+
+## Attention (needs-you)
+
+The rail's `needs-you` marker is driven by ASCII BEL. Providers that do not
+emit BEL on a permission / question prompt get a Forge-owned adapter at launch
+(`crates/agents/src/attention.rs`). Assets live under
+`<data_dir>/agent-plugins/` (idempotent, content-hashed).
+
+| Provider | Injection | Signal |
+|----------|-----------|--------|
+| `opencode` | `OPENCODE_CONFIG_CONTENT` → `forge-attention.js` | `permission.asked` / `question.asked` → BEL |
+| `claude` | `--settings` → Forge JSON (does **not** rewrite `~/.claude`) | `PermissionRequest` + `Notification(permission_prompt\|…)` → `forge-ring-bell.sh` |
+| `codex` | `-c tui.notifications=["approval-requested"]` + `notification_method="bel"` + `condition="always"` | TUI BEL on approval only |
+| `cursor` | Merge `beforeShellExecution` / `beforeMCPExecution` into `~/.cursor/hooks.json` (FORGE-gated) | Best-effort — Cursor has no permission-prompt hook |
+| `grok` | Write `~/.grok/hooks/forge-attention.json` (FORGE-gated) | `Notification(permission_prompt)` → BEL |
+
+`forge-ring-bell.sh` is a no-op without `FORGE_SESSION_ID`, drains stdin, and
+never fails the agent. Editing OpenCode's `attention` config or Claude's
+`preferredNotifChannel` does nothing here — Forge does not go through those
+channels. `OPENCODE_PURE=1` / `--pure` disables the OpenCode plugin.
+
+`OPENCODE_CONFIG_CONTENT` is a launch detail, not a terminal-contract variable:
+it is not in `RESERVED_PROFILE_VARS`, and it composes with a profile's
+`OPENCODE_CONFIG_DIR`. Provider-shaped knowledge stays in `crates/agents`; the
+daemon only supplies the asset directory (P2).
 
 ## Client-facing view
 
@@ -421,11 +485,13 @@ missing number into a wrong one.
 
 `crates/agents` unit-tests detection and launch with `agents::test_support`
 (fake executables on a temp PATH: correct marker, wrong marker, hanging probe,
-an environment overlay that must not touch `TERM`, and directory creation).
-`crates/daemon/tests/scenario_profiles.rs` covers §13.4 end to end: the child
-process really receives the profile's environment and arguments, its config
-directory is created first, a restart repeats it, and every invalid profile is
-refused at save time.
+a profile directory that must not touch `TERM`, a bare executable name found on
+PATH, and directory creation).
+`crates/daemon/tests/scenario_profiles.rs` covers §13.4 end to end: a relative
+directory lands under `$HOME` and an absolute one where it says, the child
+process really receives it along with the profile's arguments, a wrapper named
+like a shell alias is found on PATH, a restart repeats all of it, and every
+invalid profile is refused at save time.
 `crates/test-support::fake_agent` provides the same for daemon-level tests.
 Note that real daemon startup runs `--version` on whichever agent CLIs are
 installed on the machine, so workspace tests are not fully hermetic.

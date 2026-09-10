@@ -6,6 +6,7 @@ import {
   parseTabOrder,
   projectOfWorkspace,
   sessionsInWorkspace,
+  storedWorkspaceId,
 } from "./sessionScope";
 
 const workspace = (id: string, project_id: string): Workspace => ({
@@ -94,5 +95,18 @@ describe("sessionScope", () => {
     expect(parseTabOrder(JSON.stringify(["s3", "s1"]))).toEqual({});
     expect(parseTabOrder(undefined)).toEqual({});
     expect(parseTabOrder("not json")).toEqual({});
+  });
+
+  it("reopens on the remembered checkout", () => {
+    expect(storedWorkspaceId("dev-test", workspaces)).toBe("dev-test");
+  });
+
+  it("drops a remembered checkout that is no longer one", () => {
+    // A worktree removed between two launches: the window has to fall back to
+    // the first-checkout rule rather than point at a row that is gone.
+    expect(storedWorkspaceId("dev-gone", workspaces)).toBeNull();
+    expect(storedWorkspaceId(undefined, workspaces)).toBeNull();
+    expect(storedWorkspaceId("", workspaces)).toBeNull();
+    expect(storedWorkspaceId("dev-test", [])).toBeNull();
   });
 });

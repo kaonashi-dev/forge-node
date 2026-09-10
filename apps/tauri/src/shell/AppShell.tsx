@@ -8,8 +8,6 @@ import {
   addProjectFromPicker,
   closeSession,
   connect,
-  newAgent,
-  newShell,
   scrollTerminal,
   setAppState,
 } from "../runtime/api";
@@ -80,6 +78,9 @@ import { HandoffDialog } from "./HandoffDialog";
 import {
   currentWorkspace as sharedWorkspace,
   focusSession,
+  launchAgent,
+  launchShell,
+  restoreWorkspace,
   openCheckoutReview,
   startHandoff,
   toggleSessionChanges,
@@ -299,10 +300,12 @@ export function AppShell() {
     );
     switch (target.kind) {
       case "shell":
-        void newShell(currentWorkspace()).catch(() => undefined);
+        void launchShell(currentWorkspace()).catch(() => undefined);
         break;
       case "agent":
-        void newAgent(target.provider, target.profile, currentWorkspace()).catch(() => undefined);
+        void launchAgent(target.provider, target.profile, currentWorkspace()).catch(
+          () => undefined,
+        );
         break;
       default:
         setPalette("launch");
@@ -313,10 +316,10 @@ export function AppShell() {
     setPalette(null);
     switch (entry.choice.kind) {
       case "new_shell":
-        void newShell(currentWorkspace()).catch(() => undefined);
+        void launchShell(currentWorkspace()).catch(() => undefined);
         break;
       case "new_agent":
-        void newAgent(entry.choice.provider, entry.choice.profile, currentWorkspace()).catch(
+        void launchAgent(entry.choice.provider, entry.choice.profile, currentWorkspace()).catch(
           () => undefined,
         );
         break;
@@ -335,9 +338,8 @@ export function AppShell() {
         }
         // Pointed at before the launch, not after: the strip has to be showing
         // this checkout by the time its first tab lands in it.
-        showSession();
         focusWorkspace(workspace);
-        void newShell(workspace).catch(() => undefined);
+        void launchShell(workspace).catch(() => undefined);
         break;
       }
       case "action":
@@ -370,6 +372,7 @@ export function AppShell() {
           // Preferences live in the snapshot's `app_state`, so anything read
           // from it has to wait for the snapshot rather than for the module.
           restoreInspectorTab();
+          restoreWorkspace();
         }
       } catch {
         // Vite-only preview has no Tauri host.
@@ -389,7 +392,7 @@ export function AppShell() {
         // shows an empty strip, and the daemon's fallback — the workspace of
         // whatever terminal is still attached — would start the shell in the
         // checkout the user just left.
-        () => void newShell(currentWorkspace()).catch(() => undefined),
+        () => void launchShell(currentWorkspace()).catch(() => undefined),
       ),
       registerAction("new_agent", launchDefaultAgent),
       registerAction("close_session", closeActive),

@@ -28,9 +28,10 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
 
 - **Append only.** Add a new `M::up(...)` to `migrations()`; never edit or
   reorder an existing one, or already-migrated databases will diverge.
-- Eight migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
+- Ten migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
   `PROJECT_GROUPS`, `AGENT_PROFILES`, `PROJECT_ICONS`,
-  `WORKSPACE_DISPLAY_NAMES`, `SESSION_LAUNCH_COMMAND` and `WORKTREE_SHARES`.
+  `WORKSPACE_DISPLAY_NAMES`, `SESSION_LAUNCH_COMMAND`, `WORKTREE_SHARES`,
+  `SESSION_BASE_COMMIT` and `PROFILE_CONFIG_DIR`.
 - `PROJECT_ICONS` adds a nullable `projects.icon`, and null is what every
   existing project keeps: no icon means the UI draws initials, which is what it
   drew before the column existed. The column carries no `CHECK` — what makes a
@@ -94,27 +95,31 @@ Column conventions:
 ## Schema (v4 — `AGENT_PROFILES`)
 
 ```sql
-agent_profiles    (id PK, provider_id, name, executable_path, args_json,
-                   env_json, created_at)
+agent_profiles    (id PK, provider_id, name, executable_path, config_dir,
+                   args_json, created_at)
                   UNIQUE (provider_id, name COLLATE NOCASE)
 sessions          + agent_profile_id
 ```
 
 Launch profiles (§13.4), the saved form of a shell wrapper like
-`CLAUDE_CONFIG_DIR=~/.claude-work claude --model opus`. Three deliberate
+`CLAUDE_CONFIG_DIR=~/.claude-personal claude --model opus`. Four deliberate
 choices:
 
 - `provider_id` is **not** a foreign key: providers are descriptors in
   `crates/agents`, not rows.
-- `args_json` and `env_json` are JSON lists, not child tables. Nothing queries
-  inside them and the order of both is meaningful.
+- `args_json` is a JSON list, not a child table. Nothing queries inside it and
+  its order is meaningful, because arguments are positional.
+- `config_dir` is stored **as typed**, relative paths included: what a relative
+  path is relative to is the launching user's home, which is a runtime fact and
+  not a stored one (`domain::AgentProfile::resolve_config_dir`).
 - `sessions.agent_profile_id` is **not** a foreign key either, and nothing
   cascades: a session in the history must survive the deletion of the profile
   that launched it. The GUI falls back to the provider's name.
 
 Unlike sessions, profiles are user configuration and always survive a restart.
-`env_json` holds values in clear text like every other row (ADR-009); the
-editor says so and steers users towards a config directory rather than a key.
+Migration 10 (`PROFILE_CONFIG_DIR`) is where `env_json` became this column: a
+profile could set any variable it liked, what every real one set was the
+provider's config directory, and the backfill keeps that one value.
 
 ## Schema (v8 — `WORKTREE_SHARES`)
 

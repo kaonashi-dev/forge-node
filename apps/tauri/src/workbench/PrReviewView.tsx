@@ -4,7 +4,7 @@ import { sessionStateLabel, sessionTitle, type Session } from "../runtime/types"
 import { forgeStore } from "../store/forgeStore";
 import { setRuntimeStore } from "../store/runtimeStore";
 import { workbenchStore } from "../store/workbenchStore";
-import { adoptReviewSession, beginReview, clearReview, reviewRun } from "../store/prReviewStore";
+import { beginReview, clearReview, reviewRun } from "../store/prReviewStore";
 import { close, focus, showTerminal } from "../store/viewsStore";
 import { findPullRequest } from "./PrDetailView";
 import {
@@ -12,7 +12,6 @@ import {
   REVIEW_CUSTOM_KEY,
   REVIEW_PROVIDER_KEY,
   REVIEW_RECIPE_KEY,
-  adoptLaunched,
   builtinRecipes,
   composeReviewPrompt,
   launchHint,
@@ -51,7 +50,7 @@ export function PrReviewView(props: { prKey: string }) {
   const run = () => reviewRun(props.prKey);
 
   const pr = createMemo(() => findPullRequest(props.prKey));
-  const agents = createMemo(() => reviewAgents(forgeStore.providers));
+  const agents = createMemo(() => reviewAgents(forgeStore.providers, forgeStore.launchables));
   const agent = createMemo(() => preferredAgent(agents(), agentId()));
   const recipe = createMemo((): ReviewRecipe => recipeOrDefault(recipeId()));
 
@@ -102,19 +101,11 @@ export function PrReviewView(props: { prKey: string }) {
   });
 
   /*
-   * Adopt the session the launch created.
-   *
-   * The runtime command channel is one-way — it also carries keystrokes, so it
-   * cannot block on an answer — and the id therefore does not come back. The
-   * recorded `startedAt` is what keeps this from adopting a session that was
-   * already running in the same checkout.
+   * Session adoption lives in `prReviewStore` / the snapshot path: this tab
+   * unmounts the moment the reader looks elsewhere, and the command channel
+   * never returns the session id, so binding the launch to its session must
+   * keep running while the view is gone.
    */
-  createEffect(() => {
-    const current = run();
-    if (!current || current.session) return;
-    const found = adoptLaunched(forgeStore.sessions, current.workspace, current.startedAt);
-    if (found) adoptReviewSession(props.prKey, found.id);
-  });
 
   const running = createMemo((): Session | null => {
     const id = run()?.session ?? null;
@@ -139,10 +130,12 @@ export function PrReviewView(props: { prKey: string }) {
     // Recorded before the command goes out, so a session that starts fast is
     // still newer than the moment we asked.
     beginReview(props.prKey, target.id);
-    void newAgent(picked.id, null, target.id, null, prompt(), null, true).catch(() => {
-      clearReview(props.prKey);
-      setRuntimeStore("notice", "The daemon refused to launch the review.");
-    });
+    void newAgent(picked.provider, picked.profile, target.id, null, prompt(), null, true).catch(
+      () => {
+        clearReview(props.prKey);
+        setRuntimeStore("notice", "The daemon refused to launch the review.");
+      },
+    );
   }
 
   /**
@@ -227,7 +220,7 @@ export function PrReviewView(props: { prKey: string }) {
 
             <Show when={recipe().id === CUSTOM_RECIPE}>
               <TextArea
-                class="settings-hint"
+                class="pr-compose-field"
                 label="Ask for"
                 rows={4}
                 value={custom()}

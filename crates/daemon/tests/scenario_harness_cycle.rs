@@ -383,6 +383,73 @@ fn a_step_that_fails_once_is_retried_rather_than_blocking() {
     assert_eq!(attempts[1].outcome.as_deref(), Some("succeeded"));
 }
 
+/// A project registered at a subdirectory still finds the repository's
+/// `harness/`.
+///
+/// Nothing says a project has to be added at the repository root — opening
+/// `apps/tauri/src-tauri` on its own is an ordinary thing to do, and Forge
+/// accepts it. But `harness/` belongs to the *repository*, so resolving it
+/// from the registered directory looks one level too deep and finds nothing
+/// there: the daemon answers "harness not initialized" for a repository whose
+/// harness is initialised, and an agent launched under that root writes its
+/// artefacts into a directory the daemon never reads.
+#[test]
+fn a_project_registered_below_the_repository_root_still_finds_the_harness() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo (git must be installed)");
+    init_harness_dir(repo.path());
+    // The harness lives at the repository root; the project is added here.
+    let nested = repo.path().join("apps/tauri/src-tauri");
+    std::fs::create_dir_all(&nested).expect("the nested project directory");
+    write_cycle_agent(harness.bin(), "claude", "Claude Code 2.1.0");
+
+    let daemon = harness.boot();
+    let client = daemon.connect("scenario-nested-root");
+    let workspace_id = common::add_main_workspace(&client, &nested);
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+    let project_id = project_id(&client);
+    client
+        .set_app_state("ui.harness.orchestrator", "provider:claude")
+        .expect("orchestrator");
+
+    // The daemon's own read: this is the call that used to fail outright,
+    // because `<nested>/harness/features.json` does not exist.
+    let feature = client
+        .register_harness_feature(
+            project_id,
+            Some(workspace_id),
+            "work from a nested project".to_owned(),
+            None,
+        )
+        .expect("RegisterHarnessFeature reads the repository's features.json");
+
+    // And the agent's end: the step only reaches `spec_ready` if the artefacts
+    // the fake wrote under `$FORGE_HARNESS_ROOT` are the ones the daemon then
+    // read back, which is the agreement the export exists to hold.
+    client
+        .run_harness_step(project_id, feature.id, HarnessStep::Spec)
+        .expect("RunHarnessStep(Spec)");
+    wait_for_status(&client, project_id, feature.id, "spec_ready");
+
+    let spec_dir = repo
+        .path()
+        .join("harness/specs")
+        .join(format!("{}-{}", feature.id, feature.slug));
+    assert!(
+        spec_dir.join("requirements.md").is_file(),
+        "the spec lands in the repository's harness: {}",
+        spec_dir.display()
+    );
+    assert!(
+        !nested.join("harness").exists(),
+        "and nothing is written beside the registered directory"
+    );
+}
+
 // =====================================================================
 // Helpers
 // =====================================================================

@@ -1,10 +1,9 @@
 import { createMemo } from "solid-js";
-import { newAgent, newShell } from "../runtime/api";
 import { forgeStore } from "../store/forgeStore";
 import { openFeatureCompose } from "../store/viewsStore";
 import { Icon, SessionGlyph } from "../theme/icons";
 import { Menu, type MenuItem } from "../ui";
-import { currentWorkspace } from "./sessionActions";
+import { currentWorkspace, launchAgent, launchShell } from "./sessionActions";
 
 /** The `+` button in the tab strip: start a terminal, an agent, or a feature. */
 export function SessionMenu() {
@@ -18,7 +17,7 @@ export function SessionMenu() {
         glyph: <SessionGlyph providerId={null} size={14} />,
         // Named, not left to the daemon: this menu hangs off the strip,
         // and the strip is one checkout.
-        run: () => void newShell(currentWorkspace()).catch(() => undefined),
+        run: () => void launchShell(currentWorkspace()).catch(() => undefined),
       },
       {
         kind: "item",
@@ -50,7 +49,7 @@ export function SessionMenu() {
         ),
         run: () => {
           if (!item.provider) return;
-          void newAgent(item.provider, item.profile, currentWorkspace()).catch(() => undefined);
+          void launchAgent(item.provider, item.profile, currentWorkspace()).catch(() => undefined);
         },
       });
     }

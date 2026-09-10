@@ -41,6 +41,15 @@ impl Cache {
         self.update_at(window_days, analytics, Instant::now());
     }
 
+    /// Drop the cached scan, so the next call re-reads the transcripts.
+    ///
+    /// The window is not the only thing the answer depends on: a launch profile
+    /// is an account, and its transcripts are part of the total (§13.4). Saving
+    /// or deleting one changes the numbers now, not a minute from now.
+    pub fn invalidate(&mut self) {
+        self.scanned_at = None;
+    }
+
     fn fresh_at(&self, window_days: u16, now: Instant) -> Option<UsageAnalytics> {
         let fresh = self.window_days == window_days
             && self

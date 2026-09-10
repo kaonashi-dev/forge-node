@@ -296,9 +296,9 @@ patch is not a patch, and a viewer that rendered one would show a lie.
 
 | Type | Role |
 |------|------|
-| `AgentDescriptor` | Declarative provider definition: `binary_candidates` (in preference order), `default_args`, `version_probe`, `capabilities`, `profile_fields`, `resume`. Owned `String`s so it can travel over IPC and support custom agents later. |
-| `AgentProfile` | A named way to start a provider (§13.4): `provider_id`, `name`, optional `executable`, `args`, and an `env` **overlay** (unlike `SpawnSpec.env`, which is complete). |
-| `ProfileField` / `ProfileFieldEffect` | What the profile editor offers for a provider, as data: `Env { name, is_directory }` or `Flag { flag }`. `is_directory` is also what makes the daemon create the directory before launching. |
+| `AgentDescriptor` | Declarative provider definition: `binary_candidates` (in preference order), `default_args`, `version_probe`, `capabilities`, `config_dir`, `resume`. Owned `String`s so it can travel over IPC and support custom agents later. |
+| `AgentProfile` | A named way to start a provider (§13.4): `provider_id`, `name`, optional `executable`, optional `config_dir`, `args`. `resolve_config_dir` is what makes a relative directory absolute — against the launching user's `$HOME`, never the daemon's working directory. |
+| `ConfigDirSpec` | How a provider is pointed at a profile's directory, as data: the variables it is written to (two for OpenCode, which splits configuration from credentials) and one line of help. `None` on a descriptor means the provider has no such switch. |
 | `VersionProbe` | `args` (`--version`), optional `expect_substring` to reject look-alike binaries, `timeout_ms`. |
 | `AgentCapabilities` | `interactive_tui`, `supports_initial_prompt` — informational. `supports_resume` restates whether the descriptor carries a `ResumeStyle`. |
 | `ResumeStyle` | How a provider re-enters an earlier session of its own (§13.5): `Flag { flag }` (`claude --resume <id>`) or `Subcommand { command }` (`codex resume <id>`). `None` on the descriptor means its history is read-only. |
@@ -318,7 +318,7 @@ answers neither question.
 | Type | Role |
 |------|------|
 | `UsageSource` / `UsageProbe` | Where a provider's *allowance* reading comes from: a CLI printing one documented JSON document, or its existing local OAuth credentials (`ClaudeOauth`, `CodexOAuth`). |
-| `ProviderUsage` / `UsageWindow` | The provider's own word on how much of a rolling window is gone: a whole `used_percent` (no float in a wire type), a human `window` label, an optional `resets_at`, and `collected_at` so a stale reading can be shown as stale. Empty `windows` means "reported nothing", rendered as no meter — never as 0%. |
+| `ProviderUsage` / `UsageWindow` | The provider's own word on how much of a rolling window is gone: a whole `used_percent` (no float in a wire type), a human `window` label, an optional `resets_at`, and `collected_at` so a stale reading can be shown as stale. Empty `windows` means "reported nothing", rendered as no meter — never as 0%. A reading belongs to one *account*: `profile_id` names the launch profile whose login it describes, `None` being the provider's default one (§13.4). |
 | `UsageAnalytics` | *Our* count, from the transcripts the CLIs write to disk: `providers`, activity-only `daily` buckets, the `window_days` scanned, and `scanned`/`skipped` so a bounded scan never looks exhaustive. |
 | `ProviderAnalytics` | One provider's totals: `tokens`, `sessions`, `turns`, `cost_micros`, `unpriced_turns` (a non-zero count means the cost is a floor), `top_model`, `worked_secs`, and the first/last activity seen. |
 | `TokenTotals` | `input`, `output`, `cache_write`, `cache_read`, `reasoning`. `reasoning` is a subset of `output` and is *not* in `total()`; the other four are disjoint. |

@@ -24,7 +24,12 @@ export function usageResetLabel(resetsAt: string | null, now = Date.now()): stri
   if (!Number.isFinite(remaining) || remaining <= 0) return null;
 
   const minutes = Math.floor(remaining / 60_000);
-  return `resets in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  const hours = Math.floor(minutes / 60);
+  // Weekly windows reset days out, and "resets in 163h 12m" is not a number
+  // anyone reads as a week. Past a day the hours roll over into days, and the
+  // minutes stop earning their place at that distance.
+  if (hours >= 24) return `resets in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+  return `resets in ${hours}h ${minutes % 60}m`;
 }
 
 export function usageUpdatedLabel(collectedAt: string, now = Date.now()): string {

@@ -49,6 +49,7 @@ import {
   SESSION_SPLIT_WIDTH_KEY,
   readFlag,
   readWidth,
+  seedFromAppState,
   writeWidth,
 } from "./layout";
 
@@ -122,6 +123,10 @@ export function CenterStack(props: {
   const [splitWidth, setSplitWidth] = createSignal(
     readWidth(SESSION_SPLIT_WIDTH_KEY, SESSION_SPLIT_RANGE),
   );
+  // Read once above, before the daemon has answered, so the stored width would
+  // never come back on its own. The split is behind a `Show`, but the signal
+  // is not: it is created with the stack, on the frame the window paints.
+  seedFromAppState(() => setSplitWidth(readWidth(SESSION_SPLIT_WIDTH_KEY, SESSION_SPLIT_RANGE)));
 
   const activeSession = () =>
     forgeStore.sessions.find((item) => item.id === runtimeStore.activeSession) ?? null;

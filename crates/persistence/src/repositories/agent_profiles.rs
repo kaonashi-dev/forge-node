@@ -1,13 +1,13 @@
 //! Agent launch profiles repository (§13.4, §15.2).
 //!
-//! A profile is a named way to start a known provider: its own command,
-//! arguments and environment. `args` and `env` are stored as JSON lists rather
-//! than child tables — nothing queries inside them and the order of both is
-//! meaningful (arguments are positional, and a later variable wins).
+//! A profile is a named way to start a known provider: its own binary, its own
+//! config directory and its own arguments. `args` is stored as a JSON list
+//! rather than a child table — nothing queries inside it and its order is
+//! meaningful, because arguments are positional.
 //!
-//! Values are stored in clear text, like every other row here. A profile is
-//! meant to point at a config directory (`CLAUDE_CONFIG_DIR`), not to carry an
-//! API key; the GUI says so where the variables are edited.
+//! `config_dir` is stored as the user typed it, relative paths included: what
+//! it is relative *to* is the home directory of whoever launches, which is a
+//! runtime fact and not a stored one (`domain::AgentProfile::resolve_config_dir`).
 
 use std::path::PathBuf;
 
@@ -17,7 +17,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use crate::db::DbError;
 use crate::repositories::{id_from_str, path_to_str, ts_from_str, ts_to_str};
 
-const COLUMNS: &str = "id, provider_id, name, executable_path, args_json, env_json, created_at";
+const COLUMNS: &str = "id, provider_id, name, executable_path, config_dir, args_json, created_at";
 
 /// Repository over the `agent_profiles` table.
 pub struct AgentProfileRepo<'a> {
@@ -38,25 +38,23 @@ impl<'a> AgentProfileRepo<'a> {
     pub fn upsert(&self, profile: &AgentProfile) -> Result<(), DbError> {
         let args = serde_json::to_string(&profile.args)
             .map_err(|e| DbError::Encode(format!("profile args: {e}")))?;
-        let env = serde_json::to_string(&profile.env)
-            .map_err(|e| DbError::Encode(format!("profile env: {e}")))?;
         self.conn.execute(
             "INSERT INTO agent_profiles (\
-               id, provider_id, name, executable_path, args_json, env_json, created_at) \
+               id, provider_id, name, executable_path, config_dir, args_json, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
              ON CONFLICT(id) DO UPDATE SET \
                provider_id = excluded.provider_id, \
                name = excluded.name, \
                executable_path = excluded.executable_path, \
-               args_json = excluded.args_json, \
-               env_json = excluded.env_json",
+               config_dir = excluded.config_dir, \
+               args_json = excluded.args_json",
             params![
                 profile.id.to_string(),
                 profile.provider_id.as_str(),
                 profile.name,
                 profile.executable.as_deref().map(path_to_str),
+                profile.config_dir.as_deref().map(path_to_str),
                 args,
-                env,
                 ts_to_str(&profile.created_at),
             ],
         )?;
@@ -115,8 +113,8 @@ struct RawProfile {
     provider_id: String,
     name: String,
     executable_path: Option<String>,
+    config_dir: Option<String>,
     args_json: String,
-    env_json: String,
     created_at: String,
 }
 
@@ -127,8 +125,8 @@ impl RawProfile {
             provider_id: row.get(1)?,
             name: row.get(2)?,
             executable_path: row.get(3)?,
-            args_json: row.get(4)?,
-            env_json: row.get(5)?,
+            config_dir: row.get(4)?,
+            args_json: row.get(5)?,
             created_at: row.get(6)?,
         })
     }
@@ -136,15 +134,13 @@ impl RawProfile {
     fn into_domain(self) -> Result<AgentProfile, DbError> {
         let args: Vec<String> = serde_json::from_str(&self.args_json)
             .map_err(|e| DbError::decode("profile args", &self.args_json, e))?;
-        let env: Vec<(String, String)> = serde_json::from_str(&self.env_json)
-            .map_err(|e| DbError::decode("profile env", &self.env_json, e))?;
         Ok(AgentProfile {
             id: id_from_str::<AgentProfileId>("AgentProfileId", &self.id)?,
             provider_id: AgentProviderId::new(self.provider_id),
             name: self.name,
             executable: self.executable_path.map(PathBuf::from),
+            config_dir: self.config_dir.map(PathBuf::from),
             args,
-            env,
             created_at: ts_from_str(&self.created_at)?,
         })
     }

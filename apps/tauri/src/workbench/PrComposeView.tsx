@@ -1,8 +1,9 @@
-import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
+import { Show, createMemo, createSignal, onMount } from "solid-js";
 import { newAgent, selectSession } from "../runtime/api";
-import { sessionStateLabel, sessionTitle, type PullRequest, type Session } from "../runtime/types";
+import { sessionStateLabel, sessionTitle, type PullRequest } from "../runtime/types";
 import { defaultAgentFrom } from "../settings/defaultAgent";
 import { forgeStore } from "../store/forgeStore";
+import { beginCompose, clearCompose, composeRun } from "../store/prComposeStore";
 import { setRuntimeStore } from "../store/runtimeStore";
 import { setLoading, workbenchStore } from "../store/workbenchStore";
 import { close, focus, openDiff, openPrCompose, showTerminal } from "../store/viewsStore";
@@ -31,8 +32,6 @@ export function PrComposeView() {
   const [taskId, setTaskId] = createSignal(builtinTasks()[0].id);
   const [promptOpen, setPromptOpen] = createSignal(false);
   const [extra, setExtra] = createSignal("");
-  const [awaiting, setAwaiting] = createSignal(false);
-  const [launchedSession, setLaunchedSession] = createSignal<string | null>(null);
 
   const workspace = () => workbenchStore.workspace;
   const diff = (): WorkspaceDiff | null => workbenchStore.diff;
@@ -40,28 +39,21 @@ export function PrComposeView() {
   const error = () => workbenchStore.diffError;
   const task = (): PrTask => taskOrDefault(taskId());
 
+  // One launch at a time, and only for the checkout this compose is about —
+  // a leftover run from another workspace would block the button for no reason.
+  const run = () => {
+    const current = composeRun();
+    const ws = workspace();
+    return current && ws && current.workspace === ws ? current : null;
+  };
+  const awaiting = () => run() !== null && run()?.session == null;
+  const launchedSession = () => run()?.session ?? null;
+
   onMount(() => {
     const ws = workspace();
     if (ws && !diff() && !loading()) {
       setLoading("diff", true);
       void loadDiff(ws).catch(() => undefined);
-    }
-  });
-
-  // Adopt the newest agent session in this checkout once a launch is in flight.
-  createEffect(() => {
-    if (!awaiting()) return;
-    const ws = workspace();
-    if (!ws) return;
-    const session = forgeStore.sessions
-      .filter((item) => item.workspace_id === ws && item.agent_provider_id != null)
-      .reduce<Session | null>(
-        (newest, item) => (!newest || item.created_at > newest.created_at ? item : newest),
-        null,
-      );
-    if (session) {
-      setLaunchedSession(session.id);
-      setAwaiting(false);
     }
   });
 
@@ -111,9 +103,9 @@ export function PrComposeView() {
     const ws = workspace();
     if (!ws) return;
     const prompt = composePrompt(task(), d, extra());
-    setAwaiting(true);
+    beginCompose(ws);
     void newAgent(provider, null, ws, null, prompt).catch(() => {
-      setAwaiting(false);
+      clearCompose();
       setRuntimeStore("notice", "The daemon refused to launch the agent.");
     });
   }
@@ -207,7 +199,7 @@ export function PrComposeView() {
               {diff() ? composePrompt(task(), diff()!, extra()) : task().body}
             </pre>
             <TextArea
-              class="settings-hint"
+              class="pr-compose-field"
               label="Also"
               rows={3}
               value={extra()}

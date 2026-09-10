@@ -1,6 +1,7 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { createWorktree, fetchRemote, newAgent, newShell } from "../runtime/api";
+import { createWorktree, fetchRemote } from "../runtime/api";
 import { listBranches } from "../workbench/api";
+import { launchAgent, launchShell } from "./sessionActions";
 import { forgeStore } from "../store/forgeStore";
 import { setLoading, workbenchStore } from "../store/workbenchStore";
 import { runtimeStore, setRuntimeStore } from "../store/runtimeStore";
@@ -150,9 +151,9 @@ export function BranchPicker(props: BranchPickerProps) {
     props.onCreated?.();
     const choice = parseLaunch(launch(), forgeStore.launchables);
     if (choice.kind === "shell") {
-      void newShell(workspace.id).catch(() => undefined);
+      void launchShell(workspace.id).catch(() => undefined);
     } else if (choice.kind === "agent") {
-      void newAgent(choice.provider, choice.profile, workspace.id).catch(() => undefined);
+      void launchAgent(choice.provider, choice.profile, workspace.id).catch(() => undefined);
     }
     props.onDismiss();
   });

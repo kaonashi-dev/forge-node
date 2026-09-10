@@ -4,6 +4,12 @@
 //! macOS to the login Keychain (`security find-generic-password`, the existing
 //! subprocess pattern — no new crate). Then calls the Anthropic usage endpoint.
 //! Nothing here logs the token.
+//!
+//! A profile that moved the config directory is a different login (§13.4), so
+//! its credentials are read from that directory and the Keychain is not
+//! consulted: the Keychain holds one item for the default account, and falling
+//! back to it would print the default account's allowance under the profile's
+//! name — which is the whole failure this account split exists to fix.
 
 use std::path::{Path, PathBuf};
 
@@ -32,9 +38,10 @@ struct OauthField {
 pub(super) fn collect(
     descriptor: &AgentDescriptor,
     env: &ResolvedEnvironment,
+    account: &super::UsageAccount<'_>,
     http: &dyn super::HttpClient,
 ) -> Option<ProviderUsage> {
-    let token = read_access_token(env)?;
+    let token = read_access_token(env, account)?;
     let body = http.get(
         USAGE_URL,
         &[
@@ -49,21 +56,43 @@ pub(super) fn collect(
     }
     Some(ProviderUsage {
         provider_id: descriptor.id.clone(),
+        profile_id: account.profile_id,
         windows,
         collected_at: Timestamp::now(),
     })
 }
 
-fn read_access_token(env: &ResolvedEnvironment) -> Option<String> {
-    if let Some(home) = env.get("HOME") {
-        let path = PathBuf::from(home)
+/// The account's `.credentials.json`: inside a profile's config directory, or
+/// `~/.claude` for the default one.
+fn credentials_path(
+    env: &ResolvedEnvironment,
+    account: &super::UsageAccount<'_>,
+) -> Option<PathBuf> {
+    if let Some(dir) = account.config_dir {
+        return Some(dir.join(".credentials.json"));
+    }
+    Some(
+        PathBuf::from(env.get("HOME")?)
             .join(".claude")
-            .join(".credentials.json");
+            .join(".credentials.json"),
+    )
+}
+
+fn read_access_token(
+    env: &ResolvedEnvironment,
+    account: &super::UsageAccount<'_>,
+) -> Option<String> {
+    if let Some(path) = credentials_path(env, account) {
         if let Ok(raw) = std::fs::read(&path) {
             if let Some(token) = parse_credentials(&raw) {
                 return Some(token);
             }
         }
+    }
+    // One Keychain item, one login: it is the default account's, so a profile
+    // reports nothing rather than the wrong account's allowance.
+    if account.config_dir.is_some() {
+        return None;
     }
     keychain_token(env)
 }
@@ -172,7 +201,56 @@ mod tests {
         let http = FakeHttp::with(USAGE_URL, r#"{ "five_hour": { "utilization": 60.0 } }"#);
 
         let descriptor = crate::builtins::builtin("claude").unwrap();
-        let usage = collect(&descriptor, &env, &http).expect("a reading");
+        let usage = collect(
+            &descriptor,
+            &env,
+            &super::super::UsageAccount::default(),
+            &http,
+        )
+        .expect("a reading");
         assert_eq!(usage.windows[0].used_percent, 60);
+    }
+
+    /// A profile reads the login inside the directory it moved, and the
+    /// reading says which profile it belongs to.
+    #[test]
+    fn a_profile_reads_the_credentials_in_its_own_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let work = home.path().join(".claude-work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(
+            work.join(".credentials.json"),
+            r#"{ "claudeAiOauth": { "accessToken": "work-token" } }"#,
+        )
+        .unwrap();
+        let env = env_with(vec![("HOME", home.path().to_str().unwrap())]);
+        let http = FakeHttp::with(USAGE_URL, r#"{ "five_hour": { "utilization": 12.0 } }"#);
+        let profile = domain::AgentProfileId::new();
+        let account = super::super::UsageAccount {
+            profile_id: Some(profile),
+            config_dir: Some(work.as_path()),
+        };
+
+        let descriptor = crate::builtins::builtin("claude").unwrap();
+        let usage = collect(&descriptor, &env, &account, &http).expect("a reading");
+        assert_eq!(usage.windows[0].used_percent, 12);
+        assert_eq!(usage.profile_id, Some(profile));
+    }
+
+    /// The Keychain holds the default account's login only. A profile whose
+    /// directory has no credentials reports nothing rather than the default
+    /// account's allowance under the profile's name.
+    #[test]
+    fn a_profile_without_credentials_does_not_fall_back_to_the_keychain() {
+        let home = tempfile::tempdir().unwrap();
+        let empty = home.path().join(".claude-personal");
+        std::fs::create_dir_all(&empty).unwrap();
+        let env = env_with(vec![("HOME", home.path().to_str().unwrap())]);
+        let account = super::super::UsageAccount {
+            profile_id: Some(domain::AgentProfileId::new()),
+            config_dir: Some(empty.as_path()),
+        };
+
+        assert!(read_access_token(&env, &account).is_none());
     }
 }

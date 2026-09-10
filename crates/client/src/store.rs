@@ -91,8 +91,9 @@ pub struct Store {
     pub worktree_shares: Vec<ShareRule>,
     /// Opaque app-state key/value pairs (§15.2).
     pub app_state: Vec<(String, String)>,
-    /// Latest per-provider account usage (§16.2). Empty until a provider that
-    /// declares a usage source reports one.
+    /// Latest usage per *account* (§16.2, §13.4): a provider reports one
+    /// reading for its default login and one per profile that moved its config
+    /// directory. Empty until a provider that declares a usage source reports.
     pub usage: Vec<ProviderUsage>,
     /// Complete cached pull-request state from the daemon.
     pub pull_requests: PullRequestState,
@@ -697,6 +698,7 @@ mod tests {
     fn sample_usage(provider: &str, used_percent: u8) -> ProviderUsage {
         ProviderUsage {
             provider_id: AgentProviderId::new(provider),
+            profile_id: None,
             windows: vec![domain::UsageWindow {
                 used_percent,
                 window: "5h".to_string(),

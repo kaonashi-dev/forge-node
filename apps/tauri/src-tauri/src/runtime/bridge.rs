@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use client::{CellGrid, Client, DaemonEvent, EventOutcome, Store};
 use domain::{
     AgentProfileId, AgentProviderId, JobId, MouseMode, ProjectId, PtySize, SessionId, TerminalId,
-    WorkspaceId,
+    Timestamp, WorkspaceId,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter as _};
@@ -549,7 +549,7 @@ fn runtime_loop(
                 }
 
                 if batch.active_session_removed {
-                    let Some(next_session) = find_live_session(&store, None) else {
+                    let Some(next_session) = successor_session(&store, batch.departing) else {
                         break;
                     };
                     match switch_session(&client, &mut store, at.terminal, next_session, size) {
@@ -1590,8 +1590,25 @@ struct Batch {
     /// watched session printing a line never repaints the main canvas.
     preview_damage: Option<Damage>,
     active_session_removed: bool,
+    /// Where the session that just went was, read while the store still had
+    /// the row: `successor_session` needs its checkout to stay in it.
+    departing: Option<Departing>,
     /// The previewed session went away; the tab clears its canvas.
     preview_session_removed: bool,
+}
+
+/// The active session as the store last described it, kept past its removal.
+///
+/// The project is resolved here rather than from `workspace` later, because
+/// removing a worktree broadcasts `SessionRemoved` and `WorkspaceRemoved` in
+/// one burst: by the time the successor is chosen the checkout's own row can
+/// be gone too.
+#[derive(Clone, Copy)]
+struct Departing {
+    workspace: WorkspaceId,
+    project: Option<ProjectId>,
+    /// Its place in the strip, which is `created_at` then id (`tab_key`).
+    key: (Timestamp, SessionId),
 }
 
 impl Batch {
@@ -1612,6 +1629,15 @@ impl Batch {
         if let DaemonEvent::SessionRemoved { session_id } = event {
             if *session_id == at.session {
                 self.active_session_removed = true;
+                self.departing = store
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == *session_id)
+                    .map(|session| Departing {
+                        workspace: session.workspace_id,
+                        project: project_of(store, session.workspace_id),
+                        key: tab_key(session),
+                    });
             }
             if preview.is_some_and(|open| open.session == *session_id) {
                 self.preview_session_removed = true;
@@ -1773,6 +1799,68 @@ fn bootstrap(
     let terminal_id = attach_session(client, &mut store, session_id, size)
         .map_err(|error| error.reason().to_owned())?;
     Ok((store, session_id, terminal_id))
+}
+
+/// A session's place in the tab strip: creation order, ties broken by id.
+///
+/// The same key the window sorts the strip by, so "the tab before this one"
+/// means the same thing on both sides of the IPC. The persisted order the user
+/// may have dragged into lives in the window's `app_state` and is not readable
+/// from here; it seeds from this one.
+fn tab_key(session: &domain::Session) -> (Timestamp, SessionId) {
+    (session.created_at, session.id)
+}
+
+fn project_of(store: &Store, workspace: WorkspaceId) -> Option<ProjectId> {
+    store
+        .workspaces
+        .iter()
+        .find(|item| item.id == workspace)
+        .map(|item| item.project_id)
+}
+
+/// Which session takes the closed one's place on screen.
+///
+/// Ordered by how far the window has to travel: the departing session's own
+/// checkout first — the tab before it, then the one after — then any other
+/// checkout of the same project, and only then the newest live session
+/// anywhere. The strip shows one checkout at a time, so answering a closed tab
+/// with a global "newest" walks the window into a repository the person is not
+/// looking at, which is the whole reason this is not `find_live_session`.
+///
+/// `None` for the departing session is a `FactoryReset`, where there is no
+/// checkout left to prefer; a departing session whose project is `None` is one
+/// whose checkout was never in the replica, which is the same answer.
+fn successor_session(store: &Store, departing: Option<Departing>) -> Option<SessionId> {
+    let Some(gone) = departing else {
+        return find_live_session(store, None);
+    };
+    let live = || {
+        store
+            .sessions
+            .iter()
+            .filter(|session| session.terminal_id.is_some())
+    };
+    let in_checkout = || live().filter(|session| session.workspace_id == gone.workspace);
+    let neighbour = in_checkout()
+        .filter(|session| tab_key(session) < gone.key)
+        .max_by_key(|session| tab_key(session))
+        .or_else(|| {
+            in_checkout()
+                .filter(|session| tab_key(session) > gone.key)
+                .min_by_key(|session| tab_key(session))
+        });
+    if let Some(session) = neighbour {
+        return Some(session.id);
+    }
+    gone.project
+        .and_then(|project| {
+            live()
+                .filter(|session| project_of(store, session.workspace_id) == Some(project))
+                .max_by_key(|session| tab_key(session))
+        })
+        .map(|session| session.id)
+        .or_else(|| find_live_session(store, None))
 }
 
 fn find_live_session(store: &Store, preferred: Option<SessionId>) -> Option<SessionId> {
@@ -2154,6 +2242,207 @@ mod tests {
         );
         assert!(batch.active_session_removed);
         assert!(batch.shell);
+    }
+
+    fn checkout(project: ProjectId) -> domain::Workspace {
+        domain::Workspace {
+            id: WorkspaceId::new(),
+            project_id: project,
+            kind: domain::WorkspaceKind::Main,
+            path: std::path::PathBuf::from("/tmp/forge-test"),
+            branch: None,
+            display_name: None,
+            managed_by_app: false,
+            created_at: Timestamp::now(),
+            status: domain::WorkspaceStatus::default(),
+        }
+    }
+
+    /// `at` is a whole second apart per tab so the strip order under test is
+    /// the timestamps and never the sub-millisecond luck of two v7 ids.
+    fn tab(workspace: WorkspaceId, at: i64) -> domain::Session {
+        let mut session = sample_session(domain::SessionState::Running);
+        session.workspace_id = workspace;
+        session.terminal_id = Some(TerminalId::new());
+        session.created_at = Timestamp::from_unix_secs(at).expect("epoch second");
+        session
+    }
+
+    fn store_of(workspaces: &[domain::Workspace], sessions: &[domain::Session]) -> Store {
+        let mut store = Store::new();
+        store.workspaces = workspaces.to_vec();
+        store.sessions = sessions.to_vec();
+        store
+    }
+
+    fn departing(store: &Store, session: &domain::Session) -> Option<Departing> {
+        Some(Departing {
+            workspace: session.workspace_id,
+            project: project_of(store, session.workspace_id),
+            key: tab_key(session),
+        })
+    }
+
+    /// The bug this ordering exists for: the newest live session anywhere is
+    /// usually in the project the person just left.
+    #[test]
+    fn closing_a_tab_lands_on_the_one_before_it_in_the_same_checkout() {
+        let here = checkout(ProjectId::new());
+        let elsewhere = checkout(ProjectId::new());
+        let first = tab(here.id, 100);
+        let closing = tab(here.id, 200);
+        let newest_anywhere = tab(elsewhere.id, 900);
+        // Without the closing session: the loop applies its removal to the
+        // store before it asks who takes over.
+        let store = store_of(&[here, elsewhere], &[first.clone(), newest_anywhere]);
+
+        assert_eq!(
+            successor_session(&store, departing(&store, &closing)),
+            Some(first.id)
+        );
+    }
+
+    #[test]
+    fn closing_the_first_tab_lands_on_the_next_one_in_the_same_checkout() {
+        let here = checkout(ProjectId::new());
+        let elsewhere = checkout(ProjectId::new());
+        let closing = tab(here.id, 100);
+        let after = tab(here.id, 200);
+        let store = store_of(
+            &[here, elsewhere.clone()],
+            &[after.clone(), tab(elsewhere.id, 900)],
+        );
+
+        assert_eq!(
+            successor_session(&store, departing(&store, &closing)),
+            Some(after.id)
+        );
+    }
+
+    /// A session with no terminal has already exited; the strip does not show
+    /// it, so it cannot be what a close lands on.
+    #[test]
+    fn an_exited_session_is_not_a_successor() {
+        let here = checkout(ProjectId::new());
+        let mut exited = tab(here.id, 100);
+        exited.terminal_id = None;
+        let after = tab(here.id, 300);
+        let closing = tab(here.id, 200);
+        let store = store_of(&[here], &[exited, after.clone()]);
+
+        assert_eq!(
+            successor_session(&store, departing(&store, &closing)),
+            Some(after.id)
+        );
+    }
+
+    /// The strip is empty now, but the rail is still on this project: another
+    /// worktree of it is nearer than another repository.
+    #[test]
+    fn the_last_tab_of_a_checkout_falls_back_to_its_own_project() {
+        let project = ProjectId::new();
+        let here = checkout(project);
+        let sibling = checkout(project);
+        let elsewhere = checkout(ProjectId::new());
+        let closing = tab(here.id, 200);
+        let in_sibling = tab(sibling.id, 100);
+        let store = store_of(
+            &[here, sibling, elsewhere.clone()],
+            &[in_sibling.clone(), tab(elsewhere.id, 900)],
+        );
+
+        assert_eq!(
+            successor_session(&store, departing(&store, &closing)),
+            Some(in_sibling.id)
+        );
+    }
+
+    /// Removing a worktree broadcasts `SessionRemoved` and `WorkspaceRemoved`
+    /// back to back, and the loop drains both before it picks a successor: the
+    /// departing checkout's own row is gone by then, so a project resolved at
+    /// that point is `None` and the window falls through to another repository.
+    #[test]
+    fn removing_a_worktree_stays_inside_its_project() {
+        let project = ProjectId::new();
+        let here = checkout(project);
+        let sibling = checkout(project);
+        let elsewhere = checkout(ProjectId::new());
+        let closing = tab(here.id, 200);
+        let in_sibling = tab(sibling.id, 100);
+        let newest_anywhere = tab(elsewhere.id, 900);
+        let before = store_of(
+            &[here, sibling.clone(), elsewhere.clone()],
+            &[closing.clone(), in_sibling.clone(), newest_anywhere.clone()],
+        );
+        let at = attached(TerminalId::new(), closing.id, 0);
+        let mut batch = Batch::default();
+        batch.absorb(
+            &DaemonEvent::SessionRemoved {
+                session_id: closing.id,
+            },
+            &before,
+            &at,
+            None,
+        );
+
+        let after = store_of(
+            &[sibling, elsewhere],
+            &[in_sibling.clone(), newest_anywhere],
+        );
+        assert_eq!(
+            successor_session(&after, batch.departing),
+            Some(in_sibling.id)
+        );
+    }
+
+    #[test]
+    fn a_project_with_nothing_left_open_falls_back_to_the_newest_anywhere() {
+        let here = checkout(ProjectId::new());
+        let elsewhere = checkout(ProjectId::new());
+        let closing = tab(here.id, 200);
+        let older = tab(elsewhere.id, 100);
+        let newest = tab(elsewhere.id, 900);
+        let store = store_of(&[here, elsewhere], &[older, newest.clone()]);
+
+        assert_eq!(
+            successor_session(&store, departing(&store, &closing)),
+            Some(newest.id)
+        );
+    }
+
+    /// `FactoryReset` removes the active session without naming it, so there
+    /// is no checkout to prefer and the old global answer is the right one.
+    #[test]
+    fn with_no_departing_checkout_the_newest_session_anywhere_wins() {
+        let here = checkout(ProjectId::new());
+        let newest = tab(here.id, 900);
+        let store = store_of(
+            std::slice::from_ref(&here),
+            &[tab(here.id, 100), newest.clone()],
+        );
+
+        assert_eq!(successor_session(&store, None), Some(newest.id));
+        assert_eq!(successor_session(&Store::new(), None), None);
+    }
+
+    #[test]
+    fn the_departing_checkout_is_read_before_the_store_forgets_it() {
+        let here = checkout(ProjectId::new());
+        let closing = tab(here.id, 200);
+        let store = store_of(std::slice::from_ref(&here), std::slice::from_ref(&closing));
+        let at = attached(TerminalId::new(), closing.id, 0);
+        let mut batch = Batch::default();
+
+        batch.absorb(
+            &DaemonEvent::SessionRemoved {
+                session_id: closing.id,
+            },
+            &store,
+            &at,
+            None,
+        );
+
+        assert_eq!(batch.departing.map(|gone| gone.workspace), Some(here.id));
     }
 
     #[test]

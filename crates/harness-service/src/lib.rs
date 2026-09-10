@@ -1,8 +1,10 @@
 //! Read and write the subagent harness state under `<project>/harness/`.
 //!
 //! The daemon is the only caller; the GUI never opens these paths itself
-//! (ADR-012). Paths are resolved from [`Project::root_path`], not from an
-//! isolated worktree checkout.
+//! (ADR-012). Paths are resolved from the project's *repository* root
+//! (`Daemon::harness_root_for`), not from an isolated worktree checkout and
+//! not from the directory the project happens to be registered at — that one
+//! may sit below the repository root and hold no `harness/` at all.
 //!
 //! # One state machine per repository, several features at once
 //!

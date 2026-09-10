@@ -8,7 +8,7 @@
 // the provider's own read-only mode, applied by the launch — see
 // `providerReviews` in `runtime/types`.
 
-import type { ProviderInfo, PullRequest } from "../runtime/types";
+import type { Launchable, ProviderInfo, PullRequest } from "../runtime/types";
 import { providerName, providerReviewMode, providerReviews } from "../runtime/types";
 
 export type ReviewRecipe = {
@@ -129,8 +129,16 @@ export function composeReviewPrompt(recipe: ReviewRecipe, pr: PullRequest, extra
 }
 
 export type ReviewAgent = {
-  /** Provider id, as the launch names it. */
+  /**
+   * Launchable key — the bare provider id, or `profile:<uuid>`.
+   *
+   * What the select holds and what we remember: remembering only the provider
+   * would forget which profile was picked the moment a second one of the same
+   * provider appears.
+   */
   id: string;
+  provider: string;
+  profile: string | null;
   name: string;
   /** What the provider calls its read-only mode — "plan mode", "ask mode". */
   mode: string;
@@ -139,16 +147,39 @@ export type ReviewAgent = {
 /**
  * The agents that can actually be sent to review, in the snapshot's order.
  *
- * Both halves of the launch are checked, because the daemon refuses the whole
- * request when either spelling is missing: offering a row that would be turned
+ * Built from `launchables` — the same rows the `+` menu shows — so a custom
+ * profile of Claude appears next to Claude itself. Both halves of the launch
+ * are still checked against the provider: the daemon refuses the whole request
+ * when either spelling is missing, and offering a row that would be turned
  * down is a button that does nothing.
  */
-export function reviewAgents(providers: readonly ProviderInfo[]): ReviewAgent[] {
-  return providers.filter(providerReviews).map((provider) => ({
-    id: provider.descriptor?.id ?? "",
-    name: providerName(provider),
-    mode: providerReviewMode(provider) ?? "read-only",
-  }));
+export function reviewAgents(
+  providers: readonly ProviderInfo[],
+  launchables: readonly Launchable[],
+): ReviewAgent[] {
+  const byId = new Map(
+    providers
+      .filter((provider) => provider.descriptor?.id)
+      .map((provider) => [provider.descriptor!.id, provider] as const),
+  );
+  return launchables.flatMap((item) => {
+    if (item.kind !== "agent" || !item.enabled || !item.provider || !item.supports_initial_prompt) {
+      return [];
+    }
+    const provider = byId.get(item.provider);
+    if (!provider || !providerReviews(provider)) return [];
+    return [
+      {
+        id: item.key,
+        provider: item.provider,
+        profile: item.profile,
+        // A bare provider keeps its display name; a profile keeps the name the
+        // user gave it — the same label the + menu already shows.
+        name: item.profile ? item.label : providerName(provider),
+        mode: providerReviewMode(provider) ?? "read-only",
+      },
+    ];
+  });
 }
 
 /**

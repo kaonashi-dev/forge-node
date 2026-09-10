@@ -35,15 +35,6 @@
   line-height: 1.6;
   margin: var(--space-4) 0;
 }
-.panel-error {
-  background: var(--forge-diff-removed-bg);
-  border-radius: var(--radius-xs);
-  color: var(--danger-solid);
-  font-size: var(--text-xs);
-  line-height: 1.6;
-  margin: 0;
-  padding: var(--space-6) var(--space-8);
-}
 .file-tree {
   display: flex;
   flex: 1;
@@ -279,6 +270,14 @@
   align-items: center;
   display: inline-flex;
   gap: var(--space-6);
+}
+/* The account a run belongs to, when it is not the provider's default one. */
+.history-account {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  padding: 0 var(--space-6);
 }
 .history-preview {
   color: var(--fg-muted);

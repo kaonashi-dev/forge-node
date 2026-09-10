@@ -65,7 +65,11 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 ///   old peer has never heard of, and a struct field that changes the encoded
 ///   arity, are decode failures rather than ignored extras — which is a closed
 ///   connection with no explanation unless this number moves with them.
-pub const PROTOCOL_VERSION: u32 = 15;
+/// - 15 → 16: a launch profile is a directory, not an environment:
+///   `AgentProfile.env` is gone and `config_dir` takes its place, and
+///   `AgentDescriptor.profile_fields` is now `config_dir`. Both change the
+///   encoded arity of a struct every snapshot carries.
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,11 +233,8 @@ mod tests {
             provider_id: AgentProviderId::new("claude"),
             name: "Work".to_string(),
             executable: None,
+            config_dir: Some(std::path::PathBuf::from(".claude-work")),
             args: vec!["--model".to_string(), "opus".to_string()],
-            env: vec![(
-                "CLAUDE_CONFIG_DIR".to_string(),
-                "/home/dev/.claude-work".to_string(),
-            )],
             created_at: sample_timestamp(),
         }
     }
@@ -314,7 +315,7 @@ mod tests {
                     timeout_ms: 2000,
                 },
                 usage_source: None,
-                profile_fields: vec![],
+                config_dir: None,
                 resume: Some(domain::ResumeStyle::Flag {
                     flag: "--resume".to_string(),
                 }),

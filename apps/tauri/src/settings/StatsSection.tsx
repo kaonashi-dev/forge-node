@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createSignal } from "solid-js";
+import type { ProviderUsage } from "../runtime/types";
 import { forgeStore } from "../store/forgeStore";
 import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import { loadUsageAnalytics } from "../workbench/api";
@@ -199,7 +200,7 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
           <For each={forgeStore.usage}>
             {(reading) => (
               <div class="stats-meter-row">
-                <span>{reading.provider_id}</span>
+                <span>{meterAccount(reading)}</span>
                 <For each={reading.windows}>
                   {(window) => (
                     <span class="settings-row-note">
@@ -289,4 +290,15 @@ function ProviderCard(props: { provider: ProviderAnalytics; share: number }) {
       </span>
     </article>
   );
+}
+
+/**
+ * Which login a meter belongs to: a provider reports one reading per account
+ * (§13.4), so the provider id alone would print the same name twice.
+ */
+function meterAccount(reading: ProviderUsage): string {
+  const profile = reading.profile_id
+    ? forgeStore.agent_profiles.find((item) => item.id === reading.profile_id)
+    : null;
+  return profile ? `${reading.provider_id} · ${profile.name}` : reading.provider_id;
 }

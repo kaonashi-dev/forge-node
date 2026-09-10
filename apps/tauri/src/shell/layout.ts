@@ -4,6 +4,8 @@
 // so a persisted rail width survives relaunch.
 // the next, and a second window opens where the first left off.
 
+import { createEffect } from "solid-js";
+
 import { setAppState } from "../runtime/api";
 import { forgeStore } from "../store/forgeStore";
 
@@ -32,11 +34,23 @@ export const DENSITY_KEY = "ui.density";
 export const TERMINAL_ZOOM_KEY = "ui.terminal.zoom";
 /** Write the open file on blur and after a pause. Off by default (§2.2 A8). */
 export const AUTOSAVE_KEY = "ui.editor.autosave";
-/** Which editing model the editor uses: `default`, `vim` or `helix` (A9/A10). */
-export const EDITOR_KEYMAP_KEY = "ui.editor.keymap";
+/**
+ * The checkout the window was last pointed at, so a relaunch opens where the
+ * person left off rather than on whichever worktree happens to be first.
+ *
+ * The checkout and not the session: the daemon purges session rows on startup
+ * (`sessions.persist_history = false`), so a remembered session would name a
+ * row that no longer exists, while the worktree it belonged to is still there.
+ */
+export const LAST_WORKSPACE_KEY = "ui.last_workspace";
 
 /** Bounds the drag handles clamp to, so a panel cannot be dragged to nothing. */
-export const RAIL_RANGE = { min: 180, max: 480, fallback: 240 };
+/* 280 rather than 240: this column carries four levels of indent before the
+   text starts, and at 240 a worktree's path and a session's title were both
+   ellipsed on a fresh install — the two strings that say *which* checkout a
+   row is. Must stay in step with `metrics.railW`, which paints the first frame
+   before the persisted width arrives. */
+export const RAIL_RANGE = { min: 180, max: 480, fallback: 280 };
 /* 320 rather than 288: six inspector tabs are 307px of one row, and at 288 the
    strip opened already scrolled — with `History` cut in half at the left edge,
    because the tab it scrolls to is the selected one and `Git` is last. */
@@ -45,6 +59,29 @@ export const PANEL_RANGE = { min: 220, max: 560, fallback: 320 };
    never a patch, so it can give the terminal back more room than a panel that
    has to fit six tabs in one row. */
 export const SESSION_SPLIT_RANGE = { min: 240, max: 620, fallback: 340 };
+
+/**
+ * Run `seed` once the daemon's stored preferences have landed.
+ *
+ * The window paints before the snapshot arrives, so a preference read into a
+ * signal at *creation* reads an empty `app_state`, keeps the fallback, and
+ * keeps it forever: the write path still works and the value is in the
+ * database, but every relaunch quietly ignores it. A read inside a reactive
+ * context corrects itself when the snapshot lands, because `forgeStore` is a
+ * store; a `createSignal(read…())` cannot, and that is the shape this exists
+ * for.
+ *
+ * Seeded once rather than tracked, like `AppShell` does with the rail: a later
+ * write to `app_state` must not yank a panel the person has since dragged.
+ */
+export function seedFromAppState(seed: () => void): void {
+  let seeded = false;
+  createEffect(() => {
+    if (seeded || Object.keys(forgeStore.app_state).length === 0) return;
+    seeded = true;
+    seed();
+  });
+}
 
 export function readFlag(key: string, fallback: boolean): boolean {
   const value = forgeStore.app_state[key];

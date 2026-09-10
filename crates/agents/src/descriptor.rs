@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use domain::{
-    AgentDescriptor, AgentProfile, AgentProviderId, DetectionResult, LaunchAgentRequest,
-    ProfileFieldEffect, ResolvedEnvironment, SpawnSpec,
+    AgentDescriptor, AgentProviderId, DetectionResult, LaunchAgentRequest, ResolvedEnvironment,
+    SpawnSpec,
 };
 
 use crate::detection;
@@ -73,21 +73,21 @@ pub trait AgentAdapter: Send + Sync {
         env: &ResolvedEnvironment,
     ) -> Result<SpawnSpec, AgentError>;
 
-    /// Build a [`SpawnSpec`] with a profile's environment overlay (§13.4).
+    /// Build a [`SpawnSpec`] pointed at a profile's config directory (§13.4).
     ///
-    /// Defaulted, because an overlay is a property of the launch and not of
-    /// the provider: an adapter only overrides this if its own `build_launch`
-    /// does something the generic builder cannot express.
+    /// Defaulted, because a profile's directory is a property of the launch and
+    /// not of the provider: an adapter only overrides this if its own
+    /// `build_launch` does something the generic builder cannot express.
     ///
     /// # Errors
     /// As [`build_launch`](AgentAdapter::build_launch).
-    fn build_launch_with_env_overlay(
+    fn build_launch_with_config_dir(
         &self,
         req: &LaunchAgentRequest,
         env: &ResolvedEnvironment,
-        overlay: &[(String, String)],
+        config_dir: Option<&Path>,
     ) -> Result<SpawnSpec, AgentError> {
-        build_launch_with_env_overlay(self.descriptor(), req, env, overlay)
+        build_launch_with_config_dir(self.descriptor(), req, env, config_dir)
     }
 }
 
@@ -160,25 +160,25 @@ pub fn build_launch(
     req: &LaunchAgentRequest,
     env: &ResolvedEnvironment,
 ) -> Result<SpawnSpec, AgentError> {
-    build_launch_with_env_overlay(descriptor, req, env, &[])
+    build_launch_with_config_dir(descriptor, req, env, None)
 }
 
-/// [`build_launch`] plus a profile's environment overlay (§13.4).
+/// [`build_launch`] pointed at a profile's own config directory (§13.4).
 ///
-/// The overlay is applied *after* the terminal hints, so a profile can add or
-/// replace anything except what Forge owns: a variable in
-/// [`domain::RESERVED_PROFILE_VARS`] is dropped with a warning rather than
-/// honored, because a profile that redefined `TERM` would break the emulator
-/// instead of configuring the agent. The daemon still injects `FORGE_*`
-/// afterwards, so those stay authoritative too.
+/// `config_dir` must already be absolute — [`domain::AgentProfile::resolve_config_dir`]
+/// is what makes it so. Every variable the descriptor's
+/// [`domain::ConfigDirSpec`] names is set to it, after the terminal hints and
+/// before the `FORGE_*` the daemon injects, so a directory is the whole of what
+/// a profile may change about the environment. A provider that declares no such
+/// spelling ignores the directory rather than inventing a variable for it.
 ///
 /// # Errors
 /// As [`build_launch`].
-pub fn build_launch_with_env_overlay(
+pub fn build_launch_with_config_dir(
     descriptor: &AgentDescriptor,
     req: &LaunchAgentRequest,
     env: &ResolvedEnvironment,
-    overlay: &[(String, String)],
+    config_dir: Option<&Path>,
 ) -> Result<SpawnSpec, AgentError> {
     let program = resolve_program(descriptor, req, env)?;
 
@@ -219,17 +219,7 @@ pub fn build_launch_with_env_overlay(
     let mut vars = env.vars.clone();
     upsert(&mut vars, "TERM", "xterm-256color");
     upsert(&mut vars, "COLORTERM", "truecolor");
-    for (key, value) in overlay {
-        if AgentProfile::is_reserved_var(key) {
-            tracing::warn!(
-                var = %key,
-                provider = %descriptor.id,
-                "ignoring a profile variable that Forge owns"
-            );
-            continue;
-        }
-        upsert(&mut vars, key, value);
-    }
+    apply_config_dir(descriptor, &mut vars, config_dir);
 
     Ok(SpawnSpec {
         program,
@@ -239,51 +229,67 @@ pub fn build_launch_with_env_overlay(
     })
 }
 
-/// Create the directories a profile's environment names, before launching
-/// (§13.4).
+/// Set every variable `descriptor`'s [`domain::ConfigDirSpec`] names to `dir`.
 ///
-/// Which variables are directories is declared by the descriptor's
-/// [`domain::ProfileField`]s, so this stays data-driven: no provider id is
-/// matched here. It is the `mkdir -p` a hand-written shell wrapper ran before
-/// exporting `CLAUDE_CONFIG_DIR`. Directories are created with `0700` — they
-/// hold the agent's credentials.
-///
-/// # Errors
-/// Returns the first [`std::io::Error`] from creating a directory.
-pub fn ensure_profile_dirs(
+/// A provider that declares no such spelling is left alone rather than given an
+/// invented variable, and `None` is the default account.
+fn apply_config_dir(
     descriptor: &AgentDescriptor,
-    overlay: &[(String, String)],
-) -> std::io::Result<()> {
-    for (key, value) in overlay {
-        if value.trim().is_empty() || !is_directory_var(descriptor, key) {
-            continue;
-        }
-        let path = Path::new(value);
-        if path.is_dir() {
-            continue;
-        }
-        std::fs::create_dir_all(path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-        }
+    vars: &mut Vec<(String, String)>,
+    config_dir: Option<&Path>,
+) {
+    let (Some(spec), Some(dir)) = (descriptor.config_dir.as_ref(), config_dir) else {
+        return;
+    };
+    let dir = dir.to_string_lossy();
+    for var in &spec.vars {
+        upsert(vars, var, &dir);
     }
-    Ok(())
 }
 
-/// Whether the descriptor declares `name` as a directory-valued profile
-/// variable.
-fn is_directory_var(descriptor: &AgentDescriptor, name: &str) -> bool {
-    descriptor.profile_fields.iter().any(|field| {
-        matches!(
-            &field.effect,
-            ProfileFieldEffect::Env {
-                name: var,
-                is_directory: true,
-            } if var == name
-        )
-    })
+/// `env` as a profile's account sees it: the same environment with the
+/// provider's config-directory variables pointed at `config_dir` (§13.4).
+///
+/// This is what makes a usage probe read the *profile's* credentials rather
+/// than the default account's — the reading and the launch have to agree on
+/// which login they are talking about, so both go through the descriptor's own
+/// spelling instead of naming `CLAUDE_CONFIG_DIR` outside this crate.
+#[must_use]
+pub fn env_for_config_dir(
+    descriptor: &AgentDescriptor,
+    env: &ResolvedEnvironment,
+    config_dir: Option<&Path>,
+) -> ResolvedEnvironment {
+    if config_dir.is_none() {
+        return env.clone();
+    }
+    let mut env = env.clone();
+    apply_config_dir(descriptor, &mut env.vars, config_dir);
+    env
+}
+
+/// Create a profile's config directory before launching (§13.4).
+///
+/// It is the `mkdir -p` a hand-written shell wrapper ran before exporting
+/// `CLAUDE_CONFIG_DIR`, and `dir` must already be absolute
+/// ([`domain::AgentProfile::resolve_config_dir`]). Created with `0700`: it
+/// holds the agent's credentials. A provider that declares no
+/// [`domain::ConfigDirSpec`] would never be told about the directory, so
+/// nothing is created for it.
+///
+/// # Errors
+/// Returns the [`std::io::Error`] from creating the directory.
+pub fn ensure_config_dir(descriptor: &AgentDescriptor, dir: &Path) -> std::io::Result<()> {
+    if descriptor.config_dir.is_none() || dir.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 /// Resolve the program to launch to an absolute path (§13.3).
@@ -296,7 +302,8 @@ fn resolve_program(
     env: &ResolvedEnvironment,
 ) -> Result<PathBuf, AgentError> {
     if let Some(over) = &req.executable_override {
-        return absolutize(over).ok_or_else(|| AgentError::NotInstalled(descriptor.id.clone()));
+        return resolve_executable(over, env)
+            .ok_or_else(|| AgentError::NotInstalled(descriptor.id.clone()));
     }
     descriptor
         .binary_candidates
@@ -304,6 +311,31 @@ fn resolve_program(
         .find_map(|name| detection::find_executable(name, &env.path_entries))
         .and_then(|found| absolutize(&found))
         .ok_or_else(|| AgentError::NotInstalled(descriptor.id.clone()))
+}
+
+/// Resolve a profile's chosen executable to an absolute path (§13.4).
+///
+/// A bare name is looked up on the resolved login-shell PATH before anything
+/// else: that is where the wrapper script standing in for a shell alias lives,
+/// and canonicalizing it against the daemon's working directory — `/` under
+/// launchd — would never find it. A shell alias itself is not a program and
+/// cannot be launched here at all.
+///
+/// Public because the daemon resolves the same name twice: once when the
+/// profile is saved and the version probe has to run against something, and
+/// again when a session starts.
+#[must_use]
+pub fn resolve_executable(over: &Path, env: &ResolvedEnvironment) -> Option<PathBuf> {
+    if over.is_absolute() {
+        return Some(over.to_path_buf());
+    }
+    if over.components().count() == 1 {
+        if let Some(found) = detection::find_executable(&over.to_string_lossy(), &env.path_entries)
+        {
+            return absolutize(&found);
+        }
+    }
+    absolutize(over)
 }
 
 /// Make `path` absolute: keep it as-is when already absolute, otherwise resolve
@@ -405,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_overlay_wins_over_the_resolved_environment() {
+    fn a_profile_directory_replaces_the_resolved_one() {
         let dir = tempfile::tempdir().unwrap();
         write_script(dir.path(), "claude", &echo_script("v"));
         let mut env = env_with_path(vec![dir.path().to_path_buf()]);
@@ -413,15 +445,11 @@ mod tests {
             .push(("CLAUDE_CONFIG_DIR".to_owned(), "/old".to_owned()));
 
         let req = launch_req(dir.path().to_path_buf());
-        let overlay = vec![
-            ("CLAUDE_CONFIG_DIR".to_owned(), "/new".to_owned()),
-            ("ANTHROPIC_MODEL".to_owned(), "opus".to_owned()),
-        ];
-        let spec = build_launch_with_env_overlay(
+        let spec = build_launch_with_config_dir(
             &builtins::builtin("claude").unwrap(),
             &req,
             &env,
-            &overlay,
+            Some(Path::new("/home/me/.claude-personal")),
         )
         .unwrap();
 
@@ -431,59 +459,94 @@ mod tests {
             .filter(|(k, _)| k == "CLAUDE_CONFIG_DIR")
             .map(|(_, v)| v)
             .collect();
-        assert_eq!(dirs, ["/new"], "the overlay replaces, never duplicates");
-        assert!(spec
-            .env
-            .iter()
-            .any(|(k, v)| k == "ANTHROPIC_MODEL" && v == "opus"));
+        assert_eq!(
+            dirs,
+            ["/home/me/.claude-personal"],
+            "the profile replaces, never duplicates"
+        );
     }
 
+    /// OpenCode splits configuration from credentials, so one directory has to
+    /// arrive as both of its variables or the account is only half switched.
     #[test]
-    fn a_profile_cannot_redefine_what_forge_owns() {
+    fn opencodes_two_variables_point_at_the_one_directory() {
         let dir = tempfile::tempdir().unwrap();
-        write_script(dir.path(), "claude", &echo_script("v"));
+        write_script(dir.path(), "opencode", &echo_script("1.18.21"));
         let env = env_with_path(vec![dir.path().to_path_buf()]);
 
-        let req = launch_req(dir.path().to_path_buf());
-        let overlay = vec![
-            ("TERM".to_owned(), "dumb".to_owned()),
-            ("FORGE_SESSION_ID".to_owned(), "spoofed".to_owned()),
-        ];
-        let spec = build_launch_with_env_overlay(
-            &builtins::builtin("claude").unwrap(),
+        let mut req = launch_req(dir.path().to_path_buf());
+        req.provider_id = AgentProviderId::new("opencode");
+        let spec = build_launch_with_config_dir(
+            &builtins::builtin("opencode").unwrap(),
             &req,
             &env,
-            &overlay,
+            Some(Path::new("/home/me/.opencode-personal")),
         )
         .unwrap();
 
-        assert!(spec
-            .env
-            .iter()
-            .any(|(k, v)| k == "TERM" && v == "xterm-256color"));
-        assert!(!spec.env.iter().any(|(k, _)| k == "FORGE_SESSION_ID"));
+        for var in ["OPENCODE_CONFIG_DIR", "XDG_DATA_HOME"] {
+            assert!(
+                spec.env
+                    .iter()
+                    .any(|(k, v)| k == var && v == "/home/me/.opencode-personal"),
+                "{var}"
+            );
+        }
+    }
+
+    /// Cursor CLI declares no directory of its own, so a profile's directory is
+    /// dropped rather than exported under a variable nobody reads.
+    #[test]
+    fn a_provider_without_a_config_directory_ignores_one() {
+        let dir = tempfile::tempdir().unwrap();
+        write_script(dir.path(), "agent", &echo_script("cursor 1.0"));
+        let env = env_with_path(vec![dir.path().to_path_buf()]);
+
+        let mut req = launch_req(dir.path().to_path_buf());
+        req.provider_id = AgentProviderId::new("cursor");
+        let before = build_launch(&builtins::builtin("cursor").unwrap(), &req, &env)
+            .unwrap()
+            .env;
+        let after = build_launch_with_config_dir(
+            &builtins::builtin("cursor").unwrap(),
+            &req,
+            &env,
+            Some(&dir.path().join("cursor-personal")),
+        )
+        .unwrap()
+        .env;
+
+        assert_eq!(before, after);
+        assert!(!dir.path().join("cursor-personal").exists());
+    }
+
+    /// The alias case: a profile names `claude-personal`, which is a wrapper
+    /// script on the login shell's PATH and not a path anyone typed out.
+    #[test]
+    fn a_bare_executable_name_is_found_on_the_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let wrapper = write_script(
+            dir.path(),
+            "claude-personal",
+            &echo_script("Claude Code 1.0"),
+        );
+        let env = env_with_path(vec![dir.path().to_path_buf()]);
+
+        let mut req = launch_req(dir.path().to_path_buf());
+        req.executable_override = Some(PathBuf::from("claude-personal"));
+
+        let spec = build_launch(&builtins::builtin("claude").unwrap(), &req, &env).unwrap();
+        assert_eq!(spec.program, wrapper);
     }
 
     #[test]
-    fn only_declared_directory_variables_are_created() {
+    fn a_profile_directory_is_created_before_the_launch() {
         let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("claude-work");
-        let overlay = vec![
-            (
-                "CLAUDE_CONFIG_DIR".to_owned(),
-                config.to_string_lossy().into_owned(),
-            ),
-            // Not a directory field: must not become a directory on disk.
-            (
-                "ANTHROPIC_MODEL".to_owned(),
-                dir.path().join("opus").to_string_lossy().into_owned(),
-            ),
-        ];
+        let config = dir.path().join(".claude-personal");
         let claude = builtins::builtin("claude").unwrap();
 
-        ensure_profile_dirs(&claude, &overlay).unwrap();
+        ensure_config_dir(&claude, &config).unwrap();
         assert!(config.is_dir());
-        assert!(!dir.path().join("opus").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -491,48 +554,13 @@ mod tests {
             assert_eq!(mode & 0o777, 0o700);
         }
 
-        // Idempotent: running it again over an existing directory is fine.
-        ensure_profile_dirs(&claude, &overlay).unwrap();
+        // Idempotent: an existing directory is left exactly as it is.
+        ensure_config_dir(&claude, &config).unwrap();
 
-        // A provider that declares no directory field creates nothing.
-        ensure_profile_dirs(&builtins::builtin("cursor").unwrap(), &overlay).unwrap();
-    }
-
-    /// OpenCode is the first provider that declares two directory variables,
-    /// so both have to be created — not just the first one found.
-    #[test]
-    fn both_of_opencodes_directories_are_created() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("opencode-work");
-        let data = dir.path().join("opencode-data-work");
-        let overlay = vec![
-            (
-                "OPENCODE_CONFIG_DIR".to_owned(),
-                config.to_string_lossy().into_owned(),
-            ),
-            (
-                "XDG_DATA_HOME".to_owned(),
-                data.to_string_lossy().into_owned(),
-            ),
-        ];
-
-        ensure_profile_dirs(&builtins::builtin("opencode").unwrap(), &overlay).unwrap();
-
-        assert!(config.is_dir());
-        assert!(data.is_dir());
-
-        // The same variables mean nothing to another provider, so nothing of
-        // its own is created for them.
-        let elsewhere = dir.path().join("claude-side");
-        ensure_profile_dirs(
-            &builtins::builtin("claude").unwrap(),
-            &[(
-                "OPENCODE_CONFIG_DIR".to_owned(),
-                elsewhere.to_string_lossy().into_owned(),
-            )],
-        )
-        .unwrap();
-        assert!(!elsewhere.exists());
+        // Nothing is created for a provider that could never be told about it.
+        let unused = dir.path().join("cursor-personal");
+        ensure_config_dir(&builtins::builtin("cursor").unwrap(), &unused).unwrap();
+        assert!(!unused.exists());
     }
 
     /// The flags OpenCode profiles suggest reach the child as written, in the
