@@ -28,6 +28,7 @@ export type GrammarId =
   | "typescript"
   | "tsx"
   | "javascript"
+  | "python"
   | "rust"
   | "json"
   | "toml"
@@ -41,6 +42,7 @@ export type GrammarId =
 const FROM_DAEMON: Record<string, GrammarId> = {
   rust: "rust",
   javascript: "javascript",
+  python: "python",
   typescript: "typescript",
   tsx: "tsx",
   json: "json",
@@ -58,6 +60,9 @@ const FROM_EXTENSION: Record<string, GrammarId> = {
   js: "javascript",
   mjs: "javascript",
   cjs: "javascript",
+  py: "python",
+  pyi: "python",
+  pyw: "python",
   rs: "rust",
   json: "json",
   jsonc: "json",
