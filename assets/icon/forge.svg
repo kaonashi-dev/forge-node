@@ -1,69 +1,53 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Geometric mark. The raster app icon is forge-1024.png. -->
   <defs>
-    <linearGradient id="background" x1="0.12" y1="0" x2="0.82" y2="1">
-      <stop offset="0" stop-color="#3c3836"/>
-      <stop offset="0.48" stop-color="#282828"/>
-      <stop offset="1" stop-color="#1d2021"/>
+    <linearGradient id="tile" x1="0.18" y1="0" x2="0.82" y2="1">
+      <stop offset="0" stop-color="#1a1a1c"/>
+      <stop offset="0.55" stop-color="#0e0e10"/>
+      <stop offset="1" stop-color="#070708"/>
     </linearGradient>
-    <radialGradient id="ambient" cx="0.47" cy="0.45" r="0.52">
-      <stop offset="0" stop-color="#fe8019" stop-opacity="0.20"/>
-      <stop offset="0.55" stop-color="#d65d0e" stop-opacity="0.07"/>
-      <stop offset="1" stop-color="#d65d0e" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="molten" gradientUnits="userSpaceOnUse" x1="256" y1="512" x2="574" y2="512">
+    <linearGradient id="stone" x1="0.22" y1="0.05" x2="0.88" y2="1">
+      <stop offset="0" stop-color="#3a3a3e"/>
+      <stop offset="0.45" stop-color="#1c1c1f"/>
+      <stop offset="1" stop-color="#0b0b0c"/>
+    </linearGradient>
+    <linearGradient id="molten" gradientUnits="userSpaceOnUse" x1="360" y1="280" x2="680" y2="760">
       <stop offset="0" stop-color="#d65d0e"/>
-      <stop offset="0.42" stop-color="#fe8019"/>
+      <stop offset="0.4" stop-color="#fe8019"/>
       <stop offset="0.72" stop-color="#fabd2f"/>
       <stop offset="1" stop-color="#fbf1c7"/>
     </linearGradient>
-    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+    <radialGradient id="core" cx="0.38" cy="0.32" r="0.78">
       <stop offset="0" stop-color="#fbf1c7"/>
-      <stop offset="0.52" stop-color="#ebdbb2"/>
-      <stop offset="1" stop-color="#a89984"/>
-    </linearGradient>
-    <radialGradient id="node" cx="0.38" cy="0.30" r="0.76">
-      <stop offset="0" stop-color="#fbf1c7"/>
-      <stop offset="0.42" stop-color="#fabd2f"/>
-      <stop offset="1" stop-color="#fe8019"/>
+      <stop offset="0.45" stop-color="#fabd2f"/>
+      <stop offset="1" stop-color="#d65d0e"/>
     </radialGradient>
-    <filter id="soft-shadow" x="-30%" y="-30%" width="160%" height="180%">
-      <feGaussianBlur stdDeviation="24"/>
+    <filter id="ember" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="22"/>
     </filter>
-    <filter id="ember-glow" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="34"/>
-    </filter>
+    <clipPath id="hex">
+      <polygon points="512,172 806,342 806,682 512,852 218,682 218,342"/>
+    </clipPath>
   </defs>
 
-  <!-- Inset to macOS safe zone (~82%): full-bleed tiles read oversized in Cmd+Tab. -->
+  <!-- Inset to the macOS safe zone so a full-bleed tile does not read oversized in Cmd+Tab. -->
   <g transform="translate(512 512) scale(0.82) translate(-512 -512)">
-  <!-- Gruvbox tile: the app's native dark surface, not a generic black badge. -->
-  <rect width="1024" height="1024" rx="224" fill="url(#background)"/>
-  <rect x="14" y="14" width="996" height="996" rx="212" fill="none" stroke="#504945" stroke-width="4" stroke-opacity="0.55"/>
-  <circle cx="486" cy="486" r="390" fill="url(#ambient)"/>
+    <rect width="1024" height="1024" rx="224" fill="url(#tile)"/>
+    <rect x="12" y="12" width="1000" height="1000" rx="214" fill="none" stroke="#3a3a3e" stroke-width="3" stroke-opacity="0.45"/>
 
-  <!-- A terminal prompt whose three joints form Forge's parent/child session graph. -->
-  <g fill="none" stroke-linecap="round">
-    <path d="M314 304 L524 512 M314 720 L524 512" stroke="#111313" stroke-width="124" stroke-opacity="0.72" transform="translate(0 24)" filter="url(#soft-shadow)"/>
-    <path d="M314 304 L524 512 M314 720 L524 512" stroke="#fe8019" stroke-width="164" stroke-opacity="0.18" filter="url(#ember-glow)"/>
-    <path d="M314 304 L524 512 M314 720 L524 512" stroke="url(#molten)" stroke-width="94"/>
-    <path d="M314 304 L524 512 M314 720 L524 512" stroke="#fbf1c7" stroke-width="18" stroke-opacity="0.38"/>
-  </g>
+    <g>
+      <polygon points="512,172 806,342 806,682 512,852 218,682 218,342" fill="#050506" opacity="0.55" transform="translate(10 18)"/>
+      <polygon points="512,172 806,342 806,682 512,852 218,682 218,342" fill="url(#stone)"/>
+      <polygon points="512,172 806,342 806,682 512,852 218,682 218,342" fill="none" stroke="#5a5a60" stroke-width="5" stroke-opacity="0.35"/>
+      <path d="M806 342 L806 682 L512 852" fill="none" stroke="#fe8019" stroke-width="6" stroke-opacity="0.22" stroke-linejoin="round"/>
 
-  <!-- Node cores keep the graph readable without compromising the > silhouette. -->
-  <g>
-    <circle cx="314" cy="304" r="60" fill="#1d2021" stroke="#d65d0e" stroke-width="14"/>
-    <circle cx="314" cy="304" r="28" fill="url(#node)"/>
-    <circle cx="314" cy="720" r="60" fill="#1d2021" stroke="#d65d0e" stroke-width="14"/>
-    <circle cx="314" cy="720" r="28" fill="url(#node)"/>
-    <circle cx="524" cy="512" r="66" fill="#1d2021" stroke="#fabd2f" stroke-width="14"/>
-    <circle cx="524" cy="512" r="33" fill="url(#node)"/>
-    <circle cx="514" cy="501" r="9" fill="#fff" fill-opacity="0.72"/>
-  </g>
-
-  <!-- The cursor completes the terminal prompt and anchors the mark at small sizes. -->
-  <rect x="606" y="646" width="202" height="96" rx="48" fill="#111313" fill-opacity="0.65" transform="translate(0 20)" filter="url(#soft-shadow)"/>
-  <rect x="584" y="624" width="246" height="140" rx="70" fill="#fe8019" fill-opacity="0.15" filter="url(#ember-glow)"/>
-  <rect x="606" y="646" width="202" height="96" rx="48" fill="url(#metal)"/>
-  <rect x="634" y="662" width="146" height="18" rx="9" fill="#fff" fill-opacity="0.30"/>
+      <polygon points="512,172 556,468 806,512 556,556 512,852 468,556 218,512 468,468" fill="#fe8019" fill-opacity="0.22" filter="url(#ember)"/>
+      <g clip-path="url(#hex)">
+        <polygon points="512,172 556,468 806,512 556,556 512,852 468,556 218,512 468,468" fill="url(#molten)"/>
+      </g>
+      <polygon points="512,478 538,493 538,531 512,546 486,531 486,493" fill="#1d2021"/>
+      <polygon points="512,478 538,493 538,531 512,546 486,531 486,493" fill="url(#core)"/>
+      <polygon points="504,496 522,488 526,508" fill="#fff" fill-opacity="0.35"/>
+    </g>
   </g>
 </svg>
