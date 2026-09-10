@@ -54,9 +54,11 @@ with a real timestamp.
    artefacts: they live in another working tree of the same repository. Commit
    the code here, and leave the artefacts to the human — say so in your final
    line. Never `git -C "$ROOT" commit` on the human's behalf.
-3. Draft a commit message:
-   - subject: imperative, ≤72 chars, names the feature slug;
-   - body: 2-4 bullets mapping to `R<n>` or acceptance criteria.
+3. Draft a commit message that satisfies `docs/commits.md` (checklist:
+   `.agents/commits.md`):
+   - subject: imperative, ≤72 chars, names the feature slug / outcome;
+   - body: context first, then what changed; 2–4 bullets mapping to `R<n>` or
+     acceptance criteria are fine when they carry that context.
 4. Commit with a HEREDOC message. Never `--no-verify`.
 5. Append `scripts/harness event <id> feature_committed --data '{"sha":"<hash>"}'`
    if the event type is accepted (optional; ignore if validate complains).

@@ -8,6 +8,10 @@
 - `docs/performance.md` is the cost model, and it is not optional reading before touching the delta path, the Tauri render path, the core lock, or anything that spawns a process. This repository has rungs a normal request handler does not: per cell (~10 000 per frame), per delta (≤125/s **per attached terminal**), per frame (the whole window). Work priced for a request handler is ruinous three rungs down.
 - `docs/architecture.md` is the shortest current system map. Tauri + Solid is the GUI; it connects or starts the daemon and renders a passive `CellGrid`. Daemon `dump`/`stats` are unwired no-ops.
 
+## Commits And Pull Requests
+
+- Subject and body (and PR title/description) must be clear and precise about context and changes: imperative subject, why-first body, no `feat:`/`fix:` prefixes. Full rules in `docs/commits.md`; agent checklist in `.agents/commits.md`.
+
 ## Commands
 
 - The canonical gate is `scripts/dev check` (also the default for bare `scripts/dev`): `cargo fmt --all -- --check`, then `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo test --workspace`. CI uses the same order on macOS and Ubuntu.
