@@ -247,6 +247,7 @@ describe("buildTree session nesting", () => {
 
 describe("railRows", () => {
   const session = (id: string, depth = 0): SessionNode => ({
+    id,
     session: { id } as never,
     label: id,
     depth,
@@ -336,6 +337,7 @@ describe("railExpandTarget", () => {
 
 function railRowsFixture() {
   const session = (id: string): SessionNode => ({
+    id,
     session: { id } as never,
     label: id,
     depth: 0,

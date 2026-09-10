@@ -5,6 +5,7 @@ import { chipGroups, prLabel, prTone, rollupWork, syncLabel } from "./workspaceC
 
 function node(id: string, provider: string | null): SessionNode {
   return {
+    id,
     session: sessionFixture({ id, agent_provider_id: provider }),
     label: id,
     depth: 0,
