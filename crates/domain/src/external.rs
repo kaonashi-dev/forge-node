@@ -13,7 +13,7 @@
 //! that wrote it, which re-enters the conversation in a session of its own
 //! (§13.5).
 
-use crate::ids::{ProjectId, Timestamp, WorkspaceId};
+use crate::ids::{AgentProfileId, ProjectId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -32,6 +32,15 @@ pub struct ExternalAgentSession {
     pub workspace_id: Option<WorkspaceId>,
     /// Provider slug, e.g. `"claude"`. Drives the card glyph/label.
     pub provider: String,
+    /// The launch profile whose account this transcript was found in, or
+    /// `None` for the provider's default one (§13.4).
+    ///
+    /// Resuming is what needs it: a run recorded under a profile's config
+    /// directory only exists for a CLI started with that same directory, so a
+    /// resume that dropped the profile would ask the default account for a
+    /// session id it has never seen.
+    #[serde(default)]
+    pub profile_id: Option<AgentProfileId>,
     /// Display title: the provider's generated title when present, else the
     /// first user prompt, else the session id.
     pub title: String,

@@ -335,6 +335,13 @@
   --depth: 0;
   font-weight: 600;
 }
+/* A group's contents, indented one tree level as a block — the project row,
+   the checkout cards under it and their sessions all move together, which a
+   `--depth` on the project row alone would not do: the cards are its siblings
+   in the markup, not its children. */
+.tree-children.nested {
+  padding-left: var(--space-12);
+}
 .tree-row.session {
   --depth: 0;
 }
@@ -1013,9 +1020,6 @@
 .status-group > span {
   font-variant-numeric: tabular-nums;
 }
-.status-usage-refresh {
-  flex-shrink: 0;
-}
 .status-group + .status-group,
 .status-group + .status-update,
 .status-group + .status-version {
@@ -1105,13 +1109,11 @@
   padding: 0 var(--space-8);
 }
 .inspector-tab[data-selected] {
+  background: var(--bg-selected);
   color: var(--fg-default);
 }
 .inspector-tab:hover {
   background: var(--bg-hover);
-}
-.inspector-tab[data-selected] {
-  background: var(--bg-selected);
 }
 .inspector-body {
   display: flex;
@@ -1119,10 +1121,6 @@
   min-height: 0;
   overflow: hidden;
   padding: var(--space-8) var(--space-12);
-}
-.empty-copy {
-  color: var(--fg-muted);
-  font-size: var(--text-sm);
 }
 .rail-empty {
   align-items: flex-start;

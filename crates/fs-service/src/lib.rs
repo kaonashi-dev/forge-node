@@ -11,6 +11,7 @@
 //! silence.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -382,6 +383,7 @@ pub fn language_for(path: &str) -> &'static str {
     match ext.as_str() {
         "rs" => "rust",
         "js" | "mjs" | "cjs" => "javascript",
+        "py" | "pyi" | "pyw" => "python",
         "ts" => "typescript",
         "tsx" => "tsx",
         "jsx" => "javascript",
@@ -393,6 +395,27 @@ pub fn language_for(path: &str) -> &'static str {
 }
 
 fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
+    /*
+     * `--cached` answers from the *index*, not from the worktree, and nothing
+     * that removes a file touches the index on its own: a `rm`, an agent
+     * deleting a path in its terminal, and this crate's own `delete_path` all
+     * leave the entry behind. Listing the index alone is what kept a deleted
+     * `plan.md` — and every file under a deleted directory — in the tree until
+     * the deletion was staged.
+     *
+     * `--deleted` is the set of index entries whose file is gone from the
+     * worktree, so subtracting it makes the listing describe the disk. It is a
+     * second subprocess rather than a `-t` tag pass because the tags would
+     * still need this subtraction and would have to be parsed out of the same
+     * NUL-separated stream.
+     */
+    let gone = run_git(Some(root), &["ls-files", "--deleted", "-z"])?;
+    let deleted: HashSet<&str> = gone
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect();
+
     let out = run_git(
         Some(root),
         &[
@@ -405,6 +428,9 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
     )?;
     let mut entries = Vec::new();
     let mut truncated = false;
+    // An unmerged path is in the index once per stage, so `--cached` names it
+    // up to three times; the tree wants one row.
+    let mut seen = HashSet::new();
     for path in out.stdout.split('\0') {
         if path.is_empty() {
             continue;
@@ -413,11 +439,15 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
             truncated = true;
             break;
         }
-        if path.ends_with('/') {
+        if path.ends_with('/') || deleted.contains(path) {
+            continue;
+        }
+        let path = normalize_rel(path);
+        if !seen.insert(path.clone()) {
             continue;
         }
         entries.push(FileEntry {
-            path: normalize_rel(path),
+            path,
             kind: EntryKind::File,
         });
     }
@@ -1297,6 +1327,30 @@ mod tests {
     }
 
     #[test]
+    fn drops_paths_deleted_from_the_worktree() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join("plan.md"), "notes").unwrap();
+        fs::create_dir_all(tmp.path().join("docs/orca")).unwrap();
+        fs::write(tmp.path().join("docs/orca/worktrees.md"), "notes").unwrap();
+        fs::write(tmp.path().join("keep.rs"), "fn main() {}").unwrap();
+        assert!(Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+
+        // Deleted on disk, still in the index — which is what `delete_path`,
+        // a `rm`, and an agent all leave behind.
+        delete_path(tmp.path(), "plan.md").unwrap();
+        delete_path(tmp.path(), "docs").unwrap();
+
+        let tree = list_files(tmp.path()).unwrap();
+        let paths: Vec<_> = tree.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["keep.rs"]);
+    }
+
+    #[test]
     fn respects_gitignore() {
         let tmp = git_repo();
         fs::write(tmp.path().join(".gitignore"), "secret.txt\n").unwrap();
@@ -1319,6 +1373,13 @@ mod tests {
         let second = read_file(tmp.path(), "f.rs").unwrap();
         assert_eq!(second.text, "two");
         assert_ne!(first.revision, second.revision);
+    }
+
+    #[test]
+    fn recognizes_python_source_extensions() {
+        for path in ["src/main.py", "types/models.pyi", "desktop/app.pyw"] {
+            assert_eq!(language_for(path), "python", "{path}");
+        }
     }
 
     #[test]

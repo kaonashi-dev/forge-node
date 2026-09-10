@@ -45,18 +45,47 @@ export function HistoryPanel() {
     );
   });
 
-  function providerInstalled(provider: string): boolean {
+  /** The profile that recorded a run, when it still exists. */
+  function account(session: ExternalAgentSession) {
+    if (!session.profile_id) return null;
+    return forgeStore.agent_profiles.find((item) => item.id === session.profile_id) ?? null;
+  }
+
+  /**
+   * Whether the account that recorded this run can be launched.
+   *
+   * The account, not the provider: a run recorded under a profile's config
+   * directory only exists for a CLI started with that same directory, so the
+   * row that matters is that profile's — which is also the one that stays
+   * launchable when the provider is only reachable through a profile's own
+   * executable.
+   */
+  function canResume(session: ExternalAgentSession): boolean {
     return forgeStore.launchables.some(
-      (item) => item.provider === provider && item.profile === null && item.enabled,
+      (item) =>
+        item.provider === session.provider && item.profile === session.profile_id && item.enabled,
     );
+  }
+
+  function blockedReason(session: ExternalAgentSession): string | null {
+    if (canResume(session)) return null;
+    if (session.profile_id && !account(session)) {
+      return "The profile that recorded this run no longer exists";
+    }
+    return `${session.provider} is not installed`;
   }
 
   function resume(session: ExternalAgentSession): void {
     // The ordinary agent launch, told which conversation to re-enter — there
     // is no second kind of agent, and the provider's own CLI is what resumes.
-    void newAgent(session.provider, null, session.workspace_id, session.session_id).catch(
-      () => undefined,
-    );
+    // The profile travels with it: the transcript lives in that account's
+    // config directory, and the default account has never heard of its id.
+    void newAgent(
+      session.provider,
+      session.profile_id,
+      session.workspace_id,
+      session.session_id,
+    ).catch(() => undefined);
   }
 
   return (
@@ -85,6 +114,9 @@ export function HistoryPanel() {
             meta={
               <>
                 <Show when={session.branch}>{(branch) => <span>{branch()}</span>}</Show>
+                <Show when={account(session)}>
+                  {(profile) => <span class="history-account">{profile().name}</span>}
+                </Show>
                 <span>{session.message_count} turns</span>
                 <Show when={session.subagent_count > 0}>
                   <span>{session.subagent_count} subagents</span>
@@ -92,17 +124,11 @@ export function HistoryPanel() {
               </>
             }
             actions={
-              <Tooltip
-                label={
-                  providerInstalled(session.provider)
-                    ? "Re-enter this conversation"
-                    : `${session.provider} is not installed`
-                }
-              >
+              <Tooltip label={blockedReason(session) ?? "Re-enter this conversation"}>
                 <Button
                   variant="secondary"
                   size="xs"
-                  disabled={!providerInstalled(session.provider)}
+                  disabled={Boolean(blockedReason(session))}
                   onClick={() => resume(session)}
                 >
                   Resume

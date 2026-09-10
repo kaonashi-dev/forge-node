@@ -8,7 +8,7 @@
 //!
 //! ADR-007 defines two levels:
 //! - **Descriptors** ([`builtins`]) — static data: candidate binaries, version
-//!   probe, capabilities. The four MVP built-ins resolve entirely here.
+//!   probe, capabilities. The built-ins resolve entirely here.
 //! - **Adapters** ([`AgentAdapter`]) — behavioral hooks. The MVP ships zero
 //!   real adapters; [`DescriptorAdapter`] wraps any descriptor with no special
 //!   behavior.
@@ -16,6 +16,7 @@
 //! The domain types ([`domain::AgentDescriptor`], [`domain::DetectionResult`],
 //! [`domain::SpawnSpec`], …) are reused as-is and re-exported by `domain`.
 
+pub mod attention;
 pub mod builtins;
 pub mod descriptor;
 pub mod detection;
@@ -25,14 +26,18 @@ pub mod usage;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub use attention::{
+    inject_attention, inject_attention_plugin, install_assets, install_plugin, AttentionAssets,
+    PLUGIN_FILENAME,
+};
 pub use builtins::{builtin, builtins};
 pub use descriptor::{
-    build_launch, build_launch_with_env_overlay, ensure_profile_dirs, AgentAdapter, AgentError,
-    DescriptorAdapter,
+    build_launch, build_launch_with_config_dir, ensure_config_dir, env_for_config_dir,
+    resolve_executable, AgentAdapter, AgentError, DescriptorAdapter,
 };
 pub use detection::detect;
 pub use registry::AgentRegistry;
-pub use usage::{collect as collect_usage, collect_analytics};
+pub use usage::{collect as collect_usage, collect_analytics, UsageAccount};
 
 /// One line of a provider's headless event stream, in a form a person reads.
 ///

@@ -91,6 +91,7 @@ export type ActionId =
   | "file_tree_last"
   | "file_tree_rename"
   | "file_tree_delete"
+  | "file_tree_refresh"
   | "copy_terminal"
   | "paste_terminal"
   | "scroll_up"
@@ -414,6 +415,12 @@ export const ACTIONS: Action[] = [
     palette: false,
   },
   {
+    id: "file_tree_refresh",
+    label: "File Tree: Refresh",
+    detail: "Re-read the checkout, so paths an agent added or removed appear",
+    palette: true,
+  },
+  {
     id: "file_tree_next",
     label: "File Tree: Next",
     detail: "Move the selection one row down",
@@ -597,6 +604,7 @@ export function defaultBindings(): Binding[] {
     bind("end", "file_tree_last", FILES),
     /* A11. `F2` and `⌫` on the selected row, the way every file browser has
        taught. Both ask before they act. */
+    bind(`${MOD}-r`, "file_tree_refresh", FILES),
     bind("f2", "file_tree_rename", FILES),
     bind("backspace", "file_tree_delete", FILES),
   ];

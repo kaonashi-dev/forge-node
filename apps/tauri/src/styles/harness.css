@@ -274,11 +274,13 @@
   background: var(--bg-selected);
 }
 .feature-timeline-row {
-  display: flex;
-  gap: var(--space-8);
   align-items: baseline;
-  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-wrap: wrap;
   font-size: var(--text-sm);
+  gap: var(--space-8);
+  padding: var(--space-8) 0;
 }
 .feature-timeline-ts {
   flex-shrink: 0;
@@ -291,12 +293,19 @@
   color: var(--accent-solid);
 }
 .feature-timeline-detail {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-muted);
+  flex: 1;
+  min-width: 12rem;
+  overflow: hidden;
+}
+.feature-timeline-detail summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.feature-timeline-detail pre {
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 /* --- Harness: feature draft ---------------------------------------------- */
@@ -551,22 +560,4 @@
   margin: var(--space-8) 0;
   font-size: var(--text-sm);
   color: var(--fg-muted);
-}
-.feature-timeline-row {
-  flex-wrap: wrap;
-  border-bottom: 1px solid var(--border-subtle);
-  padding: var(--space-8) 0;
-}
-.feature-timeline-detail {
-  white-space: normal;
-  min-width: 12rem;
-}
-.feature-timeline-detail summary {
-  cursor: pointer;
-  overflow-wrap: anywhere;
-}
-.feature-timeline-detail pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: var(--text-xs);
 }

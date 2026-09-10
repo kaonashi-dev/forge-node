@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { TERMINAL } from "../actions/actions";
 import { enterContext, registerAction } from "../actions/dispatch";
 import {
@@ -14,7 +14,7 @@ import {
 import { cellsChannel, clipboardChannel } from "../runtime/bus";
 import { setTerminalStore, terminalStore } from "../store/terminalStore";
 import { metrics as tokens } from "../theme/tokens";
-import { TERMINAL_ZOOM_KEY, readScale, writeChoice } from "../shell/layout";
+import { TERMINAL_ZOOM_KEY, readScale, seedFromAppState, writeChoice } from "../shell/layout";
 import { LatencyProbe, PaintProbe, PAINT_BUDGET_MS } from "./latency";
 import { gridSize, measureCell, type CellMetrics } from "./metrics";
 import { readPalette } from "./palette";
@@ -23,6 +23,9 @@ import { cellAtPoint, ends, isEmpty, wordAt, type CellPoint, type Selection } fr
 import type { CellsPayload } from "./types";
 import { Viewport } from "./viewport";
 import { clipboardPaste } from "./clipboard";
+import { mayTakeCaret, registerTerminalFocus } from "./focus";
+import { runtimeStore } from "../store/runtimeStore";
+import { centerMode } from "../store/viewsStore";
 
 /** Breathing room between the grid and the pane edges (`TERMINAL_PAD`). */
 const PAD = 8;
@@ -100,6 +103,21 @@ export function TerminalPane() {
    * `ui.*` preference.
    */
   const [zoom, setZoom] = createSignal(readZoom());
+  /*
+   * The pane is mounted before the daemon has answered, so the line above
+   * reads an empty `app_state` and lands on 1 whatever the person last chose.
+   * Re-read when the snapshot arrives, and re-measure: the cell box below was
+   * measured against the wrong size.
+   *
+   * `setZoom` and not `applyZoom`: this is reading the stored value back, not
+   * choosing one, and writing it again would be a round trip per launch.
+   */
+  seedFromAppState(() => {
+    const stored = readZoom();
+    if (stored === zoom()) return;
+    setZoom(stored);
+    remeasure();
+  });
   let cell: CellMetrics = measureCell(scaledSize(zoom()), tokens.mono, tokens.monoLineHeight);
   let selection: Selection | null = null;
   let selecting = false;
@@ -111,6 +129,9 @@ export function TerminalPane() {
   let settleTo = 0;
   let resizeTimer: number | undefined;
   let wheelRemainder = 0;
+  /** Lines the wheel has asked for since the last `scroll` went out. */
+  let scrollPending = 0;
+  let scrollFrame = 0;
   /**
    * The button currently held for a program reading the mouse, or `null`.
    *
@@ -340,6 +361,35 @@ export function TerminalPane() {
     return null;
   }
 
+  /**
+   * Send at most one `scroll` per frame, carrying everything the wheel asked
+   * for since the last one.
+   *
+   * A trackpad fires wheel events faster than the display refreshes, and each
+   * `scroll` costs a **full** frame: `cells::frame` sends every row whenever
+   * `scroll_offset > 0`, because a damage list is expressed in live-viewport
+   * rows and means nothing against a window of the scrollback. One command per
+   * event was therefore one whole grid encoded, sent over IPC, decoded and
+   * repainted *per event* — more than the pipe or the canvas could keep up
+   * with, which is what made a flick look stepped rather than smooth.
+   *
+   * Coalescing to the frame the result would be painted on costs nothing in
+   * responsiveness: the paint was already going to wait for that frame. It
+   * cuts the work to one grid per frame, and opposite deltas inside a frame
+   * cancel, which is what reversing mid-flick means.
+   */
+  function queueScroll(lines: number): void {
+    scrollPending += lines;
+    if (scrollFrame !== 0) return;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      const delta = scrollPending;
+      scrollPending = 0;
+      if (delta === 0) return;
+      void scrollTerminal(delta).catch(() => undefined);
+    });
+  }
+
   function onWheel(event: WheelEvent): void {
     // A program reading the mouse expects the wheel, so it goes there as a
     // report rather than scrolling our replica out from under it.
@@ -367,7 +417,7 @@ export function TerminalPane() {
     const lines = Math.trunc(wheelRemainder);
     if (lines === 0) return;
     wheelRemainder -= lines;
-    void scrollTerminal(lines).catch(() => undefined);
+    queueScroll(lines);
   }
 
   // --- selection ------------------------------------------------------------
@@ -523,9 +573,15 @@ export function TerminalPane() {
     // nowhere to go. Ask for it rather than wait for output.
     void repaintTerminal().catch(() => undefined);
 
-    // The terminal is what the window opens on, so it starts focused; without
-    // this the first thing typed goes nowhere until the pane is clicked.
-    keys.focus({ preventScroll: true });
+    // The only thing that moves the caret across a session switch; `./focus`
+    // has why the pane cannot do it on mount alone.
+    const takeCaret = () => keys.focus({ preventScroll: true });
+    onCleanup(registerTerminalFocus(takeCaret));
+    createEffect(() => {
+      if (mayTakeCaret(centerMode(), runtimeStore.activeSession, document.activeElement, keys)) {
+        takeCaret();
+      }
+    });
 
     // Only this pane knows what is selected and what the modes are, so the
     // clipboard and scroll actions are answered here rather than in the shell.
@@ -571,6 +627,7 @@ export function TerminalPane() {
       window.removeEventListener("mouseup", onMouseUp);
       window.clearTimeout(resizeTimer);
       if (frame !== 0) cancelAnimationFrame(frame);
+      if (scrollFrame !== 0) cancelAnimationFrame(scrollFrame);
       leaveContext?.();
     });
   });

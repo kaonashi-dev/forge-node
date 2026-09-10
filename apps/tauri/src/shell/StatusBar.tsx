@@ -103,7 +103,7 @@ export function StatusBar(props: StatusBarProps) {
               {(reading) => (
                 <UsageReading
                   reading={reading}
-                  provider={providerName(reading.provider_id)}
+                  provider={accountName(reading)}
                   providerId={reading.provider_id}
                   now={now()}
                 />
@@ -151,14 +151,15 @@ export function StatusBar(props: StatusBarProps) {
                   {(reading) => (
                     <ProviderRow
                       reading={reading}
-                      provider={providerName(reading.provider_id)}
+                      provider={accountName(reading)}
+                      account={accountLabel(reading)}
                       providerId={reading.provider_id}
                       now={now()}
-                      expanded={expanded() === reading.provider_id}
+                      expanded={expanded() === accountKey(reading)}
                       mode={mode()}
                       onToggle={() =>
                         setExpanded((current) =>
-                          current === reading.provider_id ? null : reading.provider_id,
+                          current === accountKey(reading) ? null : accountKey(reading),
                         )
                       }
                     />
@@ -255,7 +256,10 @@ export function StatusBar(props: StatusBarProps) {
 
 function ProviderRow(props: {
   reading: ProviderUsage;
+  /** The account's display name — the provider, and the profile when there is one. */
   provider: string;
+  /** The login itself: a profile's name, or the provider's default account. */
+  account: string;
   providerId: string;
   now: number;
   expanded: boolean;
@@ -335,8 +339,8 @@ function ProviderRow(props: {
                 when={props.mode === "detailed" && window().window.toLowerCase().includes("5h")}
               >
                 <div class="usage-account-row">
-                  <span>{props.provider} Account</span>
-                  <span class="usage-account-value">System default</span>
+                  <span>{providerName(props.providerId)} Account</span>
+                  <span class="usage-account-value">{props.account}</span>
                   <Icon name="chevron-right" size={12} class="forge-icon-muted" />
                 </div>
               </Show>
@@ -437,4 +441,30 @@ function UsageWindowMeter(props: {
 function providerName(providerId: string): string {
   const provider = forgeStore.providers.find((item) => item.descriptor?.id === providerId);
   return provider?.descriptor?.display_name ?? providerId;
+}
+
+/** The profile a reading came from, when it is not the default account. */
+function readingProfile(reading: ProviderUsage) {
+  if (!reading.profile_id) return null;
+  return forgeStore.agent_profiles.find((item) => item.id === reading.profile_id) ?? null;
+}
+
+/**
+ * Which meter is which: one provider now reports one reading per login (§13.4),
+ * so the provider id alone would collapse two accounts into one expandable row.
+ */
+function accountKey(reading: ProviderUsage): string {
+  return `${reading.provider_id}:${reading.profile_id ?? ""}`;
+}
+
+/** Heading for a meter: the provider, and the profile when there is one. */
+function accountName(reading: ProviderUsage): string {
+  const provider = providerName(reading.provider_id);
+  const profile = readingProfile(reading);
+  return profile ? `${provider} · ${profile.name}` : provider;
+}
+
+/** What the account row names as the login behind the numbers. */
+function accountLabel(reading: ProviderUsage): string {
+  return readingProfile(reading)?.name ?? "System default";
 }

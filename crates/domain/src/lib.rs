@@ -42,11 +42,10 @@ pub mod workspace;
 
 // Re-export the most commonly used types at the crate root.
 pub use agent::{
-    AgentCapabilities, AgentDescriptor, AgentProfile, ChildWorkspacePolicy, DetectionResult,
-    DetectionStatus, EnvSource, HeadlessSpec, LaunchAgentRequest, ProfileField, ProfileFieldEffect,
-    PromptStyle, ProviderUsage, PtySize, ResolvedEnvironment, ResumeStyle, ReviewStyle,
-    SchemaStyle, SpawnSpec, UsageProbe, UsageSource, UsageWindow, VersionProbe,
-    RESERVED_PROFILE_VARS,
+    AgentCapabilities, AgentDescriptor, AgentProfile, ChildWorkspacePolicy, ConfigDirSpec,
+    DetectionResult, DetectionStatus, EnvSource, HeadlessSpec, LaunchAgentRequest, PromptStyle,
+    ProviderUsage, PtySize, ResolvedEnvironment, ResumeStyle, ReviewStyle, SchemaStyle, SpawnSpec,
+    UsageProbe, UsageSource, UsageWindow, VersionProbe, RESERVED_PROFILE_VARS,
 };
 pub use branch::{BranchRef, RefScope, Remote};
 pub use change::{ChangeContext, ChangeFile, JuvaDraft, JuvaKind};

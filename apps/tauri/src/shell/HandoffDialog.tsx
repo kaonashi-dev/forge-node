@@ -1,11 +1,11 @@
 import { Show, createMemo, createSignal } from "solid-js";
-import { newAgent } from "../runtime/api";
 import { forgeStore } from "../store/forgeStore";
 import type { HandoffRequest } from "../store/runtimeStore";
 import { defaultAgentFrom, resolveDefaultAgent } from "../settings/defaultAgent";
 import { SessionGlyph } from "../theme/icons";
 import { Button, Dialog, Select, Skeleton, toast, type SelectOption } from "../ui";
 import { handoffPrompt } from "./handoffPrompt";
+import { launchAgent } from "./sessionActions";
 
 /** `provider` and `profile` travel together; the key is what the select holds. */
 type Target = { provider: string; profile: string | null };
@@ -103,7 +103,7 @@ export function HandoffDialog(props: { request: HandoffRequest; onDismiss: () =>
     const to = resolveTarget(key);
     if (!to) return;
     setStarting(true);
-    void newAgent(
+    void launchAgent(
       to.provider,
       to.profile,
       props.request.workspace,

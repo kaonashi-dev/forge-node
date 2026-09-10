@@ -26,7 +26,7 @@ impl Daemon {
         &self,
         project_id: domain::ProjectId,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         let list = harness_service::list_features(&root).map_err(harness_err)?;
         Ok(Response::HarnessFeatureList(list))
     }
@@ -36,7 +36,7 @@ impl Daemon {
         project_id: domain::ProjectId,
         feature_id: u32,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         let feature = harness_service::get_feature(&root, feature_id).map_err(harness_err)?;
         Ok(Response::HarnessFeature(feature))
     }
@@ -46,7 +46,7 @@ impl Daemon {
         project_id: domain::ProjectId,
         feature_id: u32,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         let events = harness_service::read_timeline(&root, feature_id).map_err(harness_err)?;
         Ok(Response::HarnessTimeline(events))
     }
@@ -57,7 +57,7 @@ impl Daemon {
         feature_id: u32,
         artifact: HarnessArtifactKind,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         let text =
             harness_service::read_artifact(&root, feature_id, artifact).map_err(harness_err)?;
         Ok(Response::HarnessArtifact { text })
@@ -87,7 +87,7 @@ impl Daemon {
         spec_raw: String,
         title: Option<String>,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         let workspace_path = self.harness_checkout(project_id, workspace_id)?;
         let feature = harness_service::register_feature(
             &root,
@@ -109,7 +109,7 @@ impl Daemon {
         workspace_id: Option<domain::WorkspaceId>,
         issue_number: u32,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         let workspace_path = self.harness_checkout(project_id, workspace_id)?;
         let feature =
             harness_service::register_from_issue(&root, issue_number, workspace_id, workspace_path)
@@ -136,7 +136,7 @@ impl Daemon {
         revision: Option<u64>,
         action: HarnessAdvanceAction,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         // The decision and the step it unblocks are no longer two independent
         // guesses: the transition table says both, so a client cannot approve
         // a spec whose gate is already closed and get a second implementer for
@@ -175,7 +175,7 @@ impl Daemon {
         feature_id: u32,
         session_id: domain::SessionId,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         harness_service::link_orchestrator(&root, feature_id, session_id).map_err(harness_err)?;
         Ok(Response::Ack)
     }
@@ -184,7 +184,7 @@ impl Daemon {
         &self,
         project_id: domain::ProjectId,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         match harness_service::run_validate(&root) {
             Ok(output) => Ok(Response::HarnessValidate { ok: true, output }),
             Err(HarnessError::Invalid(output)) => {

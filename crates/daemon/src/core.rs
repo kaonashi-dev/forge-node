@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use agents::AgentRegistry;
 use domain::{
-    AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy, DetectionResult,
-    DetectionStatus, EnvSource, LaunchAgentRequest, Project, ProjectGroup, ProjectGroupId,
-    ProjectId, PtySize, ResolvedEnvironment, ScrollbackRows, Session, SessionId, SessionKind,
-    SessionRole, SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId, ShareStrategy,
-    ShareTrigger, SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId, WorkspaceKind,
-    WorkspaceStatus, DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH, MAX_SHARE_RULES,
+    AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy,
+    DetectionResult, DetectionStatus, EnvSource, LaunchAgentRequest, Project, ProjectGroup,
+    ProjectGroupId, ProjectId, PtySize, ResolvedEnvironment, ScrollbackRows, Session, SessionId,
+    SessionKind, SessionRole, SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId,
+    ShareStrategy, ShareTrigger, SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId,
+    WorkspaceKind, WorkspaceStatus, DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH, MAX_SHARE_RULES,
 };
 use persistence::Db;
 use protocol::{
@@ -103,8 +103,10 @@ pub(crate) struct Inner {
     pub(crate) max_concurrent_jobs: usize,
     /// Last `git status` per workspace (ADR-008 throttle).
     status_checks: HashMap<WorkspaceId, Instant>,
-    /// Last usage reading per provider; `GetSnapshot` must not re-probe CLIs.
-    usage: HashMap<AgentProviderId, domain::ProviderUsage>,
+    /// Last usage reading per *account* — one provider can report several
+    /// (§13.4); `GetSnapshot` must not re-probe CLIs. Kept in probe order so
+    /// the status bar does not reshuffle between sweeps.
+    usage: Vec<domain::ProviderUsage>,
     /// Login-shell fallback notice, once per daemon rather than once per spawn.
     env_fallback_noticed: bool,
     /// `TERM`/`TERMINFO` for shells. Filesystem probe; cannot change mid-session.
@@ -131,6 +133,9 @@ pub struct Daemon {
     pub started_at: Timestamp,
     shutdown: AtomicBool,
     pub(crate) resetting: AtomicBool,
+    /// Absolute paths of the Forge attention assets, or `None` when install
+    /// failed. Injected at launch by [`agents::inject_attention`].
+    attention_assets: Option<agents::AttentionAssets>,
 }
 
 struct ResetGuard<'a>(&'a AtomicBool);
@@ -311,10 +316,12 @@ impl Daemon {
             job_processes: HashMap::new(),
             max_concurrent_jobs: crate::jobs::DEFAULT_MAX_CONCURRENT_JOBS,
             status_checks: HashMap::new(),
-            usage: HashMap::new(),
+            usage: Vec::new(),
             env_fallback_noticed: false,
             term_selection: None,
         };
+
+        let attention_assets = install_attention_assets(&worktrees_root);
 
         Ok(Arc::new(Daemon {
             inner: Mutex::new(inner),
@@ -331,6 +338,7 @@ impl Daemon {
             started_at: Timestamp::now(),
             shutdown: AtomicBool::new(false),
             resetting: AtomicBool::new(false),
+            attention_assets,
         }))
     }
 
@@ -940,12 +948,13 @@ impl Daemon {
         Ok(workspace.path.clone())
     }
 
-    pub(crate) fn project_root_for(&self, project_id: ProjectId) -> Result<PathBuf, ProtocolError> {
+    /// Where this project's `harness/` lives. See [`harness_root_of`].
+    pub(crate) fn harness_root_for(&self, project_id: ProjectId) -> Result<PathBuf, ProtocolError> {
         let inner = self.lock();
         inner
             .projects
             .get(&project_id)
-            .map(|p| p.root_path.clone())
+            .map(harness_root_of)
             .ok_or_else(|| ProtocolError::not_found("project"))
     }
 
@@ -976,7 +985,7 @@ impl Daemon {
                 inner.profiles.clone(),
                 worktree_shares,
                 app_state,
-                inner.usage.values().cloned().collect::<Vec<_>>(),
+                inner.usage.clone(),
             )
         };
         // Filesystem IO: after the core lock, through the TTL cache.
@@ -984,7 +993,7 @@ impl Daemon {
             .external_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .discover(&projects, &workspaces);
+            .discover(&projects, &workspaces, &agent_profiles);
         // Clone-only: no git/`gh` on this path.
         let pull_requests = self
             .pull_requests
@@ -3889,20 +3898,22 @@ impl Daemon {
                 let _span =
                     tracing::info_span!("agent.spawn", provider_id = %provider_id, %session_id)
                         .entered();
-                // Never re-pick off PATH: only the probed binary (or the profile's) may run.
+                // Never re-pick off PATH by *candidate*: only the probed binary,
+                // or the one the profile names, may run. A profile's bare name
+                // is still looked up on PATH — that is where the wrapper script
+                // standing in for a shell alias lives (§13.4).
                 let program = match profile.and_then(|p| p.executable.clone()) {
-                    Some(path) => {
-                        if !is_executable_file(&path) {
-                            return Err(ProtocolError::new(
+                    Some(path) => agents::resolve_executable(&path, &env)
+                        .filter(|resolved| is_executable_file(resolved))
+                        .ok_or_else(|| {
+                            ProtocolError::new(
                                 ErrorCode::ProviderNotInstalled,
                                 format!(
                                     "the profile's executable is gone or not runnable: {}",
                                     path.display()
                                 ),
-                            ));
-                        }
-                        path
-                    }
+                            )
+                        })?,
                     None => verified_program.ok_or_else(|| {
                         ProtocolError::new(
                             ErrorCode::ProviderNotInstalled,
@@ -3910,16 +3921,18 @@ impl Daemon {
                         )
                     })?,
                 };
-                let overlay: Vec<(String, String)> =
-                    profile.map(|p| p.env.clone()).unwrap_or_default();
-                if let (Some(profile), Some(descriptor)) =
-                    (profile, inner.agents.descriptor(&provider_id).cloned())
-                {
-                    agents::ensure_profile_dirs(&descriptor, &profile.env).map_err(|e| {
+                let config_dir = profile.and_then(|p| profile_config_dir(p, &env));
+                if let (Some(profile), Some(dir), Some(descriptor)) = (
+                    profile,
+                    config_dir.as_deref(),
+                    inner.agents.descriptor(&provider_id).cloned(),
+                ) {
+                    agents::ensure_config_dir(&descriptor, dir).map_err(|e| {
                         ProtocolError::new(
                             ErrorCode::IoError,
                             format!(
-                                "could not create a directory for profile `{}`: {e}",
+                                "could not create `{}` for profile `{}`: {e}",
+                                dir.display(),
                                 profile.name
                             ),
                         )
@@ -3934,9 +3947,9 @@ impl Daemon {
                     initial_prompt,
                     read_only,
                 };
-                inner
+                let mut spec = inner
                     .agents
-                    .build_launch_with_env_overlay(&req, &env, &overlay)
+                    .build_launch_with_config_dir(&req, &env, config_dir.as_deref())
                     .map_err(|e| match e {
                         agents::AgentError::NotInstalled(_) => {
                             ProtocolError::new(ErrorCode::ProviderNotInstalled, e.to_string())
@@ -3947,7 +3960,15 @@ impl Daemon {
                             ProtocolError::new(ErrorCode::InvalidRequest, e.to_string())
                         }
                         _ => ProtocolError::new(ErrorCode::SpawnError, e.to_string()),
-                    })?
+                    })?;
+                // Provider-shaped: agents decides whether this launch needs an
+                // attention adapter. Daemon only supplies the on-disk assets (P2).
+                if let Some(assets) = &self.attention_assets {
+                    if let Some(descriptor) = inner.agents.descriptor(&req.provider_id) {
+                        agents::inject_attention(descriptor, &mut spec, assets);
+                    }
+                }
+                spec
             }
             _ => {
                 return Err(ProtocolError::new(
@@ -3958,7 +3979,7 @@ impl Daemon {
         };
         upsert_var(&mut spec.env, "FORGE_SESSION_ID", &session_id.to_string());
         upsert_var(&mut spec.env, "FORGE_WORKSPACE", &cwd.to_string_lossy());
-        // Harness state lives at the project root, not the worktree cwd.
+        // Harness state lives at the repository root, not the worktree cwd.
         if let Some(root) = harness_root_in(inner, cwd) {
             upsert_var(&mut spec.env, "FORGE_HARNESS_ROOT", &root.to_string_lossy());
         }
@@ -4396,11 +4417,18 @@ impl Daemon {
     }
 
     /// Core lock released: each usage probe is a subprocess or HTTP call.
+    ///
+    /// One provider can be several logins: the default account plus every
+    /// profile that moved its config directory (§13.4). Each is probed on its
+    /// own, because each has its own allowance — reporting only the default one
+    /// is what showed a profile's meter as somebody else's numbers. Profiles
+    /// are few and the sweep is every five minutes, so the extra calls are
+    /// bounded by what the user configured.
     fn collect_usage(&self) -> Vec<domain::ProviderUsage> {
         let (sources, env) = {
             let mut inner = self.lock();
             let env = self.resolved_env(&mut inner);
-            let sources: Vec<(domain::AgentDescriptor, Option<PathBuf>)> = inner
+            let sources: Vec<UsageSource> = inner
                 .agents
                 .descriptors()
                 .into_iter()
@@ -4412,7 +4440,21 @@ impl Daemon {
                         }
                         _ => None,
                     };
-                    (descriptor.clone(), executable)
+                    let mut accounts = vec![(None, None)];
+                    accounts.extend(
+                        inner
+                            .profiles
+                            .iter()
+                            .filter(|profile| profile.provider_id == descriptor.id)
+                            .filter_map(|profile| {
+                                Some((Some(profile.id), Some(profile_config_dir(profile, &env)?)))
+                            }),
+                    );
+                    UsageSource {
+                        descriptor: descriptor.clone(),
+                        executable,
+                        accounts,
+                    }
                 })
                 .collect();
             (sources, env)
@@ -4420,18 +4462,22 @@ impl Daemon {
 
         let readings: Vec<domain::ProviderUsage> = sources
             .iter()
-            .filter_map(|(descriptor, executable)| {
-                agents::collect_usage(descriptor, executable.as_deref(), &env)
+            .flat_map(|source| {
+                source.accounts.iter().filter_map(|(profile_id, dir)| {
+                    agents::collect_usage(
+                        &source.descriptor,
+                        source.executable.as_deref(),
+                        &env,
+                        &agents::UsageAccount {
+                            profile_id: *profile_id,
+                            config_dir: dir.as_deref(),
+                        },
+                    )
+                })
             })
             .collect();
 
-        let mut inner = self.lock();
-        inner.usage.clear();
-        for reading in &readings {
-            inner
-                .usage
-                .insert(reading.provider_id.clone(), reading.clone());
-        }
+        self.lock().usage.clone_from(&readings);
         readings
     }
 
@@ -4450,11 +4496,15 @@ impl Daemon {
             return cached;
         }
 
-        let env = {
+        let (env, profiles) = {
             let mut inner = self.lock();
-            self.resolved_env(&mut inner)
+            let env = self.resolved_env(&mut inner);
+            let profiles = inner.profiles.clone();
+            (env, profiles)
         };
-        let analytics = agents::collect_analytics(window_days, &env);
+        // Every account, not just the default one: a profile moves the
+        // transcripts this reads along with the config directory (§13.4).
+        let analytics = agents::collect_analytics(window_days, &env, &profiles);
         self.usage_stats
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -4702,7 +4752,7 @@ impl Daemon {
             .descriptor(&profile.provider_id)
             .cloned()
             .ok_or_else(|| ProtocolError::not_found("agent provider"))?;
-        let profile = validate_profile(profile)?;
+        let profile = validate_profile(profile, &descriptor)?;
 
         // Probe is a subprocess: core lock released.
         if let Some(path) = profile.executable.clone() {
@@ -4710,7 +4760,10 @@ impl Daemon {
                 let mut inner = self.lock();
                 self.resolved_env(&mut inner)
             };
-            let status = agents::detect(&descriptor, &env, Some(&path)).status;
+            // A bare name is probed where it will actually be found at launch —
+            // on the login shell's PATH, not under the daemon's cwd (§13.4).
+            let resolved = agents::resolve_executable(&path, &env).unwrap_or_else(|| path.clone());
+            let status = agents::detect(&descriptor, &env, Some(&resolved)).status;
             if !status.is_installed() {
                 return Err(ProtocolError::with_details(
                     ErrorCode::ProviderNotInstalled,
@@ -4733,6 +4786,7 @@ impl Daemon {
                 .map_err(|e| profile_db_err(&profile.name, e))?;
             inner.profiles = inner.db.agent_profiles().list().map_err(db_err)?;
         }
+        self.forget_account_scans();
         self.broadcast_profiles();
         Ok(Response::Ack)
     }
@@ -4751,8 +4805,19 @@ impl Daemon {
             }
             inner.profiles = inner.db.agent_profiles().list().map_err(db_err)?;
         }
+        self.forget_account_scans();
         self.broadcast_profiles();
         Ok(Response::Ack)
+    }
+
+    /// Drop the scans that read a provider's own directories, because the set
+    /// of profiles is the set of accounts they cover (§13.4). Discovery keys on
+    /// the profiles itself; the token scan only knows its window.
+    fn forget_account_scans(&self) {
+        self.usage_stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .invalidate();
     }
 
     /// Whole list: a merge would strand a deleted profile.
@@ -5085,6 +5150,30 @@ fn inferred_display_name(path: &Path, branch: Option<&str>) -> Option<String> {
 }
 
 /// Used for the out-of-home warning.
+/// One provider's usage probe and every login it should be run for.
+struct UsageSource {
+    descriptor: domain::AgentDescriptor,
+    executable: Option<PathBuf>,
+    /// The default account first (`(None, None)`), then one entry per profile
+    /// that moved the config directory.
+    accounts: Vec<(Option<domain::AgentProfileId>, Option<PathBuf>)>,
+}
+
+/// A profile's config directory as an absolute path (§13.4), or `None` when it
+/// shares the provider's default account.
+///
+/// Resolved against the *user's* home, not the daemon's working directory:
+/// launchd starts it in `/`, where a relative `.claude-personal` fails on a
+/// read-only file system.
+fn profile_config_dir(profile: &AgentProfile, env: &ResolvedEnvironment) -> Option<PathBuf> {
+    let dir = profile.config_dir.as_deref()?;
+    let home = env.get("HOME").map(PathBuf::from).or_else(home_dir);
+    Some(match home.as_deref() {
+        Some(home) => AgentProfile::resolve_config_dir(dir, home),
+        None => dir.to_path_buf(),
+    })
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
@@ -5148,14 +5237,41 @@ impl Daemon {
     }
 }
 
-/// Project root that owns `harness/` for a checkout at `cwd`.
+/// The repository root that owns `harness/`, for one project.
+///
+/// `git_root`, not `root_path`: a project is registered at whatever directory
+/// the user picked, and that is routinely a subdirectory of the repository —
+/// `apps/tauri/src-tauri` is one you would plausibly open on its own. But
+/// `harness/` is metadata of the *repository*, like `.git`, so a `root_path`
+/// one level down names a directory that has no `harness/` in it at all.
+///
+/// The agent side resolves the same root from `--git-common-dir`
+/// (`harness/src/harness.ts`), and the two ends have to agree: this value is
+/// exported as `FORGE_HARNESS_ROOT`, which wins there over any resolution of
+/// its own. Disagreeing means the GUI reads a different `features.json` than
+/// the agent writes, and — through the sandbox's writable dirs in `jobs.rs` —
+/// that the agent is handed write access to a directory the harness never
+/// touches while being denied the one it does.
+///
+/// A project outside a repository has no `git_root`; `root_path` is then the
+/// only root it has, and the fallback keeps that case working.
+pub(crate) fn harness_root_of(project: &Project) -> PathBuf {
+    project
+        .git_root
+        .clone()
+        .unwrap_or_else(|| project.root_path.clone())
+}
+
+/// Same root, reached from the checkout at `cwd` rather than a project id.
+///
+/// Runs under the core lock, so it stays a lookup: git is never spawned here.
 pub(crate) fn harness_root_in(inner: &Inner, cwd: &Path) -> Option<PathBuf> {
     inner
         .workspaces
         .values()
         .find(|workspace| workspace.path == cwd)
         .and_then(|workspace| inner.projects.get(&workspace.project_id))
-        .map(|project| project.root_path.clone())
+        .map(harness_root_of)
 }
 
 /// Negative pid: a single-pid kill orphans grandchildren.
@@ -5225,6 +5341,29 @@ fn upsert_var(vars: &mut Vec<(String, String)>, key: &str, value: &str) {
     match vars.iter_mut().find(|(k, _)| k == key) {
         Some((_, v)) => *v = value.to_owned(),
         None => vars.push((key.to_owned(), value.to_owned())),
+    }
+}
+
+/// Install Forge attention assets beside the worktrees root.
+///
+/// Default layout puts worktrees under `data_dir/worktrees`, so the assets
+/// land at `data_dir/agent-plugins/`. A custom `worktrees.root` gets a sibling
+/// directory — still private to the daemon's tree.
+fn install_attention_assets(worktrees_root: &Path) -> Option<agents::AttentionAssets> {
+    let dir = worktrees_root
+        .parent()
+        .unwrap_or(worktrees_root)
+        .join("agent-plugins");
+    match agents::install_assets(&dir) {
+        Ok(assets) => Some(assets),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                dir = %dir.display(),
+                "could not install agent attention assets"
+            );
+            None
+        }
     }
 }
 
@@ -5301,7 +5440,10 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
-fn validate_profile(mut profile: AgentProfile) -> Result<AgentProfile, ProtocolError> {
+fn validate_profile(
+    mut profile: AgentProfile,
+    descriptor: &AgentDescriptor,
+) -> Result<AgentProfile, ProtocolError> {
     profile.name = profile.name.trim().to_owned();
     if profile.name.is_empty() {
         return Err(ProtocolError::new(
@@ -5315,27 +5457,25 @@ fn validate_profile(mut profile: AgentProfile) -> Result<AgentProfile, ProtocolE
             "a profile name cannot exceed 64 characters",
         ));
     }
-    let mut seen: HashSet<&str> = HashSet::new();
-    for (name, _) in &profile.env {
-        if !AgentProfile::is_valid_var_name(name) {
-            return Err(ProtocolError::new(
-                ErrorCode::InvalidRequest,
-                format!("`{name}` is not a valid environment variable name"),
-            ));
-        }
-        if AgentProfile::is_reserved_var(name) {
-            return Err(ProtocolError::new(
-                ErrorCode::InvalidRequest,
-                format!("`{name}` is set by Forge and cannot be overridden by a profile"),
-            ));
-        }
-        if !seen.insert(name.as_str()) {
-            return Err(ProtocolError::new(
-                ErrorCode::InvalidRequest,
-                format!("`{name}` is set twice in this profile"),
-            ));
-        }
+    profile.config_dir = profile.config_dir.and_then(|dir| {
+        let trimmed = dir.to_string_lossy().trim().to_owned();
+        (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+    });
+    // A directory the provider is never told about would look saved and change
+    // nothing, which is the failure this whole screen exists to avoid.
+    if profile.config_dir.is_some() && descriptor.config_dir.is_none() {
+        return Err(ProtocolError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "{} has no config directory of its own to move",
+                descriptor.display_name
+            ),
+        ));
     }
+    profile.executable = profile.executable.and_then(|path| {
+        let trimmed = path.to_string_lossy().trim().to_owned();
+        (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+    });
     Ok(profile)
 }
 
@@ -5514,6 +5654,7 @@ mod tests {
     fn usage(provider: &str, percent: u8) -> domain::ProviderUsage {
         domain::ProviderUsage {
             provider_id: AgentProviderId::new(provider),
+            profile_id: None,
             windows: vec![domain::UsageWindow {
                 used_percent: percent,
                 window: "5h".to_owned(),
@@ -6234,6 +6375,153 @@ mod tests {
         // the read-only mode is deliberately still there.
         let respawn = backend.last_spawn().expect("a respawn happened");
         assert_eq!(respawn.args, ["--permission-mode", "plan"]);
+    }
+
+    /// OpenCode never rings BEL itself; Claude / Codex / Cursor / Grok need a
+    /// Forge adapter too. Each launch carries its provider's attention wiring.
+    #[test]
+    fn an_opencode_launch_carries_the_attention_plugin() {
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let workspace = seeded_workspace(&daemon, tmp.path());
+        let assets = daemon
+            .attention_assets
+            .as_ref()
+            .expect("attention assets installed beside the worktrees root");
+        assert!(assets.opencode_plugin.exists());
+
+        let provider = AgentProviderId::new("opencode");
+        let executable = test_support::write_fake_agent(tmp.path(), "opencode", "1.18.29");
+        {
+            let mut inner = daemon.lock();
+            inner.detections.insert(
+                provider.clone(),
+                DetectionResult {
+                    provider_id: provider.clone(),
+                    status: DetectionStatus::Installed {
+                        executable,
+                        version: Some("1.18.29".to_owned()),
+                    },
+                    checked_at: Timestamp::now(),
+                },
+            );
+        }
+
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Agent,
+                Some(provider),
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .expect("create an opencode session");
+
+        let spec = backend.last_spawn().expect("a spawn happened");
+        let content = spec
+            .env
+            .iter()
+            .find(|(k, _)| k == "OPENCODE_CONFIG_CONTENT")
+            .map(|(_, v)| v.as_str())
+            .expect("OPENCODE_CONFIG_CONTENT");
+        assert!(
+            content.contains(&assets.opencode_plugin.to_string_lossy().into_owned()),
+            "plugin path missing from {content}"
+        );
+    }
+
+    #[test]
+    fn a_claude_launch_carries_forge_settings() {
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let workspace = seeded_workspace(&daemon, tmp.path());
+        let settings = daemon
+            .attention_assets
+            .as_ref()
+            .expect("attention assets")
+            .claude_settings
+            .clone();
+        let provider = AgentProviderId::new("claude");
+        let executable = test_support::write_fake_agent(tmp.path(), "claude", "1.0.0");
+        {
+            let mut inner = daemon.lock();
+            inner.detections.insert(
+                provider.clone(),
+                DetectionResult {
+                    provider_id: provider.clone(),
+                    status: DetectionStatus::Installed {
+                        executable,
+                        version: Some("1.0.0".to_owned()),
+                    },
+                    checked_at: Timestamp::now(),
+                },
+            );
+        }
+
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Agent,
+                Some(provider),
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .expect("create a claude session");
+
+        let spec = backend.last_spawn().expect("a spawn happened");
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| { w[0] == "--settings" && w[1] == settings.to_string_lossy() }));
+    }
+
+    #[test]
+    fn a_codex_launch_requests_bel_on_approval() {
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let workspace = seeded_workspace(&daemon, tmp.path());
+        let provider = AgentProviderId::new("codex");
+        let executable = test_support::write_fake_agent(tmp.path(), "codex", "0.153.0");
+        {
+            let mut inner = daemon.lock();
+            inner.detections.insert(
+                provider.clone(),
+                DetectionResult {
+                    provider_id: provider.clone(),
+                    status: DetectionStatus::Installed {
+                        executable,
+                        version: Some("0.153.0".to_owned()),
+                    },
+                    checked_at: Timestamp::now(),
+                },
+            );
+        }
+
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Agent,
+                Some(provider),
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .expect("create a codex session");
+
+        let spec = backend.last_spawn().expect("a spawn happened");
+        assert!(spec
+            .args
+            .iter()
+            .any(|a| a.contains(r#"notification_method="bel""#)));
+        assert!(spec.args.iter().any(|a| a.contains("approval-requested")));
     }
 
     #[test]

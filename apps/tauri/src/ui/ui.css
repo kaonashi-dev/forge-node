@@ -176,6 +176,7 @@
   flex-direction: column;
   gap: var(--space-6);
   min-width: 0;
+  width: 100%;
 }
 .forge-label {
   color: var(--fg-muted);
@@ -666,6 +667,9 @@
 .forge-radio-group {
   display: flex;
   flex-direction: column;
+  /* Options are children of this group; a gap on a wrapper around it never
+     reaches them. Surfaces that want tighter chips override (`.filter-chips`). */
+  gap: var(--space-8);
 }
 .forge-radio-group[aria-orientation="horizontal"] {
   flex-direction: row;

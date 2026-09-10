@@ -22,31 +22,60 @@ mod pricing;
 
 use std::path::Path;
 
-use domain::{AgentDescriptor, ProviderUsage, ResolvedEnvironment, Timestamp, UsageSource};
+use domain::{
+    AgentDescriptor, AgentProfileId, ProviderUsage, ResolvedEnvironment, Timestamp, UsageSource,
+};
 use serde_json::Value;
 
 pub use analytics::collect as collect_analytics;
 pub use http::{HttpClient, UreqClient};
 
-/// Read `descriptor`'s account usage.
+/// One login a provider's usage can be read from (§13.4).
+///
+/// A provider is not one allowance. The default account is what an unmodified
+/// CLI uses; a launch profile that moved the config directory is a second
+/// login, with limits of its own, and a meter that showed only the first was
+/// reporting somebody else's numbers.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UsageAccount<'a> {
+    /// The profile that owns this account, stamped onto the reading. `None` is
+    /// the provider's default account.
+    pub profile_id: Option<AgentProfileId>,
+    /// Where that profile moved the provider's config directory, already
+    /// absolute (`domain::AgentProfile::resolve_config_dir`). `None` is the
+    /// default account.
+    pub config_dir: Option<&'a Path>,
+}
+
+/// Read one account's usage for `descriptor`.
 ///
 /// `executable` is the resolved provider binary, needed only by the CLI source;
-/// the OAuth sources read local credentials and ignore it. Returns `None` when
-/// the descriptor declares no source or the reading cannot be produced — every
-/// such case is "this provider reports no usage".
+/// the OAuth sources read local credentials and ignore it. `account` selects
+/// the login: the probe runs against an environment whose config-directory
+/// variables point at that account, so the CLI source and the credential reads
+/// agree on which login they are describing.
+///
+/// Returns `None` when the descriptor declares no source or the reading cannot
+/// be produced — every such case is "this account reports no usage".
 #[must_use]
 pub fn collect(
     descriptor: &AgentDescriptor,
     executable: Option<&Path>,
     env: &ResolvedEnvironment,
+    account: &UsageAccount<'_>,
 ) -> Option<ProviderUsage> {
-    match descriptor.usage_source.as_ref()? {
+    let env = &crate::descriptor::env_for_config_dir(descriptor, env, account.config_dir);
+    let mut usage = match descriptor.usage_source.as_ref()? {
         UsageSource::Cli(probe) => cli::collect(descriptor, executable?, probe, env),
         UsageSource::CodexOAuth => codex::collect(descriptor, env, &UreqClient::default()),
-        UsageSource::ClaudeOauth => claude::collect(descriptor, env, &UreqClient::default()),
+        UsageSource::ClaudeOauth => {
+            claude::collect(descriptor, env, account, &UreqClient::default())
+        }
         // A source variant this build does not know reports no usage.
         _ => None,
-    }
+    }?;
+    usage.profile_id = account.profile_id;
+    Some(usage)
 }
 
 /// Extract a whole-percent reading from a window object.

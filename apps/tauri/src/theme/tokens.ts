@@ -341,7 +341,7 @@ export const metrics = {
   titleH: 36,
   statusH: 24,
   tabH: 34,
-  railW: 240,
+  railW: 280,
   panelW: 288,
   handleW: 4,
   /*

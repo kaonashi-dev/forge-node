@@ -123,7 +123,10 @@ One dedicated OS thread per live PTY:
    exit path — `KillSession` just makes EOF happen.
 
 Title changes (OSC 0/2) become `SessionUpdated` (the `terminal` title); BEL
-becomes `TerminalBell`.
+becomes `TerminalBell`. The rail's `needs-you` marker is driven by that bell
+alone (`client::Store::pending_bell`, cleared on attach). Agents that do not
+emit BEL natively reach the same path through Forge-injected adapters; see
+[agents.md](./agents.md#attention-needs-you).
 
 ## Sequence numbers and resync (§10.5)
 

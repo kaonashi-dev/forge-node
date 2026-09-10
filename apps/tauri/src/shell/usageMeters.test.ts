@@ -27,8 +27,17 @@ describe("usage meters", () => {
   it("formats future resets and omits unknown or expired ones", () => {
     const now = Date.parse("2026-08-30T10:00:00Z");
     expect(usageResetLabel("2026-08-30T12:05:00Z", now)).toBe("resets in 2h 5m");
+    expect(usageResetLabel("2026-08-30T23:59:00Z", now)).toBe("resets in 13h 59m");
     expect(usageResetLabel(null, now)).toBeNull();
     expect(usageResetLabel("2026-08-30T09:59:00Z", now)).toBeNull();
+  });
+
+  it("rolls resets a day or more out into days and hours", () => {
+    const now = Date.parse("2026-08-30T10:00:00Z");
+    expect(usageResetLabel("2026-08-31T10:00:00Z", now)).toBe("resets in 1d 0h");
+    expect(usageResetLabel("2026-08-31T01:30:00Z", now)).toBe("resets in 15h 30m");
+    expect(usageResetLabel("2026-08-31T11:45:00Z", now)).toBe("resets in 1d 1h");
+    expect(usageResetLabel("2026-09-06T09:00:00Z", now)).toBe("resets in 6d 23h");
   });
 
   it("formats updated labels from collected_at", () => {
@@ -42,6 +51,7 @@ describe("usage meters", () => {
   it("shortens reset labels", () => {
     const now = Date.parse("2026-08-30T10:00:00Z");
     expect(usageShortResetLabel("2026-08-30T12:05:00Z", now)).toBe("2h 5m");
+    expect(usageShortResetLabel("2026-09-06T09:00:00Z", now)).toBe("6d 23h");
     expect(usageShortResetLabel(null, now)).toBeNull();
   });
 });

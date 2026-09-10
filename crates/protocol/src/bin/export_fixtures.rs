@@ -307,7 +307,7 @@ fn sample_provider() -> ProviderInfo {
                 timeout_ms: 2000,
             },
             usage_source: None,
-            profile_fields: vec![],
+            config_dir: None,
             resume: Some(domain::ResumeStyle::Flag {
                 flag: "--resume".to_string(),
             }),
@@ -346,11 +346,8 @@ fn sample_agent_profile() -> AgentProfile {
         provider_id: AgentProviderId::new("claude"),
         name: "Work".to_string(),
         executable: None,
+        config_dir: Some(PathBuf::from(".claude-work")),
         args: vec!["--model".to_string(), "opus".to_string()],
-        env: vec![(
-            "CLAUDE_CONFIG_DIR".to_string(),
-            "/home/dev/.claude-work".to_string(),
-        )],
         created_at: ts(),
     }
 }
@@ -405,6 +402,8 @@ fn sample_share_status_entry() -> ShareStatusEntry {
 fn sample_provider_usage() -> ProviderUsage {
     ProviderUsage {
         provider_id: AgentProviderId::new("claude"),
+        // The default account. A profile's reading carries its id here.
+        profile_id: None,
         windows: vec![UsageWindow {
             used_percent: 42,
             window: "5h".to_string(),

@@ -33,7 +33,15 @@ import {
 } from "../workbench/filetree";
 import { fileDecorations, folderCounts } from "../workbench/treeDecorations";
 import { Icon, LangIcon } from "../theme/icons";
-import { ContextMenu, EmptyState, FilterHeader, Skeleton, type MenuItem } from "../ui";
+import {
+  ContextMenu,
+  EmptyState,
+  FilterHeader,
+  IconButton,
+  Skeleton,
+  Tooltip,
+  type MenuItem,
+} from "../ui";
 
 const ROW_OVERSCAN = 8;
 
@@ -252,6 +260,24 @@ export function FileTreePanel() {
   });
 
   /**
+   * Re-read the checkout on demand.
+   *
+   * The listing is a read and not a subscription (see `core.rs`), so the only
+   * things that refresh it are this panel's own create, rename and delete. An
+   * agent that writes a file in its terminal, a `git checkout`, a `rm` — none
+   * of them reach the tree, and the panel would go on painting the listing it
+   * was handed when the checkout was first opened. The effect above cannot do
+   * this job: it is guarded on the tree being absent, which is exactly what a
+   * stale tree is not.
+   */
+  function refresh(): void {
+    const workspace = workbenchStore.workspace;
+    if (!workspace || workbenchStore.loading.tree) return;
+    beginWorkbenchRequest("tree");
+    void loadFileTree(workspace).catch((error) => failWorkbenchRequest("tree", error));
+  }
+
+  /**
    * A7: someone asked for a path to be shown here.
    *
    * Every ancestor is unfolded before the row is selected, because a row
@@ -313,6 +339,7 @@ export function FileTreePanel() {
         else select(target.select);
       }),
       registerAction("file_tree_open", activate),
+      registerAction("file_tree_refresh", refresh),
       registerAction("file_tree_filter", () => filterInput?.focus({ preventScroll: true })),
       registerAction("file_tree_first", () => {
         const first = rows()[0];
@@ -466,7 +493,17 @@ export function FileTreePanel() {
         query={query()}
         onQuery={setQuery}
         ref={(element) => (filterInput = element)}
-      />
+      >
+        <Tooltip label="Re-read the checkout" contents>
+          <IconButton
+            label="Re-read the checkout"
+            disabled={workbenchStore.loading.tree || workbenchStore.workspace === null}
+            onClick={refresh}
+          >
+            <Icon name="refresh" class="forge-icon-muted" size={13} />
+          </IconButton>
+        </Tooltip>
+      </FilterHeader>
       <Show when={workbenchStore.treeError}>{(error) => <p class="panel-error">{error()}</p>}</Show>
       <Show
         when={workbenchStore.tree}

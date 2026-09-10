@@ -22,7 +22,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   "Hello": {
-    "protocol_version": 14,
+    "protocol_version": 16,
     "client_version": "0.1.0",
     "client_kind": "Gui"
   }
@@ -90,7 +90,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   "HelloAck": {
-    "protocol_version": 14,
+    "protocol_version": 16,
     "daemon_version": "0.1.0",
     "instance_id": "forge-daemon-0001",
     "started_at": "2026-08-30T12:00:00Z"
@@ -99,7 +99,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   "HelloReject": {
-    "daemon_protocol_version": 14,
+    "daemon_protocol_version": 16,
     "reason": "protocol version mismatch"
   }
 } as const;
@@ -153,15 +153,10 @@ export const event_agent_profiles_changed = {
         "provider_id": "claude",
         "name": "Work",
         "executable": null,
+        "config_dir": ".claude-work",
         "args": [
           "--model",
           "opus"
-        ],
-        "env": [
-          [
-            "CLAUDE_CONFIG_DIR",
-            "/home/dev/.claude-work"
-          ]
         ],
         "created_at": "2026-08-30T12:00:00Z"
       }
@@ -215,7 +210,7 @@ export const event_job_updated = {
     "provider_session_id": "prov-1",
     "exit_code": null,
     "last_line": "editing apps/tauri/src/App.tsx",
-    "last_output_at": "2026-09-06T02:02:59.8625Z",
+    "last_output_at": "2026-09-09T23:47:32.394428Z",
     "started_at": "2026-08-30T12:00:00Z",
     "finished_at": null,
     "log_path": "/tmp/forge/jobs/7.jsonl"
@@ -279,6 +274,7 @@ export const event_provider_usage_changed = {
     "usage": [
       {
         "provider_id": "claude",
+        "profile_id": null,
         "windows": [
           {
             "used_percent": 42,
@@ -702,20 +698,20 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  "protocol_version": 14,
+  "protocol_version": 16,
   "client_version": "0.1.0",
   "client_kind": "Gui"
 } as const;
 
 export const hello_ack = {
-  "protocol_version": 14,
+  "protocol_version": 16,
   "daemon_version": "0.1.0",
   "instance_id": "forge-daemon-0001",
   "started_at": "2026-08-30T12:00:00Z"
 } as const;
 
 export const hello_reject = {
-  "daemon_protocol_version": 14,
+  "daemon_protocol_version": 16,
   "reason": "protocol version mismatch"
 } as const;
 
@@ -1329,7 +1325,7 @@ export const response_snapshot_populated = {
             "supports_resume": true,
             "supports_review": true
           },
-          "profile_fields": []
+          "config_dir": null
         },
         "detection": {
           "provider_id": "claude",
@@ -1349,15 +1345,10 @@ export const response_snapshot_populated = {
         "provider_id": "claude",
         "name": "Work",
         "executable": null,
+        "config_dir": ".claude-work",
         "args": [
           "--model",
           "opus"
-        ],
-        "env": [
-          [
-            "CLAUDE_CONFIG_DIR",
-            "/home/dev/.claude-work"
-          ]
         ],
         "created_at": "2026-08-30T12:00:00Z"
       }
@@ -1455,7 +1446,7 @@ export const response_snapshot_populated = {
         "provider_session_id": "prov-1",
         "exit_code": null,
         "last_line": "editing apps/tauri/src/App.tsx",
-        "last_output_at": "2026-09-06T02:02:59.857036Z",
+        "last_output_at": "2026-09-09T23:47:32.384552Z",
         "started_at": "2026-08-30T12:00:00Z",
         "finished_at": null,
         "log_path": "/tmp/forge/jobs/7.jsonl"
@@ -1464,6 +1455,7 @@ export const response_snapshot_populated = {
     "usage": [
       {
         "provider_id": "claude",
+        "profile_id": null,
         "windows": [
           {
             "used_percent": 42,
@@ -1839,7 +1831,9 @@ export const theme = {
     "gruvbox",
     "neutral",
     "gruvbox-light",
-    "neutral-light"
+    "neutral-light",
+    "ocean",
+    "forest"
   ],
   "palettes": {
     "gruvbox-hard": {
@@ -2079,6 +2073,102 @@ export const theme = {
           "#9333ea",
           "#0e7490",
           "#171717"
+        ]
+      }
+    },
+    "ocean": {
+      "label": "ocean",
+      "palette": {
+        "bg": "#111b27",
+        "rail": "#0c141e",
+        "sidebar": "#152130",
+        "surface": "#1b2939",
+        "surfaceHi": "#25364a",
+        "editor": "#111b27",
+        "step": "#404040",
+        "text": "#fafafa",
+        "muted": "#a1a1a1",
+        "faint": "#8a8a8a",
+        "accent": "#7dcfff",
+        "needsYou": "#f97316",
+        "needsYouDeep": "#ea580c",
+        "green": "#4ade80",
+        "red": "#ff6568",
+        "amber": "#eab308",
+        "blue": "#3794ff",
+        "termBg": "#111b27",
+        "termFg": "#e6e6e6",
+        "gitAdded": "#81b88b",
+        "gitModified": "#e2c08d",
+        "gitDeleted": "#c74e39",
+        "gitUntracked": "#73c991",
+        "gitConflict": "#e4676b",
+        "gitIgnored": "#8c8c8c",
+        "ansi": [
+          "#1a1b26",
+          "#f7768e",
+          "#9ece6a",
+          "#e0af68",
+          "#7aa2f7",
+          "#bb9af7",
+          "#7dcfff",
+          "#a9b1d6",
+          "#414868",
+          "#ff7a93",
+          "#b9f27c",
+          "#ff9e64",
+          "#7da6ff",
+          "#bb9af7",
+          "#7dcfff",
+          "#c0caf5"
+        ]
+      }
+    },
+    "forest": {
+      "label": "forest",
+      "palette": {
+        "bg": "#17211c",
+        "rail": "#111913",
+        "sidebar": "#1a261f",
+        "surface": "#223027",
+        "surfaceHi": "#2b3a30",
+        "editor": "#17211c",
+        "step": "#404040",
+        "text": "#c7c7c7",
+        "muted": "#969696",
+        "faint": "#7d7d7d",
+        "accent": "#8ec07c",
+        "needsYou": "#fe8019",
+        "needsYouDeep": "#d65d0e",
+        "green": "#98971a",
+        "red": "#fb4934",
+        "amber": "#d79921",
+        "blue": "#83a598",
+        "termBg": "#17211c",
+        "termFg": "#c7c7c7",
+        "gitAdded": "#46bb26",
+        "gitModified": "#d79921",
+        "gitDeleted": "#fb4934",
+        "gitUntracked": "#689d6a",
+        "gitConflict": "#fb4934",
+        "gitIgnored": "#928374",
+        "ansi": [
+          "#1f1f1f",
+          "#cc241d",
+          "#98971a",
+          "#d79921",
+          "#458588",
+          "#b16286",
+          "#689d6a",
+          "#a89984",
+          "#928374",
+          "#fb4934",
+          "#b8bb26",
+          "#fabd2f",
+          "#83a598",
+          "#d3869b",
+          "#8ec07c",
+          "#c7c7c7"
         ]
       }
     }

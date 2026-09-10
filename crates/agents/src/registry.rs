@@ -27,7 +27,7 @@ pub struct AgentRegistry {
 }
 
 impl AgentRegistry {
-    /// Build a registry seeded with the four MVP built-ins (§7.5), each wrapped
+    /// Build a registry seeded with the built-in descriptors, each wrapped
     /// in a generic [`DescriptorAdapter`].
     #[must_use]
     pub fn new() -> Self {
@@ -107,18 +107,18 @@ impl AgentRegistry {
         req: &LaunchAgentRequest,
         env: &ResolvedEnvironment,
     ) -> Result<SpawnSpec, AgentError> {
-        self.build_launch_with_env_overlay(req, env, &[])
+        self.build_launch_with_config_dir(req, env, None)
     }
 
-    /// [`Self::build_launch`] with a profile's environment overlay (§13.4).
+    /// [`Self::build_launch`] pointed at a profile's config directory (§13.4).
     ///
     /// # Errors
     /// As [`Self::build_launch`].
-    pub fn build_launch_with_env_overlay(
+    pub fn build_launch_with_config_dir(
         &self,
         req: &LaunchAgentRequest,
         env: &ResolvedEnvironment,
-        overlay: &[(String, String)],
+        config_dir: Option<&std::path::Path>,
     ) -> Result<SpawnSpec, AgentError> {
         let adapter = self
             .adapter(&req.provider_id)
@@ -131,10 +131,10 @@ impl AgentRegistry {
                     executable_override: Some(over.clone()),
                     ..req.clone()
                 };
-                return adapter.build_launch_with_env_overlay(&effective, env, overlay);
+                return adapter.build_launch_with_config_dir(&effective, env, config_dir);
             }
         }
-        adapter.build_launch_with_env_overlay(req, env, overlay)
+        adapter.build_launch_with_config_dir(req, env, config_dir)
     }
 
     fn adapter(&self, id: &AgentProviderId) -> Option<&dyn AgentAdapter> {
@@ -158,10 +158,10 @@ mod tests {
     use domain::DetectionStatus;
 
     #[test]
-    fn seeds_the_four_builtins_in_order() {
+    fn seeds_the_builtins_in_order() {
         let reg = AgentRegistry::new();
         let ids: Vec<String> = reg.descriptors().iter().map(|d| d.id.to_string()).collect();
-        assert_eq!(ids, ["claude", "codex", "opencode", "cursor"]);
+        assert_eq!(ids, ["claude", "codex", "opencode", "cursor", "grok"]);
     }
 
     #[test]
@@ -172,7 +172,7 @@ mod tests {
 
         let mut reg = AgentRegistry::new();
         let results = reg.detect_all(&env);
-        assert_eq!(results.len(), 4);
+        assert_eq!(results.len(), 5);
 
         let claude = AgentProviderId::new("claude");
         assert!(reg.detection(&claude).unwrap().status.is_installed());
