@@ -9,6 +9,10 @@
   the harness is TypeScript executed directly by Bun, with no build step.
 - macOS or Linux. The code uses Unix sockets, PTYs and signals directly;
   Windows is not a target.
+- For prompt icons in the terminal canvas, install
+  [JetBrainsMono Nerd Font](https://github.com/ryanoasis/nerd-fonts) (Mono).
+  The app ships plain JetBrains Mono and prefers the Nerd Font face when the
+  OS has it; see [theming.md](./theming.md#fonts).
 
 ## Commands
 
@@ -141,8 +145,8 @@ Dependency direction is one-way and enforced by `Cargo.toml`:
   `inner → registry`.
 - Persisted enum tags are stable strings — renaming a variant is a migration.
 - Keep `AGENTS.md` as the short list of invariants for contributors and
-  AI agents; keep `execution.md` as the log, not the spec.
+  AI agents. Working notes belong in local `plan/`, not in `docs/`.
 - Comments carry a constraint the types cannot (rejected alternative, unit,
   lock/IO exception, budget). They do not restate the next line, narrate
-  history, or copy `plan.md`. One sentence is the default; essays live in
+  history, or copy a plan doc. One sentence is the default; essays live in
   `docs/` or an ADR. Full rule: `AGENTS.md` § *Comments And Code*.

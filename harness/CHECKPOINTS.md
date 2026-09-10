@@ -47,7 +47,7 @@
       runtime paths where the error is recoverable.
 - [ ] New comments explain a constraint, a rejected alternative, or a known
       exception (`AGENTS.md` § *Comments And Code*). They do not restate the
-      next line, narrate history (`used to`), copy `plan.md` / `AGENTS.md`
+      next line, narrate history (`used to`), copy a plan doc / `AGENTS.md`
       into a file header, or cite `§N` as current truth. A touch of an old
       file that already has that noise deletes the redundant comment next to
       the change; it does not rewrite the crate.
