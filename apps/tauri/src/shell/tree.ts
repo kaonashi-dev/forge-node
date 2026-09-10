@@ -11,6 +11,8 @@ import { orderSessionsTree, sessionDisplayTitle } from "./sessionTree";
 import { orderWorkspaces, type WorkspaceOrderMap } from "./workspaceOrder";
 
 export type SessionNode = {
+  /** Same as `session.id`, so `reconcile({ key: "id" })` can key this row. */
+  id: string;
   session: Session;
   /** The label the row shows, with its harness role when it has one. */
   label: string;
@@ -91,6 +93,7 @@ export function buildTree(
         const sessions = orderSessionsTree(
           store.sessions.filter((session) => session.workspace_id === workspace.id),
         ).map(({ session, depth }) => ({
+          id: session.id,
           session,
           label: sessionDisplayTitle(session),
           depth,
