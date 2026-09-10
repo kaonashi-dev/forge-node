@@ -219,13 +219,14 @@ if [ "$dry_run" -eq 1 ]; then
   printf '    macOS minimum  %s\n' "$macos_min"
   printf '    slices         %s\n' "${slices[*]}"
   for slice in "${slices[@]}"; do
-    printf '    %-14s cargo --target %s\n' "$slice" "$(rust_target_for "$slice")"
+    printf '    %-14s cargo build --release --locked --target %s -p daemon -p %s --bin %s --bin %s --features %s/custom-protocol\n' \
+      "$slice" "$(rust_target_for "$slice")" "$gui_crate" "$daemon_name" "$gui_bin" "$gui_crate"
   done
   printf '    bun            %s (from .bun-version)\n' "$(tr -d '[:space:]' < "$repo_root/.bun-version")"
   printf '    frontend       bun run build in %s -> dist (embedded by tauri-build)\n' "$tauri_app"
-  printf '    gui            cargo -p %s --bin %s -> Contents/MacOS/%s\n' \
-    "$gui_crate" "$gui_bin" "$gui_name"
-  printf '    daemon         cargo -p daemon --bin %s -> Contents/MacOS/%s\n' \
+  printf '    gui            %s -> Contents/MacOS/%s\n' \
+    "$gui_bin" "$gui_name"
+  printf '    daemon         %s -> Contents/MacOS/%s\n' \
     "$daemon_name" "$daemon_name"
   printf '    icon           %s\n' "${FORGE_ICNS:-<none>}"
   printf '    bundle         %s\n' "$app"
