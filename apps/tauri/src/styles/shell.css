@@ -24,18 +24,6 @@
 .tab-strip-scroll::-webkit-scrollbar {
   display: none;
 }
-.tab-strip-scroll.fade-right {
-  mask-image: linear-gradient(to right, #000 92%, transparent);
-  -webkit-mask-image: linear-gradient(to right, #000 92%, transparent);
-}
-.tab-strip-scroll.fade-left.fade-right {
-  mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
-}
-.tab-strip-scroll.fade-left:not(.fade-right) {
-  mask-image: linear-gradient(to right, transparent, #000 8%);
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 8%);
-}
 
 .tab-strip {
   align-items: center;
@@ -1066,8 +1054,7 @@
 
 /*
  * The panel is resizable, so the strip can still be dragged narrower than its
- * content: it scrolls in one row, with both edges faded so a tab cut off at the
- * boundary reads as more rather than as clipped.
+ * content: it scrolls in one row.
  */
 .inspector-tabs {
   border-bottom: 1px solid var(--border-subtle);
@@ -1075,24 +1062,9 @@
 }
 .inspector-tabs .forge-tab-list {
   flex-wrap: nowrap;
-  /* Both edges: dragged narrow enough, the strip scrolls in either direction,
-     and a tab cut off at a hard boundary reads as clipped rather than as
-     more. Ten pixels is under a character, so it costs nothing when the six
-     tabs do fit. */
-  mask-image: linear-gradient(
-    to right,
-    transparent,
-    #000 10px,
-    #000 calc(100% - 10px),
-    transparent
-  );
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent,
-    #000 10px,
-    #000 calc(100% - 10px),
-    transparent
-  );
+  /* Wider than the shared `--space-2`: six glyphs with no words between them
+     need the gap to separate them, where text tabs separate themselves. */
+  gap: var(--space-6);
   overflow-x: auto;
   scrollbar-width: none;
 }
