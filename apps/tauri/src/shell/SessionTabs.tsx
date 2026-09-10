@@ -32,8 +32,6 @@ type SessionTabsProps = {
 
 export function SessionTabs(props: SessionTabsProps) {
   let scrollEl: HTMLDivElement | undefined;
-  const [scrolledLeft, setScrolledLeft] = createSignal(false);
-  const [scrolledRight, setScrolledRight] = createSignal(false);
   const [overflowing, setOverflowing] = createSignal(false);
   const [dragging, setDragging] = createSignal<string | null>(null);
   const [dropTarget, setDropTarget] = createSignal<{
@@ -57,17 +55,13 @@ export function SessionTabs(props: SessionTabsProps) {
     tabGround(session, props.codeActive ? null : props.activeId);
 
   /* Measured, not counted. Two tabs in a wide window overflow nothing, and a
-     count-based guess left the edge mask permanently dimming the last tab and
-     kept the scroll chevrons on screen with nowhere to scroll. */
+     count-based guess kept the scroll chevrons on screen with nowhere to
+     scroll. */
   const onScroll = () => {
     if (!scrollEl) {
       return;
     }
-    const slack = scrollEl.scrollWidth - scrollEl.clientWidth;
-    const over = slack > 1;
-    setOverflowing(over);
-    setScrolledLeft(over && scrollEl.scrollLeft > 1);
-    setScrolledRight(over && scrollEl.scrollLeft < slack - 1);
+    setOverflowing(scrollEl.scrollWidth - scrollEl.clientWidth > 1);
   };
 
   onMount(() => {
@@ -179,11 +173,7 @@ export function SessionTabs(props: SessionTabsProps) {
       <div class="tab-strip-host" data-tauri-drag-region="false">
         <div
           class="tab-strip-scroll"
-          classList={{
-            "fade-right": scrolledRight(),
-            "fade-left": scrolledLeft(),
-            reordering: dragging() != null,
-          }}
+          classList={{ reordering: dragging() != null }}
           data-tauri-drag-region="false"
           ref={scrollEl}
           onScroll={onScroll}
