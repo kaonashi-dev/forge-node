@@ -40,6 +40,7 @@ const LOADERS: Record<GrammarId, Loader> = {
   tsx: async () =>
     (await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx: true }),
   javascript: async () => (await import("@codemirror/lang-javascript")).javascript(),
+  python: async () => (await import("@codemirror/lang-python")).python(),
   rust: async () => (await import("@codemirror/lang-rust")).rust(),
   json: async () => (await import("@codemirror/lang-json")).json(),
   css: async () => (await import("@codemirror/lang-css")).css(),
