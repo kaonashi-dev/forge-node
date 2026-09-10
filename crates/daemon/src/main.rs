@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
         Command::Run => daemon::run(),
         Command::Info => daemon::info(),
         Command::Dump { .. } => {
-            eprintln!("forge-daemon dump: not wired yet. See execution.md.");
+            eprintln!("forge-daemon dump: not wired yet.");
             Ok(())
         }
         Command::Stats => daemon::stats(),

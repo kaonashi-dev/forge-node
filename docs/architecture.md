@@ -2,14 +2,11 @@
 
 Forge is a native desktop app for running many terminals and coding agents
 across Git repos and worktrees. This document is the system map and reflects
-what is implemented; see [`../plan.md`](../plan.md) for the full design,
-[`../execution.md`](../execution.md) for status, and the per-topic pages in
-[README.md](./README.md) for details (domain, protocol, terminal, agents,
-worktrees, persistence).
+what is implemented; see the per-topic pages in [README.md](./README.md) for
+details (domain, protocol, terminal, agents, worktrees, persistence) and
+[`AGENTS.md`](../AGENTS.md) for invariants.
 
 ## Principles
-
-Numbered as in `plan.md` §2.2:
 
 - **P1 Terminal-first.** `AgentSession = TerminalSession + AgentDescriptor`;
   a new CLI is supported with a descriptor. See [agents.md](./agents.md).
