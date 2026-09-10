@@ -311,6 +311,52 @@ fn last_reply(conn: &Connection, session_id: &str) -> Option<String> {
     part_text(&blob)
 }
 
+/// One turn of a recorded conversation, oldest first.
+pub(crate) struct DbTurn {
+    /// `"user"` or `"assistant"`, as opencode records the role.
+    pub role: String,
+    pub text: String,
+}
+
+/// The last `limit` turns of `session_id`, oldest first.
+///
+/// Still read-only: reading a shared database is fine, only writing is not.
+/// The `LIMIT` is applied to the *newest* rows and the result reversed, so a
+/// long run costs the tail rather than the whole conversation.
+pub(crate) fn conversation(db: &Path, session_id: &str, limit: usize) -> Vec<DbTurn> {
+    let Some(conn) = open(db) else {
+        return Vec::new();
+    };
+    let sql = "SELECT json_extract(m.data, '$.role'), p.data
+               FROM message m
+               JOIN part p ON p.message_id = m.id
+               WHERE m.session_id = ?1
+                 AND json_extract(p.data, '$.type') = 'text'
+                 AND COALESCE(json_extract(p.data, '$.synthetic'), 0) <> 1
+               ORDER BY m.time_created DESC, m.id DESC, p.time_created DESC, p.id DESC
+               LIMIT ?2";
+    let Ok(mut statement) = conn.prepare(sql) else {
+        return Vec::new();
+    };
+    let cap = i64::try_from(limit).unwrap_or(i64::MAX);
+    let Ok(rows) = statement.query_map(rusqlite::params![session_id, cap], |row| {
+        Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return Vec::new();
+    };
+    let mut turns: Vec<DbTurn> = rows
+        .flatten()
+        .filter_map(|(role, blob)| {
+            Some(DbTurn {
+                role: role?,
+                text: part_text(&blob)?,
+            })
+        })
+        .collect();
+    turns.reverse();
+    turns
+}
+
 /// The model that wrote the most recent agent message of `session_id`.
 fn last_model(conn: &Connection, session_id: &str) -> Option<String> {
     let sql = "SELECT json_extract(data, '$.modelID') FROM message

@@ -109,8 +109,10 @@ export function HandoffDialog(props: { request: HandoffRequest; onDismiss: () =>
       props.request.workspace,
       null,
       text,
-      // The graph edge: the new run nests under the one it continues.
-      props.request.session,
+      // The graph edge: the new run nests under the one it continues. A
+      // discovered run is not a node of that graph (`domain::external`), so
+      // there is no parent to record.
+      props.request.kind === "external" ? null : props.request.session,
     )
       .then(() => props.onDismiss())
       .catch((error: unknown) => {

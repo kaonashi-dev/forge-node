@@ -611,6 +611,60 @@ impl Client {
         }
     }
 
+    /// A discovered agent run's conversation as plain text, for a handoff.
+    ///
+    /// The on-disk counterpart of [`Client::session_transcript`]: the run has
+    /// no PTY, so the daemon reads its transcript file instead of the VT
+    /// engine. Named by identity, never by path.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn external_transcript(
+        &self,
+        session_id: String,
+        provider: String,
+        profile_id: Option<domain::AgentProfileId>,
+        max_turns: Option<u32>,
+        max_bytes: Option<u32>,
+    ) -> Result<domain::ExternalTranscript, ClientError> {
+        match self.request(Request::GetExternalTranscript {
+            session_id,
+            provider,
+            profile_id,
+            max_turns,
+            max_bytes,
+        })? {
+            Response::ExternalTranscript(transcript) => Ok(transcript),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "ExternalTranscript",
+            }),
+        }
+    }
+
+    /// Remove a discovered agent run's transcript from disk.
+    ///
+    /// History reaches a client only through the snapshot, so a caller
+    /// re-reads it afterwards; there is no event for this.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure, or when the daemon refuses —
+    /// a run recorded in a shared store cannot be removed on its own.
+    pub fn delete_external_session(
+        &self,
+        session_id: String,
+        provider: String,
+        profile_id: Option<domain::AgentProfileId>,
+    ) -> Result<(), ClientError> {
+        match self.request(Request::DeleteExternalSession {
+            session_id,
+            provider,
+            profile_id,
+        })? {
+            Response::Ack => Ok(()),
+            _ => Err(ClientError::UnexpectedResponse { expected: "Ack" }),
+        }
+    }
+
     /// Read one checkout's stopped rebase/merge/cherry-pick state (§14).
     ///
     /// Local and synchronous like [`Client::workspace_diff`]: belongs on the

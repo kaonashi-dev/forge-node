@@ -234,14 +234,22 @@ fn sample_file_tree() -> FileTree {
             FileEntry {
                 path: "README.md".to_string(),
                 kind: FileKind::File,
+                ignored: false,
             },
             FileEntry {
                 path: "src/main.rs".to_string(),
                 kind: FileKind::File,
+                ignored: false,
             },
             FileEntry {
                 path: "src/util/mod.rs".to_string(),
                 kind: FileKind::File,
+                ignored: false,
+            },
+            FileEntry {
+                path: "target/debug/app".to_string(),
+                kind: FileKind::File,
+                ignored: true,
             },
         ],
         truncated: false,

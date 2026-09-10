@@ -620,6 +620,11 @@
   overflow-y: auto;
   padding: var(--space-4);
 }
+/* The hold-Control list. No query field, so it is the palette's rows without
+   the palette's input. */
+.tab-switcher-list:focus-visible {
+  outline: none;
+}
 .palette-group {
   color: var(--fg-muted);
   font-size: var(--text-xs);
@@ -1060,13 +1065,9 @@
 }
 
 /*
- * Six tabs in a 288px panel.
- *
- * They used to wrap: `Lieutenant` pushed `Files` and `Git` onto a second row,
- * so the inspector opened two rows of chrome deep and the row a tab sat on
- * moved as the panel was dragged. One row that scrolls instead — the same
- * answer the session strip already gives — with the edges faded so a tab cut
- * off at the boundary reads as more rather than as clipped.
+ * The panel is resizable, so the strip can still be dragged narrower than its
+ * content: it scrolls in one row, with both edges faded so a tab cut off at the
+ * boundary reads as more rather than as clipped.
  */
 .inspector-tabs {
   border-bottom: 1px solid var(--border-subtle);
@@ -1114,6 +1115,15 @@
 }
 .inspector-tab:hover {
   background: var(--bg-hover);
+}
+/* An icon trigger is square: the glyph is the label, so horizontal padding
+   would only push the six of them apart. */
+.forge-tab-icon {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  padding: 0;
+  width: 24px;
 }
 .inspector-body {
   display: flex;

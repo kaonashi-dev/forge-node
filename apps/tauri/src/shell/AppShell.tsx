@@ -38,12 +38,7 @@ import {
   showSession,
   stepCodeView,
 } from "../store/viewsStore";
-import {
-  beginWorkbenchRequest,
-  failWorkbenchRequest,
-  loadFileTree,
-  openFile,
-} from "../workbench/api";
+import { openFile, warmFileTree as warmTree } from "../workbench/api";
 import {
   PANEL_OPEN_KEY,
   PANEL_RANGE,
@@ -75,6 +70,9 @@ import { RemoveProjectDialog } from "./RemoveProjectDialog";
 import { RemoveWorktreeDialog } from "./RemoveWorktreeDialog";
 import { TextInputDialog, type TextInputRequest } from "./TextInputDialog";
 import { HandoffDialog } from "./HandoffDialog";
+import { TabSwitcher } from "./SwitchTab";
+import { liveIdsByActivity } from "./tabMru";
+import { bindTabSwitcherCommit, stepTabSwitcher, tabSwitcherView } from "./tabSwitcher";
 import {
   currentWorkspace as sharedWorkspace,
   focusSession,
@@ -222,12 +220,7 @@ export function AppShell() {
     const workspace = session?.workspace_id ?? workbenchStore.workspace;
     if (!workspace) return;
     focusWorkspace(workspace);
-    // Same guard and the same bookkeeping the Files panel uses, so opening the
-    // palette and opening the panel cannot both read the same checkout at
-    // once, and a failure lands where the panel already shows it.
-    if (workbenchStore.tree || workbenchStore.loading.tree || workbenchStore.treeError) return;
-    beginWorkbenchRequest("tree");
-    void loadFileTree(workspace).catch((error) => failWorkbenchRequest("tree", error));
+    warmTree(workspace);
   }
 
   function openPalette(scope: PaletteScope): void {
@@ -238,6 +231,19 @@ export function AppShell() {
   function openBranchPicker(): void {
     const project = activeProject();
     if (project) requestNewWorktree(project);
+  }
+
+  /**
+   * One Ctrl+Tab: the focus ring, plus a few live sessions from other
+   * checkouts so the hold list can jump projects without leaving the strip.
+   */
+  function stepSwitcher(delta: number): void {
+    stepTabSwitcher(
+      delta,
+      openSessions().map((session) => session.id),
+      runtimeStore.activeSession,
+      liveIdsByActivity(forgeStore.sessions),
+    );
   }
 
   function cycleTab(delta: number): void {
@@ -381,6 +387,9 @@ export function AppShell() {
 
     onCleanup(enterContext(APP));
     onCleanup(installKeymap());
+    // Releasing Control commits, from the module's own key listener rather
+    // than from a chord: there is no keymap entry for "let go".
+    onCleanup(bindTabSwitcherCommit(focusSession));
 
     const bound = [
       registerAction("toggle_sidebar", toggleRail),
@@ -398,6 +407,8 @@ export function AppShell() {
       registerAction("close_session", closeActive),
       registerAction("next_session", () => cycleTab(1)),
       registerAction("previous_session", () => cycleTab(-1)),
+      registerAction("switch_tab_next", () => stepSwitcher(1)),
+      registerAction("switch_tab_previous", () => stepSwitcher(-1)),
       registerAction("focus_session", (index) => {
         const sessions = openSessions();
         const target = sessions[(index ?? 1) - 1];
@@ -619,6 +630,16 @@ export function AppShell() {
       <Show when={runtimeStore.handoff}>
         {(request) => (
           <HandoffDialog request={request()} onDismiss={() => setRuntimeStore("handoff", null)} />
+        )}
+      </Show>
+      <Show when={tabSwitcherView()}>
+        {(view) => (
+          <TabSwitcher
+            view={view()}
+            sessions={forgeStore.sessions}
+            workspaces={forgeStore.workspaces}
+            projects={forgeStore.projects}
+          />
         )}
       </Show>
     </main>

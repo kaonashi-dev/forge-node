@@ -13,6 +13,7 @@ import { FeaturesPanel } from "./FeaturesPanel";
 import { FileTreePanel } from "./FileTreePanel";
 import { GitPanel } from "./GitPanel";
 import { HistoryPanel } from "./HistoryPanel";
+import { TAB_ICONS } from "./inspectorTabs";
 import { LieutenantPanel } from "./LieutenantPanel";
 import { PullRequestPanel } from "./PullRequestPanel";
 import { Tabs } from "../ui";
@@ -71,7 +72,12 @@ export function RightPanel() {
       listClass="inspector-tabs"
       triggerClass="inspector-tab"
       contentClass="inspector-body"
-      tabs={INSPECTOR_TABS.map((item) => ({ value: item, label: item, content: PANELS[item] }))}
+      tabs={INSPECTOR_TABS.map((item) => ({
+        value: item,
+        label: item,
+        icon: TAB_ICONS[item],
+        content: PANELS[item],
+      }))}
     />
   );
 }

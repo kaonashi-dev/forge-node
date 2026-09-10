@@ -435,6 +435,42 @@ pub enum Request {
         /// Hard cap on the returned text. `None` takes the service default.
         max_bytes: Option<u32>,
     },
+    /// A discovered agent run's conversation as plain text →
+    /// [`crate::response::Response::ExternalTranscript`].
+    ///
+    /// The on-disk counterpart of [`Request::GetSessionTranscript`]: an
+    /// `ExternalAgentSession` has no PTY, so the transcript file is the only
+    /// record. Named by identity rather than by path — the daemon resolves it
+    /// against the runs it discovered, so a client cannot ask for an arbitrary
+    /// file.
+    GetExternalTranscript {
+        /// The provider's own session id, as `ExternalAgentSession::session_id`.
+        session_id: String,
+        /// Provider slug; a session id is only unique within one.
+        provider: String,
+        /// The account the run was found in, `None` for the default one.
+        profile_id: Option<AgentProfileId>,
+        /// Turns to read back from the end. `None` takes the service default.
+        max_turns: Option<u32>,
+        /// Hard cap on the returned text. `None` takes the service default.
+        max_bytes: Option<u32>,
+    },
+    /// Remove a discovered agent run's transcript from disk →
+    /// [`crate::response::Response::Ack`].
+    ///
+    /// Resolved by identity like [`Request::GetExternalTranscript`], and
+    /// refused with `InvalidRequest` when the run is recorded in a store shared
+    /// with every other run of its provider, which cannot be edited one run at
+    /// a time. Deletes the transcript and its sibling artifacts, never the
+    /// checkout the run happened in.
+    DeleteExternalSession {
+        /// The provider's own session id.
+        session_id: String,
+        /// Provider slug.
+        provider: String,
+        /// The account the run was found in, `None` for the default one.
+        profile_id: Option<AgentProfileId>,
+    },
     /// List files under a workspace → [`crate::response::Response::FileTree`].
     ///
     /// Local and synchronous like `GetWorkspaceDiff`: the daemon reads the

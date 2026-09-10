@@ -21,8 +21,8 @@ use std::thread;
 use client::Client;
 use domain::JuvaKind;
 use domain::{
-    HarnessAdvanceAction, HarnessArtifactKind, HarnessStep, ProjectId, SearchKind, SessionId,
-    ShareAction, ShareCandidate, ShareRuleId, ShareStatusEntry, WorkspaceId,
+    AgentProfileId, HarnessAdvanceAction, HarnessArtifactKind, HarnessStep, ProjectId, SearchKind,
+    SessionId, ShareAction, ShareCandidate, ShareRuleId, ShareStatusEntry, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter as _};
@@ -49,6 +49,20 @@ pub enum WorkbenchCommand {
         session: SessionId,
         max_lines: Option<u32>,
         max_bytes: Option<u32>,
+    },
+    /// A discovered run's conversation, for a handoff prompt off History.
+    LoadExternalTranscript {
+        session: String,
+        provider: String,
+        profile: Option<AgentProfileId>,
+        max_turns: Option<u32>,
+        max_bytes: Option<u32>,
+    },
+    /// Remove a discovered run's transcript from disk.
+    DeleteExternalSession {
+        session: String,
+        provider: String,
+        profile: Option<AgentProfileId>,
     },
     LoadFileTree {
         workspace: WorkspaceId,
@@ -237,6 +251,15 @@ struct SessionFailure {
     error: String,
 }
 
+/// A discovered run's id is the provider's own string, not a [`SessionId`], so
+/// [`SessionFailure`] cannot carry it — and the History panel needs the failure
+/// on the right card.
+#[derive(Clone, Debug, Serialize)]
+struct ExternalFailure {
+    session: String,
+    error: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct BranchesPayload {
     project: ProjectId,
@@ -320,6 +343,37 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
         } => match client.session_transcript(session, max_lines, max_bytes) {
             Ok(transcript) => emit(app, "workbench:session_transcript", &(session, transcript)),
             Err(error) => fail_session(app, "workbench:session_transcript_failed", session, &error),
+        },
+        WorkbenchCommand::LoadExternalTranscript {
+            session,
+            provider,
+            profile,
+            max_turns,
+            max_bytes,
+        } => match client.external_transcript(
+            session.clone(),
+            provider,
+            profile,
+            max_turns,
+            max_bytes,
+        ) {
+            Ok(transcript) => emit(app, "workbench:external_transcript", &(session, transcript)),
+            Err(error) => {
+                fail_external(app, "workbench:external_transcript_failed", session, &error)
+            }
+        },
+        WorkbenchCommand::DeleteExternalSession {
+            session,
+            provider,
+            profile,
+        } => match client.delete_external_session(session.clone(), provider, profile) {
+            Ok(()) => emit(app, "workbench:external_session_deleted", &session),
+            Err(error) => fail_external(
+                app,
+                "workbench:external_session_delete_failed",
+                session,
+                &error,
+            ),
         },
         WorkbenchCommand::LoadFileTree { workspace } => match client.list_files(workspace) {
             Ok(tree) => emit(app, "workbench:file_tree", &(workspace, tree)),
@@ -700,6 +754,18 @@ fn fail_session(app: &AppHandle, event: &str, session: SessionId, error: &client
     let _ = app.emit(
         event,
         SessionFailure {
+            session,
+            error: error.to_string(),
+        },
+    );
+}
+
+/// The same, keyed by a discovered run's provider-side id.
+fn fail_external(app: &AppHandle, event: &str, session: String, error: &client::ClientError) {
+    tracing::warn!(%error, event, "external transcript read failed");
+    let _ = app.emit(
+        event,
+        ExternalFailure {
             session,
             error: error.to_string(),
         },

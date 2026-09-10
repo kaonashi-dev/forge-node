@@ -21,7 +21,9 @@ import {
   loadFileTree,
   openFile,
   renamePath,
+  warmFileTree,
 } from "../workbench/api";
+import { ensureDiff } from "../workbench/decorations";
 import { requestConfirm, requestTextInput } from "../store/runtimeStore";
 import {
   collapseTarget,
@@ -247,16 +249,10 @@ export function FileTreePanel() {
 
   createEffect(() => {
     const workspace = workbenchStore.workspace;
-    if (
-      !workspace ||
-      workbenchStore.tree ||
-      workbenchStore.loading.tree ||
-      workbenchStore.treeError
-    ) {
-      return;
-    }
-    beginWorkbenchRequest("tree");
-    void loadFileTree(workspace).catch((error) => failWorkbenchRequest("tree", error));
+    if (workspace) warmFileTree(workspace);
+    // The decorations this panel paints are read from `workbenchStore.diff`,
+    // which until now only the Git tab ever filled.
+    ensureDiff();
   });
 
   /**
@@ -568,7 +564,11 @@ export function FileTreePanel() {
                     aria-selected={absolute() === index()}
                     aria-expanded={row.isFile ? undefined : !row.folded}
                     class="forge-row tree-row file"
-                    classList={{ active: absolute() === index(), directory: !row.isFile }}
+                    classList={{
+                      active: absolute() === index(),
+                      directory: !row.isFile,
+                      ignored: row.ignored,
+                    }}
                     data-path={row.path}
                     style={{ "--depth": String(row.depth) }}
                     onClick={() => {

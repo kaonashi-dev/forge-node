@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { setLoading, setWorkbenchStore } from "../store/workbenchStore";
+import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import { markApplying, setSharesStore } from "../store/sharesStore";
 import type { JuvaKind, SearchKind } from "./types";
 
@@ -84,8 +84,54 @@ export async function loadSessionTranscript(
   });
 }
 
+/**
+ * A discovered run's conversation, for a handoff prompt off History (§13.5).
+ *
+ * The on-disk twin of `loadSessionTranscript`: the run has no PTY, so the
+ * daemon reads its transcript file. Named by identity — a path on the wire
+ * would be an arbitrary-file primitive.
+ */
+export async function loadExternalTranscript(
+  session: string,
+  provider: string,
+  profile: string | null = null,
+  maxTurns: number | null = null,
+  maxBytes: number | null = null,
+): Promise<void> {
+  await send({
+    type: "load_external_transcript",
+    session,
+    provider,
+    profile,
+    max_turns: maxTurns,
+    max_bytes: maxBytes,
+  });
+}
+
+/** Remove a discovered run's transcript from disk. Never the checkout. */
+export async function deleteExternalSession(
+  session: string,
+  provider: string,
+  profile: string | null = null,
+): Promise<void> {
+  await send({ type: "delete_external_session", session, provider, profile });
+}
+
 export async function loadFileTree(workspace: string): Promise<void> {
   await send({ type: "load_file_tree", workspace });
+}
+
+/**
+ * Read the listing unless one is already in hand or on its way.
+ *
+ * The one guard every surface that wants a tree goes through — the panel, the
+ * palette and the path-link index — so opening two of them reads the checkout
+ * once, and a failure lands where the panel already shows it.
+ */
+export function warmFileTree(workspace: string): void {
+  if (workbenchStore.tree || workbenchStore.loading.tree || workbenchStore.treeError) return;
+  beginWorkbenchRequest("tree");
+  void loadFileTree(workspace).catch((error) => failWorkbenchRequest("tree", error));
 }
 
 export async function openFile(workspace: string, path: string): Promise<void> {

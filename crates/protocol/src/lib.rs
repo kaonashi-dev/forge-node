@@ -69,7 +69,11 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 ///   `AgentProfile.env` is gone and `config_dir` takes its place, and
 ///   `AgentDescriptor.profile_fields` is now `config_dir`. Both change the
 ///   encoded arity of a struct every snapshot carries.
-pub const PROTOCOL_VERSION: u32 = 16;
+/// - 16 → 17: two struct fields that change an encoded arity, plus the surface
+///   that reads them — `ignored` on a `FileEntry`, `store` on an
+///   `ExternalAgentSession`, and `GetExternalTranscript` /
+///   `DeleteExternalSession` with `Response::ExternalTranscript`.
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

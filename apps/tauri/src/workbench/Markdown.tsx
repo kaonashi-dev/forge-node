@@ -3,6 +3,7 @@ import { Dynamic } from "solid-js/web";
 import { openUrl } from "../runtime/api";
 import { Icon } from "../theme/icons";
 import { parseMarkdown, type MdBlock, type MdSpan } from "./markdownBlocks";
+import { PathText } from "./PathText";
 
 type MdText = Extract<MdSpan, { kind: "text" }>;
 
@@ -174,7 +175,16 @@ function Spans(props: { spans: MdSpan[] }) {
 }
 
 function Emphasis(props: { span: MdText }) {
-  const inner = () => (props.span.em ? <em>{props.span.text}</em> : props.span.text);
+  // Only plain prose is scanned for paths: a fenced block is quoted verbatim
+  // and an `[a](b)` link already says where it goes.
+  const inner = () =>
+    props.span.em ? (
+      <em>
+        <PathText text={props.span.text} />
+      </em>
+    ) : (
+      <PathText text={props.span.text} />
+    );
   return (
     <Show when={props.span.strong} fallback={inner()}>
       {<strong>{inner()}</strong>}

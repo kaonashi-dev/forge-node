@@ -13,6 +13,7 @@ import {
   type StreamTurn,
 } from "../harness/stream";
 import { jobIsRunning, type Job } from "../runtime/types";
+import { PathText } from "./PathText";
 
 /**
  * One headless run's output, as it arrives.
@@ -216,14 +217,26 @@ function StreamItemView(props: { item: Accessor<StreamItem> }) {
     <>
       <Show when={kind() === "message"}>
         <div class="job-message">
-          <Index each={lines()}>{(line) => <p>{streamLineBody(line())}</p>}</Index>
+          <Index each={lines()}>
+            {(line) => (
+              <p>
+                <PathText text={streamLineBody(line())} />
+              </p>
+            )}
+          </Index>
         </div>
       </Show>
       <Show when={kind() === "thinking"}>
         <details class="job-think">
           <summary class="job-think-head">Thinking</summary>
           <div class="job-think-body">
-            <Index each={lines()}>{(line) => <p>{streamLineBody(line())}</p>}</Index>
+            <Index each={lines()}>
+            {(line) => (
+              <p>
+                <PathText text={streamLineBody(line())} />
+              </p>
+            )}
+          </Index>
           </div>
         </details>
       </Show>

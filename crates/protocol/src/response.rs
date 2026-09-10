@@ -9,9 +9,9 @@
 
 use domain::{
     AgentDescriptor, AgentProfile, BranchRef, ChangeContext, DetectionResult, ExternalAgentSession,
-    FileContents, FileTree, HarnessEvent, HarnessFeature, HarnessFeatureList, Job, JuvaDraft,
-    Project, ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState, Remote,
-    ScrollbackRows, SearchResults, Session, SessionChanges, SessionId, SessionTranscript,
+    ExternalTranscript, FileContents, FileTree, HarnessEvent, HarnessFeature, HarnessFeatureList,
+    Job, JuvaDraft, Project, ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState,
+    Remote, ScrollbackRows, SearchResults, Session, SessionChanges, SessionId, SessionTranscript,
     ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TerminalId, TerminalSnapshot,
     UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceReview,
 };
@@ -204,6 +204,8 @@ pub enum Response {
     /// Plain text off a session's terminal, answering
     /// `GetSessionTranscript`.
     SessionTranscript(SessionTranscript),
+    /// A discovered run's conversation, answering `GetExternalTranscript`.
+    ExternalTranscript(ExternalTranscript),
     /// One checkout's stopped rebase/merge state, answering `GetRebaseState`,
     /// `ContinueRebase` and `MarkConflictResolved` (§14).
     RebaseState(RebaseState),

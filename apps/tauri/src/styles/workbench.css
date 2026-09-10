@@ -504,10 +504,40 @@
   overflow: hidden;
   position: relative;
 }
-.editor-code.hidden {
+/* The editor and its ruler share a row so the ruler's height *is* the
+   editor's, which is what makes a tick's percentage a real line. */
+.editor-code-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.editor-code-row.hidden {
   /* Hidden, not unmounted: tearing the view down would take the undo history
      and the scroll offset with it. */
   display: none;
+}
+/* A5, second half: the whole file's changes as a column beside the scrollbar,
+   three pixels wide because it answers "where else", not "what". */
+.editor-ruler {
+  cursor: pointer;
+  flex: none;
+  position: relative;
+  width: 10px;
+}
+.editor-ruler-tick {
+  border-radius: 1px;
+  left: 3px;
+  position: absolute;
+  width: 4px;
+}
+.editor-ruler-tick.added {
+  background: var(--forge-git-added);
+}
+.editor-ruler-tick.modified {
+  background: var(--forge-git-modified);
+}
+.editor-ruler-tick.deleted {
+  background: var(--forge-git-deleted);
 }
 .editor-code .cm-editor {
   height: 100%;
@@ -1264,6 +1294,23 @@
 }
 .forge-md-link:hover {
   text-decoration: underline;
+}
+/* A file the prose named. A button and not an anchor — there is no URL — so it
+   has to be un-styled back down to the text it interrupts. */
+.path-link {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+  text-decoration-color: var(--border-subtle);
+  text-underline-offset: 2px;
+}
+.path-link:hover {
+  color: var(--accent-solid);
+  text-decoration-color: currentcolor;
 }
 /* A table is the one block that can be wider than the column, so it scrolls
    in its own box rather than pushing the description sideways. */

@@ -17,6 +17,35 @@ use crate::ids::{AgentProfileId, ProjectId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Where a run is recorded, and so whether it can be removed on its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum TranscriptStore {
+    /// Its own file, plus any sibling artifacts, which can be removed alone.
+    #[default]
+    File,
+    /// A database holding every other run of this provider (opencode ≥ 1.17).
+    /// Forge opens it read-only, so a single run cannot be deleted from it.
+    SharedDatabase,
+}
+
+/// A discovered run's conversation, folded to plain text.
+///
+/// Mirrors [`crate::SessionTranscript`] field for field so a handoff can treat
+/// the two the same. `turns` rather than `lines` is the one honest difference:
+/// a transcript file has no terminal rows.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalTranscript {
+    /// The run this was read from.
+    pub session_id: String,
+    /// Oldest turn first, each prefixed by who spoke.
+    pub text: String,
+    /// Turns `text` covers.
+    pub turns: u32,
+    /// Whether older turns were dropped to stay inside the caller's budget.
+    pub truncated: bool,
+}
+
 /// One agent session transcript discovered on disk (§ future, ADR-010 note).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalAgentSession {
@@ -64,6 +93,11 @@ pub struct ExternalAgentSession {
     /// Absolute path to the transcript file, for the GUI to open when the run
     /// cannot be resumed — an uninstalled provider, or one with no resume.
     pub transcript_path: PathBuf,
+    /// Whether [`ExternalAgentSession::transcript_path`] is this run's alone.
+    /// The GUI greys `Delete` for a shared store rather than letting the
+    /// daemon refuse on confirm.
+    #[serde(default)]
+    pub store: TranscriptStore,
     /// First recorded activity (falls back to the file's mtime).
     pub started_at: Timestamp,
     /// Last recorded activity (falls back to the file's mtime).

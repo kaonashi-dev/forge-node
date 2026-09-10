@@ -7,7 +7,7 @@ import type { FileTree } from "./types";
 
 type Node = {
   dirs: Map<string, Node>;
-  files: string[];
+  files: { name: string; ignored: boolean }[];
 };
 
 export type TreeRow = {
@@ -20,10 +20,25 @@ export type TreeRow = {
   isFile: boolean;
   /** Resolved while building so rendering does not read the fold set. */
   folded: boolean;
+  /**
+   * Excluded by `.gitignore`. A directory is ignored only when everything
+   * under it is: a folder holding one build artifact beside real source is
+   * part of the work, and greying it would say otherwise.
+   */
+  ignored: boolean;
 };
 
 function emptyNode(): Node {
   return { dirs: new Map(), files: [] };
+}
+
+/** Whether every file below `node` is ignored. An empty directory is not. */
+function allIgnored(node: Node): boolean {
+  if (node.files.length === 0 && node.dirs.size === 0) return false;
+  return (
+    node.files.every((file) => file.ignored) &&
+    [...node.dirs.values()].every((dir) => allIgnored(dir))
+  );
 }
 
 /**
@@ -55,7 +70,7 @@ export function treeRows(tree: FileTree | null, collapsed: Set<string>): TreeRow
     if (entry.kind === "Directory") {
       if (!node.dirs.has(name)) node.dirs.set(name, emptyNode());
     } else {
-      node.files.push(name);
+      node.files.push({ name, ignored: entry.ignored });
     }
   }
 
@@ -92,17 +107,18 @@ function flatten(
     }
 
     const folded = collapsed.has(path);
-    rows.push({ depth, label, path, isFile: false, folded });
+    rows.push({ depth, label, path, isFile: false, folded, ignored: allIgnored(child) });
     if (!folded) flatten(child, path, depth + 1, collapsed, rows);
   }
 
-  for (const name of [...node.files].sort(compareNames)) {
+  for (const file of [...node.files].sort((a, b) => compareNames(a.name, b.name))) {
     rows.push({
       depth,
-      label: name,
-      path: join(prefix, name),
+      label: file.name,
+      path: join(prefix, file.name),
       isFile: true,
       folded: false,
+      ignored: file.ignored,
     });
   }
 }

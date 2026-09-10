@@ -35,6 +35,9 @@ const NAMES: ForgeIconName[] = [
   "message-square-plus",
   "columns-2",
   "list-checks",
+  "history",
+  "layout-grid",
+  "more-horizontal",
 ];
 
 describe("forgeIcons", () => {
