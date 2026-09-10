@@ -12,7 +12,7 @@
 #
 # The Solid frontend is not a packaged file: `tauri-build` embeds the Vite
 # output (apps/tauri/dist, the `frontendDist` of src-tauri/tauri.conf.json)
-# into the host binary, so `pnpm build` has to run *before* cargo does.
+# into the host binary, so `bun run build` has to run *before* cargo does.
 #
 # ---------------------------------------------------------------------------
 # RUNTIME DEPENDENCIES
@@ -41,7 +41,7 @@
 #                      refuses a directory without an icon), optional for .deb.
 #   FORGE_MAINTAINER   default: "ForgeNode contributors <forge@example.invalid>"
 #   FORGE_OUT_DIR      default: <repo>/dist/linux
-#   FORGE_SKIP_PNPM_INSTALL  set to 1 to reuse an existing apps/tauri/node_modules
+#   FORGE_SKIP_FRONTEND_INSTALL  set to 1 to reuse an existing apps/tauri/node_modules
 #   APPIMAGETOOL       path to appimagetool if it is not on PATH
 
 set -euo pipefail
@@ -120,16 +120,20 @@ gui_depends="\
 
 # ------------------------------------------------------------------ build ---
 
-require_cmd pnpm "install it with: corepack enable && corepack prepare pnpm@latest --activate"
-if [ "${FORGE_SKIP_PNPM_INSTALL:-0}" != "1" ]; then
+# shellcheck source=require-bun
+. "$repo_root/scripts/require-bun"
+forge_require_bun
+
+if [ "${FORGE_SKIP_FRONTEND_INSTALL:-${FORGE_SKIP_PNPM_INSTALL:-0}}" != "1" ]; then
   note "installing frontend dependencies"
-  (cd "$repo_root/apps/tauri" && pnpm install --frozen-lockfile)
+  (cd "$repo_root/apps/tauri" && bun install --frozen-lockfile)
 fi
 note "building the Solid frontend"
-(cd "$repo_root/apps/tauri" && pnpm build)
+(cd "$repo_root/apps/tauri" && bun run build)
 
 note "building release binaries${target:+ for $target}"
-cargo build --release --locked "${cargo_target_args[@]}" -p "$gui_crate" -p daemon
+cargo build --release --locked "${cargo_target_args[@]}" -p "$gui_crate" -p daemon \
+  --bin "$gui_bin" --bin forge-daemon --features "$gui_crate/custom-protocol"
 
 for bin in "$gui_bin" forge-daemon; do
   [ -x "$bin_dir/$bin" ] || die "expected binary not found: $bin_dir/$bin"

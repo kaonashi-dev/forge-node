@@ -1,25 +1,8 @@
-/**
- * Emit `src/theme/tokens.css` from the same palettes `tokens.ts` holds.
- *
- * Run: `pnpm tokens`.
- *
- * TypeScript, and run through `vite-node`, because it imports the palette
- * module itself — the alternative is a second copy of `toCssVariables` and
- * `mix`, which is the duplication this file exists to prevent.
- * The runtime still applies derived mix() values; this file is the first-paint
- * fallback so the window is not unthemed before JS.
- *
- * The palettes it reads are themselves checked against `theme tokens`
- * by `src/theme/tokens.test.ts`, so this generator never has to be trusted for
- * the values — only for the shape of the file it writes.
- */
-import { writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+// CSS provides the first-paint theme before the runtime applies derived values.
+import { resolve } from "node:path";
 import { palettes, staticTokens, toCssVariables, type ThemeBaseId } from "../src/theme/tokens.ts";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const out = resolve(here, "../src/theme/tokens.css");
+const out = resolve(import.meta.dir, "../src/theme/tokens.css");
 
 function block(selector: string, vars: Record<string, string>): string {
   const body = Object.entries(vars)
@@ -39,5 +22,5 @@ const parts = [
   block(":root", staticTokens()),
 ];
 
-writeFileSync(out, `${parts.join("\n")}\n`);
+await Bun.write(out, `${parts.join("\n")}\n`);
 console.log(`wrote ${out}`);

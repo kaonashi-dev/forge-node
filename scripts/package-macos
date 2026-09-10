@@ -26,7 +26,7 @@
 #
 # The Solid frontend is not a bundle resource: `tauri-build` embeds the Vite
 # output (`apps/tauri/dist`, the `frontendDist` of src-tauri/tauri.conf.json)
-# into the host binary at compile time. So `pnpm build` must run BEFORE cargo,
+# into the host binary at compile time. So `bun run build` must run BEFORE cargo,
 # once — the assets are architecture-independent.
 #
 # Optional signing / notarization — all parameterised by environment variables,
@@ -51,7 +51,7 @@
 #   FORGE_ICNS        path to an .icns file to embed as Contents/Resources.
 #                     Defaults to assets/icon/forge.icns.
 #   FORGE_OUT_DIR     default: <repo>/dist/macos
-#   FORGE_SKIP_PNPM_INSTALL  set to 1 to reuse an existing apps/tauri/node_modules
+#   FORGE_SKIP_FRONTEND_INSTALL  set to 1 to reuse an existing apps/tauri/node_modules
 
 set -euo pipefail
 
@@ -102,7 +102,6 @@ done
 
 require_cmd cargo
 require_cmd rustup
-require_cmd pnpm "the frontend package manager: corepack enable pnpm"
 require_cmd plutil "part of the Xcode Command Line Tools: xcode-select --install"
 
 bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge.tauri}"
@@ -222,7 +221,8 @@ if [ "$dry_run" -eq 1 ]; then
   for slice in "${slices[@]}"; do
     printf '    %-14s cargo --target %s\n' "$slice" "$(rust_target_for "$slice")"
   done
-  printf '    frontend       pnpm build in %s -> dist (embedded by tauri-build)\n' "$tauri_app"
+  printf '    bun            %s (from .bun-version)\n' "$(tr -d '[:space:]' < "$repo_root/.bun-version")"
+  printf '    frontend       bun run build in %s -> dist (embedded by tauri-build)\n' "$tauri_app"
   printf '    gui            cargo -p %s --bin %s -> Contents/MacOS/%s\n' \
     "$gui_crate" "$gui_bin" "$gui_name"
   printf '    daemon         cargo -p daemon --bin %s -> Contents/MacOS/%s\n' \
@@ -240,33 +240,30 @@ fi
 # The frontend is architecture-independent and is compiled INTO the host binary
 # by tauri-build, so it must exist before the first cargo build and only needs
 # building once.
-if [ "${FORGE_SKIP_PNPM_INSTALL:-0}" != "1" ]; then
-  note "installing frontend dependencies (pnpm install --frozen-lockfile)"
-  ( cd "$tauri_app" && pnpm install --frozen-lockfile )
+# PATH bun can be a canary; apps/tauri's preinstall requires .bun-version exactly.
+# shellcheck source=require-bun
+. "$repo_root/scripts/require-bun"
+forge_require_bun
+
+if [ "${FORGE_SKIP_FRONTEND_INSTALL:-${FORGE_SKIP_PNPM_INSTALL:-0}}" != "1" ]; then
+  note "installing frontend dependencies (bun install --frozen-lockfile)"
+  ( cd "$tauri_app" && bun install --frozen-lockfile )
 fi
 
-note "building the Solid frontend (pnpm build)"
-( cd "$tauri_app" && pnpm build ) || die "pnpm build failed — the Tauri host cannot embed a frontend that did not compile"
+note "building the Solid frontend (bun run build)"
+( cd "$tauri_app" && bun run build ) || die "bun run build failed — the Tauri host cannot embed a frontend that did not compile"
 [ -d "$tauri_app/dist" ] \
-  || die "pnpm build produced no $tauri_app/dist — check frontendDist in src-tauri/tauri.conf.json"
+  || die "bun run build produced no $tauri_app/dist — check frontendDist in src-tauri/tauri.conf.json"
 
 for slice in "${slices[@]}"; do
   rust_target="$(rust_target_for "$slice")"
   require_target "$rust_target"
 
-  note "building $daemon_name (release) for $rust_target"
-  cargo build --release --locked --target "$rust_target" -p daemon --bin "$daemon_name"
-
-  note "building $gui_bin (release) for $rust_target"
-  # --features custom-protocol is not optional: it is what makes tauri embed
-  # the frontend. Without it the build is a "dev" build whose webview loads
-  # devUrl, and the bundle opens a white window. `cargo tauri build` passes it
-  # for you; calling cargo directly does not.
-  #
-  # A failure here on the non-host slice is almost always a missing SDK for
-  # that architecture, so say so instead of leaving a bare cargo error.
-  cargo build --release --locked --target "$rust_target" -p "$gui_crate" --bin "$gui_bin" \
-    --features custom-protocol \
+  note "building $daemon_name and $gui_bin (release) for $rust_target"
+  # One graph shares dependency features; custom-protocol embeds the frontend.
+  cargo build --release --locked --target "$rust_target" \
+    -p daemon -p "$gui_crate" --bin "$daemon_name" --bin "$gui_bin" \
+    --features "$gui_crate/custom-protocol" \
     || die "cargo build failed for $rust_target — the toolchain must be able to \
 cross-compile that slice (check: xcode-select -p, and that the macOS SDK supports it); \
 build without --universal for a $host_slice-only bundle"
@@ -320,12 +317,12 @@ done
 # The frontend is embedded, not a bundle resource, so nothing downstream can
 # notice it is missing: a dev-mode binary assembles, signs, notarizes and ships
 # exactly like a good one and then opens a white window. Assert that the asset
-# `pnpm build` just emitted is really inside the Mach-O.
+# `bun run build` just emitted is really inside the Mach-O.
 require_embedded_frontend() {
   local binary="$1" entry
   entry="$(sed -n 's/.*src="\/assets\/\(index-[A-Za-z0-9_-]*\.js\)".*/\1/p' "$tauri_app/dist/index.html" | head -1)"
   [ -n "$entry" ] \
-    || die "cannot find the entry script in $tauri_app/dist/index.html — did pnpm build change its output?"
+    || die "cannot find the entry script in $tauri_app/dist/index.html — did bun run build change its output?"
   # grep reads the Mach-O directly: piping `strings` into `grep -q` trips
   # `set -o pipefail`, because the early exit SIGPIPEs the producer on a match.
   LC_ALL=C grep -aqF -- "$entry" "$binary" \
@@ -417,7 +414,7 @@ fi
 if [ "$make_updater" -eq 1 ]; then
   key="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/forge-updater.key}"
   [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] || [ -f "$key" ] \
-    || die "no updater signing key: set TAURI_SIGNING_PRIVATE_KEY, or generate one with 'pnpm tauri signer generate -w $key'"
+    || die "no updater signing key: set TAURI_SIGNING_PRIVATE_KEY, or generate one with 'bun run tauri signer generate -w $key'"
 
   if [ "$universal" -eq 1 ]; then
     updater_arch="universal"
@@ -439,9 +436,9 @@ if [ "$make_updater" -eq 1 ]; then
 
   note "signing the updater artifact"
   if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-    (cd "$tauri_app" && pnpm exec tauri signer sign "$tarball")
+    (cd "$tauri_app" && bun run tauri signer sign "$tarball")
   else
-    (cd "$tauri_app" && pnpm exec tauri signer sign --private-key-path "$key" "$tarball")
+    (cd "$tauri_app" && bun run tauri signer sign --private-key-path "$key" "$tarball")
   fi
   [ -f "$tarball.sig" ] || die "tauri signer produced no $tarball.sig"
 fi

@@ -36,13 +36,13 @@ Status for the Tauri + Solid shell.
 ## Gates
 
 ```sh
-make run-tauri                 # daemon sibling + pnpm tauri dev
-make check                     # fmt + clippy + rust tests + vitest + tsc + cargo check
+make run-tauri                 # daemon sibling + bun run tauri dev
+make check                     # rust gate + oxlint + oxfmt + vitest + bun:test + tsc + bundle
 make latency-tauri             # Phase 2 gate: key-to-render p95 <= 50 ms
 make package                   # macOS .app          (Linux: make package-linux)
 cargo run -p forge-tauri --bin forge-tauri-probe
-pnpm --dir apps/tauri codegen   # after export-fixtures
-pnpm --dir apps/tauri test
+bun run --cwd apps/tauri codegen   # after export-fixtures
+bun run --cwd apps/tauri test
 cargo test -p forge-tauri
 ```
 

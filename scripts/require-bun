@@ -1,0 +1,62 @@
+# Sourced by package-macos / package-linux.
+# Puts the bun named in .bun-version first on PATH, fetching a copy if PATH's
+# bun is a different build. Does not touch ~/.bun.
+
+forge_bun_version() {
+  local bin="${1:-bun}"
+  "$bin" -e 'process.stdout.write(String(process.versions.bun || ""))' 2>/dev/null || true
+}
+
+forge_require_bun() {
+  local pin current platform cache dest tmp archive url
+  pin="$(tr -d '[:space:]' < "$repo_root/.bun-version")"
+  [ -n "$pin" ] || die ".bun-version is missing or empty"
+
+  if command -v bun >/dev/null 2>&1; then
+    current="$(forge_bun_version)"
+    if [ "$current" = "$pin" ]; then
+      return 0
+    fi
+    note "PATH bun is ${current:-unknown}; using $pin from .bun-version"
+  fi
+
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64|Darwin-aarch64) platform="darwin-aarch64" ;;
+    Darwin-x86_64)               platform="darwin-x64" ;;
+    Linux-x86_64)                platform="linux-x64" ;;
+    Linux-aarch64|Linux-arm64)   platform="linux-aarch64" ;;
+    *) die "no pinned bun build for $(uname -s) $(uname -m)" ;;
+  esac
+
+  cache="${XDG_CACHE_HOME:-$HOME/.cache}/forge-node/bun/$pin"
+  dest="$cache/bun"
+  if [ ! -x "$dest" ] || [ "$(forge_bun_version "$dest")" != "$pin" ]; then
+    require_cmd curl
+    require_cmd unzip
+    archive="bun-${platform}.zip"
+    url="https://github.com/oven-sh/bun/releases/download/bun-v${pin}/${archive}"
+    note "fetching bun $pin ($platform)"
+    tmp="$(mktemp -d)"
+    if ! curl -fsSL "$url" -o "$tmp/$archive"; then
+      rm -rf "$tmp"
+      die "failed to download bun $pin from $url"
+    fi
+    if ! unzip -q "$tmp/$archive" -d "$tmp"; then
+      rm -rf "$tmp"
+      die "failed to unpack bun $pin"
+    fi
+    mkdir -p "$cache"
+    if ! mv "$tmp/bun-${platform}/bun" "$dest"; then
+      rm -rf "$tmp"
+      die "failed to install bun $pin into $cache"
+    fi
+    chmod 755 "$dest"
+    rm -rf "$tmp"
+  fi
+
+  PATH="$cache:$PATH"
+  export PATH
+  current="$(forge_bun_version)"
+  [ "$current" = "$pin" ] \
+    || die "bun ${current:-missing} is on PATH after pinning; expected $pin"
+}

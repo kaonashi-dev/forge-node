@@ -48,7 +48,7 @@ A comment carries a constraint the types cannot. It is not narration, history, o
 
 Rust: `rustfmt` defaults and `clippy -D warnings` are the gate. Match `#[non_exhaustive]` with a wildcard arm from other crates. Do not `unwrap()` / `expect()` on a recoverable daemon path. `#[must_use]` on pure getters that are easy to ignore.
 
-TypeScript (`apps/tauri`): `oxlint` (correctness), `oxfmt`, and `tsc --noEmit` are the gate. `strict` is on; do not add `any`. Theme values come from `src/theme/tokens.ts`, never a hex. A helper with a right and a wrong answer lives in its own module so a node test can import it without Solid's server build — that split is the comment, not an essay above the form.
+TypeScript (`apps/tauri`): Bun is pinned in `.bun-version` and the package manifest; `bun run check` runs `oxlint`, `oxfmt`, Vitest under Bun, native tooling tests, typechecks and bundle budgets. `strict` is on; do not add `any`. Bun APIs and types belong in tooling, never the WebView. Theme values come from `src/theme/tokens.ts`, never a hex. A helper with a right and a wrong answer lives in its own module so a test can import it without Solid's server build — that split is the comment, not an essay above the form.
 
 Existing code has a lot of the anti-pattern (file-level essays, field restatements, `used to` history, `§N` citations). Do not copy it. New code follows this section; a touch of an old file is the moment to delete the redundant comment next to the change, not to rewrite the crate.
 
