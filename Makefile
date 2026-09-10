@@ -4,9 +4,9 @@
 # `crates/`. Canonical Rust gate: `scripts/dev check` (also `make check`).
 #
 # Quick start:
-#   make install-ui     # pnpm install in apps/tauri
+#   make install-ui     # bun install in apps/tauri
 #   make dev            # forge-daemon (debug) + Tauri dev shell
-#   make build-release  # release workspace + installable Tauri bundle
+#   make build-release  # release daemon + installable Tauri bundle
 #   make install-local  # release bundle -> Applications, then relaunch
 #
 SHELL := /bin/bash
@@ -26,8 +26,8 @@ IS_DARWIN := $(if $(filter Darwin,$(UNAME_S)),1,)
 .PHONY: help \
         install-ui dev dev-vite run run-all run-ui run-tauri run-daemon latency-tauri \
         build build-frontend build-ui build-tauri build-tauri-debug build-tauri-release build-release \
-        build-rust build-rust-release build-daemon \
-        test test-rust test-tauri check check-fast \
+        build-rust build-rust-release build-daemon build-daemon-release \
+        test test-rust test-frontend test-tauri check check-fast \
         codegen tokens fixtures fmt clippy clean clean-rust clean-ui clean-tauri \
         package package-linux dist install-local info
 
@@ -36,12 +36,12 @@ help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make <target>\n\nTargets:\n"} \
 		/^[a-zA-Z0-9_.-]+:.*##/ { printf "  %-22s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@printf '\nTauri workflow:\n'
-	@printf '  make install-ui          # once: pnpm install\n'
+	@printf '  make install-ui          # once: bun install\n'
 	@printf '  make dev                   # daemon + Tauri dev (hot reload)\n'
 	@printf '  make dev-vite              # Vite only on :1420 (no Rust host)\n'
 	@printf '  make build-frontend        # tsc + vite build\n'
 	@printf '  make build-tauri           # debug installable bundle\n'
-	@printf '  make build-release         # release workspace + bundle\n'
+	@printf '  make build-release         # release daemon + bundle\n'
 	@printf '  make package               # macOS Forge.app (scripts/package-macos)\n'
 	@printf '  make install-local         # rebuild, replace /Applications app, relaunch\n'
 	@printf '\nGate:\n'
@@ -49,15 +49,15 @@ help: ## Show this help
 
 # ----------------------------------------------------------- Tauri: setup ---
 
-install-ui: ## Install frontend deps (`pnpm install --frozen-lockfile`)
-	cd "$(TAURI_APP)" && pnpm install --frozen-lockfile
+install-ui: ## Install frontend deps (`bun install --frozen-lockfile`)
+	cd "$(TAURI_APP)" && bun install --frozen-lockfile
 
 # ------------------------------------------------------------ Tauri: dev ---
 
 dev: run-tauri ## Daemon (debug) + Tauri dev shell — primary dev entry
 
 dev-vite: ## Vite dev server only (http://localhost:1420, no Rust host)
-	cd "$(TAURI_APP)" && pnpm dev
+	cd "$(TAURI_APP)" && bun run dev
 
 run: dev ## Alias for `make dev`
 
@@ -65,8 +65,8 @@ run-all: dev ## Alias for `make dev`
 
 run-ui: dev ## Alias for `make dev`
 
-run-tauri: build-daemon ## Build daemon, then `pnpm tauri dev`
-	cd "$(TAURI_APP)" && FORGE_DAEMON_BIN="$(DAEMON_DBG)" pnpm tauri dev
+run-tauri: build-daemon ## Build daemon, then `bun run tauri dev`
+	cd "$(TAURI_APP)" && FORGE_DAEMON_BIN="$(DAEMON_DBG)" bun run tauri dev
 
 run-daemon: ## Run forge-daemon in foreground (verbose logs)
 	RUST_LOG="$${RUST_LOG:-forge=debug,daemon=debug,info}" "$(ROOT)/scripts/dev" daemon
@@ -80,19 +80,19 @@ latency-tauri: ## Phase 2 gate: terminal key-to-render p95 (needs a live daemon)
 build: build-rust build-frontend ## Rust workspace + Tauri frontend (no installer)
 
 build-frontend: ## Typecheck + Vite bundle (`apps/tauri/dist`)
-	cd "$(TAURI_APP)" && pnpm build
+	cd "$(TAURI_APP)" && bun run build
 
 build-ui: build-tauri ## Alias: full Tauri debug bundle
 
 build-tauri: build-tauri-debug ## Debug installable bundle (.app / .deb / etc.)
 
-build-tauri-debug: build-daemon ## Debug Tauri bundle (`pnpm tauri build --debug`)
-	cd "$(TAURI_APP)" && FORGE_DAEMON_BIN="$(DAEMON_DBG)" pnpm tauri build --debug
+build-tauri-debug: build-daemon ## Debug Tauri bundle (`bun run tauri build --debug`)
+	cd "$(TAURI_APP)" && FORGE_DAEMON_BIN="$(DAEMON_DBG)" bun run tauri build --debug
 
-build-tauri-release: build-rust-release ## Release installable bundle
-	cd "$(TAURI_APP)" && FORGE_DAEMON_BIN="$(DAEMON_REL)" pnpm tauri build
+build-tauri-release: build-daemon-release ## Release installable bundle
+	cd "$(TAURI_APP)" && FORGE_DAEMON_BIN="$(DAEMON_REL)" bun run tauri build
 
-build-release: build-tauri-release ## Release Rust workspace + Tauri bundle
+build-release: build-tauri-release ## Release daemon + Tauri bundle
 
 build-rust: ## `cargo build --workspace`
 	cargo build --workspace
@@ -103,35 +103,40 @@ build-rust-release: ## `cargo build --workspace --release`
 build-daemon: ## Build forge-daemon only (debug)
 	cargo build -p daemon --bin forge-daemon
 
+build-daemon-release: ## Build forge-daemon only (release)
+	cargo build --release -p daemon --bin forge-daemon
+
 # --------------------------------------------------------- Tauri: codegen ---
 
+tokens: ## Regenerate and format the first-paint theme CSS
+	cd "$(TAURI_APP)" && bun run tokens
+
 codegen: ## Regenerate typed protocol copies for round-trip tests
-	cd "$(TAURI_APP)" && pnpm codegen
+	cd "$(TAURI_APP)" && bun run codegen
 
 fixtures: ## Export MessagePack protocol fixtures into apps/tauri/tests/fixtures
 	cargo run -p protocol --bin export-fixtures
 
 # ----------------------------------------------------------- Tauri: test ---
 
-test: test-rust test-tauri ## Run all Rust and Tauri tests
+test: test-rust test-frontend ## Run all Rust and frontend tests
 
 test-rust: ## `cargo test --workspace`
 	cargo test --workspace
 
-test-tauri: ## Vitest + tsc + cargo test -p forge-tauri
-	cd "$(TAURI_APP)" && pnpm test
-	cd "$(TAURI_APP)" && pnpm exec tsc --noEmit
+test-frontend: ## Frontend tests + typechecks
+	cd "$(TAURI_APP)" && bun run test
+	cd "$(TAURI_APP)" && bun run typecheck
+
+test-tauri: test-frontend ## Frontend checks + Tauri host tests
 	cargo test -p forge-tauri
 
 # The typecheck is here and not only in `test-tauri` because vitest only sees
 # the modules a test imports: a rename that misses a caller is a tsc error and
 # a green test run.
-check: ## Full gate: fmt + clippy + rust tests + tauri tests + typecheck
+check: ## Full gate: Rust checks + frontend lint, format, tests, types and bundle
 	"$(ROOT)/scripts/dev" check
-	cd "$(TAURI_APP)" && pnpm lint
-	cd "$(TAURI_APP)" && pnpm test
-	cd "$(TAURI_APP)" && pnpm exec tsc --noEmit
-	cargo check -p forge-tauri --all-targets
+	cd "$(TAURI_APP)" && bun run check
 
 check-fast: ## Rust fmt + clippy + tests only (no frontend)
 	"$(ROOT)/scripts/dev" check
@@ -139,19 +144,19 @@ check-fast: ## Rust fmt + clippy + tests only (no frontend)
 # ------------------------------------------------------ Tauri: lint / fmt ---
 
 lint: ## Oxlint Tauri frontend (`apps/tauri`)
-	cd "$(TAURI_APP)" && pnpm lint
+	cd "$(TAURI_APP)" && bun run lint
 
 lint-fix: ## Oxlint --fix
-	cd "$(TAURI_APP)" && pnpm lint:fix
+	cd "$(TAURI_APP)" && bun run lint:fix
 
 fmt-tauri: ## Format Tauri frontend (`oxfmt --write`)
-	cd "$(TAURI_APP)" && pnpm fmt
+	cd "$(TAURI_APP)" && bun run fmt
 
 fmt-check-tauri: ## Check Tauri formatting (`oxfmt --check`)
-	cd "$(TAURI_APP)" && pnpm fmt:check
+	cd "$(TAURI_APP)" && bun run fmt:check
 
 fmt-tauri-check: ## Alias for fmt-check-tauri
-	cd "$(TAURI_APP)" && pnpm fmt:check
+	cd "$(TAURI_APP)" && bun run fmt:check
 
 # ---------------------------------------------------------- Tauri: clean ---
 
@@ -207,5 +212,5 @@ info: ## Print resolved paths and toolchain
 	@printf 'TAURI_APP=%s\n' "$(TAURI_APP)"
 	@printf 'DAEMON_DBG=%s\n' "$(DAEMON_DBG)"
 	@printf 'DAEMON_REL=%s\n' "$(DAEMON_REL)"
-	@command -v pnpm >/dev/null && printf 'pnpm %s\n' "$$(pnpm --version)" || printf 'pnpm: not found\n'
+	@command -v bun >/dev/null && printf 'bun %s\n' "$$(bun --version)" || printf 'bun: not found\n'
 	@command -v cargo >/dev/null && cargo --version || printf 'cargo: not found\n'

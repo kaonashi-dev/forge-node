@@ -37,4 +37,4 @@ twice, once for each IntelliJ ground. `LangIcon` picks the set with
 1. Copy `<name>.svg` into **both** `dark/` and `light/`, header intact.
 2. Add `"<name>"` to `LANG_ICON_NAMES` and the extension or file name to one of
    the tables in `langIcons.ts`.
-3. `pnpm test` — the vendored-set test is what proves the two agree.
+3. `bun run test` — the vendored-set test is what proves the two agree.

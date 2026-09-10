@@ -38,10 +38,10 @@
 - [ ] `cargo fmt --all -- --check` with no differences.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` with no warnings.
 - [ ] `cargo test --workspace` green.
-- [ ] If `apps/tauri` changed: `pnpm --dir apps/tauri exec oxlint`,
-      `pnpm --dir apps/tauri exec oxfmt --check`,
-      `pnpm --dir apps/tauri exec tsc --noEmit` and
-      `pnpm --dir apps/tauri exec vitest run` are green.
+- [ ] If `apps/tauri` changed: `bun run --cwd apps/tauri lint`,
+      `bun run --cwd apps/tauri fmt:check`,
+      `bun run --cwd apps/tauri typecheck` and
+      `bun run --cwd apps/tauri test` are green.
 - [ ] The diff adds no new `#[ignore]`, no `#[allow(...)]` without a
       justification in the same file, and no `unwrap()`/`expect()` in daemon
       runtime paths where the error is recoverable.

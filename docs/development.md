@@ -62,6 +62,44 @@ cargo test -p daemon --test integration macos_vim_htop_color_and_alt_screen_smok
 cargo test -p terminal-core --test golden plain_text -- --exact
 ```
 
+## Build scope and timings
+
+Use `make build-daemon` or `make build-daemon-release` when only the daemon
+is needed. `make build-release` builds the release daemon and delegates the
+frontend and GUI build to the Tauri CLI. `make build-rust-release` remains the
+explicit full-workspace release build, including diagnostic binaries and the
+fixture exporter.
+
+`make test` runs the Rust workspace suite once plus the frontend tests and
+typechecks. `make test-tauri` checks only the frontend and its Rust host;
+`make test-frontend` avoids Rust compilation entirely.
+
+The packagers select only `forge-daemon` and `forge-tauri`, in one Cargo
+invocation per architecture. This lets Cargo share dependency features and
+schedule both graphs together. The frontend must finish first because
+`forge-tauri/custom-protocol` embeds its output. Universal macOS packages still
+need a separate native build for each architecture.
+
+CI runs the frontend and fixture checks in the cached workspace job on each
+OS. The workspace's Clippy `--all-targets` and test steps already cover the
+Tauri library and diagnostic binaries; a second native build job would repeat
+that work.
+
+For a build-time investigation, add `--timings` to the Cargo command being
+measured and open `target/cargo-timings/cargo-timing.html`. For example, after
+building the frontend with the Bun version in `.bun-version`:
+
+```sh
+cargo build --release --locked -p daemon -p forge-tauri \
+  --bin forge-daemon --bin forge-tauri \
+  --features forge-tauri/custom-protocol --timings
+```
+
+Compare the same command, target, source changes and cache state. An initial
+build after changing package selection may compile a new combination of
+dependency features; its time is not comparable to a warm no-change build.
+Release LTO and codegen settings remain defined in the root `Cargo.toml`.
+
 ## Running the daemon by hand
 
 ```sh

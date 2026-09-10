@@ -8,8 +8,8 @@ side renders the cell replica it sends (ADR-011).
 ## Development
 
 ```sh
-pnpm install
-make run-tauri          # builds forge-daemon, then `pnpm tauri dev`
+bun install
+make run-tauri          # builds forge-daemon, then `bun run tauri dev`
 ```
 
 `FORGE_DAEMON_BIN` / `FORGE_SOCKET` override locator paths. The runtime thread
@@ -19,13 +19,13 @@ project exists, and attaches a live shell.
 ## Checks
 
 ```sh
-pnpm test               # vitest
-pnpm build              # tsc --noEmit + vite build
-pnpm lint               # oxlint (correctness, Solid-aware)
-pnpm fmt:check          # oxfmt --check (printWidth 100, 2 spaces)
-pnpm fmt                # oxfmt --write
+bun run test               # vitest
+bun run build              # typecheck + vite build + bundle budgets
+bun run lint               # oxlint (correctness, Solid-aware)
+bun run fmt:check          # oxfmt --check (printWidth 100, 2 spaces)
+bun run fmt                # oxfmt --write
 cargo test -p forge-tauri
-make check              # rust fmt/clippy/test + oxlint + vitest + tsc + cargo check
+make check              # rust gate + oxlint + oxfmt + vitest + bun:test + tsc + bundle budgets
 make lint               # oxlint only
 make fmt-tauri          # oxfmt write
 make fmt-check-tauri    # oxfmt check
@@ -36,7 +36,7 @@ copies the round-trip tests read; CI fails on drift between them:
 
 ```sh
 cargo run -p protocol --bin export-fixtures
-pnpm codegen
+bun run codegen
 ```
 
 Two measurements have their own entry points:

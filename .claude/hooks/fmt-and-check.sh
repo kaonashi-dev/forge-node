@@ -39,20 +39,20 @@ case "$REL" in
       *.ts|*.tsx) ;;
       *) exit 0 ;;
     esac
-    if ! command -v pnpm >/dev/null 2>&1; then
-      echo "[harness] pnpm not found; skipping Tauri TypeScript check" >&2
+    if ! command -v bun >/dev/null 2>&1; then
+      echo "[harness] bun not found; skipping Tauri TypeScript check" >&2
       exit 0
     fi
     TAURI_REL=${REL#apps/tauri/}
-    pnpm --dir apps/tauri exec oxfmt --write "$TAURI_REL" >/dev/null 2>&1
-    if ! OUT=$(pnpm --dir apps/tauri exec oxlint "$TAURI_REL" 2>&1); then
+    bun run --cwd apps/tauri fmt:write "$TAURI_REL" >/dev/null 2>&1
+    if ! OUT=$(bun run --cwd apps/tauri lint "$TAURI_REL" 2>&1); then
       {
         echo "[harness] oxlint $REL failed:"
         printf '%s\n' "$OUT" | grep -E '^(error|warning|  ×|  !)' | head -20
-        echo "[harness] the full Tauri gate is pnpm --dir apps/tauri exec oxlint && pnpm --dir apps/tauri exec oxfmt --check && pnpm --dir apps/tauri exec tsc --noEmit && pnpm --dir apps/tauri exec vitest run"
+        echo "[harness] the full Tauri gate is bun run --cwd apps/tauri lint && bun run --cwd apps/tauri fmt:check && bun run --cwd apps/tauri typecheck && bun run --cwd apps/tauri test"
       } >&2
     fi
-    if ! OUT=$(pnpm --dir apps/tauri exec tsc --noEmit 2>&1); then
+    if ! OUT=$(bun run --cwd apps/tauri typecheck 2>&1); then
       {
         echo "[harness] tsc --noEmit failed:"
         printf '%s\n' "$OUT" | grep -E '(^|:)(error TS[0-9]+|error|warning)' | head -20
