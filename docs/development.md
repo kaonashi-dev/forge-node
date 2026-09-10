@@ -80,10 +80,11 @@ schedule both graphs together. The frontend must finish first because
 `forge-tauri/custom-protocol` embeds its output. Universal macOS packages still
 need a separate native build for each architecture.
 
-CI runs the frontend and fixture checks in the cached workspace job on each
-OS. The workspace's Clippy `--all-targets` and test steps already cover the
-Tauri library and diagnostic binaries; a second native build job would repeat
-that work.
+CI keeps frontend checks parallel to the cached Rust workspace job on each
+OS. Rust fixture export runs in the workspace job; TypeScript and CSS generation
+run in the frontend job. The workspace's Clippy `--all-targets` and test steps
+already cover the Tauri library and diagnostic binaries, so the frontend job
+needs neither native compilation nor Tauri system-library installation.
 
 For a build-time investigation, add `--timings` to the Cargo command being
 measured and open `target/cargo-timings/cargo-timing.html`. For example, after

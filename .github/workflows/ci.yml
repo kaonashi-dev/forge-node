@@ -74,6 +74,22 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test --workspace --locked
 
+      - name: Check protocol fixtures are current
+        run: |
+          cargo run -p protocol --bin export-fixtures --locked
+          git diff --exit-code -- apps/tauri/tests/fixtures
+
+  tauri:
+    name: tauri (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
@@ -86,14 +102,11 @@ jobs:
         working-directory: apps/tauri
         run: bun run check
 
-      # The committed wire fixtures are generated, not hand-written. Re-export
-      # them and fail on drift so a protocol change cannot land without them.
-      - name: Check protocol fixtures are current
+      - name: Check generated frontend files are current
         run: |
-          cargo run -p protocol --bin export-fixtures --locked
           bun run --cwd apps/tauri codegen
           bun run --cwd apps/tauri tokens
-          git diff --exit-code -- apps/tauri/tests/fixtures apps/tauri/src/runtime/generated apps/tauri/src/theme/tokens.css
+          git diff --exit-code -- apps/tauri/src/runtime/generated apps/tauri/src/theme/tokens.css
 
   # ADR-002 / §32 require `cargo deny check licenses` to pass before any
   # distribution; §31 lists cargo-deny as a project dependency. The action
