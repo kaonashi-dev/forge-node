@@ -3,6 +3,7 @@
     "usage": [
       {
         "provider_id": "claude",
+        "profile_id": null,
         "windows": [
           {
             "used_percent": 42,

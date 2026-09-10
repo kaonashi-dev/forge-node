@@ -37,6 +37,8 @@ pub(super) fn collect(
     }
     Some(ProviderUsage {
         provider_id: descriptor.id.clone(),
+        // Stamped by `super::collect`, which is what knows the account.
+        profile_id: None,
         windows,
         collected_at: Timestamp::now(),
     })

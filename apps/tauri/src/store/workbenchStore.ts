@@ -1,4 +1,5 @@
 import { createStore } from "solid-js/store";
+import { LAST_WORKSPACE_KEY, writeChoice } from "../shell/layout";
 import type {
   Branches,
   FileContents,
@@ -56,9 +57,16 @@ export function setLoading(surface: string, value: boolean): void {
  *
  * Clears every answer: the panels are about *this* workspace, and showing the
  * previous one's diff under a new branch name is worse than showing nothing.
+ *
+ * Also the one choke point every gesture that moves the window goes through,
+ * so it is where the checkout is remembered for the next launch. A `null`
+ * focus does not clear it: that is "no session on screen", which happens on
+ * every startup before the snapshot lands, not a person choosing to be
+ * nowhere.
  */
 export function focusWorkspace(workspace: string | null): void {
   if (workbenchStore.workspace === workspace) return;
+  if (workspace) writeChoice(LAST_WORKSPACE_KEY, workspace);
   setWorkbenchStore({
     workspace,
     diff: null,

@@ -257,12 +257,20 @@ export type AgentProfile = {
   id: string;
   provider_id: string;
   name: string;
-  /** Program to run instead of the detected binary; `null` inherits it. */
+  /**
+   * Program to run instead of the detected binary; `null` inherits it. A bare
+   * name is looked up on the login shell's PATH, which is where the wrapper
+   * script behind a shell alias lives.
+   */
   executable: string | null;
+  /**
+   * The account this profile logs into, as the provider's own config-directory
+   * variables. Relative to `$HOME` unless absolute; `null` shares the
+   * provider's default account.
+   */
+  config_dir: string | null;
   /** Appended after the descriptor's own default arguments. */
   args: string[];
-  /** Applied over the resolved environment, in order. */
-  env: [string, string][];
   created_at: string;
 };
 

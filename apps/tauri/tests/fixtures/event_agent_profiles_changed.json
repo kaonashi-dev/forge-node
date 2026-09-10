@@ -6,15 +6,10 @@
         "provider_id": "claude",
         "name": "Work",
         "executable": null,
+        "config_dir": ".claude-work",
         "args": [
           "--model",
           "opus"
-        ],
-        "env": [
-          [
-            "CLAUDE_CONFIG_DIR",
-            "/home/dev/.claude-work"
-          ]
         ],
         "created_at": "2026-08-30T12:00:00Z"
       }

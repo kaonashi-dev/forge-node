@@ -1010,7 +1010,16 @@
 .pr-compose-tasks {
   display: flex;
   flex-direction: column;
-  gap: var(--space-8);
+}
+/* Same column width as the task cards: `settings-hint` caps prose at 60ch and
+   must not wrap a field that sits under a full-bleed radio row. */
+.pr-compose-field {
+  max-width: none;
+  width: 100%;
+}
+.pr-compose-field .forge-textarea {
+  border-color: var(--border-subtle);
+  border-radius: var(--radius-md);
 }
 .pr-task-row {
   display: grid;
@@ -1045,10 +1054,11 @@
   overflow: auto;
   padding: var(--space-8);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   white-space: pre-wrap;
+  width: 100%;
 }
 .pr-compose-launch {
   display: flex;

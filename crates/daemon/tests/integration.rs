@@ -913,7 +913,7 @@ fn reconnect_with_a_new_client_preserves_the_grid() {
 #[test]
 #[ignore = "requires installed claude, codex, opencode, and cursor-agent TUIs"]
 fn installed_agent_tuis_render_and_accept_input() {
-    const PROVIDERS: [&str; 4] = ["claude", "codex", "opencode", "cursor"];
+    const PROVIDERS: [&str; 5] = ["claude", "codex", "opencode", "cursor", "grok"];
 
     let td = start_daemon();
     let client = Client::connect(&td.socket, "agent-tui-smoke").expect("connect");

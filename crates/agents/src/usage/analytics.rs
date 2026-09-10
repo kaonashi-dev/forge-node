@@ -34,8 +34,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use domain::{
-    AgentProviderId, DailyUsage, ProviderAnalytics, ResolvedEnvironment, Timestamp, TokenTotals,
-    UsageAnalytics,
+    AgentProfile, AgentProviderId, DailyUsage, ProviderAnalytics, ResolvedEnvironment, Timestamp,
+    TokenTotals, UsageAnalytics,
 };
 use serde_json::Value;
 
@@ -56,8 +56,18 @@ const SCAN_LIMIT: usize = 500;
 ///
 /// `window_days` is clamped into `1..=MAX_WINDOW_DAYS`; `0` means the default.
 /// The result is ordered by tokens descending, so the busiest provider leads.
+///
+/// `profiles` are the launch profiles (§13.4): each one that moves a provider's
+/// config directory moves its transcripts with it, so a machine whose work runs
+/// under a `Personal` profile would otherwise report an empty month. Every
+/// account is read and the totals are the sum — this page is what the machine
+/// spent, not what one login did.
 #[must_use]
-pub fn collect(window_days: u16, env: &ResolvedEnvironment) -> UsageAnalytics {
+pub fn collect(
+    window_days: u16,
+    env: &ResolvedEnvironment,
+    profiles: &[AgentProfile],
+) -> UsageAnalytics {
     let window_days = match window_days {
         0 => DEFAULT_WINDOW_DAYS,
         days => days.min(MAX_WINDOW_DAYS),
@@ -71,8 +81,8 @@ pub fn collect(window_days: u16, env: &ResolvedEnvironment) -> UsageAnalytics {
     let mut skipped = 0_u32;
 
     for (provider, files) in [
-        ("claude", claude_transcripts(env, cutoff)),
-        ("codex", codex_transcripts(env, cutoff)),
+        ("claude", claude_transcripts(env, profiles, cutoff)),
+        ("codex", codex_transcripts(env, profiles, cutoff)),
     ] {
         skipped += files.skipped;
         let mut totals = Totals::default();
@@ -415,46 +425,83 @@ struct Transcripts {
     skipped: u32,
 }
 
-/// `$CLAUDE_CONFIG_DIR/projects`, falling back to `$HOME/.claude/projects`.
-fn claude_transcripts(env: &ResolvedEnvironment, cutoff: time::OffsetDateTime) -> Transcripts {
-    let root = env
-        .get("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env.get("HOME")
-                .map(|home| PathBuf::from(home).join(".claude"))
-        })
-        .map(|root| root.join("projects"));
-    recent_transcripts(root.as_deref(), cutoff)
+/// `$CLAUDE_CONFIG_DIR/projects` and every profile's, falling back to
+/// `$HOME/.claude/projects`.
+fn claude_transcripts(
+    env: &ResolvedEnvironment,
+    profiles: &[AgentProfile],
+    cutoff: time::OffsetDateTime,
+) -> Transcripts {
+    let default = env.get("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| {
+        env.get("HOME")
+            .map(|home| PathBuf::from(home).join(".claude"))
+    });
+    recent_transcripts(
+        &stores(default, "claude", profiles, env, "projects"),
+        cutoff,
+    )
 }
 
-/// `$CODEX_HOME/sessions`, falling back to `$HOME/.codex/sessions`.
-fn codex_transcripts(env: &ResolvedEnvironment, cutoff: time::OffsetDateTime) -> Transcripts {
-    let root = env
-        .get("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env.get("HOME")
-                .map(|home| PathBuf::from(home).join(".codex"))
-        })
-        .map(|root| root.join("sessions"));
-    recent_transcripts(root.as_deref(), cutoff)
+/// `$CODEX_HOME/sessions` and every profile's, falling back to
+/// `$HOME/.codex/sessions`.
+fn codex_transcripts(
+    env: &ResolvedEnvironment,
+    profiles: &[AgentProfile],
+    cutoff: time::OffsetDateTime,
+) -> Transcripts {
+    let default = env.get("CODEX_HOME").map(PathBuf::from).or_else(|| {
+        env.get("HOME")
+            .map(|home| PathBuf::from(home).join(".codex"))
+    });
+    recent_transcripts(&stores(default, "codex", profiles, env, "sessions"), cutoff)
 }
 
-/// Every `.jsonl` under `root` touched since `cutoff`, newest first, capped.
+/// Every directory `provider`'s transcripts may live in: the account the
+/// resolved environment points at, plus one per launch profile that moved it
+/// (§13.4), each with `leaf` appended.
+///
+/// Duplicates are dropped by canonical path, because a profile pointing at the
+/// default account would otherwise have every one of its turns counted twice.
+fn stores(
+    default: Option<PathBuf>,
+    provider: &str,
+    profiles: &[AgentProfile],
+    env: &ResolvedEnvironment,
+    leaf: &str,
+) -> Vec<PathBuf> {
+    let home = env.get("HOME").map(PathBuf::from);
+    let dirs = default.into_iter().chain(profiles.iter().filter_map(|p| {
+        let dir = p.config_dir.as_deref()?;
+        (p.provider_id.as_str() == provider).then(|| match home.as_deref() {
+            Some(home) => AgentProfile::resolve_config_dir(dir, home),
+            None => dir.to_path_buf(),
+        })
+    }));
+
+    let mut seen = std::collections::HashSet::new();
+    let mut roots = Vec::new();
+    for dir in dirs {
+        let root = dir.join(leaf);
+        let key = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        if seen.insert(key) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+/// Every `.jsonl` under `roots` touched since `cutoff`, newest first, capped.
+/// The cap is over all of them together: the page reads the busiest 500
+/// transcripts on the machine, not 500 per account.
 ///
 /// Modification time is the filter, not the records: a transcript last written
 /// before the window opened cannot contain a turn inside it, and skipping it
 /// costs nothing. Records *inside* a kept file are still checked one by one.
-fn recent_transcripts(root: Option<&Path>, cutoff: time::OffsetDateTime) -> Transcripts {
-    let Some(root) = root else {
-        return Transcripts {
-            paths: Vec::new(),
-            skipped: 0,
-        };
-    };
+fn recent_transcripts(roots: &[PathBuf], cutoff: time::OffsetDateTime) -> Transcripts {
     let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
-    collect_jsonl(root, 0, cutoff, &mut found);
+    for root in roots {
+        collect_jsonl(root, 0, cutoff, &mut found);
+    }
     found.sort_unstable_by(|a, b| b.0.cmp(&a.0));
     let skipped = u32::try_from(found.len().saturating_sub(SCAN_LIMIT)).unwrap_or(u32::MAX);
     Transcripts {
@@ -616,7 +663,7 @@ mod tests {
             ],
         );
 
-        let analytics = collect(30, &env(home.path()));
+        let analytics = collect(30, &env(home.path()), &[]);
         let claude = &analytics.providers[0];
         assert_eq!(claude.provider_id.to_string(), "claude");
         assert_eq!(claude.turns, 2);
@@ -632,6 +679,66 @@ mod tests {
         assert_eq!(analytics.skipped, 0);
     }
 
+    fn profile(provider: &str, dir: &str) -> domain::AgentProfile {
+        domain::AgentProfile {
+            id: domain::AgentProfileId::new(),
+            provider_id: AgentProviderId::new(provider),
+            name: "Personal".to_owned(),
+            executable: None,
+            config_dir: Some(PathBuf::from(dir)),
+            args: Vec::new(),
+            created_at: Timestamp::now(),
+        }
+    }
+
+    /// A profile moves the config directory, and the transcripts move with it
+    /// (§13.4). Reading only the default account would report an empty month
+    /// for a machine whose work all runs under a `Personal` profile.
+    #[test]
+    fn a_profiles_account_is_read_alongside_the_default_one() {
+        let home = tempfile::tempdir().expect("tempdir");
+        write(
+            &home
+                .path()
+                .join(".claude/projects/-Users-me-proj/default.jsonl"),
+            &[claude_turn("msg_1", &ago(1), 100, 50, 0)],
+        );
+        // The profile's own account, named the way the form suggests.
+        write(
+            &home
+                .path()
+                .join(".claude-personal/projects/-Users-me-proj/personal.jsonl"),
+            &[claude_turn("msg_2", &ago(1), 1_000, 500, 0)],
+        );
+
+        let profiles = [
+            profile("claude", ".claude-personal"),
+            // Another provider's profile must not drag Claude's scan sideways.
+            profile("codex", ".codex-work"),
+        ];
+        let claude = &collect(30, &env(home.path()), &profiles).providers[0];
+        assert_eq!(claude.turns, 2, "both accounts are summed");
+        assert_eq!(claude.tokens.input, 1_100);
+        assert_eq!(claude.sessions, 2);
+    }
+
+    /// The same directory named twice — a profile pointing at the default
+    /// account — must not bill its turns twice.
+    #[test]
+    fn an_account_named_twice_is_read_once() {
+        let home = tempfile::tempdir().expect("tempdir");
+        write(
+            &home
+                .path()
+                .join(".claude/projects/-Users-me-proj/session.jsonl"),
+            &[claude_turn("msg_1", &ago(1), 100, 50, 0)],
+        );
+
+        let claude = &collect(30, &env(home.path()), &[profile("claude", ".claude")]).providers[0];
+        assert_eq!(claude.turns, 1);
+        assert_eq!(claude.tokens.input, 100);
+    }
+
     #[test]
     fn a_resumed_transcript_does_not_bill_its_copied_records_twice() {
         let home = tempfile::tempdir().expect("tempdir");
@@ -643,7 +750,7 @@ mod tests {
             &[turn, claude_turn("msg_2", &ago(1), 10, 5, 0)],
         );
 
-        let claude = &collect(30, &env(home.path())).providers[0];
+        let claude = &collect(30, &env(home.path()), &[]).providers[0];
         assert_eq!(claude.turns, 2, "the copied record is counted once");
         assert_eq!(claude.tokens.input, 110);
     }
@@ -667,7 +774,7 @@ mod tests {
             ],
         );
 
-        let codex = &collect(30, &env(home.path())).providers[0];
+        let codex = &collect(30, &env(home.path()), &[]).providers[0];
         assert_eq!(codex.provider_id.to_string(), "codex");
         assert_eq!(codex.turns, 2);
         // Fresh input is 600 then 1_000: the cached half never counts as new.
@@ -695,7 +802,7 @@ mod tests {
             ],
         );
 
-        let claude = &collect(30, &env(home.path())).providers[0];
+        let claude = &collect(30, &env(home.path()), &[]).providers[0];
         assert_eq!(claude.turns, 1);
         assert_eq!(claude.tokens.input, 7);
     }
@@ -703,7 +810,7 @@ mod tests {
     #[test]
     fn an_empty_home_reports_nothing_rather_than_zeroes() {
         let home = tempfile::tempdir().expect("tempdir");
-        let analytics = collect(30, &env(home.path()));
+        let analytics = collect(30, &env(home.path()), &[]);
         assert!(analytics.providers.is_empty());
         assert!(analytics.daily.is_empty());
         assert_eq!(analytics.scanned, 0);
@@ -713,11 +820,11 @@ mod tests {
     fn the_window_is_clamped_rather_than_trusted() {
         let home = tempfile::tempdir().expect("tempdir");
         assert_eq!(
-            collect(0, &env(home.path())).window_days,
+            collect(0, &env(home.path()), &[]).window_days,
             DEFAULT_WINDOW_DAYS
         );
         assert_eq!(
-            collect(10_000, &env(home.path())).window_days,
+            collect(10_000, &env(home.path()), &[]).window_days,
             MAX_WINDOW_DAYS
         );
     }

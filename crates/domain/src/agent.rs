@@ -186,6 +186,15 @@ pub struct UsageWindow {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderUsage {
     pub provider_id: AgentProviderId,
+    /// The launch profile whose account this reading came from, or `None` for
+    /// the provider's default account (§13.4).
+    ///
+    /// A provider is not one allowance: a profile that moves the config
+    /// directory logs into a second account with limits of its own, and
+    /// reporting only the default one is what made a `Personal` profile's
+    /// meter read as somebody else's.
+    #[serde(default)]
+    pub profile_id: Option<AgentProfileId>,
     /// The windows the provider reports, in display order.
     pub windows: Vec<UsageWindow>,
     /// When the reading was taken, so a stale reading can be shown as stale.
@@ -198,7 +207,15 @@ impl ProviderUsage {
     /// would always differ; the daemon uses this to broadcast only real changes.
     #[must_use]
     pub fn same_reading(&self, other: &Self) -> bool {
-        self.provider_id == other.provider_id && self.windows == other.windows
+        self.provider_id == other.provider_id
+            && self.profile_id == other.profile_id
+            && self.windows == other.windows
+    }
+
+    /// The account this reading belongs to: one provider can report several.
+    #[must_use]
+    pub fn account(&self) -> (&AgentProviderId, Option<AgentProfileId>) {
+        (&self.provider_id, self.profile_id)
     }
 }
 
@@ -494,47 +511,34 @@ pub struct AgentDescriptor {
     #[serde(default)]
     pub review: Option<ReviewStyle>,
     pub capabilities: AgentCapabilities,
-    /// The fields a profile editor offers for this provider (§13.4). Empty is
-    /// fine: the generic argument and environment editors always work.
-    pub profile_fields: Vec<ProfileField>,
+    /// How this provider is pointed at a profile's own config directory
+    /// (§13.4). `None` means it documents no such switch, so a profile for it
+    /// can only change the binary and the arguments.
+    pub config_dir: Option<ConfigDirSpec>,
 }
 
-/// A field the profile editor offers for one provider (§13.4).
+/// How a provider is told to keep one profile's account apart from another's
+/// (§13.4).
 ///
-/// Pure data, declared next to the descriptor in the `agents` crate, so the
-/// UI can render a provider-aware form and the daemon can create a
-/// directory-valued variable without any crate branching on a provider id
-/// (principle P2).
+/// One directory per profile, whatever the provider calls the variables
+/// pointing at it: OpenCode needs two because it splits configuration from
+/// credentials, the others one. Declared next to the descriptor in the
+/// `agents` crate so nothing else branches on a provider id (principle P2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProfileField {
-    /// What the form calls it — `"Config directory"`.
-    pub label: String,
-    /// One line of help under the label.
+pub struct ConfigDirSpec {
+    /// Every variable set to the profile's directory, all to the same path.
+    pub vars: Vec<String>,
+    /// One line of help under the field.
     pub help: String,
-    /// What filling it in does to the launch.
-    pub effect: ProfileFieldEffect,
 }
 
-/// What a [`ProfileField`] contributes to a launch (§13.4).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum ProfileFieldEffect {
-    /// Set an environment variable. A directory-valued one is created before
-    /// the launch, which is what a hand-written shell wrapper did with
-    /// `mkdir -p`.
-    Env { name: String, is_directory: bool },
-    /// Append this flag, followed by the value the user typed, to the args.
-    Flag { flag: String },
-}
-
-/// A named way to launch a provider: its own command, arguments and
-/// environment (§13.4).
+/// A named way to launch a provider: its own binary, its own account and its
+/// own arguments (§13.4).
 ///
 /// A profile is not a provider. It borrows the provider's descriptor — icon,
 /// detection, binary candidates, usage source — and overrides only how the
-/// process starts. Unlike [`SpawnSpec::env`], which is a *complete*
-/// environment, [`AgentProfile::env`] is an overlay applied on top of the
-/// resolved login-shell environment.
+/// process starts. Four fields, because a profile that could set anything was
+/// a second, worse copy of the provider's own configuration file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub id: AgentProfileId,
@@ -543,17 +547,29 @@ pub struct AgentProfile {
     /// What the user calls it — `"Personal"`, `"Work"`.
     pub name: String,
     /// Program to run instead of the detected binary; `None` inherits it.
+    ///
+    /// A bare name (`claude-personal`) is looked up on the resolved login-shell
+    /// PATH, which is where a wrapper script standing in for a shell alias
+    /// lives. An alias itself is not a program and cannot be launched.
     pub executable: Option<PathBuf>,
+    /// The account this profile logs into, as
+    /// [`ConfigDirSpec::vars`] for its provider; `None` shares the provider's
+    /// default account.
+    ///
+    /// Stored as the user typed it. It is resolved against `$HOME` at launch —
+    /// see [`AgentProfile::resolve_config_dir`] — so `.claude-personal` names a
+    /// directory in the home directory and not one in whatever the daemon's
+    /// working directory happens to be.
+    pub config_dir: Option<PathBuf>,
     /// Appended after the descriptor's `default_args`.
     pub args: Vec<String>,
-    /// Applied over the resolved environment, in order.
-    pub env: Vec<(String, String)>,
     pub created_at: Timestamp,
 }
 
 /// Environment variables a profile may never set: Forge owns the terminal
-/// contract with the child process (§13.3), and a profile that redefined these
-/// would break the emulator rather than configure the agent.
+/// contract with the child process (§13.3), and a provider whose config
+/// directory was spelled with one of these would break the emulator rather
+/// than switch accounts.
 pub const RESERVED_PROFILE_VARS: [&str; 5] = [
     "TERM",
     "TERMINFO",
@@ -563,21 +579,28 @@ pub const RESERVED_PROFILE_VARS: [&str; 5] = [
 ];
 
 impl AgentProfile {
-    /// Whether `name` is a variable this profile is allowed to set.
+    /// Whether `name` is a variable a profile is allowed to set.
     #[must_use]
     pub fn is_reserved_var(name: &str) -> bool {
         RESERVED_PROFILE_VARS.contains(&name)
     }
 
-    /// Whether `name` is a syntactically valid environment variable name.
+    /// The absolute directory `dir` names for a user whose home is `home`.
+    ///
+    /// The daemon's working directory is not the user's: it is `/` under
+    /// launchd, so a relative `.claude-personal` created there fails on a
+    /// read-only file system instead of landing in the home directory the user
+    /// meant. `~` is expanded for the same reason — the form takes text, and no
+    /// shell ever sees it.
     #[must_use]
-    pub fn is_valid_var_name(name: &str) -> bool {
-        let mut chars = name.chars();
-        match chars.next() {
-            Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
-            _ => return false,
+    pub fn resolve_config_dir(dir: &std::path::Path, home: &std::path::Path) -> PathBuf {
+        let text = dir.to_string_lossy();
+        match text.strip_prefix('~') {
+            Some("") => home.to_path_buf(),
+            Some(rest) if rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
+            _ if dir.is_absolute() => dir.to_path_buf(),
+            _ => home.join(dir),
         }
-        chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 }
 
@@ -603,11 +626,8 @@ mod tests {
             provider_id: AgentProviderId::new("claude"),
             name: "Work".to_owned(),
             executable: None,
+            config_dir: Some(PathBuf::from(".claude-work")),
             args: vec!["--model".to_owned(), "opus".to_owned()],
-            env: vec![(
-                "CLAUDE_CONFIG_DIR".to_owned(),
-                "/home/me/.claude-work".to_owned(),
-            )],
             created_at: Timestamp::now(),
         }
     }
@@ -621,13 +641,24 @@ mod tests {
     }
 
     #[test]
-    fn variable_names_follow_the_posix_shape() {
-        for good in ["PATH", "_HIDDEN", "CLAUDE_CONFIG_DIR", "A1"] {
-            assert!(AgentProfile::is_valid_var_name(good), "{good}");
-        }
-        for bad in ["", "1PATH", "WITH-DASH", "WITH SPACE", "WITH=EQ", "é"] {
-            assert!(!AgentProfile::is_valid_var_name(bad), "{bad:?}");
-        }
+    fn a_config_directory_is_resolved_against_the_home_directory() {
+        let home = std::path::Path::new("/home/me");
+        let resolve = |dir: &str| AgentProfile::resolve_config_dir(std::path::Path::new(dir), home);
+
+        // The case in the screenshot: a bare dotted name is a directory in the
+        // home directory, not in the daemon's cwd (`/` under launchd).
+        assert_eq!(resolve(".claude-personal"), home.join(".claude-personal"));
+        assert_eq!(
+            resolve("accounts/claude-personal"),
+            home.join("accounts/claude-personal")
+        );
+        assert_eq!(resolve("~/.claude-personal"), home.join(".claude-personal"));
+        assert_eq!(resolve("~"), home);
+        // An absolute path is somewhere else entirely, and stays there.
+        assert_eq!(
+            resolve("/Volumes/work/.claude"),
+            PathBuf::from("/Volumes/work/.claude")
+        );
     }
 
     #[test]

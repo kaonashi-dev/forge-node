@@ -88,7 +88,7 @@ fn migrations_apply_and_user_version_advances() {
     // Bump this with every appended migration (§15.2): `user_version` is the
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
-    assert_eq!(version, 9, "nine migrations applied => user_version == 9");
+    assert_eq!(version, 10, "ten migrations applied => user_version == 10");
 
     // Every §15.2 table is queryable.
     for table in [
@@ -140,7 +140,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -197,6 +197,67 @@ fn version_five_database_upgrades_and_its_workspaces_have_no_display_name() {
         Some("Portal redesign"),
         "the upgraded row takes a display name like any other"
     );
+}
+
+/// Migration 10 over profiles written when a profile carried a whole
+/// environment: the config directory is the one value that survives, and the
+/// variable it was spelled with no longer matters.
+#[test]
+fn version_nine_profiles_keep_their_config_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forge-v9.db");
+    let claude = AgentProfileId::new();
+    let codex = AgentProfileId::new();
+    let plain = AgentProfileId::new();
+    let now = Timestamp::now().to_rfc3339();
+    {
+        let mut conn = rusqlite::Connection::open(&path).unwrap();
+        let legacy = rusqlite_migration::Migrations::new(vec![
+            rusqlite_migration::M::up(crate::migrations::INITIAL_SCHEMA),
+            rusqlite_migration::M::up(crate::migrations::REFERENTIAL_ACTIONS),
+            rusqlite_migration::M::up(crate::migrations::PROJECT_GROUPS),
+            rusqlite_migration::M::up(crate::migrations::AGENT_PROFILES),
+            rusqlite_migration::M::up(crate::migrations::PROJECT_ICONS),
+            rusqlite_migration::M::up(crate::migrations::WORKSPACE_DISPLAY_NAMES),
+            rusqlite_migration::M::up(crate::migrations::SESSION_LAUNCH_COMMAND),
+            rusqlite_migration::M::up(crate::migrations::WORKTREE_SHARES),
+            rusqlite_migration::M::up(crate::migrations::SESSION_BASE_COMMIT),
+        ]);
+        legacy.to_latest(&mut conn).unwrap();
+        let insert = |id: &AgentProfileId, provider: &str, name: &str, env: &str| {
+            conn.execute(
+                "INSERT INTO agent_profiles \
+                 (id, provider_id, name, executable_path, args_json, env_json, created_at) \
+                 VALUES (?1, ?2, ?3, NULL, '[\"--model\",\"opus\"]', ?4, ?5)",
+                rusqlite::params![id.to_string(), provider, name, env, now],
+            )
+            .unwrap();
+        };
+        insert(
+            &claude,
+            "claude",
+            "Personal",
+            r#"[["HTTP_PROXY","http://localhost:8080"],["CLAUDE_CONFIG_DIR","/home/me/.claude-personal"]]"#,
+        );
+        insert(&codex, "codex", "Work", r#"[["CODEX_HOME",".codex-work"]]"#);
+        insert(&plain, "claude", "Bare", "[]");
+    }
+
+    let db = Db::open(&path).unwrap();
+    let by_id = |id: AgentProfileId| db.agent_profiles().get(id).unwrap().unwrap();
+
+    // Whichever variable named it, it is now just the directory — and the rest
+    // of the environment is gone, which is the point of the migration.
+    assert_eq!(
+        by_id(claude).config_dir,
+        Some(std::path::PathBuf::from("/home/me/.claude-personal"))
+    );
+    assert_eq!(
+        by_id(codex).config_dir,
+        Some(std::path::PathBuf::from(".codex-work"))
+    );
+    assert_eq!(by_id(plain).config_dir, None);
+    assert_eq!(by_id(plain).args, ["--model", "opus"]);
 }
 
 /// Migration 5 over a database that already has projects: the icon column is
@@ -305,14 +366,16 @@ fn mk_profile(provider: &str, name: &str) -> AgentProfile {
         provider_id: AgentProviderId::new(provider),
         name: name.to_owned(),
         executable: None,
+        // Stored as typed: what a relative directory is relative to is the
+        // launching user's home, which is not a fact this row knows.
+        config_dir: Some(std::path::PathBuf::from(".claude-personal")),
         args: vec!["--model".to_owned(), "opus".to_owned()],
-        env: vec![("CLAUDE_CONFIG_DIR".to_owned(), "/tmp/.claude-x".to_owned())],
         created_at: Timestamp::now(),
     }
 }
 
 #[test]
-fn agent_profiles_round_trip_with_their_args_and_env() {
+fn agent_profiles_round_trip_with_their_directory_and_args() {
     let db = Db::open_in_memory().unwrap();
     let profile = mk_profile("claude", "Work");
     db.agent_profiles().upsert(&profile).unwrap();
@@ -967,7 +1030,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9, "reset retains the migrated schema");
+    assert_eq!(version, 10, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------

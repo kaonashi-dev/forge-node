@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { SIDEBAR } from "../actions/actions";
 import { enterContext, registerAction } from "../actions/dispatch";
 import { onCleanup, onMount } from "solid-js";
@@ -6,8 +6,6 @@ import {
   addProjectFromPicker,
   createProjectGroup,
   moveProject,
-  newAgent,
-  newShell,
   openInEditor,
   openInFileManager,
   refreshProject,
@@ -27,7 +25,7 @@ import { setAppState } from "../runtime/api";
 import { draftWithJuva } from "../workbench/api";
 import { openComposeForWorkspace } from "../workbench/PrComposeView";
 import { focusWorkspace } from "../store/workbenchStore";
-import { focusSession } from "./sessionActions";
+import { focusSession, launchAgent, launchShell } from "./sessionActions";
 import { Button, ContextMenu, Dialog, IconButton, Tooltip, type MenuItem } from "../ui";
 import {
   buildTree,
@@ -42,6 +40,8 @@ import {
 } from "./tree";
 import { chipGroups, prLabel, prTone, rollupWork, syncLabel, type PrTone } from "./workspaceCard";
 import { workspaceBranchMeta } from "./workspaceLabel";
+import { seedFromAppState } from "./layout";
+import { foldsPayload, parseFolds, toggleFold } from "./railFolds";
 import { newWorktreeItem } from "./railMenuItems";
 import { sessionMenuItems } from "./sessionMenuItems";
 import { dropFromGap, gapAtY, moveTabToGap } from "./tabOrder";
@@ -98,12 +98,23 @@ export function Sidebar(props: SidebarProps) {
   const [workspaceOrder, setWorkspaceOrder] = createSignal<WorkspaceOrderMap>(readWorkspaceOrder());
   const [menu, setMenu] = createSignal<{ x: number; y: number; items: MenuItem[] } | null>(null);
 
-  // Same one-shot seed as the tab strip: the snapshot lands after first paint.
-  let seededOrder = false;
-  createEffect(() => {
-    if (seededOrder || Object.keys(forgeStore.app_state).length === 0) return;
-    seededOrder = true;
+  /*
+   * Same one-shot seed as the tab strip: the snapshot lands after first paint,
+   * so both lines above read an empty `app_state` at creation. The order got
+   * its correction here; the fold set did not, and so every relaunch opened
+   * the rail fully expanded — the stored set was written on every fold and
+   * read by nothing.
+   *
+   * Seeded once rather than tracked, for the reason `seedFromAppState`
+   * documents: a later write to `app_state` must not re-fold a row the person
+   * has since opened. `folded` covers the other end of the same race — a fold
+   * made in the milliseconds before the snapshot lands is a choice, and the
+   * stored set must not overwrite it.
+   */
+  let folded = false;
+  seedFromAppState(() => {
     setWorkspaceOrder(readWorkspaceOrder());
+    if (!folded) setCollapsed(readCollapsed());
   });
 
   function openMenu(event: MouseEvent, items: MenuItem[]): void {
@@ -126,8 +137,8 @@ export function Sidebar(props: SidebarProps) {
       disabled: !launchable.enabled,
       run: () =>
         launchable.kind === "shell"
-          ? void newShell(workspace).catch(() => undefined)
-          : void newAgent(launchable.provider ?? "", launchable.profile, workspace).catch(
+          ? void launchShell(workspace).catch(() => undefined)
+          : void launchAgent(launchable.provider ?? "", launchable.profile, workspace).catch(
               () => undefined,
             ),
     }));
@@ -462,11 +473,10 @@ export function Sidebar(props: SidebarProps) {
   const needsYou = createMemo(() => waiting(forgeStore));
 
   function toggle(id: string): void {
-    const next = new Set(collapsed());
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    folded = true;
+    const next = toggleFold(collapsed(), id);
     setCollapsed(next);
-    void setAppState(COLLAPSED_KEY, JSON.stringify([...next])).catch(() => undefined);
+    void setAppState(COLLAPSED_KEY, foldsPayload(next)).catch(() => undefined);
   }
 
   const isOpen = (id: string) => !collapsed().has(id);
@@ -525,7 +535,7 @@ export function Sidebar(props: SidebarProps) {
             : row.parent?.startsWith("workspace:")
               ? row.parent.slice("workspace:".length)
               : null;
-        if (workspace) void newShell(workspace).catch(() => undefined);
+        if (workspace) void launchShell(workspace).catch(() => undefined);
       }),
     ];
     onCleanup(() => {
@@ -678,64 +688,71 @@ export function Sidebar(props: SidebarProps) {
                 )}
               </Show>
               <Show when={!group.name || isOpen(group.id ?? "")}>
-                <For each={group.projects}>
-                  {(project) => (
-                    <>
-                      <button
-                        type="button"
-                        id={railRowId(`project:${project.id}`)}
-                        class="forge-row tree-row project"
-                        role="treeitem"
-                        aria-level={2}
-                        aria-expanded={isOpen(project.id)}
-                        aria-selected={selected() === `project:${project.id}`}
-                        classList={{
-                          "wants-you": project.wantsYou && !isOpen(project.id),
-                          cursor: selected() === `project:${project.id}`,
-                        }}
-                        onClick={() => {
-                          selectRow(`project:${project.id}`);
-                          toggle(project.id);
-                        }}
-                        onContextMenu={(event) => openMenu(event, projectMenu(project))}
-                      >
-                        <Twisty open={isOpen(project.id)} />
-                        <span class="project-avatar" aria-hidden="true">
-                          {project.icon ?? project.name.slice(0, 1).toUpperCase()}
-                        </span>
-                        <span class="tree-label">{project.name}</span>
-                        {/* Folded, the count is the only thing left saying the
-                            project has more than one checkout. */}
-                        <Show when={!isOpen(project.id) && project.workspaces.length > 0}>
-                          <span class="tree-note">{project.workspaces.length}</span>
-                        </Show>
-                      </button>
-                      <Show when={isOpen(project.id)}>
-                        <WorkspaceList
-                          workspaces={project.workspaces}
-                          order={workspaceOrder()[project.id] ?? []}
-                          onReorder={(ids) => persistProjectOrder(project.id, ids)}
-                          isOpen={isOpen}
-                          selected={selected()}
-                          onToggle={(workspace) => {
-                            selectRow(`workspace:${workspace.id}`);
-                            // Picking a checkout points the window at it, not
-                            // just the rail: the tab strip, the launchers and
-                            // the inspector are all scoped to the checkout, and
-                            // a worktree with no sessions left had no other way
-                            // to be selected — the card only folded.
-                            focusWorkspace(workspace.id);
-                            toggle(workspace.id);
+                {/* A group's projects are its children, and the indent is the
+                    only thing on screen that says so. Ungrouped projects are
+                    roots and stay flush, which is why this is a class and not
+                    a rule on `.tree-row.project`. */}
+                <div class="tree-children" classList={{ nested: group.name !== null }} role="group">
+                  <For each={group.projects}>
+                    {(project) => (
+                      <>
+                        <button
+                          type="button"
+                          id={railRowId(`project:${project.id}`)}
+                          class="forge-row tree-row project"
+                          role="treeitem"
+                          aria-level={group.name === null ? 1 : 2}
+                          aria-expanded={isOpen(project.id)}
+                          aria-selected={selected() === `project:${project.id}`}
+                          classList={{
+                            "wants-you": project.wantsYou && !isOpen(project.id),
+                            cursor: selected() === `project:${project.id}`,
                           }}
-                          onMenu={(event, workspace) => openMenu(event, workspaceMenu(workspace))}
-                          onSessionMenu={(event, session) =>
-                            openMenu(event, sessionMenuItems(session, sessionTitle(session)))
-                          }
-                        />
-                      </Show>
-                    </>
-                  )}
-                </For>
+                          onClick={() => {
+                            selectRow(`project:${project.id}`);
+                            toggle(project.id);
+                          }}
+                          onContextMenu={(event) => openMenu(event, projectMenu(project))}
+                        >
+                          <Twisty open={isOpen(project.id)} />
+                          <span class="project-avatar" aria-hidden="true">
+                            {project.icon ?? project.name.slice(0, 1).toUpperCase()}
+                          </span>
+                          <span class="tree-label">{project.name}</span>
+                          {/* Folded, the count is the only thing left saying the
+                            project has more than one checkout. */}
+                          <Show when={!isOpen(project.id) && project.workspaces.length > 0}>
+                            <span class="tree-note">{project.workspaces.length}</span>
+                          </Show>
+                        </button>
+                        <Show when={isOpen(project.id)}>
+                          <WorkspaceList
+                            workspaces={project.workspaces}
+                            level={group.name === null ? 2 : 3}
+                            order={workspaceOrder()[project.id] ?? []}
+                            onReorder={(ids) => persistProjectOrder(project.id, ids)}
+                            isOpen={isOpen}
+                            selected={selected()}
+                            onToggle={(workspace) => {
+                              selectRow(`workspace:${workspace.id}`);
+                              // Picking a checkout points the window at it, not
+                              // just the rail: the tab strip, the launchers and
+                              // the inspector are all scoped to the checkout, and
+                              // a worktree with no sessions left had no other way
+                              // to be selected — the card only folded.
+                              focusWorkspace(workspace.id);
+                              toggle(workspace.id);
+                            }}
+                            onMenu={(event, workspace) => openMenu(event, workspaceMenu(workspace))}
+                            onSessionMenu={(event, session) =>
+                              openMenu(event, sessionMenuItems(session, sessionTitle(session)))
+                            }
+                          />
+                        </Show>
+                      </>
+                    )}
+                  </For>
+                </div>
               </Show>
             </div>
           )}
@@ -755,6 +772,8 @@ export function Sidebar(props: SidebarProps) {
  */
 function WorkspaceList(props: {
   workspaces: WorkspaceNode[];
+  /** `aria-level` for a card here: one below the project it hangs off. */
+  level: number;
   order: string[];
   onReorder: (ids: string[]) => void;
   isOpen: (id: string) => boolean;
@@ -847,6 +866,7 @@ function WorkspaceList(props: {
         {(workspace) => (
           <WorkspaceCard
             workspace={workspace}
+            level={props.level}
             open={props.isOpen(workspace.id)}
             cursor={props.selected === `workspace:${workspace.id}`}
             cursorSession={
@@ -884,6 +904,8 @@ function WorkspaceList(props: {
  */
 function WorkspaceCard(props: {
   workspace: WorkspaceNode;
+  /** Tree depth for a reader; `3` under a grouped project, `2` under a root. */
+  level: number;
   open: boolean;
   /** The rail's keyboard cursor is on this card (§4.1 U4). */
   cursor: boolean;
@@ -920,7 +942,7 @@ function WorkspaceCard(props: {
       id={railRowId(`workspace:${props.workspace.id}`)}
       class="ws-card"
       role="treeitem"
-      aria-level={3}
+      aria-level={props.level}
       aria-expanded={props.open}
       aria-selected={props.cursor}
       aria-label={props.workspace.label}
@@ -1052,7 +1074,7 @@ function WorkspaceCard(props: {
                 inTree
                 cursor={props.cursorSession === node.session.id}
                 depth={node.depth}
-                level={4}
+                level={props.level + 1}
                 onMenu={(event) => props.onSessionMenu(event, node.session)}
               />
             )}
@@ -1168,20 +1190,12 @@ function Twisty(props: { open: boolean }) {
 /**
  * The folded rows from the last snapshot.
  *
- * Read once at mount: the daemon is authoritative, but a snapshot arriving
- * mid-session must not re-fold a row the user just opened.
+ * Read at creation and again once the snapshot lands, then never: the daemon
+ * is authoritative for the first paint, but a snapshot arriving mid-session
+ * must not re-fold a row the user just opened.
  */
 function readCollapsed(): Set<string> {
-  try {
-    const raw = forgeStore.app_state[COLLAPSED_KEY];
-    if (!raw) return new Set();
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? new Set(parsed.filter((id) => typeof id === "string"))
-      : new Set();
-  } catch {
-    return new Set();
-  }
+  return parseFolds(forgeStore.app_state[COLLAPSED_KEY]);
 }
 
 function readWorkspaceOrder(): WorkspaceOrderMap {

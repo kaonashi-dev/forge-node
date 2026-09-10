@@ -11,12 +11,13 @@ import { requestHandoff, runtimeStore } from "../store/runtimeStore";
 import { setSplitOpen, splitOpen } from "../store/sessionChangesStore";
 import { openReview, showSession } from "../store/viewsStore";
 import { focusWorkspace, workbenchStore } from "../store/workbenchStore";
-import { selectSession } from "../runtime/api";
+import { newAgent, newShell, selectSession } from "../runtime/api";
 import { draftWithJuva, loadSessionTranscript, loadWorkspaceReview } from "../workbench/api";
 import { sessionTabLabel } from "../runtime/attention";
+import { focusTerminal } from "../terminal/focus";
 import type { Session, Workspace } from "../runtime/types";
-import { SESSION_SPLIT_OPEN_KEY, readFlag } from "./layout";
-import { activeWorkspaceId, sessionsInWorkspace } from "./sessionScope";
+import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "./layout";
+import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
 
 export function activeSession(): Session | null {
   return forgeStore.sessions.find((item) => item.id === runtimeStore.activeSession) ?? null;
@@ -62,12 +63,37 @@ export function currentCheckout(): Workspace | null {
  * cannot close the gap on its own: re-selecting the session that is already
  * active is a no-op in the daemon, so nothing changes for an effect to observe,
  * and the click would do nothing at all.
+ *
+ * The caret goes too: asking for a terminal is asking to type in it.
  */
 export function focusSession(session: string): void {
   showSession();
   const workspace = forgeStore.sessions.find((item) => item.id === session)?.workspace_id;
   if (workspace) focusWorkspace(workspace);
   void selectSession(session).catch(() => undefined);
+  focusTerminal();
+}
+
+/**
+ * Start a terminal, or an agent, and go to it.
+ *
+ * The centre column is raised before the ask rather than after it: the command
+ * channel is one-way, so the new session's id never comes back, and a window
+ * left on the Code tab goes on showing a file while the agent it just started
+ * prints its first prompt behind it.
+ *
+ * A launch that belongs to another surface — a PR review, a compose draft, a
+ * conflict resolver — calls `runtime/api` directly, because that surface is
+ * where its output is meant to be read.
+ */
+export function launchShell(workspace: string | null = null): Promise<void> {
+  showSession();
+  return newShell(workspace);
+}
+
+export function launchAgent(...args: Parameters<typeof newAgent>): Promise<void> {
+  showSession();
+  return newAgent(...args);
 }
 
 /** Whether the split is showing for the session on screen. */
@@ -125,4 +151,19 @@ export function openCheckoutReview(): void {
   openReview(checkout.id);
   void loadWorkspaceReview(checkout.id).catch(() => undefined);
   void draftWithJuva(checkout.id, "ChangeReview").catch(() => undefined);
+}
+
+/**
+ * Open the window on the checkout it was left in. Called once, on the snapshot.
+ *
+ * After the snapshot because the stored id has to be checked against the
+ * worktrees that still exist, and both arrive together. It yields to a live
+ * session: with `sessions.persist_history` on, the daemon can put a terminal
+ * back on screen before this runs, and the checkout that terminal is in is a
+ * better answer than the one a previous launch was reading.
+ */
+export function restoreWorkspace(): void {
+  if (workbenchStore.workspace) return;
+  const stored = storedWorkspaceId(forgeStore.app_state[LAST_WORKSPACE_KEY], forgeStore.workspaces);
+  if (stored) focusWorkspace(stored);
 }

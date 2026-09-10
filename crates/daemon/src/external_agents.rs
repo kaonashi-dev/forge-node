@@ -30,6 +30,12 @@
 //!   agent message come from. A session with a `parentID` is a subagent run:
 //!   it is counted against its parent rather than listed on its own.
 //!
+//! Every store is read once per **account**: the default one, plus one per
+//! launch profile that moved the provider's config directory (§13.4). A
+//! profile is how a user runs a second login, and its transcripts live under
+//! its own directory — scanning only the default one is why a `Personal`
+//! profile's history used to be invisible here.
+//!
 //! Everything here is best-effort: an unreadable file, a malformed line or a
 //! missing directory yields fewer results, never an error. It runs off the
 //! daemon lock (see `Daemon::snapshot`) so transcript IO never blocks state,
@@ -42,7 +48,10 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use domain::{ExternalAgentSession, Project, ProjectId, Timestamp, Workspace, WorkspaceId};
+use domain::{
+    AgentProfile, AgentProfileId, ExternalAgentSession, Project, ProjectId, Timestamp, Workspace,
+    WorkspaceId,
+};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -99,12 +108,13 @@ impl Cache {
         &mut self,
         projects: &[Project],
         workspaces: &[Workspace],
+        profiles: &[AgentProfile],
     ) -> Vec<ExternalAgentSession> {
-        let fingerprint = fingerprint(projects, workspaces);
+        let fingerprint = fingerprint(projects, workspaces, profiles);
         let fresh = self.fingerprint == fingerprint
             && self.scanned_at.is_some_and(|at| at.elapsed() < CACHE_TTL);
         if !fresh {
-            self.sessions = discover(projects, workspaces);
+            self.sessions = discover(projects, workspaces, profiles);
             self.scanned_at = Some(Instant::now());
             self.fingerprint = fingerprint;
         }
@@ -122,14 +132,17 @@ impl Cache {
     }
 }
 
-/// A stable digest of the directories a scan covers.
-fn fingerprint(projects: &[Project], workspaces: &[Workspace]) -> u64 {
+/// A stable digest of the directories a scan covers — the ones it looks *for*
+/// and the accounts it looks *in*, so saving a profile shows its history at
+/// once rather than after the TTL.
+fn fingerprint(projects: &[Project], workspaces: &[Workspace], profiles: &[AgentProfile]) -> u64 {
     // Sorted so the hash does not depend on `HashMap` iteration order, which
     // varies run to run and would defeat the cache entirely.
     let mut keys: Vec<&Path> = projects
         .iter()
         .map(|p| p.root_path.as_path())
         .chain(workspaces.iter().map(|w| w.path.as_path()))
+        .chain(profiles.iter().filter_map(|p| p.config_dir.as_deref()))
         .collect();
     keys.sort_unstable();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -155,16 +168,96 @@ struct Root {
 /// history of every worktree would be invisible. The returned list is unsorted
 /// (the GUI sorts the history panel by time).
 #[must_use]
-pub fn discover(projects: &[Project], workspaces: &[Workspace]) -> Vec<ExternalAgentSession> {
+pub fn discover(
+    projects: &[Project],
+    workspaces: &[Workspace],
+    profiles: &[AgentProfile],
+) -> Vec<ExternalAgentSession> {
     let Some(home) = home_dir() else {
         return Vec::new();
     };
+    // `CLAUDE_CONFIG_DIR` for Claude Code and `XDG_DATA_HOME` for opencode are
+    // what a profile moves, so each account is a store of its own (§13.4).
+    let claude = accounts(&home.join(".claude"), CLAUDE_PROVIDER, profiles, &home, "");
+    let opencode = accounts(
+        &opencode_data_dir(&home),
+        OPENCODE_PROVIDER,
+        profiles,
+        &home,
+        "opencode",
+    );
+
     let mut out = Vec::new();
     for root in roots(projects, workspaces) {
-        discover_claude(&home, &root, &mut out);
-        discover_opencode(&home, &root, &mut out);
+        for account in &claude {
+            let found = out.len();
+            discover_claude(&account.dir, &root, &mut out);
+            stamp_account(&mut out[found..], account);
+        }
+        for account in &opencode {
+            let found = out.len();
+            discover_opencode(&account.dir, &root, &mut out);
+            stamp_account(&mut out[found..], account);
+        }
     }
+    // The same session can only be found twice if two accounts resolve to one
+    // directory — a profile pointing at the default one. List it once.
+    let mut seen = HashSet::new();
+    out.retain(|session| seen.insert((session.provider.clone(), session.session_id.clone())));
     out
+}
+
+/// One store of transcripts, and the login it belongs to.
+struct Account {
+    /// The directory the provider keeps its data in.
+    dir: PathBuf,
+    /// The profile that moved it there, or `None` for the default account.
+    profile: Option<AgentProfileId>,
+}
+
+/// Every directory one provider keeps its data in: `default`, plus a profile's
+/// resolved config directory with `leaf` appended, for each profile of that
+/// provider (§13.4). Duplicate directories are dropped by canonical path, so a
+/// profile pointing at the default directory is the default account and not a
+/// second one.
+fn accounts(
+    default: &Path,
+    provider: &str,
+    profiles: &[AgentProfile],
+    home: &Path,
+    leaf: &str,
+) -> Vec<Account> {
+    let mut seen = HashSet::new();
+    let mut stores = Vec::new();
+    let dirs = std::iter::once(Account {
+        dir: default.to_path_buf(),
+        profile: None,
+    })
+    .chain(profiles.iter().filter_map(|p| {
+        let dir = p.config_dir.as_deref()?;
+        (p.provider_id.as_str() == provider).then(|| Account {
+            dir: AgentProfile::resolve_config_dir(dir, home).join(leaf),
+            profile: Some(p.id),
+        })
+    }));
+    for account in dirs {
+        if seen.insert(dedup_key(&account.dir)) {
+            stores.push(account);
+        }
+    }
+    stores
+}
+
+/// Attribute the sessions a single account's scan just produced to that
+/// account.
+///
+/// Stamped here rather than threaded through every parser: which login a
+/// transcript belongs to is a fact about the *store* it was read from, and the
+/// parsers only ever see one file.
+fn stamp_account(found: &mut [ExternalAgentSession], account: &Account) {
+    for session in found {
+        session.profile_id = account.profile;
+    }
 }
 
 /// Every directory worth scanning, each attributed to a project and — where
@@ -212,12 +305,10 @@ fn dedup_key(path: &Path) -> PathBuf {
 // Claude Code
 // ---------------------------------------------------------------------------
 
-/// Scan Claude Code transcripts for one directory.
-fn discover_claude(home: &Path, root: &Root, out: &mut Vec<ExternalAgentSession>) {
-    let dir = home
-        .join(".claude")
-        .join("projects")
-        .join(claude_slug(&root.path));
+/// Scan Claude Code transcripts for one directory, in one account's store
+/// (`~/.claude`, or a profile's config directory).
+fn discover_claude(store: &Path, root: &Root, out: &mut Vec<ExternalAgentSession>) {
+    let dir = store.join("projects").join(claude_slug(&root.path));
     for path in recent_files(&dir, "jsonl") {
         if let Some(session) = parse_transcript(&path, root) {
             out.push(session);
@@ -282,6 +373,7 @@ fn parse_transcript(path: &Path, root: &Root) -> Option<ExternalAgentSession> {
 
     Some(ExternalAgentSession {
         session_id: session_id.clone(),
+        profile_id: None,
         project_id: root.project_id,
         workspace_id: root.workspace_id,
         provider: CLAUDE_PROVIDER.to_owned(),
@@ -463,14 +555,13 @@ fn claude_subagent_count(transcript: &Path, session_id: &str) -> u32 {
 /// `project/<hash>.json` whose `worktree` is this directory, then read every
 /// session file under `session/<hash>/`. Sessions carrying a `parentID` are
 /// subagent runs: they are tallied against their parent instead of listed.
-fn discover_opencode(home: &Path, root: &Root, out: &mut Vec<ExternalAgentSession>) {
-    let data = opencode_data_dir(home);
+fn discover_opencode(data: &Path, root: &Root, out: &mut Vec<ExternalAgentSession>) {
     // The database is the current layout and the JSON tree the old one, and an
     // upgraded machine has both: the tree stops being written but stays on
     // disk, so a session recorded in each must be listed once, from the source
     // that is still current.
-    let recorded = discover_opencode_databases(&data, root, out);
-    discover_opencode_storage(&opencode_storage(home), root, &recorded, out);
+    let recorded = discover_opencode_databases(data, root, out);
+    discover_opencode_storage(&data.join("storage"), root, &recorded, out);
 }
 
 /// Read every opencode database in `data` for this directory (opencode ≥ 1.17),
@@ -525,6 +616,7 @@ fn opencode_db_session(
 
     ExternalAgentSession {
         session_id: session.id,
+        profile_id: None,
         project_id: root.project_id,
         workspace_id: root.workspace_id,
         provider: OPENCODE_PROVIDER.to_owned(),
@@ -635,6 +727,7 @@ fn parse_opencode_session(
 
     Some(ExternalAgentSession {
         session_id: session_id.clone(),
+        profile_id: None,
         project_id: root.project_id,
         workspace_id: root.workspace_id,
         provider: OPENCODE_PROVIDER.to_owned(),
@@ -730,19 +823,16 @@ fn opencode_message_text(base: &Path, message_id: &str) -> Option<String> {
     })
 }
 
-/// opencode's data directory. It follows XDG on every platform (including
-/// macOS), so it is `$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`.
-/// The session databases sit here; the legacy JSON tree is `storage/` inside.
+/// opencode's *default* data directory. It follows XDG on every platform
+/// (including macOS), so it is `$XDG_DATA_HOME/opencode` or
+/// `~/.local/share/opencode`; a profile's directory replaces it, because a
+/// profile is what sets `XDG_DATA_HOME` for the launch (§13.4). The session
+/// databases sit here; the legacy JSON tree is `storage/` inside.
 fn opencode_data_dir(home: &Path) -> PathBuf {
     match std::env::var_os("XDG_DATA_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("opencode"),
         _ => home.join(".local").join("share").join("opencode"),
     }
-}
-
-/// opencode's legacy per-session JSON tree.
-fn opencode_storage(home: &Path) -> PathBuf {
-    opencode_data_dir(home).join("storage")
 }
 
 // ---------------------------------------------------------------------------
@@ -874,6 +964,18 @@ mod tests {
         }
     }
 
+    fn sample_profile(provider: &str, dir: &str) -> AgentProfile {
+        AgentProfile {
+            id: domain::AgentProfileId::new(),
+            provider_id: domain::AgentProviderId::new(provider),
+            name: "Personal".to_owned(),
+            executable: None,
+            config_dir: Some(PathBuf::from(dir)),
+            args: Vec::new(),
+            created_at: Timestamp::now(),
+        }
+    }
+
     fn sample_workspace(project: &Project, path: &Path) -> Workspace {
         Workspace {
             id: domain::WorkspaceId::new(),
@@ -895,9 +997,9 @@ mod tests {
         let mut cache = Cache::default();
 
         // First call scans; the second reuses it without touching the clock.
-        let _ = cache.discover(std::slice::from_ref(&project), &[]);
+        let _ = cache.discover(std::slice::from_ref(&project), &[], &[]);
         let first = cache.scanned_at.expect("scanned");
-        let _ = cache.discover(std::slice::from_ref(&project), &[]);
+        let _ = cache.discover(std::slice::from_ref(&project), &[], &[]);
         assert_eq!(cache.scanned_at, Some(first), "a fresh pass is reused");
 
         // A new worktree is a different question, not a stale answer: rescan
@@ -906,8 +1008,24 @@ mod tests {
         let _ = cache.discover(
             std::slice::from_ref(&project),
             std::slice::from_ref(&workspace),
+            &[],
         );
         assert_ne!(cache.scanned_at, Some(first), "new roots force a rescan");
+
+        // So is a profile: it adds an account to look in, and waiting out the
+        // TTL would hide the history the user just pointed Forge at.
+        let third = cache.scanned_at.expect("scanned");
+        let profile = sample_profile("claude", ".claude-personal");
+        let _ = cache.discover(
+            std::slice::from_ref(&project),
+            std::slice::from_ref(&workspace),
+            std::slice::from_ref(&profile),
+        );
+        assert_ne!(
+            cache.scanned_at,
+            Some(third),
+            "a new account forces a rescan"
+        );
 
         // Explicit invalidation forces one too.
         let second = cache.scanned_at.expect("scanned");
@@ -915,6 +1033,7 @@ mod tests {
         let _ = cache.discover(
             std::slice::from_ref(&project),
             std::slice::from_ref(&workspace),
+            std::slice::from_ref(&profile),
         );
         assert_ne!(cache.scanned_at, Some(second));
     }
@@ -925,8 +1044,8 @@ mod tests {
         let a = sample_project(&tmp.path().join("a"));
         let b = sample_project(&tmp.path().join("b"));
         assert_eq!(
-            fingerprint(&[a.clone(), b.clone()], &[]),
-            fingerprint(&[b, a], &[]),
+            fingerprint(&[a.clone(), b.clone()], &[], &[]),
+            fingerprint(&[b, a], &[], &[]),
             "projects come out of a HashMap, so the order varies run to run"
         );
     }
@@ -1047,6 +1166,133 @@ mod tests {
             parsed.subagent_count, 2,
             "only the .jsonl transcripts count"
         );
+    }
+
+    /// The account list a scan walks: the default store first, then one per
+    /// profile of that provider, resolved against `$HOME` (§13.4).
+    #[test]
+    fn every_profile_of_a_provider_adds_an_account_to_scan() {
+        let home = Path::new("/home/me");
+        let profiles = [
+            sample_profile("claude", ".claude-personal"),
+            sample_profile("claude", "/Volumes/work/.claude"),
+            // Another provider's profile, and a profile with no directory at
+            // all (a wrapper on PATH carries the account instead).
+            sample_profile("opencode", ".opencode-personal"),
+            AgentProfile {
+                config_dir: None,
+                ..sample_profile("claude", "")
+            },
+        ];
+
+        // Each store also carries the login it belongs to: the default
+        // account has no profile, and every other one names the profile that
+        // moved it, which is what a resume needs to re-enter the run.
+        assert_eq!(
+            listed(accounts(
+                &home.join(".claude"),
+                CLAUDE_PROVIDER,
+                &profiles,
+                home,
+                ""
+            )),
+            [
+                (PathBuf::from("/home/me/.claude"), None),
+                (
+                    PathBuf::from("/home/me/.claude-personal"),
+                    Some(profiles[0].id)
+                ),
+                (PathBuf::from("/Volumes/work/.claude"), Some(profiles[1].id)),
+            ]
+        );
+        // opencode's directory is `XDG_DATA_HOME`, so its store is one level in.
+        assert_eq!(
+            listed(accounts(
+                &home.join(".local/share/opencode"),
+                OPENCODE_PROVIDER,
+                &profiles,
+                home,
+                "opencode"
+            )),
+            [
+                (PathBuf::from("/home/me/.local/share/opencode"), None),
+                (
+                    PathBuf::from("/home/me/.opencode-personal/opencode"),
+                    Some(profiles[2].id)
+                ),
+            ]
+        );
+    }
+
+    /// The directories a scan walks, each with the profile that owns it.
+    fn listed(accounts: Vec<Account>) -> Vec<(PathBuf, Option<AgentProfileId>)> {
+        accounts
+            .into_iter()
+            .map(|account| (account.dir, account.profile))
+            .collect()
+    }
+
+    /// A profile pointing at the default account is one account, not two, or
+    /// every session in it would be listed twice.
+    #[test]
+    fn an_account_named_twice_is_scanned_once() {
+        let home = tempfile::tempdir().unwrap();
+        let default = home.path().join(".claude");
+        std::fs::create_dir_all(&default).unwrap();
+        let profiles = [sample_profile("claude", ".claude")];
+
+        assert_eq!(
+            listed(accounts(
+                &default,
+                CLAUDE_PROVIDER,
+                &profiles,
+                home.path(),
+                ""
+            )),
+            [(default, None)]
+        );
+    }
+
+    /// The transcripts of a profile's account are found where that profile put
+    /// them: `<config dir>/projects/<slug>`, not `~/.claude/projects/<slug>`.
+    #[test]
+    fn a_profiles_store_is_scanned_for_the_directory_being_viewed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workdir = tmp.path().join("proj");
+        std::fs::create_dir_all(&workdir).unwrap();
+        let root = root_of(&workdir);
+
+        let store = tmp.path().join(".claude-personal");
+        let projects = store.join("projects").join(claude_slug(&workdir));
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(
+            projects.join("ses-personal.jsonl"),
+            format!(
+                r#"{{"type":"user","cwd":"{}","message":{{"content":"hello"}},"timestamp":"2026-01-01T00:00:00Z"}}"#,
+                workdir.display()
+            ) + "\n",
+        )
+        .unwrap();
+
+        let account = Account {
+            dir: store,
+            profile: Some(AgentProfileId::new()),
+        };
+        let mut out = Vec::new();
+        discover_claude(&account.dir, &root, &mut out);
+        stamp_account(&mut out, &account);
+        assert_eq!(out.len(), 1, "the profile's transcript is listed");
+        assert_eq!(out[0].session_id, "ses-personal");
+        assert_eq!(
+            out[0].profile_id, account.profile,
+            "the card says which login can resume it"
+        );
+
+        // ...and the default store, which holds nothing for this profile,
+        // contributes nothing rather than erroring.
+        let mut empty = Vec::new();
+        discover_claude(&tmp.path().join(".claude"), &root, &mut empty);
+        assert!(empty.is_empty());
     }
 
     #[test]

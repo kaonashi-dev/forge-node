@@ -1,40 +1,42 @@
 //! Launch profiles end to end (§13.4).
 //!
 //! A profile is the saved form of what a hand-written shell wrapper did:
-//! `CLAUDE_CONFIG_DIR=~/.claude-work claude --model opus`. What matters is
-//! that the *child process* really receives that environment and those
+//! `CLAUDE_CONFIG_DIR=~/.claude-personal claude --model opus`. What matters is
+//! that the *child process* really receives that directory and those
 //! arguments, that the directory exists before the agent starts, and that a
 //! restart reproduces all of it — none of which a unit test over the builder
 //! can show.
 
 mod common;
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use domain::{AgentProfile, AgentProfileId, AgentProviderId, SessionRole, Timestamp};
 use protocol::{DaemonEvent, ErrorCode, Request, Response};
 
 const MARKER: &str = "forge_profile";
 
-fn profile(name: &str, config_dir: &Path, args: &[&str]) -> AgentProfile {
+fn profile(name: &str, config_dir: Option<&str>, args: &[&str]) -> AgentProfile {
     AgentProfile {
         id: AgentProfileId::new(),
         provider_id: AgentProviderId::new("claude"),
         name: name.to_owned(),
         executable: None,
+        config_dir: config_dir.map(PathBuf::from),
         args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-        env: vec![(
-            "CLAUDE_CONFIG_DIR".to_owned(),
-            config_dir.to_string_lossy().into_owned(),
-        )],
         created_at: Timestamp::now(),
     }
 }
 
-/// The whole point of §13.4: the agent runs with the profile's environment and
-/// arguments, its config directory is created first, and a restart repeats it.
+/// The whole point of §13.4: the agent runs with the profile's directory and
+/// arguments, the directory is created first, and a restart repeats it.
+///
+/// The directory here is the one the form suggests — a bare `.claude-personal`
+/// — because that is the case that used to fail: resolved against the daemon's
+/// working directory it is `/.claude-personal`, which under launchd is a
+/// read-only file system.
 #[test]
-fn a_profile_launches_the_agent_with_its_own_environment_and_arguments() {
+fn a_relative_config_directory_lands_in_the_home_directory() {
     let harness = common::Harness::new();
     let repo = test_support::init_repo().expect("git repo (git must be installed)");
     common::write_env_reporting_cli(harness.bin(), "claude", MARKER, "Claude Code 1.0.0");
@@ -51,20 +53,20 @@ fn a_profile_launches_the_agent_with_its_own_environment_and_arguments() {
 
     // Deliberately not created by the test: the daemon must create it, the way
     // the shell wrapper's `mkdir -p` did.
-    let config_dir = harness.root().join("claude-work");
-    let work = profile("Work", &config_dir, &["--model", "opus"]);
+    let expected = harness.home().join(".claude-personal");
+    let personal = profile("Personal", Some(".claude-personal"), &["--model", "opus"]);
 
     assert_eq!(
         client
             .request(Request::SaveAgentProfile {
-                profile: work.clone()
+                profile: personal.clone()
             })
             .expect("SaveAgentProfile"),
         Response::Ack
     );
     let broadcast = common::wait_for(&events, std::time::Duration::from_secs(5), |event| {
         matches!(event, DaemonEvent::AgentProfilesChanged { profiles }
-            if profiles.iter().any(|p| p.id == work.id))
+            if profiles.iter().any(|p| p.id == personal.id))
     });
     assert!(
         broadcast.is_some(),
@@ -72,33 +74,18 @@ fn a_profile_launches_the_agent_with_its_own_environment_and_arguments() {
     );
 
     // --- launch through the profile ---
-    let response = client
-        .request(Request::CreateAgentSession {
-            workspace_id,
-            provider_id: AgentProviderId::new("claude"),
-            profile_id: Some(work.id),
-            parent: None,
-            role: SessionRole::Generic,
-            resume: None,
-            initial_prompt: None,
-            read_only: false,
-        })
-        .expect("CreateAgentSession with a profile");
-    assert!(
-        matches!(response, Response::SessionCreated { .. }),
-        "{response:?}"
-    );
-
-    let (session_id, terminal_id) =
-        common::wait_for_running(&events, |session| session.agent_profile_id == Some(work.id));
+    let session_id = launch(&client, workspace_id, "claude", Some(personal.id));
+    let (session_id, terminal_id) = common::wait_for_running(&events, |session| {
+        session.id == session_id && session.agent_profile_id == Some(personal.id)
+    });
     assert_eq!(
         common::attach_and_read_line(&client, &events, terminal_id, MARKER).as_deref(),
-        Some("forge_profile:claude-work:--model opus"),
-        "the child gets the profile's environment and arguments"
+        Some("forge_profile:.claude-personal:--model opus"),
+        "the child gets the profile's directory and arguments"
     );
     assert!(
-        config_dir.is_dir(),
-        "the profile's config directory is created before the agent starts"
+        expected.is_dir(),
+        "the profile's config directory is created under $HOME before the agent starts"
     );
 
     // --- restart reproduces the profile ---
@@ -116,7 +103,7 @@ fn a_profile_launches_the_agent_with_its_own_environment_and_arguments() {
         common::wait_for_running(&events, |session| session.id == session_id);
     assert_eq!(
         common::attach_and_read_line(&client, &events, restarted_terminal, MARKER).as_deref(),
-        Some("forge_profile:claude-work:--model opus"),
+        Some("forge_profile:.claude-personal:--model opus"),
         "a restart re-applies the profile rather than the bare provider"
     );
 
@@ -124,7 +111,7 @@ fn a_profile_launches_the_agent_with_its_own_environment_and_arguments() {
     assert_eq!(
         client
             .request(Request::RemoveAgentProfile {
-                profile_id: work.id
+                profile_id: personal.id
             })
             .expect("RemoveAgentProfile"),
         Response::Ack
@@ -145,8 +132,112 @@ fn a_profile_launches_the_agent_with_its_own_environment_and_arguments() {
     assert!(session.state.is_active(), "the process keeps running");
     assert_eq!(
         session.agent_profile_id,
-        Some(work.id),
+        Some(personal.id),
         "history keeps the pointer even though the profile is gone"
+    );
+}
+
+/// The other two spellings the form accepts: an absolute path on another
+/// volume, and the `~/…` a user types out of shell habit. Both name a
+/// directory, so both are created and exported the same way.
+#[test]
+fn a_config_directory_can_be_absolute_or_tilde_relative() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo (git must be installed)");
+    common::write_env_reporting_cli(harness.bin(), "claude", MARKER, "Claude Code 1.0.0");
+
+    let daemon = harness.boot();
+    let client = daemon.connect("profiles-paths");
+    let events = client.events();
+    let workspace_id = common::add_main_workspace(&client, repo.path());
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+
+    // Somewhere else entirely: an accounts directory outside the home tree.
+    let elsewhere = harness.root().join("accounts/claude-elsewhere");
+    let outside = profile("Elsewhere", Some(&elsewhere.to_string_lossy()), &[]);
+    client
+        .request(Request::SaveAgentProfile {
+            profile: outside.clone(),
+        })
+        .expect("an absolute config directory saves");
+
+    let session_id = launch(&client, workspace_id, "claude", Some(outside.id));
+    let (_, terminal_id) = common::wait_for_running(&events, |session| session.id == session_id);
+    assert_eq!(
+        common::attach_and_read_line(&client, &events, terminal_id, MARKER).as_deref(),
+        Some("forge_profile:claude-elsewhere:"),
+        "an absolute directory is used exactly as typed"
+    );
+    assert!(elsewhere.is_dir(), "including the parents it needed");
+
+    // `~/…`: the same directory a bare relative path would name, spelled the
+    // way a shell user spells it. No shell ever sees this string.
+    let tilde = profile("Tilde", Some("~/.claude-tilde"), &[]);
+    client
+        .request(Request::SaveAgentProfile {
+            profile: tilde.clone(),
+        })
+        .expect("a ~-relative config directory saves");
+
+    let session_id = launch(&client, workspace_id, "claude", Some(tilde.id));
+    let (_, terminal_id) = common::wait_for_running(&events, |session| session.id == session_id);
+    assert_eq!(
+        common::attach_and_read_line(&client, &events, terminal_id, MARKER).as_deref(),
+        Some("forge_profile:.claude-tilde:"),
+        "a ~ is expanded to the launching user's home"
+    );
+    assert!(harness.home().join(".claude-tilde").is_dir());
+}
+
+/// The second shape of a personal profile: no directory at all, because the
+/// separation is already baked into a `claude-personal` wrapper on `PATH` —
+/// the thing a shell alias stands for. The name is not a path anyone typed
+/// out, so it has to be found the way the shell would find it.
+#[test]
+fn a_profile_can_run_a_wrapper_named_like_a_shell_alias() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo (git must be installed)");
+    common::write_env_reporting_cli(harness.bin(), "claude", MARKER, "Claude Code 1.0.0");
+    // The alias' wrapper: on `PATH`, named for the account, and reporting a
+    // marker of its own so the assertion cannot pass on the plain binary.
+    common::write_env_reporting_cli(
+        harness.bin(),
+        "claude-personal",
+        "forge_alias",
+        "Claude Code 1.0.0",
+    );
+
+    let daemon = harness.boot();
+    let client = daemon.connect("profiles-alias");
+    let events = client.events();
+    let workspace_id = common::add_main_workspace(&client, repo.path());
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+
+    let mut personal = profile("Personal", None, &["--model", "opus"]);
+    personal.executable = Some(PathBuf::from("claude-personal"));
+    client
+        .request(Request::SaveAgentProfile {
+            profile: personal.clone(),
+        })
+        .expect("a bare name on PATH is probed and accepted");
+
+    let session_id = launch(&client, workspace_id, "claude", Some(personal.id));
+    let (_, terminal_id) = common::wait_for_running(&events, |session| session.id == session_id);
+    let line = common::attach_and_read_line(&client, &events, terminal_id, "forge_alias");
+    assert_eq!(
+        line.as_deref(),
+        // The inherited `CLAUDE_CONFIG_DIR` is untouched: this profile switches
+        // accounts inside the wrapper, not through the environment.
+        Some("forge_alias:claude:--model opus"),
+        "the wrapper on PATH is what runs"
     );
 }
 
@@ -164,45 +255,43 @@ fn saving_a_profile_rejects_what_a_launch_could_not_honor() {
             .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
     });
 
-    let dir = harness.root().join("cfg");
     let save = |profile: AgentProfile| client.request(Request::SaveAgentProfile { profile });
 
-    save(profile("Work", &dir, &[])).expect("the first profile saves");
+    save(profile("Personal", Some(".claude-personal"), &[])).expect("the first profile saves");
 
     // A second profile of the same agent cannot share its name, whatever the
     // case: the two would be indistinguishable in a launch menu.
-    let clash = save(profile("work", &dir, &[])).expect_err("a duplicate name is refused");
+    let clash = save(profile("personal", Some(".claude-other"), &[]))
+        .expect_err("a duplicate name is refused");
     assert_eq!(protocol_code(&clash), ErrorCode::Conflict);
 
-    // Forge owns the terminal contract; a profile that redefined it would break
-    // the emulator instead of configuring the agent.
-    let mut reserved = profile("Reserved", &dir, &[]);
-    reserved.env = vec![("TERM".to_owned(), "dumb".to_owned())];
-    let refused = save(reserved).expect_err("a reserved variable is refused");
-    assert_eq!(protocol_code(&refused), ErrorCode::InvalidRequest);
+    let unnamed = save(profile("   ", None, &[])).expect_err("a nameless profile is refused");
+    assert_eq!(protocol_code(&unnamed), ErrorCode::InvalidRequest);
 
-    let mut malformed = profile("Malformed", &dir, &[]);
-    malformed.env = vec![("NOT A NAME".to_owned(), "x".to_owned())];
-    let refused = save(malformed).expect_err("a malformed variable name is refused");
-    assert_eq!(protocol_code(&refused), ErrorCode::InvalidRequest);
-
-    let mut unnamed = profile("   ", &dir, &[]);
-    unnamed.env = vec![];
-    let refused = save(unnamed).expect_err("a nameless profile is refused");
+    // Cursor CLI documents no directory of its own, so a directory saved for it
+    // would look applied and change nothing.
+    let mut cursor = profile("Cursor personal", Some(".cursor-personal"), &[]);
+    cursor.provider_id = AgentProviderId::new("cursor");
+    let refused = save(cursor).expect_err("a directory no provider variable carries is refused");
     assert_eq!(protocol_code(&refused), ErrorCode::InvalidRequest);
 
     // A profile may bring its own binary, but only one the version probe
     // accepts — the same rule `SetProviderExecutable` follows (§13.1 step 4).
-    let mut foreign = profile("Foreign", &dir, &[]);
+    let mut foreign = profile("Foreign", None, &[]);
     foreign.executable = Some(harness.root().join("nothing-here"));
     let refused = save(foreign).expect_err("an executable that is not there is refused");
+    assert_eq!(protocol_code(&refused), ErrorCode::ProviderNotInstalled);
+
+    let mut off_path = profile("Not on PATH", None, &[]);
+    off_path.executable = Some(PathBuf::from("claude-personal"));
+    let refused = save(off_path).expect_err("a bare name nothing on PATH answers to is refused");
     assert_eq!(protocol_code(&refused), ErrorCode::ProviderNotInstalled);
 
     // ...and a profile pointing at a real, probed binary is accepted.
     let elsewhere = harness.root().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).expect("create the off-PATH directory");
     let picked = common::write_env_reporting_cli(&elsewhere, "claude", MARKER, "Claude Code 2.0.0");
-    let mut own_binary = profile("Own binary", &dir, &[]);
+    let mut own_binary = profile("Own binary", None, &[]);
     own_binary.executable = Some(picked);
     save(own_binary).expect("a probed executable is accepted");
 }
@@ -225,7 +314,7 @@ fn a_profile_cannot_be_applied_to_a_different_provider() {
         })
     });
 
-    let work = profile("Work", &harness.root().join("cfg"), &[]);
+    let work = profile("Work", Some(".claude-work"), &[]);
     client
         .request(Request::SaveAgentProfile {
             profile: work.clone(),
@@ -259,6 +348,30 @@ fn a_profile_cannot_be_applied_to_a_different_provider() {
         })
         .expect_err("an unknown profile id is not silently ignored");
     assert_eq!(protocol_code(&unknown), ErrorCode::NotFound);
+}
+
+fn launch(
+    client: &client::Client,
+    workspace_id: domain::WorkspaceId,
+    provider: &str,
+    profile_id: Option<AgentProfileId>,
+) -> domain::SessionId {
+    let response = client
+        .request(Request::CreateAgentSession {
+            workspace_id,
+            provider_id: AgentProviderId::new(provider),
+            profile_id,
+            parent: None,
+            role: SessionRole::Generic,
+            resume: None,
+            initial_prompt: None,
+            read_only: false,
+        })
+        .expect("CreateAgentSession with a profile");
+    match response {
+        Response::SessionCreated { session_id, .. } => session_id,
+        other => panic!("{other:?}"),
+    }
 }
 
 fn protocol_code(error: &client::ClientError) -> ErrorCode {

@@ -70,6 +70,10 @@ impl Harness {
         // the single-entry `PATH` both hermetic and usable.
         std::os::unix::fs::symlink("/usr/bin/env", bin.join("env"))
             .expect("link /usr/bin/env into the fake PATH");
+        // A home of its own: a launch profile's relative config directory is
+        // resolved against `$HOME` (§13.4), and the developer's real one is
+        // neither hermetic nor somewhere a test may write.
+        fs::create_dir_all(tmp.path().join("home")).expect("create the fake home directory");
         let shell = write_executable(tmp.path(), "forge-test-shell", &login_shell_script(&bin));
         assert_hermetic_login_shell(&shell, &bin);
         Harness {
@@ -93,6 +97,13 @@ impl Harness {
     #[must_use]
     pub fn root(&self) -> &Path {
         self.tmp.path()
+    }
+
+    /// `$HOME` for everything the daemon launches, and what a profile's
+    /// relative config directory is resolved against (§13.4).
+    #[must_use]
+    pub fn home(&self) -> PathBuf {
+        self.tmp.path().join("home")
     }
 
     /// The database file the daemons share, so a restart sees the same rows.
@@ -288,13 +299,23 @@ fn login_shell_script(bin: &Path) -> String {
          CLAUDE_CONFIG_DIR={claude}\n\
          CODEX_HOME={codex}\n\
          export CLAUDE_CONFIG_DIR CODEX_HOME\n\
+         # A profile's relative config directory lands under this, not under\n\
+         # the developer's own home (§13.4).\n\
+         HOME={home}\n\
+         export HOME\n\
          unset ENV\n\
          unset BASH_ENV\n\
          [ \"$1\" = -l ] && shift\n\
          exec /bin/sh \"$@\"\n",
         path = sh_quote(&bin.to_string_lossy()),
         claude = sh_quote(&agent_home.join("claude").to_string_lossy()),
-        codex = sh_quote(&agent_home.join("codex").to_string_lossy())
+        codex = sh_quote(&agent_home.join("codex").to_string_lossy()),
+        home = sh_quote(
+            &bin.parent()
+                .expect("bin has a parent")
+                .join("home")
+                .to_string_lossy()
+        )
     )
 }
 

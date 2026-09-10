@@ -30,11 +30,11 @@ import { candidateLabel, resolveDefinition } from "./definition";
 import type { SearchMatch } from "./types";
 import { grammarFor } from "./language";
 import { actionForDiskRead } from "./editor/conflict";
-import { EDITOR_KEYMAPS, createEditor, type EditorHandle } from "./editor/createEditor";
+import { createEditor, type EditorHandle } from "./editor/createEditor";
 import { gitMarksFor, patchFor } from "./editor/gitMarks";
 import { languageFor } from "./editor/language";
 import { CompareView } from "./editor/CompareView";
-import { AUTOSAVE_KEY, EDITOR_KEYMAP_KEY, readChoice, readFlag } from "../shell/layout";
+import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
 import { Button, Tooltip } from "../ui";
 
 /**
@@ -221,13 +221,6 @@ export function EditorView(props: { path: string }) {
     onCleanup(enterContext(EDITOR));
     onCleanup(registerAction("save_file", save));
     onCleanup(registerAction("go_to_definition", askForDefinitionAtCursor));
-  });
-
-  // A9/A10: the editing model, and a swap when the preference changes. The
-  // vim and helix chunks load here and nowhere else.
-  createEffect(() => {
-    const which = readChoice(EDITOR_KEYMAP_KEY, EDITOR_KEYMAPS, "default");
-    void handle?.setKeymap(which).catch(() => undefined);
   });
 
   // A new path is a new document. The draft is dropped rather than carried:

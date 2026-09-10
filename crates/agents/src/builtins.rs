@@ -1,4 +1,4 @@
-//! The four MVP built-in agent descriptors (§7.5 table).
+//! The built-in agent descriptors (§7.5 table).
 //!
 //! Descriptors carry only static data (candidate binaries, version probe,
 //! capabilities); all behavior lives in [`crate::detection`] and
@@ -6,9 +6,8 @@
 //! here (principle P2): nothing else in the workspace branches on provider id.
 
 use domain::{
-    AgentCapabilities, AgentDescriptor, AgentProviderId, HeadlessSpec, ProfileField,
-    ProfileFieldEffect, PromptStyle, ResumeStyle, ReviewStyle, SchemaStyle, UsageSource,
-    VersionProbe,
+    AgentCapabilities, AgentDescriptor, AgentProviderId, ConfigDirSpec, HeadlessSpec, PromptStyle,
+    ResumeStyle, ReviewStyle, SchemaStyle, UsageSource, VersionProbe,
 };
 
 /// `claude --resume <session-id>`: the id its transcripts record, resumed from
@@ -129,6 +128,19 @@ fn review(label: &str, args: &[&str]) -> Option<ReviewStyle> {
     })
 }
 
+fn grok_resume() -> Option<ResumeStyle> {
+    Some(ResumeStyle::Flag {
+        flag: "--resume".to_owned(),
+    })
+}
+
+fn grok_config_dir() -> Option<ConfigDirSpec> {
+    Some(ConfigDirSpec {
+        vars: vec!["GROK_HOME".to_owned()],
+        help: "A separate account: its own config, credentials and sessions.".to_owned(),
+    })
+}
+
 /// Every built-in provider descriptor, in picker order (§7.5, §13.2).
 #[must_use]
 pub fn builtins() -> Vec<AgentDescriptor> {
@@ -142,7 +154,7 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             &["claude"],
             None,
             Some(UsageSource::ClaudeOauth),
-            claude_profile_fields(),
+            claude_config_dir(),
             claude_resume(),
             // `claude [options] [command] [prompt]` — its own usage line.
             Some(PromptStyle::Positional),
@@ -157,7 +169,7 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             &["codex"],
             None,
             Some(UsageSource::CodexOAuth),
-            codex_profile_fields(),
+            codex_config_dir(),
             codex_resume(),
             // `codex [OPTIONS] [PROMPT]`, forwarded to the interactive CLI
             // when no subcommand is given.
@@ -173,7 +185,7 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             &["opencode", "opencode2"],
             None,
             None,
-            opencode_profile_fields(),
+            opencode_config_dir(),
             opencode_resume(),
             // A flag, and this is the one that would have been a bug to
             // guess: `opencode [project]` reads its positional as a
@@ -194,7 +206,9 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             &["agent", "cursor-agent"],
             Some("cursor"),
             None,
-            Vec::new(),
+            // Cursor CLI documents no directory of its own, so a profile for it
+            // can change the binary and the arguments and nothing else.
+            None,
             // `--resume` takes an *optional* chat id, so a following argument
             // is ambiguous to its parser. Nothing discovers Cursor history
             // either (`external_agents` reads Claude and opencode), so there is
@@ -210,6 +224,20 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             // `--mode ask` is its own Q&A posture: explanations, no edits.
             review("ask mode", &["--mode", "ask"]),
         ),
+        descriptor(
+            "grok",
+            "Grok",
+            // Unambiguous `grok` only — `agent` on PATH is often this CLI, but
+            // the cursor descriptor already claims that name with a marker.
+            &["grok"],
+            Some("grok"),
+            None,
+            grok_config_dir(),
+            grok_resume(),
+            Some(PromptStyle::Positional),
+            None,
+            review("plan mode", &["--permission-mode", "plan"]),
+        ),
     ]
 }
 
@@ -219,123 +247,47 @@ pub fn builtin(id: &str) -> Option<AgentDescriptor> {
     builtins().into_iter().find(|d| d.id.as_str() == id)
 }
 
-/// The profile fields Claude Code understands (§13.4).
+/// Claude Code's account switch (§13.4).
 ///
-/// `CLAUDE_CONFIG_DIR` is the account switch: Claude Code keeps settings,
-/// session history and plugins there instead of `~/.claude`, which is exactly
-/// what a hand-written `claude-work` shell wrapper does. `--model` is the flag
-/// that outranks both the `model` setting and `ANTHROPIC_MODEL`.
-fn claude_profile_fields() -> Vec<ProfileField> {
-    vec![
-        ProfileField {
-            label: "Config directory".to_owned(),
-            help: "A separate account: its own login, settings, history and plugins.".to_owned(),
-            effect: ProfileFieldEffect::Env {
-                name: "CLAUDE_CONFIG_DIR".to_owned(),
-                is_directory: true,
-            },
-        },
-        ProfileField {
-            label: "Default model".to_owned(),
-            help: "An alias (opus, sonnet, haiku) or a full model id.".to_owned(),
-            effect: ProfileFieldEffect::Flag {
-                flag: "--model".to_owned(),
-            },
-        },
-        ProfileField {
-            label: "Default agent".to_owned(),
-            help: "The Claude Code subagent to start with.".to_owned(),
-            effect: ProfileFieldEffect::Flag {
-                flag: "--agent".to_owned(),
-            },
-        },
-    ]
+/// `CLAUDE_CONFIG_DIR` is what a hand-written `claude-work` wrapper exported:
+/// settings, login, history and plugins move there instead of `~/.claude`.
+fn claude_config_dir() -> Option<ConfigDirSpec> {
+    Some(ConfigDirSpec {
+        vars: vec!["CLAUDE_CONFIG_DIR".to_owned()],
+        help: "A separate account: its own login, settings, history and plugins.".to_owned(),
+    })
 }
 
-/// The profile fields Codex CLI understands (§13.4). `CODEX_HOME` is its
-/// `CLAUDE_CONFIG_DIR`; `usage::codex` already reads credentials through it.
-fn codex_profile_fields() -> Vec<ProfileField> {
-    vec![
-        ProfileField {
-            label: "Config directory".to_owned(),
-            help: "A separate account: its own credentials and history.".to_owned(),
-            effect: ProfileFieldEffect::Env {
-                name: "CODEX_HOME".to_owned(),
-                is_directory: true,
-            },
-        },
-        ProfileField {
-            label: "Default model".to_owned(),
-            help: "The model Codex starts on.".to_owned(),
-            effect: ProfileFieldEffect::Flag {
-                flag: "--model".to_owned(),
-            },
-        },
-        ProfileField {
-            label: "Config profile".to_owned(),
-            help: "A named profile from the Codex config file.".to_owned(),
-            effect: ProfileFieldEffect::Flag {
-                flag: "--profile".to_owned(),
-            },
-        },
-    ]
+/// Codex CLI's account switch (§13.4). `CODEX_HOME` is its `CLAUDE_CONFIG_DIR`;
+/// `usage::codex` already reads credentials through it.
+fn codex_config_dir() -> Option<ConfigDirSpec> {
+    Some(ConfigDirSpec {
+        vars: vec!["CODEX_HOME".to_owned()],
+        help: "A separate account: its own credentials and history.".to_owned(),
+    })
 }
 
-/// The profile fields OpenCode understands (§13.4).
+/// OpenCode's account switch (§13.4) — two variables for one directory.
 ///
-/// OpenCode splits what the other two keep together, so it gets two
-/// directories instead of one. `OPENCODE_CONFIG_DIR` moves the directory
-/// `opencode.json` is read from — with it the agents, commands and plugins
-/// defined beside it — but leaves credentials where they were.
-/// `XDG_DATA_HOME` is the one that switches accounts: `auth.json` and the
-/// session storage live under `<data>/opencode`. It is a generic variable
-/// rather than an OpenCode one, so the help text says so — every process
-/// OpenCode itself starts inherits it.
-///
-/// `--model` takes a `provider/model` pair, not a bare alias, and `--agent`
-/// picks which of the configured agents the TUI starts on.
-fn opencode_profile_fields() -> Vec<ProfileField> {
-    vec![
-        ProfileField {
-            label: "Config directory".to_owned(),
-            help: "Its own opencode.json, and the agents, commands and plugins beside it."
-                .to_owned(),
-            effect: ProfileFieldEffect::Env {
-                name: "OPENCODE_CONFIG_DIR".to_owned(),
-                is_directory: true,
-            },
-        },
-        ProfileField {
-            label: "Data directory".to_owned(),
-            help: "A separate account: its own credentials and session storage. \
-                   Standard XDG variable — anything OpenCode launches sees it too."
-                .to_owned(),
-            effect: ProfileFieldEffect::Env {
-                name: "XDG_DATA_HOME".to_owned(),
-                is_directory: true,
-            },
-        },
-        ProfileField {
-            label: "Default model".to_owned(),
-            help: "A provider/model pair, such as anthropic/claude-sonnet-4-5.".to_owned(),
-            effect: ProfileFieldEffect::Flag {
-                flag: "--model".to_owned(),
-            },
-        },
-        ProfileField {
-            label: "Default agent".to_owned(),
-            help: "The configured agent OpenCode starts on.".to_owned(),
-            effect: ProfileFieldEffect::Flag {
-                flag: "--agent".to_owned(),
-            },
-        },
-    ]
+/// OpenCode splits what the other two keep together: `OPENCODE_CONFIG_DIR`
+/// moves `opencode.json` and the agents, commands and plugins beside it, while
+/// the credentials and session storage live under `<XDG_DATA_HOME>/opencode`.
+/// Pointing both at the profile's directory is what makes it one account and
+/// not half of one. `XDG_DATA_HOME` is a generic variable, so the help text
+/// says so: every process OpenCode itself starts inherits it.
+fn opencode_config_dir() -> Option<ConfigDirSpec> {
+    Some(ConfigDirSpec {
+        vars: vec!["OPENCODE_CONFIG_DIR".to_owned(), "XDG_DATA_HOME".to_owned()],
+        help: "A separate account: its own opencode.json, credentials and sessions. \
+               Also sets the standard XDG_DATA_HOME, which anything OpenCode launches sees."
+            .to_owned(),
+    })
 }
 
-/// Construct a built-in descriptor. All four built-ins probe with `--version`
+/// Construct a built-in descriptor. Built-ins probe with `--version`
 /// and take no default args; only the id, display name, candidate list,
-/// expected marker, profile fields, resume, prompt and read-only spellings differ
-/// (§7.5, §13.4, §16.8, §16.9).
+/// expected marker, config directory, resume, prompt and read-only spellings
+/// differ (§7.5, §13.4, §16.8, §16.9).
 #[allow(clippy::too_many_arguments)]
 fn descriptor(
     id: &str,
@@ -343,7 +295,7 @@ fn descriptor(
     binary_candidates: &[&str],
     expect_substring: Option<&str>,
     usage_source: Option<UsageSource>,
-    profile_fields: Vec<ProfileField>,
+    config_dir: Option<ConfigDirSpec>,
     resume: Option<ResumeStyle>,
     prompt: Option<PromptStyle>,
     headless: Option<HeadlessSpec>,
@@ -364,13 +316,13 @@ fn descriptor(
             timeout_ms: 3000,
         },
         usage_source,
-        profile_fields,
+        config_dir,
         resume,
         prompt,
         headless,
         review,
         capabilities: AgentCapabilities {
-            // All four built-ins are interactive TUIs. Neither flag below is a
+            // Built-ins are interactive TUIs. Neither flag below is a
             // second source of truth: each restates whether the matching
             // spelling was declared above.
             interactive_tui: true,
@@ -391,7 +343,7 @@ mod tests {
     /// positional, so its prompt has to be named.
     #[test]
     fn every_builtin_declares_how_it_takes_a_prompt() {
-        for id in ["claude", "codex", "cursor"] {
+        for id in ["claude", "codex", "cursor", "grok"] {
             let descriptor = builtin(id).unwrap();
             assert_eq!(
                 descriptor.prompt,
@@ -431,9 +383,9 @@ mod tests {
     }
 
     #[test]
-    fn there_are_four_builtins_in_order() {
+    fn there_are_five_builtins_in_order() {
         let ids: Vec<String> = builtins().iter().map(|d| d.id.to_string()).collect();
-        assert_eq!(ids, ["claude", "codex", "opencode", "cursor"]);
+        assert_eq!(ids, ["claude", "codex", "opencode", "cursor", "grok"]);
     }
 
     #[test]
@@ -650,88 +602,49 @@ mod tests {
                 .expect_substring
                 .is_none());
         }
-    }
-
-    #[test]
-    fn every_provider_with_profile_fields_leads_with_a_directory() {
-        use domain::ProfileFieldEffect;
-        for id in ["claude", "codex", "opencode"] {
-            let fields = builtin(id).unwrap().profile_fields;
-            assert!(!fields.is_empty(), "{id}");
-            // The first field is a directory — that is what makes the daemon
-            // create it before launching.
-            assert!(
-                matches!(
-                    &fields[0].effect,
-                    ProfileFieldEffect::Env {
-                        is_directory: true,
-                        ..
-                    }
-                ),
-                "{id}"
-            );
-        }
-        // Cursor exposes no documented configuration switch, so it offers
-        // nothing to suggest; a profile for it is still writable by hand.
-        assert!(builtin("cursor").unwrap().profile_fields.is_empty());
-    }
-
-    /// OpenCode splits configuration from credentials, so its account switch is
-    /// the data directory and not the one named after it.
-    #[test]
-    fn opencode_offers_both_of_its_directories_and_its_two_flags() {
-        use domain::ProfileFieldEffect;
-        let fields = builtin("opencode").unwrap().profile_fields;
-        let effects: Vec<&ProfileFieldEffect> = fields.iter().map(|f| &f.effect).collect();
-        assert!(matches!(
-            effects.as_slice(),
-            [
-                ProfileFieldEffect::Env {
-                    name: config,
-                    is_directory: true
-                },
-                ProfileFieldEffect::Env {
-                    name: data,
-                    is_directory: true
-                },
-                ProfileFieldEffect::Flag { flag: model },
-                ProfileFieldEffect::Flag { flag: agent },
-            ] if config == "OPENCODE_CONFIG_DIR"
-                && data == "XDG_DATA_HOME"
-                && model == "--model"
-                && agent == "--agent"
-        ));
-    }
-
-    #[test]
-    fn provider_native_agents_and_profiles_are_direct_fields() {
-        use domain::ProfileFieldEffect;
-
-        for (provider, expected) in [("claude", "--agent"), ("codex", "--profile")] {
-            assert!(builtin(provider)
+        assert_eq!(
+            builtin("grok")
                 .unwrap()
-                .profile_fields
-                .iter()
-                .any(|field| {
-                    matches!(&field.effect, ProfileFieldEffect::Flag { flag } if flag == expected)
-                }));
-        }
+                .version_probe
+                .expect_substring
+                .as_deref(),
+            Some("grok")
+        );
     }
 
-    /// A profile field must never collide with the terminal contract (§13.3):
-    /// a suggestion the daemon would then refuse is worse than no suggestion.
     #[test]
-    fn no_suggested_variable_is_reserved() {
-        use domain::{ProfileFieldEffect, RESERVED_PROFILE_VARS};
+    fn every_provider_but_cursor_can_move_its_config_directory() {
+        for id in ["claude", "codex", "opencode", "grok"] {
+            let spec = builtin(id).unwrap().config_dir.expect(id);
+            assert!(!spec.vars.is_empty(), "{id}");
+            assert!(!spec.help.trim().is_empty(), "{id}");
+        }
+        // Cursor CLI documents no such switch, so its profiles change the
+        // binary and the arguments only.
+        assert!(builtin("cursor").unwrap().config_dir.is_none());
+    }
+
+    /// OpenCode splits configuration from credentials, so one profile directory
+    /// has to arrive as two variables or the account is only half switched.
+    #[test]
+    fn opencode_points_both_of_its_directories_at_one_place() {
+        let spec = builtin("opencode").unwrap().config_dir.unwrap();
+        assert_eq!(spec.vars, ["OPENCODE_CONFIG_DIR", "XDG_DATA_HOME"]);
+    }
+
+    /// A config-directory variable must never collide with the terminal
+    /// contract (§13.3): the launch would break the emulator instead of
+    /// switching accounts.
+    #[test]
+    fn no_config_directory_variable_is_reserved() {
+        use domain::RESERVED_PROFILE_VARS;
         for descriptor in builtins() {
-            for field in &descriptor.profile_fields {
-                if let ProfileFieldEffect::Env { name, .. } = &field.effect {
-                    assert!(
-                        !RESERVED_PROFILE_VARS.contains(&name.as_str()),
-                        "{} suggests reserved {name}",
-                        descriptor.id
-                    );
-                }
+            for var in descriptor.config_dir.iter().flat_map(|spec| &spec.vars) {
+                assert!(
+                    !RESERVED_PROFILE_VARS.contains(&var.as_str()),
+                    "{} points at reserved {var}",
+                    descriptor.id
+                );
             }
         }
     }

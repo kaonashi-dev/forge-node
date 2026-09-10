@@ -118,19 +118,18 @@ export type ProviderInfo = {
      *  calls the mode. Absent means it has none, so it cannot be sent to
      *  review a pull request. */
     review?: { args: string[]; label: string } | null;
-    profile_fields?: ProfileField[];
+    /** How this provider is pointed at a profile's own config directory
+     *  (§13.4). Absent means it has no such switch, so a profile for it can
+     *  only change the binary and the arguments. */
+    config_dir?: ConfigDirSpec | null;
   };
   detection?: { status?: DetectionStatus; checked_at?: string };
 };
 
-export type ProfileFieldEffect =
-  | { Env: { name: string; is_directory: boolean } }
-  | { Flag: { flag: string } };
-
-export type ProfileField = {
-  label: string;
+/** `domain::ConfigDirSpec`: the variables one profile directory arrives as. */
+export type ConfigDirSpec = {
+  vars: string[];
   help: string;
-  effect: ProfileFieldEffect;
 };
 
 /** The provider's id, which is what every other table keys on. */
@@ -209,6 +208,14 @@ export type UsageWindow = {
 
 export type ProviderUsage = {
   provider_id: string;
+  /**
+   * The launch profile whose account this reading came from, `null` for the
+   * provider's default one (§13.4).
+   *
+   * One provider can report several: a profile that moved the config directory
+   * is a second login with an allowance of its own.
+   */
+  profile_id: string | null;
   windows: UsageWindow[];
   collected_at: string;
 };
@@ -243,8 +250,8 @@ export type AgentProfile = {
   provider_id: string;
   name: string;
   executable: string | null;
+  config_dir: string | null;
   args: string[];
-  env: [string, string][];
   created_at: string;
 };
 
@@ -280,6 +287,12 @@ export type ExternalAgentSession = {
   project_id: string;
   workspace_id: string | null;
   provider: string;
+  /**
+   * The profile whose account holds this transcript, `null` for the default
+   * one (§13.4). Resuming has to pass it back: the run only exists for a CLI
+   * started with that profile's config directory.
+   */
+  profile_id: string | null;
   title: string;
   branch: string | null;
   preview: string | null;

@@ -1,7 +1,9 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "../ui";
 import type { CellsPayload } from "../terminal/types";
-import { applyShellSnapshot } from "../store/forgeStore";
+import { applyShellSnapshot, forgeStore } from "../store/forgeStore";
+import { adoptPendingCompose } from "../store/prComposeStore";
+import { adoptPendingReviews } from "../store/prReviewStore";
 import { loadFeatureDetail } from "../harness/api";
 import { readJobLog } from "./api";
 import {
@@ -59,6 +61,7 @@ import {
 
 export function applyConnected(payload: ConnectedPayload): void {
   applyShellSnapshot(payload.store);
+  adoptPendingLaunches();
   setRuntimeStore({
     connection: {
       kind: "connected",
@@ -68,6 +71,12 @@ export function applyConnected(payload: ConnectedPayload): void {
     activeSession: payload.active_session,
     activeTerminal: payload.active_terminal,
   });
+}
+
+/** Agent launches that outlive their tab: bind them once the snapshot lands. */
+function adoptPendingLaunches(): void {
+  adoptPendingReviews(forgeStore.sessions);
+  adoptPendingCompose(forgeStore.sessions);
 }
 
 /** `[workspace, payload]` — the worker tags every answer with what it is about. */
@@ -343,6 +352,7 @@ export async function bindRuntimeEvents(): Promise<UnlistenFn> {
     }),
     listen<StatePayload>("runtime:state", (event) => {
       applyShellSnapshot(event.payload.store);
+      adoptPendingLaunches();
       setRuntimeStore("activeSession", event.payload.active_session);
       setRuntimeStore("activeTerminal", event.payload.active_terminal);
     }),

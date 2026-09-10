@@ -223,7 +223,7 @@ impl Daemon {
         step: HarnessStep,
         force: bool,
     ) -> Result<Response, ProtocolError> {
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         let feature = harness_service::get_feature(&root, feature_id)
             .map_err(|e| ProtocolError::new(ErrorCode::InvalidRequest, e.to_string()))?;
         let Some(workspace_id) = feature.workspace_id else {
@@ -338,7 +338,7 @@ impl Daemon {
         if question.is_empty() {
             return Err(ProtocolError::new(ErrorCode::InvalidRequest, "ask what?"));
         }
-        let root = self.project_root_for(project_id)?;
+        let root = self.harness_root_for(project_id)?;
         let workspace_id = self.main_workspace_of(project_id).ok_or_else(|| {
             ProtocolError::new(
                 ErrorCode::InvalidRequest,
@@ -377,8 +377,9 @@ impl Daemon {
     /// The project's own checkout, which is where a question is answered.
     ///
     /// A worktree would do as well for reading, but the main checkout is the
-    /// one that owns `harness/`, so the answer is read from the state itself
-    /// rather than from a snapshot of it.
+    /// one that sees the harness root directly rather than a snapshot of it.
+    /// `root_path` here is the *registered* directory on purpose: it is the
+    /// Main workspace's path, which is what is being looked up.
     fn main_workspace_of(&self, project_id: ProjectId) -> Option<domain::WorkspaceId> {
         let inner = self.lock();
         let root = inner.projects.get(&project_id)?.root_path.clone();
@@ -732,7 +733,7 @@ impl Daemon {
             inner
                 .projects
                 .values()
-                .map(|project| (project.id, project.root_path.clone()))
+                .map(|project| (project.id, crate::core::harness_root_of(project)))
                 .collect()
         };
         for (project_id, root) in projects {
@@ -783,7 +784,7 @@ impl Daemon {
         }
     }
 
-    /// The project a checkout belongs to, and that project's root.
+    /// The project a checkout belongs to, and where its `harness/` lives.
     fn project_of_workspace(
         &self,
         workspace_id: domain::WorkspaceId,
@@ -791,7 +792,7 @@ impl Daemon {
         let inner = self.lock();
         let workspace = inner.workspaces.get(&workspace_id)?;
         let project = inner.projects.get(&workspace.project_id)?;
-        Some((project.id, project.root_path.clone()))
+        Some((project.id, crate::core::harness_root_of(project)))
     }
 }
 
