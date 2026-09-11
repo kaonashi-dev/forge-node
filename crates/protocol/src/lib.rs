@@ -32,7 +32,7 @@ pub use framing::{
     MAX_FRAME_SIZE,
 };
 pub use hello::{ClientKind, Hello, HelloAck, HelloReject};
-pub use request::{RemoveProjectPolicy, Request, Signal};
+pub use request::{RemoveProjectPolicy, Request, SendContextSpawn, Signal};
 pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 
 /// The single integer protocol version (§9.2). In the MVP the GUI and daemon
@@ -73,7 +73,10 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 ///   that reads them — `ignored` on a `FileEntry`, `store` on an
 ///   `ExternalAgentSession`, and `GetExternalTranscript` /
 ///   `DeleteExternalSession` with `Response::ExternalTranscript`.
-pub const PROTOCOL_VERSION: u32 = 17;
+/// - 17 → 18: cross-session mediation — `SendContext` / `ListContextEnvelopes`
+///   with `Response::ContextEnvelopes`, so one Forge session can cite another
+///   and spawn a child with any provider without peer-to-peer agent APIs.
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,6 +328,7 @@ mod tests {
                 }),
                 prompt: None,
                 headless: None,
+                acp: None,
                 review: Some(domain::ReviewStyle {
                     args: vec!["--permission-mode".to_string(), "plan".to_string()],
                     label: "plan mode".to_string(),

@@ -6,8 +6,9 @@
 //! here (principle P2): nothing else in the workspace branches on provider id.
 
 use domain::{
-    AgentCapabilities, AgentDescriptor, AgentProviderId, ConfigDirSpec, HeadlessSpec, PromptStyle,
-    ResumeStyle, ReviewStyle, SchemaStyle, UsageSource, VersionProbe,
+    AcpPermissionPolicy, AcpSpec, AgentCapabilities, AgentDescriptor, AgentProviderId,
+    ConfigDirSpec, HeadlessSpec, PromptStyle, ResumeStyle, ReviewStyle, SchemaStyle, UsageSource,
+    VersionProbe,
 };
 
 /// `claude --resume <session-id>`: the id its transcripts record, resumed from
@@ -43,6 +44,10 @@ fn opencode_resume() -> Option<ResumeStyle> {
 fn claude_headless() -> Option<HeadlessSpec> {
     Some(HeadlessSpec {
         mode_args: vec!["-p".to_owned()],
+        // A headless Spec/Implement must Write harness artefacts with nobody
+        // to click Allow. `acceptEdits` is the CLI stand-in for the ACP
+        // permission policy that answers the same question on Phase 4.
+        permission_args: vec!["--permission-mode".to_owned(), "acceptEdits".to_owned()],
         stream_args: vec![
             "--output-format".to_owned(),
             "stream-json".to_owned(),
@@ -76,6 +81,7 @@ fn claude_headless() -> Option<HeadlessSpec> {
 fn codex_headless() -> Option<HeadlessSpec> {
     Some(HeadlessSpec {
         mode_args: vec!["exec".to_owned()],
+        permission_args: Vec::new(),
         stream_args: vec![
             "--json".to_owned(),
             "-c".to_owned(),
@@ -103,6 +109,7 @@ fn codex_headless() -> Option<HeadlessSpec> {
 fn opencode_headless() -> Option<HeadlessSpec> {
     Some(HeadlessSpec {
         mode_args: vec!["run".to_owned()],
+        permission_args: Vec::new(),
         stream_args: Vec::new(),
         resume: opencode_resume(),
         prompt: PromptStyle::Positional,
@@ -110,6 +117,16 @@ fn opencode_headless() -> Option<HeadlessSpec> {
         session_id_fields: Vec::new(),
         // Plain-text runner with no sandbox to widen.
         extra_writable_dir_flag: None,
+    })
+}
+
+/// Claude Code as an ACP agent (adapter). Spawned when harness prefers ACP.
+fn claude_acp() -> Option<AcpSpec> {
+    Some(AcpSpec {
+        // `claude acp` is the adapter entry; empty args fall back to the
+        // provider's documented ACP mode when the binary grows one.
+        args: vec!["acp".to_owned()],
+        permissions: AcpPermissionPolicy::default(),
     })
 }
 
@@ -159,6 +176,7 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             // `claude [options] [command] [prompt]` — its own usage line.
             Some(PromptStyle::Positional),
             claude_headless(),
+            claude_acp(),
             // `--permission-mode plan`: reads and runs read-only tools, and
             // asks before anything that would write.
             review("plan mode", &["--permission-mode", "plan"]),
@@ -175,6 +193,7 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             // when no subcommand is given.
             Some(PromptStyle::Positional),
             codex_headless(),
+            None,
             // `-s read-only` is the sandbox policy applied to every command
             // the model runs, not a prompt it can talk its way past.
             review("read-only sandbox", &["-s", "read-only"]),
@@ -194,6 +213,7 @@ pub fn builtins() -> Vec<AgentDescriptor> {
                 flag: "--prompt".to_owned(),
             }),
             opencode_headless(),
+            None,
             // OpenCode ships a `plan` agent whose tools cannot write; naming
             // it is how a launch asks for one.
             review("plan agent", &["--agent", "plan"]),
@@ -221,6 +241,7 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             // read its event stream, and guessing one is how a job hangs
             // waiting for a session id that never arrives.
             None,
+            None,
             // `--mode ask` is its own Q&A posture: explanations, no edits.
             review("ask mode", &["--mode", "ask"]),
         ),
@@ -235,6 +256,7 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             grok_config_dir(),
             grok_resume(),
             Some(PromptStyle::Positional),
+            None,
             None,
             review("plan mode", &["--permission-mode", "plan"]),
         ),
@@ -299,6 +321,7 @@ fn descriptor(
     resume: Option<ResumeStyle>,
     prompt: Option<PromptStyle>,
     headless: Option<HeadlessSpec>,
+    acp: Option<AcpSpec>,
     review: Option<ReviewStyle>,
 ) -> AgentDescriptor {
     let supports_resume = resume.is_some();
@@ -320,6 +343,7 @@ fn descriptor(
         resume,
         prompt,
         headless,
+        acp,
         review,
         capabilities: AgentCapabilities {
             // Built-ins are interactive TUIs. Neither flag below is a
@@ -427,6 +451,8 @@ mod tests {
             claude.command_args("do the thing", None),
             [
                 "-p",
+                "--permission-mode",
+                "acceptEdits",
                 "--output-format",
                 "stream-json",
                 "--verbose",
@@ -439,6 +465,8 @@ mod tests {
                 "-p",
                 "--resume",
                 "sess-1",
+                "--permission-mode",
+                "acceptEdits",
                 "--output-format",
                 "stream-json",
                 "--verbose",
@@ -475,6 +503,8 @@ mod tests {
             claude.command_args_with("review it", None, Some(r#"{"type":"object"}"#)),
             [
                 "-p",
+                "--permission-mode",
+                "acceptEdits",
                 "--output-format",
                 "stream-json",
                 "--verbose",
@@ -534,6 +564,8 @@ mod tests {
             claude.command_args_with_dirs("do the thing", None, None, &dirs),
             [
                 "-p",
+                "--permission-mode",
+                "acceptEdits",
                 "--output-format",
                 "stream-json",
                 "--verbose",
@@ -555,6 +587,15 @@ mod tests {
             );
         }
         assert!(builtin("cursor").unwrap().headless.is_none());
+    }
+
+    #[test]
+    fn claude_declares_an_acp_spec_with_harness_write_policy() {
+        let acp = builtin("claude").unwrap().acp.expect("claude speaks ACP");
+        assert_eq!(acp.args, ["acp"]);
+        assert!(acp.permissions.allow_write_under_cwd);
+        assert!(acp.permissions.allow_write_under_extra);
+        assert!(!acp.permissions.allow_network);
     }
 
     /// The exact command line each provider re-enters a session with; these are

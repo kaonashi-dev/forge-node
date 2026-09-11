@@ -2,6 +2,7 @@
 //! `daemon` library crate; see [`daemon`] for the runtime itself.
 
 use clap::{Parser, Subcommand};
+use daemon::session_cli::{self, ContextCli, SessionCli};
 
 #[derive(Parser)]
 #[command(name = "forge-daemon", version, about = "Forge runtime daemon")]
@@ -23,6 +24,10 @@ enum Command {
     },
     /// Print runtime statistics from a running daemon (§22).
     Stats,
+    /// List, read, or spawn child sessions against a running daemon.
+    Session(SessionCli),
+    /// Send or list context envelopes against a running daemon.
+    Context(ContextCli),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -34,5 +39,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Stats => daemon::stats(),
+        Command::Session(cli) => session_cli::run_session(cli),
+        Command::Context(cli) => session_cli::run_context(cli),
     }
 }

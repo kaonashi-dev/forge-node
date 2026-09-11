@@ -1,8 +1,12 @@
 import { closeSession, killSession, renameSession, restartSession } from "../runtime/api";
 import { sessionIsActive, type Session } from "../runtime/types";
-import { requestConfirm, requestTextInput } from "../store/runtimeStore";
+import {
+  requestConfirm,
+  requestSendContext,
+  requestSpawnChild,
+  requestTextInput,
+} from "../store/runtimeStore";
 import type { MenuItem } from "../ui";
-import type { TextInputRequest } from "./TextInputDialog";
 import { openCheckoutReview, startHandoff, toggleSessionChanges } from "./sessionActions";
 
 /** Confirm before the close command can stop a live process. */
@@ -46,6 +50,26 @@ export function sessionMenuItems(session: Session, displayedTitle: string): Menu
       label: "Continue in a New Session…",
       icon: "message-square-plus",
       run: startHandoff,
+    },
+    {
+      kind: "item",
+      label: "Spawn Child…",
+      icon: "git-branch",
+      run: () =>
+        requestSpawnChild({
+          parent: session.id,
+          title: displayedTitle,
+        }),
+    },
+    {
+      kind: "item",
+      label: "Send Context…",
+      icon: "message-square-plus",
+      run: () =>
+        requestSendContext({
+          source: session.id,
+          title: displayedTitle,
+        }),
     },
     {
       kind: "item",

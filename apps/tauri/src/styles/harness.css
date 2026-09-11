@@ -99,8 +99,17 @@
 }
 .feature-status {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
   color: var(--fg-muted);
   font-size: var(--text-xs);
+}
+.feature-status.live {
+  color: var(--accent-solid);
+}
+.feature-card.live {
+  border-left-color: var(--forge-blue);
 }
 .feature-job {
   display: flex;
@@ -217,6 +226,10 @@
   flex-wrap: wrap;
   gap: var(--space-8);
   align-items: center;
+}
+.feature-run-progress {
+  flex: 1;
+  min-width: 12rem;
 }
 .feature-artifact,
 .feature-validate-output {
@@ -435,6 +448,19 @@
   font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
+.feature-blocked-card {
+  padding: var(--space-12);
+  border: 1px solid var(--danger-solid);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger-solid) 8%, var(--bg-raised));
+}
+.feature-blocked-card h3 {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-md);
+}
+.feature-blocked-card .feature-actions {
+  margin-top: var(--space-8);
+}
 .feature-blocked {
   margin: 0;
   padding: var(--space-6) var(--space-10);
@@ -442,6 +468,12 @@
   background: var(--bg-raised);
   color: var(--fg-muted);
   font-size: var(--text-sm);
+}
+.feature-blocked-card .feature-blocked {
+  margin-bottom: var(--space-8);
+  border-left: 0;
+  padding: 0;
+  background: none;
 }
 .feature-agent-row.pinned {
   background: var(--bg-selected);
@@ -454,10 +486,16 @@
   border-radius: var(--radius-sm);
   background: var(--bg-raised);
 }
+.harness-progress.active {
+  border-color: color-mix(in srgb, var(--accent-solid) 45%, var(--border-subtle));
+}
 .harness-progress-summary {
   margin: 0 0 var(--space-12);
   font-size: var(--text-sm);
   color: var(--fg-default);
+}
+.harness-progress-bar {
+  margin: 0 0 var(--space-12);
 }
 .harness-stages {
   display: grid;
@@ -481,6 +519,7 @@
   border-color: var(--success-solid);
 }
 .harness-stage[data-state="running"],
+.harness-stage[data-state="queued"],
 .harness-stage[data-state="ready"] {
   border-color: var(--accent-solid);
 }
@@ -490,7 +529,38 @@
 .harness-stage[data-state="blocked"] {
   border-color: var(--danger-solid);
 }
+@media (prefers-reduced-motion: no-preference) {
+  .harness-stage[data-state="running"],
+  .harness-stage[data-state="queued"] {
+    animation: harness-stage-pulse 1.6s ease-in-out infinite;
+  }
+  .feature-card.live {
+    animation: harness-card-pulse 1.8s ease-in-out infinite;
+  }
+}
+@keyframes harness-stage-pulse {
+  0%,
+  100% {
+    border-top-color: var(--accent-solid);
+  }
+  50% {
+    border-top-color: color-mix(in srgb, var(--accent-solid) 35%, var(--border-subtle));
+  }
+}
+@keyframes harness-card-pulse {
+  0%,
+  100% {
+    border-left-color: var(--forge-blue);
+  }
+  50% {
+    border-left-color: color-mix(in srgb, var(--forge-blue) 40%, var(--border-subtle));
+  }
+}
 .harness-stage-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1rem;
   font-family: var(--font-mono);
   color: var(--fg-default);
 }
@@ -506,6 +576,9 @@
   padding: var(--space-6) 0;
   border: 0;
   background: none;
+}
+.harness-progress.compact.active {
+  border: 0;
 }
 .harness-progress.compact .harness-progress-summary {
   margin-bottom: var(--space-4);

@@ -33,7 +33,7 @@ import { actionForDiskRead } from "./editor/conflict";
 import { createEditor, type EditorHandle } from "./editor/createEditor";
 import { gitMarksFor, patchFor } from "./editor/gitMarks";
 import { lineAt, rulerTicks } from "./editor/overviewRuler";
-import { refreshDiff } from "./decorations";
+import { ensureDiff, refreshDiff } from "./decorations";
 import { languageFor } from "./editor/language";
 import { CompareView } from "./editor/CompareView";
 import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
@@ -100,6 +100,15 @@ export function EditorView(props: { path: string }) {
   const grammar = createMemo(() => {
     const contents = file();
     return contents ? grammarFor(contents.language, contents.path) : null;
+  });
+
+  /*
+   * A5: the stripes and the ruler need a diff, and opening a file is not
+   * opening the Git tab. Guarded and idempotent, so a file opened from the
+   * tree — which asks for the same thing — makes one read between them.
+   */
+  createEffect(() => {
+    if (workbenchStore.workspace) ensureDiff();
   });
 
   /** The patch for this path, if the Diff tab's answer covers it (A5). */

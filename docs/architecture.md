@@ -20,8 +20,9 @@ details (domain, protocol, terminal, agents, worktrees, persistence) and
   common git dir rather than in anybody's working copy. See
   [worktrees.md](./worktrees.md).
 - **P5 Session graph from day one.** `parent_session_id` /
-  `root_session_id` exist even though the MVP UI is nearly a list. See
-  [domain.md](./domain.md).
+  `root_session_id` exist even though the MVP UI is nearly a list. Cross-provider
+  handoff, spawn-child and send-context are Forge-mediated — see
+  [session-context.md](./session-context.md).
 - **P6 Simplicity over speculative abstraction.** Git CLI, standard PTYs,
   descriptors, a Unix socket, one window.
 - **P7 Native where it matters.** The GUI is Tauri + Solid (`apps/tauri`); the

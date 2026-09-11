@@ -44,6 +44,57 @@ describe("ignored rows", () => {
   });
 });
 
+describe("an ignored directory", () => {
+  /*
+   * `fs-service` collapses a wholly-ignored directory with `--directory`, so
+   * it arrives as one entry standing for contents nothing walked. Without
+   * that collapse this repository answers with 385 751 ignored paths against
+   * a budget of 10 000.
+   */
+  const collapsed: FileTree = {
+    workspace_id: "w1",
+    truncated: false,
+    entries: [
+      { path: ".env", kind: "File", ignored: true },
+      { path: "app.js", kind: "File", ignored: false },
+      { path: "node_modules", kind: "Directory", ignored: true },
+    ],
+  };
+
+  const rowFor = (path: string) => treeRows(collapsed, new Set()).find((row) => row.path === path);
+
+  it("is one row with nothing under it", () => {
+    const rows = treeRows(collapsed, new Set());
+    expect(rowFor("node_modules")?.opaque).toBe(true);
+    expect(rowFor("node_modules")?.ignored).toBe(true);
+    expect(rows.some((row) => row.path.startsWith("node_modules/"))).toBe(false);
+  });
+
+  it("still lists an individually ignored file by name", () => {
+    expect(rowFor(".env")?.ignored).toBe(true);
+    expect(rowFor(".env")?.isFile).toBe(true);
+    expect(rowFor("app.js")?.ignored).toBe(false);
+  });
+
+  // Merging it into a chain would hide the fact that the listing stopped.
+  it("never merges into a single-child chain", () => {
+    expect(treeRows(collapsed, new Set()).map((row) => row.label)).toContain("node_modules");
+  });
+
+  it("is kept out of the fold bookkeeping", () => {
+    // Nothing to fold away, so it must not count as a folder the panel has
+    // seen — otherwise the first listing "folds" a row with no twisty.
+    expect(directoryPaths(collapsed)).toEqual([]);
+  });
+
+  it("answers neither fold chord", () => {
+    const rows = treeRows(collapsed, new Set());
+    const index = rows.findIndex((row) => row.path === "node_modules");
+    expect(collapseTarget(rows[index], new Set())).toBeNull();
+    expect(expandTarget(rows[index], new Set(), rows, index)).toBeNull();
+  });
+});
+
 describe("treeRows", () => {
   it("synthesizes directories and collapses only-child chains", () => {
     const rows = treeRows(tree, new Set());

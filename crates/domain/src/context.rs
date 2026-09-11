@@ -1,9 +1,8 @@
 //! Context envelope types (§8.3).
 //!
-//! MVP: only the schema, the table and the `CreateContextEnvelope` request
-//! exist; `summary` and `instructions` are the only populated fields. There is
-//! no UI to send or consume envelopes yet. The goal is that the migration and
-//! the type exist before orchestration.
+//! `summary` and `instructions` are the primary fields; artifacts and git
+//! context are optional. Cross-session delivery goes through `SendContext`
+//! (persist + optional PTY paste or child spawn) and `ListContextEnvelopes`.
 
 use crate::ids::{ContextId, SessionId, Timestamp};
 use serde::{Deserialize, Serialize};

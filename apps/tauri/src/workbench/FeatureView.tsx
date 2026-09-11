@@ -22,7 +22,7 @@ import { harnessFeatureAgents, harnessIsolationNote } from "../shell/sessionTree
 import { Icon, SessionGlyph, StateMarker } from "../theme/icons";
 import { JobStreamView, RecordedStreamView } from "./JobStreamView";
 import { PreviewTerminal } from "./PreviewTerminal";
-import { Badge, Button, RadioGroup, TextField } from "../ui";
+import { Badge, Button, Progress, RadioGroup, TextField } from "../ui";
 
 /**
  * One harness feature, as a centre tab.
@@ -104,7 +104,17 @@ export function FeatureView(props: { id: number }) {
             <header class="feature-view-head">
               <span class="feature-id">#{current().id}</span>
               <h2 class="feature-title">{featureLabel(current())}</h2>
-              <span class="feature-status">{statusLabel(current().status)}</span>
+              <span class="feature-status" classList={{ live: running() }}>
+                <Show when={running()}>
+                  <Icon
+                    name="loader"
+                    class="forge-icon-spin forge-icon-blue"
+                    size={12}
+                    title="Step running"
+                  />
+                </Show>
+                {statusLabel(current().status)}
+              </span>
               <span class="history-spacer" />
               <Show when={current().review_rounds}>
                 {(rounds) => <span class="panel-note">{rounds()} review rounds</span>}
@@ -125,8 +135,8 @@ export function FeatureView(props: { id: number }) {
               <FeatureProgress feature={current()} jobs={jobs()} />
               <Show when={isolation()}>{(note) => <p class="feature-isolation">{note()}</p>}</Show>
 
-              <Show when={current().blocked_reason}>
-                {(reason) => <p class="feature-blocked">Blocked: {reason()}</p>}
+              <Show when={current().status === "blocked"}>
+                <BlockedCard feature={current()} />
               </Show>
 
               <Show when={current().status === "spec_ready"}>
@@ -173,6 +183,57 @@ export function FeatureView(props: { id: number }) {
 }
 
 /**
+ * A feature the machine could not finish.
+ *
+ * `RetryStep` re-runs the step that died (and may resume the provider session);
+ * `Reopen` throws the cycle back to `pending`. Both are human decisions —
+ * nothing auto-retries past `max_step_attempts`.
+ */
+function BlockedCard(props: { feature: HarnessFeature }) {
+  const project = () => harnessStore.project;
+
+  function advance(action: Parameters<typeof harness.advance>[2]): void {
+    const id = project();
+    if (!id) return;
+    const revision = harnessStore.detail?.revision ?? null;
+    void harness.advance(id, props.feature.id, action, revision).catch(() => undefined);
+  }
+
+  const lastAttempt = () => props.feature.attempts?.at(-1) ?? null;
+  const canResumeSession = () => Boolean(lastAttempt()?.provider_session_id);
+
+  return (
+    <section class="feature-blocked-card">
+      <h3>Blocked — intervention needed</h3>
+      <Show when={props.feature.blocked_reason}>
+        {(reason) => <p class="feature-blocked">{reason()}</p>}
+      </Show>
+      <p class="panel-note">
+        {canResumeSession()
+          ? "Retry reuses the last provider session when the agent supports it, so research already paid for is not thrown away."
+          : "Retry starts the failed step again. Reopen returns the feature to pending and clears the block."}
+      </p>
+      <div class="feature-actions">
+        <Button
+          variant="primary"
+          loading={harnessStore.advancing}
+          onClick={() => advance("RetryStep")}
+        >
+          {canResumeSession() ? "Retry step (resume session)" : "Retry step"}
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={harnessStore.advancing}
+          onClick={() => advance("Reopen")}
+        >
+          Reopen from pending
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/**
  * The human gate.
  *
  * The one moment the machine stops and waits, so it is the one card that shows
@@ -207,7 +268,7 @@ function GateCard(props: { feature: HarnessFeature }) {
       <div class="feature-gate-actions">
         <Button
           variant="primary"
-          disabled={harnessStore.advancing}
+          loading={harnessStore.advancing}
           onClick={() => advance("ApproveSpec")}
         >
           Approve
@@ -347,7 +408,17 @@ function StepsCard(props: { feature: HarnessFeature }) {
         {(run) => (
           <article class="harness-run" data-tone={runTone(run().state)}>
             <header class="harness-run-head">
-              <Icon name="agent" size={16} />
+              <Show
+                when={run().state === "Running" || run().state === "Queued"}
+                fallback={<Icon name="agent" size={16} />}
+              >
+                <Icon
+                  name="loader"
+                  class="forge-icon-spin forge-icon-blue"
+                  size={16}
+                  title={run().state}
+                />
+              </Show>
               <strong>{run().role}</strong>
               <span class="harness-run-provider">{run().provider}</span>
               <Show when={run().attempt !== null}>
@@ -499,7 +570,16 @@ function AgentsCard(props: { rows: ReturnType<typeof harnessFeatureAgents>; head
 
 function ActionsRow(props: { feature: HarnessFeature; running: boolean }) {
   const project = () => harnessStore.project;
+  const [starting, setStarting] = createSignal(false);
   const step = createMemo(() => runnableStep(props.feature, props.running));
+  const busy = () => props.running || starting();
+
+  // Clear the click-local busy flag once a live job lands (or the feature
+  // leaves a runnable status). Leaving it latched would keep a spinner after
+  // a refused start with no job to replace it.
+  createEffect(() => {
+    if (props.running || step() === null) setStarting(false);
+  });
 
   return (
     <div class="feature-actions">
@@ -507,10 +587,14 @@ function ActionsRow(props: { feature: HarnessFeature; running: boolean }) {
         {(next) => (
           <Button
             variant="primary"
+            loading={starting()}
             onClick={() => {
               const id = project();
-              if (id)
-                void harness.runStep(id, props.feature.id, next().step).catch(() => undefined);
+              if (!id) return;
+              setStarting(true);
+              void harness
+                .runStep(id, props.feature.id, next().step)
+                .catch(() => setStarting(false));
             }}
           >
             {next().label}
@@ -541,8 +625,11 @@ function ActionsRow(props: { feature: HarnessFeature; running: boolean }) {
       >
         Validate harness
       </Button>
-      <Show when={props.running}>
-        <span class="panel-note">A step is running.</span>
+      <Show when={busy()}>
+        <Progress
+          label={props.running ? "A step is running" : "Starting step…"}
+          class="feature-run-progress"
+        />
       </Show>
     </div>
   );

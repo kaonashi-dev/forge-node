@@ -52,7 +52,10 @@
       "Bash(git status*)",
       "Bash(git diff*)",
       "Bash(git log*)",
-      "Bash(git rev-parse*)"
+      "Bash(git rev-parse*)",
+      "Write",
+      "Edit",
+      "Skill"
     ],
     "deny": [
       "Bash(cargo publish*)"

@@ -56,6 +56,8 @@ export type HarnessAttempt = {
   settled_at: string | null;
   outcome: "succeeded" | "failed" | "cancelled" | "blocked" | "superseded" | null;
   detail: string | null;
+  /** Provider's own session id — what a headless/ACP resume re-enters. */
+  provider_session_id: string | null;
 };
 
 export type HarnessFeatureList = {

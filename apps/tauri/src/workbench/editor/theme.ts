@@ -92,10 +92,31 @@ function chrome(colors: EditorPalette, dark: boolean): Extension {
         borderRadius: "var(--radius-xs)",
         color: "var(--fg-default)",
       },
-      // A5: three gutter marks, one class each, coloured from the git tokens.
-      ".cm-gutterElement.forge-git-added": { boxShadow: `inset 2px 0 0 ${colors.gitAdded}` },
-      ".cm-gutterElement.forge-git-modified": { boxShadow: `inset 2px 0 0 ${colors.gitModified}` },
-      ".cm-gutterElement.forge-git-deleted": { boxShadow: `inset 2px 0 0 ${colors.gitDeleted}` },
+      /*
+       * A5: three gutter marks, one class each, coloured from the git tokens.
+       *
+       * Scoped to `.cm-lineNumbers`, and the scope is the whole point: the
+       * class comes from `gutterLineClass`, which marks the line in *every*
+       * gutter there is, so an unscoped rule drew the stripe twice — once down
+       * the far left and once between the number and the code, on the fold
+       * gutter. Naming one gutter here is what keeps it to one stripe.
+       *
+       * `lineNumberMarkers` would mark a single gutter at the source and looks
+       * like the tidier fix; it is not. Those markers reach the gutter through
+       * a `RangeSet.eq` comparison that only inspects points and non-empty
+       * spans, and a gutter mark is a zero-length non-point range — so a
+       * changed set compares equal to the old one and the gutter never
+       * repaints. The stripes disappear entirely.
+       */
+      ".cm-lineNumbers .cm-gutterElement.forge-git-added": {
+        boxShadow: `inset 2px 0 0 ${colors.gitAdded}`,
+      },
+      ".cm-lineNumbers .cm-gutterElement.forge-git-modified": {
+        boxShadow: `inset 2px 0 0 ${colors.gitModified}`,
+      },
+      ".cm-lineNumbers .cm-gutterElement.forge-git-deleted": {
+        boxShadow: `inset 2px 0 0 ${colors.gitDeleted}`,
+      },
     },
     { dark },
   );

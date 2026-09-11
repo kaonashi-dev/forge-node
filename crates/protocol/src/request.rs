@@ -33,6 +33,21 @@ pub enum RemoveProjectPolicy {
     KillSessionsRemoveManagedWorktrees,
 }
 
+/// How [`Request::SendContext`] should spawn the receiving child.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendContextSpawn {
+    /// Shell or agent.
+    pub kind: SessionKind,
+    /// Provider when `kind` is [`SessionKind::Agent`].
+    pub provider_id: Option<AgentProviderId>,
+    /// Launch profile, or `None` for the bare provider.
+    pub profile_id: Option<AgentProfileId>,
+    /// Role tag on the child.
+    pub role: SessionRole,
+    /// Where the child runs relative to its parent.
+    pub workspace_policy: ChildWorkspacePolicy,
+}
+
 /// A POSIX signal a client can ask the daemon to deliver to a session (§10.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -709,6 +724,37 @@ pub enum Request {
     CreateContextEnvelope {
         /// The envelope to store.
         envelope: ContextEnvelope,
+    },
+    /// Deliver context to an existing session, or spawn a child that starts
+    /// with it (§8.3) → `Ack` when targeting an existing session;
+    /// [`crate::response::Response::SessionCreated`] when spawning.
+    ///
+    /// Exactly one of `target_session_id` or `spawn` must be set. The daemon
+    /// always persists an envelope; a running target also receives a framed
+    /// paste on its PTY when it has a terminal.
+    SendContext {
+        /// Session that is handing context over.
+        source_session_id: SessionId,
+        /// Existing session to receive the envelope (and a PTY paste when live).
+        target_session_id: Option<SessionId>,
+        /// Spawn a child under the source instead of targeting an existing one.
+        spawn: Option<SendContextSpawn>,
+        /// Short human summary of what is being handed over.
+        summary: Option<String>,
+        /// Instructions for the receiving agent or human.
+        instructions: Option<String>,
+        /// When true, fold a bounded transcript excerpt into the envelope and
+        /// the prompt / PTY paste.
+        #[serde(default)]
+        include_transcript: bool,
+        /// Cap on transcript bytes when `include_transcript` is set.
+        max_transcript_bytes: Option<u32>,
+    },
+    /// Envelopes where `session_id` is the source or the target (§8.3) →
+    /// [`crate::response::Response::ContextEnvelopes`].
+    ListContextEnvelopes {
+        /// Session whose inbox and outbox are listed.
+        session_id: SessionId,
     },
 
     // ----- Terminals -----

@@ -231,17 +231,30 @@ function FeatureCard(props: {
       new Date(),
     ),
   );
+  const live = createMemo(() =>
+    steps().some((job) => job.state === "Running" || job.state === "Queued"),
+  );
 
   return (
     <ListCard
-      class={`feature-card phase-${featurePhase(props.feature)}`}
+      class={`feature-card phase-${featurePhase(props.feature)}${live() ? " live" : ""}`}
       openLabel={`Open feature #${props.feature.id}`}
       onOpen={() => props.onOpen(props.feature)}
       glyph={<span class="feature-id">#{props.feature.id}</span>}
       title={featureLabel(props.feature)}
       aside={
         <>
-          <span class="feature-status">{statusBadge(props.feature.status)}</span>
+          <span class="feature-status" classList={{ live: live() }}>
+            <Show when={live()}>
+              <Icon
+                name="loader"
+                class="forge-icon-spin forge-icon-blue"
+                size={11}
+                title="Step running"
+              />
+            </Show>
+            {statusBadge(props.feature.status)}
+          </span>
           {/* Its own control, and it stops the click: the card underneath
               means "open this feature", which is not what a chevron says. */}
           <button
@@ -352,7 +365,13 @@ function StepRow(props: { job: Job; onOpen: () => void }) {
           props.onOpen();
         }}
       >
-        <Icon name="agent" class={`job-glyph state-${props.job.state.toLowerCase()}`} size={13} />
+        <Icon
+          name={props.job.state === "Running" || props.job.state === "Queued" ? "loader" : "agent"}
+          class={`job-glyph state-${props.job.state.toLowerCase()}${
+            props.job.state === "Running" || props.job.state === "Queued" ? " forge-icon-spin" : ""
+          }`}
+          size={13}
+        />
         <span class="feature-step-body">
           <span class="tree-label">
             {jobStepLabel(props.job.role)} · {props.job.provider_id}

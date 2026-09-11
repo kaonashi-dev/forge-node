@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-Plan references: §9.2, §10. `PROTOCOL_VERSION = 12`.
+Plan references: §9.2, §10. `PROTOCOL_VERSION = 18`.
 
 ## Transport & framing
 
@@ -88,7 +88,10 @@ DaemonMessage::Event    (DaemonEvent)
 | | `RestartSession { session_id }` | Only from `Exited`/`Failed`/`Orphaned`; new `TerminalId`. |
 | | `RenameSession { session_id, title }` | `None` clears the user title. |
 | | `SetSessionRole { session_id, role }` | `SessionUpdated`. |
-| | `CreateContextEnvelope { envelope }` | Persists it; no consumer yet. |
+| | `CreateContextEnvelope { envelope }` | Persists it. |
+| | `SendContext { source_session_id, target_session_id?, spawn?, summary?, instructions?, include_transcript, max_transcript_bytes? }` | Exactly one of `target_session_id` or `spawn`. Persists an envelope; pastes a framed block into a live target's PTY, or answers `SessionCreated` when spawning a child that starts with that text as `initial_prompt`. How-to: [session-context.md](./session-context.md). |
+| | `ListContextEnvelopes { session_id }` | `Response::ContextEnvelopes` — envelopes where the session is source or target. |
+| | `GetSessionTranscript { session_id, max_lines?, max_bytes? }` | Plain text off the session's terminal (cite / handoff capture). |
 | Terminals | `AttachTerminal { terminal_id, size }` | `Response::AttachAck { snapshot }`; subscribes to deltas. `size` is adopted **only when this is the first subscriber** — attaching to a terminal someone else is already watching never resizes it under them. Use `ResizeTerminal` to change a shared terminal. |
 | | `DetachTerminal { terminal_id }` | Unsubscribe. |
 | | `WriteTerminalInput { terminal_id, bytes }` | Raw bytes to the PTY master. Key→bytes mapping is done client-side through the pure `terminal-input` crate, re-exported by `client`. |

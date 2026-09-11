@@ -131,6 +131,56 @@ export async function newAgent(
   });
 }
 
+/** Spawn a child agent under a parent session (§8.2). */
+export async function createChildSession(args: {
+  parent: string;
+  provider: string;
+  profile?: string | null;
+  prompt?: string | null;
+  role?: string | null;
+  workspacePolicy?: "same" | "worktree";
+  branchHint?: string | null;
+}): Promise<void> {
+  await send({
+    type: "create_child_session",
+    parent: args.parent,
+    provider: args.provider,
+    profile: args.profile ?? null,
+    prompt: args.prompt ?? null,
+    role: args.role ?? null,
+    workspace_policy: args.workspacePolicy ?? "same",
+    branch_hint: args.branchHint ?? null,
+  });
+}
+
+/** Persist a context envelope and deliver it or spawn a child (§8.3). */
+export async function sendContext(args: {
+  source: string;
+  target?: string | null;
+  spawnProvider?: string | null;
+  profile?: string | null;
+  summary?: string | null;
+  instructions?: string | null;
+  includeTranscript?: boolean;
+  role?: string | null;
+  workspacePolicy?: "same" | "worktree";
+  branchHint?: string | null;
+}): Promise<void> {
+  await send({
+    type: "send_context",
+    source: args.source,
+    target: args.target ?? null,
+    spawn_provider: args.spawnProvider ?? null,
+    profile: args.profile ?? null,
+    summary: args.summary ?? null,
+    instructions: args.instructions ?? null,
+    include_transcript: args.includeTranscript ?? false,
+    role: args.role ?? null,
+    workspace_policy: args.workspacePolicy ?? "same",
+    branch_hint: args.branchHint ?? null,
+  });
+}
+
 /** Ask the harness lieutenant; the answer arrives as streamed job events. */
 export async function askLieutenant(
   project: string,

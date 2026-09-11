@@ -7,7 +7,12 @@
 // reports.
 
 import { forgeStore } from "../store/forgeStore";
-import { requestHandoff, runtimeStore } from "../store/runtimeStore";
+import {
+  requestHandoff,
+  requestSendContext,
+  requestSpawnChild,
+  runtimeStore,
+} from "../store/runtimeStore";
 import { setSplitOpen, splitOpen } from "../store/sessionChangesStore";
 import { openReview, showSession } from "../store/viewsStore";
 import { focusWorkspace, workbenchStore } from "../store/workbenchStore";
@@ -140,6 +145,28 @@ export function startHandoff(): void {
     sourceAgent: session.agent_provider_id,
   });
   void loadSessionTranscript(session.id).catch(() => undefined);
+}
+
+/** Open the spawn-child dialog for the session on screen. */
+export function startSpawnChild(): void {
+  const session = activeSession();
+  const checkout = activeCheckout();
+  if (!session || !checkout) return;
+  requestSpawnChild({
+    parent: session.id,
+    title: sessionTabLabel(session, sessionsInWorkspace(forgeStore.sessions, checkout.id)),
+  });
+}
+
+/** Open the send-context dialog for the session on screen. */
+export function startSendContext(): void {
+  const session = activeSession();
+  const checkout = activeCheckout();
+  if (!session || !checkout) return;
+  requestSendContext({
+    source: session.id,
+    title: sessionTabLabel(session, sessionsInWorkspace(forgeStore.sessions, checkout.id)),
+  });
 }
 
 /**

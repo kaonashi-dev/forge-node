@@ -1009,6 +1009,86 @@ fn run_command(
             at.scroll_offset = 0;
             Ok(Effect::shell())
         }
+        RuntimeCommand::CreateChildSession {
+            parent,
+            provider,
+            profile,
+            prompt,
+            role,
+            workspace_policy,
+            branch_hint,
+        } => {
+            let (session, terminal) = client
+                .create_child_session(
+                    parent,
+                    domain::SessionKind::Agent,
+                    Some(provider),
+                    profile,
+                    parse_session_role(role.as_deref()),
+                    parse_workspace_policy(workspace_policy.as_deref(), branch_hint),
+                    prompt,
+                )
+                .map_err(CommandError::from_client)?;
+            let _ = client.detach_terminal(at.terminal);
+            store.detach_terminal(&at.terminal);
+            let snapshot = client
+                .attach_terminal(terminal, *size)
+                .map_err(CommandError::from_client)?;
+            store.attach_terminal(terminal, &snapshot);
+            at.session = session;
+            at.terminal = terminal;
+            at.scroll_offset = 0;
+            Ok(Effect::shell())
+        }
+        RuntimeCommand::SendContext {
+            source,
+            target,
+            spawn_provider,
+            profile,
+            summary,
+            instructions,
+            include_transcript,
+            role,
+            workspace_policy,
+            branch_hint,
+        } => {
+            let spawn = spawn_provider.map(|provider| client::SendContextSpawn {
+                kind: domain::SessionKind::Agent,
+                provider_id: Some(provider),
+                profile_id: profile,
+                role: parse_session_role(role.as_deref()),
+                workspace_policy: parse_workspace_policy(workspace_policy.as_deref(), branch_hint),
+            });
+            match client
+                .send_context(
+                    source,
+                    target,
+                    spawn,
+                    summary,
+                    instructions,
+                    include_transcript,
+                    None,
+                )
+                .map_err(CommandError::from_client)?
+            {
+                client::SendContextResult::Delivered => Ok(Effect::nothing()),
+                client::SendContextResult::Spawned {
+                    session_id,
+                    terminal_id,
+                } => {
+                    let _ = client.detach_terminal(at.terminal);
+                    store.detach_terminal(&at.terminal);
+                    let snapshot = client
+                        .attach_terminal(terminal_id, *size)
+                        .map_err(CommandError::from_client)?;
+                    store.attach_terminal(terminal_id, &snapshot);
+                    at.session = session_id;
+                    at.terminal = terminal_id;
+                    at.scroll_offset = 0;
+                    Ok(Effect::shell())
+                }
+            }
+        }
         RuntimeCommand::AskLieutenant {
             project,
             question,
@@ -1939,6 +2019,32 @@ fn switch_session(
 /// The agent arm carries the whole launch as one value rather than parallel
 /// `Option`s: a profile, a resume id or a read-only flag without a provider is
 /// not a state this can be asked for.
+fn parse_session_role(raw: Option<&str>) -> domain::SessionRole {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None | Some("generic") => domain::SessionRole::Generic,
+        Some("orchestrator") => domain::SessionRole::Orchestrator,
+        Some("planner") => domain::SessionRole::Planner,
+        Some("researcher") => domain::SessionRole::Researcher,
+        Some("executor") => domain::SessionRole::Executor,
+        Some("reviewer") => domain::SessionRole::Reviewer,
+        Some("tester") => domain::SessionRole::Tester,
+        Some(other) => domain::SessionRole::Custom(other.to_owned()),
+    }
+}
+
+fn parse_workspace_policy(
+    raw: Option<&str>,
+    branch_hint: Option<String>,
+) -> domain::ChildWorkspacePolicy {
+    match raw.map(str::trim) {
+        Some("worktree") => domain::ChildWorkspacePolicy::NewManagedWorktree {
+            branch_hint,
+            base: None,
+        },
+        _ => domain::ChildWorkspacePolicy::SameWorkspace,
+    }
+}
+
 fn create_session(
     client: &Client,
     store: &mut Store,

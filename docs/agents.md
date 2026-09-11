@@ -210,6 +210,11 @@ until that account is signed in.
   `FORGE_SESSION_ID`, `FORGE_WORKSPACE`) is what Forge owns of the child's
   environment. A profile can no longer name a variable at all; the constant is
   the contract every descriptor's `ConfigDirSpec` is tested against.
+- Inside a Forge-launched PTY, `forge-daemon` is on `PATH` and
+  `FORGE_SESSION_ID` is set. Agents cite or spawn other sessions through Forge,
+  not peer-to-peer: `forge-daemon session list|read|spawn-child` and
+  `forge-daemon context send|list`. Full model, GUI gestures and framed paste:
+  [session-context.md](./session-context.md).
 - A profile with its own `executable` is version-probed when it is **saved**,
   exactly like a `SetProviderExecutable` override, so the daemon still never
   launches a binary no probe accepted. At launch time only its presence and
