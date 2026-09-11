@@ -9,8 +9,8 @@ Day-to-day layout and behaviour details live next to the code:
 
 | Area | Where |
 |------|--------|
-| Shell (title, sidebar, tabs, status) | `apps/tauri/src/shell/` |
-| Sidebar views (projects, files, git, history, PR, harness) | `apps/tauri/src/panels/` |
+| Shell (title, sidebar and its Projects view, tabs, status) | `apps/tauri/src/shell/` |
+| Other sidebar views (files, git, history, PR, harness) | `apps/tauri/src/panels/` |
 | Workbench (editor, diff, feature, PR) | `apps/tauri/src/workbench/` |
 | Terminal Canvas | `apps/tauri/src/terminal/` |
 | Control kit | `apps/tauri/src/ui/` |
@@ -34,8 +34,8 @@ Day-to-day layout and behaviour details live next to the code:
 
 One left sidebar holds a strip of view icons above a single visible view, in the
 order Projects, Files, History, PR, Features, Lieutenant, Git. Projects stays
-mounted while another view is up. Width and the active view live in
-`ui.sidebar.open` / `ui.sidebar.width` / `ui.sidebar.view`; theme metrics
+mounted while another view is up. Whether it is open, its width and the active
+view live in `ui.sidebar.open` / `ui.sidebar.width` / `ui.sidebar.view`; theme metrics
 (`TITLE_H`, the sidebar default, control ladder) come from `theme/tokens.ts`,
 never hardcoded hex in views.
 

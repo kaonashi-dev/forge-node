@@ -22,7 +22,7 @@ export const TERMINAL = "Terminal";
 /** The in-app file editor, while its pane holds the keyboard (ADR-012). */
 export const EDITOR = "Editor";
 /**
- * The right panel's file tree, while it holds the keyboard.
+ * The sidebar's file tree, while it holds the keyboard.
  *
  * Its bindings are bare letters (`j`, `k`, `h`, `l`), which is only safe
  * because a context nests: they exist while focus is inside the tree and
@@ -540,9 +540,9 @@ export function defaultBindings(): Binding[] {
     bind(`${MOD}-shift-n`, "new_worktree", APP),
     bind(`${MOD}-,`, "open_settings", APP),
     bind(`${MOD}-w`, "close_session", APP),
-    // Two different actions now: `${MOD}-b` folds the whole sidebar, while
+    // `${MOD}-b` folds the whole sidebar, as every editor has taught;
     // `${MOD}-1` is where the hand already is when it reaches for the tab
-    // numbers, so it goes to the Projects view.
+    // numbers, so it goes to the first view.
     bind(`${MOD}-b`, "toggle_sidebar", APP),
     bind(`${MOD}-1`, "toggle_projects", APP),
     bind(`${MOD}-shift-r`, "toggle_pull_requests", APP),

@@ -39,7 +39,7 @@ import type { Job } from "../runtime/types";
 import { Badge, Button, EmptyState, FilterHeader, IconButton, ListCard, Tooltip } from "../ui";
 
 /**
- * Right panel: harness features, and the agents working on each one.
+ * Sidebar view: harness features, and the agents working on each one.
  *
  * Sibling of the History panel and built from the same parts in the same
  * order — scope, status, free search, then cards. What differs is what a card

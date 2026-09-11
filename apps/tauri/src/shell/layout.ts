@@ -12,7 +12,6 @@ import { forgeStore } from "../store/forgeStore";
 /** Keys, in `ui.*` — the namespace `apps/tauri already uses. */
 export const SIDEBAR_OPEN_KEY = "ui.sidebar.open";
 export const SIDEBAR_WIDTH_KEY = "ui.sidebar.width";
-/** Which sidebar view is up. */
 export const SIDEBAR_VIEW_KEY = "ui.sidebar.view";
 export const THEME_BASE_KEY = "ui.theme_base";
 /** Unified or split, in the Diff tab (§2.3 D2). */

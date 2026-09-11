@@ -8,6 +8,7 @@ import {
   writeFlag,
 } from "../shell/layout";
 
+/** Stored verbatim under `ui.sidebar.view`: renaming one sends everyone back to Projects. */
 export const SIDEBAR_VIEWS = [
   "Projects",
   "Files",
