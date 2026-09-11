@@ -12,6 +12,7 @@ import {
   setAppState,
 } from "../runtime/api";
 import { applyConnected, bindRuntimeEvents } from "../runtime/events";
+import { startGitSync } from "./gitSync";
 import { restoreInspectorTab } from "../store/inspectorStore";
 import { forgeStore } from "../store/forgeStore";
 import {
@@ -387,6 +388,9 @@ export function AppShell() {
 
     onCleanup(enterContext(APP));
     onCleanup(installKeymap());
+    // The rail's branch name is a persisted column: without this a
+    // `git checkout` typed into a shell never reaches it.
+    onCleanup(startGitSync());
     // Releasing Control commits, from the module's own key listener rather
     // than from a chord: there is no keymap entry for "let go".
     onCleanup(bindTabSwitcherCommit(focusSession));
