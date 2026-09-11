@@ -136,6 +136,45 @@ pub enum RuntimeCommand {
         #[serde(default)]
         read_only: bool,
     },
+    /// Spawn a child under a parent with any provider (§8.2).
+    CreateChildSession {
+        parent: SessionId,
+        provider: AgentProviderId,
+        #[serde(default)]
+        profile: Option<AgentProfileId>,
+        #[serde(default)]
+        prompt: Option<String>,
+        /// `generic` (default), `planner`, `executor`, `reviewer`, …
+        #[serde(default)]
+        role: Option<String>,
+        /// `same` (default) or `worktree`.
+        #[serde(default)]
+        workspace_policy: Option<String>,
+        #[serde(default)]
+        branch_hint: Option<String>,
+    },
+    /// Persist a context envelope and deliver or spawn (§8.3).
+    SendContext {
+        source: SessionId,
+        #[serde(default)]
+        target: Option<SessionId>,
+        #[serde(default)]
+        spawn_provider: Option<AgentProviderId>,
+        #[serde(default)]
+        profile: Option<AgentProfileId>,
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        instructions: Option<String>,
+        #[serde(default)]
+        include_transcript: bool,
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        workspace_policy: Option<String>,
+        #[serde(default)]
+        branch_hint: Option<String>,
+    },
     /// Ask the harness lieutenant a question; the accepted job and its output
     /// are published on dedicated runtime events.
     AskLieutenant {

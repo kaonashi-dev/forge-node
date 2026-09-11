@@ -80,6 +80,18 @@ pub enum ClientError {
     UnexpectedResponse { expected: &'static str },
 }
 
+/// Outcome of [`Client::send_context`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SendContextResult {
+    /// Envelope stored; optional PTY paste to an existing target.
+    Delivered,
+    /// A child session was spawned with the context as its initial prompt.
+    Spawned {
+        session_id: SessionId,
+        terminal_id: TerminalId,
+    },
+}
+
 /// The daemon instance a [`Client`] is connected to (from the §9.2 `HelloAck`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaemonInfo {
@@ -1067,6 +1079,54 @@ impl Client {
             workspace_policy,
             initial_prompt,
         })
+    }
+
+    /// Persist and deliver a context envelope (§8.3).
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_context(
+        &self,
+        source_session_id: SessionId,
+        target_session_id: Option<SessionId>,
+        spawn: Option<protocol::SendContextSpawn>,
+        summary: Option<String>,
+        instructions: Option<String>,
+        include_transcript: bool,
+        max_transcript_bytes: Option<u32>,
+    ) -> Result<SendContextResult, ClientError> {
+        match self.request(Request::SendContext {
+            source_session_id,
+            target_session_id,
+            spawn,
+            summary,
+            instructions,
+            include_transcript,
+            max_transcript_bytes,
+        })? {
+            Response::Ack => Ok(SendContextResult::Delivered),
+            Response::SessionCreated {
+                session_id,
+                terminal_id,
+            } => Ok(SendContextResult::Spawned {
+                session_id,
+                terminal_id,
+            }),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "Ack or SessionCreated",
+            }),
+        }
+    }
+
+    /// Envelopes where the session is source or target (§8.3).
+    pub fn list_context_envelopes(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Vec<domain::ContextEnvelope>, ClientError> {
+        match self.request(Request::ListContextEnvelopes { session_id })? {
+            Response::ContextEnvelopes(list) => Ok(list),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "ContextEnvelopes",
+            }),
+        }
     }
 
     pub fn list_harness_features(

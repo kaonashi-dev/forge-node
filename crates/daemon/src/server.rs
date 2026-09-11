@@ -334,6 +334,8 @@ fn request_name(request: &Request) -> &'static str {
         Request::RenameSession { .. } => "RenameSession",
         Request::SetSessionRole { .. } => "SetSessionRole",
         Request::CreateContextEnvelope { .. } => "CreateContextEnvelope",
+        Request::SendContext { .. } => "SendContext",
+        Request::ListContextEnvelopes { .. } => "ListContextEnvelopes",
         Request::AttachTerminal { .. } => "AttachTerminal",
         Request::DetachTerminal { .. } => "DetachTerminal",
         Request::WriteTerminalInput { .. } => "WriteTerminalInput",

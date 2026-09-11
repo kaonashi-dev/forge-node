@@ -76,6 +76,25 @@ impl<'a> ContextRepo<'a> {
         }
         Ok(out)
     }
+
+    /// Envelopes where the session is the source or the target, newest first.
+    ///
+    /// # Errors
+    /// Returns [`DbError`] on a failed query, an undecodable row, or a JSON
+    /// deserialization failure.
+    pub fn list_for_session(&self, session: SessionId) -> Result<Vec<ContextEnvelope>, DbError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM context_envelopes \
+             WHERE source_session_id = ?1 OR target_session_id = ?1 \
+             ORDER BY created_at DESC"
+        ))?;
+        let rows = stmt.query_map(params![session.to_string()], RawEnvelope::from_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?.into_domain()?);
+        }
+        Ok(out)
+    }
 }
 
 struct RawEnvelope {

@@ -4,7 +4,9 @@
 //! on a temporary socket and drive it with the real `client`. The `forge-daemon`
 //! binary (`main.rs`) is a thin CLI over [`run`].
 
+mod acp;
 pub mod config;
+mod context_xfer;
 pub mod core;
 pub mod environment;
 pub mod external_agents;
@@ -20,6 +22,7 @@ pub mod paths;
 pub mod pull_requests;
 pub mod registry;
 pub mod server;
+pub mod session_cli;
 pub mod shares;
 pub mod terminal;
 pub mod terminfo;

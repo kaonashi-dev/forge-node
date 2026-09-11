@@ -105,6 +105,10 @@ export const [runtimeStore, setRuntimeStore] = createStore({
    * reads as a click that did nothing.
    */
   handoff: null as HandoffRequest | null,
+  /** Spawn-child dialog (§8.2). */
+  spawnChild: null as SpawnChildRequest | null,
+  /** Send-context dialog (§8.3). */
+  sendContext: null as SendContextRequest | null,
 });
 
 export type HandoffRequest = {
@@ -143,6 +147,26 @@ export function applyTranscript(session: string, transcript: SessionTranscript):
 export function failTranscript(session: string, error: string): void {
   if (runtimeStore.handoff?.session !== session) return;
   setRuntimeStore("handoff", "error", error);
+}
+
+export type SpawnChildRequest = {
+  parent: string;
+  title: string;
+};
+
+export type SendContextRequest = {
+  source: string;
+  title: string;
+};
+
+/** Open the spawn-child dialog for the active session. */
+export function requestSpawnChild(request: SpawnChildRequest): void {
+  setRuntimeStore("spawnChild", request);
+}
+
+/** Open the send-context dialog for the active session. */
+export function requestSendContext(request: SendContextRequest): void {
+  setRuntimeStore("sendContext", request);
 }
 
 /** Ask for a name. Replaces `window.prompt`, which WKWebView does not show. */

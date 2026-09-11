@@ -15,16 +15,17 @@ use std::time::{Duration, Instant};
 use agents::AgentRegistry;
 use domain::{
     AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy,
-    DetectionResult, DetectionStatus, EnvSource, LaunchAgentRequest, Project, ProjectGroup,
-    ProjectGroupId, ProjectId, PtySize, ResolvedEnvironment, ScrollbackRows, Session, SessionId,
-    SessionKind, SessionRole, SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId,
-    ShareStrategy, ShareTrigger, SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId,
-    WorkspaceKind, WorkspaceStatus, DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH, MAX_SHARE_RULES,
+    ContextArtifactRef, ContextEnvelope, ContextId, DetectionResult, DetectionStatus, EnvSource,
+    LaunchAgentRequest, Project, ProjectGroup, ProjectGroupId, ProjectId, PtySize,
+    ResolvedEnvironment, ScrollbackRows, Session, SessionId, SessionKind, SessionRole,
+    SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId, ShareStrategy, ShareTrigger,
+    SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId, WorkspaceKind, WorkspaceStatus,
+    DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH, MAX_SHARE_RULES,
 };
 use persistence::Db;
 use protocol::{
     DaemonEvent, DaemonStats, ErrorCode, NoticeLevel, ProtocolError, ProviderInfo,
-    RemoveProjectPolicy, Request, Response, SessionsByState, Signal,
+    RemoveProjectPolicy, Request, Response, SendContextSpawn, SessionsByState, Signal,
 };
 use terminal_core::{AlacrittyEngine, DeltaBuilder, PtyBackend, TerminalEngine};
 
@@ -810,8 +811,45 @@ impl Daemon {
             Request::SetSessionRole { session_id, role } => self.set_session_role(session_id, role),
             Request::CreateContextEnvelope { envelope } => {
                 let inner = self.lock();
+                if !inner.sessions.contains_key(&envelope.source_session_id) {
+                    return Err(ProtocolError::not_found("source session"));
+                }
+                if let Some(target) = envelope.target_session_id {
+                    if !inner.sessions.contains_key(&target) {
+                        return Err(ProtocolError::not_found("target session"));
+                    }
+                }
                 inner.db.context().insert(&envelope).map_err(db_err)?;
                 Ok(Response::Ack)
+            }
+            Request::SendContext {
+                source_session_id,
+                target_session_id,
+                spawn,
+                summary,
+                instructions,
+                include_transcript,
+                max_transcript_bytes,
+            } => self.send_context(
+                source_session_id,
+                target_session_id,
+                spawn,
+                summary,
+                instructions,
+                include_transcript,
+                max_transcript_bytes,
+            ),
+            Request::ListContextEnvelopes { session_id } => {
+                let inner = self.lock();
+                if !inner.sessions.contains_key(&session_id) {
+                    return Err(ProtocolError::not_found("session"));
+                }
+                let envelopes = inner
+                    .db
+                    .context()
+                    .list_for_session(session_id)
+                    .map_err(db_err)?;
+                Ok(Response::ContextEnvelopes(envelopes))
             }
 
             Request::AttachTerminal { terminal_id, size } => {
@@ -1585,7 +1623,20 @@ impl Daemon {
             let Some(mut ws) = inner.workspaces.get(&workspace_id).cloned() else {
                 return;
             };
-            ws.branch = status.branch.clone().or(ws.branch);
+            /*
+             * Assigned, not merged in.
+             *
+             * This was `status.branch.clone().or(ws.branch)`, which reads as
+             * caution and is not: `parse_status_v2` returns `None` for exactly
+             * one reason — `# branch.head (detached)` — and a failed read
+             * never reaches here at all, because `status()` returning `Err` is
+             * handled by the callers. So the `or` could only ever fire on a
+             * genuine detached HEAD, where it kept naming the branch the
+             * worktree had left. `Workspace::label` already falls back to the
+             * directory name when there is no branch, which is the true thing
+             * to say.
+             */
+            ws.branch = status.branch.clone();
             ws.status = WorkspaceStatus {
                 dirty: status.dirty,
                 ahead: status.ahead,
@@ -3438,6 +3489,164 @@ impl Daemon {
         )
     }
 
+    /// Persist an envelope and either paste it into a live PTY or spawn a child
+    /// that starts with it (§8.3).
+    #[allow(clippy::too_many_arguments)]
+    fn send_context(
+        self: &Arc<Self>,
+        source_session_id: SessionId,
+        target_session_id: Option<SessionId>,
+        spawn: Option<SendContextSpawn>,
+        summary: Option<String>,
+        instructions: Option<String>,
+        include_transcript: bool,
+        max_transcript_bytes: Option<u32>,
+    ) -> Result<Response, ProtocolError> {
+        match (&target_session_id, &spawn) {
+            (Some(_), None) | (None, Some(_)) => {}
+            (None, None) => {
+                return Err(ProtocolError::new(
+                    ErrorCode::InvalidRequest,
+                    "SendContext needs target_session_id or spawn",
+                ));
+            }
+            (Some(_), Some(_)) => {
+                return Err(ProtocolError::new(
+                    ErrorCode::InvalidRequest,
+                    "SendContext takes target_session_id or spawn, not both",
+                ));
+            }
+        }
+
+        let summary = crate::context_xfer::clamp_field(summary);
+        let instructions = crate::context_xfer::clamp_field(instructions);
+        if summary.is_none() && instructions.is_none() && !include_transcript {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                "SendContext needs summary, instructions, or include_transcript",
+            ));
+        }
+
+        let source_label = {
+            let inner = self.lock();
+            let source = inner
+                .sessions
+                .get(&source_session_id)
+                .ok_or_else(|| ProtocolError::not_found("source session"))?;
+            source.title.resolve("session").to_owned()
+        };
+
+        let transcript_text = if include_transcript {
+            match self.get_session_transcript(source_session_id, None, max_transcript_bytes)? {
+                Response::SessionTranscript(t) if !t.text.trim().is_empty() => Some(t.text),
+                Response::SessionTranscript(_) => None,
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let mut artifacts: Vec<ContextArtifactRef> = Vec::new();
+        if let Some(text) = transcript_text.as_deref() {
+            artifacts.push(crate::context_xfer::transcript_artifact(text));
+        }
+
+        if let Some(spec) = spawn {
+            let prompt = {
+                let draft = ContextEnvelope {
+                    id: ContextId::new(),
+                    source_session_id,
+                    target_session_id: None,
+                    summary: summary.clone(),
+                    instructions: instructions.clone(),
+                    artifacts: artifacts.clone(),
+                    git_context: None,
+                    created_at: Timestamp::now(),
+                };
+                crate::context_xfer::format_delivery(
+                    &draft,
+                    &source_label,
+                    transcript_text.as_deref(),
+                )
+            };
+            let created = self.create_child_session(
+                source_session_id,
+                spec.kind,
+                spec.provider_id,
+                spec.profile_id,
+                spec.role,
+                spec.workspace_policy,
+                Some(prompt),
+            )?;
+            let (child_id, _) = match &created {
+                Response::SessionCreated {
+                    session_id,
+                    terminal_id,
+                } => (*session_id, *terminal_id),
+                _ => {
+                    return Err(ProtocolError::new(
+                        ErrorCode::Internal,
+                        "CreateChildSession did not return SessionCreated",
+                    ));
+                }
+            };
+            let envelope = ContextEnvelope {
+                id: ContextId::new(),
+                source_session_id,
+                target_session_id: Some(child_id),
+                summary,
+                instructions,
+                artifacts,
+                git_context: None,
+                created_at: Timestamp::now(),
+            };
+            self.lock().db.context().insert(&envelope).map_err(db_err)?;
+            return Ok(created);
+        }
+
+        let target_id = target_session_id.expect("validated above");
+        if target_id == source_session_id {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                "cannot send context to the same session",
+            ));
+        }
+        let terminal_id = {
+            let inner = self.lock();
+            let target = inner
+                .sessions
+                .get(&target_id)
+                .ok_or_else(|| ProtocolError::not_found("target session"))?;
+            target.terminal_id
+        };
+
+        let envelope = ContextEnvelope {
+            id: ContextId::new(),
+            source_session_id,
+            target_session_id: Some(target_id),
+            summary,
+            instructions,
+            artifacts,
+            git_context: None,
+            created_at: Timestamp::now(),
+        };
+        let paste = crate::context_xfer::format_delivery(
+            &envelope,
+            &source_label,
+            transcript_text.as_deref(),
+        );
+        self.lock().db.context().insert(&envelope).map_err(db_err)?;
+
+        if let Some(terminal_id) = terminal_id {
+            let mut bytes = paste.into_bytes();
+            if !bytes.ends_with(b"\n") {
+                bytes.push(b'\n');
+            }
+            let _ = self.write_terminal_input(terminal_id, &bytes);
+        }
+        Ok(Response::Ack)
+    }
+
     /// ADR-010: no cycle, depth ≤ 8, same project.
     fn graph_placement(
         inner: &Inner,
@@ -4072,6 +4281,9 @@ impl Daemon {
         if let Some(root) = harness_root_in(inner, cwd) {
             upsert_var(&mut spec.env, "FORGE_HARNESS_ROOT", &root.to_string_lossy());
         }
+        // Agents call `forge-daemon session|context …` with FORGE_SESSION_ID;
+        // the daemon binary's directory must be on PATH inside the PTY.
+        prepend_daemon_bin_to_path(&mut spec.env);
         Ok(spec)
     }
 
@@ -5433,6 +5645,26 @@ fn upsert_var(vars: &mut Vec<(String, String)>, key: &str, value: &str) {
     }
 }
 
+/// Put the running `forge-daemon` binary's directory first on PATH.
+fn prepend_daemon_bin_to_path(vars: &mut Vec<(String, String)>) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else {
+        return;
+    };
+    let dir = dir.to_string_lossy();
+    match vars.iter_mut().find(|(k, _)| k == "PATH") {
+        Some((_, path)) => {
+            if path.split(':').any(|entry| entry == dir) {
+                return;
+            }
+            *path = format!("{dir}:{path}");
+        }
+        None => vars.push(("PATH".to_owned(), dir.into_owned())),
+    }
+}
+
 /// Install Forge attention assets beside the worktrees root.
 ///
 /// Default layout puts worktrees under `data_dir/worktrees`, so the assets
@@ -6743,6 +6975,75 @@ mod tests {
             .close_session(session_id)
             .expect("a session with an envelope must still be closeable");
         assert!(daemon.lock().sessions.is_empty());
+    }
+
+    #[test]
+    fn send_context_pastes_into_a_live_target_and_lists_the_envelope() {
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let workspace = seeded_workspace(&daemon, tmp.path());
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Shell,
+                None,
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .expect("source");
+        let source = only_session(&daemon).id;
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Shell,
+                None,
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .expect("target");
+        let target = daemon
+            .lock()
+            .sessions
+            .values()
+            .find(|s| s.id != source)
+            .map(|s| s.id)
+            .expect("target id");
+
+        daemon
+            .send_context(
+                source,
+                Some(target),
+                None,
+                Some("hand this over".into()),
+                Some("do the next step".into()),
+                false,
+                None,
+            )
+            .expect("send");
+
+        let bytes = backend.written();
+        let written = String::from_utf8_lossy(&bytes);
+        assert!(written.contains("--- forge context ---"));
+        assert!(written.contains("Summary: hand this over"));
+        assert!(written.contains("do the next step"));
+
+        let listed = match daemon
+            .handle_request(Request::ListContextEnvelopes { session_id: source })
+            .expect("list")
+        {
+            Response::ContextEnvelopes(list) => list,
+            other => panic!("expected ContextEnvelopes, got {other:?}"),
+        };
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].target_session_id, Some(target));
+        assert_eq!(listed[0].summary.as_deref(), Some("hand this over"));
     }
 
     // ---------------------------------------------------------------

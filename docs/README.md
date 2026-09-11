@@ -11,6 +11,7 @@ must match the code.
 |------|------------------------|
 | [architecture.md](./architecture.md) | the two-process model, the crate map and dependency direction |
 | [domain.md](./domain.md) | the glossary, entities, session state machine and graph rules, wire types |
+| [session-context.md](./session-context.md) | cite/handoff/spawn across providers — Forge mediation, GUI, `forge-daemon session\|context` |
 | [protocol.md](./protocol.md) | every request/response/event, error codes, the `client` crate |
 | [terminal.md](./terminal.md) | PTY → engine → delta pipeline, sequence/resync, backpressure, kill semantics, shell environment |
 | [agents.md](./agents.md) | built-in providers, detection algorithm, launch spec |
@@ -40,7 +41,8 @@ forge-tauri (GUI)  ──UDS + MessagePack──►  forge-daemon
   workspace; worktrees Forge creates are `managed_by_app` and the only ones it
   will ever delete. Branches are never deleted.
 - **Sessions form a graph** (parent/child, depth ≤ 8) that is logical, not the
-  process tree.
+  process tree. Cross-provider cite/spawn/send-context is Forge-mediated —
+  [session-context.md](./session-context.md).
 - **Single source of truth for the grid:** the daemon sends a snapshot on
   attach and damaged-row deltas afterwards; the GUI never emulates.
 

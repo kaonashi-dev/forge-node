@@ -71,6 +71,8 @@ import { RemoveProjectDialog } from "./RemoveProjectDialog";
 import { RemoveWorktreeDialog } from "./RemoveWorktreeDialog";
 import { TextInputDialog, type TextInputRequest } from "./TextInputDialog";
 import { HandoffDialog } from "./HandoffDialog";
+import { SendContextDialog } from "./SendContextDialog";
+import { SpawnChildDialog } from "./SpawnChildDialog";
 import { TabSwitcher } from "./SwitchTab";
 import { liveIdsByActivity } from "./tabMru";
 import { bindTabSwitcherCommit, stepTabSwitcher, tabSwitcherView } from "./tabSwitcher";
@@ -82,6 +84,8 @@ import {
   restoreWorkspace,
   openCheckoutReview,
   startHandoff,
+  startSendContext,
+  startSpawnChild,
   toggleSessionChanges,
 } from "./sessionActions";
 import { listen } from "@tauri-apps/api/event";
@@ -431,6 +435,8 @@ export function AppShell() {
       // The same three functions the overlay over the terminal calls, so a
       // palette entry cannot drift from the button beside it.
       registerAction("session_handoff", startHandoff),
+      registerAction("session_spawn_child", startSpawnChild),
+      registerAction("session_send_context", startSendContext),
       registerAction("toggle_session_changes", toggleSessionChanges),
       registerAction("review_checkout", openCheckoutReview),
       // U10, on the Code strip. All three are no-ops with nothing open, which
@@ -634,6 +640,22 @@ export function AppShell() {
       <Show when={runtimeStore.handoff}>
         {(request) => (
           <HandoffDialog request={request()} onDismiss={() => setRuntimeStore("handoff", null)} />
+        )}
+      </Show>
+      <Show when={runtimeStore.spawnChild}>
+        {(request) => (
+          <SpawnChildDialog
+            request={request()}
+            onDismiss={() => setRuntimeStore("spawnChild", null)}
+          />
+        )}
+      </Show>
+      <Show when={runtimeStore.sendContext}>
+        {(request) => (
+          <SendContextDialog
+            request={request()}
+            onDismiss={() => setRuntimeStore("sendContext", null)}
+          />
         )}
       </Show>
       <Show when={tabSwitcherView()}>

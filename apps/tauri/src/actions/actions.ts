@@ -107,6 +107,8 @@ export type ActionId =
   | "toggle_history"
   /* §16.7-16.8 — the three things you can do to the session on screen. */
   | "session_handoff"
+  | "session_spawn_child"
+  | "session_send_context"
   | "toggle_session_changes"
   | "review_checkout"
   | "close_other_views"
@@ -306,6 +308,18 @@ export const ACTIONS: Action[] = [
     id: "session_handoff",
     label: "Continue in a New Session…",
     detail: "Carry this session's context into a fresh agent",
+    palette: true,
+  },
+  {
+    id: "session_spawn_child",
+    label: "Spawn Child…",
+    detail: "Start a nested agent under this session, any provider",
+    palette: true,
+  },
+  {
+    id: "session_send_context",
+    label: "Send Context…",
+    detail: "Pass an envelope to another session or spawn with it",
     palette: true,
   },
   {

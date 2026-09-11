@@ -8,12 +8,13 @@
 //! generic [`Response::Ack`] and the client learns the result from the event.
 
 use domain::{
-    AgentDescriptor, AgentProfile, BranchRef, ChangeContext, DetectionResult, ExternalAgentSession,
-    ExternalTranscript, FileContents, FileTree, HarnessEvent, HarnessFeature, HarnessFeatureList,
-    Job, JuvaDraft, Project, ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState,
-    Remote, ScrollbackRows, SearchResults, Session, SessionChanges, SessionId, SessionTranscript,
-    ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TerminalId, TerminalSnapshot,
-    UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceReview,
+    AgentDescriptor, AgentProfile, BranchRef, ChangeContext, ContextEnvelope, DetectionResult,
+    ExternalAgentSession, ExternalTranscript, FileContents, FileTree, HarnessEvent, HarnessFeature,
+    HarnessFeatureList, Job, JuvaDraft, Project, ProjectGroup, ProjectId, ProviderUsage,
+    PullRequestState, RebaseState, Remote, ScrollbackRows, SearchResults, Session, SessionChanges,
+    SessionId, SessionTranscript, ShareAction, ShareCandidate, ShareRule, ShareStatusEntry,
+    TerminalId, TerminalSnapshot, UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId,
+    WorkspaceReview,
 };
 use serde::{Deserialize, Serialize};
 
@@ -204,6 +205,8 @@ pub enum Response {
     /// Plain text off a session's terminal, answering
     /// `GetSessionTranscript`.
     SessionTranscript(SessionTranscript),
+    /// Context envelopes for one session, answering `ListContextEnvelopes`.
+    ContextEnvelopes(Vec<ContextEnvelope>),
     /// A discovered run's conversation, answering `GetExternalTranscript`.
     ExternalTranscript(ExternalTranscript),
     /// One checkout's stopped rebase/merge state, answering `GetRebaseState`,

@@ -179,9 +179,8 @@ Where a child created via `CreateChildSession` runs:
 `FileReference`, `DiffReference`, `CommitReference`, `TerminalExcerpt`,
 `StructuredJson`) and an optional `GitContextRef { repo_path, branch, commit }`.
 
-MVP status: the type, the table and `CreateContextEnvelope` exist so the
-migration is in place before orchestration; only `summary`/`instructions` are
-populated and no UI consumes envelopes.
+How envelopes are created, delivered, listed, and how agents call the same
+surface from a PTY: [session-context.md](./session-context.md).
 
 ### `ExternalAgentSession` (`external.rs`)
 
