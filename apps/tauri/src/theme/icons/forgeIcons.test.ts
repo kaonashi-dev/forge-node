@@ -21,7 +21,6 @@ const NAMES: ForgeIconName[] = [
   "square-terminal",
   "panel-left-open",
   "panel-left-close",
-  "panel-right",
   "chevron-left",
   "chevron-right",
   "chevron-down",

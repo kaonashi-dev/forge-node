@@ -1,4 +1,4 @@
-import { For, Show, createComputed, createMemo, createSignal } from "solid-js";
+import { For, Show, createComputed, createEffect, createMemo, createSignal, on } from "solid-js";
 import { createStore } from "solid-js/store";
 import { applyRailTree } from "./railTree";
 import { SIDEBAR } from "../actions/actions";
@@ -56,6 +56,7 @@ function railRowId(id: string): string {
   return `rail-${encodeURIComponent(id)}`;
 }
 import { sessionDisplayTitle } from "./sessionTree";
+import { sidebarView } from "../store/sidebarStore";
 import { waitedFor } from "../runtime/attention";
 import {
   AttentionMarker,
@@ -507,6 +508,22 @@ export function ProjectsView() {
 
   onCleanup(releaseKeyboard);
 
+  /*
+   * A hidden kept panel does not guarantee a `focusout` in WebKit, so entering
+   * the counted SIDEBAR context on focus and leaving it on cleanup is not
+   * enough: the context would stay live while another view is up and
+   * `MOD-Enter` would reach this tree instead of the terminal.
+   */
+  createEffect(
+    on(
+      () => sidebarView() === "Projects",
+      (visible) => {
+        if (!visible) releaseKeyboard();
+      },
+      { defer: true },
+    ),
+  );
+
   onMount(() => {
     const bound = [
       registerAction("sidebar_next", () => step(1)),
@@ -550,7 +567,7 @@ export function ProjectsView() {
   });
 
   return (
-    <aside class="sidebar" aria-label="Projects">
+    <div class="projects-view">
       <div class="rail-head">
         <span class="section-label">Projects</span>
         <IconButton
@@ -743,9 +760,9 @@ export function ProjectsView() {
                               selectRow(`workspace:${workspace.id}`);
                               // Picking a checkout points the window at it, not
                               // just the rail: the tab strip, the launchers and
-                              // the inspector are all scoped to the checkout, and
-                              // a worktree with no sessions left had no other way
-                              // to be selected — the card only folded.
+                              // the sidebar views are all scoped to the checkout,
+                              // and a worktree with no sessions left had no other
+                              // way to be selected — the card only folded.
                               focusWorkspace(workspace.id);
                               toggle(workspace.id);
                             }}
@@ -764,7 +781,7 @@ export function ProjectsView() {
           )}
         </For>
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -817,7 +834,7 @@ function WorkspaceList(props: {
   }
 
   function scrollRailToward(y: number): void {
-    const rail = listEl?.closest(".sidebar");
+    const rail = listEl?.closest(".projects-view");
     if (!(rail instanceof HTMLElement)) return;
     const rect = rail.getBoundingClientRect();
     if (y < rect.top + CHECKOUT_SCROLL_EDGE_PX) {

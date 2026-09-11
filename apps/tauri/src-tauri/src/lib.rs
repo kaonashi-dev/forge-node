@@ -131,7 +131,7 @@ fn app_menus(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &item(app, "open_file_palette", "Open File…")?,
             &PredefinedMenuItem::separator(app)?,
             &item(app, "toggle_sidebar", "Toggle Sidebar")?,
-            &item(app, "toggle_right_panel", "Toggle Right Panel")?,
+            &item(app, "toggle_projects", "Projects")?,
             &item(app, "toggle_pull_requests", "Pull Requests")?,
             &item(app, "toggle_files", "Files")?,
             &PredefinedMenuItem::separator(app)?,

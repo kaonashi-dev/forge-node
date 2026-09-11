@@ -75,7 +75,7 @@ export type ActionId =
   | "switch_tab_previous"
   | "focus_session"
   | "toggle_sidebar"
-  | "toggle_right_panel"
+  | "toggle_projects"
   | "toggle_pull_requests"
   | "toggle_files"
   | "toggle_features"
@@ -192,31 +192,31 @@ export const ACTIONS: Action[] = [
   {
     id: "toggle_sidebar",
     label: "Toggle Sidebar",
-    detail: "Show or hide the project rail",
+    detail: "Show or hide the sidebar",
     palette: true,
   },
   {
-    id: "toggle_right_panel",
-    label: "Toggle Right Panel",
-    detail: "Show or hide the inspector",
+    id: "toggle_projects",
+    label: "Projects",
+    detail: "Show the projects, checkouts and their agents in the sidebar",
     palette: true,
   },
   {
     id: "toggle_pull_requests",
     label: "Pull Requests",
-    detail: "Show the inspector's pull-request tab",
+    detail: "Show the pull-request view in the sidebar",
     palette: true,
   },
   {
     id: "toggle_files",
     label: "Files",
-    detail: "Show the file browser in the inspector",
+    detail: "Show the file browser in the sidebar",
     palette: true,
   },
   {
     id: "toggle_features",
     label: "Features",
-    detail: "Show the harness features in the inspector",
+    detail: "Show the harness features in the sidebar",
     palette: true,
   },
   { id: "toggle_lieutenant", label: "Lieutenant", detail: "Ask about the harness", palette: true },
@@ -303,7 +303,7 @@ export const ACTIONS: Action[] = [
     detail: "Bring back the last view that was closed",
     palette: true,
   },
-  { id: "toggle_git", label: "Git", detail: "Show the inspector's git tab", palette: true },
+  { id: "toggle_git", label: "Git", detail: "Show the git view in the sidebar", palette: true },
   {
     id: "session_handoff",
     label: "Continue in a New Session…",
@@ -337,7 +337,7 @@ export const ACTIONS: Action[] = [
   {
     id: "toggle_history",
     label: "History",
-    detail: "Show the inspector's history tab",
+    detail: "Show the history view in the sidebar",
     palette: true,
   },
   {
@@ -540,12 +540,11 @@ export function defaultBindings(): Binding[] {
     bind(`${MOD}-shift-n`, "new_worktree", APP),
     bind(`${MOD}-,`, "open_settings", APP),
     bind(`${MOD}-w`, "close_session", APP),
-    // Two chords for one rail, deliberately: `${MOD}-b` is what every editor
-    // has taught, and `${MOD}-1` is where the hand already is when it reaches
-    // for the tab numbers.
+    // Two different actions now: `${MOD}-b` folds the whole sidebar, while
+    // `${MOD}-1` is where the hand already is when it reaches for the tab
+    // numbers, so it goes to the Projects view.
     bind(`${MOD}-b`, "toggle_sidebar", APP),
-    bind(`${MOD}-1`, "toggle_sidebar", APP),
-    bind(`${MOD}-j`, "toggle_right_panel", APP),
+    bind(`${MOD}-1`, "toggle_projects", APP),
     bind(`${MOD}-shift-r`, "toggle_pull_requests", APP),
     bind(`${MOD}-shift-f`, "toggle_files", APP),
     // `shift-h` for the harness: `${MOD}-h` alone is macOS's hide-application,

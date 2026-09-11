@@ -10,13 +10,11 @@ import { setAppState } from "../runtime/api";
 import { forgeStore } from "../store/forgeStore";
 
 /** Keys, in `ui.*` — the namespace `apps/tauri already uses. */
-export const RAIL_OPEN_KEY = "ui.sidebar.open";
-export const RAIL_WIDTH_KEY = "ui.sidebar.width";
-export const PANEL_OPEN_KEY = "ui.panel.open";
-export const PANEL_WIDTH_KEY = "ui.panel.width";
+export const SIDEBAR_OPEN_KEY = "ui.sidebar.open";
+export const SIDEBAR_WIDTH_KEY = "ui.sidebar.width";
+/** Which sidebar view is up. */
+export const SIDEBAR_VIEW_KEY = "ui.sidebar.view";
 export const THEME_BASE_KEY = "ui.theme_base";
-/** Which inspector tab is up, so it survives a restart (§4.2 U9). */
-export const PANEL_TAB_KEY = "ui.panel.tab";
 /** Unified or split, in the Diff tab (§2.3 D2). */
 export const DIFF_SPLIT_KEY = "ui.diff.split";
 /**
@@ -45,19 +43,15 @@ export const AUTOSAVE_KEY = "ui.editor.autosave";
 export const LAST_WORKSPACE_KEY = "ui.last_workspace";
 
 /** Bounds the drag handles clamp to, so a panel cannot be dragged to nothing. */
-/* 280 rather than 240: this column carries four levels of indent before the
-   text starts, and at 240 a worktree's path and a session's title were both
-   ellipsed on a fresh install — the two strings that say *which* checkout a
-   row is. Must stay in step with `metrics.railW`, which paints the first frame
-   before the persisted width arrives. */
-export const RAIL_RANGE = { min: 180, max: 480, fallback: 280 };
-/* 320 rather than 288: six inspector tabs are 307px of one row, and at 288 the
-   strip opened already scrolled — with `History` cut in half at the left edge,
-   because the tab it scrolls to is the selected one and `Git` is last. */
-export const PANEL_RANGE = { min: 220, max: 560, fallback: 320 };
-/* Narrower floor than the inspector: this column holds paths and two counts,
+/* One width for every view. 224 rather than 180: the strip is seven 24px
+   glyphs, six 6px gaps and 16px of padding (220px) plus the hairline border,
+   and below that the last view is clipped. Must stay in step with
+   `metrics.sidebarW`, which paints the first frame before the stored width
+   arrives. */
+export const SIDEBAR_RANGE = { min: 224, max: 560, fallback: 300 };
+/* Narrower floor than the sidebar: this column holds paths and two counts,
    never a patch, so it can give the terminal back more room than a panel that
-   has to fit six tabs in one row. */
+   has to fit seven views in one row. */
 export const SESSION_SPLIT_RANGE = { min: 240, max: 620, fallback: 340 };
 
 /**

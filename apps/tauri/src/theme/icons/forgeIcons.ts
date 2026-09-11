@@ -39,7 +39,6 @@ import {
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRight,
   Pencil,
   Plus,
   RefreshCw,
@@ -71,7 +70,6 @@ export type ForgeIconName =
   | "square-terminal"
   | "panel-left-open"
   | "panel-left-close"
-  | "panel-right"
   | "chevron-left"
   | "chevron-right"
   | "chevron-down"
@@ -109,7 +107,6 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "square-terminal": SquareTerminal,
   "panel-left-open": PanelLeftOpen,
   "panel-left-close": PanelLeftClose,
-  "panel-right": PanelRight,
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,
   "chevron-down": ChevronDown,

@@ -98,7 +98,7 @@ kbd {
   .ws-card,
   .session-tab,
   .palette-row,
-  .inspector-tab,
+  .sidebar-view-tab,
   .workbench-tab,
   .forge-field,
   .forge-textarea {
@@ -190,8 +190,8 @@ button:not(:disabled):active {
  *
  * This file had `cursor: default` on sixteen controls and `cursor: pointer` on
  * fourteen, split *inside* the same widget families: a project row in the rail
- * was a hand and the session row under it was an arrow; an inspector tab was a
- * hand and a settings tab was an arrow; `Resume` in the history panel — a
+ * was a hand and the session row under it was an arrow; a sidebar view tab was
+ * a hand and a settings tab was an arrow; `Resume` in the history panel — a
  * `Button`, so every button in the app — was an arrow while the amber action
  * beside the attention bar was a hand.
  *
@@ -405,25 +405,18 @@ html[data-platform="macos"] .title-bar-inset {
   background: var(--danger-solid);
 }
 
-/* Rail, handle, terminal, handle, inspector. The widths are inline custom
-   properties the drag handles write, falling back to the theme's metrics
-   before the daemon has answered with the stored layout. */
+/* Sidebar, handle, terminal. The widths are inline custom properties the drag
+   handle writes, falling back to the theme's metrics before the daemon has
+   answered with the stored layout. */
 .workspace-grid {
   display: grid;
   flex: 1;
   grid-template-columns:
-    var(--rail-w, var(--forge-rail-w)) var(--forge-handle-w)
-    minmax(0, 1fr)
-    var(--forge-handle-w) var(--panel-w, var(--forge-panel-w));
+    var(--sidebar-w, var(--forge-sidebar-w)) var(--forge-handle-w)
+    minmax(0, 1fr);
   min-height: 0;
 }
-.workspace-grid.rail-collapsed {
-  grid-template-columns: minmax(0, 1fr) var(--forge-handle-w) var(--panel-w, var(--forge-panel-w));
-}
-.workspace-grid.panel-collapsed {
-  grid-template-columns: var(--rail-w, var(--forge-rail-w)) var(--forge-handle-w) minmax(0, 1fr);
-}
-.workspace-grid.rail-collapsed.panel-collapsed {
+.workspace-grid.sidebar-collapsed {
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -442,20 +435,13 @@ html[data-platform="macos"] .title-bar-inset {
   position: absolute;
 }
 
-.sidebar,
-.inspector {
-  background: var(--bg-subtle);
-  min-height: 0;
-  overflow: auto;
-}
 .sidebar {
+  background: var(--bg-subtle);
   border-right: 1px solid var(--border-subtle);
-  padding: var(--space-8);
-}
-.inspector {
-  border-left: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /*

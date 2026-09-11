@@ -1,7 +1,15 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  onCleanup,
+  onMount,
+} from "solid-js";
 import { APP } from "../actions/actions";
 import { enterContext, installKeymap, invokeAction, registerAction } from "../actions/dispatch";
-import { RightPanel } from "../panels/RightPanel";
 import { CommandPalette } from "../palette/CommandPalette";
 import type { PaletteEntry, PaletteScope } from "../palette/entries";
 import {
@@ -13,7 +21,6 @@ import {
 } from "../runtime/api";
 import { applyConnected, bindRuntimeEvents } from "../runtime/events";
 import { startGitSync } from "./gitSync";
-import { restoreInspectorTab } from "../store/inspectorStore";
 import { forgeStore } from "../store/forgeStore";
 import {
   requestConfirm,
@@ -41,18 +48,12 @@ import {
 } from "../store/viewsStore";
 import { openFile, warmFileTree as warmTree } from "../workbench/api";
 import {
-  PANEL_OPEN_KEY,
-  PANEL_RANGE,
-  PANEL_WIDTH_KEY,
-  RAIL_OPEN_KEY,
-  RAIL_RANGE,
-  RAIL_WIDTH_KEY,
   DENSITY_KEY,
+  SIDEBAR_RANGE,
+  SIDEBAR_WIDTH_KEY,
   THEME_BASE_KEY,
   readChoice,
-  readFlag,
   readWidth,
-  writeFlag,
   writeWidth,
 } from "./layout";
 import { CenterStack } from "./CenterStack";
@@ -61,7 +62,7 @@ import { defaultAgentFrom, resolveDefaultAgent } from "../settings/defaultAgent"
 import { applyThemeBase, type ThemePreference } from "../theme/ThemeProvider";
 import { DENSITIES, applyDensity } from "../theme/density";
 import { ResizeHandle } from "./ResizeHandle";
-import { ProjectsView } from "./ProjectsView";
+import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { BranchPicker } from "./BranchPicker";
@@ -97,16 +98,19 @@ import {
   type TabOrderMap,
 } from "./sessionScope";
 import { closeTarget } from "./closeTarget";
-import { inspectorTab, setInspectorTab, type InspectorTab } from "../store/inspectorStore";
+import {
+  restoreSidebar,
+  showView,
+  sidebarOpen,
+  toggleSidebar,
+  toggleView,
+} from "../store/sidebarStore";
 import { IconButton, ToastRegion } from "../ui";
 
 const TAB_ORDER_KEY = "ui.tab_order";
 
 export function AppShell() {
-  const [railOpen, setRailOpen] = createSignal(true);
-  const [panelOpen, setPanelOpen] = createSignal(true);
-  const [railWidth, setRailWidth] = createSignal(RAIL_RANGE.fallback);
-  const [panelWidth, setPanelWidth] = createSignal(PANEL_RANGE.fallback);
+  const [sidebarWidth, setSidebarWidth] = createSignal(SIDEBAR_RANGE.fallback);
   const [palette, setPalette] = createSignal<PaletteScope | null>(null);
   const [settings, setSettings] = createSignal(false);
   const [settingsSection, setSettingsSection] = createSignal<Section | undefined>();
@@ -119,10 +123,8 @@ export function AppShell() {
   createEffect(() => {
     if (seeded || Object.keys(forgeStore.app_state).length === 0) return;
     seeded = true;
-    setRailOpen(readFlag(RAIL_OPEN_KEY, true));
-    setPanelOpen(readFlag(PANEL_OPEN_KEY, true));
-    setRailWidth(readWidth(RAIL_WIDTH_KEY, RAIL_RANGE));
-    setPanelWidth(readWidth(PANEL_WIDTH_KEY, PANEL_RANGE));
+    restoreSidebar();
+    setSidebarWidth(readWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_RANGE));
     setTabOrder(readTabOrder());
     const base = forgeStore.app_state[THEME_BASE_KEY] as ThemePreference | undefined;
     if (base) applyThemeBase(base);
@@ -132,31 +134,34 @@ export function AppShell() {
     applyDensity(readChoice(DENSITY_KEY, DENSITIES, "default"));
   });
 
-  function toggleRail(): void {
-    setRailOpen((open) => !open);
-    writeFlag(RAIL_OPEN_KEY, railOpen());
-  }
-
-  function togglePanel(): void {
-    setPanelOpen((open) => !open);
-    writeFlag(PANEL_OPEN_KEY, panelOpen());
-  }
-
-  /**
-   * Show an inspector tab, opening the panel if it is collapsed.
+  /*
+   * The active session says which checkout the sidebar views answer about.
+   * Switching sessions must move them rather than leave the previous
+   * checkout's diff under a new branch name.
    *
-   * Pressing the chord for a tab that is already up closes the panel — the
-   * same toggle every other panel chord has, so the shortcut is a switch
-   * rather than a one-way door.
+   * `on`, tracking the session's workspace alone. As a bare effect this also
+   * depended on what it wrote: `focusWorkspace` reads `workbenchStore.workspace`
+   * to decide whether anything changed, so anyone else focusing a checkout — the
+   * palette, the file palette, the Git panel with no session open — woke this
+   * effect, which saw no active session and immediately cleared it again.
+   *
+   * Do not guess from the workspace list while the runtime is still settling:
+   * that list may contain retained worktrees whose directories no longer exist,
+   * so the active session stays the authoritative selection.
    */
-  function revealInspector(tab: InspectorTab): void {
-    if (panelOpen() && inspectorTab() === tab) {
-      togglePanel();
-      return;
-    }
-    setInspectorTab(tab);
-    if (!panelOpen()) togglePanel();
-  }
+  createEffect(
+    on(
+      () =>
+        forgeStore.sessions.find((item) => item.id === runtimeStore.activeSession)?.workspace_id,
+      (workspace) => {
+        // A new tab must not steal the Code view: while it is up the checkout
+        // on screen belongs to what is being read, not to the session that
+        // just started in the background.
+        if (centerMode() === "code") return;
+        focusWorkspace(workspace ?? null);
+      },
+    ),
+  );
 
   /** How many files, diffs and PRs are parked in the Code tab. */
   const openViewCount = createMemo(() => currentViews().open.length);
@@ -382,7 +387,6 @@ export function AppShell() {
           applyConnected(snapshot);
           // Preferences live in the snapshot's `app_state`, so anything read
           // from it has to wait for the snapshot rather than for the module.
-          restoreInspectorTab();
           restoreWorkspace();
         }
       } catch {
@@ -400,8 +404,7 @@ export function AppShell() {
     onCleanup(bindTabSwitcherCommit(focusSession));
 
     const bound = [
-      registerAction("toggle_sidebar", toggleRail),
-      registerAction("toggle_right_panel", togglePanel),
+      registerAction("toggle_sidebar", toggleSidebar),
       registerAction(
         "new_terminal",
         // Named rather than left to the daemon's default. With the strip
@@ -423,15 +426,16 @@ export function AppShell() {
         if (!target) return;
         focusSession(target.id);
       }),
-      // Registered here, not in `RightPanel`: the panel unmounts when it is
-      // collapsed, and a shortcut that names a tab has to be able to open the
-      // panel it lives in rather than going quiet.
-      registerAction("toggle_files", () => revealInspector("Files")),
-      registerAction("toggle_pull_requests", () => revealInspector("PR")),
-      registerAction("toggle_features", () => revealInspector("Features")),
-      registerAction("toggle_lieutenant", () => revealInspector("Lieutenant")),
-      registerAction("toggle_git", () => revealInspector("Git")),
-      registerAction("toggle_history", () => revealInspector("History")),
+      // Registered here, not in the container: the sidebar unmounts when it is
+      // collapsed, and a shortcut that names a view has to be able to open the
+      // bar it lives in rather than going quiet.
+      registerAction("toggle_projects", () => toggleView("Projects")),
+      registerAction("toggle_files", () => toggleView("Files")),
+      registerAction("toggle_pull_requests", () => toggleView("PR")),
+      registerAction("toggle_features", () => toggleView("Features")),
+      registerAction("toggle_lieutenant", () => toggleView("Lieutenant")),
+      registerAction("toggle_git", () => toggleView("Git")),
+      registerAction("toggle_history", () => toggleView("History")),
       // The same three functions the overlay over the terminal calls, so a
       // palette entry cannot drift from the button beside it.
       registerAction("session_handoff", startHandoff),
@@ -453,7 +457,7 @@ export function AppShell() {
         // The settings layer covers the centre, so a draft opened from
         // Settings → Harness would land underneath it.
         setSettings(false);
-        revealInspector("Features");
+        showView("Features");
         openFeatureCompose();
       }),
       registerAction("open_settings", () => {
@@ -507,10 +511,8 @@ export function AppShell() {
     <main class="app-shell">
       <TitleBar
         settingsOpen={settings()}
-        railOpen={railOpen()}
-        panelOpen={panelOpen()}
-        onToggleRail={toggleRail}
-        onTogglePanel={togglePanel}
+        sidebarOpen={sidebarOpen()}
+        onToggleSidebar={toggleSidebar}
         sessions={openSessions()}
         tabOrder={currentTabOrder()}
         onReorderTabs={persistTabOrder}
@@ -522,23 +524,20 @@ export function AppShell() {
       />
       <div
         class="workspace-grid"
-        classList={{ "rail-collapsed": !railOpen(), "panel-collapsed": !panelOpen() }}
-        style={{
-          "--rail-w": `${railWidth()}px`,
-          "--panel-w": `${panelWidth()}px`,
-        }}
+        classList={{ "sidebar-collapsed": !sidebarOpen() }}
+        style={{ "--sidebar-w": `${sidebarWidth()}px` }}
       >
-        <Show when={railOpen()}>
-          <ProjectsView />
+        <Show when={sidebarOpen()}>
+          <Sidebar />
           <ResizeHandle
             side="left"
-            label="Resize the project rail"
-            width={railWidth()}
-            min={RAIL_RANGE.min}
-            max={RAIL_RANGE.max}
-            fallback={RAIL_RANGE.fallback}
-            onResize={setRailWidth}
-            onCommit={(width) => writeWidth(RAIL_WIDTH_KEY, width)}
+            label="Resize the sidebar"
+            width={sidebarWidth()}
+            min={SIDEBAR_RANGE.min}
+            max={SIDEBAR_RANGE.max}
+            fallback={SIDEBAR_RANGE.fallback}
+            onResize={setSidebarWidth}
+            onCommit={(width) => writeWidth(SIDEBAR_WIDTH_KEY, width)}
           />
         </Show>
         <CenterStack
@@ -546,19 +545,6 @@ export function AppShell() {
           settingsSection={settingsSection()}
           onCloseSettings={() => setSettings(false)}
         />
-        <Show when={panelOpen()}>
-          <ResizeHandle
-            side="right"
-            label="Resize the inspector"
-            width={panelWidth()}
-            min={PANEL_RANGE.min}
-            max={PANEL_RANGE.max}
-            fallback={PANEL_RANGE.fallback}
-            onResize={setPanelWidth}
-            onCommit={(width) => writeWidth(PANEL_WIDTH_KEY, width)}
-          />
-          <RightPanel />
-        </Show>
       </div>
       <StatusBar
         onViewDetails={() => {

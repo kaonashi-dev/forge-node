@@ -1053,25 +1053,31 @@
 }
 
 /*
- * The panel is resizable, so the strip can still be dragged narrower than its
+ * The bar is resizable, so the strip can still be dragged narrower than its
  * content: it scrolls in one row.
  */
-.inspector-tabs {
+.sidebar-tabs {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.sidebar-views {
   border-bottom: 1px solid var(--border-subtle);
   padding: var(--space-6) var(--space-8);
 }
-.inspector-tabs .forge-tab-list {
+.sidebar-views .forge-tab-list {
   flex-wrap: nowrap;
-  /* Wider than the shared `--space-2`: six glyphs with no words between them
+  /* Wider than the shared `--space-2`: seven glyphs with no words between them
      need the gap to separate them, where text tabs separate themselves. */
   gap: var(--space-6);
   overflow-x: auto;
   scrollbar-width: none;
 }
-.inspector-tabs .forge-tab-list::-webkit-scrollbar {
+.sidebar-views .forge-tab-list::-webkit-scrollbar {
   display: none;
 }
-.inspector-tab {
+.sidebar-view-tab {
   background: transparent;
   border: 0;
   border-radius: var(--radius-xs);
@@ -1081,15 +1087,15 @@
   height: 24px;
   padding: 0 var(--space-8);
 }
-.inspector-tab[data-selected] {
+.sidebar-view-tab[data-selected] {
   background: var(--bg-selected);
   color: var(--fg-default);
 }
-.inspector-tab:hover {
+.sidebar-view-tab:hover {
   background: var(--bg-hover);
 }
 /* An icon trigger is square: the glyph is the label, so horizontal padding
-   would only push the six of them apart. */
+   would only push the seven of them apart. */
 .forge-tab-icon {
   align-items: center;
   display: inline-flex;
@@ -1097,12 +1103,22 @@
   padding: 0;
   width: 24px;
 }
-.inspector-body {
+.sidebar-body {
   display: flex;
   flex: 1;
   min-height: 0;
   overflow: hidden;
   padding: var(--space-8) var(--space-12);
+}
+/* The tree scrolls itself, edge to edge, like the rail did. */
+.sidebar-body.projects-body {
+  padding: 0;
+}
+.projects-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-8);
 }
 .rail-empty {
   align-items: flex-start;

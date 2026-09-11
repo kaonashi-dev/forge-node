@@ -36,7 +36,7 @@ export function activeSession(): Session | null {
 
 /**
  * The checkout the window is in: the scope of the tab strip, the launchers and
- * the inspector.
+ * the sidebar views.
  *
  * Here rather than in `AppShell` because the `+` menu inside the strip needs
  * it too, and a menu that starts a terminal in a different checkout than the
@@ -68,9 +68,9 @@ export function currentCheckout(): Workspace | null {
  * Go to a session: the window's checkout, the centre column and the daemon.
  *
  * One function because the three have to move together. The strip, the
- * launchers and the inspector are all scoped to `workbenchStore.workspace`, so
- * a selection that only told the daemon would leave the window pointed at the
- * checkout the user just left — and the reactive fallback in `RightPanel`
+ * launchers and the sidebar views are all scoped to `workbenchStore.workspace`,
+ * so a selection that only told the daemon would leave the window pointed at
+ * the checkout the user just left — and the reactive fallback in `AppShell`
  * cannot close the gap on its own: re-selecting the session that is already
  * active is a no-op in the daemon, so nothing changes for an effect to observe,
  * and the click would do nothing at all.

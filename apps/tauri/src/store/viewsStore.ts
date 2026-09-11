@@ -219,8 +219,8 @@ export function stepCodeView(delta: number): void {
  * A7: the directory the file tree should show and select.
  *
  * A signal rather than a call into the panel, because the panel may not be
- * mounted: the rail can be collapsed, or the inspector on another tab. The
- * request stands until the tree picks it up, and the tree clears it.
+ * mounted: the sidebar can be collapsed, or on another view. The request
+ * stands until the tree picks it up, and the tree clears it.
  */
 const [pendingReveal, setPendingReveal] = createSignal<string | null>(null);
 

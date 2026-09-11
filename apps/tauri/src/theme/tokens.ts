@@ -341,8 +341,7 @@ export const metrics = {
   titleH: 36,
   statusH: 24,
   tabH: 34,
-  railW: 280,
-  panelW: 288,
+  sidebarW: 300,
   handleW: 4,
   /*
    * Denser than the ladder the GUI handed over (28 rows, 24–36 controls,

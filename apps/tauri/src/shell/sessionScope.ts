@@ -34,7 +34,7 @@ export type TabOrderMap = Record<string, string[]>;
  * The workbench checkout leads, because it is the one selection every gesture
  * writes: `focusSession` points it at the session's checkout before it tells
  * the daemon anything, the rail's cards point it at themselves, and
- * `RightPanel` points it at the active session whenever the daemon moves that
+ * `AppShell` points it at the active session whenever the daemon moves that
  * on its own. Deriving it from the active session instead would make a
  * worktree with no sessions unreachable — picking it in the rail could not
  * change an answer that reads the session it does not have.

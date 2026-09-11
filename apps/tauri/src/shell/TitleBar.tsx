@@ -14,15 +14,13 @@ type TitleBarProps = {
    *
    * Everything in this bar except the window controls and the daemon pill acts
    * on something the settings layer is covering: the tab strip switches to a
-   * terminal nobody can see, and the two panel toggles fold a rail and an
-   * inspector that are not on screen. The bar stays — it carries the traffic
-   * lights and the drag region — but it empties out.
+   * terminal nobody can see, and the sidebar toggle folds a bar that is not on
+   * screen. The bar stays — it carries the traffic lights and the drag region —
+   * but it empties out.
    */
   settingsOpen: boolean;
-  railOpen: boolean;
-  panelOpen: boolean;
-  onToggleRail: () => void;
-  onTogglePanel: () => void;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
   sessions: Session[];
   tabOrder: string[];
   onReorderTabs: (order: string[]) => void;
@@ -77,9 +75,9 @@ export function TitleBar(props: TitleBarProps) {
         when={!props.settingsOpen}
         fallback={<div class="title-bar-spacer" data-tauri-drag-region />}
       >
-        <IconButton label="Toggle sidebar" onClick={props.onToggleRail}>
+        <IconButton label="Toggle sidebar" onClick={props.onToggleSidebar}>
           <Icon
-            name={props.railOpen ? "panel-left-close" : "panel-left-open"}
+            name={props.sidebarOpen ? "panel-left-close" : "panel-left-open"}
             class="forge-icon-muted"
           />
         </IconButton>
@@ -110,11 +108,6 @@ export function TitleBar(props: TitleBarProps) {
             <span class="connection-pill-label">{pillLabel()}</span>
           </Button>
         </Tooltip>
-        <Show when={!props.settingsOpen}>
-          <IconButton label="Toggle inspector" onClick={props.onTogglePanel}>
-            <Icon name="panel-right" class="forge-icon-muted" />
-          </IconButton>
-        </Show>
       </div>
     </header>
   );

@@ -34,14 +34,15 @@ describe("default bindings (actions.rs port)", () => {
   });
 
   /**
-   * The chord on `1` belongs to the rail, not to the first tab. Both halves
-   * matter: a stale focus binding left behind would win or lose the dispatch
-   * by table order, so the tab side has to be gone rather than outranked.
+   * The chord on `1` belongs to the sidebar's Projects view, not to the first
+   * tab. Both halves matter: a stale focus binding left behind would win or
+   * lose the dispatch by table order, so the tab side has to be gone rather
+   * than outranked.
    */
   it("gives the first number chord to the rail", () => {
     const onOne = defaultBindings().filter((binding) => binding.chord.key === "1");
     expect(onOne).toHaveLength(1);
-    expect(onOne[0].action).toBe("toggle_sidebar");
+    expect(onOne[0].action).toBe("toggle_projects");
     expect(FOCUSABLE_SESSIONS).not.toContain(1);
   });
 

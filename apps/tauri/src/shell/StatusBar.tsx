@@ -51,9 +51,9 @@ export function StatusBar(props: StatusBarProps) {
   });
 
   // The checkout the window is pointed at, which is what the strip, the
-  // launchers and the inspector are all scoped to. Reading the active session
-  // instead would name a branch nothing else on screen is showing whenever the
-  // rail is on a worktree whose terminals are closed.
+  // launchers and the sidebar views are all scoped to. Reading the active
+  // session instead would name a branch nothing else on screen is showing
+  // whenever the rail is on a worktree whose terminals are closed.
   const workspace = currentCheckout;
 
   const branchLabel = createMemo(() => {

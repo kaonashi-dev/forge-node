@@ -12,7 +12,7 @@
  * A screen, not a third column.
  *
  * Fixed to the window under the title bar rather than placed in the centre
- * grid: settings framed by the project rail on one side and the inspector on
+ * grid: settings framed by the sidebar on one side and a bare window edge on
  * the other reads as a panel whose terminal went missing. The title bar stays
  * uncovered because it carries the window controls and the drag region.
  */

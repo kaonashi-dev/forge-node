@@ -41,7 +41,7 @@
   pointer-events: none;
 }
 /* Terminal, handle, changes. The terminal keeps its box and reflows: opening
-   this costs one debounced PTY resize, the same as dragging the inspector. */
+   this costs one debounced PTY resize, the same as dragging the sidebar. */
 .center-slot.split {
   grid-template-columns: minmax(0, 1fr) var(--forge-handle-w) var(--session-split-w);
 }
@@ -259,10 +259,10 @@
 /*
  * What the centre column shows with nothing open.
  *
- * A card rather than a full-bleed screen: the window still has a rail and an
- * inspector with content in them, and a wall of centred text at that size
- * competes with both. The rows are the same three actions the `+` menu and the
- * palette carry, with their own chords read off the keymap.
+ * A card rather than a full-bleed screen: the window still has a sidebar with
+ * content in it, and a wall of centred text at that size competes with it. The
+ * rows are the same three actions the `+` menu and the palette carry, with
+ * their own chords read off the keymap.
  */
 .empty-center {
   align-items: center;
