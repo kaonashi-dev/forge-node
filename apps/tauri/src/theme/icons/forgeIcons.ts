@@ -30,6 +30,7 @@ import {
   GitBranch,
   GitPullRequest,
   History,
+  Layers,
   LayoutGrid,
   ListChecks,
   Loader2,
@@ -86,6 +87,7 @@ export type ForgeIconName =
   | "list-checks"
   | "history"
   | "layout-grid"
+  | "layers"
   | "more-horizontal";
 
 export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
@@ -123,5 +125,6 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "list-checks": ListChecks,
   history: History,
   "layout-grid": LayoutGrid,
+  layers: Layers,
   "more-horizontal": MoreHorizontal,
 };

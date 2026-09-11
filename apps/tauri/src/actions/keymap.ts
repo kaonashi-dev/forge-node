@@ -12,11 +12,21 @@
 // Pure, and its own module: merging and conflict detection are the parts with
 // a right and a wrong answer, and both are answerable without a DOM.
 
-import { defaultBindings, type ActionId, type Binding, type ContextId } from "./actions";
+import { ACTIONS, defaultBindings, type ActionId, type Binding, type ContextId } from "./actions";
 import { describeChord, keyIsKnown, parseChord, type Chord } from "./keys";
 
 /** Where the merged table is stored, alongside `ui.sidebar.width` and friends. */
 export const KEYMAP_KEY = "ui.keymap";
+
+/**
+ * The actions that still exist.
+ *
+ * A stored override can name one that has since been removed, and `mergeBindings`
+ * would otherwise mint a binding for it: a chord with no handler still
+ * `preventDefault`s in the dispatcher, so the key would vanish from the
+ * terminal too.
+ */
+const KNOWN_ACTIONS = new Set<string>(ACTIONS.map((action) => action.id));
 
 /**
  * One person's decision about one binding.
@@ -96,8 +106,9 @@ export function mergeBindings(
   overrides: KeymapOverride[],
   defaults: Binding[] = defaultBindings(),
 ): Binding[] {
+  const known = overrides.filter((override) => KNOWN_ACTIONS.has(override.action));
   const decided = new Map<string, KeymapOverride>();
-  for (const override of overrides) decided.set(pairKey(override), override);
+  for (const override of known) decided.set(pairKey(override), override);
 
   const merged: Binding[] = [];
   const applied = new Set<string>();
@@ -120,7 +131,7 @@ export function mergeBindings(
 
   // An override for something with no default — a chord for an action that
   // ships unbound — is an addition, not a replacement.
-  for (const override of overrides) {
+  for (const override of known) {
     if (applied.has(pairKey(override)) || override.chord === null) continue;
     if (defaults.some((binding) => pairKey(binding) === pairKey(override))) continue;
     merged.push({

@@ -37,6 +37,7 @@ const NAMES: ForgeIconName[] = [
   "list-checks",
   "history",
   "layout-grid",
+  "layers",
   "more-horizontal",
 ];
 

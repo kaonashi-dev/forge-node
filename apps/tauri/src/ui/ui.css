@@ -718,6 +718,32 @@
   flex-direction: column;
 }
 
+/* A badge rides the trigger's top-right corner without widening it, so a
+   strip's own width math still holds. */
+.forge-tab-icon {
+  position: relative;
+}
+.forge-tab-badge {
+  background: var(--attention-solid);
+  border-radius: var(--radius-full);
+  color: var(--attention-fg);
+  font-size: var(--text-xs);
+  line-height: 1;
+  min-width: var(--space-12);
+  padding: var(--space-1) var(--space-3);
+  position: absolute;
+  right: calc(var(--space-2) * -1);
+  text-align: center;
+  top: calc(var(--space-2) * -1);
+}
+
+/* Kobalte's `forceMount` renders a kept panel but does not hide it; the
+   attribute is ours, and a feature rule's `display: flex` would otherwise
+   beat it. */
+.forge-tab-panel[hidden] {
+  display: none;
+}
+
 /* --------------------------------------------------------------- badge --- */
 
 .forge-badge {
