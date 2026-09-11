@@ -329,6 +329,15 @@ describe("validate", () => {
     expect(out).toContain("no features");
   });
 
+  // features.json is gitignored, so this is what every fresh clone looks like.
+  test("accepts a checkout with no features.json yet", () => {
+    const r = fakeRepo({ features: [] });
+    rmSync(join(r.root, "harness", "features.json"));
+    const { code, out } = run(r.validate);
+    expect(code).toBe(0);
+    expect(out).toContain("no harness state in this checkout");
+  });
+
   // The spec step runs under `pending`, so a live attempt there is a step in
   // flight — not a leftover. Flagging it turned every spec run into an
   // "incoherent" harness and had the Stop hook refuse to close sessions.

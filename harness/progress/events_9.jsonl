@@ -1,7 +1,0 @@
-{"ts": "2026-08-29T19:01:38.273436Z", "type": "feature_registered", "slug": "add-support-for-others-theme", "title": "Add support for others theme"}
-{"ts": "2026-08-29T19:01:38.278987Z", "type": "spec_started"}
-{"ts": "2026-08-29T19:04:45.139838Z", "type": "explore_done", "path": "harness/progress/explore_9_theme.md"}
-{"ts": "2026-08-29T19:04:45.139838Z", "type": "spec_ready", "spec": "harness/specs/9-add-support-for-others-theme", "gate": "harness/progress/gate_9.md"}
-{"ts": "2026-08-29T19:04:45.139838Z", "type": "human_gate_opened", "gate": "spec_approval"}
-{"ts":"2026-08-29T19:22:15.173468Z","type":"human_gate_resolved","gate":"spec_approval","decision":"revise"}
-{"ts":"2026-09-01T18:43:01Z","type":"feature_blocked","reason":"test data"}
