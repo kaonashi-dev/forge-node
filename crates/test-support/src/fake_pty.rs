@@ -36,7 +36,7 @@ use std::io::{self, Cursor, Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use terminal_core::{ExitStatus, PtyBackend, PtyError, PtyHandle};
+use terminal_core::{ExitStatus, PtyBackend, PtyError, PtyHandle, PtyReader};
 
 /// Default fake pid and process-group id, matching the value suggested in §17.
 pub const DEFAULT_FAKE_PID: u32 = 424_242;
@@ -241,7 +241,7 @@ impl FakePtyHandle {
 }
 
 impl PtyHandle for FakePtyHandle {
-    fn reader(&mut self) -> Box<dyn Read + Send> {
+    fn reader(&mut self) -> Box<dyn PtyReader> {
         // A fresh cursor over the full script; valid to call more than once,
         // mirroring the real backend's cloned reader.
         let state = lock(&self.state);
@@ -298,6 +298,21 @@ impl PtyHandle for FakePtyHandle {
 /// because it has no output, so wait until the fake child is explicitly exited.
 struct WaitingReader {
     state: Arc<Mutex<FakePtyState>>,
+}
+
+impl PtyReader for WaitingReader {
+    fn read_timeout(
+        &mut self,
+        buffer: &mut [u8],
+        timeout: Option<Duration>,
+    ) -> io::Result<Option<usize>> {
+        if let Some(timeout) = timeout {
+            // The fake exit flag has no fd; production readers wait on the PTY descriptor.
+            std::thread::sleep(timeout);
+            return Ok(lock(&self.state).exit_status.map(|_| 0));
+        }
+        self.read(buffer).map(Some)
+    }
 }
 
 impl Read for WaitingReader {

@@ -76,7 +76,10 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// - 17 → 18: cross-session mediation — `SendContext` / `ListContextEnvelopes`
 ///   with `Response::ContextEnvelopes`, so one Forge session can cite another
 ///   and spawn a child with any provider without peer-to-peer agent APIs.
-pub const PROTOCOL_VERSION: u32 = 18;
+/// - 18 → 19: terminal history generation, column patches, and compact cells.
+///   `TerminalSnapshot`/`TerminalDelta`/`ScrollbackRows` change encoded arity,
+///   and MessagePack cells drop repeated field names.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,12 +119,13 @@ pub enum DaemonMessage {
 mod tests {
     use super::*;
     use domain::{
-        AgentCapabilities, AgentDescriptor, AgentProviderId, DetectionResult, DetectionStatus,
-        Project, ProjectGroup, ProjectGroupId, ProjectId, PtySize, PullRequest, PullRequestFailure,
-        PullRequestFailureKind, PullRequestLabel, PullRequestRelations, PullRequestSource,
-        PullRequestSourceStatus, PullRequestState, PullRequestViewer, ReviewDecision, Session,
-        SessionKind, SessionRole, SessionState, SessionTitle, Timestamp, VersionProbe, Workspace,
-        WorkspaceId, WorkspaceKind, WorkspaceStatus,
+        AgentCapabilities, AgentDescriptor, AgentProviderId, Cell, CellFlags, Color,
+        DetectionResult, DetectionStatus, Project, ProjectGroup, ProjectGroupId, ProjectId,
+        PtySize, PullRequest, PullRequestFailure, PullRequestFailureKind, PullRequestLabel,
+        PullRequestRelations, PullRequestSource, PullRequestSourceStatus, PullRequestState,
+        PullRequestViewer, ReviewDecision, Session, SessionKind, SessionRole, SessionState,
+        SessionTitle, Timestamp, VersionProbe, Workspace, WorkspaceId, WorkspaceKind,
+        WorkspaceStatus,
     };
     use std::path::PathBuf;
 
@@ -406,11 +410,32 @@ mod tests {
         assert_eq!(ack, back);
     }
 
+    #[test]
+    fn a_cell_round_trips_as_a_compact_messagepack_tuple() {
+        let cell = Cell {
+            text: "x".into(),
+            fg: Color::Indexed(2),
+            bg: Color::Rgb(1, 2, 3),
+            flags: CellFlags::BOLD,
+        };
+        let bytes = rmp_serde::to_vec_named(&cell).unwrap();
+        assert!(
+            !bytes.windows(4).any(|window| window == b"text"),
+            "binary cells must not repeat field names"
+        );
+        let back: Cell = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, cell);
+        let json = serde_json::to_string(&cell).unwrap();
+        assert!(json.contains("\"text\""));
+        assert_eq!(serde_json::from_str::<Cell>(&json).unwrap(), cell);
+    }
+
     /// Minimal terminal snapshot to exercise the nested `domain` grid types.
     struct TerminalSnapshotFixture;
     impl TerminalSnapshotFixture {
         fn make() -> domain::TerminalSnapshot {
             domain::TerminalSnapshot {
+                scrollback_generation: 0,
                 seq: 1,
                 size: PtySize::default(),
                 visible: vec![domain::Row::blank(80)],

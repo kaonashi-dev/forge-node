@@ -22,6 +22,7 @@ struct ClientHandle {
     subscriptions: HashSet<TerminalId>,
     /// Terminals for which this client fell behind and needs a resync.
     behind: HashSet<TerminalId>,
+    finished: HashMap<TerminalId, DaemonEvent>,
 }
 
 /// Registry of connected clients (§9.3).
@@ -45,6 +46,7 @@ impl ClientRegistry {
                 tx,
                 subscriptions: HashSet::new(),
                 behind: HashSet::new(),
+                finished: HashMap::new(),
             },
         );
         rx
@@ -99,6 +101,7 @@ impl ClientRegistry {
         if let Some(c) = self.clients.lock().unwrap().get_mut(&id) {
             c.subscriptions.remove(&terminal_id);
             c.behind.remove(&terminal_id);
+            c.finished.remove(&terminal_id);
         }
     }
 
@@ -155,6 +158,9 @@ impl ClientRegistry {
                 continue;
             }
             if c.behind.contains(&terminal_id) {
+                if c.tx.is_full() {
+                    continue;
+                }
                 // Try to recover: only send a fresh snapshot once the queue has room.
                 let ev = resync_event.get_or_insert_with(&mut resync);
                 if c.tx.try_send(DaemonMessage::Event(ev.clone())).is_ok() {
@@ -165,6 +171,70 @@ impl ClientRegistry {
             if c.tx.try_send(DaemonMessage::Event(delta.clone())).is_err() {
                 // Queue full: drop the backlog conceptually and mark for resync.
                 c.behind.insert(terminal_id);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn needs_resync(&self, id: ClientId) -> bool {
+        self.clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .is_some_and(|client| !client.behind.is_empty())
+    }
+
+    /// Called after a socket write frees capacity, including when the PTY has gone quiet.
+    pub fn recover(
+        &self,
+        id: ClientId,
+        mut snapshot: impl FnMut(TerminalId) -> Option<DaemonEvent>,
+    ) {
+        let mut clients = self
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(client) = clients.get_mut(&id) else {
+            return;
+        };
+        let terminals: Vec<_> = client.behind.iter().copied().collect();
+        for terminal in terminals {
+            if client.tx.is_full() {
+                break;
+            }
+            let event = client
+                .finished
+                .remove(&terminal)
+                .or_else(|| snapshot(terminal));
+            if let Some(event) = event {
+                if let Err(error) = client.tx.try_send(DaemonMessage::Event(event)) {
+                    if let DaemonMessage::Event(event) = error.into_inner() {
+                        client.finished.insert(terminal, event);
+                    }
+                    break;
+                }
+            }
+            client.behind.remove(&terminal);
+        }
+    }
+
+    /// Preserve the final grid for lagging clients before its engine is reaped.
+    pub fn finish_terminal(&self, terminal: TerminalId, snapshot: impl FnOnce() -> DaemonEvent) {
+        let mut clients = self
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = Some(snapshot);
+        let mut event = None;
+        for client in clients
+            .values_mut()
+            .filter(|client| client.behind.contains(&terminal))
+        {
+            if event.is_none() {
+                event = snapshot.take().map(|build| build());
+            }
+            if let Some(event) = &event {
+                client.finished.insert(terminal, event.clone());
             }
         }
     }
@@ -190,6 +260,9 @@ mod tests {
         DaemonEvent::TerminalDelta {
             terminal_id,
             delta: TerminalDelta {
+                patches: Vec::new(),
+                scrollback_len: 0,
+                scrollback_generation: 0,
                 seq,
                 rows: vec![],
                 scrolled_lines: 0,
@@ -203,6 +276,7 @@ mod tests {
         DaemonEvent::TerminalResync {
             terminal_id,
             snapshot: TerminalSnapshot {
+                scrollback_generation: 0,
                 seq: 999,
                 size: PtySize::default(),
                 visible: vec![],
@@ -248,6 +322,53 @@ mod tests {
         // Next routed delta should deliver a single resync (recovery path).
         reg.route_terminal_delta(term, &delta_event(term, 9999), || resync_event(term));
         let msg = rx.try_recv().expect("a recovery message");
+        match msg {
+            DaemonMessage::Event(DaemonEvent::TerminalResync { .. }) => {}
+            other => panic!("expected resync, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_full_queue_does_not_build_a_resync_snapshot() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let reg = ClientRegistry::new();
+        let a = ClientId::new();
+        let _rx = reg.register(a);
+        let term = TerminalId::new();
+        reg.subscribe(a, term);
+        for seq in 0..(CLIENT_QUEUE_CAPACITY as u64 + 1) {
+            reg.route_terminal_delta(term, &delta_event(term, seq), || resync_event(term));
+        }
+
+        let builds = AtomicUsize::new(0);
+        for seq in 0..8 {
+            reg.route_terminal_delta(term, &delta_event(term, seq), || {
+                builds.fetch_add(1, Ordering::SeqCst);
+                resync_event(term)
+            });
+        }
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            0,
+            "a full queue must not construct snapshots it cannot send"
+        );
+    }
+
+    #[test]
+    fn recover_sends_a_resync_once_the_queue_has_room() {
+        let reg = ClientRegistry::new();
+        let a = ClientId::new();
+        let rx = reg.register(a);
+        let term = TerminalId::new();
+        reg.subscribe(a, term);
+        for seq in 0..(CLIENT_QUEUE_CAPACITY as u64 + 1) {
+            reg.route_terminal_delta(term, &delta_event(term, seq), || resync_event(term));
+        }
+        while rx.try_recv().is_ok() {}
+
+        reg.recover(a, |_| Some(resync_event(term)));
+        let msg = rx.try_recv().expect("a recovery message after drain");
         match msg {
             DaemonMessage::Event(DaemonEvent::TerminalResync { .. }) => {}
             other => panic!("expected resync, got {other:?}"),

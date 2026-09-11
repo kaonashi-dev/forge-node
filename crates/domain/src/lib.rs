@@ -88,8 +88,8 @@ pub use share::{
     ShareStrategy, ShareTrigger, ShareVerb, MAX_SHARE_RULES,
 };
 pub use terminal::{
-    Cell, CellFlags, Color, Cursor, CursorShape, Damage, MouseMode, Row, ScrollbackRows, TermModes,
-    TerminalDelta, TerminalSnapshot, DEFAULT_SCROLLBACK_TAIL,
+    Cell, CellFlags, CellPatch, Color, Cursor, CursorShape, Damage, MouseMode, Row, ScrollbackRows,
+    TermModes, TerminalDelta, TerminalSnapshot, DEFAULT_SCROLLBACK_TAIL,
 };
 pub use usage::{DailyUsage, ProviderAnalytics, TokenTotals, UsageAnalytics, MICROS_PER_USD};
 pub use workspace::{Workspace, WorkspaceKind, WorkspaceStatus};

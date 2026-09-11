@@ -4319,6 +4319,8 @@ impl Daemon {
             engine: AlacrittyEngine::with_scrollback(size, scrollback),
             delta_builder: DeltaBuilder::new(),
             emit_seq: 0,
+            last_emit: None,
+            pending_damage: false,
             size,
             child_pid,
             process_group,
@@ -4438,6 +4440,8 @@ impl Daemon {
     ) -> Result<Response, ProtocolError> {
         if count == 0 {
             return Ok(Response::ScrollbackRows(ScrollbackRows {
+                snapshot: None,
+                generation: 0,
                 from_line,
                 rows: Vec::new(),
             }));
@@ -4466,7 +4470,12 @@ impl Daemon {
             .checked_add(i64::from(count))
             .ok_or_else(|| ProtocolError::invalid_request("from_line + count is out of range"))?;
         let rows = rt.engine.rows(start..end);
-        Ok(Response::ScrollbackRows(ScrollbackRows { from_line, rows }))
+        Ok(Response::ScrollbackRows(ScrollbackRows {
+            snapshot: None,
+            generation: rt.engine.scrollback_generation(),
+            from_line,
+            rows,
+        }))
     }
 
     fn send_signal(
@@ -4505,15 +4514,40 @@ impl Daemon {
         self.registry.has_subscribers(terminal_id)
     }
 
-    /// One PTY chunk, one core lock. Blocking I/O happens after the lock is released.
-    /// Returns whether anyone was watching (`FRAME` vs `IDLE_FRAME`).
+    pub(crate) fn recover_client(&self, client: domain::ClientId) {
+        let inner = self.lock();
+        self.registry.recover(client, |terminal_id| {
+            let rt = inner.terminals.get(&terminal_id)?;
+            let mut snapshot = rt.engine.snapshot(DEFAULT_SCROLLBACK_TAIL);
+            snapshot.seq = rt.emit_seq;
+            Some(DaemonEvent::TerminalResync {
+                terminal_id,
+                snapshot,
+            })
+        });
+    }
+
+    /// Feed and publish immediately, without ending an open synchronized frame.
     pub fn pump_terminal(
         self: &Arc<Self>,
         terminal_id: TerminalId,
         bytes: &[u8],
         note: bool,
     ) -> bool {
+        self.pump_terminal_batch(terminal_id, bytes, note, true, false)
+            .subscribed
+    }
+
+    pub(crate) fn pump_terminal_batch(
+        self: &Arc<Self>,
+        terminal_id: TerminalId,
+        bytes: &[u8],
+        note: bool,
+        force_emit: bool,
+        eof: bool,
+    ) -> crate::terminal::PumpStatus {
         let subscribed = self.registry.has_subscribers(terminal_id);
+        let mut next_wake = None;
 
         let mut reply = None;
         let mut bell = false;
@@ -4522,15 +4556,35 @@ impl Daemon {
         {
             let mut inner = self.lock();
             let Some(rt) = inner.terminals.get_mut(&terminal_id) else {
-                return subscribed;
+                return crate::terminal::PumpStatus {
+                    subscribed,
+                    next_wake,
+                };
             };
 
             let (replies, publish_damage) = rt.feed(bytes);
+            rt.pending_damage |= publish_damage;
+            if eof {
+                rt.pending_damage |= rt.engine.finish_sync();
+            }
             if !replies.is_empty() {
                 reply = Some((Arc::clone(&rt.writer), replies));
             }
 
-            if subscribed && publish_damage {
+            let now = Instant::now();
+            let emit_at = rt
+                .last_emit
+                .map_or(now, |last| last + crate::terminal::FRAME);
+            let emit = subscribed && rt.pending_damage && (force_emit || now >= emit_at);
+            if emit {
+                rt.pending_damage = false;
+                rt.last_emit = Some(now);
+            }
+            next_wake = rt.engine.sync_deadline();
+            if subscribed && rt.pending_damage {
+                next_wake = Some(next_wake.map_or(emit_at, |sync| sync.min(emit_at)));
+            }
+            if emit {
                 // Once per emitted delta, not per engine feed.
                 rt.emit_seq += 1;
                 let seq = rt.emit_seq;
@@ -4566,6 +4620,7 @@ impl Daemon {
                     if let Some(session) = inner.sessions.get_mut(&session_id) {
                         session.title.terminal = title;
                         let snap = session.clone();
+                        // Known lock/I/O debt: title persistence shares Inner's SQLite connection.
                         let _ = inner.db.sessions().upsert(&snap);
                         session_update = Some(snap);
                     }
@@ -4596,7 +4651,10 @@ impl Daemon {
             self.registry
                 .notify_non_subscribers(terminal_id, DaemonEvent::TerminalActivity { terminal_id });
         }
-        subscribed
+        crate::terminal::PumpStatus {
+            subscribed,
+            next_wake,
+        }
     }
 
     /// Runtime-only `last_activity_at`. Never touches the DB. Caller holds the core lock.
@@ -4633,6 +4691,16 @@ impl Daemon {
         // Reap outside the core lock.
         let Some(mut rt) = ({
             let mut inner = self.lock();
+            if let Some(rt) = inner.terminals.get(&terminal_id) {
+                self.registry.finish_terminal(terminal_id, || {
+                    let mut snapshot = rt.engine.snapshot(DEFAULT_SCROLLBACK_TAIL);
+                    snapshot.seq = rt.emit_seq;
+                    DaemonEvent::TerminalResync {
+                        terminal_id,
+                        snapshot,
+                    }
+                });
+            }
             inner.terminals.remove(&terminal_id)
         }) else {
             return;
@@ -5886,7 +5954,7 @@ fn file_change(status: git_service::FileChange) -> domain::DiffStatus {
 /// cell beyond the string being built.
 fn row_text(row: &domain::Row) -> String {
     let mut out = String::new();
-    for cell in &row.cells {
+    for cell in row.cells.iter() {
         out.push_str(cell.text.as_str());
     }
     while out.ends_with(' ') {

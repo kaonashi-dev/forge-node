@@ -7,28 +7,18 @@
 //! subscribers at most every [`FRAME`] (≤125/s, §10.5). On EOF the child has
 //! exited and the loop notifies the core.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use domain::{PtySize, SessionId, TerminalId};
-use terminal_core::{AlacrittyEngine, DeltaBuilder, PtyHandle, TerminalEngine};
+use terminal_core::{AlacrittyEngine, DeltaBuilder, PtyHandle, PtyReader, TerminalEngine};
 
 use crate::core::Daemon;
 
 /// Minimum interval between emitted deltas (§10.5 coalescing: ~8 ms ⇒ ≤125/s).
 pub const FRAME: Duration = Duration::from_millis(8);
-/// The same floor for a terminal nobody is watching (~20/s).
-///
-/// The 8 ms frame exists so an attached client sees output promptly. With no
-/// subscriber there is no frame to hit: the bytes go into the engine's grid and
-/// nothing is sent anywhere, so waking the thread 125 times a second — each
-/// wake taking the core lock — buys nothing. A background agent spewing a
-/// progress spinner used to cost exactly that, times however many are running.
-/// Output is not lost or reordered, it simply arrives in larger chunks, and the
-/// only cost is that the first delta after an attach can be one interval late —
-/// after `AttachTerminal` has already answered with a full snapshot.
-const IDLE_FRAME: Duration = Duration::from_millis(50);
+const READ_BATCH_BUDGET: Duration = Duration::from_millis(2);
 /// PTY read buffer size (§11.2).
 const READ_BUF: usize = 64 * 1024;
 /// Minimum interval between two activity notes for the same terminal (§10.4).
@@ -78,6 +68,8 @@ pub struct TerminalRuntime {
     /// deltas are consecutive for the client's `seq` gap check (§10.5) even
     /// though the engine feeds many byte-chunks between emissions.
     pub emit_seq: u64,
+    pub last_emit: Option<Instant>,
+    pub pending_damage: bool,
     pub size: PtySize,
     /// Reserved for diagnostics/stats (§22); killing uses `process_group`.
     #[allow(dead_code)]
@@ -107,42 +99,55 @@ impl TerminalRuntime {
     }
 }
 
-/// The blocking PTY read loop for one terminal (§11.2). Runs on its own thread.
-///
-/// One chunk used to cost three separate lock acquisitions — feed under the
-/// core lock, `has_subscribers` under the registry lock, then emit or note
-/// under the core lock again — up to 125 times a second per terminal, all
-/// contending with every client request. [`Daemon::pump_terminal`] does the
-/// whole chunk under one core lock instead, and the ≤1/s activity clock lives
-/// in this thread's own state so the common case adds nothing at all.
-pub fn pty_loop(daemon: Arc<Daemon>, terminal_id: TerminalId, mut reader: Box<dyn Read + Send>) {
-    let mut buf = [0u8; READ_BUF];
-    // Start in the past so the first chunk emits immediately.
-    let mut last_emit = Instant::now() - FRAME;
-    let mut last_note = Instant::now() - ACTIVITY_NOTE;
+pub(crate) struct PumpStatus {
+    pub subscribed: bool,
+    pub next_wake: Option<Instant>,
+}
 
+/// Drain bounded batches independently of the emission clock; block when there is no work.
+pub fn pty_loop(daemon: Arc<Daemon>, terminal_id: TerminalId, mut reader: Box<dyn PtyReader>) {
+    let mut buf = [0u8; READ_BUF];
+    let mut deadline: Option<Instant> = None;
+    let mut last_note = Instant::now() - ACTIVITY_NOTE;
     loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break,  // EOF: child (and fd inheritors) exited.
-            Err(_) => break, // Master closed / errored.
-            Ok(n) => {
-                let note = last_note.elapsed() >= ACTIVITY_NOTE;
-                if note {
-                    last_note = Instant::now();
+        let timeout = deadline.map(|end| end.saturating_duration_since(Instant::now()));
+        let mut eof = false;
+        let mut len = match reader.read_timeout(&mut buf, timeout) {
+            Ok(Some(0)) => break,
+            Ok(Some(len)) => len,
+            Ok(None) => 0,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        let batch_end = Instant::now() + READ_BATCH_BUDGET;
+        while len > 0 && len < buf.len() && Instant::now() < batch_end {
+            match reader.read_timeout(&mut buf[len..], Some(Duration::ZERO)) {
+                Ok(Some(0)) => {
+                    eof = true;
+                    break;
                 }
-                let subscribed = daemon.pump_terminal(terminal_id, &buf[..n], note);
-                // Enforce the inter-delta floor so a flood coalesces (§10.5): the
-                // child keeps filling the kernel PTY buffer while we sleep.
-                let floor = if subscribed { FRAME } else { IDLE_FRAME };
-                let since = last_emit.elapsed();
-                if since < floor {
-                    std::thread::sleep(floor - since);
+                Ok(Some(n)) => len += n,
+                Ok(None) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    eof = true;
+                    break;
                 }
-                last_emit = Instant::now();
             }
         }
+        let note = len > 0 && last_note.elapsed() >= ACTIVITY_NOTE;
+        if note {
+            last_note = Instant::now();
+        }
+        deadline = daemon
+            .pump_terminal_batch(terminal_id, &buf[..len], note, false, false)
+            .next_wake;
+        if eof {
+            break;
+        }
     }
-
+    // EOF must publish the final batch even if its frame deadline has not arrived.
+    daemon.pump_terminal_batch(terminal_id, &[], false, true, true);
     daemon.on_terminal_exited(terminal_id);
 }
 
@@ -193,17 +198,9 @@ mod tests {
         Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>))
     }
 
-    /// §10.5: an attached terminal coalesces at ~125 deltas/s, an unwatched one
-    /// at ~20/s, and the activity clock and its broadcast are far slower. These
-    /// are the numbers the client's timing assumptions are built on.
     #[test]
-    fn the_coalescing_floors_match_the_plan() {
+    fn the_frame_and_activity_budgets_are_bounded() {
         assert_eq!(FRAME, Duration::from_millis(8));
-        assert_eq!(IDLE_FRAME, Duration::from_millis(50));
-        assert!(
-            IDLE_FRAME > FRAME,
-            "an unwatched terminal must wake less often, not more"
-        );
         assert_eq!(ACTIVITY_NOTE, Duration::from_secs(1));
         assert_eq!(ACTIVITY_BROADCAST, Duration::from_secs(30));
         assert!(ACTIVITY_BROADCAST > ACTIVITY_NOTE);
@@ -276,6 +273,8 @@ mod tests {
             engine: terminal_core::AlacrittyEngine::new(size),
             delta_builder: terminal_core::DeltaBuilder::new(),
             emit_seq: 0,
+            last_emit: None,
+            pending_damage: false,
             size,
             child_pid: 1,
             process_group: 1,

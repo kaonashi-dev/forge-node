@@ -144,10 +144,20 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     }
 
     // ---- Writer task: drain the client channel to the socket ----
+    let writer_daemon = Arc::clone(&daemon);
     let writer = tokio::spawn(async move {
         while let Ok(msg) = rx.recv_async().await {
             if write_message(&mut write_half, &msg).await.is_err() {
                 break;
+            }
+            if writer_daemon.registry().needs_resync(client_id) {
+                let daemon = Arc::clone(&writer_daemon);
+                if tokio::task::spawn_blocking(move || daemon.recover_client(client_id))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
     });

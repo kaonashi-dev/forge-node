@@ -129,7 +129,7 @@ fn wait_for_row(
 ) -> Option<String> {
     let mut found = None;
     wait_for(rx, timeout, |ev| match ev {
-        DaemonEvent::TerminalDelta { delta, .. } => delta.rows.iter().any(|(_, row)| {
+        DaemonEvent::TerminalDelta { delta, .. } => delta.changed_rows().any(|(_, row)| {
             let text = row_text(row);
             if pred(&text) {
                 found = Some(text);
@@ -402,9 +402,9 @@ fn end_to_end_shell_session() {
 
     // Expect a delta whose rows contain the marker (echoed and/or printed).
     let seen = wait_for(&events, Duration::from_secs(10), |ev| match ev {
-        DaemonEvent::TerminalDelta { delta, .. } => {
-            delta.rows.iter().any(|(_, r)| row_text(r).contains(marker))
-        }
+        DaemonEvent::TerminalDelta { delta, .. } => delta
+            .changed_rows()
+            .any(|(_, r)| row_text(r).contains(marker)),
         _ => false,
     });
     assert!(
@@ -530,23 +530,32 @@ fn resize_terminal_reaches_the_grid_and_the_pty() {
     // delta carrying that output must be shaped by the new size as well
     // (§10.5, §11.4).
     write_input(&client, terminal_id, "stty size\n");
-    let mut width = 0usize;
+    let mut width = None;
     let seen = wait_for(&events, Duration::from_secs(30), |ev| match ev {
-        DaemonEvent::TerminalDelta { delta, .. } => delta.rows.iter().any(|(_, row)| {
-            if row_text(row).contains("40 100") {
-                width = row.cells.len();
+        DaemonEvent::TerminalDelta { delta, .. } => {
+            if let Some((_, row)) = delta
+                .rows
+                .iter()
+                .find(|(_, row)| row_text(row).contains("40 100"))
+            {
+                width = Some(row.cells.len());
                 true
             } else {
-                false
+                delta
+                    .patches
+                    .iter()
+                    .any(|patch| row_text(&patch.row).contains("40 100"))
             }
-        }),
+        }
         _ => false,
     });
     assert!(
         seen.is_some(),
         "`stty size` inside the PTY should report the resized geometry"
     );
-    assert_eq!(width, 100, "deltas carry rows of the new width");
+    if let Some(width) = width {
+        assert_eq!(width, 100, "full-row deltas carry the new width");
+    }
 
     let snapshot = attach(&client, terminal_id, 100, 40);
     assert_eq!(snapshot.size, size, "snapshot reports the new PTY size");
@@ -965,7 +974,7 @@ fn installed_agent_tuis_render_and_accept_input() {
         let rendered = initial_content
             || wait_for(&events, Duration::from_secs(30), |event| {
                 matches!(event, DaemonEvent::TerminalDelta { terminal_id: id, delta }
-                    if *id == terminal_id && delta.rows.iter().any(|(_, row)|
+                    if *id == terminal_id && delta.changed_rows().any(|(_, row)|
                         row.cells.iter().any(|cell| !cell.text.trim().is_empty())))
             })
             .is_some();
@@ -1052,7 +1061,7 @@ fn macos_vim_htop_color_and_alt_screen_smoke() {
     assert!(
         wait_for(&events, Duration::from_secs(30), |event| {
             matches!(event, DaemonEvent::TerminalDelta { delta, .. }
-            if delta.rows.iter().any(|(_, row)| {
+            if delta.changed_rows().any(|(_, row)| {
                 row_text(row).contains("forge_color_ready")
                     && row.cells.iter().any(|cell| cell.fg != domain::Color::Default)
             }))
@@ -1070,7 +1079,7 @@ fn macos_vim_htop_color_and_alt_screen_smoke() {
         wait_for(&events, Duration::from_secs(30), |event| {
             matches!(event, DaemonEvent::TerminalDelta { delta, .. }
                 if delta.modes.alt_screen
-                    && delta.rows.iter().any(|(_, row)| row_text(row).contains("forge_vim_ready")))
+                    && delta.changed_rows().any(|(_, row)| row_text(row).contains("forge_vim_ready")))
         })
         .is_some(),
         "vim should render in the alternate screen"
@@ -1085,7 +1094,7 @@ fn macos_vim_htop_color_and_alt_screen_smoke() {
         wait_for(&events, Duration::from_secs(30), |event| {
             matches!(event, DaemonEvent::TerminalDelta { delta, .. }
                 if delta.modes.alt_screen
-                    && delta.rows.iter().any(|(_, row)|
+                    && delta.changed_rows().any(|(_, row)|
                         row.cells.iter().any(|cell| !cell.text.trim().is_empty())))
         })
         .is_some(),

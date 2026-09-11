@@ -23,7 +23,7 @@ fn render_plain(e: &AlacrittyEngine) -> String {
     let mut out = String::new();
     for row in &snap.visible {
         let mut line = String::new();
-        for cell in &row.cells {
+        for cell in row.cells.iter() {
             line.push_str(&cell.text);
         }
         out.push_str(line.trim_end());

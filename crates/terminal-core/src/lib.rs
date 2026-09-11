@@ -33,7 +33,7 @@ pub mod snapshot;
 pub mod alacritty_engine;
 
 pub use engine::TerminalEngine;
-pub use pty::{ExitStatus, PortablePtyBackend, PtyBackend, PtyError, PtyHandle};
+pub use pty::{ExitStatus, PortablePtyBackend, PtyBackend, PtyError, PtyHandle, PtyReader};
 pub use snapshot::DeltaBuilder;
 
 #[cfg(feature = "engine-alacritty")]

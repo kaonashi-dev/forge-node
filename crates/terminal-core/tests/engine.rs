@@ -26,11 +26,18 @@ fn feed_reports_damage() {
 
     e.feed(b"a\r\nb\r\nc");
     match e.take_damage() {
+        Damage::Columns(rows) => {
+            assert!(!rows.is_empty(), "expected damaged rows after feed");
+            assert!(
+                rows.iter().any(|(line, _, _)| *line == 0),
+                "row 0 should be damaged, got {rows:?}"
+            );
+        }
         Damage::Partial(rows) => {
             assert!(!rows.is_empty(), "expected damaged rows after feed");
             assert!(rows.contains(&0), "row 0 should be damaged, got {rows:?}");
         }
-        other => panic!("expected Partial damage, got {other:?}"),
+        other => panic!("expected column or partial damage, got {other:?}"),
     }
 }
 
@@ -44,13 +51,19 @@ fn damage_clears_after_poll() {
     // Poll 2 without any new input: the previously damaged top rows are cleared
     // (only the cursor's own row may remain).
     match e.take_damage() {
+        Damage::Columns(rows) => {
+            assert!(
+                !rows.iter().any(|(line, _, _)| *line == 0),
+                "row 0 damage should have cleared, got {rows:?}"
+            );
+        }
         Damage::Partial(rows) => {
             assert!(
                 !rows.contains(&0),
                 "row 0 damage should have cleared, got {rows:?}"
             );
         }
-        other => panic!("expected Partial after clear, got {other:?}"),
+        other => panic!("expected column or partial damage after clear, got {other:?}"),
     }
 }
 
@@ -103,13 +116,16 @@ fn delta_carries_changed_rows() {
     e.feed(b"hello");
     let delta = db.delta(&mut e);
     assert_eq!(delta.seq, 1);
-    assert!(!delta.rows.is_empty(), "delta should carry damaged rows");
     assert!(
-        delta.rows.iter().any(|(i, _)| *i == 0),
+        delta.changed_rows().next().is_some(),
+        "delta should carry damaged rows"
+    );
+    assert!(
+        delta.changed_rows().any(|(i, _)| i == 0),
         "row 0 should be in the delta"
     );
     // The changed row's text should render "hello".
-    let (_, row) = delta.rows.iter().find(|(i, _)| *i == 0).unwrap();
+    let (_, row) = delta.changed_rows().find(|(i, _)| *i == 0).unwrap();
     let text: String = row.cells.iter().map(|c| c.text.as_str()).collect();
     assert!(text.starts_with("hello"), "got {text:?}");
 }
@@ -270,4 +286,90 @@ fn modes_parse_private_modes() {
 
     e.feed(b"\x1b[?1049h"); // alt screen
     assert!(e.modes().alt_screen);
+}
+
+#[test]
+fn unsaturated_growth_keeps_history_generation() {
+    let mut e = engine(8, 2);
+    e.feed(b"a\r\nb\r\nc\r\n");
+    assert!(e.scrollback_len() >= 1);
+    let first = e.scrollback_generation();
+    e.feed(b"d\r\n");
+    assert!(e.scrollback_len() > 1);
+    assert_eq!(
+        e.scrollback_generation(),
+        first,
+        "absolute history indices stay valid while the buffer is still growing"
+    );
+}
+
+#[test]
+fn a_saturated_history_rewrites_its_generation() {
+    let mut e = AlacrittyEngine::with_scrollback(
+        PtySize {
+            cols: 8,
+            rows: 2,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+        2,
+    );
+    for i in 0..8 {
+        e.feed(format!("{i}\r\n").as_bytes());
+    }
+    assert_eq!(e.scrollback_len(), 2);
+    let before = e.scrollback_generation();
+    e.feed(b"c\r\n");
+    assert_eq!(e.scrollback_len(), 2);
+    assert_ne!(
+        e.scrollback_generation(),
+        before,
+        "a ring-buffer scroll must invalidate cached history addresses"
+    );
+}
+
+#[test]
+fn finish_sync_releases_a_held_synchronized_frame() {
+    let mut e = engine(20, 2);
+    let _ = e.take_damage();
+    assert!(e.feed(b"\x1b[?2026h"));
+    assert!(!e.feed(b"hidden"));
+    let held: String = e.snapshot(0).visible[0]
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect();
+    assert!(
+        !held.contains("hidden"),
+        "the synchronized body must stay off-screen until it is closed, got {held:?}"
+    );
+    assert!(e.finish_sync());
+    let shown: String = e.snapshot(0).visible[0]
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect();
+    assert!(
+        shown.contains("hidden"),
+        "finish_sync must publish the held frame, got {shown:?}"
+    );
+}
+
+#[test]
+fn an_expired_sync_deadline_publishes_on_the_next_feed() {
+    let mut e = engine(20, 2);
+    // Entering the mode may publish the preceding frame; the body is held.
+    let _ = e.feed(b"\x1b[?2026h");
+    assert!(!e.feed(b"held"));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(e.feed(b""));
+    let shown: String = e.snapshot(0).visible[0]
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect();
+    assert!(
+        shown.contains("held"),
+        "an expired synchronized frame must appear without a closing sequence, got {shown:?}"
+    );
 }

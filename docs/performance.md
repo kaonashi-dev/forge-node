@@ -36,9 +36,10 @@ cargo test -p client --release scrollback_delta_timing -- --ignored --nocapture
 Current-source checks also refine the historical audit below: Tauri's bridge
 already owns its `CellGrid` on the runtime thread and emits shell state separately
 from terminal frames. The old whole-`Store` emission finding does not describe
-that bridge. `client::Client` still has an unbounded event queue, and
-`Daemon::pump_terminal` still persists title changes under the core lock; both
-remain review targets. The full-grid scrolling-damage limitation also remains.
+that bridge. `client::Client` now uses a bounded event queue that disconnects
+on overflow. `Daemon::pump_terminal` still persists title changes under the
+core lock. Column patches cover mid-screen edits; a line feed can still force
+a whole-grid delta because Alacritty reports `TermDamage::Full`.
 
 ## Why this page exists
 
@@ -70,8 +71,9 @@ its cost times its rung.
 
 Two rungs deserve special care because they are easy to miss:
 
-- **`IDLE_FRAME` does not save you.** The 50 ms floor applies only when nobody
-  is watching. An attached terminal is always on the 8 ms rung.
+- **Unwatched sessions no longer throttle the child.** The 8 ms floor is the
+  emit cadence for an attached terminal. Reads wait on `poll` and drain
+  available bytes independently of that floor.
 - **Per-frame is not per-user-action.** A background agent's delta repaints the sidebar, the diff pane and the PR list too.
 
 ## Memory
@@ -83,7 +85,8 @@ Two rungs deserve special care because they are easy to miss:
 a `scrollback_cache` capped at `MAX_SCROLLBACK_CACHE_ROWS = 5_000`, and
 `push_scrolled_lines` fills that cache within seconds of any scrolling output.
 A `Cell` is 40 B padded, so a 200-column replica saturates at ~40 MB — copied on
-every daemon event, at up to 125 /s, into a `flume::unbounded()` channel.
+every daemon event, at up to 125 /s. Row cells now travel as `Arc<Vec<Cell>>`,
+and the client event queue is `flume::bounded(64)` (overflow disconnects).
 
 **Rule.** Anything on the delta rung that is bigger than a cache line ships as
 `Arc`, not by value. If a queue can be produced into faster than it is drained,
@@ -91,8 +94,9 @@ it is bounded and drops, the way the daemon side already does
 (`registry.rs`: `flume::bounded(256)` plus a fresh resync for a `behind`
 client — never a replayed backlog).
 
-> **Status: open.** This is the one audit finding of its class still unfixed.
-> See *Known open* below.
+> **Status: partly fixed.** Grid rows are `Arc`, and both the daemon outbound
+> queue and the client event queue are bounded. `Store` itself can still be
+> cloned on slower GUI paths; see *Known open* below.
 
 ### Cap before you allocate, not after
 
@@ -379,8 +383,8 @@ Carry these forward; they are real, verified, and not yet fixed.
 
 | Item | Where | Why it still matters |
 |---|---|---|
-| `Store` deep-cloned per event into unbounded channels | `ui::runtime`, `client::Store` | The highest-value item left. Coupled to the one below: the emitter still produces at 125 /s. |
-| Whole-grid delta on every line feed | `DeltaBuilder::delta` | ~46 MB/s per attached terminal. Not narrowable via `scrolled_lines` (see above); the column-bounds path is the way in. |
+| `Store` deep-cloned on slower GUI paths | `ui::runtime`, `client::Store` | Terminal rows are `Arc` and both event queues are bounded. Remaining clones are whole-store snapshots, not per-cell. |
+| Whole-grid delta on a line feed | `DeltaBuilder::delta` | Mid-screen edits now travel as column patches. A line feed can still report `TermDamage::Full` (see Alacritty `Term::damage()`), so that path still repaints the viewport. |
 | WAL write under the core lock | `Daemon::pump_terminal` | fsync is gone (`synchronous = NORMAL`) but the write still holds the global mutex on the delta rung. |
 | `resolved_env` under the core lock | `Daemon::resolved_env` | 796 ms measured, 5 s worst case, taken while the socket is being bound. |
 | One `impl Render`, no list virtualization | `apps/tauri` | Every delta repaints the whole window; every scroll list builds its off-screen rows. |

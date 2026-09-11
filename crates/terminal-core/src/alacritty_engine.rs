@@ -13,6 +13,7 @@
 
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Row as AlacRow};
@@ -92,6 +93,7 @@ pub struct AlacrittyEngine {
     title: Option<String>,
     bell: bool,
     pty_writes: Vec<u8>,
+    history_generation: u64,
 }
 
 impl AlacrittyEngine {
@@ -124,6 +126,7 @@ impl AlacrittyEngine {
             title: None,
             bell: false,
             pty_writes: Vec::new(),
+            history_generation: 0,
         }
     }
 
@@ -133,6 +136,23 @@ impl AlacrittyEngine {
     /// programs that query the terminal don't stall. Take-and-clear.
     pub fn take_pty_writes(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.pty_writes)
+    }
+
+    #[must_use]
+    pub fn sync_deadline(&self) -> Option<Instant> {
+        self.processor.sync_timeout().sync_timeout()
+    }
+
+    /// Release a synchronized frame at EOF, when its closing escape cannot arrive.
+    pub fn finish_sync(&mut self) -> bool {
+        if self.sync_deadline().is_none() {
+            return false;
+        }
+        self.processor.stop_sync(&mut self.term);
+        self.seq += 1;
+        self.history_generation += 1;
+        self.drain_proxy();
+        true
     }
 
     /// Fold the proxy state accumulated during a feed/resize into engine fields
@@ -286,11 +306,22 @@ fn convert_row(row: &AlacRow<AlacCell>, cols: usize) -> Row {
         cells.push(convert_cell(&row[Column(c)]));
     }
     let wrapped = cols > 0 && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
-    Row { cells, wrapped }
+    Row {
+        cells: cells.into(),
+        wrapped,
+    }
 }
 
 impl TerminalEngine for AlacrittyEngine {
     fn feed(&mut self, bytes: &[u8]) -> bool {
+        let expired = self
+            .sync_deadline()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+            && self.finish_sync();
+        if bytes.is_empty() {
+            return expired;
+        }
+        let history_len = self.scrollback_len();
         self.seq += 1;
         self.processor.advance(&mut self.term, bytes);
         // Match alacritty_terminal's own event loop: when every byte in this
@@ -298,12 +329,25 @@ impl TerminalEngine for AlacrittyEngine {
         // has deliberately not changed yet and no renderer should wake. The
         // closing ESU applies the buffered bytes, drops this count below the
         // chunk length and publishes one complete frame.
-        let publish_damage = !bytes.is_empty() && self.processor.sync_bytes_count() < bytes.len();
+        let publish_damage = expired || self.processor.sync_bytes_count() < bytes.len();
+        let new_len = self.scrollback_len();
+        // Growth below the cap keeps absolute history indices. A shrink is a
+        // clear/reset. Unchanged length plus Full is a saturated ring or a
+        // rewrite whose addresses cannot be proven stable.
+        if new_len < history_len
+            || (new_len == history_len
+                && new_len > 0
+                && publish_damage
+                && matches!(self.term.damage(), TermDamage::Full))
+        {
+            self.history_generation += 1;
+        }
         self.drain_proxy();
         publish_damage
     }
 
     fn resize(&mut self, size: PtySize) {
+        self.history_generation += 1;
         self.size = size;
         let dims = TermDimensions {
             columns: (size.cols.max(1)) as usize,
@@ -319,7 +363,7 @@ impl TerminalEngine for AlacrittyEngine {
             TermDamage::Full => true,
             TermDamage::Partial(iter) => {
                 for bounds in iter {
-                    rows.push(bounds.line as u16);
+                    rows.push((bounds.line as u16, bounds.left as u16, bounds.right as u16));
                 }
                 false
             }
@@ -330,7 +374,7 @@ impl TerminalEngine for AlacrittyEngine {
         } else {
             rows.sort_unstable();
             rows.dedup();
-            Damage::Partial(rows)
+            Damage::Columns(rows)
         }
     }
 
@@ -358,6 +402,7 @@ impl TerminalEngine for AlacrittyEngine {
             visible,
             scrollback_tail: scrollback,
             scrollback_len: hist as u64,
+            scrollback_generation: self.history_generation,
             cursor: self.build_cursor(),
             modes: self.build_modes(),
             title: self.title.clone(),
@@ -378,6 +423,25 @@ impl TerminalEngine for AlacrittyEngine {
             }
         }
         out
+    }
+
+    fn row_slice(&self, line: u16, first: u16, last: u16) -> Row {
+        let grid = self.term.grid();
+        let cols = grid.columns();
+        let row = &grid[Line(i32::from(line))];
+        let start = usize::from(first).min(cols);
+        let end = usize::from(last).saturating_add(1).min(cols).max(start);
+        Row {
+            cells: (start..end)
+                .map(|col| convert_cell(&row[Column(col)]))
+                .collect::<Vec<_>>()
+                .into(),
+            wrapped: cols > 0 && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE),
+        }
+    }
+
+    fn scrollback_generation(&self) -> u64 {
+        self.history_generation
     }
 
     fn cursor(&self) -> Cursor {

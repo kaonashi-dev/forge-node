@@ -47,6 +47,29 @@ pub trait TerminalEngine: Send {
     /// indices yield blank rows.
     fn rows(&self, range: Range<i64>) -> Vec<Row>;
 
+    /// Inclusive columns from one visible row, without materializing the rest of it.
+    fn row_slice(&self, line: u16, first: u16, last: u16) -> Row {
+        let Some(mut row) = self
+            .rows(i64::from(line)..i64::from(line) + 1)
+            .into_iter()
+            .next()
+        else {
+            return Row::blank(0);
+        };
+        let start = usize::from(first).min(row.cells.len());
+        let end = usize::from(last)
+            .saturating_add(1)
+            .min(row.cells.len())
+            .max(start);
+        row.cells = row.cells[start..end].to_vec().into();
+        row
+    }
+
+    /// Invalidates history addresses after scrolling, clearing or reflow.
+    fn scrollback_generation(&self) -> u64 {
+        self.seq()
+    }
+
     /// Current cursor position, shape, and visibility.
     fn cursor(&self) -> Cursor;
 
