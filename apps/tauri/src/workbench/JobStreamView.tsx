@@ -231,12 +231,12 @@ function StreamItemView(props: { item: Accessor<StreamItem> }) {
           <summary class="job-think-head">Thinking</summary>
           <div class="job-think-body">
             <Index each={lines()}>
-            {(line) => (
-              <p>
-                <PathText text={streamLineBody(line())} />
-              </p>
-            )}
-          </Index>
+              {(line) => (
+                <p>
+                  <PathText text={streamLineBody(line())} />
+                </p>
+              )}
+            </Index>
           </div>
         </details>
       </Show>
