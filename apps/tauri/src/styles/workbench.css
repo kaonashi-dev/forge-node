@@ -556,8 +556,6 @@
   cursor: pointer;
 }
 
-/* A6's third answer, in the same pane rather than a dialog: the conflict is
-   about this file, and a modal would cover it. */
 .editor-compare {
   flex: 1;
   min-height: 0;
