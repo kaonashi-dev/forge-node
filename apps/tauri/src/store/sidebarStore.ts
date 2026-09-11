@@ -21,6 +21,13 @@ export const SIDEBAR_VIEWS = [
 
 export type SidebarView = (typeof SIDEBAR_VIEWS)[number];
 
+/** The views with a number chord of their own; MOD-3 walks the rest. */
+const NUMBERED_VIEWS: readonly SidebarView[] = ["Projects", "Files"];
+
+export const CYCLED_VIEWS: readonly SidebarView[] = SIDEBAR_VIEWS.filter(
+  (item) => !NUMBERED_VIEWS.includes(item),
+);
+
 const [view, setView] = createSignal<SidebarView>("Projects");
 const [open, setOpen] = createSignal(true);
 
@@ -59,6 +66,21 @@ export function showView(next: SidebarView): void {
 export function toggleView(next: SidebarView): void {
   if (open() && view() === next) setSidebarOpen(false);
   else showView(next);
+}
+
+/**
+ * Where MOD-3 goes from here. A press made off the cycle — the bar closed, or
+ * on a view with its own number — always starts it at the first view; only a
+ * press made while on it advances.
+ */
+export function cycleTarget(current: SidebarView, open: boolean): SidebarView {
+  const index = CYCLED_VIEWS.indexOf(current);
+  if (!open || index < 0) return CYCLED_VIEWS[0];
+  return CYCLED_VIEWS[(index + 1) % CYCLED_VIEWS.length];
+}
+
+export function cycleSidebarView(): void {
+  showView(cycleTarget(view(), open()));
 }
 
 /** Point the views at the stored choice. Called once the snapshot lands. */
