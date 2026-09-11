@@ -6,7 +6,13 @@
 // bubble-phase listener would let `cmd-t` open a tab *and* type `t`.
 
 import { createSignal } from "solid-js";
-import { CONTEXT_ORDER, type ActionId, type Binding, type ContextId } from "./actions";
+import {
+  CONTEXT_ORDER,
+  firesOnRepeat,
+  type ActionId,
+  type Binding,
+  type ContextId,
+} from "./actions";
 import { bindings as mergedBindings } from "./bindings";
 import { isMac, isSelectAll, matches, type Chord } from "./keys";
 
@@ -206,6 +212,10 @@ export function installKeymap(table: () => Binding[] = mergedBindings): () => vo
     if (!binding) return;
     event.preventDefault();
     event.stopPropagation();
+    // Held keys repeat, and a view chord re-firing would remount a panel per
+    // repeat. Consumed here — after `preventDefault`, so the key never reaches
+    // the PTY as a `3` or a `^[`.
+    if (event.repeat && !firesOnRepeat(binding.action)) return;
     invokeAction(binding.action, binding.argument);
   };
   window.addEventListener("keydown", onKeyDown, { capture: true });

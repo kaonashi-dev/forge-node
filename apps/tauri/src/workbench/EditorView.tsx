@@ -18,6 +18,7 @@ import {
   openEditorAt,
   revealInTree,
 } from "../store/viewsStore";
+import { showView } from "../store/sidebarStore";
 import { themeBase } from "../theme/ThemeProvider";
 import {
   beginWorkbenchRequest,
@@ -547,7 +548,13 @@ function Breadcrumb(props: { path: string }) {
               <Button
                 size="xs"
                 class={`editor-crumb${segment.last ? " current" : ""}`}
-                onClick={() => revealInTree(segment.path)}
+                onClick={() => {
+                  // The breadcrumb is a request to see this file in the tree,
+                  // so it switches the sidebar; `revealInTree` alone is a
+                  // passive sync (a definition jump) and must not move the view.
+                  revealInTree(segment.path);
+                  showView("Files");
+                }}
               >
                 {segment.label}
               </Button>

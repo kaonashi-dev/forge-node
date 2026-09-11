@@ -30,6 +30,7 @@ import {
   GitBranch,
   GitPullRequest,
   History,
+  Layers,
   LayoutGrid,
   ListChecks,
   Loader2,
@@ -38,7 +39,6 @@ import {
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRight,
   Pencil,
   Plus,
   RefreshCw,
@@ -70,7 +70,6 @@ export type ForgeIconName =
   | "square-terminal"
   | "panel-left-open"
   | "panel-left-close"
-  | "panel-right"
   | "chevron-left"
   | "chevron-right"
   | "chevron-down"
@@ -86,6 +85,7 @@ export type ForgeIconName =
   | "list-checks"
   | "history"
   | "layout-grid"
+  | "layers"
   | "more-horizontal";
 
 export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
@@ -107,7 +107,6 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "square-terminal": SquareTerminal,
   "panel-left-open": PanelLeftOpen,
   "panel-left-close": PanelLeftClose,
-  "panel-right": PanelRight,
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,
   "chevron-down": ChevronDown,
@@ -123,5 +122,6 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "list-checks": ListChecks,
   history: History,
   "layout-grid": LayoutGrid,
+  layers: Layers,
   "more-horizontal": MoreHorizontal,
 };

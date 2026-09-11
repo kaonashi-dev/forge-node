@@ -301,8 +301,8 @@ export function FileTreePanel() {
    *
    * Entered on *focus* and not on mount, which is how the terminal does it.
    * Held from mount, the panel took `j`/`k`/`h`/`l` and `Enter` away from the
-   * editor and from any focused control for as long as the inspector happened
-   * to be on the Files tab — the tree does not have the keyboard just because
+   * editor and from any focused control for as long as the sidebar happened
+   * to be on the Files view — the tree does not have the keyboard just because
    * it is visible.
    */
   let leaveFiles: (() => void) | undefined;

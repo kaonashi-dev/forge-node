@@ -13,6 +13,19 @@ export type TabDef = {
    * says nothing to a screen reader.
    */
   icon?: ForgeIconName;
+  /**
+   * Rendered while not selected, hidden, so the panel keeps its local state.
+   * Not its scroll offset: WKWebView drops that for a `display: none` box, so
+   * a kept panel that scrolls has to put it back itself.
+   */
+  keepMounted?: boolean;
+  /**
+   * An accessor, not a value: a badge read eagerly would put a reactive read
+   * inside the tab array and remount every panel whenever it changed.
+   */
+  badge?: () => { count: number; label: string } | null;
+  /** Appended to `TabsProps.contentClass` for this panel only. */
+  contentClass?: string;
 };
 
 export type TabsProps = {
@@ -48,39 +61,58 @@ export function Tabs(props: TabsProps) {
       <div class={props.listClass}>
         <Kobalte.List class="forge-tab-list">
           <For each={props.tabs}>
-            {(tab) => (
-              <Show
-                when={tab.icon}
-                fallback={
-                  <Kobalte.Trigger value={tab.value} class={props.triggerClass}>
-                    {tab.label}
-                  </Kobalte.Trigger>
-                }
-              >
-                {/* `contents` keeps the trigger a direct child of the list in
-                    the accessibility tree: a generic element between
-                    `role="tablist"` and `role="tab"` is the one ARIA rule a tab
-                    strip cannot bend. */}
-                {(icon) => (
-                  <Tooltip label={String(tab.label)} contents>
-                    <Kobalte.Trigger
-                      value={tab.value}
-                      class={`${props.triggerClass ?? ""} forge-tab-icon`}
-                      aria-label={String(tab.label)}
-                    >
-                      <Icon name={icon()} size={16} />
+            {(tab) => {
+              const badge = () => tab.badge?.() ?? null;
+              const name = () => {
+                const current = badge();
+                return current ? `${tab.label} — ${current.label}` : String(tab.label);
+              };
+              return (
+                <Show
+                  when={tab.icon}
+                  fallback={
+                    <Kobalte.Trigger value={tab.value} class={props.triggerClass}>
+                      {tab.label}
                     </Kobalte.Trigger>
-                  </Tooltip>
-                )}
-              </Show>
-            )}
+                  }
+                >
+                  {/* `contents` keeps the trigger a direct child of the list in
+                      the accessibility tree: a generic element between
+                      `role="tablist"` and `role="tab"` is the one ARIA rule a tab
+                      strip cannot bend. */}
+                  {(icon) => (
+                    <Tooltip label={name()} contents>
+                      <Kobalte.Trigger
+                        value={tab.value}
+                        class={`${props.triggerClass ?? ""} forge-tab-icon`}
+                        aria-label={name()}
+                      >
+                        <Icon name={icon()} size={16} />
+                        <Show when={badge()}>
+                          {(current) => (
+                            <span class="forge-tab-badge" aria-hidden="true">
+                              {current().count}
+                            </span>
+                          )}
+                        </Show>
+                      </Kobalte.Trigger>
+                    </Tooltip>
+                  )}
+                </Show>
+              );
+            }}
           </For>
         </Kobalte.List>
         {props.listSuffix}
       </div>
       <For each={props.tabs}>
         {(tab) => (
-          <Kobalte.Content value={tab.value} class={props.contentClass}>
+          <Kobalte.Content
+            value={tab.value}
+            class={`forge-tab-panel ${props.contentClass ?? ""} ${tab.contentClass ?? ""}`}
+            forceMount={tab.keepMounted}
+            hidden={tab.keepMounted ? props.value !== tab.value : undefined}
+          >
             {tab.content()}
           </Kobalte.Content>
         )}

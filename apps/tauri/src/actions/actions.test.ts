@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACTIONS, FOCUSABLE_SESSIONS, chordFor, defaultBindings } from "./actions";
+import { ACTIONS, FOCUSABLE_SESSIONS, chordFor, defaultBindings, firesOnRepeat } from "./actions";
 import { MOD, PASTE_CHORD } from "./keys";
 
 describe("default bindings (actions.rs port)", () => {
@@ -34,15 +34,32 @@ describe("default bindings (actions.rs port)", () => {
   });
 
   /**
-   * The chord on `1` belongs to the rail, not to the first tab. Both halves
-   * matter: a stale focus binding left behind would win or lose the dispatch
-   * by table order, so the tab side has to be gone rather than outranked.
+   * The bare number row is the sidebar's and the tabs are on `MOD-alt`, so the
+   * test pins the modifiers and not just the key. Both halves matter: a stale
+   * focus binding left behind would win or lose the dispatch by table order,
+   * so the tab side has to be gone rather than outranked.
    */
-  it("gives the first number chord to the rail", () => {
-    const onOne = defaultBindings().filter((binding) => binding.chord.key === "1");
-    expect(onOne).toHaveLength(1);
-    expect(onOne[0].action).toBe("toggle_sidebar");
-    expect(FOCUSABLE_SESSIONS).not.toContain(1);
+  it("gives the bare number row to the rail", () => {
+    const bareDigit = (key: string) =>
+      defaultBindings().filter(
+        (binding) =>
+          binding.chord.key === key &&
+          !binding.chord.alt &&
+          !binding.chord.shift &&
+          binding.chord.ctrl === (MOD === "ctrl") &&
+          binding.chord.meta === (MOD === "cmd"),
+      );
+    expect(bareDigit("1").map((binding) => binding.action)).toEqual(["toggle_projects"]);
+    expect(bareDigit("2").map((binding) => binding.action)).toEqual(["toggle_files"]);
+    expect(bareDigit("3").map((binding) => binding.action)).toEqual(["cycle_sidebar_views"]);
+    expect(FOCUSABLE_SESSIONS).toContain(1);
+  });
+
+  // Declared before `MOD-shift-f`: the palette draws an action's first chord.
+  it("draws Files from its number chord, not the letter", () => {
+    const chord = chordFor("toggle_files");
+    expect(chord?.key).toBe("2");
+    expect(chord?.shift).toBe(false);
   });
 
   // The editor convention is the one a new user guesses; taking it away to pay
@@ -126,5 +143,32 @@ describe("default bindings (actions.rs port)", () => {
   it("uses the platform's shortcut modifier", () => {
     const chord = chordFor("new_terminal");
     expect(MOD === "cmd" ? chord?.meta : chord?.ctrl).toBe(true);
+  });
+});
+
+describe("firesOnRepeat", () => {
+  // A held view chord would remount a panel per repeat; the bar toggles would
+  // collapse and unfold it ~30 times a second.
+  it("does not re-fire the sidebar's chords on a held key", () => {
+    for (const action of [
+      "toggle_sidebar",
+      "toggle_projects",
+      "toggle_files",
+      "toggle_history",
+      "toggle_pull_requests",
+      "toggle_features",
+      "toggle_lieutenant",
+      "toggle_git",
+      "cycle_sidebar_views",
+    ] as const) {
+      expect(firesOnRepeat(action), action).toBe(false);
+    }
+  });
+
+  // Scrolling or zooming while holding the key is the gesture, not a burst.
+  it("lets scroll, zoom and tab stepping repeat", () => {
+    for (const action of ["scroll_up", "terminal_zoom_in", "next_session"] as const) {
+      expect(firesOnRepeat(action), action).toBe(true);
+    }
   });
 });

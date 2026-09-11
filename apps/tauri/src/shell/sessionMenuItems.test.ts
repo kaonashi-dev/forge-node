@@ -12,9 +12,15 @@ function labels(state: Session["state"]): string[] {
 }
 
 describe("sessionMenuItems", () => {
-  /* The three session gestures sit between the rename and the destructive
-     pair, so the run of items that can end a process stays contiguous. */
-  const GESTURES = ["Continue in a New Session…", "Session Changes", "Review This Checkout"];
+  /* The session gestures sit between the rename and the destructive pair, so
+     the run of items that can end a process stays contiguous. */
+  const GESTURES = [
+    "Continue in a New Session…",
+    "Spawn Child…",
+    "Send Context…",
+    "Session Changes",
+    "Review This Checkout",
+  ];
 
   it("offers kill for a running session", () => {
     expect(labels("Running")).toEqual(["Rename…", ...GESTURES, "Kill", "Close"]);

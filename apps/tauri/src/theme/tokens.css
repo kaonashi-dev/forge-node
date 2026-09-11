@@ -45,8 +45,7 @@
   --forge-title-h: 36px;
   --forge-status-h: 24px;
   --forge-tab-h: 34px;
-  --forge-rail-w: 240px;
-  --forge-panel-w: 288px;
+  --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
   --forge-control-xs: 20px;
@@ -58,7 +57,8 @@
   --forge-radius-md: 8px;
   --forge-radius-lg: 10px;
   --forge-radius-xl: 999px;
-  --forge-mono: JetBrainsMono Nerd Font Mono, JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
+  --forge-mono:
+    JetBrainsMono Nerd Font Mono, JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
   --forge-mono-size: 13px;
   --forge-mono-line-height: 1.35;
   --forge-sans:
@@ -138,8 +138,7 @@
   --forge-title-h: 36px;
   --forge-status-h: 24px;
   --forge-tab-h: 34px;
-  --forge-rail-w: 240px;
-  --forge-panel-w: 288px;
+  --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
   --forge-control-xs: 20px;
@@ -151,7 +150,8 @@
   --forge-radius-md: 8px;
   --forge-radius-lg: 10px;
   --forge-radius-xl: 999px;
-  --forge-mono: JetBrainsMono Nerd Font Mono, JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
+  --forge-mono:
+    JetBrainsMono Nerd Font Mono, JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
   --forge-mono-size: 13px;
   --forge-mono-line-height: 1.35;
   --forge-sans:
@@ -231,8 +231,7 @@
   --forge-title-h: 36px;
   --forge-status-h: 24px;
   --forge-tab-h: 34px;
-  --forge-rail-w: 240px;
-  --forge-panel-w: 288px;
+  --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
   --forge-control-xs: 20px;
@@ -244,7 +243,8 @@
   --forge-radius-md: 8px;
   --forge-radius-lg: 10px;
   --forge-radius-xl: 999px;
-  --forge-mono: JetBrainsMono Nerd Font Mono, JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
+  --forge-mono:
+    JetBrainsMono Nerd Font Mono, JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
   --forge-mono-size: 13px;
   --forge-mono-line-height: 1.35;
   --forge-sans:
