@@ -34,6 +34,12 @@ Cargo.lock.orig
 
 # Harness TS (bun): dependencies of the harness CLI. bun.lock IS committed.
 harness/node_modules
+# Harness state is one developer's runs, not source: never committed.
+harness/features.json
+harness/features.json.lock
+harness/features.json.tmp
+harness/progress/
+harness/specs/*/
 
 # Tauri frontend build output and dependencies
 apps/tauri/node_modules

@@ -50,6 +50,9 @@
       }
     ]
   ],
+  "patches": [],
+  "scrollback_len": 0,
+  "scrollback_generation": 0,
   "scrolled_lines": 3,
   "cursor": {
     "line": 3,

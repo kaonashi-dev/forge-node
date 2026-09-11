@@ -86,7 +86,7 @@ fn run() -> Result<bool, String> {
                     if delta.scrolled_lines > 0 {
                         Damage::Full
                     } else {
-                        Damage::Rows(delta.rows.iter().map(|(index, _)| *index).collect())
+                        Damage::Rows(delta.changed_rows().map(|(index, _)| index).collect())
                     }
                 }
                 _ => {

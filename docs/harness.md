@@ -13,9 +13,9 @@ and strengthened with patterns from
 |-------|----------|
 | `scripts/harness` | Human interface: status, list, show, doctor, watch, resume, timeline, event, from-issue, root, validate, gate |
 | `harness/src/*.ts` | CLI, validator, event log (TypeScript on Bun) |
-| `harness/features.json` | State machine + rules (`max_gate_attempts`, artefact requirements) |
-| `harness/specs/<id>-<slug>/` | Approvable spec: requirements (EARS), design, tasks |
-| `harness/progress/` | Session log, per-feature artefacts, **event log** |
+| `harness/features.json` | State machine + rules (`max_gate_attempts`, artefact requirements) — local, gitignored |
+| `harness/specs/<id>-<slug>/` | Approvable spec: requirements (EARS), design, tasks — local, gitignored |
+| `harness/progress/` | Session log, per-feature artefacts, **event log** — local, gitignored |
 | `harness/CHECKPOINTS.md` | Objective criteria the reviewer ticks (C1–C7) |
 | `crates/harness-service` | Daemon-side reads and writes of the harness files |
 | `crates/harness-service/src/transition.rs` | **The transition table**: the one place a feature's status is decided |

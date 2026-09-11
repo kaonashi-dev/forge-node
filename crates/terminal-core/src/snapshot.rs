@@ -8,7 +8,7 @@
 //! applies these (§10.5, §11.4). This module turns "engine + damage since the
 //! last poll" into those two messages.
 
-use domain::{Damage, Row, TerminalDelta, TerminalSnapshot};
+use domain::{CellPatch, Damage, Row, TerminalDelta, TerminalSnapshot};
 
 use crate::engine::TerminalEngine;
 
@@ -61,7 +61,19 @@ impl DeltaBuilder {
         let scrollback_len = engine.scrollback_len();
 
         let damage = engine.take_damage();
+        let mut patches = Vec::new();
         let rows: Vec<(u16, Row)> = match damage {
+            Damage::Columns(bounds) => {
+                patches = bounds
+                    .into_iter()
+                    .map(|(line, first, last)| CellPatch {
+                        line,
+                        first,
+                        row: engine.row_slice(line, first, last),
+                    })
+                    .collect();
+                Vec::new()
+            }
             // `Partial` is the common path: pull just the damaged rows.
             Damage::Partial(indices) => indices
                 .into_iter()
@@ -101,16 +113,16 @@ impl DeltaBuilder {
             }
         };
 
-        // `scrolled_lines` is derived from the growth of scrollback length. Once
-        // scrollback saturates at its configured maximum this reports 0 even
-        // though content keeps scrolling; that is acceptable for the GUI replica,
-        // which fetches out-of-window scrollback on demand (§11.5).
+        // Growth is a viewport hint; generation, not growth, validates cached history.
         let scrolled_lines = scrollback_len.saturating_sub(self.last_scrollback_len);
         self.last_scrollback_len = scrollback_len;
 
         TerminalDelta {
             seq,
             rows,
+            patches,
+            scrollback_len,
+            scrollback_generation: engine.scrollback_generation(),
             scrolled_lines: scrolled_lines.min(u64::from(u32::MAX)) as u32,
             cursor,
             modes,
@@ -135,7 +147,8 @@ mod tests {
                 fg: Color::Default,
                 bg: Color::Default,
                 flags: CellFlags::empty(),
-            }],
+            }]
+            .into(),
             wrapped: false,
         }
     }
@@ -205,6 +218,7 @@ mod tests {
         fn snapshot(&self, scrollback_tail: usize) -> TerminalSnapshot {
             let tail_start = self.scrollback.len().saturating_sub(scrollback_tail);
             TerminalSnapshot {
+                scrollback_generation: 0,
                 seq: self.seq,
                 size: PtySize {
                     cols: 1,
@@ -438,5 +452,19 @@ mod tests {
     fn a_fresh_builder_has_no_baseline() {
         let builder = DeltaBuilder::default();
         assert_eq!(builder.last_scrollback_len, 0);
+    }
+
+    #[test]
+    fn column_damage_emits_patches_instead_of_whole_rows() {
+        let mut engine = FakeEngine::new(3);
+        engine.damage = Damage::Columns(vec![(1, 0, 0)]);
+        let delta = DeltaBuilder::new().delta(&mut engine);
+
+        assert!(delta.rows.is_empty());
+        assert_eq!(delta.patches.len(), 1);
+        assert_eq!(delta.patches[0].line, 1);
+        assert_eq!(delta.patches[0].first, 0);
+        assert_eq!(text_of(&delta.patches[0].row), "v1");
+        assert_eq!(delta.scrollback_generation, 0);
     }
 }

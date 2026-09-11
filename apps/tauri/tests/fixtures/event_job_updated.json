@@ -12,7 +12,7 @@
     "provider_session_id": "prov-1",
     "exit_code": null,
     "last_line": "editing apps/tauri/src/App.tsx",
-    "last_output_at": "2026-09-11T01:43:06.499981Z",
+    "last_output_at": "2026-09-11T04:24:43.843Z",
     "started_at": "2026-08-30T12:00:00Z",
     "finished_at": null,
     "log_path": "/tmp/forge/jobs/7.jsonl"

@@ -22,7 +22,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   "Hello": {
-    "protocol_version": 18,
+    "protocol_version": 19,
     "client_version": "0.1.0",
     "client_kind": "Gui"
   }
@@ -90,7 +90,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   "HelloAck": {
-    "protocol_version": 18,
+    "protocol_version": 19,
     "daemon_version": "0.1.0",
     "instance_id": "forge-daemon-0001",
     "started_at": "2026-08-30T12:00:00Z"
@@ -99,7 +99,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   "HelloReject": {
-    "daemon_protocol_version": 18,
+    "daemon_protocol_version": 19,
     "reason": "protocol version mismatch"
   }
 } as const;
@@ -210,7 +210,7 @@ export const event_job_updated = {
     "provider_session_id": "prov-1",
     "exit_code": null,
     "last_line": "editing apps/tauri/src/App.tsx",
-    "last_output_at": "2026-09-11T01:43:06.499981Z",
+    "last_output_at": "2026-09-11T04:24:43.843Z",
     "started_at": "2026-08-30T12:00:00Z",
     "finished_at": null,
     "log_path": "/tmp/forge/jobs/7.jsonl"
@@ -508,6 +508,9 @@ export const event_terminal_delta = {
           }
         ]
       ],
+      "patches": [],
+      "scrollback_len": 0,
+      "scrollback_generation": 0,
       "scrolled_lines": 3,
       "cursor": {
         "line": 3,
@@ -623,6 +626,7 @@ export const event_terminal_resync = {
         }
       ],
       "scrollback_len": 7,
+      "scrollback_generation": 0,
       "cursor": {
         "line": 3,
         "col": 4,
@@ -706,20 +710,20 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  "protocol_version": 18,
+  "protocol_version": 19,
   "client_version": "0.1.0",
   "client_kind": "Gui"
 } as const;
 
 export const hello_ack = {
-  "protocol_version": 18,
+  "protocol_version": 19,
   "daemon_version": "0.1.0",
   "instance_id": "forge-daemon-0001",
   "started_at": "2026-08-30T12:00:00Z"
 } as const;
 
 export const hello_reject = {
-  "daemon_protocol_version": 18,
+  "daemon_protocol_version": 19,
   "reason": "protocol version mismatch"
 } as const;
 
@@ -987,6 +991,7 @@ export const response_attach_ack = {
         }
       ],
       "scrollback_len": 7,
+      "scrollback_generation": 0,
       "cursor": {
         "line": 3,
         "col": 4,
@@ -1050,6 +1055,8 @@ export const response_file_tree = {
 
 export const response_scrollback_rows = {
   "ScrollbackRows": {
+    "generation": 0,
+    "snapshot": null,
     "from_line": 5,
     "rows": [
       {
@@ -1463,7 +1470,7 @@ export const response_snapshot_populated = {
         "provider_session_id": "prov-1",
         "exit_code": null,
         "last_line": "editing apps/tauri/src/App.tsx",
-        "last_output_at": "2026-09-11T01:43:06.492769Z",
+        "last_output_at": "2026-09-11T04:24:43.834781Z",
         "started_at": "2026-08-30T12:00:00Z",
         "finished_at": null,
         "log_path": "/tmp/forge/jobs/7.jsonl"
@@ -1562,6 +1569,8 @@ export const row = {
 } as const;
 
 export const scrollback_rows = {
+  "generation": 0,
+  "snapshot": null,
   "from_line": 5,
   "rows": [
     {
@@ -1714,6 +1723,9 @@ export const terminal_delta = {
       }
     ]
   ],
+  "patches": [],
+  "scrollback_len": 0,
+  "scrollback_generation": 0,
   "scrolled_lines": 3,
   "cursor": {
     "line": 3,
@@ -1824,6 +1836,7 @@ export const terminal_snapshot = {
     }
   ],
   "scrollback_len": 7,
+  "scrollback_generation": 0,
   "cursor": {
     "line": 3,
     "col": 4,

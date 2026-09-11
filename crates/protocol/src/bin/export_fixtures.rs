@@ -150,7 +150,7 @@ fn sample_cell() -> Cell {
 
 fn sample_row() -> Row {
     Row {
-        cells: vec![Cell::default(), sample_cell()],
+        cells: vec![Cell::default(), sample_cell()].into(),
         wrapped: true,
     }
 }
@@ -178,6 +178,7 @@ fn sample_modes() -> TermModes {
 
 fn sample_snapshot() -> TerminalSnapshot {
     TerminalSnapshot {
+        scrollback_generation: 0,
         seq: 42,
         size: sample_pty_size(),
         visible: vec![Row::blank(4), sample_row()],
@@ -191,6 +192,9 @@ fn sample_snapshot() -> TerminalSnapshot {
 
 fn sample_delta() -> TerminalDelta {
     TerminalDelta {
+        patches: Vec::new(),
+        scrollback_len: 0,
+        scrollback_generation: 0,
         seq: 5,
         rows: vec![(0, Row::blank(2)), (7, sample_row())],
         scrolled_lines: 3,
@@ -294,6 +298,8 @@ fn sample_hello_reject() -> HelloReject {
 
 fn sample_scrollback_rows() -> ScrollbackRows {
     ScrollbackRows {
+        snapshot: None,
+        generation: 0,
         from_line: 5,
         rows: vec![Row::blank(2), sample_row()],
     }

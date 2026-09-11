@@ -33,8 +33,8 @@ Plan references: §10.4, §10.5, §11. ADRs: 005 (PTY owned by the daemon),
 - `TerminalEngine` trait + `AlacrittyEngine` (`alacritty_terminal` 0.26):
   `feed(bytes)`, damage tracking, `snapshot()`, title/bell, device replies
   that must be written back to the PTY (e.g. cursor-position reports).
-- `DeltaBuilder` — turns damage into `TerminalDelta { rows, scrolled_lines,
-  cursor, modes }`.
+- `DeltaBuilder` — turns damage into `TerminalDelta { rows, patches,
+  scrollback_len, scrollback_generation, scrolled_lines, cursor, modes }`.
 - `terminal-input` compiles the **pure** key/mouse/paste → byte mapping that
   honors `TermModes` (application cursor keys, bracketed paste, SGR mouse…).
   `client` re-exports it so the GUI uses the same mapping without pulling the
@@ -45,12 +45,16 @@ Plan references: §10.4, §10.5, §11. ADRs: 005 (PTY owned by the daemon),
 Both sides share the cell types so the client never links the engine (ADR-011):
 
 - `TerminalSnapshot { seq, size, visible, scrollback_tail, scrollback_len,
-  cursor, modes, title }` — sent by `AttachAck` and `TerminalResync`.
-  `scrollback_tail` carries the last `DEFAULT_SCROLLBACK_TAIL = 200` lines.
-- `TerminalDelta { seq, rows: Vec<(u16, Row)>, scrolled_lines, cursor, modes }`
-  — only the damaged rows, addressed by visible-row index.
-- `Row { cells, wrapped }`, `Cell { text, fg, bg, flags }` — `text` holds a whole
-  grapheme; the trailing half of a wide character is a `WIDE_SPACER` cell.
+  scrollback_generation, cursor, modes, title }` — sent by `AttachAck` and
+  `TerminalResync`. `scrollback_tail` carries the last
+  `DEFAULT_SCROLLBACK_TAIL = 200` lines. A changed generation invalidates
+  cached history addresses, including when length is saturated.
+- `TerminalDelta { seq, rows, patches, scrollback_len, scrollback_generation,
+  scrolled_lines, cursor, modes }` — whole damaged rows and/or column patches.
+- `Row { cells: Arc<Vec<Cell>>, wrapped }`, `Cell { text, fg, bg, flags }` —
+  `text` holds a whole grapheme; the trailing half of a wide character is a
+  `WIDE_SPACER` cell. MessagePack cells are a 4-tuple so field names are not
+  repeated per cell.
 
 Field-by-field notes are in
 [domain.md](./domain.md#terminal-wire-types-terminalrs-114).

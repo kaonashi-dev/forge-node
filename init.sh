@@ -55,7 +55,9 @@ fi
 echo ""
 echo "── 2. Harness base files ───────────────────────────────"
 
-for f in AGENTS.md harness/CHECKPOINTS.md harness/features.json harness/progress/current.md harness/progress/history.md scripts/harness; do
+# Tooling only: features.json and progress/ are local state that a fresh clone
+# does not have until its first registration.
+for f in AGENTS.md harness/CHECKPOINTS.md scripts/harness; do
   if [ ! -e "$f" ]; then
     fail "missing base file: $f"
     EXIT_CODE=1

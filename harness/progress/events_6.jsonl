@@ -1,5 +1,0 @@
-{"ts":"2026-08-29T13:26:47.405227Z","type":"feature_registered","slug":"test","title":"Test"}
-{"ts":"2026-08-29T13:26:47.420253Z","type":"spec_started"}
-{"ts":"2026-08-29T13:29:10.652543Z","type":"human_gate_opened","gate":"spec_approval"}
-{"ts":"2026-08-29T18:39:33.006966Z","type":"human_gate_resolved","gate":"spec_approval","decision":"revise"}
-{"ts":"2026-09-01T18:43:01Z","type":"feature_blocked","reason":"test data"}

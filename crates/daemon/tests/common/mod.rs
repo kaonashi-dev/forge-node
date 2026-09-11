@@ -452,7 +452,7 @@ pub fn wait_for_row(
 ) -> Option<String> {
     let mut found = None;
     wait_for(rx, timeout, |event| match event {
-        DaemonEvent::TerminalDelta { delta, .. } => delta.rows.iter().any(|(_, row)| {
+        DaemonEvent::TerminalDelta { delta, .. } => delta.changed_rows().any(|(_, row)| {
             let text = row_text(row);
             if pred(&text) {
                 found = Some(text);

@@ -228,7 +228,8 @@ impl Client {
         let read_half = stream.try_clone()?;
         let write_half = stream;
 
-        let (events_tx, events_rx) = flume::unbounded();
+        // Overflow invalidates the connection; blocking this reader would also block request replies.
+        let (events_tx, events_rx) = flume::bounded(64);
         let shared = Arc::new(Shared {
             write: Mutex::new(write_half),
             pending: Mutex::new(HashMap::new()),
@@ -1711,7 +1712,12 @@ fn reader_loop(
         loop {
             match decoder.next_frame() {
                 Ok(Some(payload)) => match decode_payload::<DaemonMessage>(&payload) {
-                    Ok(message) => route_message(shared, events_tx, message),
+                    Ok(message) => {
+                        if !route_message(shared, events_tx, message) {
+                            shared.disconnect();
+                            return;
+                        }
+                    }
                     Err(err) => {
                         tracing::error!(%err, "failed to decode daemon message; closing");
                         shared.disconnect();
@@ -1749,7 +1755,7 @@ fn route_message(
     shared: &Arc<Shared>,
     events_tx: &flume::Sender<DaemonEvent>,
     message: DaemonMessage,
-) {
+) -> bool {
     match message {
         DaemonMessage::Response { request_id, body } => {
             let waiter = shared
@@ -1767,15 +1773,17 @@ fn route_message(
             }
         }
         DaemonMessage::Event(event) => {
-            // Unbounded, so the reader never blocks; a closed channel just means
-            // the GUI stopped listening.
-            let _ = events_tx.send(event);
+            if events_tx.try_send(event).is_err() {
+                tracing::warn!("event queue overflow; reconnect for an authoritative snapshot");
+                return false;
+            }
         }
         DaemonMessage::HelloAck(_) | DaemonMessage::HelloReject(_) => {
             tracing::warn!("unexpected handshake message after connect");
         }
         _ => tracing::warn!("ignoring unrecognized daemon message"),
     }
+    true
 }
 
 /// Encode a client `message` and write the whole frame to `stream`.
@@ -1812,6 +1820,7 @@ mod tests {
     use protocol::{ErrorCode, HelloAck, HelloReject};
     use std::os::unix::net::UnixListener;
     use std::thread;
+    use std::time::{Duration, Instant};
 
     /// A short socket path under `/tmp` (macOS caps `sun_path` at ~104 bytes, so
     /// the long scratchpad path will not fit).
@@ -1967,6 +1976,55 @@ mod tests {
         let event = client.events().recv().unwrap();
         assert_eq!(event, DaemonEvent::TerminalActivity { terminal_id });
 
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn overflowing_events_disconnect_the_client() {
+        let sock = socket_path();
+        let listener = UnixListener::bind(&sock.path).unwrap();
+        let terminal_id = TerminalId::new();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut decoder = FrameDecoder::new();
+            let mut buf = vec![0u8; 8192];
+            match read_client_message(&mut stream, &mut decoder, &mut buf) {
+                ClientMessage::Hello(_) => {}
+                other => panic!("expected Hello, got {other:?}"),
+            }
+            write_daemon_message(&mut stream, &DaemonMessage::HelloAck(hello_ack()));
+            let request_id = match read_client_message(&mut stream, &mut decoder, &mut buf) {
+                ClientMessage::Request { request_id, .. } => request_id,
+                other => panic!("expected Request, got {other:?}"),
+            };
+            write_daemon_message(
+                &mut stream,
+                &DaemonMessage::Response {
+                    request_id,
+                    body: Ok(Response::Ack),
+                },
+            );
+            for _ in 0..80 {
+                write_daemon_message(
+                    &mut stream,
+                    &DaemonMessage::Event(DaemonEvent::TerminalActivity { terminal_id }),
+                );
+            }
+            let _ = stream.read(&mut buf);
+        });
+
+        let client = Client::connect(&sock.path, "0.1.0").unwrap();
+        let _ = client.request(Request::GetSnapshot);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while client.is_connected() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !client.is_connected(),
+            "the reader must drop a stalled event queue rather than block replies"
+        );
         drop(client);
         server.join().unwrap();
     }

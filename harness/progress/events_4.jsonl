@@ -1,6 +1,0 @@
-{"ts":"2026-08-28T22:48:51.479277Z","type":"feature_registered","slug":"test","title":"Test"}
-{"ts":"2026-08-28T22:50:08.710Z","type":"explore_done","path":"harness/progress/explore_4_scope.md"}
-{"ts":"2026-08-28T22:50:08.727Z","type":"spec_ready","spec":"harness/specs/4-test","gate":"harness/progress/gate_4.md"}
-{"ts":"2026-08-29T12:57:02.972313Z","type":"human_gate_resolved","gate":"spec_approval","decision":"revise"}
-{"ts":"2026-08-29T12:57:02.978663Z","type":"spec_started"}
-{"ts":"2026-09-01T18:43:01Z","type":"feature_blocked","reason":"test data"}

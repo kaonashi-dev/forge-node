@@ -92,6 +92,7 @@
         }
       ],
       "scrollback_len": 7,
+      "scrollback_generation": 0,
       "cursor": {
         "line": 3,
         "col": 4,

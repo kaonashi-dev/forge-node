@@ -13,6 +13,7 @@
 //! [`DeltaOutcome`] telling the caller when a re-attach is required.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use domain::{
     AgentProfile, Cursor, ExternalAgentSession, Job, JobId, Project, ProjectGroup, ProviderUsage,
@@ -492,6 +493,7 @@ pub struct CellGrid {
     scrollback_cache: BTreeMap<i64, Row>,
     /// Total number of lines currently in the daemon's scrollback.
     pub scrollback_len: u64,
+    pub scrollback_generation: u64,
     /// Cursor position and shape at `last_seq`.
     pub cursor: Cursor,
     /// Terminal modes (alt screen, mouse, ...) at `last_seq`.
@@ -521,6 +523,7 @@ impl CellGrid {
             visible: snapshot.visible.clone(),
             scrollback_cache: BTreeMap::new(),
             scrollback_len: snapshot.scrollback_len,
+            scrollback_generation: snapshot.scrollback_generation,
             cursor: snapshot.cursor,
             modes: snapshot.modes,
             last_seq: snapshot.seq,
@@ -537,8 +540,8 @@ impl CellGrid {
     ///
     /// - `seq <= last_seq`  → [`DeltaOutcome::Stale`] (discarded).
     /// - `seq == last_seq+1` → [`DeltaOutcome::Applied`]: damaged rows overwrite
-    ///   `visible` by index, `scrollback_len` advances by `scrolled_lines`, and
-    ///   cursor/modes/`last_seq` update.
+    ///   `visible` by index, `scrollback_len`/`scrollback_generation` take the
+    ///   delta's values, and cursor/modes/`last_seq` update.
     /// - `seq > last_seq+1`  → [`DeltaOutcome::NeedsResync`]: a gap; nothing is
     ///   applied and the caller must re-attach.
     /// - a damaged row outside the replica's current geometry →
@@ -567,16 +570,31 @@ impl CellGrid {
             return DeltaOutcome::NeedsResync;
         }
 
-        if delta.scrolled_lines > 0 {
-            self.push_scrolled_lines(delta.scrolled_lines);
+        if delta.patches.iter().any(|patch| {
+            self.visible.get(usize::from(patch.line)).is_none_or(|row| {
+                usize::from(patch.first)
+                    .checked_add(patch.row.cells.len())
+                    .is_none_or(|end| end > row.cells.len())
+            })
+        }) {
+            return DeltaOutcome::NeedsResync;
+        }
+        if delta.scrollback_generation != self.scrollback_generation {
+            self.scrollback_cache.clear();
         }
         for (index, row) in &delta.rows {
             let i = *index as usize;
             self.visible[i] = row.clone();
         }
-        self.scrollback_len = self
-            .scrollback_len
-            .saturating_add(u64::from(delta.scrolled_lines));
+        for patch in &delta.patches {
+            let row = &mut self.visible[usize::from(patch.line)];
+            let first = usize::from(patch.first);
+            Arc::make_mut(&mut row.cells)[first..first + patch.row.cells.len()]
+                .clone_from_slice(&patch.row.cells);
+            row.wrapped = patch.row.wrapped;
+        }
+        self.scrollback_len = delta.scrollback_len;
+        self.scrollback_generation = delta.scrollback_generation;
         self.cursor = delta.cursor;
         self.modes = delta.modes;
         self.last_seq = delta.seq;
@@ -590,6 +608,7 @@ impl CellGrid {
         self.visible = snapshot.visible.clone();
         self.scrollback_cache.clear();
         self.scrollback_len = snapshot.scrollback_len;
+        self.scrollback_generation = snapshot.scrollback_generation;
         self.cursor = snapshot.cursor;
         self.modes = snapshot.modes;
         self.last_seq = snapshot.seq;
@@ -603,6 +622,17 @@ impl CellGrid {
     /// Merge fetched history by absolute index (0 = oldest), keeping the newest
     /// [`MAX_SCROLLBACK_CACHE_ROWS`] cached rows.
     pub fn merge_scrollback(&mut self, block: &ScrollbackRows) {
+        if let Some(snapshot) = &block.snapshot {
+            if snapshot.seq < self.last_seq || snapshot.scrollback_generation != block.generation {
+                return;
+            }
+            if self.scrollback_generation != block.generation {
+                self.apply_resync(snapshot);
+            }
+        }
+        if block.generation != self.scrollback_generation {
+            return;
+        }
         let skip = block.rows.len().saturating_sub(MAX_SCROLLBACK_CACHE_ROWS);
         for (i, row) in block.rows.iter().enumerate().skip(skip) {
             let Some(absolute) = block.from_line.checked_add(i as i64) else {
@@ -663,18 +693,6 @@ impl CellGrid {
             .saturating_sub(MAX_SCROLLBACK_CACHE_ROWS);
         for (i, row) in snapshot.scrollback_tail.iter().enumerate().skip(skip) {
             self.scrollback_cache.insert(base + i as i64, row.clone());
-        }
-    }
-
-    fn push_scrolled_lines(&mut self, scrolled: u32) {
-        // A scroll larger than the viewport leaves a gap to FetchScrollback.
-        if (scrolled as usize) <= self.visible.len() {
-            let base = self.scrollback_len as i64;
-            for j in 0..scrolled as usize {
-                self.scrollback_cache
-                    .insert(base + j as i64, self.visible[j].clone());
-                self.trim_scrollback_cache();
-            }
         }
     }
 
@@ -788,6 +806,7 @@ mod tests {
         tail: usize,
     ) -> TerminalSnapshot {
         TerminalSnapshot {
+            scrollback_generation: 0,
             seq,
             size: PtySize {
                 cols,
@@ -804,11 +823,14 @@ mod tests {
         }
     }
 
-    fn delta(seq: u64, rows: Vec<(u16, Row)>, scrolled: u32) -> TerminalDelta {
+    fn delta(seq: u64, rows: Vec<(u16, Row)>, scrollback_len: u64) -> TerminalDelta {
         TerminalDelta {
+            patches: Vec::new(),
+            scrollback_len,
+            scrollback_generation: 0,
             seq,
             rows,
-            scrolled_lines: scrolled,
+            scrolled_lines: 0,
             cursor: Cursor::default(),
             modes: TermModes::default(),
         }
@@ -1104,9 +1126,9 @@ mod tests {
         );
         assert_eq!(grid.last_seq, 5);
 
-        // seq == last_seq + 1 → applied: damaged row at index 1, scrolled 2.
+        // seq == last_seq + 1 → applied: damaged row at index 1, history length 2.
         let mut damaged = Row::blank(4);
-        damaged.cells[0].text = "X".into();
+        Arc::make_mut(&mut damaged.cells)[0].text = "X".into();
         assert_eq!(
             grid.apply_delta(&delta(6, vec![(1u16, damaged)], 2)),
             DeltaOutcome::Applied
@@ -1123,10 +1145,10 @@ mod tests {
         let mut grid = CellGrid::from_snapshot(&snapshot(5, 4, 3, 7, 0));
         let before = grid.clone();
         let mut damaged = Row::blank(4);
-        damaged.cells[0].text = "new geometry".into();
+        Arc::make_mut(&mut damaged.cells)[0].text = "new geometry".into();
 
         assert_eq!(
-            grid.apply_delta(&delta(6, vec![(3, damaged)], 1)),
+            grid.apply_delta(&delta(6, vec![(3, damaged)], 7)),
             DeltaOutcome::NeedsResync
         );
         assert_eq!(grid.last_seq, before.last_seq);
@@ -1159,12 +1181,13 @@ mod tests {
         let mut grid = CellGrid::from_snapshot(&snapshot(5, 4, 3, 10, 2));
         assert!(grid.is_scrollback_cached(-1) && grid.is_scrollback_cached(-2));
 
-        // One line scrolls in: old -1→-2, old -2→-3, and the scrolled-off row is
-        // seeded at -1.
-        let _ = grid.apply_delta(&delta(6, vec![], 1));
+        // Absolute indices stay put when generation does not change, so a length
+        // bump shifts offsets. The newly scrolled-off line is a hole until fetch.
+        let _ = grid.apply_delta(&delta(6, vec![], 11));
         assert_eq!(grid.scrollback_len, 11);
-        assert_eq!(grid.scrollback_cache.len(), 3);
-        assert!(grid.is_scrollback_cached(-1));
+        assert_eq!(grid.scrollback_cache.len(), 2);
+        assert!(!grid.is_scrollback_cached(-1));
+        assert!(grid.is_scrollback_cached(-2));
         assert!(grid.is_scrollback_cached(-3));
     }
 
@@ -1175,7 +1198,7 @@ mod tests {
         let started = std::time::Instant::now();
         for seq in 6..10_006 {
             assert_eq!(
-                grid.apply_delta(&delta(seq, vec![], 1)),
+                grid.apply_delta(&delta(seq, vec![], 5_000 + (seq - 5))),
                 DeltaOutcome::Applied
             );
         }
@@ -1191,6 +1214,8 @@ mod tests {
         let block = MAX_SCROLLBACK_CACHE_ROWS / 4;
         for i in 0..6 {
             grid.merge_scrollback(&ScrollbackRows {
+                snapshot: None,
+                generation: 0,
                 from_line: (i * block) as i64,
                 rows: vec![Row::blank(4); block],
             });
@@ -1213,6 +1238,8 @@ mod tests {
         // Fetch rows 90..=93 (absolute). With scrollback_len 100 these map to
         // offsets -10..=-7.
         grid.merge_scrollback(&ScrollbackRows {
+            snapshot: None,
+            generation: 0,
             from_line: 90,
             rows: vec![Row::blank(4); 4],
         });
@@ -1224,24 +1251,26 @@ mod tests {
     #[test]
     fn history_contents_survive_scroll_fetch_and_resync() {
         let mut snap = snapshot(5, 4, 3, 10, 2);
-        snap.scrollback_tail[0].cells[0].text = "old".into();
-        snap.visible[0].cells[0].text = "top".into();
+        Arc::make_mut(&mut snap.scrollback_tail[0].cells)[0].text = "old".into();
+        Arc::make_mut(&mut snap.visible[0].cells)[0].text = "top".into();
         let mut grid = CellGrid::from_snapshot(&snap);
         assert_eq!(
-            grid.apply_delta(&delta(6, vec![], 2)),
+            grid.apply_delta(&delta(6, vec![], 12)),
             DeltaOutcome::Applied
         );
         assert_eq!(grid.scrollback_row(-4).unwrap().cells[0].text, "old");
-        assert_eq!(grid.scrollback_row(-2).unwrap().cells[0].text, "top");
+        assert!(grid.scrollback_row(-1).is_none());
 
-        // A coalesced scroll larger than the screen cannot seed missing history.
+        // A coalesced scroll does not reconstruct missing history from the old viewport.
         assert_eq!(
-            grid.apply_delta(&delta(7, vec![], 5)),
+            grid.apply_delta(&delta(7, vec![], 17)),
             DeltaOutcome::Applied
         );
         assert_eq!(grid.scrollback_row(-9).unwrap().cells[0].text, "old");
         assert!(grid.scrollback_row(-1).is_none());
         grid.merge_scrollback(&ScrollbackRows {
+            snapshot: None,
+            generation: 0,
             from_line: 16,
             rows: vec![snap.visible[0].clone()],
         });
@@ -1254,6 +1283,49 @@ mod tests {
         assert_eq!(grid.scrollback_cached_extent(), Some((-2, -1)));
         assert_eq!(grid.scrollback_row(-2).unwrap().cells[0].text, "old");
         assert!(grid.scrollback_row(-9).is_none());
+    }
+
+    #[test]
+    fn a_generation_change_drops_cached_history() {
+        let mut grid = CellGrid::from_snapshot(&snapshot(5, 4, 3, 10, 2));
+        assert!(grid.is_scrollback_cached(-1));
+        let mut next = delta(6, vec![], 10);
+        next.scrollback_generation = 1;
+        assert_eq!(grid.apply_delta(&next), DeltaOutcome::Applied);
+        assert!(grid.scrollback_cache.is_empty());
+        grid.merge_scrollback(&ScrollbackRows {
+            snapshot: None,
+            generation: 0,
+            from_line: 8,
+            rows: vec![Row::blank(4)],
+        });
+        assert!(grid.scrollback_cache.is_empty());
+        grid.merge_scrollback(&ScrollbackRows {
+            snapshot: None,
+            generation: 1,
+            from_line: 8,
+            rows: vec![Row::blank(4)],
+        });
+        assert!(grid.is_scrollback_cached(-2));
+    }
+
+    #[test]
+    fn a_column_patch_updates_only_the_named_cells() {
+        let mut grid = CellGrid::from_snapshot(&snapshot(5, 4, 3, 0, 0));
+        let mut patch_row = Row::blank(2);
+        Arc::make_mut(&mut patch_row.cells)[0].text = "A".into();
+        Arc::make_mut(&mut patch_row.cells)[1].text = "B".into();
+        let mut next = delta(6, vec![], 0);
+        next.patches = vec![domain::CellPatch {
+            line: 1,
+            first: 1,
+            row: patch_row,
+        }];
+        assert_eq!(grid.apply_delta(&next), DeltaOutcome::Applied);
+        assert_eq!(grid.visible[1].cells[0].text.as_str(), " ");
+        assert_eq!(grid.visible[1].cells[1].text.as_str(), "A");
+        assert_eq!(grid.visible[1].cells[2].text.as_str(), "B");
+        assert_eq!(grid.visible[1].cells[3].text.as_str(), " ");
     }
 
     #[test]

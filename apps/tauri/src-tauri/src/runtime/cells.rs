@@ -173,7 +173,7 @@ pub fn oldest_needed_line(grid: &CellGrid, scroll_offset: u64) -> Option<i64> {
 #[must_use]
 pub fn encode_row(row: &Row) -> WireRow {
     let mut out = RunBuilder::default();
-    for cell in &row.cells {
+    for cell in row.cells.iter() {
         // The leading cell of a wide grapheme already reserved both columns.
         if cell.flags.contains(CellFlags::WIDE_SPACER) {
             continue;
@@ -197,6 +197,7 @@ pub fn frame(
     bell: bool,
     echo_id: u64,
 ) -> CellsPayload {
+    let scroll_offset = scroll_offset.min(grid.scrollback_len);
     let height = grid.visible.len();
     let full = matches!(damage, Damage::Full) || scroll_offset > 0;
     let patch = if full {
@@ -400,7 +401,7 @@ mod tests {
 
     fn row(cells: Vec<Cell>) -> Row {
         Row {
-            cells,
+            cells: cells.into(),
             wrapped: false,
         }
     }
@@ -421,6 +422,7 @@ mod tests {
 
     fn grid(visible: Vec<Row>, scrollback: Vec<Row>) -> CellGrid {
         CellGrid::from_snapshot(&TerminalSnapshot {
+            scrollback_generation: 0,
             seq: 1,
             size: PtySize {
                 cols: visible.first().map_or(0, |r| r.cells.len()) as u16,
@@ -447,7 +449,7 @@ mod tests {
 
     #[test]
     fn a_style_change_breaks_the_run() {
-        let mut cells = plain("ab").cells;
+        let mut cells = plain("ab").cells.as_ref().clone();
         cells.push(cell(
             "c",
             Color::Indexed(2),
@@ -552,7 +554,22 @@ mod tests {
     /// collapsing it would make the text above jump as the fetch lands.
     #[test]
     fn history_the_cache_lacks_is_a_null_row_not_an_absent_one() {
-        let grid = grid(vec![plain("a"), plain("b")], Vec::new());
+        let grid = CellGrid::from_snapshot(&TerminalSnapshot {
+            scrollback_generation: 0,
+            seq: 1,
+            size: PtySize {
+                cols: 1,
+                rows: 2,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            visible: vec![plain("a"), plain("b")],
+            scrollback_tail: Vec::new(),
+            scrollback_len: 5,
+            cursor: Cursor::default(),
+            modes: TermModes::default(),
+            title: None,
+        });
         let payload = frame(TerminalId::new(), &grid, 2, &Damage::Full, false, 0);
         assert_eq!(payload.patch.len(), 2);
         assert!(payload.patch.iter().all(|(_, row)| row.is_none()));

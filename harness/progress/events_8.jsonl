@@ -1,5 +1,0 @@
-{"ts":"2026-08-29T18:40:23.318348Z","type":"feature_registered","slug":"add-suport-for-other-themes","title":"Add suport for other themes"}
-{"ts":"2026-08-29T18:40:23.320962Z","type":"spec_started"}
-{"ts":"2026-08-29T18:43:39.115574Z","type":"human_gate_opened","gate":"spec_approval"}
-{"ts":"2026-08-29T18:58:39.448551Z","type":"human_gate_resolved","gate":"spec_approval","decision":"revise"}
-{"ts":"2026-09-01T18:43:01Z","type":"feature_blocked","reason":"test data"}

@@ -44,8 +44,11 @@ export async function validate(): Promise<number> {
   try {
     data = JSON.parse(await Bun.file(FEATURES).text()) as HarnessData;
   } catch (exc) {
+    // Not an incoherence: the state is local and never committed, so a fresh
+    // clone has none until it registers a feature.
     if ((exc as NodeJS.ErrnoException)?.code === "ENOENT") {
-      console.log(`[FAIL]  missing ${rel(FEATURES)}`);
+      console.log(`[OK]    no harness state in this checkout (${rel(FEATURES)} not created yet)`);
+      return 0;
     } else {
       console.log(`[FAIL]  features.json is not valid JSON: ${(exc as Error).message}`);
     }

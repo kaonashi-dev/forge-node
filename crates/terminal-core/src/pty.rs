@@ -26,6 +26,8 @@
 //! needed for the MVP.
 
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, BorrowedFd};
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair};
 
@@ -87,7 +89,7 @@ pub trait PtyBackend: Send + Sync {
 pub trait PtyHandle: Send {
     /// A fresh readable handle for the child's output. Cloned from the master,
     /// so it is valid to call more than once.
-    fn reader(&mut self) -> Box<dyn Read + Send>;
+    fn reader(&mut self) -> Box<dyn PtyReader>;
     /// The writable handle for the child's input. Valid to take only once.
     fn writer(&mut self) -> Box<dyn Write + Send>;
     /// Apply a new window size (including pixel size) via `TIOCSWINSZ`.
@@ -104,6 +106,70 @@ pub trait PtyHandle: Send {
     /// # Errors
     /// Returns [`PtyError::Io`] if the underlying wait fails.
     fn try_wait(&mut self) -> Result<Option<ExitStatus>, PtyError>;
+}
+
+/// `None` means a deadline expired, `Some(0)` means EOF. No timeout blocks on input.
+pub trait PtyReader: Read + Send {
+    fn read_timeout(
+        &mut self,
+        buffer: &mut [u8],
+        timeout: Option<Duration>,
+    ) -> std::io::Result<Option<usize>>;
+}
+
+impl PtyReader for std::io::Cursor<Vec<u8>> {
+    fn read_timeout(
+        &mut self,
+        buffer: &mut [u8],
+        _: Option<Duration>,
+    ) -> std::io::Result<Option<usize>> {
+        self.read(buffer).map(Some)
+    }
+}
+
+struct PollReader(std::fs::File);
+
+impl Read for PollReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buffer)
+    }
+}
+
+impl PtyReader for PollReader {
+    fn read_timeout(
+        &mut self,
+        buffer: &mut [u8],
+        timeout: Option<Duration>,
+    ) -> std::io::Result<Option<usize>> {
+        let deadline = timeout.map(|duration| Instant::now() + duration);
+        loop {
+            let millis = deadline.map_or(-1, |end| {
+                let remaining = end.saturating_duration_since(Instant::now());
+                remaining
+                    .as_millis()
+                    .saturating_add(u128::from(remaining.subsec_nanos() % 1_000_000 != 0))
+                    .min(i32::MAX as u128) as i32
+            });
+            let mut fd = nix::libc::pollfd {
+                fd: self.0.as_raw_fd(),
+                events: nix::libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: the owned file outlives the poll and `fd` points to one initialized entry.
+            let ready = unsafe { nix::libc::poll(&mut fd, 1, millis) };
+            if ready == 0 {
+                return Ok(None);
+            }
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            return self.read(buffer).map(Some);
+        }
+    }
 }
 
 /// Default [`PtyBackend`], built on `portable-pty`'s native system.
@@ -200,12 +266,13 @@ struct PortablePtyHandle {
 }
 
 impl PtyHandle for PortablePtyHandle {
-    fn reader(&mut self) -> Box<dyn Read + Send> {
-        // `try_clone_reader` dups the master fd; the signature is infallible per
-        // §11.2, so a clone failure (fd exhaustion) is unrecoverable here.
-        self.master
-            .try_clone_reader()
-            .expect("clone pty reader from master fd")
+    fn reader(&mut self) -> Box<dyn PtyReader> {
+        // This Unix backend must expose a master fd; exhaustion during dup is unrecoverable.
+        let raw = self.master.as_raw_fd().expect("Unix PTY master fd");
+        // SAFETY: the master owns `raw` throughout dup; the reader owns the resulting descriptor.
+        let fd =
+            nix::unistd::dup(unsafe { BorrowedFd::borrow_raw(raw) }).expect("clone PTY reader fd");
+        Box::new(PollReader(std::fs::File::from(fd)))
     }
 
     fn writer(&mut self) -> Box<dyn Write + Send> {

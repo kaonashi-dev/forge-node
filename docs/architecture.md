@@ -95,13 +95,13 @@ The client keeps a passive `CellGrid` of cells and applies row diffs.
 
 - **Sequence:** each terminal has a per-emit `seq`. The client discards
   `seq ≤ last`, applies `seq == last+1`, and re-attaches on a gap (`> last+1`).
-- **Coalescing:** the PTY loop feeds the engine continuously but emits a delta at
-  most every ~8 ms (≤125/s). During the inter-frame sleep the kernel PTY buffer
-  fills, so a flood coalesces into one delta. With no subscriber the floor grows
-  to 50 ms: nothing is being sent anywhere, so a background agent's spinner
-  should not wake its thread — and take the core lock — 125 times a second.
-- **One lock per chunk:** feeding, routing and the activity bump all happen in a
-  single core-lock acquisition (`Daemon::pump_terminal`), not three.
+- **Coalescing:** the PTY loop drains available bytes, then emits a delta at
+  most every ~8 ms (≤125/s). Read waits on `poll` until input or the next emit /
+  synchronized-output deadline; it does not sleep after a successful read.
+  Unwatched sessions still consume the child's output at full speed and simply
+  skip emit.
+- **One lock per batch:** feeding, routing and the activity bump all happen in a
+  single core-lock acquisition (`Daemon::pump_terminal_batch`), not three.
 - **Backpressure:** each client's outbound queue is bounded (256). When it fills
   the client is marked "behind" for that terminal and, once drained, gets a
   single fresh resync instead of a backlog — the PTY loop never blocks and daemon

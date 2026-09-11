@@ -36,6 +36,10 @@ use super::snapshot::{
 use super::workbench::{self, WorkbenchCommand, WorkbenchSender};
 use crate::daemon::locator::{connect_or_spawn, Locator};
 
+const EVENT_BATCH_LIMIT: usize = 64;
+const EVENT_BATCH_BUDGET: Duration = Duration::from_millis(2);
+const COMMAND_BATCH_LIMIT: usize = 32;
+
 const LIVENESS_TICK: Duration = Duration::from_secs(1);
 const CELL_SEND_FLOOR: Duration = Duration::from_millis(16);
 
@@ -202,6 +206,7 @@ struct Preview {
 /// Emits the two event streams and keeps the `connect` command's cached
 /// snapshot in step with them.
 struct Emitter<'a> {
+    client: &'a Client,
     app: &'a AppHandle,
     latest: &'a Mutex<Latest>,
     daemon: DaemonInfoDto,
@@ -240,6 +245,7 @@ impl Emitter<'_> {
 
     /// Publish one terminal frame.
     fn cells(&self, store: &mut Store, at: &Attached, damage: &Damage, echo_id: u64) {
+        request_scrollback(self.client, store, at);
         let bell = store
             .terminals
             .get_mut(&at.terminal)
@@ -324,6 +330,7 @@ fn runtime_loop(
         *lock(&workbench) = Some(workbench::start(app.clone(), Arc::clone(&client)));
         preferred_session = Some(at.session);
         let emitter = Emitter {
+            client: &client,
             app: &app,
             latest: &latest,
             daemon: DaemonInfoDto::from(client.daemon_info()),
@@ -355,7 +362,7 @@ fn runtime_loop(
         let mut reconnect = false;
 
         loop {
-            loop {
+            for _ in 0..COMMAND_BATCH_LIMIT {
                 let next = match pending_command.take() {
                     Some(command) => Ok(command),
                     None => commands.try_recv(),
@@ -527,7 +534,14 @@ fn runtime_loop(
                     at.terminal,
                     preview.as_ref(),
                 );
-                while let Ok(more) = events.try_recv() {
+                let batch_end = Instant::now() + EVENT_BATCH_BUDGET;
+                for _ in 1..EVENT_BATCH_LIMIT {
+                    if Instant::now() >= batch_end {
+                        break;
+                    }
+                    let Ok(more) = events.try_recv() else {
+                        break;
+                    };
                     batch.absorb(&more, &store, &at, preview.as_ref());
                     emit_job_event(&app, &more);
                     batch.apply(
@@ -590,7 +604,7 @@ fn runtime_loop(
                     if !batch.shell && within_floor {
                         held = Some(match held.take() {
                             Some((since, held_damage)) => (since, held_damage.merge(damage)),
-                            None => (Instant::now(), damage),
+                            None => (last_cells_sent.unwrap_or_else(Instant::now), damage),
                         });
                     } else {
                         let damage = match held.take() {
@@ -1648,10 +1662,11 @@ fn request_scrollback(client: &Client, store: &mut Store, at: &Attached) {
     let Some(grid) = store.terminal(&at.terminal) else {
         return;
     };
-    if cells::viewport_is_cached(grid, at.scroll_offset) {
+    let offset = at.scroll_offset.min(grid.scrollback_len);
+    if cells::viewport_is_cached(grid, offset) {
         return;
     }
-    let Some(oldest) = cells::oldest_needed_line(grid, at.scroll_offset) else {
+    let Some(oldest) = cells::oldest_needed_line(grid, offset) else {
         return;
     };
     let from_line = (oldest - i64::from(cells::SCROLLBACK_PAGE) / 2).max(0);
@@ -1850,7 +1865,7 @@ fn delta_damage(delta: &domain::TerminalDelta) -> Damage {
     if delta.scrolled_lines > 0 {
         Damage::Full
     } else {
-        Damage::Rows(delta.rows.iter().map(|(index, _)| *index).collect())
+        Damage::Rows(delta.changed_rows().map(|(index, _)| index).collect())
     }
 }
 
@@ -2170,6 +2185,9 @@ mod tests {
         DaemonEvent::TerminalDelta {
             terminal_id,
             delta: TerminalDelta {
+                patches: Vec::new(),
+                scrollback_len: 0,
+                scrollback_generation: 0,
                 seq: 1,
                 rows: rows
                     .into_iter()
@@ -2316,6 +2334,7 @@ mod tests {
             &DaemonEvent::TerminalResync {
                 terminal_id: at.terminal,
                 snapshot: domain::TerminalSnapshot {
+                    scrollback_generation: 0,
                     seq: 2,
                     size: DEFAULT_SIZE,
                     visible: Vec::new(),

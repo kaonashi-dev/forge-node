@@ -13,9 +13,10 @@
 
 ## C1 — The harness is complete
 
-- [ ] `init.sh`, `harness/CHECKPOINTS.md`, `harness/features.json`,
-      `harness/progress/current_<id>.md`, `harness/progress/history.md` and
-      `scripts/harness` exist.
+- [ ] `init.sh`, `harness/CHECKPOINTS.md` and `scripts/harness` exist, and
+      `harness/progress/current_<id>.md` exists for the reviewed feature.
+- [ ] The diff commits no harness state: nothing under `harness/progress/`,
+      `harness/specs/<id>-<slug>/` or `harness/features.json` is staged.
 - [ ] `./init.sh --fast` (or `scripts/harness gate --fast`) finishes with exit
       code 0.
 
@@ -81,10 +82,11 @@ Every box is a `grep` over the diff, not a general impression.
 
 - [ ] The `inner -> registry` lock order is respected, and the core lock is
       **never** held across an `.await`.
-- [ ] `Daemon::pump_terminal` is still a single critical section per PTY chunk
-      (feed + the delta route or the activity note + idle clock), and it still
-      reports whether anyone was watching so it can pick `FRAME` vs
-      `IDLE_FRAME`. It has not been split again into feed/`has_subscribers`/emit.
+- [ ] `Daemon::pump_terminal_batch` is still a single critical section per
+      processed PTY batch (feed + optional coalesced emit + the activity note
+      + idle clock). `pty_loop` waits on `poll` with a deadline rather than
+      sleeping after a successful read, and `FRAME` is the emit floor, not the
+      read cadence. It has not been split again into feed/`has_subscribers`/emit.
 - [ ] `TerminalRuntime::emit_seq` advances once per **emitted** delta, not per
       feed to the engine.
 - [ ] The runtime-only fields still have no SQLite column and are rebuilt on
