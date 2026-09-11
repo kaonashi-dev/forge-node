@@ -99,6 +99,7 @@ import {
 } from "./sessionScope";
 import { closeTarget } from "./closeTarget";
 import {
+  cycleSidebarView,
   restoreSidebar,
   showView,
   sidebarOpen,
@@ -436,6 +437,7 @@ export function AppShell() {
       registerAction("toggle_lieutenant", () => toggleView("Lieutenant")),
       registerAction("toggle_git", () => toggleView("Git")),
       registerAction("toggle_history", () => toggleView("History")),
+      registerAction("cycle_sidebar_views", cycleSidebarView),
       // The same three functions the overlay over the terminal calls, so a
       // palette entry cannot drift from the button beside it.
       registerAction("session_handoff", startHandoff),

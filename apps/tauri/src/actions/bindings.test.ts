@@ -71,6 +71,8 @@ describe("the binding table", () => {
       );
       expect(binding, `no chord for tab ${index}`).toBeDefined();
       expect(binding?.chord.key).toBe(String(index));
+      // On `MOD-alt`: the bare number row belongs to the sidebar.
+      expect(binding?.chord.alt, `tab ${index} must carry alt`).toBe(true);
     }
   });
 });

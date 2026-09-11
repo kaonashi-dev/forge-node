@@ -80,6 +80,7 @@ export type ActionId =
   | "toggle_files"
   | "toggle_features"
   | "toggle_lieutenant"
+  | "cycle_sidebar_views"
   | "add_project"
   | "open_file_palette"
   | "save_file"
@@ -230,6 +231,13 @@ export const ACTIONS: Action[] = [
     id: "toggle_lieutenant",
     label: "Lieutenant",
     detail: "Ask about the harness",
+    palette: true,
+    repeats: false,
+  },
+  {
+    id: "cycle_sidebar_views",
+    label: "Next Sidebar View",
+    detail: "Walk History, PR, Features, Lieutenant and Git in turn",
     palette: true,
     repeats: false,
   },
@@ -533,14 +541,12 @@ export type Binding = {
 };
 
 /**
- * The tabs the number chords can reach, counted the way the user counts them.
+ * The tabs a chord can reach, counted the way the user counts them.
  *
- * Starts at 2 because `cmd-1` was spent on the project rail: the rail is the
- * only chord that gives the whole window back, and it is worth more than a
- * direct route to a tab that `ctrl-tab` already reaches in one press from
- * either neighbour. The numbering stays literal — `cmd-2` is tab 2.
+ * On `MOD-alt`, because the bare number row is the sidebar's. Matched on
+ * `event.code`, so macOS's ⌥ turning `1` into `¡` does not move the key.
  */
-export const FOCUSABLE_SESSIONS = [2, 3, 4, 5, 6, 7, 8, 9];
+export const FOCUSABLE_SESSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 /** The default bindings, built without touching the DOM so tests can read them. */
 export function defaultBindings(): Binding[] {
@@ -569,11 +575,13 @@ export function defaultBindings(): Binding[] {
     bind(`${MOD}-shift-n`, "new_worktree", APP),
     bind(`${MOD}-,`, "open_settings", APP),
     bind(`${MOD}-w`, "close_session", APP),
-    // `${MOD}-b` folds the whole sidebar, as every editor has taught;
-    // `${MOD}-1` is where the hand already is when it reaches for the tab
-    // numbers, so it goes to the first view.
+    // `${MOD}-b` folds the whole sidebar, as every editor has taught. The
+    // number row is the strip, left to right: 1 and 2 are the two views reached
+    // most, and 3 walks the rest, since seven views do not fit under three keys.
     bind(`${MOD}-b`, "toggle_sidebar", APP),
     bind(`${MOD}-1`, "toggle_projects", APP),
+    bind(`${MOD}-2`, "toggle_files", APP),
+    bind(`${MOD}-3`, "cycle_sidebar_views", APP),
     bind(`${MOD}-shift-r`, "toggle_pull_requests", APP),
     bind(`${MOD}-shift-f`, "toggle_files", APP),
     // `shift-h` for the harness: `${MOD}-h` alone is macOS's hide-application,
@@ -669,7 +677,7 @@ export function defaultBindings(): Binding[] {
   ];
 
   for (const index of FOCUSABLE_SESSIONS) {
-    bindings.push(bind(`${MOD}-${index}`, "focus_session", APP, index));
+    bindings.push(bind(`${MOD}-alt-${index}`, "focus_session", APP, index));
   }
   return bindings;
 }

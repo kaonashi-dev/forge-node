@@ -34,16 +34,32 @@ describe("default bindings (actions.rs port)", () => {
   });
 
   /**
-   * The chord on `1` belongs to the sidebar's Projects view, not to the first
-   * tab. Both halves matter: a stale focus binding left behind would win or
-   * lose the dispatch by table order, so the tab side has to be gone rather
-   * than outranked.
+   * The bare number row is the sidebar's and the tabs are on `MOD-alt`, so the
+   * test pins the modifiers and not just the key. Both halves matter: a stale
+   * focus binding left behind would win or lose the dispatch by table order,
+   * so the tab side has to be gone rather than outranked.
    */
-  it("gives the first number chord to the rail", () => {
-    const onOne = defaultBindings().filter((binding) => binding.chord.key === "1");
-    expect(onOne).toHaveLength(1);
-    expect(onOne[0].action).toBe("toggle_projects");
-    expect(FOCUSABLE_SESSIONS).not.toContain(1);
+  it("gives the bare number row to the rail", () => {
+    const bareDigit = (key: string) =>
+      defaultBindings().filter(
+        (binding) =>
+          binding.chord.key === key &&
+          !binding.chord.alt &&
+          !binding.chord.shift &&
+          binding.chord.ctrl === (MOD === "ctrl") &&
+          binding.chord.meta === (MOD === "cmd"),
+      );
+    expect(bareDigit("1").map((binding) => binding.action)).toEqual(["toggle_projects"]);
+    expect(bareDigit("2").map((binding) => binding.action)).toEqual(["toggle_files"]);
+    expect(bareDigit("3").map((binding) => binding.action)).toEqual(["cycle_sidebar_views"]);
+    expect(FOCUSABLE_SESSIONS).toContain(1);
+  });
+
+  // Declared before `MOD-shift-f`: the palette draws an action's first chord.
+  it("draws Files from its number chord, not the letter", () => {
+    const chord = chordFor("toggle_files");
+    expect(chord?.key).toBe("2");
+    expect(chord?.shift).toBe(false);
   });
 
   // The editor convention is the one a new user guesses; taking it away to pay
@@ -143,6 +159,7 @@ describe("firesOnRepeat", () => {
       "toggle_features",
       "toggle_lieutenant",
       "toggle_git",
+      "cycle_sidebar_views",
     ] as const) {
       expect(firesOnRepeat(action), action).toBe(false);
     }
