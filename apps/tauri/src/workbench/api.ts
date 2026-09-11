@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import { markApplying, setSharesStore } from "../store/sharesStore";
+import { createImageReader } from "./previewImages";
 import type { JuvaKind, SearchKind } from "./types";
 
 /**
@@ -137,6 +138,13 @@ export function warmFileTree(workspace: string): void {
 export async function openFile(workspace: string, path: string): Promise<void> {
   await send({ type: "open_file", workspace, path });
 }
+
+/** An image a Markdown preview names; answered on `workbench:image`. */
+export async function loadImage(workspace: string, path: string): Promise<void> {
+  await send({ type: "load_image", workspace, path });
+}
+
+export const previewImageReader = createImageReader(loadImage);
 
 /**
  * A11: the three path mutations, all of which answer by re-listing the tree.

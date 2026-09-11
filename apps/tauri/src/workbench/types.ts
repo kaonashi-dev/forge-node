@@ -120,6 +120,14 @@ export type FileContents = {
   too_large: boolean;
 };
 
+export type ImageContents = {
+  workspace_id: string;
+  path: string;
+  mime: string;
+  /** Base64 of the file's bytes. */
+  data: string;
+};
+
 export type SearchMatch = {
   path: string;
   line: number;

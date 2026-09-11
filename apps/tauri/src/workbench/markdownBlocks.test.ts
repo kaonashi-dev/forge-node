@@ -90,6 +90,29 @@ describe("parseMarkdown", () => {
     if (blocks[0].kind !== "quote") throw new Error("expected a quote");
     expect(blocks[0].blocks.map((block) => block.kind)).toEqual(["heading", "list"]);
   });
+
+  it("drops the tags a README centres an image with, and the gap they leave", () => {
+    const blocks = parseMarkdown('<p align="center">\n  <img src="logo.png" width="120">\n</p>');
+    expect(blocks).toEqual([
+      {
+        kind: "paragraph",
+        spans: [{ kind: "image", alt: "", src: "logo.png", href: null, width: "120px" }],
+      },
+    ]);
+  });
+
+  it("hides comments, on one line or across several", () => {
+    const blocks = parseMarkdown(
+      "<!-- a note -->\nkept <!-- inline --> here\n\n<!--\nhidden\n-->\nafter",
+    );
+    expect(blocks).toEqual([
+      {
+        kind: "paragraph",
+        spans: [{ kind: "text", text: "kept  here", strong: false, em: false }],
+      },
+      { kind: "paragraph", spans: [{ kind: "text", text: "after", strong: false, em: false }] },
+    ]);
+  });
 });
 
 describe("inlineSpans", () => {
@@ -123,6 +146,43 @@ describe("inlineSpans", () => {
     ]);
     expect(inlineSpans("[x](javascript:alert(1))")).toEqual([
       { kind: "text", text: "[x](javascript:alert(1))", strong: false, em: false },
+    ]);
+  });
+
+  it("reads an image with its source unresolved", () => {
+    expect(inlineSpans('see ![a chart](./chart.png "title")')).toEqual([
+      { kind: "text", text: "see ", strong: false, em: false },
+      { kind: "image", alt: "a chart", src: "./chart.png", href: null, width: null },
+    ]);
+    expect(inlineSpans("![spaced](<my shot.png>)")).toEqual([
+      { kind: "image", alt: "spaced", src: "my shot.png", href: null, width: null },
+    ]);
+  });
+
+  it("keeps a badge's image whole inside its link", () => {
+    expect(inlineSpans("[![CI](https://example.com/ci.svg)](https://example.com/actions)")).toEqual(
+      [
+        {
+          kind: "image",
+          alt: "CI",
+          src: "https://example.com/ci.svg",
+          href: "https://example.com/actions",
+          width: null,
+        },
+      ],
+    );
+  });
+
+  it("reads an img tag's source and alt, and a br as a break", () => {
+    expect(inlineSpans(`one<br>two <img alt='the "logo"' src=a.svg width="50%" />`)).toEqual([
+      { kind: "text", text: "one\ntwo ", strong: false, em: false },
+      { kind: "image", alt: 'the "logo"', src: "a.svg", href: null, width: "50%" },
+    ]);
+  });
+
+  it("leaves a tag it does not know as text", () => {
+    expect(inlineSpans("<script>x</script>")).toEqual([
+      { kind: "text", text: "<script>x</script>", strong: false, em: false },
     ]);
   });
 });

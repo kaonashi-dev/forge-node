@@ -39,6 +39,9 @@ import { languageFor } from "./editor/language";
 import { CompareView } from "./editor/CompareView";
 import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
 import { Button, Tooltip } from "../ui";
+import { Markdown, type MdImageLoader } from "./Markdown";
+import { imageSource } from "./previewImages";
+import { previewImageReader } from "./api";
 
 /**
  * The in-app editor (ADR-012).
@@ -64,6 +67,9 @@ import { Button, Tooltip } from "../ui";
  * itself" stops being true in the moment someone closes the window.
  */
 const AUTOSAVE_IDLE_MS = 1_000;
+
+/** How a Markdown file is shown: its source, or the document it renders to. */
+type MarkdownMode = "code" | "preview";
 
 export function EditorView(props: { path: string }) {
   let host!: HTMLDivElement;
@@ -96,6 +102,17 @@ export function EditorView(props: { path: string }) {
   onCleanup(() => clearTimeout(idleTimer));
   const [conflict, setConflict] = createSignal(false);
   const [comparing, setComparing] = createSignal(false);
+  /** A Markdown file opens as the document it renders to (see `previewing`). */
+  const [markdownMode, setMarkdownMode] = createSignal<MarkdownMode>("preview");
+  /**
+   * Bumped whenever the buffer's text changes, so the preview can re-read it.
+   * The editor's text is not a signal, and a keystroke with no preview on
+   * screen has nothing subscribed to this.
+   */
+  const [docVersion, setDocVersion] = createSignal(0);
+  const touchDoc = (): void => {
+    setDocVersion((version) => version + 1);
+  };
 
   const file = () => (workbenchStore.file?.path === props.path ? workbenchStore.file : null);
   const grammar = createMemo(() => {
@@ -229,6 +246,7 @@ export function EditorView(props: { path: string }) {
       base: themeBase(),
       onChange: () => {
         setDirty(true);
+        touchDoc();
         scheduleAutosave();
       },
       onBlur: () => {
@@ -261,7 +279,9 @@ export function EditorView(props: { path: string }) {
     setComparing(false);
     setLookup(null);
     dismissDefinition();
+    setMarkdownMode("preview");
     handle?.setDoc("");
+    touchDoc();
     setWorkbenchStore("fileError", null);
   });
 
@@ -296,6 +316,7 @@ export function EditorView(props: { path: string }) {
       lastRevision = revision;
       if (action === "apply") {
         editor.setDoc(disk);
+        touchDoc();
         setConflict(false);
         return;
       }
@@ -358,6 +379,8 @@ export function EditorView(props: { path: string }) {
     const reveal = editorReveal();
     const contents = file();
     if (!reveal || reveal.path !== props.path || !contents) return;
+    // A line is a place in the source; the rendered document has no lines.
+    setMarkdownMode("code");
     handle?.revealLine(reveal.line);
     clearEditorReveal();
   });
@@ -394,12 +417,69 @@ export function EditorView(props: { path: string }) {
     return null;
   };
 
+  const markdown = () => grammar() === "markdown";
+  const previewing = () =>
+    markdown() && markdownMode() === "preview" && !comparing() && unopenable() === null;
+
+  /*
+   * The preview draws the buffer, not the last read: what is being looked at
+   * is the draft, unsaved edits included. It tracks `docVersion` only while it
+   * is on screen, so typing in the source pays for no parse.
+   */
+  const previewText = createMemo(() => {
+    if (!previewing()) return "";
+    docVersion();
+    return handle?.text() ?? "";
+  });
+
+  /*
+   * One image loader per rendered text. A checkout image is read once for the
+   * document it appears in, and read again when the document changes or the
+   * preview is opened again — there is no watcher to say it moved on disk.
+   */
+  const previewImages = createMemo((): MdImageLoader => {
+    previewText();
+    const reads = new Map<string, Promise<string>>();
+    return (src) => {
+      const workspace = workbenchStore.workspace;
+      const source = imageSource(src, props.path);
+      if (!workspace || source === null) return null;
+      if (source.kind === "url") return Promise.resolve(source.url);
+      let read = reads.get(source.path);
+      if (!read) {
+        read = previewImageReader.read(workspace, source.path);
+        reads.set(source.path, read);
+      }
+      return read;
+    };
+  });
+
   return (
     <div class="editor-view">
       <header class="editor-head">
         <Breadcrumb path={props.path} />
         <Show when={dirty()}>
           <span class="editor-dirty">unsaved</span>
+        </Show>
+        <Show when={markdown() && file() && unopenable() === null}>
+          <div class="editor-mode" role="group" aria-label="Show as">
+            <Button
+              variant="ghost"
+              size="xs"
+              selected={markdownMode() === "code"}
+              onClick={() => setMarkdownMode("code")}
+            >
+              Code
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              selected={markdownMode() === "preview"}
+              onClick={() => setMarkdownMode("preview")}
+            >
+              Preview
+            </Button>
+          </div>
         </Show>
         <Button variant="secondary" size="xs" onClick={save} disabled={!dirty()}>
           Save
@@ -487,12 +567,18 @@ export function EditorView(props: { path: string }) {
         <p class="empty-copy">{workbenchStore.loading.file ? "Reading…" : "Nothing open."}</p>
       </Show>
 
+      <Show when={previewing() && file()}>
+        <div class="editor-preview">
+          <Markdown text={previewText()} class="forge-md-doc" images={previewImages()} />
+        </div>
+      </Show>
+
       {/* Never unmounted, and never inside the `Show` above: tearing the view
           down and building it again on every read would throw away the undo
           history and the scroll position with it. It is hidden instead. */}
       <div
         class="editor-code-row"
-        classList={{ hidden: comparing() || unopenable() !== null || !file() }}
+        classList={{ hidden: comparing() || previewing() || unopenable() !== null || !file() }}
       >
         <div ref={host} class="editor-code" />
         {/* A5: the gutter answers "did this line change" for the lines on
