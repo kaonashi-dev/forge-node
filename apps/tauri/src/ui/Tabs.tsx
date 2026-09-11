@@ -13,7 +13,11 @@ export type TabDef = {
    * says nothing to a screen reader.
    */
   icon?: ForgeIconName;
-  /** Rendered while not selected, hidden, so the panel keeps its scroll and local state. */
+  /**
+   * Rendered while not selected, hidden, so the panel keeps its local state.
+   * Not its scroll offset: WKWebView drops that for a `display: none` box, so
+   * a kept panel that scrolls has to put it back itself.
+   */
   keepMounted?: boolean;
   /**
    * An accessor, not a value: a badge read eagerly would put a reactive read
@@ -106,7 +110,7 @@ export function Tabs(props: TabsProps) {
           <Kobalte.Content
             value={tab.value}
             class={`forge-tab-panel ${props.contentClass ?? ""} ${tab.contentClass ?? ""}`}
-            forceMount={tab.keepMounted === true ? true : undefined}
+            forceMount={tab.keepMounted}
             hidden={tab.keepMounted ? props.value !== tab.value : undefined}
           >
             {tab.content()}

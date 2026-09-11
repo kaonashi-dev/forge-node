@@ -509,16 +509,25 @@ export function ProjectsView() {
   onCleanup(releaseKeyboard);
 
   /*
-   * A hidden kept panel does not guarantee a `focusout` in WebKit, so entering
-   * the counted SIDEBAR context on focus and leaving it on cleanup is not
-   * enough: the context would stay live while another view is up and
-   * `MOD-Enter` would reach this tree instead of the terminal.
+   * This view stays mounted while hidden, so neither cleanup nor a `focusout`
+   * is guaranteed to release SIDEBAR when it goes — not every engine sends one
+   * for a focused element that becomes `display: none` — and a live context
+   * would hand `MOD-Enter` to this tree instead of the terminal.
+   *
+   * The scroll offset has the opposite problem: WKWebView drops it for a
+   * `display: none` box, and by the time this runs the attribute has already
+   * been applied. So the offset is kept from the scroll events and put back on
+   * the way in.
    */
+  let viewEl: HTMLDivElement | undefined;
+  let keptScroll = 0;
+
   createEffect(
     on(
       () => sidebarView() === "Projects",
       (visible) => {
         if (!visible) releaseKeyboard();
+        else if (viewEl) viewEl.scrollTop = keptScroll;
       },
       { defer: true },
     ),
@@ -567,7 +576,13 @@ export function ProjectsView() {
   });
 
   return (
-    <div class="projects-view">
+    <div
+      class="projects-view"
+      ref={viewEl}
+      onScroll={(event) => {
+        if (sidebarView() === "Projects") keptScroll = event.currentTarget.scrollTop;
+      }}
+    >
       <div class="rail-head">
         <span class="section-label">Projects</span>
         <IconButton
