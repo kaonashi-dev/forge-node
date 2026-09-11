@@ -131,6 +131,30 @@ fn path_escape_is_refused() {
     }
 }
 
+#[test]
+fn image_read_serves_images_and_nothing_else() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    fs::create_dir_all(repo.path().join("docs")).unwrap();
+    fs::write(repo.path().join("docs/logo.png"), [0x89, b'P', b'N', b'G']).unwrap();
+    fs::write(repo.path().join(".env"), "SECRET=1\n").unwrap();
+    let daemon = harness.boot();
+    let client = daemon.connect("files-image");
+    let workspace = common::add_main_workspace(&client, repo.path());
+
+    let image = client
+        .read_image(workspace, "docs/logo.png")
+        .expect("ReadImage");
+    assert_eq!(image.path, "docs/logo.png");
+    assert_eq!(image.mime, "image/png");
+    assert_eq!(image.data, "iVBORw==");
+
+    let err = client
+        .read_image(workspace, ".env")
+        .expect_err("a non-image must be refused");
+    assert_eq!(refusal_code(err), ErrorCode::InvalidRequest);
+}
+
 /// Every refusal in this file arrives as a `ProtocolError` inside a
 /// `ClientError`; only its code is ever asserted on.
 fn refusal_code(error: client::ClientError) -> ErrorCode {

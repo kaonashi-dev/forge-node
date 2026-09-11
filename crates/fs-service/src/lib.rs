@@ -23,6 +23,10 @@ use thiserror::Error;
 /// Soft ceiling for one file's contents on the wire.
 pub const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 
+/// Ceiling for one image read. The daemon ships it as base64 — a third larger —
+/// inside a frame capped at 16 MiB, so this leaves room for the envelope.
+pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Soft ceiling for how many paths a tree listing returns.
 pub const MAX_TREE_ENTRIES: usize = 10_000;
 
@@ -63,6 +67,9 @@ pub enum FsError {
     /// The file contains a `NUL` in its probe window.
     #[error("binary file")]
     Binary,
+    /// [`read_image`] was asked for a path without an image extension.
+    #[error("not an image: {0}")]
+    NotAnImage(String),
     /// The on-disk content no longer matches the expected revision.
     #[error("file changed on disk")]
     RevisionMismatch {
@@ -125,6 +132,17 @@ pub struct FileContents {
     pub binary: bool,
     /// True when the file exceeded [`MAX_FILE_BYTES`] and was not opened.
     pub too_large: bool,
+}
+
+/// The bytes of one image, for a Markdown preview.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageBytes {
+    /// Workspace-relative path.
+    pub path: String,
+    /// Media type from the extension (`image/png`, `image/svg+xml`, …).
+    pub mime: &'static str,
+    /// The whole file.
+    pub bytes: Vec<u8>,
 }
 
 /// Name match or content match.
@@ -215,6 +233,66 @@ pub fn read_file(root: &Path, relative: &str) -> Result<FileContents, FsError> {
         text,
         binary: false,
         too_large: false,
+    })
+}
+
+/// Read one image relative to `root`, whole or not at all.
+///
+/// The extension is the gate, checked before the path is touched: this hands
+/// back raw bytes, and without it a preview could name `.env` and turn this
+/// into a second, unrevisioned `read_file` for anything.
+pub fn read_image(root: &Path, relative: &str) -> Result<ImageBytes, FsError> {
+    let mime = image_mime(relative).ok_or_else(|| FsError::NotAnImage(relative.to_string()))?;
+    let root = canonicalize_root(root)?;
+    let path = resolve_inside(&root, relative)?;
+    let meta = fs::metadata(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            FsError::NotFound(relative.to_string())
+        } else {
+            FsError::Io(e)
+        }
+    })?;
+    if !meta.is_file() {
+        return Err(FsError::NotFound(relative.to_string()));
+    }
+    if meta.len() > MAX_IMAGE_BYTES as u64 {
+        return Err(FsError::TooLarge {
+            size: meta.len(),
+            limit: MAX_IMAGE_BYTES,
+        });
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    // The file can grow between `metadata` and the read; `take` holds the cap.
+    File::open(&path)?
+        .take(MAX_IMAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(FsError::TooLarge {
+            size: bytes.len() as u64,
+            limit: MAX_IMAGE_BYTES,
+        });
+    }
+    Ok(ImageBytes {
+        path: normalize_rel(relative),
+        mime,
+        bytes,
+    })
+}
+
+/// Media type for an image extension a WebView can draw, or `None`.
+#[must_use]
+pub fn image_mime(path: &str) -> Option<&'static str> {
+    let ext = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        _ => return None,
     })
 }
 
@@ -1547,6 +1625,48 @@ mod tests {
         let c = read_file(tmp.path(), "b.bin").unwrap();
         assert!(c.binary);
         assert!(c.text.is_empty());
+    }
+
+    #[test]
+    fn reads_an_image_whole_with_its_media_type() {
+        let tmp = git_repo();
+        fs::create_dir_all(tmp.path().join("docs")).unwrap();
+        let png = [0x89, b'P', b'N', b'G', 0, 0, 0, 0];
+        fs::write(tmp.path().join("docs/shot.PNG"), png).unwrap();
+        let image = read_image(tmp.path(), "docs/shot.PNG").unwrap();
+        assert_eq!(image.mime, "image/png");
+        assert_eq!(image.path, "docs/shot.PNG");
+        assert_eq!(image.bytes, png);
+    }
+
+    #[test]
+    fn image_read_refuses_what_is_not_named_as_an_image() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join(".env"), "SECRET=1").unwrap();
+        // Refused on the name alone, before the path is touched.
+        assert!(matches!(
+            read_image(tmp.path(), ".env"),
+            Err(FsError::NotAnImage(_))
+        ));
+        assert!(matches!(
+            read_image(tmp.path(), "../outside.png"),
+            Err(FsError::EscapesWorkspace(_))
+        ));
+        assert!(matches!(
+            read_image(tmp.path(), "missing.png"),
+            Err(FsError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn image_read_refuses_an_oversize_file_instead_of_cutting_it() {
+        let tmp = git_repo();
+        let file = File::create(tmp.path().join("huge.jpg")).unwrap();
+        file.set_len(MAX_IMAGE_BYTES as u64 + 1).unwrap();
+        assert!(matches!(
+            read_image(tmp.path(), "huge.jpg"),
+            Err(FsError::TooLarge { .. })
+        ));
     }
 
     #[test]

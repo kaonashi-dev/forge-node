@@ -327,6 +327,7 @@ fn request_name(request: &Request) -> &'static str {
         Request::GetWorkspaceDiff { .. } => "GetWorkspaceDiff",
         Request::ListFiles { .. } => "ListFiles",
         Request::ReadFile { .. } => "ReadFile",
+        Request::ReadImage { .. } => "ReadImage",
         Request::WriteFile { .. } => "WriteFile",
         Request::CreatePath { .. } => "CreatePath",
         Request::RenamePath { .. } => "RenamePath",

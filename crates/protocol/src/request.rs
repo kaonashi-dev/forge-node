@@ -504,6 +504,16 @@ pub enum Request {
         /// Workspace-relative path.
         path: String,
     },
+    /// Read one image → [`crate::response::Response::ImageContents`].
+    ///
+    /// For a Markdown preview. Only image extensions are served, and a file
+    /// over the service budget is refused rather than cut.
+    ReadImage {
+        /// Workspace the path is relative to.
+        workspace_id: WorkspaceId,
+        /// Workspace-relative path.
+        path: String,
+    },
     /// Write one file → `Ack`, conditioned on `expected_revision`.
     ///
     /// Rejects with [`crate::ErrorCode::PreconditionFailed`] when the on-disk

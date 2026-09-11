@@ -158,11 +158,11 @@ Every box is a `grep` over the diff, not a general impression.
       `truncated`; it is never cut in half.
 
 - [ ] The GUI does not do `std::fs` over a workspace (ADR-012): `ListFiles` /
-      `ReadFile` / `WriteFile` / `SearchFiles` are local, synchronous reads like
-      `GetWorkspaceDiff`, resolved by `fs-service` outside the core lock, with
-      every canonical path inside the checkout. `FileTree` / `FileContents` /
-      `SearchResults` are still runtime-only (no column, no migration, no field
-      in `Store`).
+      `ReadFile` / `ReadImage` / `WriteFile` / `SearchFiles` are local,
+      synchronous reads like `GetWorkspaceDiff`, resolved by `fs-service`
+      outside the core lock, with every canonical path inside the checkout.
+      `FileTree` / `FileContents` / `ImageContents` / `SearchResults` are still
+      runtime-only (no column, no migration, no field in `Store`).
 - [ ] `WriteFile` requires the `revision` of the last `ReadFile` and answers
       `PreconditionFailed` if the disk changed; the GUI re-reads, it does not
       embed the content in the error. The Tauri editor still sends reads and

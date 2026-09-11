@@ -787,6 +787,23 @@ impl Client {
         }
     }
 
+    /// Read one image relative to a workspace, for a Markdown preview (ADR-012).
+    pub fn read_image(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        path: impl Into<String>,
+    ) -> Result<domain::ImageContents, ClientError> {
+        match self.request(Request::ReadImage {
+            workspace_id,
+            path: path.into(),
+        })? {
+            Response::ImageContents(image) => Ok(image),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "ImageContents",
+            }),
+        }
+    }
+
     /// Write one file conditioned on a revision (ADR-012).
     ///
     /// On a stale revision the daemon answers

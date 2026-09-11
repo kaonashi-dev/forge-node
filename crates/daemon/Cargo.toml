@@ -11,6 +11,7 @@ name = "forge-daemon"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 domain.workspace = true
 protocol.workspace = true
 terminal-core.workspace = true

@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-Plan references: §9.2, §10. `PROTOCOL_VERSION = 19`.
+Plan references: §9.2, §10. `PROTOCOL_VERSION = 20`.
 
 ## Transport & framing
 
@@ -78,6 +78,7 @@ DaemonMessage::Event    (DaemonEvent)
 | | `GetWorkspaceDiff { workspace_id, context_lines }` | `Response::WorkspaceDiff(WorkspaceDiff)` — the checkout's uncommitted changes, one unified patch per file (§16.7). Local and **synchronous**, like `ListBranches`: `git diff` opens no socket, so there is nothing to ack early and report through an event. Not broadcast either: a diff is a view one client asked for, not shared state. `context_lines: None` takes the service default (12, wider than git's 3 — this feeds a window, not a pager). |
 | | `ListFiles { workspace_id }` | `Response::FileTree(FileTree)` — tracked and untracked-but-not-ignored paths (ADR-012). Local and **synchronous** like `GetWorkspaceDiff`. Paths are relative and stay inside the checkout. |
 | | `ReadFile { workspace_id, path }` | `Response::FileContents(FileContents)` — text plus a `revision` the next write must present. Refuses binaries and oversize files without truncating. |
+| | `ReadImage { workspace_id, path }` | `Response::ImageContents(ImageContents)` — one image's bytes as base64 plus its media type, for the Markdown preview. `InvalidRequest` for a path without an image extension (checked before the path is touched) and for a file over `fs_service::MAX_IMAGE_BYTES` (8 MiB), which is refused rather than cut. |
 | | `WriteFile { workspace_id, path, text, expected_revision }` | `Ack`. `PreconditionFailed` when the on-disk content no longer matches the revision (an agent wrote the same path); the GUI re-reads with `ReadFile`. |
 | | `SearchFiles { workspace_id, query, kind, limit }` | `Response::SearchResults(SearchResults)` — fuzzy name match, `git grep` content search, or `Definition`: a `git grep -w -F` for the bare word kept only where the line declares it. The answer echoes `query`, which is what tells a client whose lookup it is. |
 | Sessions | `CreateShellSession { workspace_id, parent, role }` | `SessionCreated` (state `Starting`, then `SessionUpdated` → `Running`). |

@@ -269,11 +269,12 @@ view one client asked for, not shared state.
 | `files` | changed paths in git's own order |
 | `truncated` | files, or one file's patch, were left out of the answer |
 
-### `FileTree` / `FileContents` / `SearchResults` (`file.rs`)
+### `FileTree` / `FileContents` / `ImageContents` / `SearchResults` (`file.rs`)
 
 Workspace filesystem views for the in-app editor (ADR-012). Runtime-only like
-`WorkspaceDiff`: computed on demand by `ListFiles` / `ReadFile` / `SearchFiles`,
-never stored, never broadcast. `FileContents.revision` is the optimistic-
+`WorkspaceDiff`: computed on demand by `ListFiles` / `ReadFile` / `ReadImage` /
+`SearchFiles`, never stored, never broadcast. `ImageContents.data` is base64
+because the last hop is JSON into the WebView. `FileContents.revision` is the optimistic-
 concurrency token `WriteFile` must present back. `SearchResults.query` echoes
 what was asked: the answer arrives as an event with no request id, so it is the
 only thing that tells a second lookup from the first one's answer.

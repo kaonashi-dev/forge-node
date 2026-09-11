@@ -57,7 +57,8 @@ pub use diff::{
 };
 pub use external::{ExternalAgentSession, ExternalTranscript, TranscriptStore};
 pub use file::{
-    FileContents, FileEntry, FileKind, FileTree, SearchKind, SearchMatch, SearchResults,
+    FileContents, FileEntry, FileKind, FileTree, ImageContents, SearchKind, SearchMatch,
+    SearchResults,
 };
 pub use harness::{
     HarnessAdvanceAction, HarnessArtifactKind, HarnessAttempt, HarnessEvent, HarnessFeature,
