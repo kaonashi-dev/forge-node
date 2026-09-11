@@ -80,8 +80,6 @@ const PR_ICON_CLASS: Record<PrTone, string> = {
   bad: "forge-icon-red",
 };
 
-type SidebarProps = {};
-
 /**
  * The project rail: group → project → workspace → session.
  *
@@ -89,7 +87,7 @@ type SidebarProps = {};
  * row: the set is small, and a row that appears later must not arrive folded
  * because some earlier build wrote a key for it.
  */
-export function Sidebar(props: SidebarProps) {
+export function ProjectsView() {
   const [sharedFiles, setSharedFiles] = createSignal<{
     projectId: string;
     workspaceId?: string;

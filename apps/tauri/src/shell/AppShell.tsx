@@ -61,7 +61,7 @@ import { defaultAgentFrom, resolveDefaultAgent } from "../settings/defaultAgent"
 import { applyThemeBase, type ThemePreference } from "../theme/ThemeProvider";
 import { DENSITIES, applyDensity } from "../theme/density";
 import { ResizeHandle } from "./ResizeHandle";
-import { Sidebar } from "./Sidebar";
+import { ProjectsView } from "./ProjectsView";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { BranchPicker } from "./BranchPicker";
@@ -529,7 +529,7 @@ export function AppShell() {
         }}
       >
         <Show when={railOpen()}>
-          <Sidebar />
+          <ProjectsView />
           <ResizeHandle
             side="left"
             label="Resize the project rail"
