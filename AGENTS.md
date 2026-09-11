@@ -2,7 +2,7 @@
 
 ## Ground Truth
 
-- This is a virtual Cargo workspace on Rust 2021, pinned to Rust 1.89.0. Current code depends directly on Unix sockets, PTYs, and signals, so development and CI target macOS/Linux, not Windows.
+- This is a virtual Cargo workspace on Rust 2021, pinned to Rust 1.89.0. Current code depends directly on Unix sockets, PTYs, and signals, so development targets macOS/Linux and CI gates on macOS, not Windows.
 - The canonical test gate needs `git`, and builds need a C toolchain for bundled SQLite. There is no external database service.
 - Use `Cargo.toml`, crate-level module docs, `scripts/dev`, and current source as truth. Working plans and historical checkpoints live in a local `plan/` (not published); they can contradict later implementation and are never the gate.
 - `docs/performance.md` is the cost model, and it is not optional reading before touching the delta path, the Tauri render path, the core lock, or anything that spawns a process. This repository has rungs a normal request handler does not: per cell (~10 000 per frame), per delta (≤125/s **per attached terminal**), per frame (the whole window). Work priced for a request handler is ruinous three rungs down.
@@ -14,7 +14,7 @@
 
 ## Commands
 
-- The canonical gate is `scripts/dev check` (also the default for bare `scripts/dev`): `cargo fmt --all -- --check`, then `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo test --workspace`. CI uses the same order on macOS and Ubuntu.
+- The canonical gate is `scripts/dev check` (also the default for bare `scripts/dev`): `cargo fmt --all -- --check`, then `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo test --workspace`. CI runs the same gate on macOS.
 - Build everything with `cargo build --workspace`; run one package with `cargo test -p <package>`.
 - Exact unit-test example: `cargo test -p client --lib ipc::tests::connect_request_and_event_round_trip -- --exact`.
 - Exact daemon E2E example: `cargo test -p daemon --test integration end_to_end_shell_session -- --exact`; run all non-ignored E2E cases with `cargo test -p daemon --test integration`.
