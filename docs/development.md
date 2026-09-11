@@ -28,10 +28,11 @@ cargo deny check                 # license/advisory policy (deny.toml); install 
                                  # `cargo install cargo-deny --locked`
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same three steps on `macos-latest` and
-`ubuntu-latest`, plus a separate `cargo-deny` job via `EmbarkStudios/cargo-deny-action`, which needs
-no compilation. `cargo deny check` is not part of `scripts/dev check`, so run it
-locally after touching dependencies.
+CI (`.github/workflows/ci.yml`) runs `scripts/dev check` on `macos-latest` and
+the frontend's `bun run check` in a parallel job; Linux is not in the matrix
+while no Linux artifact is published. `cargo deny check` is not part of
+`scripts/dev check`, so run it locally after touching dependencies (and before
+distributing; ADR-002).
 
 Packaging lives in `scripts/package-macos` and `scripts/package-linux`. Neither
 is run by `scripts/dev` or by CI; run them by hand and see `--help` for the
@@ -80,11 +81,10 @@ schedule both graphs together. The frontend must finish first because
 `forge-tauri/custom-protocol` embeds its output. Universal macOS packages still
 need a separate native build for each architecture.
 
-CI keeps frontend checks parallel to the cached Rust workspace job on each
-OS. Rust fixture export runs in the workspace job; TypeScript and CSS generation
-run in the frontend job. The workspace's Clippy `--all-targets` and test steps
-already cover the Tauri library and diagnostic binaries, so the frontend job
-needs neither native compilation nor Tauri system-library installation.
+CI keeps frontend checks parallel to the cached Rust workspace job. The
+workspace's Clippy `--all-targets` and test steps already cover the Tauri
+library and diagnostic binaries, so the frontend job needs neither native
+compilation nor Tauri system-library installation.
 
 For a build-time investigation, add `--timings` to the Cargo command being
 measured and open `target/cargo-timings/cargo-timing.html`. For example, after

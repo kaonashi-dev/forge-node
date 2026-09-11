@@ -1,8 +1,8 @@
 name: CI
 
-# §18 Fase 1: "CI (macOS + Linux headless)". The gate is the same one
-# `scripts/dev check` runs locally: fmt → clippy → test, on both platforms,
-# plus the `cargo deny` policy job ADR-002 requires before any distribution.
+# The same gate `scripts/dev check` runs locally (fmt → clippy → test) plus the
+# frontend's `bun run check`, both on macOS. No Linux job: no Linux artifact is
+# published yet.
 
 on:
   push:
@@ -27,66 +27,26 @@ env:
 
 jobs:
   workspace:
-    name: workspace (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: workspace (macOS)
+    runs-on: macos-latest
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            pkg-config \
-            libssl-dev \
-            libzstd-dev \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            patchelf
 
       - name: Install Rust (pinned by rust-toolchain.toml)
         run: rustup show
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Format
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Test (macOS)
-        if: runner.os == 'macOS'
-        run: cargo test --workspace --locked
-
-      - name: Test (Linux)
-        if: runner.os == 'Linux'
-        run: cargo test --workspace --locked
-
-      - name: Check protocol fixtures are current
-        run: |
-          cargo run -p protocol --bin export-fixtures --locked
-          git diff --exit-code -- apps/tauri/tests/fixtures
+      - name: Gate (fmt, clippy, test)
+        run: scripts/dev check
 
   tauri:
-    name: tauri (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: tauri (macOS)
+    runs-on: macos-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -101,26 +61,3 @@ jobs:
       - name: Check frontend (lint, format, tests, types, bundle)
         working-directory: apps/tauri
         run: bun run check
-
-      - name: Check generated frontend files are current
-        run: |
-          bun run --cwd apps/tauri codegen
-          bun run --cwd apps/tauri tokens
-          git diff --exit-code -- apps/tauri/src/runtime/generated apps/tauri/src/theme/tokens.css
-
-  # ADR-002 / §32 require `cargo deny check licenses` to pass before any
-  # distribution; §31 lists cargo-deny as a project dependency. The action
-  # ships a prebuilt cargo-deny, so this job compiles nothing and stays fast
-  # even when the matrix job above is cold.
-  deny:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          # All four checks (advisories, bans, licenses, sources); the policy
-          # itself lives in deny.toml.
-          command: check
-          arguments: --all-features

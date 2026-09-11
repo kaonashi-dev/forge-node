@@ -194,7 +194,11 @@ fn the_four_providers_coexist_as_live_sessions_of_one_workspace() {
     let workspace_id = common::add_main_workspace(&client, repo.path());
 
     common::wait_for_detection(&client, |providers| {
-        providers.iter().all(|p| p.detection.status.is_installed())
+        PROVIDERS.iter().all(|(id, _)| {
+            providers
+                .iter()
+                .any(|p| p.descriptor.id.as_str() == *id && p.detection.status.is_installed())
+        })
     });
 
     let mut live = Vec::new();
