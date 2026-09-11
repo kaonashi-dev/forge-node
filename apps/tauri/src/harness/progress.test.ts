@@ -13,6 +13,7 @@ const attempt: HarnessAttempt = {
   settled_at: "2026-09-01T10:02:15Z",
   outcome: "failed",
   detail: "Rate limit",
+  provider_session_id: null,
 };
 const feature: HarnessFeature = {
   id: 1,

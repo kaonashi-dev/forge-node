@@ -251,6 +251,10 @@ impl Daemon {
         let attempt = harness_service::attempts_of(&feature, step) + 1;
         let prompt = step_prompt(step, feature_id, &feature, &root, attempt);
         let schema = matches!(step, HarnessStep::Review).then(|| VERDICT_SCHEMA.to_owned());
+        // A retry re-enters the provider conversation that already researched
+        // the problem when the stream named a session id. Fresh starts keep
+        // `None`.
+        let resume_from = prior_provider_session(&feature, step);
 
         // The id is minted here rather than inside `start_job` so the event
         // can name it. Jobs live in the daemon's memory only: restart it and
@@ -286,7 +290,7 @@ impl Daemon {
                 feature_id: Some(feature_id),
                 parent_session_id: None,
                 prompt,
-                resume_from: None,
+                resume_from,
                 schema,
             },
         );
@@ -774,7 +778,12 @@ impl Daemon {
     }
 
     /// Tell every client the feature row changed under them.
-    fn broadcast_harness_feature(&self, project_id: ProjectId, root: &Path, feature_id: u32) {
+    pub(crate) fn broadcast_harness_feature(
+        &self,
+        project_id: ProjectId,
+        root: &Path,
+        feature_id: u32,
+    ) {
         if let Ok(feature) = harness_service::get_feature(root, feature_id) {
             self.registry
                 .broadcast_domain(protocol::event::DaemonEvent::HarnessFeatureChanged {
@@ -856,6 +865,18 @@ fn harness_briefing(root: &Path) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The provider session a prior attempt of this step left, if any.
+///
+/// Newest first: a RetryStep after a blocked Spec should re-enter the
+/// conversation that already explored the codebase, not an older one.
+fn prior_provider_session(feature: &domain::HarnessFeature, step: HarnessStep) -> Option<String> {
+    feature.attempts.as_ref()?.iter().rev().find_map(|attempt| {
+        (attempt.step == step)
+            .then(|| attempt.provider_session_id.clone())
+            .flatten()
+    })
 }
 
 /// Display paths of the gate documents a spec step should have written.
@@ -1217,6 +1238,7 @@ mod tests {
             settled_at: settled.then(|| "t".to_owned()),
             outcome: None,
             detail: None,
+            provider_session_id: None,
         };
         let mut feature = domain::HarnessFeature::default();
 
@@ -1288,6 +1310,47 @@ mod tests {
         let again = step_prompt(HarnessStep::Implement, 4, &feature, root, 2);
         assert!(again.contains("attempt 2"), "{again}");
         assert!(again.contains("git status"), "{again}");
+    }
+
+    #[test]
+    fn a_prior_provider_session_is_the_newest_for_that_step() {
+        let feature = domain::HarnessFeature {
+            attempts: Some(vec![
+                domain::HarnessAttempt {
+                    step: HarnessStep::Spec,
+                    n: 1,
+                    job: Some("old".into()),
+                    provider: Some("claude".into()),
+                    transport: Some("cli".into()),
+                    started_at: "t0".into(),
+                    settled_at: Some("t1".into()),
+                    outcome: Some("blocked".into()),
+                    detail: None,
+                    provider_session_id: Some("sess-old".into()),
+                },
+                domain::HarnessAttempt {
+                    step: HarnessStep::Spec,
+                    n: 2,
+                    job: Some("new".into()),
+                    provider: Some("claude".into()),
+                    transport: Some("cli".into()),
+                    started_at: "t2".into(),
+                    settled_at: Some("t3".into()),
+                    outcome: Some("blocked".into()),
+                    detail: None,
+                    provider_session_id: Some("sess-new".into()),
+                },
+            ]),
+            ..domain::HarnessFeature::default()
+        };
+        assert_eq!(
+            prior_provider_session(&feature, HarnessStep::Spec).as_deref(),
+            Some("sess-new")
+        );
+        assert_eq!(
+            prior_provider_session(&feature, HarnessStep::Implement),
+            None
+        );
     }
 
     #[test]

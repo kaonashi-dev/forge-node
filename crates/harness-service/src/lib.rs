@@ -654,6 +654,37 @@ pub fn apply(
     })
 }
 
+/// Record the provider session id on the live attempt that names this job.
+///
+/// The stream names the id after `StartStep` wrote the attempt; without this
+/// patch a RetryStep has nothing to pass as `resume_from`.
+pub fn attach_provider_session(
+    project_root: &Path,
+    feature_id: u32,
+    job: &str,
+    provider_session_id: &str,
+) -> Result<(), HarnessError> {
+    let mut locked = load_mut(project_root)?;
+    let current = feature_mut(&mut locked.file, feature_id)?;
+    let Some(attempts) = current.attempts.as_mut() else {
+        return Ok(());
+    };
+    let Some(attempt) = attempts
+        .iter_mut()
+        .rev()
+        .find(|attempt| attempt.job.as_deref() == Some(job))
+    else {
+        return Ok(());
+    };
+    if attempt.provider_session_id.as_deref() == Some(provider_session_id) {
+        return Ok(());
+    }
+    attempt.provider_session_id = Some(provider_session_id.to_owned());
+    current.revision = Some(current.revision.unwrap_or(0) + 1);
+    locked.save()?;
+    Ok(())
+}
+
 /// A human decision from a client, as one [`HarnessTrigger`].
 ///
 /// The wire vocabulary and the table's vocabulary are deliberately separate:

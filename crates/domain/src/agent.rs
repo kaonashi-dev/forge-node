@@ -417,6 +417,14 @@ pub struct HeadlessSpec {
     /// `--add-dir`; a step running in a worktree reaches the repository's
     /// shared harness state through it.
     pub extra_writable_dir_flag: Option<String>,
+    /// Non-interactive permission posture, before the stream args.
+    ///
+    /// A headless job has no human to click "Allow" on Write/Edit. Claude's
+    /// `--permission-mode acceptEdits` is the CLI answer; ACP answers the same
+    /// question through [`AcpPermissionPolicy`]. Empty for providers that do
+    /// not prompt.
+    #[serde(default)]
+    pub permission_args: Vec<String>,
 }
 
 impl HeadlessSpec {
@@ -466,6 +474,7 @@ impl HeadlessSpec {
         if let (Some(style), Some(id)) = (self.resume.as_ref(), resume_from) {
             args.extend(style.args(id));
         }
+        args.extend(self.permission_args.iter().cloned());
         args.extend(self.stream_args.iter().cloned());
         if let Some(flag) = self.extra_writable_dir_flag.as_ref() {
             for dir in writable_dirs {
@@ -482,6 +491,154 @@ impl HeadlessSpec {
         }
         args.extend(self.prompt.args(prompt));
         args
+    }
+}
+
+/// How a provider speaks [Agent Client Protocol](https://agentclientprotocol.com)
+/// over stdio (§ plan-agnostic-orchestrator Phase 4).
+///
+/// The sibling of [`HeadlessSpec`]: same job row, same log, same envelope; a
+/// different wire. `None` on a descriptor means CLI-only for now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcpSpec {
+    /// Extra args after the executable when spawning as an ACP agent.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// What the daemon answers when the agent asks `session/request_permission`.
+    pub permissions: AcpPermissionPolicy,
+}
+
+/// Auto-answers for ACP tool permission requests on harness jobs.
+///
+/// The daemon is the Client: a headless worker must not wait on a click that
+/// never comes. Writes under the worktree cwd and under explicit extra roots
+/// (the harness state directory) are allowed; everything else is denied or
+/// escalated to a human gate depending on [`AcpPermissionPolicy::ask_outside`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcpPermissionPolicy {
+    /// Allow read tools unconditionally.
+    #[serde(default = "default_true")]
+    pub allow_read: bool,
+    /// Allow edit/write tools whose paths sit under the session cwd.
+    #[serde(default = "default_true")]
+    pub allow_write_under_cwd: bool,
+    /// Allow edit/write under directories passed as extra roots (harness root).
+    #[serde(default = "default_true")]
+    pub allow_write_under_extra: bool,
+    /// Allow network / fetch tools.
+    #[serde(default)]
+    pub allow_network: bool,
+    /// When a write falls outside cwd and extra roots: ask the human (true)
+    /// or deny (false). Harness defaults to deny so a job still ends.
+    #[serde(default)]
+    pub ask_outside: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AcpPermissionPolicy {
+    fn default() -> Self {
+        Self {
+            allow_read: true,
+            allow_write_under_cwd: true,
+            allow_write_under_extra: true,
+            allow_network: false,
+            ask_outside: false,
+        }
+    }
+}
+
+/// Kind of tool call an ACP agent is asking permission for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcpToolKind {
+    Read,
+    Edit,
+    Execute,
+    Fetch,
+    Other,
+}
+
+/// What the daemon decides for one ACP permission request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcpPermissionDecision {
+    Allow,
+    Deny,
+    /// Surface as a harness gate; the job stays alive only on a real ACP session.
+    Ask,
+}
+
+impl AcpPermissionPolicy {
+    /// Decide from tool kind and optional absolute path the tool would touch.
+    #[must_use]
+    pub fn decide(
+        &self,
+        kind: AcpToolKind,
+        path: Option<&std::path::Path>,
+        cwd: &std::path::Path,
+        extra_roots: &[std::path::PathBuf],
+    ) -> AcpPermissionDecision {
+        match kind {
+            AcpToolKind::Read => {
+                if self.allow_read {
+                    AcpPermissionDecision::Allow
+                } else {
+                    AcpPermissionDecision::Deny
+                }
+            }
+            AcpToolKind::Fetch => {
+                if self.allow_network {
+                    AcpPermissionDecision::Allow
+                } else {
+                    AcpPermissionDecision::Deny
+                }
+            }
+            AcpToolKind::Execute | AcpToolKind::Other => AcpPermissionDecision::Ask,
+            AcpToolKind::Edit => {
+                let Some(path) = path else {
+                    return if self.ask_outside {
+                        AcpPermissionDecision::Ask
+                    } else {
+                        AcpPermissionDecision::Deny
+                    };
+                };
+                if self.allow_write_under_cwd && path.starts_with(cwd) {
+                    return AcpPermissionDecision::Allow;
+                }
+                if self.allow_write_under_extra
+                    && extra_roots.iter().any(|root| path.starts_with(root))
+                {
+                    return AcpPermissionDecision::Allow;
+                }
+                if self.ask_outside {
+                    AcpPermissionDecision::Ask
+                } else {
+                    AcpPermissionDecision::Deny
+                }
+            }
+        }
+    }
+}
+
+/// Which wire a harness worker uses.
+///
+/// Today every job is [`WorkerTransport::Cli`]. [`WorkerTransport::Acp`] is
+/// the Phase 4 arm: same settlement path, structured `session/update` stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum WorkerTransport {
+    Cli,
+    Acp,
+}
+
+impl WorkerTransport {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Acp => "acp",
+        }
     }
 }
 
@@ -506,6 +663,9 @@ pub struct AgentDescriptor {
     /// How the provider runs a task headless. `None` means it has no such
     /// mode, so it can only ever be driven through a terminal.
     pub headless: Option<HeadlessSpec>,
+    /// How the provider speaks ACP over stdio. `None` means CLI-only for now.
+    #[serde(default)]
+    pub acp: Option<AcpSpec>,
     /// How the provider is put in a read-only posture (§16.9). `None` means it
     /// has none, so nothing may launch it for a review.
     #[serde(default)]
@@ -702,5 +862,48 @@ mod tests {
             pixel_height: 0,
         };
         assert_eq!(ok.sanitized(), ok);
+    }
+
+    #[test]
+    fn acp_policy_allows_worktree_and_harness_writes() {
+        let policy = AcpPermissionPolicy::default();
+        let cwd = PathBuf::from("/repo/worktrees/feat");
+        let harness = PathBuf::from("/repo/harness");
+        let extras = [harness.clone()];
+        assert_eq!(
+            policy.decide(AcpToolKind::Read, None, &cwd, &extras),
+            AcpPermissionDecision::Allow
+        );
+        assert_eq!(
+            policy.decide(
+                AcpToolKind::Edit,
+                Some(&cwd.join("src/a.rs")),
+                &cwd,
+                &extras
+            ),
+            AcpPermissionDecision::Allow
+        );
+        assert_eq!(
+            policy.decide(
+                AcpToolKind::Edit,
+                Some(&harness.join("progress/gate_12.md")),
+                &cwd,
+                &extras
+            ),
+            AcpPermissionDecision::Allow
+        );
+        assert_eq!(
+            policy.decide(
+                AcpToolKind::Edit,
+                Some(&PathBuf::from("/etc/passwd")),
+                &cwd,
+                &extras
+            ),
+            AcpPermissionDecision::Deny
+        );
+        assert_eq!(
+            policy.decide(AcpToolKind::Execute, None, &cwd, &extras),
+            AcpPermissionDecision::Ask
+        );
     }
 }

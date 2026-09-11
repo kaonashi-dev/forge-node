@@ -315,6 +315,7 @@ pub fn transition(
                     settled_at: None,
                     outcome: None,
                     detail: None,
+                    provider_session_id: None,
                 });
             next.status = step.running_status().to_owned();
             next.blocked_reason = None;

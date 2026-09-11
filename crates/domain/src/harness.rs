@@ -98,6 +98,12 @@ pub struct HarnessAttempt {
     /// Why it ended that way, when that needs saying.
     #[serde(default)]
     pub detail: Option<String>,
+    /// The provider's own session id, when the stream named one.
+    ///
+    /// What a retry passes as `resume_from` so the next attempt re-enters the
+    /// same conversation instead of throwing away research already paid for.
+    #[serde(default)]
+    pub provider_session_id: Option<String>,
 }
 
 impl HarnessAttempt {

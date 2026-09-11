@@ -620,10 +620,40 @@ impl Daemon {
             if job.provider_session_id.as_deref() == Some(provider_session_id.as_str()) {
                 return;
             }
-            job.provider_session_id = Some(provider_session_id);
+            job.provider_session_id = Some(provider_session_id.clone());
             job.clone()
         };
         self.broadcast_job(&job);
+        // Persist onto the harness attempt so a RetryStep can resume after the
+        // daemon forgets the in-memory job row.
+        if let Some(feature_id) = job.feature_id {
+            let root = {
+                let inner = self.lock();
+                let cwd = inner
+                    .workspaces
+                    .get(&job.workspace_id)
+                    .map(|workspace| workspace.path.clone());
+                cwd.and_then(|cwd| crate::core::harness_root_in(&inner, &cwd))
+            };
+            if let Some(root) = root {
+                if let Err(error) = harness_service::attach_provider_session(
+                    &root,
+                    feature_id,
+                    &id.to_string(),
+                    &provider_session_id,
+                ) {
+                    tracing::warn!(%id, %error, "could not persist provider session on attempt");
+                } else if let Some(project_id) = {
+                    let inner = self.lock();
+                    inner
+                        .workspaces
+                        .get(&job.workspace_id)
+                        .map(|workspace| workspace.project_id)
+                } {
+                    self.broadcast_harness_feature(project_id, &root, feature_id);
+                }
+            }
+        }
     }
 
     /// Move a job to its final state and tell everyone.
