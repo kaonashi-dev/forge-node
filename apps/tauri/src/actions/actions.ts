@@ -135,6 +135,8 @@ export type Action = {
   detail: string;
   /** Whether the command palette lists it. */
   palette: boolean;
+  /** `false` for an action a held chord must not re-fire: each repeat would remount a view. */
+  repeats?: boolean;
 };
 
 /** Every action, in the order the palette lists them when nothing is typed. */
@@ -194,32 +196,43 @@ export const ACTIONS: Action[] = [
     label: "Toggle Sidebar",
     detail: "Show or hide the sidebar",
     palette: true,
+    repeats: false,
   },
   {
     id: "toggle_projects",
     label: "Projects",
     detail: "Show the projects, checkouts and their agents in the sidebar",
     palette: true,
+    repeats: false,
   },
   {
     id: "toggle_pull_requests",
     label: "Pull Requests",
     detail: "Show the pull-request view in the sidebar",
     palette: true,
+    repeats: false,
   },
   {
     id: "toggle_files",
     label: "Files",
     detail: "Show the file browser in the sidebar",
     palette: true,
+    repeats: false,
   },
   {
     id: "toggle_features",
     label: "Features",
     detail: "Show the harness features in the sidebar",
     palette: true,
+    repeats: false,
   },
-  { id: "toggle_lieutenant", label: "Lieutenant", detail: "Ask about the harness", palette: true },
+  {
+    id: "toggle_lieutenant",
+    label: "Lieutenant",
+    detail: "Ask about the harness",
+    palette: true,
+    repeats: false,
+  },
   {
     id: "new_feature",
     label: "New Feature…",
@@ -303,7 +316,13 @@ export const ACTIONS: Action[] = [
     detail: "Bring back the last view that was closed",
     palette: true,
   },
-  { id: "toggle_git", label: "Git", detail: "Show the git view in the sidebar", palette: true },
+  {
+    id: "toggle_git",
+    label: "Git",
+    detail: "Show the git view in the sidebar",
+    palette: true,
+    repeats: false,
+  },
   {
     id: "session_handoff",
     label: "Continue in a New Session…",
@@ -339,6 +358,7 @@ export const ACTIONS: Action[] = [
     label: "History",
     detail: "Show the history view in the sidebar",
     palette: true,
+    repeats: false,
   },
   {
     id: "close_other_views",
@@ -494,6 +514,15 @@ export const ACTIONS: Action[] = [
     palette: true,
   },
 ];
+
+const HELD_ONCE = new Set(
+  ACTIONS.filter((action) => action.repeats === false).map((action) => action.id),
+);
+
+/** Whether a repeated keydown for this action should run it again. */
+export function firesOnRepeat(action: ActionId): boolean {
+  return !HELD_ONCE.has(action);
+}
 
 export type Binding = {
   chord: Chord;

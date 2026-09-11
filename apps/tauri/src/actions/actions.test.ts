@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACTIONS, FOCUSABLE_SESSIONS, chordFor, defaultBindings } from "./actions";
+import { ACTIONS, FOCUSABLE_SESSIONS, chordFor, defaultBindings, firesOnRepeat } from "./actions";
 import { MOD, PASTE_CHORD } from "./keys";
 
 describe("default bindings (actions.rs port)", () => {
@@ -127,5 +127,31 @@ describe("default bindings (actions.rs port)", () => {
   it("uses the platform's shortcut modifier", () => {
     const chord = chordFor("new_terminal");
     expect(MOD === "cmd" ? chord?.meta : chord?.ctrl).toBe(true);
+  });
+});
+
+describe("firesOnRepeat", () => {
+  // A held view chord would remount a panel per repeat; the bar toggles would
+  // collapse and unfold it ~30 times a second.
+  it("does not re-fire the sidebar's chords on a held key", () => {
+    for (const action of [
+      "toggle_sidebar",
+      "toggle_projects",
+      "toggle_files",
+      "toggle_history",
+      "toggle_pull_requests",
+      "toggle_features",
+      "toggle_lieutenant",
+      "toggle_git",
+    ] as const) {
+      expect(firesOnRepeat(action), action).toBe(false);
+    }
+  });
+
+  // Scrolling or zooming while holding the key is the gesture, not a burst.
+  it("lets scroll, zoom and tab stepping repeat", () => {
+    for (const action of ["scroll_up", "terminal_zoom_in", "next_session"] as const) {
+      expect(firesOnRepeat(action), action).toBe(true);
+    }
   });
 });
