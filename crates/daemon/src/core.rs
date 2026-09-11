@@ -6114,6 +6114,22 @@ mod tests {
             Box::new(backend.clone()),
         )
         .expect("load daemon core");
+        // The gate must not depend on the terminal it was launched from: a
+        // resolved login shell inherits Forge's own exports (FORGE_*,
+        // OPENCODE_CONFIG_CONTENT) from an agent PTY.
+        {
+            let mut inner = daemon.lock();
+            inner.env.set_for_test(
+                PathBuf::from("/bin/sh"),
+                vec![
+                    ("HOME".to_owned(), tmp.path().to_string_lossy().into_owned()),
+                    (
+                        "PATH".to_owned(),
+                        "/usr/bin:/bin:/usr/sbin:/sbin".to_owned(),
+                    ),
+                ],
+            );
+        }
         (daemon, tmp, backend)
     }
 
@@ -6655,7 +6671,8 @@ mod tests {
 
         let spec = backend.last_spawn().expect("a spawn happened");
         assert_eq!(spec.program.file_name().unwrap(), "claude");
-        assert_eq!(spec.args, ["--resume", "39c2ae5c-4fe3"]);
+        // Attention appends `--settings`; the resume spelling is the assertion.
+        assert_eq!(spec.args[..2], ["--resume", "39c2ae5c-4fe3"]);
 
         let session = only_session(&daemon);
         let terminal_id = session
@@ -6667,7 +6684,7 @@ mod tests {
         daemon.restart_session(session.id).expect("restart");
 
         let respawn = backend.last_spawn().expect("a respawn happened");
-        assert_eq!(respawn.args, ["--resume", "39c2ae5c-4fe3"]);
+        assert_eq!(respawn.args[..2], ["--resume", "39c2ae5c-4fe3"]);
     }
 
     /// A provider that declares no resume spelling is refused rather than
@@ -6749,7 +6766,8 @@ mod tests {
             .expect("create a read-only agent session");
 
         let spec = backend.last_spawn().expect("a spawn happened");
-        assert_eq!(spec.args, ["--permission-mode", "plan", "review it"]);
+        // Attention appends `--settings`; the read-only flags are the assertion.
+        assert_eq!(spec.args[..3], ["--permission-mode", "plan", "review it"]);
 
         let session = only_session(&daemon);
         let terminal_id = session
@@ -6763,7 +6781,7 @@ mod tests {
         // The prompt is deliberately gone — a restart must not re-ask — while
         // the read-only mode is deliberately still there.
         let respawn = backend.last_spawn().expect("a respawn happened");
-        assert_eq!(respawn.args, ["--permission-mode", "plan"]);
+        assert_eq!(respawn.args[..2], ["--permission-mode", "plan"]);
     }
 
     /// OpenCode never rings BEL itself; Claude / Codex / Cursor / Grok need a
@@ -7254,7 +7272,10 @@ mod tests {
     #[test]
     fn a_session_records_its_baseline_and_its_own_commits_count() {
         let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
-        let repo = tmp.path().to_path_buf();
+        // A subdirectory, so the attention assets beside the worktrees root are
+        // not untracked files in this repo.
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo");
         let git = |args: &[&str]| {
             let ok = std::process::Command::new("git")
                 .args(args)

@@ -65,6 +65,14 @@ impl ShellEnvironmentService {
         self.cached.as_ref().expect("just resolved")
     }
 
+    /// Replace the cache with fixed variables; core tests must not inherit the
+    /// shell the test runner was launched from. Marked `LoginShell` so
+    /// `resolved_env` does not raise the process-fallback notice.
+    #[cfg(test)]
+    pub(crate) fn set_for_test(&mut self, shell: PathBuf, vars: Vec<(String, String)>) {
+        self.cached = Some(Self::build(shell, vars, EnvSource::LoginShell));
+    }
+
     /// Resolve the shell to invoke: override, else `$SHELL`, else the passwd
     /// entry, else `/bin/sh` (§12).
     fn resolve_shell(&self) -> PathBuf {

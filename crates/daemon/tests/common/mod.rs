@@ -383,7 +383,10 @@ pub fn write_fake_agent_cli(dir: &Path, name: &str, marker: &str, version_output
 ///
 /// Prints `<marker>:<basename of $CLAUDE_CONFIG_DIR or "none">:<args>` on one
 /// line — short enough to survive an 80-column grid — then blocks on `cat` so
-/// the session stays `Running` like a real TUI would.
+/// the session stays `Running` like a real TUI would. Forge's attention adapter
+/// appends `--settings <…forge-claude-attention.json>` to a Claude launch; that
+/// pair is dropped so callers assert the arguments they passed, not the
+/// adapter's.
 pub fn write_env_reporting_cli(dir: &Path, name: &str, marker: &str, version: &str) -> PathBuf {
     let script = format!(
         "#!/bin/sh\n\
@@ -392,7 +395,10 @@ pub fn write_env_reporting_cli(dir: &Path, name: &str, marker: &str, version: &s
          \x20 exit 0\n\
          fi\n\
          dir=${{CLAUDE_CONFIG_DIR:-none}}\n\
-         printf '%s:%s:%s\\n' {marker} \"${{dir##*/}}\" \"$*\"\n\
+         args=\" $*\"\n\
+         args=${{args%% --settings *forge-claude-attention.json}}\n\
+         args=${{args# }}\n\
+         printf '%s:%s:%s\\n' {marker} \"${{dir##*/}}\" \"$args\"\n\
          exec /bin/cat\n",
         version = sh_quote(version),
         marker = sh_quote(marker),
