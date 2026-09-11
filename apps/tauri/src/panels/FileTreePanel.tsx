@@ -562,7 +562,7 @@ export function FileTreePanel() {
                     role="treeitem"
                     aria-level={row.depth + 1}
                     aria-selected={absolute() === index()}
-                    aria-expanded={row.isFile ? undefined : !row.folded}
+                    aria-expanded={row.isFile || row.opaque ? undefined : !row.folded}
                     class="forge-row tree-row file"
                     classList={{
                       active: absolute() === index(),
@@ -573,6 +573,10 @@ export function FileTreePanel() {
                     style={{ "--depth": String(row.depth) }}
                     onClick={() => {
                       select(row.path);
+                      // An ignored directory has no children to show: the
+                      // listing stopped at its name, so a click that toggled
+                      // it would flip a twisty over nothing.
+                      if (row.opaque) return;
                       if (!row.isFile) {
                         row.folded ? unfold(row.path) : fold(row.path);
                       } else {
@@ -586,7 +590,7 @@ export function FileTreePanel() {
                     }}
                   >
                     <span class="tree-twisty" classList={{ open: !row.folded }}>
-                      {!row.isFile ? "›" : ""}
+                      {!row.isFile && !row.opaque ? "›" : ""}
                     </span>
                     {/* Directories carry the state the twisty already shows, so
                         the open folder is only ever under an open twisty, and
@@ -611,7 +615,27 @@ export function FileTreePanel() {
                         to operate the row, and a Kobalte tooltip trigger per
                         row would put a portal and three listeners on every one
                         of the 50 000 paths the tree is budgeted for. */}
-                    <span class="tree-label" title={row.path}>
+                    {/* U8: the name itself carries git's verdict, the way
+                        every file browser this shell is measured against does.
+                        The letter beside it stays — colour alone cannot say
+                        *what* happened, and cannot be read at all by someone
+                        who does not distinguish these five hues. A directory
+                        borrows the modified tone from the roll-up: something
+                        under it changed, and which of the five it was is a
+                        question only its children can answer. */}
+                    <span
+                      class="tree-label"
+                      data-git={
+                        row.isFile
+                          ? marks().get(row.path)?.tone
+                          : counts().has(row.path)
+                            ? "modified"
+                            : undefined
+                      }
+                      title={
+                        row.opaque ? `${row.path} — ignored by git; contents not listed` : row.path
+                      }
+                    >
                       {row.label}
                     </span>
                     {/* U8: what git says about this path, from the same

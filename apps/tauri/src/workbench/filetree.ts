@@ -8,6 +8,15 @@ import type { FileTree } from "./types";
 type Node = {
   dirs: Map<string, Node>;
   files: { name: string; ignored: boolean }[];
+  /**
+   * The directory is ignored whole and the listing stopped at its name.
+   *
+   * Different from "a directory that happens to be empty": there is content
+   * down there and the daemon deliberately did not walk it (`--directory` in
+   * `fs-service`), so a twisty offering to unfold nothing would be a lie about
+   * why the rows are missing.
+   */
+  opaque: boolean;
 };
 
 export type TreeRow = {
@@ -26,14 +35,22 @@ export type TreeRow = {
    * part of the work, and greying it would say otherwise.
    */
   ignored: boolean;
+  /**
+   * An ignored directory whose contents were never listed.
+   *
+   * There is nothing to unfold, so the row carries no twisty and the fold
+   * chords step over it.
+   */
+  opaque: boolean;
 };
 
 function emptyNode(): Node {
-  return { dirs: new Map(), files: [] };
+  return { dirs: new Map(), files: [], opaque: false };
 }
 
 /** Whether every file below `node` is ignored. An empty directory is not. */
 function allIgnored(node: Node): boolean {
+  if (node.opaque) return true;
   if (node.files.length === 0 && node.dirs.size === 0) return false;
   return (
     node.files.every((file) => file.ignored) &&
@@ -68,7 +85,11 @@ export function treeRows(tree: FileTree | null, collapsed: Set<string>): TreeRow
     }
 
     if (entry.kind === "Directory") {
-      if (!node.dirs.has(name)) node.dirs.set(name, emptyNode());
+      const child = node.dirs.get(name) ?? emptyNode();
+      // Only a wholly-ignored directory arrives as an entry of its own, and it
+      // arrives standing for everything beneath it.
+      if (entry.ignored) child.opaque = true;
+      node.dirs.set(name, child);
     } else {
       node.files.push({ name, ignored: entry.ignored });
     }
@@ -99,15 +120,25 @@ function flatten(
     let label = name;
     let path = join(prefix, name);
     let child = initialChild;
-    while (child.files.length === 0 && child.dirs.size === 1) {
+    // An opaque directory never merges with a child: it has none, and the
+    // chain-folding would otherwise swallow the row that stands for the lot.
+    while (!child.opaque && child.files.length === 0 && child.dirs.size === 1) {
       const [only, next] = child.dirs.entries().next().value as [string, Node];
       label = `${label}/${only}`;
       path = join(path, only);
       child = next;
     }
 
-    const folded = collapsed.has(path);
-    rows.push({ depth, label, path, isFile: false, folded, ignored: allIgnored(child) });
+    const folded = child.opaque || collapsed.has(path);
+    rows.push({
+      depth,
+      label,
+      path,
+      isFile: false,
+      folded,
+      ignored: allIgnored(child),
+      opaque: child.opaque,
+    });
     if (!folded) flatten(child, path, depth + 1, collapsed, rows);
   }
 
@@ -119,6 +150,7 @@ function flatten(
       isFile: true,
       folded: false,
       ignored: file.ignored,
+      opaque: false,
     });
   }
 }
@@ -142,7 +174,10 @@ export function directoryPaths(tree: FileTree | null): string[] {
   for (const entry of tree.entries) {
     const parts = entry.path.split("/").filter(Boolean);
     // A file contributes its parents; a directory contributes itself as well.
-    const upto = entry.kind === "Directory" ? parts.length : parts.length - 1;
+    // A file contributes its parents; a directory contributes itself as well —
+    // except an ignored one, which has nothing under it to fold away and whose
+    // row must not be counted as a folder the panel has "seen".
+    const upto = entry.kind === "Directory" && !entry.ignored ? parts.length : parts.length - 1;
     let prefix = "";
     for (let i = 0; i < upto; i += 1) {
       prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
@@ -197,7 +232,7 @@ export function collapseTarget(
   collapsed: Set<string>,
 ): { fold: string } | { select: string } | null {
   if (!row) return null;
-  if (!row.isFile && !collapsed.has(row.path)) return { fold: row.path };
+  if (!row.isFile && !row.opaque && !collapsed.has(row.path)) return { fold: row.path };
   const parent = parentOf(row.path);
   return parent === null ? null : { select: parent };
 }
@@ -209,7 +244,9 @@ export function expandTarget(
   rows: TreeRow[],
   index: number,
 ): { unfold: string } | { select: string } | null {
-  if (!row || row.isFile) return null;
+  // Nothing to unfold into and nothing folded away: the listing stops at an
+  // ignored directory's name.
+  if (!row || row.isFile || row.opaque) return null;
   if (collapsed.has(row.path)) return { unfold: row.path };
   const next = rows[index + 1];
   return next && next.path.startsWith(`${row.path}/`) ? { select: next.path } : null;

@@ -463,31 +463,53 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
      * it cannot be combined with the un-excluded `--others` above — the two
      * are complementary halves of the same set, not a superset and a subset.
      *
+     * `--directory` is what makes the pass affordable, and it is not optional.
+     * Without it this repository answers with 385 751 ignored paths, almost
+     * all of them inside `node_modules` and `target`; the budget is 10 000, so
+     * the listing truncates on build output before it has said anything about
+     * the source. With it the same repository answers with twelve: a directory
+     * ignored *whole* comes back as its own name with a trailing slash,
+     * standing for contents nothing needs to walk, while a file ignored on its
+     * own — the `.env` someone actually wants to open — still arrives by name.
+     *
      * Appended after the tracked rows and never interleaved, so the budget is
-     * spent on the work first: a `node_modules` that alone exceeds
-     * `MAX_TREE_ENTRIES` truncates itself instead of the source tree.
+     * spent on the work first.
      */
     if !truncated {
         let ignored = run_git(
             Some(root),
-            &["ls-files", "--others", "-i", "--exclude-standard", "-z"],
+            &[
+                "ls-files",
+                "--others",
+                "-i",
+                "--exclude-standard",
+                "--directory",
+                "--no-empty-directory",
+                "-z",
+            ],
         )?;
         let mut extra = Vec::new();
         for path in ignored.stdout.split('\0') {
-            if path.is_empty() || path.ends_with('/') {
+            if path.is_empty() {
                 continue;
             }
             if entries.len() + extra.len() >= MAX_TREE_ENTRIES {
                 truncated = true;
                 break;
             }
-            let path = normalize_rel(path);
-            if !seen.insert(path.clone()) {
+            // The trailing slash is git saying "and everything under it".
+            let directory = path.ends_with('/');
+            let path = normalize_rel(path.trim_end_matches('/'));
+            if path.is_empty() || !seen.insert(path.clone()) {
                 continue;
             }
             extra.push(FileEntry {
                 path,
-                kind: EntryKind::File,
+                kind: if directory {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::File
+                },
                 ignored: true,
             });
         }
@@ -1416,16 +1438,53 @@ mod tests {
             .collect();
 
         // The tracked group comes first, so the budget is spent on the work
-        // before a build directory gets any of it.
+        // before a build directory gets any of it — and `dist` arrives as
+        // itself rather than as its contents.
         assert_eq!(
             flagged,
             vec![
                 (".gitignore", false),
                 ("ok.txt", false),
-                ("dist/app.js", true),
+                ("dist", true),
                 ("secret.txt", true),
             ]
         );
+        assert_eq!(
+            tree.entries
+                .iter()
+                .find(|e| e.path == "dist")
+                .map(|e| e.kind),
+            Some(EntryKind::Directory)
+        );
+    }
+
+    /// An ignored directory costs one row however much is under it.
+    ///
+    /// Without `--directory` this repository's own listing answers with
+    /// 385 751 ignored paths against a budget of 10 000, so the tree truncates
+    /// on build output before it reaches any source. The collapse is what
+    /// makes listing ignored paths affordable at all.
+    #[test]
+    fn an_ignored_directory_never_lists_its_contents() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join(".gitignore"), "node_modules/\n").unwrap();
+        fs::create_dir_all(tmp.path().join("node_modules/left-pad/deep")).unwrap();
+        for name in ["a.js", "b.js", "c.js"] {
+            fs::write(tmp.path().join("node_modules/left-pad/deep").join(name), "").unwrap();
+        }
+        fs::write(tmp.path().join("app.js"), "source").unwrap();
+
+        let tree = list_files(tmp.path()).unwrap();
+        let modules: Vec<_> = tree
+            .entries
+            .iter()
+            .filter(|e| e.path.starts_with("node_modules"))
+            .collect();
+        assert_eq!(modules.len(), 1, "got {modules:?}");
+        assert_eq!(modules[0].path, "node_modules");
+        assert_eq!(modules[0].kind, EntryKind::Directory);
+        assert!(modules[0].ignored);
+        assert!(!tree.truncated);
     }
 
     #[test]

@@ -222,6 +222,26 @@
 }
 /* A folded directory says how much is changed under it; without the roll-up a
    collapsed `src/` looks as clean as an untouched one. */
+/* U8: git's verdict on the name itself, not only on the letter beside it.
+   The tone matches `.tree-git-*` exactly — one path cannot be one colour in
+   its mark and another in its label. */
+.tree-label[data-git="added"] {
+  color: var(--forge-git-added);
+}
+.tree-label[data-git="modified"] {
+  color: var(--forge-git-modified);
+}
+.tree-label[data-git="deleted"] {
+  color: var(--forge-git-deleted);
+  text-decoration: line-through;
+}
+.tree-label[data-git="untracked"] {
+  color: var(--forge-git-untracked);
+}
+.tree-label[data-git="conflict"] {
+  color: var(--forge-git-conflict);
+}
+
 .tree-git-count {
   background: var(--bg-raised);
   border-radius: var(--radius-full);
