@@ -82,7 +82,11 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// - 19 → 20: `ReadImage` with `Response::ImageContents`, for the Markdown
 ///   preview. An old daemon closes the connection on a request it cannot
 ///   decode, so a new GUI must be refused at the handshake instead.
-pub const PROTOCOL_VERSION: u32 = 21;
+/// - 20 → 21: removal of `AskHarness`, the harness Lieutenant's question box.
+/// - 21 → 22: persistent worktree forgetting (§14.4) — `ListWorktreeIgnores` /
+///   `SetWorktreeIgnores` with `Response::WorktreeIgnores`, `worktree_ignores`
+///   in the snapshot, and `ProjectWorktreeIgnoresChanged`.
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,6 +376,7 @@ mod tests {
             providers: vec![sample_provider()],
             agent_profiles: vec![sample_profile()],
             worktree_shares: vec![],
+            worktree_ignores: vec![],
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
             pull_requests: sample_pull_request_state(),

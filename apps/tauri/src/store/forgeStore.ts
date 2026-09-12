@@ -19,6 +19,7 @@ export const emptySnapshot = (): ShellSnapshot => ({
   },
   launchables: [],
   worktree_shares: [],
+  worktree_ignores: [],
   agent_profiles: [],
   session_attention: {},
   app_state: {},

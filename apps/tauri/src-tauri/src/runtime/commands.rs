@@ -334,6 +334,13 @@ pub enum RuntimeCommand {
         #[serde(default)]
         cleanup: domain::ShareCleanup,
     },
+    /// Replace a project's whole worktree-ignore set (§14.4). The daemon
+    /// rescans the project before it acks, so the rows a new rule covers are
+    /// already gone when this returns.
+    SetWorktreeIgnores {
+        project: ProjectId,
+        rules: Vec<domain::WorktreeIgnore>,
+    },
     /// Pin the executable used for a provider, or clear the override.
     SetProviderExecutable {
         provider: AgentProviderId,

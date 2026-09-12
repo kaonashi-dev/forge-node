@@ -27,6 +27,7 @@ pub mod shares;
 pub mod terminal;
 pub mod terminfo;
 pub mod usage_stats;
+pub mod worktrees;
 
 pub use core::Daemon;
 

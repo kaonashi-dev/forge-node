@@ -134,6 +134,14 @@ pub struct WorktreesConfig {
 
     /// How long [`WorktreesConfig::setup_script`] may run before it is killed.
     pub setup_timeout_secs: u64,
+
+    /// Directories whose worktrees the rescan never adopts, for every project.
+    ///
+    /// A relative entry resolves against each project's `git_root`; an absolute
+    /// one is used as it is. Subtree matching, so an entry covers every worktree
+    /// under it. This is the machine-wide escape hatch; the GUI's per-project
+    /// rules live in the database and apply without a restart.
+    pub ignore: Vec<String>,
 }
 
 /// Git behaviour the user can tune (§14, branches plan §4).
@@ -242,6 +250,7 @@ impl Default for WorktreesConfig {
             copy: Vec::new(),
             setup_script: String::new(),
             setup_timeout_secs: 120,
+            ignore: Vec::new(),
         }
     }
 }
@@ -430,6 +439,10 @@ mod tests {
         );
         assert!(c.worktrees.setup_script.is_empty());
         assert_eq!(c.worktrees.setup_timeout_secs, 120);
+        assert!(
+            c.worktrees.ignore.is_empty(),
+            "ignoring a folder is opt-in, never a default"
+        );
         assert_eq!(
             c.git.fetch_timeout_secs, 0,
             "0 defers to the git-service network default"

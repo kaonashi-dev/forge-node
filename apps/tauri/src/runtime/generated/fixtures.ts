@@ -22,7 +22,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   "Hello": {
-    "protocol_version": 21,
+    "protocol_version": 22,
     "client_version": "0.1.0",
     "client_kind": "Gui"
   }
@@ -90,7 +90,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   "HelloAck": {
-    "protocol_version": 21,
+    "protocol_version": 22,
     "daemon_version": "0.1.0",
     "instance_id": "forge-daemon-0001",
     "started_at": "2026-08-30T12:00:00Z"
@@ -99,7 +99,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   "HelloReject": {
-    "daemon_protocol_version": 21,
+    "daemon_protocol_version": 22,
     "reason": "protocol version mismatch"
   }
 } as const;
@@ -210,7 +210,7 @@ export const event_job_updated = {
     "provider_session_id": "prov-1",
     "exit_code": null,
     "last_line": "editing apps/tauri/src/App.tsx",
-    "last_output_at": "2026-09-11T04:24:43.843Z",
+    "last_output_at": "2026-08-30T12:00:00Z",
     "started_at": "2026-08-30T12:00:00Z",
     "finished_at": null,
     "log_path": "/tmp/forge/jobs/7.jsonl"
@@ -665,6 +665,7 @@ export const event_workspace_updated = {
     "created_at": "2026-08-30T12:00:00Z",
     "status": {
       "dirty": false,
+      "head": null,
       "ahead": null,
       "behind": null,
       "measured_at": null
@@ -710,20 +711,20 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  "protocol_version": 21,
+  "protocol_version": 22,
   "client_version": "0.1.0",
   "client_kind": "Gui"
 } as const;
 
 export const hello_ack = {
-  "protocol_version": 21,
+  "protocol_version": 22,
   "daemon_version": "0.1.0",
   "instance_id": "forge-daemon-0001",
   "started_at": "2026-08-30T12:00:00Z"
 } as const;
 
 export const hello_reject = {
-  "daemon_protocol_version": 21,
+  "daemon_protocol_version": 22,
   "reason": "protocol version mismatch"
 } as const;
 
@@ -1196,6 +1197,7 @@ export const response_snapshot = {
         "created_at": "2026-08-30T12:00:00Z",
         "status": {
           "dirty": false,
+          "head": null,
           "ahead": null,
           "behind": null,
           "measured_at": null
@@ -1228,6 +1230,7 @@ export const response_snapshot = {
     "providers": [],
     "agent_profiles": [],
     "worktree_shares": [],
+    "worktree_ignores": [],
     "app_state": [
       [
         "sidebar_width",
@@ -1281,6 +1284,7 @@ export const response_snapshot_populated = {
         "created_at": "2026-08-30T12:00:00Z",
         "status": {
           "dirty": false,
+          "head": null,
           "ahead": null,
           "behind": null,
           "measured_at": null
@@ -1390,6 +1394,14 @@ export const response_snapshot_populated = {
         "created_at": "2026-08-30T12:00:00Z"
       }
     ],
+    "worktree_ignores": [
+      {
+        "project_id": "00000000-0000-7000-8000-000000000001",
+        "path": "/repo/.claude/worktrees",
+        "scope": "subtree",
+        "created_at": "2026-08-30T12:00:00Z"
+      }
+    ],
     "app_state": [
       [
         "ui.theme_base",
@@ -1470,7 +1482,7 @@ export const response_snapshot_populated = {
         "provider_session_id": "prov-1",
         "exit_code": null,
         "last_line": "editing apps/tauri/src/App.tsx",
-        "last_output_at": "2026-09-11T04:24:43.834781Z",
+        "last_output_at": "2026-08-30T12:00:00Z",
         "started_at": "2026-08-30T12:00:00Z",
         "finished_at": null,
         "log_path": "/tmp/forge/jobs/7.jsonl"
@@ -1534,6 +1546,7 @@ export const response_workspaces = {
       "created_at": "2026-08-30T12:00:00Z",
       "status": {
         "dirty": false,
+        "head": null,
         "ahead": null,
         "behind": null,
         "measured_at": null
@@ -2216,6 +2229,7 @@ export const workspace = {
   "created_at": "2026-08-30T12:00:00Z",
   "status": {
     "dirty": false,
+    "head": null,
     "ahead": null,
     "behind": null,
     "measured_at": null
@@ -2250,6 +2264,7 @@ export const workspace_diff = {
 
 export const workspace_status = {
   "dirty": true,
+  "head": "0123456789abcdef0123456789abcdef01234567",
   "ahead": 2,
   "behind": 1,
   "measured_at": "2026-08-30T12:00:00Z"

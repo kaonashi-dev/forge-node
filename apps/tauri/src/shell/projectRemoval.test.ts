@@ -5,7 +5,7 @@ import type { ShellSnapshot, Workspace } from "../runtime/types";
 import { describeProjectRemoval, policyIsRefused, projectFootprint } from "./projectRemoval";
 
 /** Status is never `null` on the wire, and no test here reads it. */
-const UNMEASURED = { dirty: false, ahead: null, behind: null, measured_at: null };
+const UNMEASURED = { dirty: false, head: null, ahead: null, behind: null, measured_at: null };
 
 function workspace(partial: Partial<Workspace> & Pick<Workspace, "id" | "project_id">): Workspace {
   return {

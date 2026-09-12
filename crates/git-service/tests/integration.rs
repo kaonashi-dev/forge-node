@@ -5,7 +5,7 @@
 use git_service::command::run_git;
 use git_service::{
     create, current_branch, default_remote, discover_root, fetch, has_remote, list_branches,
-    list_refs, list_remotes, list_worktrees, precheck_remove, remove, status, GitError,
+    list_refs, list_remotes, list_worktrees, precheck_remove, prune, remove, status, GitError,
 };
 use std::path::Path;
 use tempfile::{tempdir, TempDir};
@@ -190,6 +190,68 @@ fn remove_worktree_whose_directory_was_deleted_by_hand() {
         .unwrap()
         .iter()
         .any(|b| b == "vanished"));
+}
+
+/// A hand-deleted worktree keeps appearing in `worktree list` as `prunable`
+/// until a prune, holding its branch against a later create.
+#[test]
+fn a_hand_deleted_worktree_is_prunable_and_blocks_reuse_until_pruned() {
+    require_git!();
+    let repo = init_repo();
+    let wt_root = tempdir().unwrap();
+    let ghost = wt_root.path().join("wt-ghost");
+
+    create(repo.path(), &ghost, "ghost", None).unwrap();
+    std::fs::remove_dir_all(&ghost).unwrap();
+
+    // Git still lists the entry; that is the whole defect C2.
+    let listed = list_worktrees(repo.path()).unwrap();
+    let entry = listed
+        .iter()
+        .find(|w| w.branch.as_deref() == Some("ghost"))
+        .expect("a hand-deleted worktree stays in the listing");
+    assert!(entry.prunable, "git marks the vanished directory prunable");
+    assert!(entry.is_stale());
+
+    // `git worktree add` would refuse the branch while the ghost holds it.
+    // `create` prunes the dead bookkeeping and succeeds.
+    let recreated = wt_root.path().join("wt-ghost-2");
+    create(repo.path(), &recreated, "ghost", None).unwrap();
+    assert!(canon(&recreated).exists());
+    let listed = list_worktrees(repo.path()).unwrap();
+    assert!(listed
+        .iter()
+        .any(|w| w.branch.as_deref() == Some("ghost") && canon(&w.path) == canon(&recreated)));
+}
+
+/// `prune` drops only the bookkeeping of a vanished directory: branches and
+/// live worktrees are untouched.
+#[test]
+fn prune_removes_only_dead_bookkeeping() {
+    require_git!();
+    let repo = init_repo();
+    let wt_root = tempdir().unwrap();
+    let live = wt_root.path().join("wt-live");
+    let ghost = wt_root.path().join("wt-ghost");
+
+    create(repo.path(), &live, "live", None).unwrap();
+    create(repo.path(), &ghost, "ghost", None).unwrap();
+    std::fs::remove_dir_all(&ghost).unwrap();
+
+    prune(repo.path()).unwrap();
+
+    let listed = list_worktrees(repo.path()).unwrap();
+    assert!(listed
+        .iter()
+        .any(|w| w.branch.as_deref() == Some("live") && canon(&w.path) == canon(&live)));
+    assert!(listed.iter().all(|w| w.branch.as_deref() != Some("ghost")));
+    assert!(
+        list_branches(repo.path())
+            .unwrap()
+            .iter()
+            .any(|b| b == "ghost"),
+        "prune never deletes a branch"
+    );
 }
 
 #[test]

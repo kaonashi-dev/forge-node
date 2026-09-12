@@ -24,11 +24,16 @@ pub enum WorkspaceKind {
 /// [`WorkspaceStatus::default`] (all `None`/`false`), which reads as "not
 /// measured yet" rather than "clean". The `serde` default keeps a client built
 /// before this field existed decodable.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceStatus {
     /// At least one tracked change or untracked file.
     pub dirty: bool,
+    /// The commit HEAD points at, or `None` before the first commit or when
+    /// the status has never been measured. It is the "the checkout moved"
+    /// signal: a `git pull` rewrites it while leaving `branch` unchanged, and
+    /// clients re-read the file tree and diff when it differs from last time.
+    pub head: Option<String>,
     /// Commits ahead of upstream, when an upstream is configured.
     pub ahead: Option<u32>,
     /// Commits behind upstream, when an upstream is configured.

@@ -37,12 +37,15 @@ code must not.
 4. Create the `Main` workspace at `root_path` with `managed_by_app = false`.
 5. `list_worktrees` (`worktree list --porcelain`) → one `GitWorktree`
    workspace per pre-existing worktree, **`managed_by_app = false`** (Forge
-   will never delete them from disk).
+   will never delete them from disk). `bare` entries are skipped, `prunable`
+   ones (or entries whose directory is gone) are not adopted, and the paths
+   are canonicalized on both sides of the main-checkout comparison — the same
+   filter the rescan uses (see [Forgetting a worktree](#forgetting-a-worktree-144)).
 
 `RefreshWorkspaceStatus` runs `status --porcelain=v2 --branch` and updates the
-workspace's `branch` **and** its `WorkspaceStatus` (dirty / ahead / behind),
-throttled to one run every 2 s per workspace (ADR-008). The GUI calls it when a
-session is selected — the moment its checkout becomes visible.
+workspace's `branch` **and** its `WorkspaceStatus` (head oid / dirty / ahead /
+behind), throttled to one run every 2 s per workspace (ADR-008). The GUI calls
+it when a session is selected — the moment its checkout becomes visible.
 
 `RefreshProject` reconciles **on demand**: it re-runs `discover_root`, then
 `rescan_project_worktrees` (the per-project half of the startup rescan), then
@@ -54,10 +57,18 @@ disagree.
 Startup does the same sweep across every project: `Daemon::start` calls
 `rescan_worktrees` before accepting clients (§15.3 steps 3 and 4). It runs
 `git worktree list` per Git project, adds workspaces for worktrees created
-outside the app and removes those that vanished, broadcasting
-`WorkspaceCreated` / `WorkspaceRemoved`.
+outside the app, and removes the rows whose worktree is really gone,
+broadcasting `WorkspaceCreated` / `WorkspaceRemoved`.
 
-`Workspace.status` (`WorkspaceStatus { dirty, ahead, behind, measured_at }`) is
+"Really gone" is `!listed_live(path) && !on_disk`, where *live* excludes
+entries git still reports as `prunable`. Git keeps listing a directory deleted
+by hand until a `worktree prune`, so the old "not listed **and** not on disk"
+rule never dropped those rows: the rescan re-adopted them on every restart.
+The prune-rung is repaired too: `git-service::create` ignores stale entries in
+its branch-conflict check and prunes the dead bookkeeping before `worktree add`,
+so a worktree deleted outside the app can be recreated on its branch.
+
+`Workspace.status` (`WorkspaceStatus { dirty, head, ahead, behind, measured_at }`) is
 **runtime state, never a column** — the same rule as `Session::terminal_id`. A
 workspace loaded from SQLite starts unmeasured, which the sidebar renders as
 *nothing* rather than as "clean": a row that claims to be clean because nobody
@@ -268,7 +279,9 @@ force == false:
  or dirty tree (`status --porcelain`)
  or MERGE_HEAD / rebase-merge / rebase-apply present ──► PreconditionFailed
                                                           (message lists which)
-managed_by_app == false ──► forget the workspace only; disk untouched
+always                      ──► drop the sessions and the workspace row, and
+                                write an `Exact` ignore rule for the path
+managed_by_app == false ──► disk untouched (prune if the directory is gone)
 managed_by_app == true  ──► (force: kill its sessions)
                             git worktree remove [--force] -- <path>
                             git worktree prune
@@ -298,6 +311,60 @@ restart.
 branch of the table to every managed worktree of the project (always forced,
 since sessions were just killed). See
 [protocol.md](./protocol.md#removeprojectpolicy).
+
+## Forgetting a worktree (§14.4)
+
+Dropping a worktree's row is not enough for one Forge did not create. Its
+directory and its git registration are not Forge's to delete, so the next
+rescan — every restart, every `RefreshProject`, every status repair — adopted
+it right back with a fresh id. The rail had no action that made an external
+worktree disappear for good.
+
+The daemon now records the decision in `worktree_ignores`: one row per
+`(project_id, path)`, with a scope.
+
+| Scope | Written by | Means |
+|---|---|---|
+| `Exact` | `RemoveWorktree`, automatically | the worktree at that path is forgotten |
+| `Subtree` | the user, from the rail's *Ignore worktrees in this folder* | nothing under that folder is adopted |
+
+`SetWorktreeIgnores` replaces a project's whole set (the GUI edits a list);
+`ListWorktreeIgnores` reads it. `[worktrees] ignore` in `config.toml` is the
+machine-wide escape hatch, merged with the stored rows when a project is
+scanned: a relative entry resolves against that project's `git_root`, an
+absolute one is used as it is.
+
+Policy is one pure function, `daemon::worktrees::plan` (the `idle.rs` split):
+`core.rs` stats and canonicalizes git's listing, the model's rows and the rules
+**outside** the core lock, calls `plan`, and applies the result in one critical
+section. The rules are:
+
+```
+adopt     ⟸ !stale && !ignored && !known
+drop      ⟸ ignored                      // directory or not
+          ∨ (!listed_live && !on_disk)   // the old vanished rule
+keep      ⟸ has sessions                 // FK; dropped on a later rescan
+collect   ⟸ Exact && !listed && !on_disk // the tombstone's GC
+```
+
+- **Retroactive.** Adding a `Subtree` rule drops the rows it now covers in the
+  same request: `SetWorktreeIgnores` rescans the project before it acks.
+- **A rule never touches the disk**, and removing it lets the next rescan adopt
+  the worktree again.
+- **A tombstone is state, a `Subtree` rule is policy.** The GC collects only
+  `Exact` rules whose path is neither listed by git nor on disk — the worktree
+  is really gone, and a future one at that path must be adoptable.
+  `CreateWorktree` clears the tombstone at the path it just created, because a
+  worktree can be deleted and recreated between two rescans.
+- **A rule cannot hide the project's own checkout** (`InvalidRequest` for the
+  `git_root` or any ancestor of it), and rules never apply to the `Main`
+  workspace.
+- **Sessions come first.** A row with sessions is kept and reported with a
+  notice; it is dropped by a later rescan once its sessions are gone.
+
+Because adoption now filters stale entries, a worktree whose directory was
+deleted by hand is dropped without a rule at all; the tombstone exists for the
+*forgotten* case, where the directory is still there and git still lists it.
 
 ## Git errors
 

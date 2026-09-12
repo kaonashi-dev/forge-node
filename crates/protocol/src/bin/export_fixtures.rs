@@ -19,14 +19,15 @@ use std::path::{Path, PathBuf};
 use domain::{
     AgentCapabilities, AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId, Cell,
     CellFlags, Color, Cursor, CursorShape, DetectionResult, DetectionStatus, DiffFile, DiffStatus,
-    FileContents, FileEntry, FileKind, FileTree, Job, JobId, JobState, MouseMode, Project,
-    ProjectGroup, ProjectGroupId, ProjectId, ProviderUsage, PtySize, PullRequest, PullRequestLabel,
-    PullRequestRelations, PullRequestSource, PullRequestSourceStatus, PullRequestState,
-    PullRequestViewer, ReviewDecision, Row, ScrollbackRows, Session, SessionId, SessionKind,
-    SessionRole, SessionState, SessionTitle, ShareAction, ShareCandidate, ShareClass, ShareCleanup,
-    ShareRule, ShareRuleId, ShareState, ShareStatusEntry, ShareStrategy, ShareTrigger, ShareVerb,
-    TermModes, TerminalDelta, TerminalId, TerminalSnapshot, Timestamp, UsageWindow, VersionProbe,
-    Workspace, WorkspaceDiff, WorkspaceId, WorkspaceKind, WorkspaceStatus,
+    FileContents, FileEntry, FileKind, FileTree, IgnoreScope, Job, JobId, JobState, MouseMode,
+    Project, ProjectGroup, ProjectGroupId, ProjectId, ProviderUsage, PtySize, PullRequest,
+    PullRequestLabel, PullRequestRelations, PullRequestSource, PullRequestSourceStatus,
+    PullRequestState, PullRequestViewer, ReviewDecision, Row, ScrollbackRows, Session, SessionId,
+    SessionKind, SessionRole, SessionState, SessionTitle, ShareAction, ShareCandidate, ShareClass,
+    ShareCleanup, ShareRule, ShareRuleId, ShareState, ShareStatusEntry, ShareStrategy,
+    ShareTrigger, ShareVerb, TermModes, TerminalDelta, TerminalId, TerminalSnapshot, Timestamp,
+    UsageWindow, VersionProbe, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceKind,
+    WorkspaceStatus, WorktreeIgnore,
 };
 use protocol::{
     ClientKind, ClientMessage, DaemonEvent, DaemonMessage, ErrorCode, Hello, HelloAck, HelloReject,
@@ -383,6 +384,15 @@ fn sample_share_rule() -> ShareRule {
     }
 }
 
+fn sample_worktree_ignore() -> WorktreeIgnore {
+    WorktreeIgnore {
+        project_id: project_id(),
+        path: PathBuf::from("/repo/.claude/worktrees"),
+        scope: IgnoreScope::Subtree,
+        created_at: ts(),
+    }
+}
+
 fn sample_share_candidate() -> ShareCandidate {
     ShareCandidate {
         path: "node_modules".to_string(),
@@ -442,7 +452,9 @@ fn sample_job() -> Job {
         provider_session_id: Some("prov-1".to_string()),
         exit_code: None,
         last_line: Some("editing apps/tauri/src/App.tsx".to_string()),
-        last_output_at: Some(domain::Timestamp::now()),
+        // Fixed like every other timestamp: `now()` made re-running the
+        // exporter rewrite the job fixtures on every invocation.
+        last_output_at: Some(ts()),
         started_at: ts(),
         finished_at: None,
         log_path: PathBuf::from("/tmp/forge/jobs/7.jsonl"),
@@ -573,6 +585,7 @@ fn main() {
         "workspace_status",
         &WorkspaceStatus {
             dirty: true,
+            head: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             ahead: Some(2),
             behind: Some(1),
             measured_at: Some(ts()),
@@ -1047,6 +1060,7 @@ fn sample_snapshot_response() -> Response {
         providers: vec![],
         agent_profiles: vec![],
         worktree_shares: vec![],
+        worktree_ignores: vec![],
         app_state: vec![("sidebar_width".to_string(), "280".to_string())],
         external_agents: vec![],
         pull_requests: PullRequestState::default(),
@@ -1071,6 +1085,7 @@ fn populated_snapshot_response() -> Response {
         providers: vec![sample_provider()],
         agent_profiles: vec![sample_agent_profile()],
         worktree_shares: vec![sample_share_rule()],
+        worktree_ignores: vec![sample_worktree_ignore()],
         app_state: vec![("ui.theme_base".to_string(), "gruvbox".to_string())],
         external_agents: vec![],
         pull_requests: sample_pull_request_state(),
