@@ -116,7 +116,7 @@ export function editorPalette(base: ThemeBaseId): EditorPalette {
   return {
     background: active.editor,
     foreground: active.text,
-    caret: active.accent,
+    caret: active.text,
     // Selection is a wash on the ground rather than a fill, so the text inside
     // it keeps the colour the grammar gave it instead of turning into one flat
     // block the moment three lines are selected.

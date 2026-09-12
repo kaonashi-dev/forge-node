@@ -22,6 +22,7 @@ describe("editorPalette", () => {
     (base) => {
       expect(editorPalette(base).background).toBe(palettes[base].editor);
       expect(editorPalette(base).foreground).toBe(palettes[base].text);
+      expect(editorPalette(base).caret).toBe(palettes[base].text);
     },
   );
 

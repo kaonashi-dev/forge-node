@@ -20,7 +20,9 @@ use alacritty_terminal::grid::{Dimensions, Row as AlacRow};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell as AlacCell, Flags};
 use alacritty_terminal::term::{Config, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{self, Color as AnsiColor, CursorShape as AnsiCursorShape};
+use alacritty_terminal::vte::ansi::{
+    self, Color as AnsiColor, CursorShape as AnsiCursorShape, CursorStyle as AnsiCursorStyle,
+};
 use compact_str::CompactString;
 use domain::{
     Cell, CellFlags, Color, Cursor, CursorShape, Damage, MouseMode, PtySize, Row, TermModes,
@@ -110,6 +112,11 @@ impl AlacrittyEngine {
         let proxy = EventProxy::default();
         let config = Config {
             scrolling_history: scrollback_lines.min(MAX_SCROLLBACK_LINES),
+            // What DECSCUSR 0 resets to; a program that asks for a shape still wins.
+            default_cursor_style: AnsiCursorStyle {
+                shape: AnsiCursorShape::Beam,
+                blinking: true,
+            },
             ..Config::default()
         };
         let dims = TermDimensions {
@@ -472,5 +479,24 @@ impl TerminalEngine for AlacrittyEngine {
 
     fn screen_lines(&self) -> u16 {
         self.term.grid().screen_lines() as u16
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::TerminalEngine;
+    use domain::{CursorShape, PtySize};
+
+    #[test]
+    fn decscusr_explicit_block_resets_to_beam() {
+        let mut engine = AlacrittyEngine::new(PtySize::default());
+        assert_eq!(engine.cursor().shape, CursorShape::Beam);
+
+        engine.feed(b"\x1b[2 q");
+        assert_eq!(engine.cursor().shape, CursorShape::Block);
+
+        engine.feed(b"\x1b[0 q");
+        assert_eq!(engine.cursor().shape, CursorShape::Beam);
     }
 }

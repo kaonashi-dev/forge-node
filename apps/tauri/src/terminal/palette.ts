@@ -12,10 +12,12 @@ export type TerminalPalette = {
   fg: string;
   /** Default background, and the backdrop the canvas clears to. */
   bg: string;
-  /** Block cursor fill. */
-  cursor: string;
-  /** Text under a block cursor. */
-  cursorText: string;
+  /** Project accent; the hovered-path rule. */
+  accent: string;
+  /** Caret fill, the text colour. */
+  caret: string;
+  /** Glyph under an explicit block caret. */
+  caretText: string;
   /** The wash behind a dragged selection. */
   selection: string;
   /** The 16 ANSI colors. */
@@ -125,8 +127,9 @@ export function readPalette(root: HTMLElement = document.documentElement): Termi
   return {
     fg: read("--forge-term-fg", "#c7c7c7"),
     bg: read("--forge-term-bg", "#1f1f1f"),
-    cursor: read("--forge-accent", "#6cacbd"),
-    cursorText: read("--forge-term-bg", "#1f1f1f"),
+    accent: read("--forge-accent", "#6cacbd"),
+    caret: read("--forge-term-fg", "#c7c7c7"),
+    caretText: read("--forge-term-bg", "#1f1f1f"),
     selection: read("--forge-step", "#404040"),
     ansi: Array.from({ length: 16 }, (_, index) =>
       read(`--forge-ansi-${index}`, index < 8 ? "#1f1f1f" : "#c7c7c7"),

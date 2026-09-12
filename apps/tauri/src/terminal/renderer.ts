@@ -10,6 +10,7 @@
 // drag fires dozens of events per crossed cell, and none of them should reach
 // the runtime thread.
 
+import { caretRect } from "./caret";
 import type { CellMetrics } from "./metrics";
 import { ColorCache, isDefaultBackground, type TerminalPalette } from "./palette";
 import { columnsOn, type Selection } from "./selection";
@@ -25,7 +26,7 @@ import type { Viewport } from "./viewport";
 
 /** How much of its color a `DIM` run keeps (same 0.62 factor as the dim wash). */
 const DIM_ALPHA = 0.62;
-/** Thickness of an underline, a strikeout, and a beam cursor. */
+/** Thickness of an underline, a strikeout, and a link rule. */
 const RULE = 2;
 
 /**
@@ -177,12 +178,12 @@ export class TerminalRenderer {
     this.paintCursor(context, viewport, row);
   }
 
-  /** The rule under a hovered path, in the cursor's colour so it reads as live. */
+  /** The rule under a hovered path, in the project's accent so it reads as live. */
   private paintLink(context: CanvasRenderingContext2D, row: number): void {
     const { width: cellWidth, height: cellHeight } = this.metrics;
     for (const span of this.link) {
       if (span.row !== row) continue;
-      context.fillStyle = this.palette.cursor;
+      context.fillStyle = this.palette.accent;
       context.fillRect(
         span.from * cellWidth,
         row * cellHeight + cellHeight - RULE,
@@ -237,26 +238,19 @@ export class TerminalRenderer {
     if (!this.focused || viewport.scrollOffset !== 0 || !this.cursorVisible) return;
     if (!cursor.visible || cursor.shape === "hidden" || cursor.line !== row) return;
 
-    const { width: cellWidth, height: cellHeight } = this.metrics;
     const cell = viewport.cellAt(row, cursor.col);
     const wide = cell !== null && (cell.flags & FLAG_WIDE_CHAR) !== 0;
-    const width = wide ? cellWidth * 2 : cellWidth;
-    const x = cursor.col * cellWidth;
-    const top = row * cellHeight;
+    const rect = caretRect(cursor.col, row, wide, this.metrics, cursor.shape, this.ratio);
 
     context.save();
-    context.fillStyle = this.palette.cursor;
-    if (cursor.shape === "beam") {
-      context.fillRect(x, top, RULE, cellHeight);
-    } else if (cursor.shape === "underline") {
-      context.fillRect(x, top + cellHeight - RULE, width, RULE);
-    } else {
-      context.fillRect(x, top, width, cellHeight);
+    context.fillStyle = this.palette.caret;
+    context.fillRect(rect.x, rect.y, rect.w, rect.h);
+    if (cursor.shape === "block") {
       const text = cell?.text ?? "";
       if (text.trim() !== "") {
-        context.fillStyle = this.palette.cursorText;
+        context.fillStyle = this.palette.caretText;
         context.font = this.font(cell?.flags ?? 0);
-        context.fillText(text, x, top + this.metrics.baseline);
+        context.fillText(text, rect.x, rect.y + this.metrics.baseline);
       }
     }
     context.restore();
