@@ -224,7 +224,8 @@ impl ProviderUsage {
 /// Every provider-specific fact lives in the `agents` crate; this only names the
 /// mechanism. `Cli` keeps the original JSON-contract probe intact; the OAuth
 /// variants read the provider's existing local credentials and call its usage
-/// endpoint — no extra login.
+/// endpoint — no extra login, and `GrokAcp` spends one short-lived JSON-RPC
+/// handshake for the same reason.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum UsageSource {
@@ -234,6 +235,9 @@ pub enum UsageSource {
     CodexOAuth,
     /// Read Claude's local credentials and call the Anthropic usage endpoint.
     ClaudeOauth,
+    /// Ask Grok over its own ACP entry ([`AcpSpec::args`]) rather than over
+    /// HTTP: the account meter is a JSON-RPC extension method, not a URL.
+    GrokAcp,
 }
 
 /// The result of detecting a single provider (§7.6).

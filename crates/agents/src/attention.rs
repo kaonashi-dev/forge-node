@@ -17,6 +17,9 @@ pub const CLAUDE_SETTINGS_FILENAME: &str = "forge-claude-attention.json";
 
 const OPENCODE_CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
 const FORGE_HOOK_MARKER: &str = "forge-ring-bell.sh";
+/// Grok's opt-out of the Cursor hook compatibility scan (§13.3 is unaffected:
+/// this is a launch detail, not a terminal-contract variable).
+const GROK_CURSOR_HOOKS_ENABLED: &str = "GROK_CURSOR_HOOKS_ENABLED";
 
 /// Absolute paths of the installed attention assets.
 #[derive(Clone, Debug)]
@@ -166,6 +169,17 @@ fn inject_cursor(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
     }
 }
 
+/// Grok's own hook file, and an opt-out of the *Cursor* hooks Grok also reads.
+///
+/// The opt-out is the half that is not obvious. Grok scans `~/.cursor/hooks.json`
+/// by default (its Cursor compatibility layer, always trusted at the global
+/// scope) and maps `beforeShellExecution` / `beforeMCPExecution` onto its own
+/// `PreToolUse`. That file is exactly where [`ensure_cursor_hooks`] already put
+/// `forge-ring-bell.sh`, so on a machine where Cursor has ever been launched
+/// from Forge a Grok session would ring BEL on *every tool call* — `needs-you`
+/// lit permanently rather than on the permission prompts the marker means. The
+/// hook Grok should ring from is the one written below; the Cursor file is
+/// Cursor's.
 fn inject_grok(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
     let home = env_var(&spec.env, "GROK_HOME")
         .map(PathBuf::from)
@@ -173,13 +187,23 @@ fn inject_grok(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
     let Some(grok_home) = home else {
         return false;
     };
+    let mut changed = set_env_if_unset(spec, GROK_CURSOR_HOOKS_ENABLED, "false");
     match ensure_grok_hooks(&grok_home, &assets.ring_bell) {
-        Ok(changed) => changed,
-        Err(error) => {
-            tracing::warn!(%error, "could not install Grok attention hooks");
-            false
-        }
+        Ok(wrote) => changed |= wrote,
+        Err(error) => tracing::warn!(%error, "could not install Grok attention hooks"),
     }
+    changed
+}
+
+/// Set `key` on the launch unless it already carries one — a profile that says
+/// so itself wins, as it does for every other injection here.
+fn set_env_if_unset(spec: &mut SpawnSpec, key: &str, value: &str) -> bool {
+    if spec.env.iter().any(|(k, _)| k == key) {
+        tracing::info!(key, "launch already sets it; leaving the Forge value unset");
+        return false;
+    }
+    spec.env.push((key.to_owned(), value.to_owned()));
+    true
 }
 
 /// Cursor has no permission-prompt hook; `beforeShellExecution` /
@@ -498,6 +522,66 @@ mod tests {
         assert!(hook.contains("permission_prompt"));
         assert!(hook.contains("forge-ring-bell.sh"));
         assert!(!inject_attention(&descriptor, &mut spec, &assets));
+    }
+
+    /// The bug this guards: Grok reads `~/.cursor/hooks.json` too, and Forge's
+    /// *Cursor* injection put `forge-ring-bell.sh` on `beforeShellExecution` /
+    /// `beforeMCPExecution` there. Grok maps both to `PreToolUse`, so without
+    /// the opt-out a Grok session rings BEL on every tool call and `needs-you`
+    /// never goes out.
+    #[test]
+    fn grok_ignores_the_cursor_hooks_forge_wrote_for_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".grok")).unwrap();
+        let assets = install_assets(&dir.path().join("p")).unwrap();
+
+        // Exactly the state a machine is in after one Cursor launch.
+        let cursor = builtins::builtin("cursor").unwrap();
+        let mut cursor_spec = empty_spec();
+        cursor_spec.env = vec![("HOME".into(), home.to_string_lossy().into_owned())];
+        assert!(inject_attention(&cursor, &mut cursor_spec, &assets));
+        let cursor_hooks = std::fs::read_to_string(home.join(".cursor/hooks.json")).unwrap();
+        assert!(cursor_hooks.contains("forge-ring-bell.sh"));
+
+        let mut spec = empty_spec();
+        spec.env = vec![("HOME".into(), home.to_string_lossy().into_owned())];
+        assert!(inject_attention(
+            &builtins::builtin("grok").unwrap(),
+            &mut spec,
+            &assets
+        ));
+        assert_eq!(
+            env_var(&spec.env, "GROK_CURSOR_HOOKS_ENABLED"),
+            Some("false")
+        );
+    }
+
+    /// A profile that says so itself wins, as it does for every other
+    /// injection here.
+    #[test]
+    fn grok_leaves_an_explicit_cursor_hooks_choice_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".grok")).unwrap();
+        let assets = install_assets(&dir.path().join("p")).unwrap();
+        let mut spec = empty_spec();
+        spec.env = vec![
+            ("HOME".into(), home.to_string_lossy().into_owned()),
+            ("GROK_CURSOR_HOOKS_ENABLED".into(), "true".into()),
+        ];
+        inject_attention(&builtins::builtin("grok").unwrap(), &mut spec, &assets);
+        assert_eq!(
+            env_var(&spec.env, "GROK_CURSOR_HOOKS_ENABLED"),
+            Some("true")
+        );
+        assert_eq!(
+            spec.env
+                .iter()
+                .filter(|(k, _)| k == "GROK_CURSOR_HOOKS_ENABLED")
+                .count(),
+            1
+        );
     }
 
     #[test]

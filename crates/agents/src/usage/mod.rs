@@ -2,12 +2,14 @@
 //!
 //! Every provider-specific fact stays in this crate (principle P2). A provider
 //! declares *where* its usage comes from with a [`UsageSource`]; nothing else in
-//! the workspace branches on provider id. Three sources exist today:
+//! the workspace branches on provider id. Four sources exist today:
 //!
 //! - [`UsageSource::Cli`] — run a CLI that prints one documented JSON document.
 //! - [`UsageSource::CodexOAuth`] / [`UsageSource::ClaudeOauth`] — read the
 //!   provider's *existing* local OAuth credentials and call its usage endpoint,
 //!   with no extra login (the Orca/CodexBar approach).
+//! - [`UsageSource::GrokAcp`] — ask the provider's own ACP entry, because Grok
+//!   publishes no usage URL: the account meter is a JSON-RPC extension method.
 //!
 //! Every failure — no source, not signed in, network down, an unexpected shape —
 //! resolves to `None`: the provider is simply absent from the result, exactly as
@@ -17,6 +19,7 @@ pub mod analytics;
 mod claude;
 mod cli;
 mod codex;
+mod grok;
 mod http;
 mod pricing;
 
@@ -71,6 +74,9 @@ pub fn collect(
         UsageSource::ClaudeOauth => {
             claude::collect(descriptor, env, account, &UreqClient::default())
         }
+        // Like the CLI source, this one needs the binary: the reading comes out
+        // of the provider rather than out of a URL.
+        UsageSource::GrokAcp => grok::collect(descriptor, executable?, env),
         // A source variant this build does not know reports no usage.
         _ => None,
     }?;
