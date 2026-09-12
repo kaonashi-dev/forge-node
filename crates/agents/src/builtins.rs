@@ -151,6 +151,55 @@ fn grok_resume() -> Option<ResumeStyle> {
     })
 }
 
+/// `grok -p <prompt>`, streaming the Anthropic Messages wire format.
+///
+/// Grok offers two NDJSON dialects and the choice is the whole point of this
+/// function. `streaming-json` is its own native one (an ACP session update per
+/// line); `streaming-messages-json` is the shape Claude already speaks —
+/// `{"type":"assistant","message":{"content":[…]}}` with `text` / `thinking` /
+/// `tool_use` blocks, a terminal `{"type":"result","result":…}`, and
+/// `session_id` on every line. Picking the second is what lets
+/// [`crate::summarize_stream_line`] and the harness's verdict reader take a
+/// Grok job unchanged, instead of the daemon learning a third dialect (P2).
+///
+/// `--json-schema` documents itself as *implying* `--output-format json`; it
+/// does not override an explicit one, and the structured answer arrives on the
+/// terminal `result` line either way.
+fn grok_headless() -> Option<HeadlessSpec> {
+    Some(HeadlessSpec {
+        // `-p` is both the mode selector and the prompt flag, so unlike
+        // `claude -p` / `codex exec` it arrives at the *end* with its value
+        // rather than leading the command line.
+        mode_args: Vec::new(),
+        permission_args: vec!["--permission-mode".to_owned(), "acceptEdits".to_owned()],
+        stream_args: vec![
+            "--output-format".to_owned(),
+            "streaming-messages-json".to_owned(),
+        ],
+        resume: grok_resume(),
+        prompt: PromptStyle::Flag {
+            flag: "-p".to_owned(),
+        },
+        // Takes the schema document itself on the command line, as Claude does.
+        schema: Some(SchemaStyle::Inline {
+            flag: "--json-schema".to_owned(),
+        }),
+        session_id_fields: vec!["session_id".to_owned()],
+        // `--sandbox` is opt-in: a run that names no profile writes where it
+        // likes, so there is no cwd jail to widen.
+        extra_writable_dir_flag: None,
+    })
+}
+
+/// Grok as an ACP agent: `grok agent stdio` answers `initialize` with
+/// `protocolVersion: 1` and `loadSession`.
+fn grok_acp() -> Option<AcpSpec> {
+    Some(AcpSpec {
+        args: vec!["agent".to_owned(), "stdio".to_owned()],
+        permissions: AcpPermissionPolicy::default(),
+    })
+}
+
 fn grok_config_dir() -> Option<ConfigDirSpec> {
     Some(ConfigDirSpec {
         vars: vec!["GROK_HOME".to_owned()],
@@ -163,8 +212,9 @@ fn grok_config_dir() -> Option<ConfigDirSpec> {
 pub fn builtins() -> Vec<AgentDescriptor> {
     vec![
         // Claude and Codex read their existing local OAuth credentials to report
-        // usage (§16.2). OpenCode bills per model provider and Cursor exposes no
-        // local endpoint, so neither declares a usage source.
+        // usage, and Grok answers the same question over its ACP entry (§16.2).
+        // OpenCode bills per model provider and Cursor exposes no local endpoint
+        // of any kind, so neither declares a usage source.
         descriptor(
             "claude",
             "Claude Code",
@@ -252,12 +302,15 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             // the cursor descriptor already claims that name with a marker.
             &["grok"],
             Some("grok"),
-            None,
+            // Grok publishes no usage URL; `usage::grok` asks its ACP entry
+            // instead, which is why this is the one source that needs the
+            // binary rather than a credentials file.
+            Some(UsageSource::GrokAcp),
             grok_config_dir(),
             grok_resume(),
             Some(PromptStyle::Positional),
-            None,
-            None,
+            grok_headless(),
+            grok_acp(),
             review("plan mode", &["--permission-mode", "plan"]),
         ),
     ]
@@ -589,6 +642,74 @@ mod tests {
         assert!(builtin("cursor").unwrap().headless.is_none());
     }
 
+    /// Grok's command line, written out for the same reason Claude's and
+    /// Codex's are: the order is the part that breaks. `-p` carries the prompt
+    /// as its *value*, so it lands at the end rather than leading the line.
+    #[test]
+    fn grok_runs_a_job_with_the_prompt_on_its_mode_flag() {
+        let grok = builtin("grok").unwrap().headless.unwrap();
+        assert_eq!(
+            grok.command_args("do the thing", None),
+            [
+                "--permission-mode",
+                "acceptEdits",
+                "--output-format",
+                "streaming-messages-json",
+                "-p",
+                "do the thing"
+            ]
+        );
+        assert_eq!(
+            grok.command_args("and then this", Some("sess-3")),
+            [
+                "--resume",
+                "sess-3",
+                "--permission-mode",
+                "acceptEdits",
+                "--output-format",
+                "streaming-messages-json",
+                "-p",
+                "and then this"
+            ]
+        );
+        assert_eq!(
+            grok.command_args_with("review it", None, Some(r#"{"type":"object"}"#)),
+            [
+                "--permission-mode",
+                "acceptEdits",
+                "--output-format",
+                "streaming-messages-json",
+                "--json-schema",
+                r#"{"type":"object"}"#,
+                "-p",
+                "review it"
+            ]
+        );
+    }
+
+    /// Grok speaks two NDJSON dialects; the descriptor picks the one the daemon
+    /// already parses. Reading `session_id` out of a stream that spelled it
+    /// `sessionId` would leave every follow-up job starting a fresh
+    /// conversation, silently.
+    #[test]
+    fn grok_streams_the_dialect_the_daemon_already_reads() {
+        let grok = builtin("grok").unwrap().headless.unwrap();
+        assert!(grok
+            .stream_args
+            .contains(&"streaming-messages-json".to_owned()));
+        assert!(!grok.stream_args.contains(&"streaming-json".to_owned()));
+        assert_eq!(grok.session_id_fields, ["session_id"]);
+        // The same spelling Claude's stream uses, which is the point.
+        assert_eq!(
+            grok.session_id_fields,
+            builtin("claude")
+                .unwrap()
+                .headless
+                .unwrap()
+                .session_id_fields
+        );
+    }
+
     #[test]
     fn claude_declares_an_acp_spec_with_harness_write_policy() {
         let acp = builtin("claude").unwrap().acp.expect("claude speaks ACP");
@@ -596,6 +717,23 @@ mod tests {
         assert!(acp.permissions.allow_write_under_cwd);
         assert!(acp.permissions.allow_write_under_extra);
         assert!(!acp.permissions.allow_network);
+    }
+
+    /// The two providers with a documented ACP entry answer `initialize` the
+    /// same way, so they carry the same harness write policy and differ only in
+    /// how the binary is asked for that wire.
+    #[test]
+    fn grok_declares_the_same_acp_policy_on_its_own_subcommand() {
+        let grok = builtin("grok").unwrap().acp.expect("grok speaks ACP");
+        assert_eq!(grok.args, ["agent", "stdio"]);
+        assert_eq!(
+            grok.permissions,
+            builtin("claude").unwrap().acp.unwrap().permissions
+        );
+        // Everything else is CLI-only for now.
+        for id in ["codex", "opencode", "cursor"] {
+            assert!(builtin(id).unwrap().acp.is_none(), "{id}");
+        }
     }
 
     /// The exact command line each provider re-enters a session with; these are
@@ -696,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_and_codex_declare_a_usage_source() {
+    fn three_providers_declare_a_usage_source_each_of_its_own_kind() {
         use domain::UsageSource;
         assert!(matches!(
             builtin("claude").unwrap().usage_source,
@@ -706,7 +844,29 @@ mod tests {
             builtin("codex").unwrap().usage_source,
             Some(UsageSource::CodexOAuth)
         ));
+        assert!(matches!(
+            builtin("grok").unwrap().usage_source,
+            Some(UsageSource::GrokAcp)
+        ));
+        // OpenCode bills per model provider; Cursor exposes nothing local.
         assert!(builtin("opencode").unwrap().usage_source.is_none());
         assert!(builtin("cursor").unwrap().usage_source.is_none());
+    }
+
+    /// `usage::grok` spawns [`AcpSpec::args`] rather than spelling
+    /// `agent stdio` a second time, so a provider reading its meter over ACP
+    /// has to declare that entry or the reading has nothing to spawn.
+    #[test]
+    fn an_acp_usage_source_comes_with_the_acp_entry_it_spawns() {
+        use domain::UsageSource;
+        for descriptor in builtins() {
+            if matches!(descriptor.usage_source, Some(UsageSource::GrokAcp)) {
+                assert!(
+                    descriptor.acp.is_some(),
+                    "{} reads usage over ACP but declares no ACP entry",
+                    descriptor.id
+                );
+            }
+        }
     }
 }

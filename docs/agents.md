@@ -25,6 +25,35 @@ spelling. OpenCode is the one that names its prompt: `opencode [project]`
 reads its positional as a *directory*, so a prompt put there would launch it
 in a folder named after the prompt.
 
+## Headless runs and ACP
+
+`AgentDescriptor.headless` is the same descriptor read for a job with no PTY
+and nobody to click Allow; `acp` is the sibling for the same job on a different
+wire. Both are data, so `crates/daemon/src/jobs.rs` spawns four providers with
+one code path.
+
+| id | Mode | Stream | Prompt | Schema | Session id | ACP entry |
+|----|------|--------|--------|--------|-----------|-----------|
+| `claude` | `-p` | `--output-format stream-json --verbose` | positional | `--json-schema <doc>` | `session_id` | `claude acp` |
+| `codex` | `exec` | `--json -c model_reasoning_summary=detailed` | positional | `--output-schema <path>` | `session_id`, `conversation_id` | — |
+| `opencode` | `run` | — (plain text) | positional | — | — | — |
+| `grok` | — | `--output-format streaming-messages-json` | `-p <text>` | `--json-schema <doc>` | `session_id` | `grok agent stdio` |
+| `cursor` | — | — | — | — | — | — |
+
+Grok is the one whose prompt flag **is** its mode selector, so `-p` arrives at
+the end of the line carrying the prompt rather than leading it. It also ships
+two NDJSON dialects, and the descriptor picks the second on purpose:
+`streaming-json` is its own (one ACP session update per line) while
+`streaming-messages-json` is the Anthropic Messages wire format Claude already
+emits — same `{"type":"assistant","message":{"content":[…]}}` blocks, same
+terminal `{"type":"result","result":…}`, same snake_case `session_id`. Choosing
+it is what lets `summarize_stream_line` and the harness's verdict reader take a
+Grok job unchanged instead of the daemon learning a third dialect (P2).
+
+Cursor declares neither: its non-interactive form takes `--print`, but nothing
+here has read its event stream, and guessing one is how a job hangs waiting for
+a session id that never arrives.
+
 ## Read-only mode (§16.9)
 
 `AgentDescriptor.review` is how a provider is launched so that it reads and
@@ -182,6 +211,32 @@ account, dropping duplicates by canonical path:
   page is what the machine spent, not what one login did, so the totals are the
   sum; saving or deleting a profile drops the cached scan.
 
+### Where a meter comes from
+
+`AgentDescriptor.usage_source` names the mechanism; `crates/agents/src/usage`
+holds the provider-shaped half. Three of the five declare one:
+
+| id | Source | How it is read |
+|----|--------|----------------|
+| `claude` | `ClaudeOauth` | `~/.claude/.credentials.json` (or the Keychain) → the Anthropic usage endpoint |
+| `codex` | `CodexOAuth` | `$CODEX_HOME/auth.json` → the ChatGPT usage endpoint |
+| `grok` | `GrokAcp` | spawn the descriptor's own ACP entry, `initialize`, then the `_x.ai/billing` extension method |
+
+Grok is the reason a fourth kind of source exists. It publishes no usage URL at
+all: its account meter is a JSON-RPC extension method on the same
+`grok agent stdio` wire the ACP spec already names, so `usage/grok.rs` spends one
+short-lived child process and two lines of stdin instead of one GET. The spawn
+reuses `AcpSpec::args` rather than spelling `agent stdio` twice, and the
+credentials are never opened here — the binary that owns them is asked. The
+reply's `config.creditUsagePercent` is the percentage and `config.currentPeriod`
+names and dates the window (`USAGE_PERIOD_TYPE_WEEKLY` → `week`, to sit beside
+Codex's own `week` in one status bar).
+
+One non-obvious thing that handshake depends on: stdin stays **open** until the
+reply arrives. Grok reads EOF on the ACP wire as the client hanging up and shuts
+down, so closing the pipe after writing — the obvious thing to do — loses the
+race against its own answer and the meter reads empty every time.
+
 The allowance meter (`usage::collect`) reads one account at a time, and the
 daemon sweeps all of them: the default login plus every profile that moved the
 config directory, each probed against an environment whose `ConfigDirSpec`
@@ -323,7 +378,17 @@ emit BEL on a permission / question prompt get a Forge-owned adapter at launch
 | `claude` | `--settings` → Forge JSON (does **not** rewrite `~/.claude`) | `PermissionRequest` + `Notification(permission_prompt\|…)` → `forge-ring-bell.sh` |
 | `codex` | `-c tui.notifications=["approval-requested"]` + `notification_method="bel"` + `condition="always"` | TUI BEL on approval only |
 | `cursor` | Merge `beforeShellExecution` / `beforeMCPExecution` into `~/.cursor/hooks.json` (FORGE-gated) | Best-effort — Cursor has no permission-prompt hook |
-| `grok` | Write `~/.grok/hooks/forge-attention.json` (FORGE-gated) | `Notification(permission_prompt)` → BEL |
+| `grok` | Write `~/.grok/hooks/forge-attention.json` (FORGE-gated), and set `GROK_CURSOR_HOOKS_ENABLED=false` | `Notification(permission_prompt)` → BEL |
+
+Grok is the one that needs an opt-out as well as a hook. It reads
+`~/.cursor/hooks.json` by default (its Cursor compatibility layer, always
+trusted at the global scope) and maps `beforeShellExecution` /
+`beforeMCPExecution` onto its own `PreToolUse` — and that file is exactly where
+the Cursor row above already put `forge-ring-bell.sh`. Without
+`GROK_CURSOR_HOOKS_ENABLED=false`, a machine that has ever launched Cursor from
+Forge would ring BEL on *every* Grok tool call, leaving `needs-you` lit instead
+of marking the permission prompts it means. A launch that sets the variable
+itself keeps its own value.
 
 `forge-ring-bell.sh` is a no-op without `FORGE_SESSION_ID`, drains stdin, and
 never fails the agent. Editing OpenCode's `attention` config or Claude's

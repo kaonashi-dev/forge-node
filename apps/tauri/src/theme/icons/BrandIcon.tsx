@@ -1,7 +1,7 @@
 /**
- * The five marks that are logotypes, not UI icons.
+ * The six marks that are logotypes, not UI icons.
  *
- * lucide has no Claude, Codex, opencode, Cursor or Zed glyph, and it should not
+ * lucide has no Claude, Codex, opencode, Cursor, Grok or Zed glyph, and it should not
  * — these are brands, drawn from their own SVG. The technique is the mask-tint
  * the whole icon set used before lucide: the SVG is a `mask-image` and the fill
  * is `currentColor`, so a mark takes the colour of the row it sits in and no
@@ -13,13 +13,14 @@
  * rule read the other way — a file type is not a choice, and its colour is
  * what makes a tree scannable.
  */
-export type BrandName = "claude" | "codex" | "opencode" | "cursor" | "editor-zed";
+export type BrandName = "claude" | "codex" | "opencode" | "cursor" | "grok" | "editor-zed";
 
 const BRAND_SVG: Record<BrandName, string> = {
   claude: "provider-claude.svg",
   codex: "provider-codex.svg",
   opencode: "provider-opencode.svg",
   cursor: "provider-cursor.svg",
+  grok: "provider-grok.svg",
   "editor-zed": "editor-zed.svg",
 };
 
@@ -30,6 +31,7 @@ export function brandForProvider(providerId: string): BrandName | null {
     case "codex":
     case "opencode":
     case "cursor":
+    case "grok":
       return providerId;
     default:
       return null;

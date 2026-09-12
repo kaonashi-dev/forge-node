@@ -57,7 +57,15 @@ describe("forgeIcons", () => {
    * lucide path and lose the mask-tint the whole set depends on.
    */
   it("keeps brand and state marks out of the lucide registry", () => {
-    for (const name of ["claude", "codex", "opencode", "cursor", "editor-zed", "state-running"]) {
+    for (const name of [
+      "claude",
+      "codex",
+      "opencode",
+      "cursor",
+      "grok",
+      "editor-zed",
+      "state-running",
+    ]) {
       expect(Object.keys(ICONS)).not.toContain(name);
     }
   });
@@ -67,6 +75,7 @@ describe("forgeIcons", () => {
     expect(brandForProvider("codex")).toBe("codex");
     expect(brandForProvider("opencode")).toBe("opencode");
     expect(brandForProvider("cursor")).toBe("cursor");
+    expect(brandForProvider("grok")).toBe("grok");
     expect(brandForProvider("custom")).toBeNull();
   });
 });

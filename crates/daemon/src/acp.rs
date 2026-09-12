@@ -7,7 +7,7 @@
 //! - [`domain::AcpSpec`] / [`domain::AcpPermissionPolicy`] on the descriptor
 //! - [`domain::AcpPermissionPolicy::decide`] — the allow/deny matrix a future
 //!   `session/request_permission` handler will call
-//! - Claude's `acp` entry in `agents::builtins`
+//! - Claude's `acp` and Grok's `agent stdio` entries in `agents::builtins`
 //!
 //! Until spawn is wired, harness jobs keep using CLI with
 //! `--permission-mode acceptEdits` as the same posture on a different wire.
