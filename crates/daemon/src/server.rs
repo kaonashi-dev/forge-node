@@ -319,6 +319,8 @@ fn request_name(request: &Request) -> &'static str {
         Request::ListWorkspaces { .. } => "ListWorkspaces",
         Request::CreateWorktree { .. } => "CreateWorktree",
         Request::RemoveWorktree { .. } => "RemoveWorktree",
+        Request::ListWorktreeIgnores { .. } => "ListWorktreeIgnores",
+        Request::SetWorktreeIgnores { .. } => "SetWorktreeIgnores",
         Request::RefreshWorkspaceStatus { .. } => "RefreshWorkspaceStatus",
         Request::ListBranches { .. } => "ListBranches",
         Request::FetchRemote { .. } => "FetchRemote",

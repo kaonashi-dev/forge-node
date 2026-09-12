@@ -1207,6 +1207,33 @@
   margin: 0;
   padding-left: var(--space-20);
 }
+/* Rules that keep worktrees out of the rail (§14.4). */
+.worktree-ignores {
+  display: grid;
+  gap: var(--space-10);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.worktree-ignore {
+  align-items: center;
+  display: flex;
+  gap: var(--space-12);
+  justify-content: space-between;
+}
+.worktree-ignore-what {
+  min-width: 0;
+}
+.worktree-ignore-path {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.worktree-ignore-scope {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
 /* --- Rail header --------------------------------------------------------- */
 .rail-head {
   display: flex;

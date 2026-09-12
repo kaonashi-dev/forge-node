@@ -18,6 +18,8 @@
 //! - [`job`]: [`job::Job`], a headless agent run that exits when it is done.
 //! - [`share`]: [`share::ShareRule`], the files a project shares between its
 //!   workspaces (§14.2).
+//! - [`worktree_ignore`]: [`worktree_ignore::WorktreeIgnore`], the worktrees a
+//!   project asked Forge to forget (§14.4).
 
 pub mod agent;
 pub mod branch;
@@ -39,6 +41,7 @@ pub mod share;
 pub mod terminal;
 pub mod usage;
 pub mod workspace;
+pub mod worktree_ignore;
 
 // Re-export the most commonly used types at the crate root.
 pub use agent::{
@@ -94,3 +97,4 @@ pub use terminal::{
 };
 pub use usage::{DailyUsage, ProviderAnalytics, TokenTotals, UsageAnalytics, MICROS_PER_USD};
 pub use workspace::{Workspace, WorkspaceKind, WorkspaceStatus};
+pub use worktree_ignore::{IgnoreScope, WorktreeIgnore, MAX_WORKTREE_IGNORES};

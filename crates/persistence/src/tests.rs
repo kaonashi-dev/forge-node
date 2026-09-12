@@ -6,9 +6,10 @@ use std::path::PathBuf;
 
 use domain::{
     AgentProfile, AgentProfileId, AgentProviderId, ContextArtifactKind, ContextArtifactRef,
-    ContextEnvelope, ContextId, GitContextRef, Project, ProjectGroup, ProjectGroupId, ProjectId,
-    Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle, ShareRule,
+    ContextEnvelope, ContextId, GitContextRef, IgnoreScope, Project, ProjectGroup, ProjectGroupId,
+    ProjectId, Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle, ShareRule,
     ShareRuleId, ShareStrategy, Timestamp, Workspace, WorkspaceId, WorkspaceKind, WorkspaceStatus,
+    WorktreeIgnore,
 };
 
 use crate::Db;
@@ -88,7 +89,10 @@ fn migrations_apply_and_user_version_advances() {
     // Bump this with every appended migration (§15.2): `user_version` is the
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
-    assert_eq!(version, 10, "ten migrations applied => user_version == 10");
+    assert_eq!(
+        version, 11,
+        "eleven migrations applied => user_version == 11"
+    );
 
     // Every §15.2 table is queryable.
     for table in [
@@ -100,6 +104,8 @@ fn migrations_apply_and_user_version_advances() {
         "provider_overrides",
         "app_state",
         "agent_profiles",
+        "worktree_shares",
+        "worktree_ignores",
     ] {
         let count: i64 = db
             .conn()
@@ -140,7 +146,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1017,6 +1023,8 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         "provider_overrides",
         "app_state",
         "agent_profiles",
+        "worktree_shares",
+        "worktree_ignores",
     ] {
         let count: i64 = db
             .conn()
@@ -1030,7 +1038,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10, "reset retains the migrated schema");
+    assert_eq!(version, 11, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -1196,4 +1204,125 @@ fn removing_a_project_takes_its_rules_with_it() {
 
     db.projects().delete(project.id).unwrap();
     assert!(db.shares().list_all().unwrap().is_empty());
+}
+
+// ---- worktree ignores (§14.4) ----------------------------------------------
+
+fn mk_ignore(project: ProjectId, path: &str, scope: IgnoreScope) -> WorktreeIgnore {
+    WorktreeIgnore {
+        project_id: project,
+        path: PathBuf::from(path),
+        scope,
+        created_at: Timestamp::now(),
+    }
+}
+
+#[test]
+fn a_projects_ignore_rules_round_trip() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/p-ignores");
+    db.projects().upsert(&project).unwrap();
+
+    let rules = vec![
+        mk_ignore(project.id, "/tmp/one", IgnoreScope::Exact),
+        mk_ignore(project.id, "/tmp/tree", IgnoreScope::Subtree),
+    ];
+    db.ignores()
+        .replace_for_project(project.id, &rules)
+        .unwrap();
+
+    let back = db.ignores().list_all().unwrap();
+    assert_eq!(back.len(), 2);
+    assert_eq!(back[0].path, PathBuf::from("/tmp/one"));
+    assert_eq!(back[0].scope, IgnoreScope::Exact);
+    assert_eq!(back[1].scope, IgnoreScope::Subtree);
+}
+
+#[test]
+fn replacing_an_ignore_set_drops_what_is_no_longer_in_it() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/p-ignores-2");
+    db.projects().upsert(&project).unwrap();
+
+    let first = vec![
+        mk_ignore(project.id, "/tmp/one", IgnoreScope::Exact),
+        mk_ignore(project.id, "/tmp/tree", IgnoreScope::Subtree),
+    ];
+    db.ignores()
+        .replace_for_project(project.id, &first)
+        .unwrap();
+    db.ignores()
+        .replace_for_project(project.id, &first[..1])
+        .unwrap();
+
+    let back = db.ignores().list_all().unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].path, PathBuf::from("/tmp/one"));
+}
+
+#[test]
+fn upserting_a_rule_keeps_the_created_at_of_the_row_it_replaces() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/p-ignores-3");
+    db.projects().upsert(&project).unwrap();
+
+    let first = mk_ignore(project.id, "/tmp/one", IgnoreScope::Exact);
+    db.ignores().upsert(&first).unwrap();
+    let mut second = mk_ignore(project.id, "/tmp/one", IgnoreScope::Subtree);
+    second.created_at =
+        Timestamp::from_offset(first.created_at.as_offset() + time::Duration::seconds(60));
+    db.ignores().upsert(&second).unwrap();
+
+    let back = db.ignores().list_all().unwrap();
+    assert_eq!(back.len(), 1, "the path is the identity");
+    assert_eq!(back[0].scope, IgnoreScope::Subtree);
+    assert_eq!(back[0].created_at, first.created_at);
+}
+
+#[test]
+fn deleting_a_rule_reports_whether_a_row_did_not_exist() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/p-ignores-4");
+    db.projects().upsert(&project).unwrap();
+    let rule = mk_ignore(project.id, "/tmp/one", IgnoreScope::Exact);
+    db.ignores().upsert(&rule).unwrap();
+
+    assert!(db.ignores().delete(project.id, &rule.path).unwrap());
+    assert!(!db.ignores().delete(project.id, &rule.path).unwrap());
+}
+
+#[test]
+fn removing_a_project_takes_its_ignore_rules_with_it() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/p-ignores-5");
+    db.projects().upsert(&project).unwrap();
+    db.ignores()
+        .replace_for_project(
+            project.id,
+            &[mk_ignore(project.id, "/tmp/one", IgnoreScope::Exact)],
+        )
+        .unwrap();
+
+    db.projects().delete(project.id).unwrap();
+    assert!(db.ignores().list_all().unwrap().is_empty());
+}
+
+#[test]
+fn an_unknown_ignore_scope_is_a_decode_error_not_a_panic() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/p-ignores-6");
+    db.projects().upsert(&project).unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO worktree_ignores (project_id, path, scope, created_at) \
+             VALUES (?1, '/tmp/one', 'sideways', ?2)",
+            rusqlite::params![project.id.to_string(), Timestamp::now().to_rfc3339()],
+        )
+        .unwrap();
+
+    let error = db.ignores().list_all().unwrap_err();
+    assert!(
+        matches!(error, crate::DbError::Decode(_)),
+        "expected a decode error, got {error:?}"
+    );
 }

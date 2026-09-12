@@ -28,7 +28,7 @@ use std::time::Duration;
 use domain::{
     AgentProfile, AgentProfileId, AgentProviderId, ProjectId, PtySize, SessionId, SessionRole,
     ShareAction, ShareCandidate, ShareCleanup, ShareRule, ShareRuleId, ShareStatusEntry,
-    TerminalId, WorkspaceId,
+    TerminalId, WorkspaceId, WorktreeIgnore,
 };
 use protocol::{
     decode_payload, encode_frame, ClientKind, ClientMessage, DaemonEvent, DaemonMessage,
@@ -1493,6 +1493,29 @@ impl Client {
         })
     }
 
+    /// A project's worktree-ignore rules (§14.4).
+    pub fn list_worktree_ignores(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<WorktreeIgnore>, ClientError> {
+        match self.request(Request::ListWorktreeIgnores { project_id })? {
+            Response::WorktreeIgnores(rules) => Ok(rules),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "WorktreeIgnores",
+            }),
+        }
+    }
+
+    /// Replace a project's whole worktree-ignore set (§14.4). The rescan of
+    /// the project follows on the daemon before it acks.
+    pub fn set_worktree_ignores(
+        &self,
+        project_id: ProjectId,
+        rules: Vec<WorktreeIgnore>,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::SetWorktreeIgnores { project_id, rules })
+    }
+
     /// Subscribe to a terminal and return its authoritative snapshot.
     pub fn attach_terminal(
         &self,
@@ -1916,6 +1939,7 @@ mod tests {
             providers: vec![],
             agent_profiles: vec![],
             worktree_shares: vec![],
+            worktree_ignores: vec![],
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
             pull_requests: domain::PullRequestState::default(),

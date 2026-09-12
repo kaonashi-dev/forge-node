@@ -58,6 +58,21 @@ pub struct WorktreeEntry {
     pub detached: bool,
     /// `true` when the worktree is locked.
     pub locked: bool,
+    /// `true` when git says the entry is prunable — its `gitdir` file points to
+    /// a non-existent location, which is what a directory deleted by hand
+    /// leaves behind. The entry still appears in `worktree list` until a
+    /// `worktree prune`, so it must not be treated as a live checkout.
+    pub prunable: bool,
+}
+
+impl WorktreeEntry {
+    /// Whether this entry names no live checkout: git marked it `prunable`, or
+    /// its directory is gone. A `locked` entry is not stale — locked says the
+    /// user does not want it pruned, not that it is missing.
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        self.prunable || !self.path.exists()
+    }
 }
 
 /// Discover the top-level working directory containing `path` (§14.1).
@@ -549,6 +564,7 @@ fn parse_worktrees(text: &str) -> Vec<WorktreeEntry> {
                 bare: false,
                 detached: false,
                 locked: false,
+                prunable: false,
             });
         } else if let Some(entry) = current.as_mut() {
             if let Some(head) = line.strip_prefix("HEAD ") {
@@ -566,8 +582,10 @@ fn parse_worktrees(text: &str) -> Vec<WorktreeEntry> {
                 entry.detached = true;
             } else if line == "locked" || line.starts_with("locked ") {
                 entry.locked = true;
+            } else if line == "prunable" || line.starts_with("prunable ") {
+                entry.prunable = true;
             }
-            // `prunable` and any future attributes are ignored.
+            // Any future attribute is ignored, like `prunable`'s reason line.
         }
     }
     if let Some(entry) = current.take() {
@@ -694,9 +712,14 @@ worktree /repo/detached
 HEAD abc
 detached
 locked needs review
+
+worktree /repo/ghost
+HEAD def
+branch refs/heads/ghost
+prunable gitdir file points to non-existent location
 ";
         let wts = parse_worktrees(text);
-        assert_eq!(wts.len(), 3);
+        assert_eq!(wts.len(), 4);
         assert_eq!(wts[0].path, PathBuf::from("/repo"));
         assert_eq!(wts[0].branch.as_deref(), Some("main"));
         assert_eq!(wts[0].head.as_deref(), Some("f3bf41c"));
@@ -704,5 +727,7 @@ locked needs review
         assert!(wts[2].detached);
         assert!(wts[2].locked);
         assert_eq!(wts[2].branch, None);
+        assert!(wts[3].prunable);
+        assert_eq!(wts[3].branch.as_deref(), Some("ghost"));
     }
 }

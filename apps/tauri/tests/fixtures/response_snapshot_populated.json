@@ -141,6 +141,14 @@
         "created_at": "2026-08-30T12:00:00Z"
       }
     ],
+    "worktree_ignores": [
+      {
+        "project_id": "00000000-0000-7000-8000-000000000001",
+        "path": "/repo/.claude/worktrees",
+        "scope": "subtree",
+        "created_at": "2026-08-30T12:00:00Z"
+      }
+    ],
     "app_state": [
       [
         "ui.theme_base",

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use domain::{
     AgentProfile, Cursor, ExternalAgentSession, Job, JobId, Project, ProjectGroup, ProviderUsage,
     PtySize, PullRequestState, Row, ScrollbackRows, Session, ShareRule, TermModes, TerminalDelta,
-    TerminalId, TerminalSnapshot, Workspace,
+    TerminalId, TerminalSnapshot, Workspace, WorktreeIgnore,
 };
 use protocol::{DaemonEvent, ProviderInfo, Response};
 
@@ -90,6 +90,10 @@ pub struct Store {
     pub agent_profiles: Vec<AgentProfile>,
     /// Every project's file-sharing rules (§14.2), in application order.
     pub worktree_shares: Vec<ShareRule>,
+    /// Every project's worktree-ignore rules (§14.4). Loaded whole, like the
+    /// share rules: the rail's context menu edits the set and the settings
+    /// dialog shows it.
+    pub worktree_ignores: Vec<WorktreeIgnore>,
     /// Opaque app-state key/value pairs (§15.2).
     pub app_state: Vec<(String, String)>,
     /// Latest usage per *account* (§16.2, §13.4): a provider reports one
@@ -173,6 +177,7 @@ impl Store {
                 providers,
                 agent_profiles,
                 worktree_shares,
+                worktree_ignores,
                 app_state,
                 external_agents,
                 pull_requests,
@@ -186,6 +191,7 @@ impl Store {
                 self.providers = providers;
                 self.agent_profiles = agent_profiles;
                 self.worktree_shares = worktree_shares;
+                self.worktree_ignores = worktree_ignores;
                 self.app_state = app_state;
                 self.external_agents = external_agents;
                 self.pull_requests = pull_requests;
@@ -233,6 +239,7 @@ impl Store {
                 self.external_agents.clear();
                 self.agent_profiles.clear();
                 self.worktree_shares.clear();
+                self.worktree_ignores.clear();
                 self.app_state.clear();
                 self.usage.clear();
                 self.pull_requests = PullRequestState::default();
@@ -356,6 +363,14 @@ impl Store {
                 self.worktree_shares
                     .retain(|rule| rule.project_id != *project_id);
                 self.worktree_shares.extend(rules.iter().cloned());
+                EventOutcome::Applied
+            }
+            DaemonEvent::ProjectWorktreeIgnoresChanged { project_id, rules } => {
+                // Same whole-set replacement: a tombstone the rescan collected
+                // must disappear from the GUI's list, and a merge cannot say so.
+                self.worktree_ignores
+                    .retain(|rule| rule.project_id != *project_id);
+                self.worktree_ignores.extend(rules.iter().cloned());
                 EventOutcome::Applied
             }
             // Provisioning results are read where they are shown, like a diff
@@ -849,6 +864,7 @@ mod tests {
             providers: vec![],
             agent_profiles: vec![],
             worktree_shares: vec![],
+            worktree_ignores: vec![],
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
             pull_requests: pull_requests.clone(),
@@ -876,6 +892,7 @@ mod tests {
             providers: vec![],
             agent_profiles: vec![],
             worktree_shares: vec![],
+            worktree_ignores: vec![],
             app_state: vec![
                 ("sidebar_width".to_string(), "280".to_string()),
                 ("theme".to_string(), "dark".to_string()),

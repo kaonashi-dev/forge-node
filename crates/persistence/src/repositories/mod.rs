@@ -9,6 +9,7 @@
 pub mod agent_profiles;
 pub mod app_state;
 pub mod context;
+pub mod ignores;
 pub mod project_groups;
 pub mod projects;
 pub mod provider_overrides;
@@ -19,6 +20,7 @@ pub mod workspaces;
 pub use agent_profiles::AgentProfileRepo;
 pub use app_state::AppStateRepo;
 pub use context::ContextRepo;
+pub use ignores::IgnoreRepo;
 pub use project_groups::ProjectGroupRepo;
 pub use projects::ProjectRepo;
 pub use provider_overrides::ProviderOverrideRepo;

@@ -308,6 +308,27 @@ UPDATE agent_profiles SET config_dir = (
 ALTER TABLE agent_profiles DROP COLUMN env_json;
 ";
 
+/// Migration 11: worktrees a project asked Forge to forget (§14.4).
+///
+/// A worktree made by another tool is adopted by the rescan, and one whose
+/// directory vanished stays in `git worktree list` as `prunable`; in both cases
+/// dropping the row only lasts until the next sweep. One row per
+/// `(project_id, path)` records the decision. Unlike `worktree_shares` there is
+/// no `id`: nothing references a rule, and a rule is replaced by path.
+/// `ON DELETE CASCADE` for the migration-2 reason: a removed project must not
+/// leave rules behind.
+pub const WORKTREE_IGNORES: &str = "\
+CREATE TABLE worktree_ignores (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    path       TEXT NOT NULL,
+    scope      TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, path)
+);
+
+CREATE INDEX idx_worktree_ignores_project ON worktree_ignores (project_id);
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -322,5 +343,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(WORKTREE_SHARES),
         M::up(SESSION_BASE_COMMIT),
         M::up(PROFILE_CONFIG_DIR),
+        M::up(WORKTREE_IGNORES),
     ])
 }

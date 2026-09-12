@@ -64,6 +64,7 @@
     "providers": [],
     "agent_profiles": [],
     "worktree_shares": [],
+    "worktree_ignores": [],
     "app_state": [
       [
         "sidebar_width",

@@ -14,7 +14,7 @@ use domain::{
     ProviderUsage, PullRequestState, RebaseState, Remote, ScrollbackRows, SearchResults, Session,
     SessionChanges, SessionId, SessionTranscript, ShareAction, ShareCandidate, ShareRule,
     ShareStatusEntry, TerminalId, TerminalSnapshot, UsageAnalytics, Workspace, WorkspaceDiff,
-    WorkspaceId, WorkspaceReview,
+    WorkspaceId, WorkspaceReview, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +116,10 @@ pub enum Response {
         /// rows are small and the settings section needs them without a round
         /// trip, exactly like `agent_profiles`.
         worktree_shares: Vec<ShareRule>,
+        /// Every project's worktree-ignore rules (§14.4). Same reasoning as
+        /// `worktree_shares`: the GUI edits them and must show the truth after
+        /// a rescan collects a tombstone without a round trip.
+        worktree_ignores: Vec<WorktreeIgnore>,
         /// Opaque app-state key/value pairs (§15.2).
         app_state: Vec<(String, String)>,
         /// Agent sessions discovered on disk that the daemon did not launch
@@ -171,6 +175,9 @@ pub enum Response {
         /// One entry per enabled rule of the project.
         entries: Vec<ShareStatusEntry>,
     },
+    /// A project's worktree-ignore rules, answering `ListWorktreeIgnores`
+    /// (§14.4).
+    WorktreeIgnores(Vec<WorktreeIgnore>),
     /// Agent providers with detection state, answering `ListAgentProviders`.
     Providers(Vec<ProviderInfo>),
     /// The value of an app-state key, answering `GetAppState`; `None` if unset.

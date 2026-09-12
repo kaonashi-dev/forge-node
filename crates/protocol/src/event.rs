@@ -12,6 +12,7 @@ use domain::{
     AgentProfile, DetectionResult, Job, JobId, JuvaDraft, Project, ProjectGroup, ProjectGroupId,
     ProjectId, ProviderUsage, PullRequestState, Session, SessionId, ShareAction, ShareRule,
     ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot, Workspace, WorkspaceId,
+    WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -128,6 +129,15 @@ pub enum DaemonEvent {
         project_id: ProjectId,
         /// Every rule of that project, in application order.
         rules: Vec<ShareRule>,
+    },
+    /// A project's worktree-ignore rules changed (§14.4). Carries the whole
+    /// set, like `ProjectSharesChanged`: the rescan's GC collects a tombstone
+    /// on its own, and a client that missed one edit still ends up consistent.
+    ProjectWorktreeIgnoresChanged {
+        /// The project whose rules these are.
+        project_id: ProjectId,
+        /// Every rule of that project.
+        rules: Vec<WorktreeIgnore>,
     },
     /// A workspace finished being provisioned (§14.2).
     ///

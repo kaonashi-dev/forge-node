@@ -234,6 +234,87 @@ fn a_worktree_whose_sessions_have_ended_can_be_removed() {
 }
 
 #[test]
+fn a_forgotten_worktree_stays_gone_across_a_daemon_restart() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo (git must be installed)");
+    let external = harness.root().join("agent-wts/arch-review");
+    std::fs::create_dir_all(external.parent().expect("parent")).expect("mkdir");
+    // Created the way a parallel agent would: plain git, no Forge.
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["worktree", "add"])
+        .arg(&external)
+        .args(["-b", "agent/arch-review"])
+        .status()
+        .expect("run git worktree add");
+    assert!(status.success(), "git worktree add failed");
+
+    let first = harness.boot();
+    let client = first.connect("forget-restart");
+    common::add_main_workspace(&client, repo.path());
+
+    let adopted = common::workspaces(&client)
+        .into_iter()
+        .find(|w| w.kind == WorkspaceKind::GitWorktree)
+        .expect("the agent's worktree is adopted when the project is added");
+    assert!(!adopted.managed_by_app);
+
+    client
+        .request(Request::RemoveWorktree {
+            workspace_id: adopted.id,
+            force: false,
+        })
+        .expect("forget the worktree");
+    assert!(
+        !common::workspaces(&client)
+            .iter()
+            .any(|w| w.id == adopted.id),
+        "forgetting drops the row"
+    );
+    assert!(
+        external.is_dir(),
+        "and never touches an unmanaged directory"
+    );
+
+    // Kill the daemon and bring it back over the same database: the literal
+    // reproduction the tombstone exists for. Before it, this restart's rescan
+    // adopted the worktree again with a fresh id.
+    first.crash();
+    drop(client);
+    let second = harness.boot();
+    let client = second.connect("forget-restart-2");
+
+    let workspaces = common::workspaces(&client);
+    assert_eq!(
+        workspaces.len(),
+        1,
+        "only Main after the restart: {workspaces:?}"
+    );
+    assert_eq!(workspaces[0].kind, WorkspaceKind::Main);
+
+    // The rule rode through the restart with it, canonical path and all.
+    match client
+        .request(Request::ListWorktreeIgnores {
+            project_id: workspaces[0].project_id,
+        })
+        .expect("ListWorktreeIgnores")
+    {
+        Response::WorktreeIgnores(rules) => {
+            assert_eq!(rules.len(), 1, "the tombstone survived: {rules:?}");
+            assert_eq!(rules[0].scope, domain::IgnoreScope::Exact);
+            assert_eq!(
+                rules[0].path,
+                std::fs::canonicalize(&external).expect("canonicalize the worktree")
+            );
+        }
+        other => panic!("expected WorktreeIgnores, got {other:?}"),
+    }
+
+    common::stop_daemon(&client);
+}
+
+#[test]
 fn factory_reset_removes_managed_state_but_keeps_repository_harness_files() {
     const BRANCH: &str = "feature/factory-reset";
 

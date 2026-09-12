@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 
 use crate::migrations::migrations;
 use crate::repositories::{
-    AgentProfileRepo, AppStateRepo, ContextRepo, ProjectGroupRepo, ProjectRepo,
+    AgentProfileRepo, AppStateRepo, ContextRepo, IgnoreRepo, ProjectGroupRepo, ProjectRepo,
     ProviderOverrideRepo, SessionRepo, ShareRepo, WorkspaceRepo,
 };
 
@@ -238,6 +238,12 @@ impl Db {
     #[must_use]
     pub fn shares(&self) -> ShareRepo<'_> {
         ShareRepo::new(&self.conn)
+    }
+
+    /// Project worktree-ignore rules repository (§14.4).
+    #[must_use]
+    pub fn ignores(&self) -> IgnoreRepo<'_> {
+        IgnoreRepo::new(&self.conn)
     }
 
     /// Opaque application/layout state repository (ADR-003, §15.2).

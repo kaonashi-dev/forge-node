@@ -152,6 +152,9 @@ pub struct ShellSnapshot {
     /// Every project's file-sharing rules (§14.2), in application order, for
     /// the settings section that edits them.
     pub worktree_shares: Vec<domain::ShareRule>,
+    /// Every project's worktree-ignore rules (§14.4), for the settings dialog
+    /// that undoes them.
+    pub worktree_ignores: Vec<domain::WorktreeIgnore>,
     pub session_attention: HashMap<SessionId, SessionAttentionFlags>,
     /// Persisted GUI preferences (§15.2). The daemon stays authoritative:
     /// writes go through `SetAppState`, and this is the last read of them.
@@ -198,6 +201,7 @@ impl ShellSnapshot {
             launchables: launchables(store),
             agent_profiles: store.agent_profiles.clone(),
             worktree_shares: store.worktree_shares.clone(),
+            worktree_ignores: store.worktree_ignores.clone(),
             session_attention,
             app_state: store.app_state.iter().cloned().collect(),
             live_sessions,

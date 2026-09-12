@@ -22,7 +22,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   "Hello": {
-    "protocol_version": 21,
+    "protocol_version": 22,
     "client_version": "0.1.0",
     "client_kind": "Gui"
   }
@@ -90,7 +90,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   "HelloAck": {
-    "protocol_version": 21,
+    "protocol_version": 22,
     "daemon_version": "0.1.0",
     "instance_id": "forge-daemon-0001",
     "started_at": "2026-08-30T12:00:00Z"
@@ -99,7 +99,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   "HelloReject": {
-    "daemon_protocol_version": 21,
+    "daemon_protocol_version": 22,
     "reason": "protocol version mismatch"
   }
 } as const;
@@ -711,20 +711,20 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  "protocol_version": 21,
+  "protocol_version": 22,
   "client_version": "0.1.0",
   "client_kind": "Gui"
 } as const;
 
 export const hello_ack = {
-  "protocol_version": 21,
+  "protocol_version": 22,
   "daemon_version": "0.1.0",
   "instance_id": "forge-daemon-0001",
   "started_at": "2026-08-30T12:00:00Z"
 } as const;
 
 export const hello_reject = {
-  "daemon_protocol_version": 21,
+  "daemon_protocol_version": 22,
   "reason": "protocol version mismatch"
 } as const;
 
@@ -1230,6 +1230,7 @@ export const response_snapshot = {
     "providers": [],
     "agent_profiles": [],
     "worktree_shares": [],
+    "worktree_ignores": [],
     "app_state": [
       [
         "sidebar_width",
@@ -1390,6 +1391,14 @@ export const response_snapshot_populated = {
         },
         "enabled": true,
         "position": 0,
+        "created_at": "2026-08-30T12:00:00Z"
+      }
+    ],
+    "worktree_ignores": [
+      {
+        "project_id": "00000000-0000-7000-8000-000000000001",
+        "path": "/repo/.claude/worktrees",
+        "scope": "subtree",
         "created_at": "2026-08-30T12:00:00Z"
       }
     ],

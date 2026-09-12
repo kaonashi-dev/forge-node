@@ -16,6 +16,7 @@ import {
   renameProjectGroup,
   renameWorkspace,
   setProjectIcon,
+  setWorktreeIgnores,
 } from "../runtime/api";
 import { sessionIsAgent, sessionTitle, type Session } from "../runtime/types";
 import { forgeStore } from "../store/forgeStore";
@@ -48,6 +49,7 @@ import { newWorktreeItem } from "./railMenuItems";
 import { sessionMenuItems } from "./sessionMenuItems";
 import { dropFromGap, gapAtY, moveTabToGap } from "./tabOrder";
 import { SharedFiles } from "../settings/SharedFiles";
+import { WorktreeIgnoresDialog } from "./WorktreeIgnoresDialog";
 import { sharesStore } from "../store/sharesStore";
 import { orderFromWorkspaces, parseWorkspaceOrder, type WorkspaceOrderMap } from "./workspaceOrder";
 
@@ -92,6 +94,10 @@ export function ProjectsView() {
   const [sharedFiles, setSharedFiles] = createSignal<{
     projectId: string;
     workspaceId?: string;
+    name: string;
+  } | null>(null);
+  const [ignoredWorktrees, setIgnoredWorktrees] = createSignal<{
+    projectId: string;
     name: string;
   } | null>(null);
 
@@ -162,6 +168,13 @@ export function ProjectsView() {
         label: "Shared files…",
         icon: "folder-open",
         run: () => setSharedFiles({ projectId: node.id, name: node.name }),
+      },
+      {
+        kind: "item",
+        label: "Ignored worktrees…",
+        detail: "Undo a folder Forge was told to stop adopting",
+        icon: "filter",
+        run: () => setIgnoredWorktrees({ projectId: node.id, name: node.name }),
       },
       {
         kind: "item",
@@ -368,6 +381,32 @@ export function ProjectsView() {
       },
       ...(isWorktree(node.id)
         ? [
+            {
+              kind: "item" as const,
+              label: "Ignore worktrees in this folder",
+              detail: "Forge stops adopting anything under it",
+              icon: "filter" as const,
+              disabled: !project,
+              run: () => {
+                if (!project) return;
+                // The gesture names the containing folder, not the worktree:
+                // the next agent run gets a different directory name.
+                const folder =
+                  node.path.replace(/\/+$/, "").split("/").slice(0, -1).join("/") || "/";
+                const kept = forgeStore.worktree_ignores.filter(
+                  (rule) => rule.project_id === project.id && rule.path !== folder,
+                );
+                void setWorktreeIgnores(project.id, [
+                  ...kept,
+                  {
+                    project_id: project.id,
+                    path: folder,
+                    scope: "subtree" as const,
+                    created_at: new Date().toISOString(),
+                  },
+                ]).catch(() => undefined);
+              },
+            },
             {
               kind: "item" as const,
               label: "Remove worktree",
@@ -649,6 +688,15 @@ export function ProjectsView() {
           >
             <SharedFiles projectId={target().projectId} workspaceId={target().workspaceId} />
           </Dialog>
+        )}
+      </Show>
+      <Show when={ignoredWorktrees()}>
+        {(target) => (
+          <WorktreeIgnoresDialog
+            projectId={target().projectId}
+            name={target().name}
+            onDismiss={() => setIgnoredWorktrees(null)}
+          />
         )}
       </Show>
       <Show when={menu()}>

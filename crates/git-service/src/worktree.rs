@@ -175,15 +175,23 @@ pub fn create(repo: &Path, path: &Path, branch: &str, base: Option<&str>) -> Res
     let branch_exists = list_branches(repo)?.iter().any(|b| b == branch);
 
     if branch_exists {
-        // Reject if the branch is already checked out in some other worktree.
-        if let Some(existing) = list_worktrees(repo)?
-            .into_iter()
-            .find(|w| w.branch.as_deref() == Some(branch))
+        // Reject if the branch is checked out in a live worktree. A stale entry
+        // (`prunable`, or a directory deleted by hand) is still listed by git
+        // and still holds the branch, but the checkout it names is gone: prune
+        // the dead bookkeeping, then add. Without this, a worktree deleted
+        // outside the app could never be recreated on its branch.
+        let entries = list_worktrees(repo)?;
+        if let Some(existing) = entries
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(branch) && !w.is_stale())
         {
             return Err(GitError::Conflict {
                 branch: branch.to_string(),
-                path: existing.path,
+                path: existing.path.clone(),
             });
+        }
+        if entries.iter().any(|w| w.branch.as_deref() == Some(branch)) {
+            prune(repo)?;
         }
         // `--` ends option parsing so the positionals cannot be read as flags.
         let args = ["worktree", "add", "--", path_str, branch];
@@ -195,6 +203,19 @@ pub fn create(repo: &Path, path: &Path, branch: &str, base: Option<&str>) -> Res
     }
 
     tracing::debug!(target: "git", branch, "worktree.create");
+    Ok(())
+}
+
+/// Drop administrative entries whose working directory is gone (§14.4).
+///
+/// Never touches a working directory; only `.git/worktrees/` bookkeeping is
+/// removed, which is exactly what a hand-deleted worktree leaves behind.
+///
+/// # Errors
+/// [`GitError::CommandFailed`] if `git worktree prune` fails.
+pub fn prune(repo: &Path) -> Result<(), GitError> {
+    const PRUNE: [&str; 2] = ["worktree", "prune"];
+    run_git(Some(repo), &PRUNE)?.ok(&PRUNE)?;
     Ok(())
 }
 
@@ -227,8 +248,7 @@ pub fn remove(repo: &Path, path: &Path, force: bool) -> Result<(), GitError> {
         run_git(Some(repo), &args)?.ok(&args)?;
     }
 
-    const PRUNE: [&str; 2] = ["worktree", "prune"];
-    run_git(Some(repo), &PRUNE)?.ok(&PRUNE)?;
+    prune(repo)?;
 
     tracing::debug!(target: "git", force, "worktree.remove");
     Ok(())

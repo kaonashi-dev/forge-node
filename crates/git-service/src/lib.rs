@@ -56,5 +56,6 @@ pub use repository::{
     set_local_excludes, short_commit, status, IgnoredPath, RefEntry, RepoStatus, WorktreeEntry,
 };
 pub use worktree::{
-    create, precheck_remove, remove, slugify, unique_slug, validate_branch_name, RemovePrechecks,
+    create, precheck_remove, prune, remove, slugify, unique_slug, validate_branch_name,
+    RemovePrechecks,
 };

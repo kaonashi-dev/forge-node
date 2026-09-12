@@ -7,6 +7,7 @@ import type {
   ShareCleanup,
   ShareRule,
   UpdateInfo,
+  WorktreeIgnore,
 } from "./types";
 
 export async function hostStatus(): Promise<HostStatus> {
@@ -348,6 +349,20 @@ export async function removeShareRule(
 /** Ask the platform for a file to share. `null` means the user cancelled. */
 export async function pickFile(title?: string, directory?: string): Promise<string | null> {
   return (await invoke<string | null>("pick_file", { title, directory })) ?? null;
+}
+
+// --- Worktrees Forge is told to forget (§14.4) ------------------------------
+
+/**
+ * Replace a project's whole ignore set.
+ *
+ * The set, not a row, for the same reason as the share rules: adding and
+ * removing are one edit of one list. The daemon rescans the project before it
+ * acks, so the rail has already dropped what the new rules cover when this
+ * returns.
+ */
+export async function setWorktreeIgnores(project: string, rules: WorktreeIgnore[]): Promise<void> {
+  await send({ type: "set_worktree_ignores", project, rules });
 }
 
 /** Pin the executable used for a provider, or clear the override with `null`. */

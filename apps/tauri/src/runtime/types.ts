@@ -460,6 +460,18 @@ export type ShareCleanup = "leave" | "remove_injected" | "materialize";
 
 export type ShareTrigger = "Created" | "Adopted" | "Requested";
 
+/** How far a worktree-ignore rule reaches from its path (§14.4). */
+export type IgnoreScope = "exact" | "subtree";
+
+/** One worktree-ignore rule of a project (§14.4). */
+export type WorktreeIgnore = {
+  project_id: string;
+  /** Absolute and canonical when the daemon wrote the rule. */
+  path: string;
+  scope: IgnoreScope;
+  created_at: string;
+};
+
 export type ShellSnapshot = {
   project_groups: ProjectGroup[];
   projects: Project[];
@@ -486,6 +498,12 @@ export type ShellSnapshot = {
    * `agent_profiles`.
    */
   worktree_shares: ShareRule[];
+  /**
+   * Every project's worktree-ignore rules (§14.4), for the dialog that undoes
+   * them. The daemon writes a tombstone here on `RemoveWorktree` and collects
+   * it once the worktree is really gone.
+   */
+  worktree_ignores: WorktreeIgnore[];
   session_attention: Record<string, SessionAttentionFlags>;
   /**
    * Persisted GUI preferences (§15.2). The daemon stays authoritative: writes

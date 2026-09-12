@@ -13,7 +13,7 @@ use domain::{
     AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy, ContextEnvelope,
     HarnessAdvanceAction, HarnessArtifactKind, HarnessStep, JobId, JobRequest, JuvaKind,
     ProjectGroupId, ProjectId, PtySize, SessionId, SessionKind, SessionRole, ShareCleanup,
-    ShareRule, ShareRuleId, TerminalId, WorkspaceId,
+    ShareRule, ShareRuleId, TerminalId, WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -930,6 +930,28 @@ pub enum Request {
         path: String,
         /// The workspace to write into; `None` means every workspace.
         workspace_id: Option<WorkspaceId>,
+    },
+
+    // --------------------------------------- worktree ignores (§14.4) ---
+    /// A project's worktree-ignore rules → `WorktreeIgnores`.
+    ///
+    /// A local read: the daemon keeps the rules loaded, so this is a clone, not
+    /// a query and certainly not a scan.
+    ListWorktreeIgnores {
+        /// The project whose rules to return.
+        project_id: ProjectId,
+    },
+    /// Replace a project's whole ignore set → `Ack`;
+    /// `ProjectWorktreeIgnoresChanged`, then a rescan that drops the rows the
+    /// new rules cover.
+    ///
+    /// The set, not a row: the GUI edits the list as a list, and the rule at a
+    /// path *is* the path. `created_at` is filled in by the daemon.
+    SetWorktreeIgnores {
+        /// The project whose rules these are.
+        project_id: ProjectId,
+        /// The rules, in the order they should be kept.
+        rules: Vec<WorktreeIgnore>,
     },
 }
 

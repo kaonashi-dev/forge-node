@@ -1339,6 +1339,12 @@ fn run_command(
                 .map_err(CommandError::from_client)?;
             Ok(Effect::nothing())
         }
+        RuntimeCommand::SetWorktreeIgnores { project, rules } => {
+            client
+                .set_worktree_ignores(project, rules)
+                .map_err(CommandError::from_client)?;
+            Ok(Effect::nothing())
+        }
         RuntimeCommand::SetProviderExecutable { provider, path } => {
             client
                 .set_provider_executable(&provider, path.map(std::path::PathBuf::from))

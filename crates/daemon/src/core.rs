@@ -16,11 +16,12 @@ use agents::AgentRegistry;
 use domain::{
     AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy,
     ContextArtifactRef, ContextEnvelope, ContextId, DetectionResult, DetectionStatus, EnvSource,
-    LaunchAgentRequest, Project, ProjectGroup, ProjectGroupId, ProjectId, PtySize,
+    IgnoreScope, LaunchAgentRequest, Project, ProjectGroup, ProjectGroupId, ProjectId, PtySize,
     ResolvedEnvironment, ScrollbackRows, Session, SessionId, SessionKind, SessionRole,
     SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId, ShareStrategy, ShareTrigger,
     SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId, WorkspaceKind, WorkspaceStatus,
-    DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH, MAX_SHARE_RULES,
+    WorktreeIgnore, DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH, MAX_SHARE_RULES,
+    MAX_WORKTREE_IGNORES,
 };
 use persistence::Db;
 use protocol::{
@@ -34,6 +35,7 @@ use crate::environment::ShellEnvironmentService;
 use crate::shares::{self, apply as share_apply, ShareContext};
 use crate::terminal::{pty_loop, TerminalRuntime};
 use crate::terminfo::{self, TermSelection};
+use crate::worktrees::{self, IgnoreRule, Known, Listed};
 
 /// ADR-008: at most one `git status` per workspace every 2 s.
 const GIT_STATUS_THROTTLE: Duration = Duration::from_secs(2);
@@ -112,6 +114,10 @@ pub(crate) struct Inner {
     env_fallback_noticed: bool,
     /// `TERM`/`TERMINFO` for shells. Filesystem probe; cannot change mid-session.
     term_selection: Option<TermSelection>,
+    /// Project worktree-ignore rules (§14.4), keyed by project and loaded once.
+    /// The rescan reads them without a query; `SetWorktreeIgnores` replaces a
+    /// project's list in the same critical section as its rows.
+    worktree_ignores: HashMap<ProjectId, Vec<WorktreeIgnore>>,
 }
 
 /// Shared as `Arc<Daemon>` across the accept loop and PTY threads.
@@ -293,6 +299,14 @@ impl Daemon {
 
         let profiles = db.agent_profiles().list().map_err(|e| e.to_string())?;
 
+        let mut worktree_ignores: HashMap<ProjectId, Vec<WorktreeIgnore>> = HashMap::new();
+        for rule in db.ignores().list_all().map_err(|e| e.to_string())? {
+            worktree_ignores
+                .entry(rule.project_id)
+                .or_default()
+                .push(rule);
+        }
+
         let inner = Inner {
             db,
             project_groups,
@@ -320,6 +334,7 @@ impl Daemon {
             usage: Vec::new(),
             env_fallback_noticed: false,
             term_selection: None,
+            worktree_ignores,
         };
 
         let attention_assets = install_attention_assets(&worktrees_root);
@@ -448,14 +463,23 @@ impl Daemon {
         };
 
         let main_path = canonical_or_self(root_path);
-        let listed: HashMap<PathBuf, Option<String>> = entries
+        let listed: Vec<Listed> = entries
             .into_iter()
             .filter(|e| !e.bare)
-            .map(|e| (canonical_or_self(&e.path), e.branch))
-            .filter(|(path, _)| *path != main_path)
+            .filter_map(|e| {
+                let path = canonical_or_self(&e.path);
+                if path == main_path {
+                    return None; // the main checkout, not a worktree
+                }
+                Some(Listed {
+                    stale: e.is_stale(),
+                    path,
+                    branch: e.branch,
+                })
+            })
             .collect();
 
-        let (added, removed) = self.reconcile_project_worktrees(project_id, &listed);
+        let (added, removed) = self.reconcile_project_worktrees(project_id, git_root, &listed);
         for ws in added {
             let workspace_id = ws.id;
             self.registry
@@ -470,34 +494,101 @@ impl Daemon {
         }
     }
 
+    /// The rules that apply to one project: its stored rows plus the global
+    /// `[worktrees] ignore` entries, each resolved against `git_root`.
+    ///
+    /// Filesystem work (a `stat` per rule), so it is only ever called before
+    /// the core lock is taken. Stored paths are canonical as of the write, so
+    /// they are used as they are — the GC deletes by stored path.
+    fn project_ignore_rules(&self, git_root: &Path, stored: &[WorktreeIgnore]) -> Vec<IgnoreRule> {
+        let mut rules: Vec<IgnoreRule> = stored
+            .iter()
+            .map(|rule| IgnoreRule {
+                scope: rule.scope,
+                path: rule.path.clone(),
+                on_disk: rule.path.exists(),
+            })
+            .collect();
+
+        for entry in &self.config.worktrees.ignore {
+            let configured = PathBuf::from(entry);
+            let candidate = if configured.is_absolute() {
+                configured
+            } else {
+                git_root.join(configured)
+            };
+            let path = canonical_or_self(&candidate);
+            // A rule may not hide the project's own checkout. The config is
+            // machine-wide, so a bad entry is skipped with a warning rather
+            // than refusing every project on the machine.
+            if path == git_root || git_root.starts_with(&path) {
+                tracing::warn!(entry = %entry, "ignoring the project root in [worktrees] ignore");
+                continue;
+            }
+            rules.push(IgnoreRule {
+                scope: IgnoreScope::Subtree,
+                on_disk: path.exists(),
+                path,
+            });
+        }
+        rules
+    }
+
+    /// One reconcile pass: adopt, drop, and collect tombstones.
+    ///
+    /// The core lock is taken twice with all `stat`/`canonicalize` work between
+    /// them, so no filesystem call ever runs under it.
     fn reconcile_project_worktrees(
         self: &Arc<Self>,
         project_id: ProjectId,
-        listed: &HashMap<PathBuf, Option<String>>,
+        git_root: &Path,
+        listed: &[Listed],
     ) -> (Vec<Workspace>, Vec<WorkspaceId>) {
+        // Snapshot under the lock; observe outside it.
+        let (raw_known, stored_rules) = {
+            let inner = self.lock();
+            let raw_known: Vec<(WorkspaceId, PathBuf, bool)> = inner
+                .workspaces
+                .values()
+                .filter(|w| w.project_id == project_id && w.kind == WorkspaceKind::GitWorktree)
+                .map(|w| {
+                    let has_sessions = inner.sessions.values().any(|s| s.workspace_id == w.id);
+                    (w.id, w.path.clone(), has_sessions)
+                })
+                .collect();
+            let rules = inner
+                .worktree_ignores
+                .get(&project_id)
+                .cloned()
+                .unwrap_or_default();
+            (raw_known, rules)
+        };
+
+        let known: Vec<Known> = raw_known
+            .into_iter()
+            .map(|(id, path, has_sessions)| Known {
+                id,
+                on_disk: path.exists(),
+                path: canonical_or_self(&path),
+                has_sessions,
+            })
+            .collect();
+        let rules = self.project_ignore_rules(git_root, &stored_rules);
+        let decision = worktrees::plan(listed, &known, &rules);
+
         let mut added = Vec::new();
         let mut removed = Vec::new();
         let mut keep_notices = Vec::new();
         {
             let mut inner = self.lock();
-            let known: HashMap<PathBuf, WorkspaceId> = inner
-                .workspaces
-                .values()
-                .filter(|w| w.project_id == project_id)
-                .map(|w| (canonical_or_self(&w.path), w.id))
-                .collect();
-
-            for (path, branch) in listed {
-                if known.contains_key(path) {
-                    continue;
-                }
+            for entry in &decision.adopt {
                 let ws = Workspace {
                     id: WorkspaceId::new(),
                     project_id,
                     kind: WorkspaceKind::GitWorktree,
-                    path: path.clone(),
-                    branch: branch.clone(),
-                    display_name: inferred_display_name(path, branch.as_deref()),
+                    path: entry.path.clone(),
+                    branch: entry.branch.clone(),
+                    display_name: inferred_display_name(&entry.path, entry.branch.as_deref()),
                     managed_by_app: false,
                     created_at: Timestamp::now(),
                     status: WorkspaceStatus::default(),
@@ -510,23 +601,13 @@ impl Daemon {
                 added.push(ws);
             }
 
-            let vanished: Vec<WorkspaceId> = inner
-                .workspaces
-                .values()
-                .filter(|w| {
-                    w.project_id == project_id
-                        && w.kind == WorkspaceKind::GitWorktree
-                        && !listed.contains_key(&canonical_or_self(&w.path))
-                        && !w.path.exists()
-                })
-                .map(|w| w.id)
-                .collect();
-            for workspace_id in vanished {
-                // Sessions still reference it; the FK would refuse the delete.
+            for workspace_id in &decision.drop {
+                // A session can appear between the two lock sections; the FK is
+                // the last word and the row waits for the next pass.
                 if inner
                     .sessions
                     .values()
-                    .any(|s| s.workspace_id == workspace_id)
+                    .any(|s| s.workspace_id == *workspace_id)
                 {
                     keep_notices.push(format!(
                         "worktree of workspace {workspace_id} is gone but still has sessions; keeping it"
@@ -535,20 +616,58 @@ impl Daemon {
                 }
                 let managed = inner
                     .workspaces
-                    .get(&workspace_id)
+                    .get(workspace_id)
                     .is_some_and(|w| w.managed_by_app);
-                if let Err(e) = inner.db.workspaces().delete(workspace_id) {
+                // A managed row the user's own rule just hid is not a surprise;
+                // one that vanished behind the app's back is worth a notice.
+                let explicitly_ignored = known
+                    .iter()
+                    .find(|k| k.id == *workspace_id)
+                    .is_some_and(|k| worktrees::ignores(&rules, &k.path));
+                if let Err(e) = inner.db.workspaces().delete(*workspace_id) {
                     tracing::warn!(%workspace_id, error = %e, "drop vanished worktree");
                     continue;
                 }
-                inner.workspaces.remove(&workspace_id);
-                if managed {
+                inner.workspaces.remove(workspace_id);
+                // One owner, one deletion path: the throttle table follows the row.
+                inner.status_checks.remove(workspace_id);
+                if managed && !explicitly_ignored {
                     keep_notices.push(format!(
                         "worktree {workspace_id} created by Forge was removed outside the app"
                     ));
                 }
-                removed.push(workspace_id);
+                removed.push(*workspace_id);
             }
+
+            keep_notices.extend(decision.kept_with_sessions.iter().map(|workspace_id| {
+                format!(
+                    "worktree of workspace {workspace_id} would be forgotten but still has sessions; keeping it"
+                )
+            }));
+
+            // D7: an `Exact` tombstone whose worktree is really gone has done
+            // its job. A `Subtree` rule is policy and is never collected.
+            for path in &decision.stale_rules {
+                if let Err(e) = inner.db.ignores().delete(project_id, path) {
+                    tracing::warn!(path = %path.display(), error = %e, "collect worktree ignore");
+                    continue;
+                }
+                if let Some(rules) = inner.worktree_ignores.get_mut(&project_id) {
+                    rules.retain(|rule| rule.path != *path);
+                }
+            }
+        }
+
+        if !decision.stale_rules.is_empty() {
+            // Clients hold the rule list; they must see the tombstone go.
+            let rules = self
+                .lock()
+                .worktree_ignores
+                .get(&project_id)
+                .cloned()
+                .unwrap_or_default();
+            self.registry
+                .broadcast_domain(DaemonEvent::ProjectWorktreeIgnoresChanged { project_id, rules });
         }
         for message in keep_notices {
             self.notice(NoticeLevel::Warning, message);
@@ -926,6 +1045,11 @@ impl Daemon {
                 workspace_id,
             } => self.materialize_from_share_store(project_id, path, workspace_id),
 
+            Request::ListWorktreeIgnores { project_id } => self.list_worktree_ignores(project_id),
+            Request::SetWorktreeIgnores { project_id, rules } => {
+                self.set_worktree_ignores(project_id, rules)
+            }
+
             _ => Err(ProtocolError::new(
                 ErrorCode::InvalidRequest,
                 "unsupported request in this daemon build",
@@ -1020,6 +1144,7 @@ impl Daemon {
             providers,
             agent_profiles,
             worktree_shares,
+            worktree_ignores,
             app_state,
             usage,
         ) = {
@@ -1027,6 +1152,15 @@ impl Daemon {
             let providers = self.provider_infos_locked(&inner);
             let app_state = inner.db.app_state().list().unwrap_or_default();
             let worktree_shares = inner.db.shares().list_all().unwrap_or_default();
+            // The cache is a map, so order it: a snapshot that reshuffles the
+            // rule list would re-render it for nothing.
+            let mut worktree_ignores: Vec<WorktreeIgnore> =
+                inner.worktree_ignores.values().flatten().cloned().collect();
+            worktree_ignores.sort_by(|a, b| {
+                a.project_id
+                    .cmp(&b.project_id)
+                    .then_with(|| a.path.cmp(&b.path))
+            });
             (
                 inner.project_groups.values().cloned().collect::<Vec<_>>(),
                 inner.projects.values().cloned().collect::<Vec<_>>(),
@@ -1035,6 +1169,7 @@ impl Daemon {
                 providers,
                 inner.profiles.clone(),
                 worktree_shares,
+                worktree_ignores,
                 app_state,
                 inner.usage.clone(),
             )
@@ -1065,6 +1200,7 @@ impl Daemon {
             providers,
             agent_profiles,
             worktree_shares,
+            worktree_ignores,
             app_state,
             external_agents,
             pull_requests,
@@ -1153,6 +1289,7 @@ impl Daemon {
             inner.pr_refreshing = false;
             inner.status_checks.clear();
             inner.usage.clear();
+            inner.worktree_ignores.clear();
             // PTY threads remove and reap their own runtimes after the group
             // kills above reach EOF; dropping them here would leak children.
         }
@@ -1350,12 +1487,38 @@ impl Daemon {
         })?;
 
         let git_root = git_service::discover_root(&root).ok();
-        let (branch, worktrees) = match &git_root {
-            Some(gr) => (
-                git_service::current_branch(gr).ok().flatten(),
-                git_service::list_worktrees(gr).unwrap_or_default(),
-            ),
+        let (branch, listed) = match &git_root {
+            Some(gr) => {
+                let main_path = root.clone();
+                let listed: Vec<Listed> = git_service::list_worktrees(gr)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|e| !e.bare)
+                    .filter_map(|e| {
+                        let path = canonical_or_self(&e.path);
+                        if path == main_path {
+                            return None; // the main checkout, already added below
+                        }
+                        Some(Listed {
+                            stale: e.is_stale(),
+                            path,
+                            branch: e.branch,
+                        })
+                    })
+                    .collect();
+                (git_service::current_branch(gr).ok().flatten(), listed)
+            }
             None => (None, Vec::new()),
+        };
+        // `[worktrees] ignore` filters adoption from the first scan, not only
+        // for a project that already has rows; a fresh project has no stored
+        // rules for the plan to apply.
+        let adopt = match &git_root {
+            Some(gr) => {
+                let rules = self.project_ignore_rules(gr, &[]);
+                worktrees::plan(&listed, &[], &rules).adopt
+            }
+            None => Vec::new(),
         };
 
         let mut inner = self.lock();
@@ -1428,11 +1591,7 @@ impl Daemon {
         created.push(main);
 
         if git_root.is_some() {
-            let main_path = root.clone();
-            for wt in worktrees {
-                if wt.path == main_path {
-                    continue; // the main checkout, already added
-                }
+            for wt in adopt {
                 let ws = Workspace {
                     id: WorkspaceId::new(),
                     project_id: project.id,
@@ -1550,6 +1709,8 @@ impl Daemon {
             inner.workspaces.remove(id);
         }
         inner.projects.remove(&project_id);
+        // The rows cascade in SQLite; the cache is not a table.
+        inner.worktree_ignores.remove(&project_id);
         drop(inner);
 
         // Replica drops by id: sessions before their workspace/project.
@@ -2686,10 +2847,36 @@ impl Daemon {
             created_at: Timestamp::now(),
             status: WorkspaceStatus::default(),
         };
-        {
+        let cleared_ignore = {
             let mut inner = self.lock();
             inner.db.workspaces().upsert(&ws).map_err(db_err)?;
             inner.workspaces.insert(ws.id, ws.clone());
+            // A tombstone on this path — an earlier worktree the user forgot,
+            // or a half-done removal — would hide the checkout just created.
+            // Stored rules are canonical, so the lookup is too.
+            let canonical = canonical_or_self(&ws.path);
+            match inner.db.ignores().delete(project_id, &canonical) {
+                Ok(cleared) => {
+                    if let Some(rules) = inner.worktree_ignores.get_mut(&project_id) {
+                        rules.retain(|rule| rule.path != canonical);
+                    }
+                    cleared
+                }
+                Err(e) => {
+                    tracing::warn!(path = %ws.path.display(), error = %e, "clear worktree ignore");
+                    false
+                }
+            }
+        };
+        if cleared_ignore {
+            let rules = self
+                .lock()
+                .worktree_ignores
+                .get(&project_id)
+                .cloned()
+                .unwrap_or_default();
+            self.registry
+                .broadcast_domain(DaemonEvent::ProjectWorktreeIgnoresChanged { project_id, rules });
         }
         self.registry
             .broadcast_domain(DaemonEvent::WorkspaceCreated(ws.clone()));
@@ -3035,6 +3222,102 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
+    // --------------------------------------- worktree ignores (§14.4) ---
+
+    fn list_worktree_ignores(&self, project_id: ProjectId) -> Result<Response, ProtocolError> {
+        let inner = self.lock();
+        if !inner.projects.contains_key(&project_id) {
+            return Err(ProtocolError::not_found("project"));
+        }
+        let rules = inner
+            .worktree_ignores
+            .get(&project_id)
+            .cloned()
+            .unwrap_or_default();
+        Ok(Response::WorktreeIgnores(rules))
+    }
+
+    /// Replace a project's whole ignore set, then rescan it retroactively.
+    ///
+    /// Paths are resolved and canonicalized here, exactly as `RemoveWorktree`
+    /// writes its tombstone: the plan compares them against git's canonical
+    /// paths, and the GC deletes by them.
+    fn set_worktree_ignores(
+        self: &Arc<Self>,
+        project_id: ProjectId,
+        rules: Vec<WorktreeIgnore>,
+    ) -> Result<Response, ProtocolError> {
+        if rules.len() > MAX_WORKTREE_IGNORES {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                format!("at most {MAX_WORKTREE_IGNORES} rules per project"),
+            ));
+        }
+        let (git_root, existing) = {
+            let inner = self.lock();
+            let project = inner
+                .projects
+                .get(&project_id)
+                .ok_or_else(|| ProtocolError::not_found("project"))?;
+            let git_root = project.git_root.as_deref().map(canonical_or_self);
+            let existing = inner
+                .worktree_ignores
+                .get(&project_id)
+                .cloned()
+                .unwrap_or_default();
+            (git_root, existing)
+        };
+
+        let mut normalized: Vec<WorktreeIgnore> = Vec::with_capacity(rules.len());
+        for mut rule in rules {
+            let configured = rule.path.clone();
+            let resolved = match (&git_root, configured.is_absolute()) {
+                (Some(gr), false) => gr.join(configured),
+                _ => configured,
+            };
+            let path = canonical_or_self(&resolved);
+            if let Some(gr) = &git_root {
+                if path == *gr || gr.starts_with(&path) {
+                    return Err(ProtocolError::new(
+                        ErrorCode::InvalidRequest,
+                        "a rule cannot ignore the project's own checkout",
+                    ));
+                }
+            }
+            rule.project_id = project_id;
+            rule.path = path;
+            // Created-at is the daemon's: a path is the identity, and a client
+            // re-sending its list must not age the rules it kept.
+            rule.created_at = existing
+                .iter()
+                .find(|old| old.path == rule.path)
+                .map_or_else(Timestamp::now, |old| old.created_at);
+            normalized.retain(|kept| kept.path != rule.path);
+            normalized.push(rule);
+        }
+
+        {
+            let mut inner = self.lock();
+            inner
+                .db
+                .ignores()
+                .replace_for_project(project_id, &normalized)
+                .map_err(db_err)?;
+            inner
+                .worktree_ignores
+                .insert(project_id, normalized.clone());
+        }
+        self.registry
+            .broadcast_domain(DaemonEvent::ProjectWorktreeIgnoresChanged {
+                project_id,
+                rules: normalized,
+            });
+        // Naming a folder is a request to stop seeing what is under it *now*,
+        // not from the next restart on.
+        self.rescan_project(project_id);
+        Ok(Response::Ack)
+    }
+
     /// Ack when the work *starts*; the outcome arrives as `SharesApplied`.
     ///
     /// A `Run` rule is a subprocess of up to an hour and the GUI drains one
@@ -3197,7 +3480,7 @@ impl Daemon {
         }
 
         // DB first (`ON DELETE RESTRICT`). Disk-then-row left a workspace pointing at a gone path.
-        let (removed_sessions, updated_sessions) = self.drop_workspace_rows(workspace_id)?;
+        let (removed_sessions, updated_sessions) = self.drop_workspace_rows(&ws)?;
 
         // Replica drops by id: sessions before their workspace.
         for session in updated_sessions {
@@ -3211,9 +3494,13 @@ impl Daemon {
         self.registry
             .broadcast_domain(DaemonEvent::WorkspaceRemoved { workspace_id });
 
-        // Unmanaged: drop the model row, never someone else's directory.
+        // Unmanaged: drop the model row, never someone else's directory. A
+        // directory already gone leaves only git's dead bookkeeping, and
+        // pruning that is not touching the directory.
         if ws.managed_by_app {
             git_service::remove(&git_root, &ws.path, force).map_err(git_err)?;
+        } else if !ws.path.exists() {
+            git_service::prune(&git_root).map_err(git_err)?;
         }
         Ok(Response::Ack)
     }
@@ -3221,8 +3508,9 @@ impl Daemon {
     /// FK order. Returns `(removed session ids, re-parented sessions)`. No broadcast.
     fn drop_workspace_rows(
         &self,
-        workspace_id: WorkspaceId,
+        ws: &Workspace,
     ) -> Result<(Vec<SessionId>, Vec<Session>), ProtocolError> {
+        let workspace_id = ws.id;
         let mut inner = self.lock();
         let session_ids: Vec<SessionId> = inner
             .sessions
@@ -3240,6 +3528,23 @@ impl Daemon {
         inner.workspaces.remove(&workspace_id);
         // One owner, one deletion path.
         inner.status_checks.remove(&workspace_id);
+
+        // Row and tombstone fall together: without the rule the next rescan
+        // adopts the worktree right back, since neither its directory nor its
+        // git registration is Forge's to delete. Written for managed worktrees
+        // too — a half-done `git worktree remove` is exactly the case the GC
+        // exists for.
+        let rule = WorktreeIgnore {
+            project_id: ws.project_id,
+            path: canonical_or_self(&ws.path),
+            scope: IgnoreScope::Exact,
+            created_at: Timestamp::now(),
+        };
+        inner.db.ignores().upsert(&rule).map_err(db_err)?;
+        let rules = inner.worktree_ignores.entry(ws.project_id).or_default();
+        rules.retain(|old| old.path != rule.path);
+        rules.push(rule);
+
         // Re-parented-on-the-way-out: no update event.
         updated.retain(|s| !session_ids.contains(&s.id));
         Ok((session_ids, updated))
@@ -8231,6 +8536,320 @@ mod tests {
                 .expect("query")
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn forget_an_adopted_worktree_and_the_next_rescan_does_not_readopt_it() {
+        let Ok(repo) = test_support::temp_repo::init_repo() else {
+            return; // git is not installed: skip (§21).
+        };
+        let (daemon, tmp) = test_daemon();
+        daemon.add_project(repo.path()).expect("add a git project");
+        let (project, git_root) = {
+            let inner = daemon.lock();
+            let p = inner.projects.values().next().expect("the project");
+            (p.id, p.git_root.clone().expect("a git project"))
+        };
+
+        let external = tmp.path().join("external");
+        git_service::create(&git_root, &external, "feature/x", None).expect("git worktree add");
+        daemon.rescan_worktrees();
+        let workspace_id = {
+            let inner = daemon.lock();
+            inner
+                .workspaces
+                .values()
+                .find(|w| w.kind == WorkspaceKind::GitWorktree)
+                .expect("the adopted worktree")
+                .id
+        };
+
+        // Unmanaged: forgetting drops the row and never touches the directory.
+        daemon
+            .remove_worktree(workspace_id, false)
+            .expect("forget the worktree");
+        assert!(external.exists(), "an unmanaged directory is never removed");
+
+        // Re-adoption is exactly the bug: the rescan used to find it again.
+        daemon.rescan_worktrees();
+        let inner = daemon.lock();
+        assert_eq!(
+            inner.workspaces.len(),
+            1,
+            "the forgotten worktree stays gone"
+        );
+        assert_eq!(
+            inner
+                .db
+                .workspaces()
+                .list_by_project(project)
+                .expect("query")
+                .len(),
+            1
+        );
+        let stored = inner.db.ignores().list_all().expect("query");
+        assert_eq!(stored.len(), 1, "the tombstone is persisted: {stored:?}");
+        assert_eq!(stored[0].scope, IgnoreScope::Exact);
+        assert_eq!(stored[0].path, canonical_or_self(&external));
+    }
+
+    #[test]
+    fn a_worktree_directory_deleted_by_hand_is_dropped_by_the_next_rescan() {
+        let Ok(repo) = test_support::temp_repo::init_repo() else {
+            return; // git is not installed: skip (§21).
+        };
+        let (daemon, tmp) = test_daemon();
+        daemon.add_project(repo.path()).expect("add a git project");
+        let (project, git_root) = {
+            let inner = daemon.lock();
+            let p = inner.projects.values().next().expect("the project");
+            (p.id, p.git_root.clone().expect("a git project"))
+        };
+
+        let external = tmp.path().join("external");
+        git_service::create(&git_root, &external, "feature/x", None).expect("git worktree add");
+        daemon.rescan_worktrees();
+        assert_eq!(daemon.lock().workspaces.len(), 2);
+
+        // `rm -rf`: git still lists the entry as `prunable`, which is why the
+        // old "not listed && not on disk" rule never fired.
+        std::fs::remove_dir_all(&external).expect("delete the worktree by hand");
+        daemon.rescan_worktrees();
+
+        let inner = daemon.lock();
+        assert_eq!(
+            inner.workspaces.len(),
+            1,
+            "the hand-deleted worktree is gone"
+        );
+        assert_eq!(
+            inner
+                .db
+                .workspaces()
+                .list_by_project(project)
+                .expect("query")
+                .len(),
+            1
+        );
+        assert!(inner
+            .worktree_ignores
+            .get(&project)
+            .is_none_or(Vec::is_empty));
+    }
+
+    #[test]
+    fn a_managed_removal_leaves_a_tombstone_the_next_rescan_collects() {
+        let Ok(repo) = test_support::temp_repo::init_repo() else {
+            return; // git is not installed: skip (§21).
+        };
+        let (daemon, _tmp) = test_daemon();
+        daemon.add_project(repo.path()).expect("add a git project");
+        let project = {
+            daemon
+                .lock()
+                .projects
+                .values()
+                .next()
+                .expect("the project")
+                .id
+        };
+
+        daemon
+            .create_worktree(project, "feature/y", None, None)
+            .expect("create a managed worktree");
+        let workspace_id = {
+            let inner = daemon.lock();
+            inner
+                .workspaces
+                .values()
+                .find(|w| w.project_id == project && w.managed_by_app)
+                .expect("the managed worktree")
+                .id
+        };
+        daemon
+            .remove_worktree(workspace_id, true)
+            .expect("remove the managed worktree");
+        {
+            let inner = daemon.lock();
+            assert_eq!(
+                inner.worktree_ignores.get(&project).map(Vec::len),
+                Some(1),
+                "row and tombstone fall together"
+            );
+        }
+
+        // The directory and the git entry are really gone, so the tombstone has
+        // done its job and must not block a future worktree at that path.
+        daemon.rescan_worktrees();
+        let inner = daemon.lock();
+        assert!(
+            inner
+                .worktree_ignores
+                .get(&project)
+                .is_none_or(Vec::is_empty),
+            "the rescan collected the tombstone"
+        );
+        assert!(inner.db.ignores().list_all().expect("query").is_empty());
+    }
+
+    #[test]
+    fn creating_a_managed_worktree_clears_a_stale_tombstone_and_reuses_the_path() {
+        let Ok(repo) = test_support::temp_repo::init_repo() else {
+            return; // git is not installed: skip (§21).
+        };
+        let (daemon, _tmp) = test_daemon();
+        daemon.add_project(repo.path()).expect("add a git project");
+        let project = {
+            daemon
+                .lock()
+                .projects
+                .values()
+                .next()
+                .expect("the project")
+                .id
+        };
+
+        let first = daemon
+            .create_managed_worktree(project, "feature/z", None, None)
+            .expect("create a managed worktree");
+        daemon
+            .remove_worktree(first.id, true)
+            .expect("remove the managed worktree");
+        {
+            let inner = daemon.lock();
+            assert_eq!(inner.worktree_ignores.get(&project).map(Vec::len), Some(1));
+        }
+
+        // No rescan happened in between: the tombstone is still there and the
+        // new worktree lands on the same slug.
+        let second = daemon
+            .create_managed_worktree(project, "feature/z", None, None)
+            .expect("recreate the worktree");
+        assert_eq!(second.path, first.path);
+        let inner = daemon.lock();
+        assert!(
+            inner
+                .worktree_ignores
+                .get(&project)
+                .is_none_or(Vec::is_empty),
+            "the created worktree is visible, not hidden by its own tombstone"
+        );
+        assert!(
+            inner
+                .workspaces
+                .values()
+                .any(|w| w.id == second.id && w.managed_by_app),
+            "the recreated worktree is in the model"
+        );
+    }
+
+    #[test]
+    fn ignoring_a_folder_drops_the_rows_under_it_and_blocks_readoption() {
+        let Ok(repo) = test_support::temp_repo::init_repo() else {
+            return; // git is not installed: skip (§21).
+        };
+        let (daemon, tmp) = test_daemon();
+        daemon.add_project(repo.path()).expect("add a git project");
+        let (project, git_root) = {
+            let inner = daemon.lock();
+            let p = inner.projects.values().next().expect("the project");
+            (p.id, p.git_root.clone().expect("a git project"))
+        };
+
+        let folder = tmp.path().join("agent-wts");
+        std::fs::create_dir_all(&folder).expect("mkdir");
+        git_service::create(&git_root, &folder.join("one"), "agent/one", None)
+            .expect("git worktree add");
+        git_service::create(&git_root, &folder.join("two"), "agent/two", None)
+            .expect("git worktree add");
+        daemon.rescan_worktrees();
+        assert_eq!(daemon.lock().workspaces.len(), 3, "Main plus two adopted");
+
+        let rule = WorktreeIgnore {
+            project_id: project,
+            path: std::fs::canonicalize(&folder).expect("canonicalize"),
+            scope: IgnoreScope::Subtree,
+            created_at: Timestamp::now(),
+        };
+        daemon
+            .set_worktree_ignores(project, vec![rule.clone()])
+            .expect("set the rules");
+
+        {
+            let inner = daemon.lock();
+            assert_eq!(
+                inner.workspaces.len(),
+                1,
+                "the rows under the folder are dropped retroactively"
+            );
+            let stored = inner.worktree_ignores.get(&project).expect("the rule");
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].path, rule.path);
+            assert_eq!(stored[0].scope, IgnoreScope::Subtree);
+        }
+        daemon.rescan_worktrees();
+        assert_eq!(
+            daemon.lock().workspaces.len(),
+            1,
+            "and they are not re-adopted"
+        );
+        match daemon.list_worktree_ignores(project).expect("list") {
+            Response::WorktreeIgnores(rules) => assert_eq!(rules.len(), 1),
+            other => panic!("expected WorktreeIgnores, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_worktree_ignore_rule_cannot_hide_the_project_root() {
+        let Ok(repo) = test_support::temp_repo::init_repo() else {
+            return; // git is not installed: skip (§21).
+        };
+        let (daemon, _tmp) = test_daemon();
+        daemon.add_project(repo.path()).expect("add a git project");
+        let (project, git_root) = {
+            let inner = daemon.lock();
+            let p = inner.projects.values().next().expect("the project");
+            (p.id, p.git_root.clone().expect("a git project"))
+        };
+
+        let rule = WorktreeIgnore {
+            project_id: project,
+            path: git_root,
+            scope: IgnoreScope::Subtree,
+            created_at: Timestamp::now(),
+        };
+        let error = daemon
+            .set_worktree_ignores(project, vec![rule])
+            .expect_err("the project's own checkout cannot be ignored");
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+    }
+
+    #[test]
+    fn the_config_ignore_list_keeps_a_folder_out_of_a_new_project() {
+        let Ok(repo) = test_support::temp_repo::init_repo() else {
+            return; // git is not installed: skip (§21).
+        };
+        let mut config = Config::default();
+        config.worktrees.ignore = vec!["agent-wts".to_owned()];
+        let (daemon, _tmp, _backend) = test_daemon_with_config(FakePtyBackend::empty(), config);
+
+        let folder = repo.path().join("agent-wts");
+        std::fs::create_dir_all(&folder).expect("mkdir");
+        git_service::create(repo.path(), &folder.join("one"), "cfg/one", None)
+            .expect("git worktree add");
+
+        daemon.add_project(repo.path()).expect("add a git project");
+        let inner = daemon.lock();
+        assert_eq!(
+            inner.workspaces.len(),
+            1,
+            "the worktree under the configured folder is not adopted: {:?}",
+            inner
+                .workspaces
+                .values()
+                .map(|w| &w.path)
+                .collect::<Vec<_>>()
         );
     }
 

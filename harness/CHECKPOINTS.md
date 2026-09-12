@@ -104,6 +104,15 @@ Every box is a `grep` over the diff, not a general impression.
 - [ ] Provisioning (`daemon::shares`) still runs off the request thread and
       without the core lock, still decides in the pure `plan` half, and still
       refuses to overwrite a path unless the caller named that rule.
+- [ ] Forgetting a worktree is still a **rule**, not a row drop (§14.4):
+      `RemoveWorktree`'s tombstone and `SetWorktreeIgnores`'s policy live in
+      `worktree_ignores`, and the pure `daemon::worktrees::plan` — every `stat` /
+      `canonicalize` supplied by `core.rs` outside the core lock — filters
+      adoption and GCs only `Exact` rules whose path is neither listed nor on
+      disk. A `prunable` entry is never adopted, the vanished rule is
+      `!listed_live && !on_disk`, a `Subtree` rule is never collected, rules
+      never touch disk or the `Main` checkout, and a row with sessions survives
+      until they are gone.
 - [ ] The migrations in `crates/persistence/src/migrations.rs` have only been
       **appended at the end**; no existing one was edited or reordered.
       Persistence still stores metadata, never terminal streams.

@@ -62,7 +62,7 @@ export function RemoveWorktreeDialog(props: RemoveWorktreeDialogProps) {
           <p class="remove-worktree-copy forge-dialog-copy">
             {managed()
               ? "Forge Node will remove this worktree from disk. The branch and its commits are kept."
-              : "Forge Node did not create this worktree, so only its entry is removed. The directory and branch are kept."}
+              : "Forge Node did not create this worktree, so it only forgets it: the directory and branch are kept, and Forge Node will not adopt it again."}
           </p>
         }
       >
@@ -75,7 +75,7 @@ export function RemoveWorktreeDialog(props: RemoveWorktreeDialogProps) {
         <p class="remove-worktree-copy forge-dialog-copy">
           {managed()
             ? "Removing it anyway discards the worktree and the state listed above. The branch is kept."
-            : "Removing it anyway only forgets Forge Node's entry. The directory, branch, and local changes are kept."}
+            : "Removing it anyway only forgets Forge Node's entry, permanently. The directory, branch, and local changes are kept."}
         </p>
       </Show>
     </AlertDialog>
