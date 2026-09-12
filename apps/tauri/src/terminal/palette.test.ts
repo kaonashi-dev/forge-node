@@ -5,8 +5,9 @@ import { COLOR_BG, COLOR_FG, COLOR_RGB } from "./types";
 const palette: TerminalPalette = {
   fg: "#c7c7c7",
   bg: "#1f1f1f",
-  cursor: "#6cacbd",
-  cursorText: "#1f1f1f",
+  accent: "#6cacbd",
+  caret: "#c7c7c7",
+  caretText: "#1f1f1f",
   selection: "#404040",
   ansi: Array.from({ length: 16 }, (_, index) => `#0000${index.toString(16)}${index.toString(16)}`),
 };
@@ -49,8 +50,9 @@ describe("ColorCache", () => {
   const themed: TerminalPalette = {
     fg: "#c7c7c7",
     bg: "#1f1f1f",
-    cursor: "#6cacbd",
-    cursorText: "#1f1f1f",
+    accent: "#6cacbd",
+    caret: "#c7c7c7",
+    caretText: "#1f1f1f",
     selection: "#404040",
     ansi: Array.from(
       { length: 16 },

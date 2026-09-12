@@ -38,7 +38,7 @@ function chrome(colors: EditorPalette, dark: boolean): Extension {
         overflow: "auto",
       },
       ".cm-content": { caretColor: colors.caret, padding: "var(--space-8) 0" },
-      ".cm-cursor, .cm-dropCursor": { borderLeftColor: colors.caret, borderLeftWidth: "2px" },
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: colors.caret, borderLeftWidth: "1px" },
       // CM6 needs both: `.cm-selectionBackground` while the view has focus and
       // `::selection` while it does not, and setting only one is how a
       // selection disappears the moment the palette is opened over it.
