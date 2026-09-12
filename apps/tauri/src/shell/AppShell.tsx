@@ -21,6 +21,7 @@ import {
 } from "../runtime/api";
 import { applyConnected, bindRuntimeEvents } from "../runtime/events";
 import { startGitSync } from "./gitSync";
+import { startCheckoutWatch } from "../workbench/checkoutWatch";
 import { forgeStore } from "../store/forgeStore";
 import {
   requestConfirm,
@@ -400,6 +401,9 @@ export function AppShell() {
     // The rail's branch name is a persisted column: without this a
     // `git checkout` typed into a shell never reaches it.
     onCleanup(startGitSync());
+    // The Files panel and the diff are guarded by presence, so a `git pull`
+    // that leaves the branch name alone would never reach them.
+    onCleanup(startCheckoutWatch());
     // Releasing Control commits, from the module's own key listener rather
     // than from a chord: there is no keymap entry for "let go".
     onCleanup(bindTabSwitcherCommit(focusSession));

@@ -70,7 +70,7 @@ General through `ON DELETE SET NULL`.
 | `branch` | `None` when detached/unborn or not Git. |
 | `display_name` | Optional human label, independent of the branch. When set, the sidebar leads with it and keeps the branch as a secondary line. Cleared by `RenameWorkspace`. |
 | `managed_by_app` | `true` only for worktrees Forge created. Gate for any on-disk removal (§14.4). |
-| `status` | `WorkspaceStatus { dirty, ahead, behind, measured_at }`. **Runtime-only**, like `Session::terminal_id`: never a column, and `Default` (unmeasured) on load. `measured_at: None` means "nobody has looked", which the sidebar draws as nothing rather than as "clean". |
+| `status` | `WorkspaceStatus { dirty, head, ahead, behind, measured_at }`. **Runtime-only**, like `Session::terminal_id`: never a column, and `Default` (unmeasured) on load. `measured_at: None` means "nobody has looked", which the sidebar draws as nothing rather than as "clean". `head` is the commit HEAD points at (`None` before the first commit or unmeasured): the "the checkout moved" signal — a `git pull` rewrites it while leaving `branch` unchanged, and the GUI re-reads the file tree and diff when it differs from last time. |
 
 ### `BranchRef` (§14.3)
 

@@ -17,7 +17,7 @@ const workspace = (id: string, project_id: string): Workspace => ({
   branch: "main",
   display_name: null,
   managed_by_app: false,
-  status: { dirty: false, ahead: null, behind: null, measured_at: null },
+  status: { dirty: false, head: null, ahead: null, behind: null, measured_at: null },
 });
 
 // Two worktrees of the *same* project, which is the shape the bug needs: a

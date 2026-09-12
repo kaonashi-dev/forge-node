@@ -210,7 +210,7 @@ export const event_job_updated = {
     "provider_session_id": "prov-1",
     "exit_code": null,
     "last_line": "editing apps/tauri/src/App.tsx",
-    "last_output_at": "2026-09-11T04:24:43.843Z",
+    "last_output_at": "2026-08-30T12:00:00Z",
     "started_at": "2026-08-30T12:00:00Z",
     "finished_at": null,
     "log_path": "/tmp/forge/jobs/7.jsonl"
@@ -665,6 +665,7 @@ export const event_workspace_updated = {
     "created_at": "2026-08-30T12:00:00Z",
     "status": {
       "dirty": false,
+      "head": null,
       "ahead": null,
       "behind": null,
       "measured_at": null
@@ -1196,6 +1197,7 @@ export const response_snapshot = {
         "created_at": "2026-08-30T12:00:00Z",
         "status": {
           "dirty": false,
+          "head": null,
           "ahead": null,
           "behind": null,
           "measured_at": null
@@ -1281,6 +1283,7 @@ export const response_snapshot_populated = {
         "created_at": "2026-08-30T12:00:00Z",
         "status": {
           "dirty": false,
+          "head": null,
           "ahead": null,
           "behind": null,
           "measured_at": null
@@ -1470,7 +1473,7 @@ export const response_snapshot_populated = {
         "provider_session_id": "prov-1",
         "exit_code": null,
         "last_line": "editing apps/tauri/src/App.tsx",
-        "last_output_at": "2026-09-11T04:24:43.834781Z",
+        "last_output_at": "2026-08-30T12:00:00Z",
         "started_at": "2026-08-30T12:00:00Z",
         "finished_at": null,
         "log_path": "/tmp/forge/jobs/7.jsonl"
@@ -1534,6 +1537,7 @@ export const response_workspaces = {
       "created_at": "2026-08-30T12:00:00Z",
       "status": {
         "dirty": false,
+        "head": null,
         "ahead": null,
         "behind": null,
         "measured_at": null
@@ -2216,6 +2220,7 @@ export const workspace = {
   "created_at": "2026-08-30T12:00:00Z",
   "status": {
     "dirty": false,
+    "head": null,
     "ahead": null,
     "behind": null,
     "measured_at": null
@@ -2250,6 +2255,7 @@ export const workspace_diff = {
 
 export const workspace_status = {
   "dirty": true,
+  "head": "0123456789abcdef0123456789abcdef01234567",
   "ahead": 2,
   "behind": 1,
   "measured_at": "2026-08-30T12:00:00Z"

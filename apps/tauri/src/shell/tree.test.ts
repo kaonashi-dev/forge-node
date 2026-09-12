@@ -36,7 +36,7 @@ function checkout(id: string, project: string, extra: Partial<Workspace> = {}): 
     branch: null,
     display_name: null,
     managed_by_app: true,
-    status: { dirty: false, ahead: null, behind: null, measured_at: null },
+    status: { dirty: false, head: null, ahead: null, behind: null, measured_at: null },
     ...extra,
   };
 }
@@ -87,7 +87,13 @@ function snapshot(): ShellSnapshot {
         branch: "main",
         display_name: null,
         managed_by_app: true,
-        status: { dirty: true, ahead: null, behind: null, measured_at: "2026-01-01T00:00:00Z" },
+        status: {
+          dirty: true,
+          head: null,
+          ahead: null,
+          behind: null,
+          measured_at: "2026-01-01T00:00:00Z",
+        },
       },
       {
         id: "w2",
@@ -97,7 +103,7 @@ function snapshot(): ShellSnapshot {
         branch: null,
         display_name: null,
         managed_by_app: false,
-        status: { dirty: true, ahead: null, behind: null, measured_at: null },
+        status: { dirty: true, head: null, ahead: null, behind: null, measured_at: null },
       },
     ],
     sessions: [session("a", "w1"), session("b", "w2")],

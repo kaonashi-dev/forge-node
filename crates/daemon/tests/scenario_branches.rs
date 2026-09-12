@@ -520,6 +520,55 @@ fn refresh_project_reports_a_dirty_working_tree() {
 }
 
 #[test]
+fn a_commit_rewrites_the_reported_head() {
+    // `WorkspaceStatus.head` is what clients read as "the checkout moved": a
+    // `git pull` or a commit rewrites it while leaving `branch` unchanged.
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo (git must be installed)");
+
+    let daemon = harness.boot();
+    let client = daemon.connect("branches");
+    common::add_main_workspace(&client, repo.path());
+
+    client
+        .request(Request::RefreshProject {
+            project_id: project_id(&client),
+        })
+        .expect("RefreshProject");
+
+    let mut before: Option<String> = None;
+    assert!(
+        common::poll_until(common::DEADLINE, || {
+            before = common::workspaces(&client)
+                .first()
+                .and_then(|w| w.status.head.clone());
+            before.is_some()
+        }),
+        "the first status should carry HEAD's oid"
+    );
+
+    repo.commit_file("scratch.txt", "moves HEAD\n").unwrap();
+    client
+        .request(Request::RefreshProject {
+            project_id: project_id(&client),
+        })
+        .expect("RefreshProject");
+
+    let mut after: Option<String> = None;
+    assert!(
+        common::poll_until(common::DEADLINE, || {
+            after = common::workspaces(&client)
+                .first()
+                .and_then(|w| w.status.head.clone())
+                .filter(|head| Some(head) != before.as_ref());
+            after.is_some()
+        }),
+        "the committed oid should replace the old one"
+    );
+    assert_ne!(after, before);
+}
+
+#[test]
 fn a_new_worktree_gets_the_configured_files_and_setup_script() {
     // A managed worktree lives away from the repository, so it starts without
     // the untracked files a project needs to run. Without this an agent

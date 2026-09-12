@@ -40,9 +40,9 @@ code must not.
    will never delete them from disk).
 
 `RefreshWorkspaceStatus` runs `status --porcelain=v2 --branch` and updates the
-workspace's `branch` **and** its `WorkspaceStatus` (dirty / ahead / behind),
-throttled to one run every 2 s per workspace (ADR-008). The GUI calls it when a
-session is selected — the moment its checkout becomes visible.
+workspace's `branch` **and** its `WorkspaceStatus` (head oid / dirty / ahead /
+behind), throttled to one run every 2 s per workspace (ADR-008). The GUI calls
+it when a session is selected — the moment its checkout becomes visible.
 
 `RefreshProject` reconciles **on demand**: it re-runs `discover_root`, then
 `rescan_project_worktrees` (the per-project half of the startup rescan), then
@@ -57,7 +57,7 @@ Startup does the same sweep across every project: `Daemon::start` calls
 outside the app and removes those that vanished, broadcasting
 `WorkspaceCreated` / `WorkspaceRemoved`.
 
-`Workspace.status` (`WorkspaceStatus { dirty, ahead, behind, measured_at }`) is
+`Workspace.status` (`WorkspaceStatus { dirty, head, ahead, behind, measured_at }`) is
 **runtime state, never a column** — the same rule as `Session::terminal_id`. A
 workspace loaded from SQLite starts unmeasured, which the sidebar renders as
 *nothing* rather than as "clean": a row that claims to be clean because nobody

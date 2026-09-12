@@ -34,6 +34,8 @@ pub struct RepoStatus {
     pub branch: Option<String>,
     /// `true` if the working tree has any tracked change or untracked file.
     pub dirty: bool,
+    /// The commit HEAD points at, or `None` when unborn or unknown.
+    pub head: Option<String>,
     /// Commits ahead of upstream, when an upstream is configured.
     pub ahead: Option<u32>,
     /// Commits behind upstream, when an upstream is configured.
@@ -434,6 +436,7 @@ pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeEntry>, GitError> {
 /// The `--porcelain=v2 --branch` format emits `# branch.*` header lines followed
 /// by one line per changed/untracked/unmerged entry:
 /// - `# branch.head <name>` (or `(detached)`),
+/// - `# branch.oid <oid>` (or `(initial)` before the first commit),
 /// - `# branch.ab +<ahead> -<behind>` (only when an upstream is configured),
 /// - entry lines begin with `1`, `2`, `u` (tracked changes / renames / unmerged)
 ///   or `?` (untracked); any such line means the tree is dirty.
@@ -455,8 +458,15 @@ fn parse_status_v2(text: &str) -> RepoStatus {
                     st.behind = b.parse().ok();
                 }
             }
+        } else if let Some(rest) = line.strip_prefix("# branch.oid ") {
+            // `(initial)` is git's word for an unborn HEAD, not an object id.
+            st.head = if rest.trim() == "(initial)" {
+                None
+            } else {
+                Some(rest.trim().to_string())
+            };
         } else if line.starts_with('#') {
-            // Other header line (branch.oid, branch.upstream): ignored.
+            // Other header line (branch.upstream): ignored.
         } else if !line.trim().is_empty() {
             // Any non-header, non-blank line is a change/untracked entry.
             st.dirty = true;
@@ -575,9 +585,27 @@ mod tests {
         let text = "# branch.oid abc123\n# branch.head main\n";
         let st = parse_status_v2(text);
         assert_eq!(st.branch.as_deref(), Some("main"));
+        assert_eq!(st.head.as_deref(), Some("abc123"));
         assert!(!st.dirty);
         assert_eq!(st.ahead, None);
         assert_eq!(st.behind, None);
+    }
+
+    #[test]
+    fn parses_an_unborn_head_as_no_oid() {
+        // Git prints the literal `(initial)` before the first commit; taking
+        // it as an oid would make every later read look like a movement.
+        let text = "# branch.oid (initial)\n# branch.head main\n";
+        let st = parse_status_v2(text);
+        assert_eq!(st.head, None);
+        assert_eq!(st.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn parses_a_status_without_an_oid_line_as_none() {
+        let text = "# branch.head main\n";
+        let st = parse_status_v2(text);
+        assert_eq!(st.head, None);
     }
 
     #[test]

@@ -22,7 +22,7 @@ function workspace(id: string, branch: string | null): Workspace {
     branch,
     display_name: null,
     managed_by_app: true,
-    status: { dirty: false, ahead: null, behind: null, measured_at: null },
+    status: { dirty: false, head: null, ahead: null, behind: null, measured_at: null },
   };
 }
 

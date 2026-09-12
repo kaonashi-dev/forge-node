@@ -442,7 +442,9 @@ fn sample_job() -> Job {
         provider_session_id: Some("prov-1".to_string()),
         exit_code: None,
         last_line: Some("editing apps/tauri/src/App.tsx".to_string()),
-        last_output_at: Some(domain::Timestamp::now()),
+        // Fixed like every other timestamp: `now()` made re-running the
+        // exporter rewrite the job fixtures on every invocation.
+        last_output_at: Some(ts()),
         started_at: ts(),
         finished_at: None,
         log_path: PathBuf::from("/tmp/forge/jobs/7.jsonl"),
@@ -573,6 +575,7 @@ fn main() {
         "workspace_status",
         &WorkspaceStatus {
             dirty: true,
+            head: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             ahead: Some(2),
             behind: Some(1),
             measured_at: Some(ts()),

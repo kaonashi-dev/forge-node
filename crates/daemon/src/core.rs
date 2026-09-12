@@ -1634,6 +1634,7 @@ impl Daemon {
             ws.branch = status.branch.clone();
             ws.status = WorkspaceStatus {
                 dirty: status.dirty,
+                head: status.head.clone(),
                 ahead: status.ahead,
                 behind: status.behind,
                 measured_at: Some(Timestamp::now()),

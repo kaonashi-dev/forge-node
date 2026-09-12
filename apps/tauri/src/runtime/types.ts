@@ -77,6 +77,8 @@ export type Project = {
 
 export type WorkspaceStatus = {
   dirty: boolean;
+  /** The commit HEAD points at, `null` before the first commit or unmeasured. */
+  head: string | null;
   ahead: number | null;
   behind: number | null;
   measured_at: string | null;

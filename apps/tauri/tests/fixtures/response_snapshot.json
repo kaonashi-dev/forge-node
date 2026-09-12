@@ -31,6 +31,7 @@
         "created_at": "2026-08-30T12:00:00Z",
         "status": {
           "dirty": false,
+          "head": null,
           "ahead": null,
           "behind": null,
           "measured_at": null
