@@ -33,7 +33,7 @@ Day-to-day layout and behaviour details live next to the code:
 ```
 
 One left sidebar holds a strip of view icons above a single visible view, in the
-order Projects, Files, History, PR, Features, Lieutenant, Git. Projects stays
+order Projects, Files, History, PR, Features, Git. Projects stays
 mounted while another view is up. Whether it is open, its width and the active
 view live in `ui.sidebar.open` / `ui.sidebar.width` / `ui.sidebar.view`; theme metrics
 (`TITLE_H`, the sidebar default, control ladder) come from `theme/tokens.ts`,

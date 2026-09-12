@@ -70,7 +70,7 @@ apps/tauri/
     actions/           chord → action dispatch
     harness/           feature types, gate rules, harness API
     palette/           command palette and its fuzzy filter
-    panels/            sidebar views: history, PR, features, lieutenant, files, git
+    panels/            sidebar views: history, PR, features, files, git
     settings/          the settings route and its sections
     shell/             title bar, sidebar container (Sidebar.tsx), projects view
                        (ProjectsView.tsx), tabs, status bar, attention bar

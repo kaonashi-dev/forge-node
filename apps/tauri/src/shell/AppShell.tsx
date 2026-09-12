@@ -434,7 +434,6 @@ export function AppShell() {
       registerAction("toggle_files", () => toggleView("Files")),
       registerAction("toggle_pull_requests", () => toggleView("PR")),
       registerAction("toggle_features", () => toggleView("Features")),
-      registerAction("toggle_lieutenant", () => toggleView("Lieutenant")),
       registerAction("toggle_git", () => toggleView("Git")),
       registerAction("toggle_history", () => toggleView("History")),
       registerAction("cycle_sidebar_views", cycleSidebarView),

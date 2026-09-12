@@ -99,18 +99,6 @@ struct ClipboardPayload {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct LieutenantJobPayload {
-    project: ProjectId,
-    job: Box<domain::Job>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct LieutenantFailedPayload {
-    project: ProjectId,
-    error: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
 struct JobLogPayload {
     job_id: JobId,
     lines: Vec<String>,
@@ -404,18 +392,6 @@ fn runtime_loop(
                         }
                         if let Some(text) = effect.clipboard {
                             let _ = app.emit("runtime:clipboard", ClipboardPayload { text });
-                        }
-                        if let Some((project, job)) = effect.lieutenant_job {
-                            let _ = app.emit(
-                                "runtime:lieutenant_job",
-                                LieutenantJobPayload { project, job },
-                            );
-                        }
-                        if let Some((project, error)) = effect.lieutenant_failed {
-                            let _ = app.emit(
-                                "runtime:lieutenant_failed",
-                                LieutenantFailedPayload { project, error },
-                            );
                         }
                         if let Some((job_id, lines)) = effect.job_log {
                             let _ = app.emit("runtime:job_log", JobLogPayload { job_id, lines });
@@ -793,10 +769,6 @@ struct Effect {
     damage: Option<Damage>,
     /// Text to hand the WebView for the clipboard.
     clipboard: Option<String>,
-    /// A question was accepted as a headless job.
-    lieutenant_job: Option<(ProjectId, Box<domain::Job>)>,
-    /// The question could not be accepted, but the daemon connection survived.
-    lieutenant_failed: Option<(ProjectId, String)>,
     /// Existing output read for a job that was opened after it started.
     job_log: Option<(JobId, Vec<String>)>,
     /// The preview terminal has to repaint.
@@ -1103,23 +1075,6 @@ fn run_command(
                 }
             }
         }
-        RuntimeCommand::AskLieutenant {
-            project,
-            question,
-            resume_from,
-        } => match client.ask_harness(project, question, resume_from) {
-            Ok(job) => Ok(Effect {
-                lieutenant_job: Some((project, Box::new(job))),
-                ..Effect::nothing()
-            }),
-            Err(error) => match CommandError::from_client(error) {
-                CommandError::Refused(reason) => Ok(Effect {
-                    lieutenant_failed: Some((project, reason)),
-                    ..Effect::nothing()
-                }),
-                error @ CommandError::Disconnected(_) => Err(error),
-            },
-        },
         RuntimeCommand::ReadJobLog { job_id } => match client.read_job_log(job_id, 0) {
             Ok((lines, _)) => Ok(Effect {
                 job_log: Some((job_id, lines)),

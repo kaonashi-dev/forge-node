@@ -302,7 +302,6 @@ fn request_name(request: &Request) -> &'static str {
         Request::HarnessAdvance { .. } => "HarnessAdvance",
         Request::LinkHarnessSession { .. } => "LinkHarnessSession",
         Request::RunHarnessStep { .. } => "RunHarnessStep",
-        Request::AskHarness { .. } => "AskHarness",
         Request::StartJob { .. } => "StartJob",
         Request::CancelJob { .. } => "CancelJob",
         Request::ListJobs => "ListJobs",

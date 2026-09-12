@@ -213,22 +213,6 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
-    /// Ask a question about the harness → `Response::Job`.
-    ///
-    /// The daemon puts the state of every feature in front of an agent and
-    /// hands it the question, as one headless run: the answer arrives on the
-    /// job's own stream like any other. Nothing here is a new channel — it is
-    /// the same jobs, asked a different kind of thing.
-    ///
-    /// `resume_from` is the `provider_session_id` of the previous answer,
-    /// which is what makes it a conversation rather than a series of
-    /// strangers. Dropped when the provider cannot resume a headless run.
-    AskHarness {
-        project_id: ProjectId,
-        question: String,
-        resume_from: Option<String>,
-    },
-
     // ----- Jobs (headless agent runs) -----
     /// Start a headless run of one provider → `Response::Job`.
     ///

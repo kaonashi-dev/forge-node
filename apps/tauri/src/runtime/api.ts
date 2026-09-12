@@ -181,16 +181,7 @@ export async function sendContext(args: {
   });
 }
 
-/** Ask the harness lieutenant; the answer arrives as streamed job events. */
-export async function askLieutenant(
-  project: string,
-  question: string,
-  resumeFrom: string | null = null,
-): Promise<void> {
-  await send({ type: "ask_lieutenant", project, question, resume_from: resumeFrom });
-}
-
-/** Read output written before the lieutenant job was attached to the UI. */
+/** Read output written before a job viewer was opened. */
 export async function readJobLog(jobId: string): Promise<void> {
   await send({ type: "read_job_log", job_id: jobId });
 }

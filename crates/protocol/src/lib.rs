@@ -54,7 +54,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 ///   `JobRequest`.
 /// - 11 → 12: `prompt` on a `Job` and `job` on a `HarnessEvent`, so a client
 ///   can show what a step was asked and can still find the transcript of a
-///   step the daemon no longer remembers running; and `AskHarness`.
+///   step the daemon no longer remembers running.
 /// - 12 → 13: `FactoryReset` request and event.
 /// - 13 → 14: session baselines and the surfaces that read them —
 ///   `GetSessionChanges`, `GetWorkspaceReview`, `GetSessionTranscript`,
@@ -82,7 +82,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// - 19 → 20: `ReadImage` with `Response::ImageContents`, for the Markdown
 ///   preview. An old daemon closes the connection on a request it cannot
 ///   decode, so a new GUI must be refused at the handshake instead.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -175,14 +175,6 @@ pub enum RuntimeCommand {
         #[serde(default)]
         branch_hint: Option<String>,
     },
-    /// Ask the harness lieutenant a question; the accepted job and its output
-    /// are published on dedicated runtime events.
-    AskLieutenant {
-        project: ProjectId,
-        question: String,
-        #[serde(default)]
-        resume_from: Option<String>,
-    },
     /// Seed a job viewer with the lines already written before it was opened.
     ReadJobLog {
         job_id: domain::JobId,

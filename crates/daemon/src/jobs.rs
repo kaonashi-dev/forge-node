@@ -170,10 +170,7 @@ impl Daemon {
         let executable = self.verified_agent_executable(&request.provider_id)?;
 
         let log_path = self.job_log_path(id)?;
-        // Harness steps write their artefacts under the canonical harness
-        // root, outside the worktree checkout they run in — a sandboxed
-        // provider cannot reach it otherwise. Scoped by feature, which only
-        // harness jobs carry: the lieutenant only reads.
+        // Feature jobs need write access to the canonical harness root outside their checkout.
         let extra_writable_dirs: Vec<PathBuf> = match request.feature_id {
             Some(_) => {
                 let inner = self.lock();

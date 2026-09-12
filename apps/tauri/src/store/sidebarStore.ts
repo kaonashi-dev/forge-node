@@ -9,15 +9,7 @@ import {
 } from "../shell/layout";
 
 /** Stored verbatim under `ui.sidebar.view`: renaming one sends everyone back to Projects. */
-export const SIDEBAR_VIEWS = [
-  "Projects",
-  "Files",
-  "History",
-  "PR",
-  "Features",
-  "Lieutenant",
-  "Git",
-] as const;
+export const SIDEBAR_VIEWS = ["Projects", "Files", "History", "PR", "Features", "Git"] as const;
 
 export type SidebarView = (typeof SIDEBAR_VIEWS)[number];
 

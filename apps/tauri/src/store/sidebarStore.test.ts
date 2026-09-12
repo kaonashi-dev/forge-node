@@ -45,12 +45,15 @@ describe("showView", () => {
 });
 
 describe("restoreSidebar", () => {
-  it("falls back to Projects when the stored view is not one", async () => {
-    applyShellSnapshot({ ...emptySnapshot(), app_state: { "ui.sidebar.view": "Inspector" } });
-    await Promise.resolve();
-    restoreSidebar();
-    expect(sidebarView()).toBe("Projects");
-  });
+  it.each(["Inspector", "Lieutenant"])(
+    "falls back to Projects when the stored view is %s",
+    async (view) => {
+      applyShellSnapshot({ ...emptySnapshot(), app_state: { "ui.sidebar.view": view } });
+      await Promise.resolve();
+      restoreSidebar();
+      expect(sidebarView()).toBe("Projects");
+    },
+  );
 
   it("reads the stored view and open flag", async () => {
     applyShellSnapshot({
@@ -70,7 +73,7 @@ it("keeps Projects, Files and History as the first three views", () => {
 
 describe("CYCLED_VIEWS", () => {
   it("is exactly the views without a number chord", () => {
-    expect(CYCLED_VIEWS).toEqual(["History", "PR", "Features", "Lieutenant", "Git"]);
+    expect(CYCLED_VIEWS).toEqual(["History", "PR", "Features", "Git"]);
   });
 });
 
@@ -86,8 +89,7 @@ describe("cycleTarget", () => {
   it("walks the cycle in strip order and wraps", () => {
     expect(cycleTarget("History", true)).toBe("PR");
     expect(cycleTarget("PR", true)).toBe("Features");
-    expect(cycleTarget("Features", true)).toBe("Lieutenant");
-    expect(cycleTarget("Lieutenant", true)).toBe("Git");
+    expect(cycleTarget("Features", true)).toBe("Git");
     expect(cycleTarget("Git", true)).toBe("History");
   });
 });
