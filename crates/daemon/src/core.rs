@@ -708,6 +708,7 @@ impl Daemon {
             } => self.delete_external_session(&session_id, &provider, profile_id),
             Request::ListFiles { workspace_id } => self.list_files(workspace_id),
             Request::ReadFile { workspace_id, path } => self.read_file(workspace_id, &path),
+            Request::ReadImage { workspace_id, path } => self.read_image(workspace_id, &path),
             Request::WriteFile {
                 workspace_id,
                 path,
@@ -2303,6 +2304,23 @@ impl Daemon {
             language: contents.language,
             binary: contents.binary,
             too_large: contents.too_large,
+        }))
+    }
+
+    /// Read one image for a Markdown preview (ADR-012). Lock released before IO.
+    fn read_image(
+        &self,
+        workspace_id: WorkspaceId,
+        relative: &str,
+    ) -> Result<Response, ProtocolError> {
+        use base64::Engine as _;
+        let path = self.workspace_path(workspace_id)?;
+        let image = fs_service::read_image(&path, relative).map_err(fs_err)?;
+        Ok(Response::ImageContents(domain::ImageContents {
+            workspace_id,
+            path: image.path,
+            mime: image.mime.to_string(),
+            data: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
         }))
     }
 
@@ -6022,7 +6040,9 @@ fn fs_err(e: fs_service::FsError) -> ProtocolError {
         | fs_service::FsError::AlreadyExists(_) => {
             ProtocolError::new(ErrorCode::InvalidRequest, e.to_string())
         }
-        fs_service::FsError::TooLarge { .. } | fs_service::FsError::Binary => {
+        fs_service::FsError::TooLarge { .. }
+        | fs_service::FsError::Binary
+        | fs_service::FsError::NotAnImage(_) => {
             ProtocolError::new(ErrorCode::InvalidRequest, e.to_string())
         }
         fs_service::FsError::RevisionMismatch { .. } => {

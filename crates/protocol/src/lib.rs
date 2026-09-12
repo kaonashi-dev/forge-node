@@ -79,7 +79,10 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// - 18 → 19: terminal history generation, column patches, and compact cells.
 ///   `TerminalSnapshot`/`TerminalDelta`/`ScrollbackRows` change encoded arity,
 ///   and MessagePack cells drop repeated field names.
-pub const PROTOCOL_VERSION: u32 = 19;
+/// - 19 → 20: `ReadImage` with `Response::ImageContents`, for the Markdown
+///   preview. An old daemon closes the connection on a request it cannot
+///   decode, so a new GUI must be refused at the handshake instead.
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

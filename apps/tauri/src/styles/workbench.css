@@ -420,6 +420,28 @@
   color: var(--warning-solid);
   font-size: var(--text-xs);
 }
+/* Code / Preview for a Markdown file: one control in two halves, so it reads
+   as a choice between views rather than as two commands beside Save. */
+.editor-mode {
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+/* The rendered document. A reading column rather than the pane's full width:
+   a 1 600px line of prose is not readable, and a table or a diagram that
+   needs more scrolls inside its own box. */
+.editor-preview {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-24) var(--space-32);
+}
+.editor-preview > .forge-md {
+  margin: 0 auto;
+  max-width: 880px;
+}
 /* Go to definition: a note while the search is out, a note when it found
    nothing, and a list when it found several. The list is a list and not a jump
    because the search is a heuristic — picking one of five silently is how a
@@ -1331,4 +1353,76 @@
   background: var(--bg-raised);
   color: var(--fg-muted);
   font-weight: 600;
+}
+/* A `<br>` inside a cell is the only way a table row holds two lines. */
+.forge-md-table th,
+.forge-md-table td {
+  white-space: pre-line;
+}
+.forge-md-img {
+  height: auto;
+  max-width: 100%;
+  vertical-align: middle;
+}
+/* Alone in its paragraph, an image is a figure, not a word in a sentence. */
+.forge-md-p > .forge-md-img:only-child,
+.forge-md-p > .forge-md-link:only-child > .forge-md-img {
+  display: block;
+}
+/* Standing in for an image still being read, or one that cannot be shown:
+   the alt text says what should be there, the title says why it is not. */
+.forge-md-img-placeholder {
+  align-items: center;
+  background: var(--bg-subtle);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  display: inline-flex;
+  font-size: var(--text-sm);
+  gap: var(--space-6);
+  padding: var(--space-2) var(--space-8);
+}
+.forge-md-img-placeholder[data-state="failed"] {
+  border-style: solid;
+}
+.forge-md-diagram {
+  margin: 0 0 var(--space-12);
+}
+.forge-md-diagram-svg {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+  padding: var(--space-16);
+}
+.forge-md-diagram-svg.hidden {
+  display: none;
+}
+.forge-md-diagram-svg svg {
+  height: auto;
+  max-width: 100%;
+}
+.forge-md-diagram-error {
+  color: var(--danger-solid);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  margin-top: calc(-1 * var(--space-6));
+  white-space: pre-wrap;
+}
+
+/* A whole document rather than a description under a view's title: headings
+   carry the outline, so they are sized as one. */
+.forge-md-doc .forge-md-heading[data-level="1"] {
+  font-size: calc(var(--text-xl) * 1.35);
+}
+.forge-md-doc .forge-md-heading[data-level="2"] {
+  font-size: var(--text-xl);
+}
+.forge-md-doc .forge-md-heading[data-level="3"] {
+  font-size: var(--text-lg);
+}
+.forge-md-doc .forge-md-heading[data-level="4"] {
+  color: var(--fg-default);
 }

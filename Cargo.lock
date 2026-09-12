@@ -703,6 +703,7 @@ version = "0.1.1"
 dependencies = [
  "agents",
  "anyhow",
+ "base64 0.22.1",
  "clap",
  "client",
  "directories",

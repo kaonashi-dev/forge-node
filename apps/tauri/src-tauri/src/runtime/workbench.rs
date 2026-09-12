@@ -71,6 +71,11 @@ pub enum WorkbenchCommand {
         workspace: WorkspaceId,
         path: String,
     },
+    /// An image a Markdown preview names.
+    LoadImage {
+        workspace: WorkspaceId,
+        path: String,
+    },
     /// Write conditioned on the revision of the last read (ADR-012).
     SaveFile {
         workspace: WorkspaceId,
@@ -245,6 +250,14 @@ struct Failure {
     error: String,
 }
 
+/// A preview asks for several images at once, so a failure names its path.
+#[derive(Clone, Debug, Serialize)]
+struct ImageFailure {
+    workspace: WorkspaceId,
+    path: String,
+    error: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct SessionFailure {
     session: SessionId,
@@ -383,6 +396,12 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             match client.read_file(workspace, path.clone()) {
                 Ok(contents) => emit(app, "workbench:file", &(workspace, contents)),
                 Err(error) => fail(app, "workbench:file_failed", Some(workspace), &error),
+            }
+        }
+        WorkbenchCommand::LoadImage { workspace, path } => {
+            match client.read_image(workspace, path.clone()) {
+                Ok(image) => emit(app, "workbench:image", &(workspace, image)),
+                Err(error) => fail_image(app, workspace, path, &error),
             }
         }
         WorkbenchCommand::SaveFile {
@@ -743,6 +762,18 @@ fn fail(app: &AppHandle, event: &str, workspace: Option<WorkspaceId>, error: &cl
         event,
         Failure {
             workspace,
+            error: error.to_string(),
+        },
+    );
+}
+
+fn fail_image(app: &AppHandle, workspace: WorkspaceId, path: String, error: &client::ClientError) {
+    tracing::warn!(%error, path, "workbench image read failed");
+    let _ = app.emit(
+        "workbench:image_failed",
+        ImageFailure {
+            workspace,
+            path,
             error: error.to_string(),
         },
     );

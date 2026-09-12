@@ -65,6 +65,20 @@ pub struct FileContents {
     pub too_large: bool,
 }
 
+/// One image from a checkout, for a Markdown preview.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageContents {
+    /// Which checkout this was read from.
+    pub workspace_id: WorkspaceId,
+    /// Workspace-relative path, as asked for.
+    pub path: String,
+    /// Media type from the extension (`image/png`, `image/svg+xml`, …).
+    pub mime: String,
+    /// The file's bytes as base64: the last hop is JSON into a WebView, where a
+    /// byte array would serialize as a list of numbers three times the size.
+    pub data: String,
+}
+
 /// Name match or content match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]

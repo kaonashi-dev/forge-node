@@ -10,11 +10,11 @@
 use domain::{
     AgentDescriptor, AgentProfile, BranchRef, ChangeContext, ContextEnvelope, DetectionResult,
     ExternalAgentSession, ExternalTranscript, FileContents, FileTree, HarnessEvent, HarnessFeature,
-    HarnessFeatureList, Job, JuvaDraft, Project, ProjectGroup, ProjectId, ProviderUsage,
-    PullRequestState, RebaseState, Remote, ScrollbackRows, SearchResults, Session, SessionChanges,
-    SessionId, SessionTranscript, ShareAction, ShareCandidate, ShareRule, ShareStatusEntry,
-    TerminalId, TerminalSnapshot, UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId,
-    WorkspaceReview,
+    HarnessFeatureList, ImageContents, Job, JuvaDraft, Project, ProjectGroup, ProjectId,
+    ProviderUsage, PullRequestState, RebaseState, Remote, ScrollbackRows, SearchResults, Session,
+    SessionChanges, SessionId, SessionTranscript, ShareAction, ShareCandidate, ShareRule,
+    ShareStatusEntry, TerminalId, TerminalSnapshot, UsageAnalytics, Workspace, WorkspaceDiff,
+    WorkspaceId, WorkspaceReview,
 };
 use serde::{Deserialize, Serialize};
 
@@ -216,6 +216,8 @@ pub enum Response {
     FileTree(FileTree),
     /// One file's contents, answering `ReadFile` (ADR-012).
     FileContents(FileContents),
+    /// One image's bytes, answering `ReadImage` (ADR-012).
+    ImageContents(ImageContents),
     /// Search hits, answering `SearchFiles` (ADR-012).
     SearchResults(SearchResults),
     /// Aggregated transcript analytics, answering `GetUsageAnalytics`

@@ -38,6 +38,8 @@ const NAMES: ForgeIconName[] = [
   "layout-grid",
   "layers",
   "more-horizontal",
+  "image",
+  "image-off",
 ];
 
 describe("forgeIcons", () => {

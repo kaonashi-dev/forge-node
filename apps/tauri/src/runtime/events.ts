@@ -18,10 +18,13 @@ import { asSessionTranscript } from "./externalTranscript";
 import { applySessionChanges, failSessionChanges } from "../store/sessionChangesStore";
 import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import { refreshDiff } from "../workbench/decorations";
+import { previewImageReader } from "../workbench/api";
+import { dataUrl } from "../workbench/previewImages";
 import type {
   Branches,
   FileContents,
   FileTree,
+  ImageContents,
   JuvaDraft,
   RebaseState,
   SearchResults,
@@ -165,6 +168,17 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
     }),
     failure("workbench:file_failed", "file", "fileError"),
     failure("workbench:save_failed", "file", "fileError"),
+    /* Not checked against the current workspace: the reader matches on the
+       workspace it was asked for, and a preview that moved on has stopped
+       listening for the answer. */
+    listen<Tagged<ImageContents>>("workbench:image", ({ payload: [workspace, image] }) =>
+      previewImageReader.settle(workspace, image.path, { url: dataUrl(image) }),
+    ),
+    listen<{ workspace: string; path: string; error: string }>(
+      "workbench:image_failed",
+      ({ payload }) =>
+        previewImageReader.settle(payload.workspace, payload.path, { error: payload.error }),
+    ),
     answer<SearchResults>("workbench:search", "search", (search) => setWorkbenchStore({ search })),
     failure("workbench:search_failed", "search", "fileError"),
     answer<RebaseState>("workbench:rebase", "rebase", (rebase) =>

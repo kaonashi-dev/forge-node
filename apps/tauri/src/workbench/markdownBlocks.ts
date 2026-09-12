@@ -1,16 +1,33 @@
 /**
- * Markdown → blocks, for prose a forge host wrote (a pull request body).
+ * Markdown → blocks, for a pull request body or a document in the checkout.
  *
- * A parser rather than a dependency: this is the subset a description actually
- * uses and the bundle has a budget. It answers with data and never with HTML —
- * `Markdown.tsx` renders the blocks through JSX, so raw markup in a description
- * is text and there is no sanitiser here to get wrong.
+ * A parser rather than a dependency: this is the subset those actually use and
+ * the bundle has a budget. It answers with data and never with HTML —
+ * `Markdown.tsx` renders the blocks through JSX, so raw markup is text and
+ * there is no sanitiser here to get wrong. The few tags a README leans on are
+ * read as what they mean (`<img>`, `<br>`) or dropped as layout; none of them
+ * is ever passed through.
  */
 
 export type MdSpan =
   | { kind: "text"; text: string; strong: boolean; em: boolean }
   | { kind: "code"; text: string }
-  | { kind: "link"; text: string; href: string };
+  | { kind: "link"; text: string; href: string }
+  | MdImage;
+
+/**
+ * An image as the document wrote it. `src` is unresolved: whether it can be
+ * drawn, and from where, depends on what the document is (`previewImages.ts`).
+ */
+export type MdImage = {
+  kind: "image";
+  alt: string;
+  src: string;
+  /** Where a click goes, for an image wrapped in a link; only a safe href. */
+  href: string | null;
+  /** From `<img width>`, in pixels or a percentage. */
+  width: string | null;
+};
 
 export type MdListItem = {
   spans: MdSpan[];
@@ -38,6 +55,25 @@ const QUOTE = /^ {0,3}> ?(.*)$/;
 const ITEM = /^([ \t]*)(?:([-*+])|(\d{1,9})[.)])\s+(.*)$/;
 const TASK = /^\[([ xX])\]\s+(.*)$/;
 const WORD = /[\p{L}\p{N}_]/u;
+const COMMENT_OPEN = /^ {0,3}<!--/;
+
+/** `(src "title")` after an image's `![alt]`, the title ignored. */
+const IMAGE_TARGET = String.raw`\(\s*(<[^>]*>|[^\s)]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)`;
+const IMAGE = new RegExp(String.raw`^!\[([^\]]*)\]` + IMAGE_TARGET);
+const LINKED_IMAGE = new RegExp(
+  String.raw`^\[\s*!\[([^\]]*)\]` +
+    IMAGE_TARGET +
+    String.raw`\s*\]\(\s*([^\s)]+)(?:\s+"[^"]*")?\s*\)`,
+);
+const HTML_TAG = /^<(\/?)([a-z][a-z0-9]*)\b((?:[^<>"']|"[^"]*"|'[^']*')*)>/i;
+const HTML_COMMENT = /^<!--[\s\S]*?-->/;
+
+/**
+ * Tags a README wraps images and badges in. They carry layout this renderer
+ * does not do, so they are dropped rather than printed as text around the
+ * picture they were centring.
+ */
+const LAYOUT_TAGS = new Set(["a", "p", "div", "center", "picture", "source", "span"]);
 
 /** The blocks of one Markdown document, in reading order. */
 export function parseMarkdown(source: string): MdBlock[] {
@@ -64,6 +100,17 @@ function parseBlocks(lines: string[]): MdBlock[] {
     const line = lines[index];
     if (line.trim() === "") {
       index += 1;
+      continue;
+    }
+
+    // A comment is the author's note to the next author; a forge host hides it.
+    // An unclosed one hides the rest of the document, as it does in a browser.
+    if (COMMENT_OPEN.test(line)) {
+      while (index < lines.length && !lines[index].includes("-->")) index += 1;
+      const closing = index < lines.length ? lines[index] : "";
+      const after = closing.slice(closing.indexOf("-->") + 3).trim();
+      index += 1;
+      if (after !== "") blocks.push({ kind: "paragraph", spans: inlineSpans(after) });
       continue;
     }
 
@@ -160,7 +207,9 @@ function parseBlocks(lines: string[]): MdBlock[] {
       text.push(lines[index].trim());
       index += 1;
     }
-    blocks.push({ kind: "paragraph", spans: inlineSpans(text.join("\n")) });
+    // A line that was only a layout tag leaves nothing, and must leave no gap.
+    const spans = trimSpans(inlineSpans(text.join("\n")));
+    if (spans.length > 0) blocks.push({ kind: "paragraph", spans });
   }
 
   return blocks;
@@ -168,8 +217,27 @@ function parseBlocks(lines: string[]): MdBlock[] {
 
 function startsBlock(line: string): boolean {
   return (
-    FENCE.test(line) || HEADING.test(line) || RULE.test(line) || QUOTE.test(line) || ITEM.test(line)
+    FENCE.test(line) ||
+    HEADING.test(line) ||
+    RULE.test(line) ||
+    QUOTE.test(line) ||
+    ITEM.test(line) ||
+    COMMENT_OPEN.test(line)
   );
+}
+
+/** A paragraph without the blank edges its dropped wrapper tags left behind. */
+function trimSpans(spans: MdSpan[]): MdSpan[] {
+  const blank = (span: MdSpan | undefined): boolean =>
+    span?.kind === "text" && span.text.trim() === "";
+  const out = [...spans];
+  while (blank(out[0])) out.shift();
+  while (blank(out.at(-1))) out.pop();
+  const first = out[0];
+  if (first?.kind === "text") out[0] = { ...first, text: first.text.trimStart() };
+  const last = out.at(-1);
+  if (last?.kind === "text") out[out.length - 1] = { ...last, text: last.text.trimEnd() };
+  return out;
 }
 
 function closesFence(line: string, marker: string): boolean {
@@ -235,7 +303,26 @@ function spansWith(text: string, strong: boolean, em: boolean): MdSpan[] {
       }
     }
 
+    if (char === "!") {
+      const image = IMAGE.exec(rest);
+      if (image !== null) {
+        flush();
+        spans.push(imageSpan(image[1] ?? "", image[2] ?? "", null, null));
+        index += image[0].length;
+        continue;
+      }
+    }
+
     if (char === "[") {
+      // A badge: the image is the link's text, and `[^\]]*` below would cut
+      // the link at the image's own `]`.
+      const linked = LINKED_IMAGE.exec(rest);
+      if (linked !== null) {
+        flush();
+        spans.push(imageSpan(linked[1] ?? "", linked[2] ?? "", safeHref(linked[3] ?? ""), null));
+        index += linked[0].length;
+        continue;
+      }
       const link = /^\[([^\]]*)\]\(\s*([^\s)]+)(?:\s+"[^"]*")?\s*\)/.exec(rest);
       const href = link === null ? null : safeHref(link[2] ?? "");
       if (link !== null && href !== null) {
@@ -247,6 +334,32 @@ function spansWith(text: string, strong: boolean, em: boolean): MdSpan[] {
     }
 
     if (char === "<") {
+      const comment = HTML_COMMENT.exec(rest);
+      if (comment !== null) {
+        index += comment[0].length;
+        continue;
+      }
+      const tag = HTML_TAG.exec(rest);
+      const name = tag?.[2]?.toLowerCase() ?? "";
+      if (tag !== null && name === "img" && tag[1] === "") {
+        const attrs = tag[3] ?? "";
+        const src = attribute(attrs, "src");
+        if (src !== null) {
+          flush();
+          spans.push(imageSpan(attribute(attrs, "alt") ?? "", src, null, cssWidth(attrs)));
+          index += tag[0].length;
+          continue;
+        }
+      }
+      if (tag !== null && name === "br") {
+        plain += "\n";
+        index += tag[0].length;
+        continue;
+      }
+      if (tag !== null && LAYOUT_TAGS.has(name)) {
+        index += tag[0].length;
+        continue;
+      }
       const auto = /^<([^\s>]+)>/.exec(rest);
       const href = auto === null ? null : safeHref(auto[1] ?? "");
       if (auto !== null && href !== null) {
@@ -288,6 +401,28 @@ function spansWith(text: string, strong: boolean, em: boolean): MdSpan[] {
 
   flush();
   return spans;
+}
+
+function imageSpan(alt: string, src: string, href: string | null, width: string | null): MdImage {
+  // `![a](<my shot.png>)`: the brackets are how a destination holds a space.
+  const bare = src.startsWith("<") && src.endsWith(">") ? src.slice(1, -1) : src;
+  return { kind: "image", alt, src: bare.trim(), href, width };
+}
+
+/** One attribute of an HTML tag, quoted or not. `name` is always a literal. */
+function attribute(attrs: string, name: string): string | null {
+  const match = new RegExp(
+    String.raw`(?:^|\s)${name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))`,
+    "i",
+  ).exec(attrs);
+  return match === null ? null : (match[1] ?? match[2] ?? match[3] ?? null);
+}
+
+/** `<img width>` as a CSS length — a bare number is pixels — or `null`. */
+function cssWidth(attrs: string): string | null {
+  const width = attribute(attrs, "width")?.trim() ?? "";
+  if (/^\d{1,5}$/.test(width)) return `${width}px`;
+  return /^\d{1,5}(?:px|%)$/.test(width) ? width : null;
 }
 
 /**

@@ -50,6 +50,8 @@ objc = "0.2"
 # Serialization
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+# A preview's image bytes cross into a JSON WebView as text.
+base64 = "0.22"
 
 # HTTP (agents only: OAuth usage endpoints, §16.2). Short timeouts, blocking.
 ureq = "2"
