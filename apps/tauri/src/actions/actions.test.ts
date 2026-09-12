@@ -157,7 +157,6 @@ describe("firesOnRepeat", () => {
       "toggle_history",
       "toggle_pull_requests",
       "toggle_features",
-      "toggle_lieutenant",
       "toggle_git",
       "cycle_sidebar_views",
     ] as const) {

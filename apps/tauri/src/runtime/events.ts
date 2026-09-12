@@ -6,13 +6,6 @@ import { adoptPendingCompose } from "../store/prComposeStore";
 import { adoptPendingReviews } from "../store/prReviewStore";
 import { loadFeatureDetail } from "../harness/api";
 import { readJobLog } from "./api";
-import {
-  acceptLieutenantJob,
-  applyLieutenantJob,
-  applyLieutenantOutput,
-  seedLieutenantOutput,
-  setLieutenantError,
-} from "../store/lieutenantStore";
 import { applyTranscript, failTranscript, setRuntimeStore } from "../store/runtimeStore";
 import { asSessionTranscript } from "./externalTranscript";
 import { applySessionChanges, failSessionChanges } from "../store/sessionChangesStore";
@@ -440,29 +433,17 @@ export async function bindRuntimeEvents(): Promise<UnlistenFn> {
     listen<{ profile: string; error: string | null }>("runtime:profile_save", (event) => {
       setRuntimeStore("profileSave", event.payload);
     }),
-    listen<{ project: string; job: Job }>("runtime:lieutenant_job", (event) => {
-      acceptLieutenantJob(event.payload.project, event.payload.job);
-      void readJobLog(event.payload.job.id).catch(() => undefined);
-    }),
-    listen<{ project: string; error: string }>("runtime:lieutenant_failed", (event) => {
-      setLieutenantError(event.payload.error, event.payload.project);
-    }),
-    // One job stream, two readers: a job is either the lieutenant's answer or
-    // a harness step, and each store ignores the ids that are not its own.
     listen<Job>("runtime:job_updated", (event) => {
-      applyLieutenantJob(event.payload);
       applyHarnessJob(event.payload);
       announceJob(event.payload);
     }),
     listen<{ job_id: string; from_line: number; lines: string[] }>(
       "runtime:job_output",
       (event) => {
-        applyLieutenantOutput(event.payload.job_id, event.payload.from_line, event.payload.lines);
         applyHarnessOutput(event.payload.job_id, event.payload.from_line, event.payload.lines);
       },
     ),
     listen<{ job_id: string; lines: string[] }>("runtime:job_log", (event) => {
-      seedLieutenantOutput(event.payload.job_id, event.payload.lines);
       seedHarnessOutput(event.payload.job_id, event.payload.lines);
     }),
     listen<DisconnectedPayload>("runtime:disconnected", (event) => {

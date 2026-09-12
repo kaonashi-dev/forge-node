@@ -1301,27 +1301,6 @@ impl Client {
         }
     }
 
-    /// Ask a question about the harness; the answer arrives on the job's
-    /// stream.
-    ///
-    /// `resume_from` continues the previous answer's provider session, which
-    /// is what makes a series of questions a conversation.
-    pub fn ask_harness(
-        &self,
-        project_id: domain::ProjectId,
-        question: String,
-        resume_from: Option<String>,
-    ) -> Result<domain::Job, ClientError> {
-        match self.request(Request::AskHarness {
-            project_id,
-            question,
-            resume_from,
-        })? {
-            Response::Job(job) => Ok(*job),
-            _ => Err(ClientError::UnexpectedResponse { expected: "Job" }),
-        }
-    }
-
     /// Start a headless run of one provider (§ jobs).
     ///
     /// Answers as soon as the job is *accepted*: it may still be queued behind

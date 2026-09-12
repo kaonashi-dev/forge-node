@@ -79,7 +79,6 @@ export type ActionId =
   | "toggle_pull_requests"
   | "toggle_files"
   | "toggle_features"
-  | "toggle_lieutenant"
   | "cycle_sidebar_views"
   | "add_project"
   | "open_file_palette"
@@ -228,16 +227,9 @@ export const ACTIONS: Action[] = [
     repeats: false,
   },
   {
-    id: "toggle_lieutenant",
-    label: "Lieutenant",
-    detail: "Ask about the harness",
-    palette: true,
-    repeats: false,
-  },
-  {
     id: "cycle_sidebar_views",
     label: "Next Sidebar View",
-    detail: "Walk History, PR, Features, Lieutenant and Git in turn",
+    detail: "Walk History, PR, Features and Git in turn",
     palette: true,
     repeats: false,
   },
@@ -575,9 +567,7 @@ export function defaultBindings(): Binding[] {
     bind(`${MOD}-shift-n`, "new_worktree", APP),
     bind(`${MOD}-,`, "open_settings", APP),
     bind(`${MOD}-w`, "close_session", APP),
-    // `${MOD}-b` folds the whole sidebar, as every editor has taught. The
-    // number row is the strip, left to right: 1 and 2 are the two views reached
-    // most, and 3 walks the rest, since seven views do not fit under three keys.
+    // MOD-3 cycles the views that have no dedicated number chord.
     bind(`${MOD}-b`, "toggle_sidebar", APP),
     bind(`${MOD}-1`, "toggle_projects", APP),
     bind(`${MOD}-2`, "toggle_files", APP),

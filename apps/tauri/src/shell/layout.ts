@@ -42,15 +42,7 @@ export const AUTOSAVE_KEY = "ui.editor.autosave";
 export const LAST_WORKSPACE_KEY = "ui.last_workspace";
 
 /** Bounds the drag handles clamp to, so a panel cannot be dragged to nothing. */
-/* One width for every view. 224 rather than 180: the strip is seven 24px
-   glyphs, six 6px gaps and 16px of padding (220px) plus the hairline border,
-   and below that the last view is clipped. Must stay in step with
-   `metrics.sidebarW`, which paints the first frame before the stored width
-   arrives. */
 export const SIDEBAR_RANGE = { min: 224, max: 560, fallback: 300 };
-/* Narrower floor than the sidebar: this column holds paths and two counts,
-   never a patch, so it can give the terminal back more room than a panel that
-   has to fit seven views in one row. */
 export const SESSION_SPLIT_RANGE = { min: 240, max: 620, fallback: 340 };
 
 /**

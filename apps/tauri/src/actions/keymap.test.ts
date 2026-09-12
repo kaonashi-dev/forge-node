@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { APP, EDITOR, FILES, type Binding } from "./actions";
-import {
-  conflicts,
-  mergeBindings,
-  parseKeymap,
-  serializeKeymap,
-  type KeymapOverride,
-} from "./keymap";
+import { conflicts, mergeBindings, parseKeymap, serializeKeymap } from "./keymap";
 import { parseChord } from "./keys";
 
 const binding = (spec: string, action: string, context = APP, argument?: number): Binding =>
@@ -94,15 +88,16 @@ describe("mergeBindings", () => {
     expect(merged[0].argument).toBe(3);
   });
 
-  it("drops an override naming an action that no longer exists", () => {
-    // A removed action leaves a stored override behind; without the filter it
-    // would still become a binding, and the dispatcher swallows its chord.
-    const merged = mergeBindings(
-      [{ action: "no_such_action", context: APP, chord: "cmd-e" } as unknown as KeymapOverride],
-      [binding("cmd-t", "new_terminal")],
-    );
-    expect(merged.some((item) => item.chord.key === "e")).toBe(false);
-  });
+  it.each(["no_such_action", "toggle_lieutenant"])(
+    "drops an override for the removed action %s",
+    (action) => {
+      const merged = mergeBindings(
+        parseKeymap(JSON.stringify([{ action, context: APP, chord: "cmd-e" }])),
+        [binding("cmd-t", "new_terminal")],
+      );
+      expect(merged.some((item) => item.chord.key === "e")).toBe(false);
+    },
+  );
 });
 
 describe("conflicts", () => {

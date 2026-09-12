@@ -3,7 +3,6 @@ import { FeaturesPanel } from "../panels/FeaturesPanel";
 import { FileTreePanel } from "../panels/FileTreePanel";
 import { GitPanel } from "../panels/GitPanel";
 import { HistoryPanel } from "../panels/HistoryPanel";
-import { LieutenantPanel } from "../panels/LieutenantPanel";
 import { PullRequestPanel } from "../panels/PullRequestPanel";
 import { VIEW_ICONS } from "../panels/sidebarViews";
 import { forgeStore } from "../store/forgeStore";
@@ -34,7 +33,6 @@ export function Sidebar() {
     History: () => <HistoryPanel />,
     PR: () => <PullRequestPanel />,
     Features: () => <FeaturesPanel />,
-    Lieutenant: () => <LieutenantPanel />,
     Git: () => <GitPanel />,
   };
 

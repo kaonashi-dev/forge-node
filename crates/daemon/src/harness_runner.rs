@@ -318,88 +318,6 @@ impl Daemon {
             .map(|job| job.id)
     }
 
-    /// Answer a question about the harness, as one headless run.
-    ///
-    /// The operator's counterpart to the cycle: the steps run the work, this
-    /// says what the work is doing. It is deliberately the same machinery —
-    /// a job, a prompt, a stream — because the alternative is a second kind of
-    /// agent with a second set of failure modes for something that is, at
-    /// bottom, one question and one answer.
-    ///
-    /// The state goes in the prompt rather than being left for the agent to
-    /// discover: `features.json` is one file and reading it is three tool
-    /// calls the answer does not need. What is *not* in the briefing — a
-    /// spec's text, a review's reasoning — the agent can still go and read,
-    /// because it runs in the checkout with the harness root in its
-    /// environment like every other job.
-    pub(crate) fn ask_harness(
-        self: &Arc<Self>,
-        project_id: ProjectId,
-        question: String,
-        resume_from: Option<String>,
-    ) -> Result<Response, ProtocolError> {
-        let question = question.trim();
-        if question.is_empty() {
-            return Err(ProtocolError::new(ErrorCode::InvalidRequest, "ask what?"));
-        }
-        let root = self.harness_root_for(project_id)?;
-        let workspace_id = self.main_workspace_of(project_id).ok_or_else(|| {
-            ProtocolError::new(
-                ErrorCode::InvalidRequest,
-                "this project has no checkout to run an agent in",
-            )
-        })?;
-        // Whoever runs the spec: the question is about the same cycle, and a
-        // separate setting would be one more thing to configure for no gain.
-        let provider_id = self.harness_provider(HarnessStep::Spec)?;
-        let briefing = harness_briefing(&root);
-        let prompt = format!(
-            "You are the harness lieutenant for this repository. Answer the operator's \
-             question about the state of the feature harness.\n\n\
-             Harness state lives in {}/harness — read files there if the briefing below \
-             is not enough. Do not change any harness state and do not write code; you \
-             are being asked, not told.\n\n\
-             Answer in a few sentences, plainly, and say plainly when something is not \
-             knowable from what you can see.\n\n\
-             === Harness state ===\n{briefing}\n\
-             === Operator's question ===\n{question}\n",
-            root.display()
-        );
-
-        self.start_job(JobRequest {
-            provider_id,
-            workspace_id,
-            role: SessionRole::Generic,
-            feature_id: None,
-            parent_session_id: None,
-            prompt,
-            resume_from,
-            schema: None,
-        })
-    }
-
-    /// The project's own checkout, which is where a question is answered.
-    ///
-    /// A worktree would do as well for reading, but the main checkout is the
-    /// one that sees the harness root directly rather than a snapshot of it.
-    /// `root_path` here is the *registered* directory on purpose: it is the
-    /// Main workspace's path, which is what is being looked up.
-    fn main_workspace_of(&self, project_id: ProjectId) -> Option<domain::WorkspaceId> {
-        let inner = self.lock();
-        let root = inner.projects.get(&project_id)?.root_path.clone();
-        inner
-            .workspaces
-            .values()
-            .find(|workspace| workspace.project_id == project_id && workspace.path == root)
-            .or_else(|| {
-                inner
-                    .workspaces
-                    .values()
-                    .find(|workspace| workspace.project_id == project_id)
-            })
-            .map(|workspace| workspace.id)
-    }
-
     /// The provider one step runs on.
     ///
     /// `provider:<id>` is the only spelling resolved here. A profile or the
@@ -839,32 +757,6 @@ fn step_of(job: &Job) -> Option<HarnessStep> {
         SessionRole::Reviewer => Some(HarnessStep::Review),
         _ => None,
     }
-}
-
-/// Every feature and where it stands, small enough to put in a prompt.
-///
-/// One line each, in the vocabulary the harness itself uses, so an agent that
-/// then goes and reads `features.json` finds the same words rather than a
-/// paraphrase it has to reconcile.
-fn harness_briefing(root: &Path) -> String {
-    let Ok(list) = harness_service::list_features(root) else {
-        return "(the harness state could not be read)".to_owned();
-    };
-    if list.features.is_empty() {
-        return "(no features are registered)".to_owned();
-    }
-    list.features
-        .iter()
-        .map(|feature| {
-            let rounds = feature.review_rounds.unwrap_or(0);
-            let checkout = feature.workspace_path.as_deref().unwrap_or("(no checkout)");
-            format!(
-                "#{} {} — status {} · review rounds {} · {}",
-                feature.id, feature.slug, feature.status, rounds, checkout
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// The provider session a prior attempt of this step left, if any.

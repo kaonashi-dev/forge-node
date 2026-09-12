@@ -613,12 +613,6 @@ impl Daemon {
                 step,
                 force,
             } => self.run_harness_step_forced(project_id, feature_id, step, force),
-            Request::AskHarness {
-                project_id,
-                question,
-                resume_from,
-            } => self.ask_harness(project_id, question, resume_from),
-
             Request::StartJob { request } => self.start_job(request),
             Request::CancelJob { job_id } => self.cancel_job(job_id),
             Request::ListJobs => Ok(self.list_jobs()),
