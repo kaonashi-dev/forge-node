@@ -1,25 +1,9 @@
-//! # git-service
+//! Git and worktree operations on the system `git` CLI (ADR-008).
 //!
-//! Git and worktree operations for Forge (ForgeNode), implemented on top of the
-//! system `git` CLI per **ADR-008** ("Git CLI first"): every command runs with
-//! `-C <repo>`, `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, a 30 s timeout, and never
-//! inside a user PTY. It covers the discovery, status, create and remove flows
-//! described in **§14** (Git y worktrees).
-//!
-//! This crate returns its own lightweight result structs ([`RepoStatus`],
-//! [`WorktreeEntry`], [`RemovePrechecks`]); it does **not** construct
-//! `domain::Workspace` values — the daemon's `WorkspaceService` maps these
-//! results into domain objects (§9.3, §17).
-//!
-//! Modules mirror §17 (`src/{command,repository,remote,worktree,change,github}.rs`):
-//! - [`command`]: the [`command::run_git`] subprocess helper and [`GitError`].
-//! - [`repository`]: read-only queries (discovery, branch, refs, status, worktrees).
-//! - [`remote`]: the only commands that open a socket ([`remote::fetch`]).
-//! - [`change`]: working-tree diffs, local commits, and (explicit) push.
-//! - [`diff`]: per-file working-tree patches for the GUI's diff view.
-//! - [`rebase`]: the stopped sequencer — conflicts, continue, abort.
-//! - [`github`]: create and list pull requests through `gh` (host API, not git objects).
-//! - [`worktree`]: slug generation, validation, create/remove, pre-checks.
+//! Every command runs with `-C <repo>`, `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`,
+//! a 30 s timeout, and never inside a user PTY. Returns crate-local result
+//! structs; does not construct `domain::Workspace` — the daemon maps git
+//! output into domain objects. Network commands use [`command::run_git_network`].
 
 pub mod change;
 pub mod command;

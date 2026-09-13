@@ -56,7 +56,10 @@ struct EventProxy(Arc<Mutex<ProxyState>>);
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
-        let mut st = self.0.lock().expect("terminal event proxy poisoned");
+        let mut st = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match event {
             Event::Title(title) => st.title = Some(title),
             Event::ResetTitle => st.title = None,
@@ -166,7 +169,11 @@ impl AlacrittyEngine {
     /// so [`title`](TerminalEngine::title) can hand out a borrow and bell/PTY
     /// writes survive until taken.
     fn drain_proxy(&mut self) {
-        let mut st = self.proxy.0.lock().expect("terminal event proxy poisoned");
+        let mut st = self
+            .proxy
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.title = st.title.clone();
         if st.bell {
             self.bell = true;

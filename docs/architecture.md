@@ -4,7 +4,9 @@ Forge is a native desktop app for running many terminals and coding agents
 across Git repos and worktrees. This document is the system map and reflects
 what is implemented; see the per-topic pages in [README.md](./README.md) for
 details (domain, protocol, terminal, agents, worktrees, persistence) and
-[`AGENTS.md`](../AGENTS.md) for invariants.
+[`AGENTS.md`](../AGENTS.md) for invariants. Cost model before touching the
+delta path, the Tauri render path, the core lock, or anything that spawns a
+process: [performance.md](./performance.md). ADR numbers: [decisions.md](./decisions.md).
 
 ## Principles
 
@@ -20,8 +22,8 @@ details (domain, protocol, terminal, agents, worktrees, persistence) and
   common git dir rather than in anybody's working copy. See
   [worktrees.md](./worktrees.md).
 - **P5 Session graph from day one.** `parent_session_id` /
-  `root_session_id` exist even though the MVP UI is nearly a list. Cross-provider
-  handoff, spawn-child and send-context are Forge-mediated — see
+  `root_session_id` exist; the rail indents children under the parent.
+  Cross-provider handoff, spawn-child and send-context are Forge-mediated — see
   [session-context.md](./session-context.md).
 - **P6 Simplicity over speculative abstraction.** Git CLI, standard PTYs,
   descriptors, a Unix socket, one window.
@@ -39,26 +41,29 @@ Closing the GUI never kills sessions; the daemon owns execution. They talk over
 a Unix domain socket with length-prefixed MessagePack frames (ADR-004): `u32`
 big-endian length + payload, 16 MiB max.
 
-## Crates (§17)
+## Crates
 
 ```
-domain         shared model: ids, project, workspace, session (+state machine),
-               agent descriptors/runtime types, context, and the terminal wire
-               types (Row/Cell/Cursor/Snapshot/Delta) shared by both sides
-protocol       ClientMessage/DaemonMessage, framing, handshake, requests,
-               responses, events, errors — transport-agnostic
-terminal-core  PtyBackend/PtyHandle (portable-pty), TerminalEngine trait,
-               AlacrittyEngine, DeltaBuilder
-terminal-input pure key/mouse/paste mapping shared without PTY/VT dependencies
-agents         provider registry, verified detection, four built-ins
-git-service    git CLI wrapper (LC_ALL=C, 30s timeout), repo + worktree ops
-persistence    SQLite (WAL + FK), migrations, repositories, orphan reconciliation
-client         sync UDS client + passive CellGrid replica (no tokio)
-daemon         the runtime: core dispatcher, server, registry, terminal loop,
-               shell env, services  → binary forge-daemon
-forge-tauri    Tauri host: runtime thread, workbench worker, cells encoder,
-                daemon locator                       → binary forge-tauri
-test-support   FakePtyBackend, fake agents, temp git repos
+domain           shared model: ids, project, workspace, session (+state machine),
+                 agent descriptors/runtime types, context, and the terminal wire
+                 types (Row/Cell/Cursor/Snapshot/Delta) shared by both sides
+protocol         ClientMessage/DaemonMessage, framing, handshake, requests,
+                 responses, events, errors — transport-agnostic
+terminal-core    PtyBackend/PtyHandle (portable-pty), TerminalEngine trait,
+                 AlacrittyEngine, DeltaBuilder
+terminal-input   pure key/mouse/paste mapping shared without PTY/VT dependencies
+agents           provider registry, verified detection, five built-ins
+                 (claude, codex, opencode, cursor, grok)
+git-service      git CLI wrapper (LC_ALL=C, 30s local timeout), repo + worktree ops
+fs-service       workspace list/read/write/search; paths stay inside the checkout
+harness-service  read/write of `<repo>/harness/` (one state machine per repository)
+persistence      SQLite (WAL + FK), migrations, repositories, orphan reconciliation
+client           sync UDS client + passive CellGrid replica (no tokio)
+daemon           the runtime: core dispatcher, server, registry, terminal loop,
+                 shell env, services  → binary forge-daemon
+forge-tauri      Tauri host: runtime thread, workbench worker, cells encoder,
+                 daemon locator                       → binary forge-tauri
+test-support     FakePtyBackend, fake agents, temp git repos
 ```
 
 `forge-tauri` lives outside `crates/` — at `apps/tauri/src-tauri` — because it
@@ -69,8 +74,9 @@ terminal-input} → domain`).
 
 Dependency direction is one-way: `forge-tauri → client → {protocol,
 terminal-input} → domain` and
-`daemon → {agents, git-service, persistence, terminal-core} → domain`. The GUI
-renders `domain::terminal` wire types, it does not emulate.
+`daemon → {agents, git-service, fs-service, harness-service, persistence,
+terminal-core} → domain`. The GUI renders `domain::terminal` wire types, it does
+not emulate. ADR numbers cited in code are indexed in [decisions.md](./decisions.md).
 
 The Tauri host runs blocking `client::Client` calls on a dedicated runtime thread. A
 flume command channel carries input, resize and session actions away from the
@@ -83,7 +89,7 @@ no project exists, and creates or reuses a live shell. On disconnect it
 reconnects and attaches a fresh authoritative snapshot.
 
 The Tauri host also has a *workbench worker* sharing the same `Client`. The command
-channel carries keystrokes, and the §16.7 reads that answer inline — `git diff`, a
+channel carries keystrokes, and the local reads that answer inline — `git diff`, a
 file tree, a search, the harness's own files — are seconds of subprocess, so
 running them there would freeze typing.
 
@@ -129,7 +135,7 @@ session row once it passes ten minutes.
 
 A worktree Forge creates lives away from the repository, so it arrives without
 the untracked files the project needs to run. Which ones follow it is a
-per-project set of rules (`crates/daemon/src/shares`, §14.2), and the split is
+per-project set of rules (`crates/daemon/src/shares`), and the split is
 the one `idle.rs` uses: `plan.rs` decides as a pure function of the rules and
 what is on disk, `apply.rs` performs the copy / CoW clone / symlink / command,
 and `core.rs` owns which workspace and when. Provisioning runs on a worker and

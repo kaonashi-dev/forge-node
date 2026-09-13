@@ -1,12 +1,10 @@
 //! Workbench reads, on their own thread.
 //!
-//! Every request here is one of the *local synchronous* reads §16.7 and
-//! ADR-012 describe: `git diff`, a file tree, a file, a search, a stopped
-//! rebase. The daemon answers them without acking-then-eventing, which is
-//! exactly why they must not run where terminal input runs — a `git diff` of a
-//! large checkout is seconds of subprocess, and `AGENTS.md` is explicit that
-//! the GUI's command channel "also carries `RuntimeCommand::Input`, so a
-//! synchronous network write would freeze typing".
+//! Local synchronous reads (ADR-012): `git diff`, a file tree, a file, a
+//! search, a stopped rebase. The daemon answers them without acking-then-eventing,
+//! which is why they must not run where terminal input runs — a `git diff` of a
+//! large checkout is seconds of subprocess, and that channel also carries
+//! `RuntimeCommand::Input`.
 //!
 //! Sharing the client across two threads is what it was built for:
 //! `Shared.write` is a `Mutex<UnixStream>` documented as serialized across
@@ -101,7 +99,7 @@ pub enum WorkbenchCommand {
     SearchFiles {
         workspace: WorkspaceId,
         query: String,
-        /// `name`, `content` or `definition`; anything else is a name search.
+        /// `name`, `content` or `definition`. Unknown values fail closed.
         kind: String,
         limit: Option<u32>,
     },
@@ -458,19 +456,13 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             query,
             kind,
             limit,
-        } => {
-            let kind = if kind.eq_ignore_ascii_case("content") {
-                SearchKind::Content
-            } else if kind.eq_ignore_ascii_case("definition") {
-                SearchKind::Definition
-            } else {
-                SearchKind::Name
-            };
-            match client.search_files(workspace, query, kind, limit) {
+        } => match parse_search_kind(&kind) {
+            Ok(kind) => match client.search_files(workspace, query, kind, limit) {
                 Ok(results) => emit(app, "workbench:search", &(workspace, results)),
                 Err(error) => fail(app, "workbench:search_failed", Some(workspace), &error),
-            }
-        }
+            },
+            Err(error) => fail_text(app, "workbench:search_failed", Some(workspace), &error),
+        },
         WorkbenchCommand::LoadRebaseState { workspace } => {
             rebase(app, client.rebase_state(workspace), workspace)
         }
@@ -757,7 +749,11 @@ fn emit<T: Serialize>(app: &AppHandle, event: &str, payload: &T) {
 }
 
 fn fail(app: &AppHandle, event: &str, workspace: Option<WorkspaceId>, error: &client::ClientError) {
-    tracing::warn!(%error, event, "workbench read failed");
+    fail_text(app, event, workspace, &error.to_string());
+}
+
+fn fail_text(app: &AppHandle, event: &str, workspace: Option<WorkspaceId>, error: &str) {
+    tracing::warn!(error, event, "workbench read failed");
     let _ = app.emit(
         event,
         Failure {
@@ -765,6 +761,18 @@ fn fail(app: &AppHandle, event: &str, workspace: Option<WorkspaceId>, error: &cl
             error: error.to_string(),
         },
     );
+}
+
+fn parse_search_kind(kind: &str) -> Result<SearchKind, String> {
+    if kind.eq_ignore_ascii_case("name") {
+        Ok(SearchKind::Name)
+    } else if kind.eq_ignore_ascii_case("content") {
+        Ok(SearchKind::Content)
+    } else if kind.eq_ignore_ascii_case("definition") {
+        Ok(SearchKind::Definition)
+    } else {
+        Err(format!("unknown search kind: {kind}"))
+    }
 }
 
 fn fail_image(app: &AppHandle, workspace: WorkspaceId, path: String, error: &client::ClientError) {

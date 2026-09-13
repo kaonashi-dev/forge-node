@@ -22,7 +22,7 @@ edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 authors = ["ForgeNode contributors"]
-repository = "https://github.com/forge-node/forge"
+repository = "https://github.com/kaonashi-dev/forge-node"
 
 [workspace.dependencies]
 # Internal crates

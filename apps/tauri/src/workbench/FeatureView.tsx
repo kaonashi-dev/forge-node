@@ -10,6 +10,7 @@ import {
   type HarnessFeature,
 } from "../harness/types";
 import { GATE_DOCS, RUN_DOCS, docPath, missingDocNote, type DocTab } from "../harness/docs";
+import { shouldLoadFeatureDetail } from "../harness/loadGate";
 import { agentRuns, eventSummary, runDuration, runTone } from "../harness/progress";
 import { FeatureProgress } from "../harness/FeatureProgress";
 import { jobPreviewLine } from "../harness/stream";
@@ -52,8 +53,18 @@ export function FeatureView(props: { id: number }) {
   // whenever the tab is pointed at a different one.
   createEffect(() => {
     const id = project();
+    if (
+      !shouldLoadFeatureDetail({
+        project: id,
+        featureId: props.id,
+        detailId: harnessStore.detail?.id,
+        loadingDetail: harnessStore.loadingDetail,
+        detailError: harnessStore.detailError,
+      })
+    ) {
+      return;
+    }
     if (!id) return;
-    if (harnessStore.detail?.id === props.id || harnessStore.loadingDetail) return;
     void harness.loadFeatureDetail(id, props.id).catch(() => undefined);
   });
 

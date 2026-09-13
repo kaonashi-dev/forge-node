@@ -5,7 +5,7 @@ not speak to agents over an API; it spawns their interactive TUI in a PTY and
 renders it like any shell. Everything provider-specific lives in
 `crates/agents` (principle P2) — no other crate branches on a provider id.
 
-Plan references: §7.5, §7.6, §13. ADR-007 (declarative provider registry).
+ADR-007 (declarative provider registry).
 
 ## Built-in providers (`builtins.rs`)
 

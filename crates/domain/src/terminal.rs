@@ -1,11 +1,7 @@
-//! Shared terminal-grid wire types (§11.4).
+//! Terminal-grid wire types: snapshot, delta, row, cell, cursor.
 //!
-//! Placement note: the plan sketches these under `terminal-core`. We keep the
-//! *data* types here in `domain` so both sides of the wire can name them
-//! without `ui` ever depending on `terminal-core` (§17): the daemon's
-//! `terminal-core` engine produces them, `protocol` transports them, and
-//! `client`/`ui` render them. The `TerminalEngine` *trait* and the
-//! `alacritty_terminal` implementation stay in `terminal-core`.
+//! Live in `domain` so the GUI can name them without depending on
+//! `terminal-core`. The engine trait and alacritty implementation stay there.
 
 use crate::agent::PtySize;
 use compact_str::CompactString;

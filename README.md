@@ -1,7 +1,7 @@
 <h1 align="center">Forge Node</h1>
 
 <p align="center">
-  Run <b>Claude Code, Codex, OpenCode and Cursor side by side</b> — each in its own
+  Run <b>Claude Code, Codex, OpenCode, Cursor and Grok side by side</b> — each in its own
   git worktree, every terminal owned by a daemon that outlives the window.
 </p>
 
@@ -70,6 +70,7 @@ Intel Macs and Linux are not published yet — build them from source with
 | Codex CLI | `codex` | `CODEX_HOME` | remaining allowance + token analytics |
 | OpenCode | `opencode` | `OPENCODE_CONFIG_DIR` | — |
 | Cursor CLI | `cursor-agent` | — | — |
+| Grok | `grok` | `GROK_HOME` | remaining allowance + token analytics |
 
 A launch profile is the saved form of a shell wrapper — its own config
 directory, arguments and environment — so the same agent can run twice against
@@ -84,7 +85,9 @@ workspace is allowed to branch on a provider id.
 
 [`docs/README.md`](./docs/README.md) indexes the implementation docs —
 architecture, domain, protocol, terminal, agents, worktrees, persistence,
-development. Working plans stay in a local `plan/` directory (not published).
+development. [`CONTEXT.md`](./CONTEXT.md) is the short vocabulary and map;
+[`docs/decisions.md`](./docs/decisions.md) indexes ADR numbers cited in code.
+Working plans stay in a local `plan/` directory (not published).
 [`AGENTS.md`](./AGENTS.md) is the invariant list that must match the code.
 
 ## Developing
@@ -116,6 +119,8 @@ crates/
   terminal-input/ pure key/mouse/paste encoder shared with the GUI
   agents/         provider registry, detection, built-ins
   git-service/    git CLI wrapper, repository + worktree ops
+  fs-service/     workspace list/read/write/search (ADR-012)
+  harness-service/ repository harness files and status transitions
   persistence/    SQLite schema, migrations, repositories
   client/         protocol client + cell-grid replica
   daemon/         the runtime: services, PTYs, sessions, IPC → `forge-daemon`
@@ -123,7 +128,7 @@ apps/tauri/       Tauri 2 + Solid shell; the Rust host is under `src-tauri/`
 ```
 
 Dependency direction: `forge-tauri → client → {protocol, terminal-input} → domain`
-and `daemon → {agents, git-service, persistence, terminal-core} → domain`.
+and `daemon → {agents, git-service, fs-service, harness-service, persistence, terminal-core} → domain`.
 
 Rust · Tauri 2 + Solid/Vite · Unix domain socket + MessagePack · Git CLI ·
 SQLite · `alacritty_terminal`.
@@ -160,7 +165,8 @@ replaces `Forge Node.app`, and opens the replacement. The daemon is left running
 so active terminals and sessions survive; a protocol-changing build still needs
 a deliberate daemon restart because that would terminate its PTYs.
 
-`cargo deny check licenses` must pass before anything is distributed (ADR-002).
+`cargo deny check licenses` must pass locally before anything is distributed
+([ADR-002](docs/decisions.md)); it is not part of `scripts/dev check` or CI.
 
 ### Releasing
 
@@ -181,13 +187,14 @@ draft, and the updater endpoint silently falls back to the previous version.
 
 MVP in progress, and experimental in the sense above: the pieces below work and
 are tested, but nothing here is settled. The backend is implemented and covered by `scripts/dev check`:
-`domain`, `protocol` (framing, handshake, ~30 requests, events, errors),
+`domain`, `protocol` (see [`docs/protocol.md`](docs/protocol.md)),
 `terminal-core` (PTY, alacritty engine, deltas), `terminal-input`, `agents`
-(registry, verified detection, four built-ins), `git-service`, `persistence`
-(SQLite, migrations, orphan reconciliation), `client` and `daemon` — including
-end-to-end tests that drive a real daemon over a real socket with a real shell.
+(registry, verified detection, five built-ins), `git-service`, `fs-service`,
+`harness-service`, `persistence` (SQLite, migrations, orphan reconciliation),
+`client` and `daemon` — including end-to-end tests that drive a real daemon
+over a real socket with a real shell.
 
-`forge-daemon dump` is the one command still unwired.
+`forge-daemon dump` is the one command still unwired. `forge-daemon stats` is live.
 
 ## License
 

@@ -6,7 +6,7 @@ behavior beyond validation** — no I/O, no Git, no PTY. Everything in it is
 `Serialize + Deserialize` so the same values travel over IPC, live in the
 daemon's memory and map to SQLite columns.
 
-Source: `crates/domain/src/`. Plan references: §7, §8, §11.4.
+Source: `crates/domain/src/`.
 
 ## Glossary
 
@@ -17,7 +17,7 @@ Source: `crates/domain/src/`. Plan references: §7, §8, §11.4.
 | **Workspace** | A directory where sessions actually run: the main checkout *or* a Git worktree. The main checkout is never a special case. |
 | **Session** | A persistent unit of work — a shell or an agent CLI — and a node of the session graph. Survives daemon restarts as metadata. |
 | **Terminal** | The live PTY + VT engine behind a session. Runtime-only; a `TerminalId` is regenerated on every spawn/restart and never persisted. |
-| **Agent provider** | A coding-agent CLI (`claude`, `codex`, `opencode`, `cursor`). Described declaratively by an `AgentDescriptor`. |
+| **Agent provider** | A coding-agent CLI (`claude`, `codex`, `opencode`, `cursor`, `grok`). Described declaratively by an `AgentDescriptor`. |
 | **Session graph** | Logical parent/child relationships between sessions (a session can spawn sessions). Independent of the OS process tree. |
 | **Context envelope** | An explicit, auditable hand-off of context from one session to another. Schema only in the MVP. |
 | **Managed worktree** | A worktree Forge created itself (`managed_by_app = true`). Only these are ever removed from disk. |

@@ -9,6 +9,7 @@ import {
   type FeatureFilter,
   type HarnessFeature,
 } from "../harness/types";
+import { shouldLoadFeatureList } from "../harness/loadGate";
 import { jobStateTone, jobStepLabel } from "../harness/steps";
 import { jobPreviewLine } from "../harness/stream";
 import {
@@ -78,12 +79,20 @@ export function FeaturesPanel() {
     focusHarnessProject(project());
   });
 
-  // One read per project, when the panel first has one. The list is a file the
-  // daemon parses, so re-reading it on every redraw would be a parse per frame.
+  // One read per project. An empty list is a finished answer, not "not loaded".
   createEffect(() => {
     const id = project();
-    if (!id || harnessStore.loadingList || harnessStore.features.length > 0) return;
-    if (harnessStore.listError) return;
+    if (
+      !id ||
+      !shouldLoadFeatureList({
+        project: id,
+        loadingList: harnessStore.loadingList,
+        listReady: harnessStore.listReady,
+        listError: harnessStore.listError,
+      })
+    ) {
+      return;
+    }
     void harness.loadFeatures(id).catch(() => undefined);
   });
 

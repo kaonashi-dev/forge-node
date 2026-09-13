@@ -1,14 +1,12 @@
-//! Connected-client registry and event routing (§9.3, §10.4, §10.5).
+//! Connected-client registry and event routing.
 //!
-//! Each connection registers a bounded outbound channel plus its terminal
-//! subscriptions. Domain events broadcast to every client; terminal deltas go
-//! only to subscribers. Per §10.5 the outbound queue is bounded (256): when it
-//! fills the client is marked "behind" for that terminal and, once its queue
-//! drains, gets a single fresh `TerminalResync` instead of a backlog — the PTY
-//! loop never blocks and daemon memory stays bounded (scenario H).
+//! Domain events broadcast to every client; terminal deltas go only to
+//! subscribers. The outbound queue is bounded (256): when it fills the client
+//! is marked behind for that terminal and, once drained, gets one fresh
+//! `TerminalResync` instead of a backlog — the PTY loop never blocks.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use domain::{ClientId, TerminalId};
 use protocol::{DaemonEvent, DaemonMessage};
@@ -37,10 +35,19 @@ impl ClientRegistry {
         Self::default()
     }
 
+    /// Recover from poison the same way `Daemon::lock` does: a panicked client
+    /// writer must not take down the PTY thread, which calls into here under
+    /// the core lock.
+    fn lock_clients(&self) -> MutexGuard<'_, HashMap<ClientId, ClientHandle>> {
+        self.clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Register a client, returning the receiver its writer task drains.
     pub fn register(&self, id: ClientId) -> flume::Receiver<DaemonMessage> {
         let (tx, rx) = flume::bounded(CLIENT_QUEUE_CAPACITY);
-        self.clients.lock().unwrap().insert(
+        self.lock_clients().insert(
             id,
             ClientHandle {
                 tx,
@@ -54,14 +61,14 @@ impl ClientRegistry {
 
     /// Remove a client and all its subscriptions (on disconnect, §9.1).
     pub fn unregister(&self, id: ClientId) {
-        self.clients.lock().unwrap().remove(&id);
+        self.lock_clients().remove(&id);
     }
 
     /// Number of currently connected clients. Used by `stats` (§22) and to
     /// decide whether a `DaemonNotice` can be delivered now or must be queued
     /// for the first client (§15.3 runs before the accept loop).
     pub fn client_count(&self) -> usize {
-        self.clients.lock().unwrap().len()
+        self.lock_clients().len()
     }
 
     /// Send a single message to one client (e.g. a request response). Returns
@@ -73,13 +80,13 @@ impl ClientRegistry {
     /// observes a disconnect rather than hanging forever.
     #[must_use]
     pub fn send_to(&self, id: ClientId, msg: DaemonMessage) -> bool {
-        let clients = self.clients.lock().unwrap();
+        let clients = self.lock_clients();
         clients.get(&id).is_some_and(|c| c.tx.try_send(msg).is_ok())
     }
 
     /// Broadcast a low-volume domain event to every client (§10.3).
     pub fn broadcast_domain(&self, event: DaemonEvent) {
-        let clients = self.clients.lock().unwrap();
+        let clients = self.lock_clients();
         for c in clients.values() {
             // Domain events are low-volume; a momentarily full queue drops this
             // one rather than blocking. The client resyncs domain state on
@@ -90,7 +97,7 @@ impl ClientRegistry {
 
     /// Subscribe a client to a terminal (`AttachTerminal`, §10.4).
     pub fn subscribe(&self, id: ClientId, terminal_id: TerminalId) {
-        if let Some(c) = self.clients.lock().unwrap().get_mut(&id) {
+        if let Some(c) = self.lock_clients().get_mut(&id) {
             c.subscriptions.insert(terminal_id);
             c.behind.remove(&terminal_id);
         }
@@ -98,7 +105,7 @@ impl ClientRegistry {
 
     /// Unsubscribe a client from a terminal (`DetachTerminal`).
     pub fn unsubscribe(&self, id: ClientId, terminal_id: TerminalId) {
-        if let Some(c) = self.clients.lock().unwrap().get_mut(&id) {
+        if let Some(c) = self.lock_clients().get_mut(&id) {
             c.subscriptions.remove(&terminal_id);
             c.behind.remove(&terminal_id);
             c.finished.remove(&terminal_id);
@@ -108,9 +115,7 @@ impl ClientRegistry {
     /// How many clients are subscribed to a terminal. Used by `AttachTerminal`
     /// to decide whether the attacher may impose its size on a shared grid.
     pub fn subscriber_count(&self, terminal_id: TerminalId) -> usize {
-        self.clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.lock_clients()
             .values()
             .filter(|c| c.subscriptions.contains(&terminal_id))
             .count()
@@ -119,9 +124,7 @@ impl ClientRegistry {
     /// Whether any client is subscribed to a terminal (drives whether the PTY
     /// loop bothers building deltas).
     pub fn has_subscribers(&self, terminal_id: TerminalId) -> bool {
-        self.clients
-            .lock()
-            .unwrap()
+        self.lock_clients()
             .values()
             .any(|c| c.subscriptions.contains(&terminal_id))
     }
@@ -133,9 +136,7 @@ impl ClientRegistry {
     /// under the core lock, on every sweep.
     #[must_use]
     pub fn subscribed_terminals(&self) -> HashSet<TerminalId> {
-        self.clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.lock_clients()
             .values()
             .flat_map(|c| c.subscriptions.iter().copied())
             .collect()
@@ -150,7 +151,7 @@ impl ClientRegistry {
         delta: &DaemonEvent,
         mut resync: impl FnMut() -> DaemonEvent,
     ) {
-        let mut clients = self.clients.lock().unwrap();
+        let mut clients = self.lock_clients();
         // Build the resync event at most once per call.
         let mut resync_event: Option<DaemonEvent> = None;
         for c in clients.values_mut() {
@@ -177,9 +178,7 @@ impl ClientRegistry {
 
     #[must_use]
     pub fn needs_resync(&self, id: ClientId) -> bool {
-        self.clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.lock_clients()
             .get(&id)
             .is_some_and(|client| !client.behind.is_empty())
     }
@@ -190,10 +189,7 @@ impl ClientRegistry {
         id: ClientId,
         mut snapshot: impl FnMut(TerminalId) -> Option<DaemonEvent>,
     ) {
-        let mut clients = self
-            .clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut clients = self.lock_clients();
         let Some(client) = clients.get_mut(&id) else {
             return;
         };
@@ -220,10 +216,7 @@ impl ClientRegistry {
 
     /// Preserve the final grid for lagging clients before its engine is reaped.
     pub fn finish_terminal(&self, terminal: TerminalId, snapshot: impl FnOnce() -> DaemonEvent) {
-        let mut clients = self
-            .clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut clients = self.lock_clients();
         let mut snapshot = Some(snapshot);
         let mut event = None;
         for client in clients
@@ -242,7 +235,7 @@ impl ClientRegistry {
     /// Send a coalesced activity/bell event to clients NOT subscribed to the
     /// terminal (§10.4), for unread badges.
     pub fn notify_non_subscribers(&self, terminal_id: TerminalId, event: DaemonEvent) {
-        let clients = self.clients.lock().unwrap();
+        let clients = self.lock_clients();
         for c in clients.values() {
             if !c.subscriptions.contains(&terminal_id) {
                 let _ = c.tx.try_send(DaemonMessage::Event(event.clone()));

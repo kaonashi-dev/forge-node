@@ -10,6 +10,7 @@ must match the code.
 | Page | Read it when you need… |
 |------|------------------------|
 | [architecture.md](./architecture.md) | the two-process model, the crate map and dependency direction |
+| [decisions.md](./decisions.md) | ADR numbers cited in code (`ADR-003` … `ADR-012`) |
 | [domain.md](./domain.md) | the glossary, entities, session state machine and graph rules, wire types |
 | [session-context.md](./session-context.md) | cite/handoff/spawn across providers — Forge mediation, GUI, `forge-daemon session\|context` |
 | [protocol.md](./protocol.md) | every request/response/event, error codes, the `client` crate |
@@ -18,6 +19,7 @@ must match the code.
 | [worktrees.md](./worktrees.md) | project discovery, managed worktree placement/slugs, create/remove safety rules |
 | [persistence.md](./persistence.md) | SQLite schema, migration rules, startup reconciliation |
 | [ui.md](./ui.md) | the window layout, theme tokens, terminal rendering and the keyboard map |
+| [theming.md](./theming.md) | palettes, tokens, fonts |
 | [performance.md](./performance.md) | the cost model — what runs per cell, per delta, per frame; the memory, CPU, process and lock rules and the defects behind them |
 | [development.md](./development.md) | prerequisites, commands, running the daemon, testing notes |
 | [commits.md](./commits.md) | commit subject/body and pull-request title/description |
@@ -33,7 +35,7 @@ forge-tauri (GUI)  ──UDS + MessagePack──►  forge-daemon
 ```
 
 - **Terminal-first:** an agent is a CLI (`claude`, `codex`, `opencode`,
-  `cursor-agent`) running in a PTY. Providers are descriptors, not
+  `cursor-agent`, `grok`) running in a PTY. Providers are descriptors, not
   integrations.
 - **The daemon owns execution:** closing the GUI never kills a session; the
   daemon is a per-user singleton.
@@ -50,9 +52,10 @@ forge-tauri (GUI)  ──UDS + MessagePack──►  forge-daemon
 
 Backend complete and tested (`scripts/dev check` is the gate). The Phase 0 GUI
 is complete for the requested local macOS scope: it connects or starts the
-daemon, renders and drives a live PTY, launches the four installed agent TUIs,
+daemon, renders and drives a live PTY, launches the installed agent TUIs,
 reattaches after disconnects, and reports key-to-render latency. Reference
 smokes cover real agents, `vim`, `htop`, reconnect and the ≤33 ms byte-to-grid
 budget. Wayland/X11 validation is deliberately deferred and remains required
-before claiming Linux support. `forge-daemon dump`/`stats` are not wired. See
+before claiming Linux support. `forge-daemon dump` is not wired;
+`forge-daemon stats` is a live `GetStats` read. See
 [`../AGENTS.md`](../AGENTS.md) for the invariants contributors must preserve.

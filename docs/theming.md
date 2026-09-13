@@ -27,7 +27,7 @@ Default preference: **`gruvbox-hard`**. A `system` preference follows
 deliberately with:
 
 ```sh
-pnpm --dir apps/tauri exec vite-node scripts/emit-theme-fixture.ts
+bun run --cwd apps/tauri theme:fixture
 ```
 
 Do not regenerate as part of the build — an auto-updated fixture asserts nothing.

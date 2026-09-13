@@ -121,9 +121,12 @@ pub enum GitError {
         status: i32,
     },
 
-    /// The command exceeded [`GIT_TIMEOUT`] and was killed.
-    #[error("git command timed out after {}s", GIT_TIMEOUT.as_secs())]
-    Timeout,
+    /// The command exceeded its budget and was killed.
+    #[error("git command timed out after {}s", timeout.as_secs())]
+    Timeout {
+        /// Wall-clock budget that elapsed, in the same unit the caller passed.
+        timeout: Duration,
+    },
 
     /// `check-ref-format --branch` rejected the branch name.
     #[error("invalid branch name {branch:?}: {reason}")]
@@ -276,7 +279,7 @@ fn run_git_inner(
             // sleep, or one that escaped the group with its own `setsid`) from
             // blocking the caller indefinitely.
             let _ = rx.recv_timeout(KILL_REAP_GRACE);
-            Err(GitError::Timeout)
+            Err(GitError::Timeout { timeout })
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(GitError::Io(std::io::Error::other(
             "git worker thread disconnected before reporting a result",
@@ -387,8 +390,18 @@ mod tests {
         assert!(failed.contains('1'), "{failed}");
 
         assert_eq!(
-            GitError::Timeout.to_string(),
+            GitError::Timeout {
+                timeout: GIT_TIMEOUT
+            }
+            .to_string(),
             "git command timed out after 30s"
+        );
+        assert_eq!(
+            GitError::Timeout {
+                timeout: GIT_NETWORK_TIMEOUT
+            }
+            .to_string(),
+            "git command timed out after 120s"
         );
         assert!(GitError::NotAGitRepo(PathBuf::from("/tmp/x"))
             .to_string()

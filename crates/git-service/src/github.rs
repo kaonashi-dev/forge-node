@@ -772,7 +772,9 @@ fn run_gh(cli: &GitHubCli, cwd: Option<&Path>, args: &[String]) -> Result<GhOutp
             // descendant wedged in uninterruptible sleep instead of hanging the
             // whole shutdown path (P8).
             let _ = rx.recv_timeout(Duration::from_secs(5));
-            Err(GitError::Timeout)
+            Err(GitError::Timeout {
+                timeout: cli.timeout,
+            })
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(GitError::Io(std::io::Error::other(
             "gh worker thread disconnected before reporting a result",
@@ -1292,7 +1294,7 @@ while :; do sleep 1; done
         };
         let started = Instant::now();
         let error = run_gh(&cli, None, &[pid_path.to_string_lossy().into_owned()]).unwrap_err();
-        assert!(matches!(error, GitError::Timeout));
+        assert!(matches!(error, GitError::Timeout { .. }));
         assert!(started.elapsed() < Duration::from_secs(2));
 
         // Under heavy parallel test load the child can be killed before its

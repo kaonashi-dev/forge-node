@@ -171,7 +171,8 @@ Every box is a `grep` over the diff, not a general impression.
       synchronous reads like `GetWorkspaceDiff`, resolved by `fs-service`
       outside the core lock, with every canonical path inside the checkout.
       `FileTree` / `FileContents` / `ImageContents` / `SearchResults` are still
-      runtime-only (no column, no migration, no field in `Store`).
+      runtime-only (no column, no migration, no field in `Store`). An unknown
+      `SearchKind` is `InvalidRequest`, never silently `Name`.
 - [ ] `WriteFile` requires the `revision` of the last `ReadFile` and answers
       `PreconditionFailed` if the disk changed; the GUI re-reads, it does not
       embed the content in the error. The Tauri editor still sends reads and
