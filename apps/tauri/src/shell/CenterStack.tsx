@@ -86,11 +86,7 @@ const PrReviewView = lazy(() =>
  * nothing and cost a full resync on the way back, so a glance at a diff would
  * reflow every program running in it.
  */
-export function CenterStack(props: {
-  settings: boolean;
-  settingsSection?: Section;
-  onCloseSettings: () => void;
-}) {
+export function CenterStack(props: { settings: boolean; settingsSection?: Section }) {
   const views = () => currentViews();
   /** Code is up only when it is selected *and* has something in it. */
   const onCode = () => !props.settings && centerMode() === "code" && strip(views()).length > 0;
@@ -375,7 +371,7 @@ export function CenterStack(props: {
       </Show>
 
       <Show when={props.settings}>
-        <SettingsRoute section={props.settingsSection} onClose={props.onCloseSettings} />
+        <SettingsRoute section={props.settingsSection} />
       </Show>
     </div>
   );

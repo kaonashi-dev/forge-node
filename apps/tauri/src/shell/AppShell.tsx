@@ -59,6 +59,7 @@ import {
 } from "./layout";
 import { CenterStack } from "./CenterStack";
 import type { Section } from "../settings/SettingsRoute";
+import { ESC_AGAIN_MS, isSecondEsc } from "../settings/escAgain";
 import { defaultAgentFrom, resolveDefaultAgent } from "../settings/defaultAgent";
 import { applyThemeBase, type ThemePreference } from "../theme/ThemeProvider";
 import { DENSITIES, applyDensity } from "../theme/density";
@@ -120,6 +121,7 @@ export function AppShell() {
   const [palette, setPalette] = createSignal<PaletteScope | null>(null);
   const [settings, setSettings] = createSignal(false);
   const [settingsSection, setSettingsSection] = createSignal<Section | undefined>();
+  const [settingsEscArmed, setSettingsEscArmed] = createSignal(false);
   const [tabOrder, setTabOrder] = createSignal<TabOrderMap>(readTabOrder());
 
   // The daemon answers with the stored layout some milliseconds after the
@@ -523,10 +525,57 @@ export function AppShell() {
       .catch(() => undefined);
   });
 
+  /*
+   * Bubble, not the capture-phase keymap: a bound Escape would steal dismissals
+   * from a dialog, a select, and the keyboard-capture row. Two presses inside
+   * the window close; a nested overlay that already handled the key never
+   * reaches us (`defaultPrevented` / `stopPropagation`).
+   */
+  createEffect(() => {
+    if (!settings()) {
+      setSettingsEscArmed(false);
+      return;
+    }
+    let firstAt: number | null = null;
+    let armTimer = 0;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.repeat) return;
+      if (event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      const now = Date.now();
+      if (isSecondEsc(now, firstAt)) {
+        event.preventDefault();
+        event.stopPropagation();
+        firstAt = null;
+        window.clearTimeout(armTimer);
+        setSettingsEscArmed(false);
+        setSettings(false);
+        return;
+      }
+      firstAt = now;
+      setSettingsEscArmed(true);
+      window.clearTimeout(armTimer);
+      armTimer = window.setTimeout(() => {
+        if (firstAt !== null && Date.now() - firstAt >= ESC_AGAIN_MS) {
+          firstAt = null;
+          setSettingsEscArmed(false);
+        }
+      }, ESC_AGAIN_MS);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    onCleanup(() => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.clearTimeout(armTimer);
+      setSettingsEscArmed(false);
+    });
+  });
+
   return (
     <main class="app-shell">
       <TitleBar
         settingsOpen={settings()}
+        onCloseSettings={() => setSettings(false)}
+        settingsEscArmed={settingsEscArmed()}
         sidebarOpen={sidebarOpen()}
         onToggleSidebar={toggleSidebar}
         sessions={openSessions()}
@@ -556,11 +605,7 @@ export function AppShell() {
             onCommit={(width) => writeWidth(SIDEBAR_WIDTH_KEY, width)}
           />
         </Show>
-        <CenterStack
-          settings={settings()}
-          settingsSection={settingsSection()}
-          onCloseSettings={() => setSettings(false)}
-        />
+        <CenterStack settings={settings()} settingsSection={settingsSection()} />
       </div>
       {/* What the host refused, and why. Dismissed by hand rather than on a
           timer: a message that vanishes before it is read is not a message. */}

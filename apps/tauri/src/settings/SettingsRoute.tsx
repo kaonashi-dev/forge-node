@@ -16,7 +16,7 @@ import {
   Settings as SettingsIcon,
   Workflow,
 } from "lucide-solid";
-import { Badge, Button, Disclosure, IconButton, RadioGroup, Switch, Tabs, TextField } from "../ui";
+import { Badge, Button, Disclosure, RadioGroup, Switch, Tabs, TextField } from "../ui";
 import { Icon, SessionGlyph } from "../theme/icons";
 import {
   configPaths,
@@ -87,7 +87,6 @@ const SECTION_ICONS: Record<Section, typeof SettingsIcon> = {
 };
 
 export type SettingsRouteProps = {
-  onClose: () => void;
   /** Section to open on. Re-reading it moves the rail, which is how About lands on General. */
   section?: Section;
 };
@@ -114,12 +113,6 @@ export function SettingsRoute(props: SettingsRouteProps) {
 
   return (
     <div class="settings-layer">
-      <header class="settings-header">
-        <span class="settings-header-title">Settings</span>
-        <IconButton label="Close settings" onClick={props.onClose}>
-          <Icon name="close" class="forge-icon-muted" />
-        </IconButton>
-      </header>
       <Tabs
         class="settings-route"
         aria-label="Settings"
