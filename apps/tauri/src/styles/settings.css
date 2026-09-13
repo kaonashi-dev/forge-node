@@ -19,25 +19,10 @@
 .settings-layer {
   background: var(--bg-base);
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   inset: var(--forge-title-h) 0 0 0;
   position: fixed;
   z-index: var(--z-route);
-}
-.settings-header {
-  align-items: center;
-  border-bottom: 1px solid var(--border-subtle);
-  display: flex;
-  gap: var(--space-8);
-  padding: 0 var(--space-12) 0 var(--space-20);
-}
-.settings-header-title {
-  font-size: var(--text-lg);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-.settings-header > :last-child {
-  margin-left: auto;
 }
 .settings-route {
   display: grid;

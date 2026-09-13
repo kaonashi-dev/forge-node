@@ -96,7 +96,7 @@ export function KeyboardSection() {
   return (
     <Page
       title="Keyboard"
-      summary="Every action, the context it belongs to, and the key it answers to."
+      summary="Every action, the context it belongs to, and the key it answers to. Escape twice leaves Settings — a sequence, not a rebindable chord."
     >
       <Show when={bindingConflicts().length > 0}>
         <Group

@@ -12,13 +12,15 @@ type TitleBarProps = {
   /**
    * Whether the settings screen is up.
    *
-   * Everything in this bar except the window controls and the daemon pill acts
-   * on something the settings layer is covering: the tab strip switches to a
-   * terminal nobody can see, and the sidebar toggle folds a bar that is not on
-   * screen. The bar stays — it carries the traffic lights and the drag region —
-   * but it empties out.
+   * The tab strip, sidebar toggle and Open menu act on something the settings
+   * layer is covering, so they hide. The bar stays — traffic lights, drag
+   * region, daemon pill — and carries a back control plus the Settings title
+   * after the lights instead.
    */
   settingsOpen: boolean;
+  onCloseSettings: () => void;
+  /** First Escape has been seen; the next one inside the window will close. */
+  settingsEscArmed: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   sessions: Session[];
@@ -73,7 +75,20 @@ export function TitleBar(props: TitleBarProps) {
       <div class="title-bar-inset" aria-hidden="true" data-tauri-drag-region />
       <Show
         when={!props.settingsOpen}
-        fallback={<div class="title-bar-spacer" data-tauri-drag-region />}
+        fallback={
+          <>
+            <IconButton
+              label="Back"
+              title={props.settingsEscArmed ? "Press Esc again to close" : "Back · Esc Esc"}
+              selected={props.settingsEscArmed}
+              onClick={props.onCloseSettings}
+            >
+              <Icon name="arrow-left" class="forge-icon-muted" />
+            </IconButton>
+            <h1 class="title-bar-title">Settings</h1>
+            <div class="title-bar-spacer" data-tauri-drag-region />
+          </>
+        }
       >
         <IconButton label="Toggle sidebar" onClick={props.onToggleSidebar}>
           <Icon
