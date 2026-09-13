@@ -748,6 +748,11 @@
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-8);
+  /* Overlay thumb sits on the trailing session actions of a dense rail. */
+  scrollbar-width: none;
+}
+.projects-view::-webkit-scrollbar {
+  display: none;
 }
 .rail-empty {
   align-items: flex-start;
