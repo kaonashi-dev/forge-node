@@ -2,6 +2,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import {
   ACTIONS,
   CONTEXT_ORDER,
+  actionLabel,
   defaultBindings,
   type ActionId,
   type ContextId,
@@ -13,7 +14,7 @@ import {
   rebind,
   resetBinding,
 } from "../actions/bindings";
-import { describeChord, keyIsKnown, type Chord } from "../actions/keys";
+import { describeChord, specFromEvent, type Chord } from "../actions/keys";
 import { Button, FilterHeader, Kbd } from "../ui";
 import { Group, Page } from "./SettingsLayout";
 
@@ -28,7 +29,7 @@ import { Group, Page } from "./SettingsLayout";
  */
 export function KeyboardSection() {
   const [query, setQuery] = createSignal("");
-  /** The row currently listening for a keystroke, as `context:action`. */
+  /** The row currently listening for a keystroke, as `context:action:argument`. */
   const [capturing, setCapturing] = createSignal<string | null>(null);
 
   /**
@@ -37,7 +38,12 @@ export function KeyboardSection() {
    */
   const rows = createMemo(() => {
     const table = bindings();
-    const out: Array<{ action: ActionId; context: ContextId; chord: Chord | null }> = [];
+    const out: Array<{
+      action: ActionId;
+      context: ContextId;
+      chord: Chord | null;
+      argument?: number;
+    }> = [];
     for (const action of ACTIONS) {
       const own = table.filter((binding) => binding.action === action.id);
       if (own.length === 0) {
@@ -45,13 +51,18 @@ export function KeyboardSection() {
         continue;
       }
       for (const binding of own) {
-        out.push({ action: action.id, context: binding.context, chord: binding.chord });
+        out.push({
+          action: action.id,
+          context: binding.context,
+          chord: binding.chord,
+          argument: binding.argument,
+        });
       }
     }
     const needle = query().trim().toLowerCase();
     if (needle === "") return out;
     return out.filter((row) => {
-      const label = labelFor(row.action).toLowerCase();
+      const label = actionLabel(row.action, row.argument).toLowerCase();
       const chord = row.chord ? describeChord(row.chord).toLowerCase() : "";
       return label.includes(needle) || row.action.includes(needle) || chord.includes(needle);
     });
@@ -64,27 +75,21 @@ export function KeyboardSection() {
    * dispatcher runs on capture and would have taken `⌘K` before this ever saw
    * it, so the handler stops propagation on the way in.
    */
-  function capture(event: KeyboardEvent, action: ActionId, context: ContextId): void {
+  function capture(
+    event: KeyboardEvent,
+    action: ActionId,
+    context: ContextId,
+    argument?: number,
+  ): void {
     event.preventDefault();
     event.stopPropagation();
     if (event.key === "Escape") {
       setCapturing(null);
       return;
     }
-    // A modifier alone is the first half of a chord, not a chord.
-    if (["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
-    const key = normaliseKey(event);
-    if (!keyIsKnown(key)) return;
-    const spec = [
-      event.ctrlKey ? "ctrl" : "",
-      event.altKey ? "alt" : "",
-      event.shiftKey ? "shift" : "",
-      event.metaKey ? "cmd" : "",
-      key,
-    ]
-      .filter(Boolean)
-      .join("-");
-    rebind(action, context, spec);
+    const spec = specFromEvent(event);
+    if (!spec) return;
+    rebind(action, context, spec, argument);
     setCapturing(null);
   }
 
@@ -104,7 +109,7 @@ export function KeyboardSection() {
                 <Kbd chord={conflict.chord} />
                 <span class="keymap-conflict-context">{conflict.context}</span>
                 <span class="keymap-conflict-actions">
-                  {conflict.actions.map(labelFor).join(" · ")}
+                  {conflict.actions.map((action) => actionLabel(action)).join(" · ")}
                 </span>
               </div>
             )}
@@ -133,12 +138,17 @@ export function KeyboardSection() {
           <tbody>
             <For each={rows()}>
               {(row) => {
-                const id = () => `${row.context}:${row.action}`;
+                const id = () => `${row.context}:${row.action}:${row.argument ?? ""}`;
                 const listening = () => capturing() === id();
+                const label = actionLabel(row.action, row.argument);
                 return (
-                  <tr classList={{ overridden: isOverridden(row.action, row.context) }}>
+                  <tr
+                    classList={{
+                      overridden: isOverridden(row.action, row.context, row.argument),
+                    }}
+                  >
                     <th scope="row" class="keymap-action">
-                      {labelFor(row.action)}
+                      {label}
                     </th>
                     <td class="keymap-context">{row.context}</td>
                     <td>
@@ -148,14 +158,14 @@ export function KeyboardSection() {
                         classList={{ listening: listening() }}
                         aria-label={
                           listening()
-                            ? `Press a new shortcut for ${labelFor(row.action)}, or Escape to cancel`
-                            : `Change the shortcut for ${labelFor(row.action)}`
+                            ? `Press a new shortcut for ${label}, or Escape to cancel`
+                            : `Change the shortcut for ${label}`
                         }
                         onClick={() => setCapturing(listening() ? null : id())}
                         onBlur={() => listening() && setCapturing(null)}
                         onKeyDown={(event) => {
                           if (!listening()) return;
-                          capture(event, row.action, row.context);
+                          capture(event, row.action, row.context, row.argument);
                         }}
                       >
                         <Show
@@ -172,11 +182,11 @@ export function KeyboardSection() {
                       </button>
                     </td>
                     <td>
-                      <Show when={isOverridden(row.action, row.context)}>
+                      <Show when={isOverridden(row.action, row.context, row.argument)}>
                         <Button
                           variant="ghost"
                           size="xs"
-                          onClick={() => resetBinding(row.action, row.context)}
+                          onClick={() => resetBinding(row.action, row.context, row.argument)}
                         >
                           Reset
                         </Button>
@@ -193,10 +203,6 @@ export function KeyboardSection() {
   );
 }
 
-function labelFor(action: ActionId): string {
-  return ACTIONS.find((item) => item.id === action)?.label ?? action;
-}
-
 /**
  * Where an unbound action would live if it were given a chord.
  *
@@ -207,18 +213,4 @@ function labelFor(action: ActionId): string {
 function defaultContextFor(action: ActionId): ContextId {
   const shipped = defaultBindings().find((binding) => binding.action === action);
   return shipped?.context ?? CONTEXT_ORDER[CONTEXT_ORDER.length - 1];
-}
-
-/** `KeyboardEvent.key` as a chord spec writes it. */
-function normaliseKey(event: KeyboardEvent): string {
-  const named: Record<string, string> = {
-    arrowup: "up",
-    arrowdown: "down",
-    arrowleft: "left",
-    arrowright: "right",
-    " ": "space",
-    esc: "escape",
-  };
-  const key = event.key.toLowerCase();
-  return named[key] ?? key;
 }

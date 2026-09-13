@@ -160,6 +160,46 @@ export function keyIsKnown(key: string): boolean {
   return lower in NAMED_CODES;
 }
 
+const CAPTURE_KEYS: Record<string, string> = {
+  arrowup: "up",
+  arrowdown: "down",
+  arrowleft: "left",
+  arrowright: "right",
+  " ": "space",
+  esc: "escape",
+};
+
+/**
+ * Chord spec Settings stores for this event.
+ *
+ * Prefers `event.code` for letters and digits so Option+1 records as `alt-1`
+ * rather than `alt-¡` — the same physical-key rule `matches` uses.
+ */
+export function specFromEvent(event: KeyboardEvent): string | null {
+  if (["Shift", "Control", "Alt", "Meta"].includes(event.key)) return null;
+  const key = keyFromEvent(event);
+  if (!keyIsKnown(key)) return null;
+  return [
+    event.ctrlKey ? "ctrl" : "",
+    event.altKey ? "alt" : "",
+    event.shiftKey ? "shift" : "",
+    event.metaKey ? "cmd" : "",
+    key,
+  ]
+    .filter(Boolean)
+    .join("-");
+}
+
+function keyFromEvent(event: KeyboardEvent): string {
+  const code = event.code ?? "";
+  const digit = /^Digit([0-9])$/.exec(code);
+  if (digit) return digit[1];
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) return letter[1].toLowerCase();
+  const key = event.key.toLowerCase();
+  return CAPTURE_KEYS[key] ?? key;
+}
+
 function codeFor(key: string): string | null {
   if (NAMED_CODES[key]) return NAMED_CODES[key];
   if (/^[a-z]$/.test(key)) return `Key${key.toUpperCase()}`;

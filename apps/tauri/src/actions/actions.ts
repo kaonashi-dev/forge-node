@@ -11,7 +11,7 @@
 // Contexts nest: a binding declared on `App` fires while focus is anywhere in
 // the window, and one declared on `Terminal` only fires with the grid focused.
 
-import { CLIPBOARD_MOD, MOD, PASTE_CHORD, parseChord, type Chord } from "./keys";
+import { CLIPBOARD_MOD, MOD, PASTE_CHORD, isMac, parseChord, type Chord } from "./keys";
 
 /** The context on the window root: everything the shell can do from anywhere. */
 export const APP = "App";
@@ -500,7 +500,7 @@ export const ACTIONS: Action[] = [
     detail: "Open the file, or fold the directory",
     palette: false,
   },
-  { id: "focus_session", label: "Focus Session", detail: "Focus a tab by number", palette: false },
+  { id: "focus_session", label: "Focus Tab", detail: "Focus a tab by number", palette: false },
   {
     id: "about",
     label: "About Forge Node",
@@ -535,10 +535,17 @@ export type Binding = {
 /**
  * The tabs a chord can reach, counted the way the user counts them.
  *
- * On `MOD-alt`, because the bare number row is the sidebar's. Matched on
- * `event.code`, so macOS's ⌥ turning `1` into `¡` does not move the key.
+ * Option+N on macOS, because Cmd+N is the sidebar. Ctrl+Alt+N elsewhere:
+ * Linux readline owns Alt+N as a numeric argument. Matched on `event.code`,
+ * so Option turning `1` into `¡` does not move the key.
  */
 export const FOCUSABLE_SESSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+/** Settings / conflict title. Numbered tabs name the index they reach. */
+export function actionLabel(action: ActionId, argument?: number): string {
+  if (action === "focus_session" && argument != null) return `Focus Tab ${argument}`;
+  return ACTIONS.find((item) => item.id === action)?.label ?? action;
+}
 
 /** The default bindings, built without touching the DOM so tests can read them. */
 export function defaultBindings(): Binding[] {
@@ -666,8 +673,10 @@ export function defaultBindings(): Binding[] {
     bind("backspace", "file_tree_delete", FILES),
   ];
 
+  // macOS: Option+N. Linux: Ctrl+Alt+N — Alt+N is readline's M-N.
+  const tabMod = isMac() ? "alt" : `${MOD}-alt`;
   for (const index of FOCUSABLE_SESSIONS) {
-    bindings.push(bind(`${MOD}-alt-${index}`, "focus_session", APP, index));
+    bindings.push(bind(`${tabMod}-${index}`, "focus_session", APP, index));
   }
   return bindings;
 }

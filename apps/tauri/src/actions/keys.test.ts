@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeChord, matches, parseChord } from "./keys";
+import { describeChord, matches, parseChord, specFromEvent } from "./keys";
 
 function event(init: Partial<KeyboardEvent> & { key: string }): KeyboardEvent {
   return {
@@ -69,6 +69,25 @@ describe("matches", () => {
     expect(matches(parseChord("cmd-k"), event({ key: "j", code: "KeyJ", metaKey: true }))).toBe(
       false,
     );
+  });
+
+  // US macOS Option+1 types `¡`. The position is still Digit1.
+  it("matches Option+digit by physical key when the layout remaps the character", () => {
+    const chord = parseChord("alt-1");
+    expect(matches(chord, event({ key: "¡", code: "Digit1", altKey: true }))).toBe(true);
+    expect(matches(chord, event({ key: "1", code: "Digit1", altKey: true, metaKey: true }))).toBe(
+      false,
+    );
+  });
+});
+
+describe("specFromEvent", () => {
+  it("records Option+digit as alt-N, not the character the layout produced", () => {
+    expect(specFromEvent(event({ key: "¡", code: "Digit1", altKey: true }))).toBe("alt-1");
+  });
+
+  it("ignores a modifier with no key", () => {
+    expect(specFromEvent(event({ key: "Alt", code: "AltLeft", altKey: true }))).toBeNull();
   });
 });
 

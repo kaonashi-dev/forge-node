@@ -6,7 +6,7 @@ import { AttentionMarker, Icon, SessionGlyph, StateMarker } from "../theme/icons
 import { ContextMenu, IconButton, type MenuItem } from "../ui";
 import { SessionMenu } from "./SessionMenu";
 import { closeSessionFromUi, sessionMenuItems } from "./sessionMenuItems";
-import { dropFromGap, gapAtX, moveTabToGap, orderFromSessions } from "./tabOrder";
+import { clampGapToKind, dropFromGap, gapAtX, moveTabToGap, orderFromSessions } from "./tabOrder";
 import type { TextInputRequest } from "./TextInputDialog";
 
 const TAB_MIN_W = 120;
@@ -137,10 +137,11 @@ export function SessionTabs(props: SessionTabsProps) {
     }
     event.preventDefault();
     scrollStripToward(event.clientX);
+    const list = tabs();
     setDropTarget(
       dropFromGap(
-        tabs().map((session) => session.id),
-        gapAtX(tabBoxes(), event.clientX),
+        list.map((session) => session.id),
+        clampGapToKind(list, sessionId, gapAtX(tabBoxes(), event.clientX)),
         sessionId,
       ),
     );
@@ -151,8 +152,11 @@ export function SessionTabs(props: SessionTabsProps) {
     if (drag.started) {
       swallowClick = true;
       const fromId = drag.id;
-      const base = orderFromSessions(tabs(), props.tabOrder);
-      props.onReorderTabs(moveTabToGap(base, fromId, gapAtX(tabBoxes(), event.clientX)));
+      const list = tabs();
+      const base = orderFromSessions(list, props.tabOrder);
+      props.onReorderTabs(
+        moveTabToGap(base, fromId, clampGapToKind(list, fromId, gapAtX(tabBoxes(), event.clientX))),
+      );
       focusSession(fromId);
     }
     finishDrag();
@@ -179,7 +183,53 @@ export function SessionTabs(props: SessionTabsProps) {
           onScroll={onScroll}
         >
           <div class="tab-strip" role="tablist" aria-label="Sessions">
-            <For each={tabs()} fallback={<span class="tab-empty">No sessions</span>}>
+            {/* Code leads so Option+1 reaches the files. Sessions follow it. */}
+            <Show when={props.codeOpen}>
+              <div class="session-tab-wrap code-tab-wrap">
+                <div
+                  role="tab"
+                  class={`session-tab ${props.codeActive ? "ground-current" : "ground-quiet"}`}
+                  aria-selected={props.codeActive}
+                  aria-label={`Code — ${props.codeCount} open`}
+                  style={{ "min-width": `${CODE_TAB_MIN_W}px`, "max-width": "200px" }}
+                  onClick={props.onSelectCode}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      props.onSelectCode();
+                    }
+                  }}
+                >
+                  <Icon
+                    name="folder-open"
+                    class={props.codeActive ? "forge-icon-accent" : "forge-icon-muted"}
+                    size={14}
+                  />
+                  <span class="session-tab-label">Code</span>
+                  <span class="code-tab-count">{props.codeCount}</span>
+                  <IconButton
+                    label="Close every open file"
+                    hideTooltip
+                    size="xs"
+                    class="session-tab-close"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      props.onCloseCode();
+                    }}
+                  >
+                    <Icon name="close" class="forge-icon-faint" size={14} />
+                  </IconButton>
+                </div>
+              </div>
+            </Show>
+            <For
+              each={tabs()}
+              fallback={
+                <Show when={!props.codeOpen}>
+                  <span class="tab-empty">No sessions</span>
+                </Show>
+              }
+            >
               {(session, index) => {
                 const ground = () => groundOf(session);
                 const prev = () => {
@@ -226,48 +276,6 @@ export function SessionTabs(props: SessionTabsProps) {
                 );
               }}
             </For>
-            {/* Files and diffs get one window tab of their own rather than a
-                strip stacked on top of a terminal: the terminal keeps its own
-                tab, and opening a file no longer covers whichever session the
-                person was watching. */}
-            <Show when={props.codeOpen}>
-              <div class="session-tab-wrap code-tab-wrap">
-                <div
-                  role="tab"
-                  class={`session-tab ${props.codeActive ? "ground-current" : "ground-quiet"}`}
-                  aria-selected={props.codeActive}
-                  aria-label={`Code — ${props.codeCount} open`}
-                  style={{ "min-width": `${CODE_TAB_MIN_W}px`, "max-width": "200px" }}
-                  onClick={props.onSelectCode}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      props.onSelectCode();
-                    }
-                  }}
-                >
-                  <Icon
-                    name="folder-open"
-                    class={props.codeActive ? "forge-icon-accent" : "forge-icon-muted"}
-                    size={14}
-                  />
-                  <span class="session-tab-label">Code</span>
-                  <span class="code-tab-count">{props.codeCount}</span>
-                  <IconButton
-                    label="Close every open file"
-                    hideTooltip
-                    size="xs"
-                    class="session-tab-close"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      props.onCloseCode();
-                    }}
-                  >
-                    <Icon name="close" class="forge-icon-faint" size={14} />
-                  </IconButton>
-                </div>
-              </div>
-            </Show>
           </div>
         </div>
         <div class="tab-strip-trailing">

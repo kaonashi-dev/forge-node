@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { ACTIONS, FOCUSABLE_SESSIONS, chordFor, defaultBindings, firesOnRepeat } from "./actions";
-import { MOD, PASTE_CHORD } from "./keys";
+import {
+  ACTIONS,
+  FOCUSABLE_SESSIONS,
+  actionLabel,
+  chordFor,
+  defaultBindings,
+  firesOnRepeat,
+} from "./actions";
+import { MOD, PASTE_CHORD, parseChord } from "./keys";
 
 describe("default bindings (actions.rs port)", () => {
   /*
@@ -34,10 +41,11 @@ describe("default bindings (actions.rs port)", () => {
   });
 
   /**
-   * The bare number row is the sidebar's and the tabs are on `MOD-alt`, so the
-   * test pins the modifiers and not just the key. Both halves matter: a stale
-   * focus binding left behind would win or lose the dispatch by table order,
-   * so the tab side has to be gone rather than outranked.
+   * The bare number row is the sidebar's and the tabs are on Option (Alt
+   * alone on macOS, Ctrl+Alt elsewhere), so the test pins the modifiers and
+   * not just the key. Both halves matter: a stale focus binding left behind
+   * would win or lose the dispatch by table order, so the tab side has to be
+   * gone rather than outranked.
    */
   it("gives the bare number row to the rail", () => {
     const bareDigit = (key: string) =>
@@ -53,6 +61,21 @@ describe("default bindings (actions.rs port)", () => {
     expect(bareDigit("2").map((binding) => binding.action)).toEqual(["toggle_files"]);
     expect(bareDigit("3").map((binding) => binding.action)).toEqual(["cycle_sidebar_views"]);
     expect(FOCUSABLE_SESSIONS).toContain(1);
+  });
+
+  it("puts the tabs on Option, because Cmd+N is the rail", () => {
+    for (const index of FOCUSABLE_SESSIONS) {
+      const binding = defaultBindings().find(
+        (item) => item.action === "focus_session" && item.argument === index,
+      );
+      const spec = MOD === "cmd" ? `alt-${index}` : `${MOD}-alt-${index}`;
+      expect(binding?.chord).toEqual(parseChord(spec));
+    }
+  });
+
+  it("names a numbered tab in Settings by the index it reaches", () => {
+    expect(actionLabel("focus_session", 3)).toBe("Focus Tab 3");
+    expect(actionLabel("new_terminal")).toBe("New Terminal");
   });
 
   // Declared before `MOD-shift-f`: the palette draws an action's first chord.
@@ -101,7 +124,11 @@ describe("default bindings (actions.rs port)", () => {
    */
   it("keeps every bare-letter chord inside a tree's own context", () => {
     const bare = defaultBindings().filter(
-      (binding) => binding.chord.key.length === 1 && !binding.chord.meta && !binding.chord.ctrl,
+      (binding) =>
+        binding.chord.key.length === 1 &&
+        !binding.chord.meta &&
+        !binding.chord.ctrl &&
+        !binding.chord.alt,
     );
     expect(bare.length).toBeGreaterThan(0);
     for (const binding of bare) expect(["Files", "Sidebar"]).toContain(binding.context);

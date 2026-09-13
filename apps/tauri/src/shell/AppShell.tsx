@@ -90,7 +90,12 @@ import {
   toggleSessionChanges,
 } from "./sessionActions";
 import { listen } from "@tauri-apps/api/event";
-import { openSessions as orderedOpenSessions } from "./tabOrder";
+import {
+  openSessions as orderedOpenSessions,
+  stripIndex,
+  stripItems,
+  type StripItem,
+} from "./tabOrder";
 import {
   parseTabOrder,
   projectOfWorkspace,
@@ -257,14 +262,22 @@ export function AppShell() {
     );
   }
 
+  function windowTabs() {
+    return stripItems(openSessions(), openViewCount() > 0);
+  }
+
+  function activateTab(item: StripItem): void {
+    if (item.kind === "code") showCode();
+    else focusSession(item.id);
+  }
+
   function cycleTab(delta: number): void {
-    const sessions = openSessions();
-    if (sessions.length === 0) return;
-    const current = sessions.findIndex((session) => session.id === runtimeStore.activeSession);
+    const items = windowTabs();
+    if (items.length === 0) return;
+    const current = stripIndex(items, centerMode() === "code", runtimeStore.activeSession);
     const index =
-      ((((current < 0 ? 0 : current) + delta) % sessions.length) + sessions.length) %
-      sessions.length;
-    focusSession(sessions[index].id);
+      ((((current < 0 ? 0 : current) + delta) % items.length) + items.length) % items.length;
+    activateTab(items[index]);
   }
 
   /**
@@ -425,10 +438,9 @@ export function AppShell() {
       registerAction("switch_tab_next", () => stepSwitcher(1)),
       registerAction("switch_tab_previous", () => stepSwitcher(-1)),
       registerAction("focus_session", (index) => {
-        const sessions = openSessions();
-        const target = sessions[(index ?? 1) - 1];
+        const target = windowTabs()[(index ?? 1) - 1];
         if (!target) return;
-        focusSession(target.id);
+        activateTab(target);
       }),
       // Registered here, not in the container: the sidebar unmounts when it is
       // collapsed, and a shortcut that names a view has to be able to open the

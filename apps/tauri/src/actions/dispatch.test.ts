@@ -57,6 +57,21 @@ describe("resolve", () => {
   it("returns null when nothing matches", () => {
     expect(resolve(event("z", "KeyZ"), [APP], bindings, bound)).toBeNull();
   });
+
+  it("matches Option+digit even when the layout produced a different character", () => {
+    const tabs: Binding[] = [
+      { chord: parseChord("alt-1"), action: "focus_session", context: APP, argument: 1 },
+    ];
+    const stroke = {
+      key: "¡",
+      code: "Digit1",
+      ctrlKey: false,
+      altKey: true,
+      shiftKey: false,
+      metaKey: false,
+    } as KeyboardEvent;
+    expect(resolve(stroke, [APP], tabs, bound)?.argument).toBe(1);
+  });
 });
 
 describe("action registry", () => {

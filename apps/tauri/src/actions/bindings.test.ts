@@ -6,7 +6,7 @@ import {
   FOCUSABLE_SESSIONS,
   type ActionId,
 } from "./actions";
-import { describeChord, PASTE_CHORD, type Chord } from "./keys";
+import { describeChord, MOD, PASTE_CHORD, type Chord } from "./keys";
 
 function chordKey(chord: Chord): string {
   return [
@@ -64,6 +64,29 @@ describe("the binding table", () => {
     }
   });
 
+  it.each([
+    { platform: "MacIntel", spec: "alt-1", meta: false, ctrl: false },
+    { platform: "Linux x86_64", spec: "ctrl-alt-1", meta: false, ctrl: true },
+  ])("binds tab 1 as $spec on $platform", async ({ platform, spec, meta, ctrl }) => {
+    vi.stubGlobal("navigator", { platform, userAgent: "" });
+    vi.resetModules();
+    try {
+      const { defaultBindings: platformBindings, FOCUSABLE_SESSIONS: tabs } =
+        await import("./actions");
+      const { parseChord } = await import("./keys");
+      const binding = platformBindings().find(
+        (item) => item.action === "focus_session" && item.argument === 1,
+      );
+      expect(tabs).toContain(1);
+      expect(binding?.chord).toEqual(parseChord(spec));
+      expect(binding?.chord.meta).toBe(meta);
+      expect(binding?.chord.ctrl).toBe(ctrl);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
   it("numbers the session chords the way a person counts tabs", () => {
     for (const index of FOCUSABLE_SESSIONS) {
       const binding = bindings.find(
@@ -71,8 +94,15 @@ describe("the binding table", () => {
       );
       expect(binding, `no chord for tab ${index}`).toBeDefined();
       expect(binding?.chord.key).toBe(String(index));
-      // On `MOD-alt`: the bare number row belongs to the sidebar.
+      // Option (and Ctrl+Alt off macOS): the bare number row is the sidebar.
       expect(binding?.chord.alt, `tab ${index} must carry alt`).toBe(true);
+      expect(binding?.chord.shift).toBe(false);
+      if (MOD === "cmd") {
+        expect(binding?.chord.meta, `tab ${index} must not also require cmd`).toBe(false);
+        expect(binding?.chord.ctrl).toBe(false);
+      } else {
+        expect(binding?.chord.ctrl, `tab ${index} must keep ctrl off macOS`).toBe(true);
+      }
     }
   });
 });

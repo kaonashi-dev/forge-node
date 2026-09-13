@@ -40,6 +40,8 @@ export type KeymapOverride = {
   context: ContextId;
   /** A chord spec — `cmd-shift-p` — or `null` to unbind the action there. */
   chord: string | null;
+  /** Present when the default binding carries one (`focus_session`'s tab). */
+  argument?: number;
 };
 
 /**
@@ -65,10 +67,13 @@ export function parseKeymap(raw: string | undefined): KeymapOverride[] {
     if (typeof row.action !== "string" || typeof row.context !== "string") continue;
     if (row.chord !== null && typeof row.chord !== "string") continue;
     if (typeof row.chord === "string" && !chordIsValid(row.chord)) continue;
+    const argument =
+      typeof row.argument === "number" && Number.isInteger(row.argument) ? row.argument : undefined;
     out.push({
       action: row.action as ActionId,
       context: row.context as ContextId,
       chord: row.chord as string | null,
+      ...(argument !== undefined ? { argument } : {}),
     });
   }
   return out;
@@ -93,11 +98,11 @@ function chordIsValid(spec: string): boolean {
 /**
  * The defaults with the overrides applied.
  *
- * An override replaces the default for its `(action, context)` pair rather
- * than adding to it, because that is what a rebind means. An action bound to
- * two chords by default — the file tree answers to both `↓` and `j` — keeps
- * whichever it was not asked about, so rebinding `j` does not silently take
- * the arrow away too.
+ * An override replaces the default for its `(action, context, argument)`
+ * triple rather than adding to it, because that is what a rebind means.
+ * Numbered tabs share an action and must rebind independently; two chords
+ * for one un-numbered action still collapse, so rebinding the tree's `j`
+ * does not leave `↓` behind that nobody asked for.
  *
  * `argument` is preserved from the default it replaces, so rebinding
  * "focus tab 3" still focuses tab 3.
@@ -138,13 +143,14 @@ export function mergeBindings(
       chord: parseChord(override.chord),
       action: override.action,
       context: override.context,
+      argument: override.argument,
     });
   }
   return merged;
 }
 
-function pairKey(item: { action: ActionId; context: ContextId }): string {
-  return `${item.context}:${item.action}`;
+function pairKey(item: { action: ActionId; context: ContextId; argument?: number }): string {
+  return `${item.context}:${item.action}:${item.argument ?? ""}`;
 }
 
 /** A chord claimed by more than one action in the same context. */

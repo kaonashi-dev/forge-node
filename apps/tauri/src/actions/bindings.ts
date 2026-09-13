@@ -53,25 +53,46 @@ export function writeOverrides(next: KeymapOverride[]): void {
 /**
  * Rebind one action in one context, or unbind it with `chord: null`.
  *
- * Replaces any previous decision about the same pair rather than stacking a
- * second one, so the stored table never grows a history.
+ * Replaces any previous decision about the same triple rather than stacking a
+ * second one, so the stored table never grows a history. `argument` is how
+ * "focus tab 3" stays tab 3 when its chord moves.
  */
-export function rebind(action: ActionId, context: Binding["context"], chord: string | null): void {
-  const next = overrides().filter((item) => !(item.action === action && item.context === context));
-  next.push({ action, context, chord });
+export function rebind(
+  action: ActionId,
+  context: Binding["context"],
+  chord: string | null,
+  argument?: number,
+): void {
+  const next = overrides().filter((item) => !sameBinding(item, action, context, argument));
+  next.push({ action, context, chord, argument });
   writeOverrides(next);
 }
 
 /** Drop the override for one action, restoring what ships. */
-export function resetBinding(action: ActionId, context: Binding["context"]): void {
-  writeOverrides(
-    overrides().filter((item) => !(item.action === action && item.context === context)),
-  );
+export function resetBinding(
+  action: ActionId,
+  context: Binding["context"],
+  argument?: number,
+): void {
+  writeOverrides(overrides().filter((item) => !sameBinding(item, action, context, argument)));
 }
 
 /** Whether an action is currently carrying an override in a context. */
-export function isOverridden(action: ActionId, context: Binding["context"]): boolean {
-  return overrides().some((item) => item.action === action && item.context === context);
+export function isOverridden(
+  action: ActionId,
+  context: Binding["context"],
+  argument?: number,
+): boolean {
+  return overrides().some((item) => sameBinding(item, action, context, argument));
+}
+
+function sameBinding(
+  item: { action: ActionId; context: Binding["context"]; argument?: number },
+  action: ActionId,
+  context: Binding["context"],
+  argument?: number,
+): boolean {
+  return item.action === action && item.context === context && item.argument === argument;
 }
 
 export { defaultBindings };

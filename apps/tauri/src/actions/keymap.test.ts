@@ -14,6 +14,15 @@ describe("parseKeymap", () => {
     ]);
   });
 
+  it("keeps the tab number a numbered override names", () => {
+    const raw = serializeKeymap([
+      { action: "focus_session", context: APP, chord: "alt-9", argument: 3 },
+    ]);
+    expect(parseKeymap(raw)).toEqual([
+      { action: "focus_session", context: APP, chord: "alt-9", argument: 3 },
+    ]);
+  });
+
   it("keeps an unbind, which is a real preference", () => {
     const raw = serializeKeymap([{ action: "new_terminal", context: APP, chord: null }]);
     expect(parseKeymap(raw)[0].chord).toBeNull();
@@ -82,10 +91,27 @@ describe("mergeBindings", () => {
     // Rebinding "focus tab 3" has to still focus tab 3.
     const tabs = [binding("cmd-3", "focus_session", APP, 3)];
     const merged = mergeBindings(
-      [{ action: "focus_session", context: APP, chord: "cmd-f3" }],
+      [{ action: "focus_session", context: APP, chord: "cmd-f3", argument: 3 }],
       tabs,
     );
+    expect(merged).toHaveLength(1);
     expect(merged[0].argument).toBe(3);
+    expect(merged[0].chord.key).toBe("f3");
+  });
+
+  it("rebinds one numbered tab without dropping the others", () => {
+    const tabs = [
+      binding("alt-2", "focus_session", APP, 2),
+      binding("alt-3", "focus_session", APP, 3),
+    ];
+    const merged = mergeBindings(
+      [{ action: "focus_session", context: APP, chord: "alt-f3", argument: 3 }],
+      tabs,
+    );
+    expect(merged.map((item) => [item.argument, item.chord.key])).toEqual([
+      [2, "2"],
+      [3, "f3"],
+    ]);
   });
 
   it.each(["no_such_action", "toggle_lieutenant"])(
