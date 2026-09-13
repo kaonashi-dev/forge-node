@@ -1,20 +1,8 @@
-//! # agents
+//! Provider registry, descriptors, detection, and launch-spec construction.
 //!
-//! Provider registry, descriptors, detection, and launch-spec construction for
-//! Forge's agent CLIs (§7.5, §7.6, §13, ADR-007). Per principle P2 this crate
-//! owns *all* provider-specific knowledge; the daemon's `AgentService` (§9.3)
-//! is thin orchestration over [`AgentRegistry`], and no other crate branches on
-//! provider id.
-//!
-//! ADR-007 defines two levels:
-//! - **Descriptors** ([`builtins`]) — static data: candidate binaries, version
-//!   probe, capabilities. The built-ins resolve entirely here.
-//! - **Adapters** ([`AgentAdapter`]) — behavioral hooks. The MVP ships zero
-//!   real adapters; [`DescriptorAdapter`] wraps any descriptor with no special
-//!   behavior.
-//!
-//! The domain types ([`domain::AgentDescriptor`], [`domain::DetectionResult`],
-//! [`domain::SpawnSpec`], …) are reused as-is and re-exported by `domain`.
+//! All provider-specific knowledge lives here (P2, ADR-007). No other crate
+//! branches on a provider id. Descriptors are static data; [`DescriptorAdapter`]
+//! wraps one with no extra behavior.
 
 pub mod attention;
 pub mod builtins;

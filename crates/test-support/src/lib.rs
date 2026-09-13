@@ -1,22 +1,8 @@
-//! # test-support
+//! Shared test fixtures: fake PTY, fake agent binaries, throwaway git repos.
 //!
-//! Deterministic test fixtures shared across the Forge (ForgeNode) workspace
-//! (§21 "Determinismo"). The plan splits terminal testing into two tiers, and
-//! this crate provides the building blocks for both:
-//!
-//! - **Unit/terminal tests** drive a fake [`PtyBackend`](terminal_core::PtyBackend)
-//!   with predefined bytes: [`FakePtyBackend`] replays a scripted byte stream as
-//!   the child's output, captures input, and lets the test control termination —
-//!   no real process, no threads.
-//! - **Integration tests** use real PTYs and real git repositories:
-//!   [`TempRepo`] builds an actual `git` repo in a temp directory, and the
-//!   [`fake_agent`] helpers write real executable probe scripts.
-//!
-//! It also exposes small builders for shared runtime types
-//! ([`resolved_env`] for [`domain::ResolvedEnvironment`]).
-//!
-//! This crate is a dev-only dependency of the other backend crates; keep it
-//! dependency-light (`std` plus `domain`, `terminal-core`, and `tempfile`).
+//! Unit tests drive [`FakePtyBackend`] with scripted bytes — no process, no
+//! threads. Integration tests use real PTYs and [`TempRepo`]. Dev-only;
+//! keep the dependency set small.
 
 pub mod env;
 pub mod fake_agent;

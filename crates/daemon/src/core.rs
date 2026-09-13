@@ -1965,11 +1965,11 @@ impl Daemon {
         std::thread::Builder::new()
             .name("forge-fetch".into())
             .spawn(move || {
+                let _guard = FetchingGuard {
+                    daemon: Arc::clone(&daemon),
+                    project_id,
+                };
                 let outcome = git_service::fetch(&git_root, &remote, Some(timeout));
-                {
-                    let mut inner = daemon.lock();
-                    inner.fetching.remove(&project_id);
-                }
                 let event = match outcome {
                     Ok(outcome) => DaemonEvent::RemoteRefsUpdated {
                         project_id,
@@ -2013,6 +2013,9 @@ impl Daemon {
         std::thread::Builder::new()
             .name("forge-pr-refresh".into())
             .spawn(move || {
+                let _guard = PrRefreshingGuard {
+                    daemon: Arc::clone(&daemon),
+                };
                 let (projects, path_entries): (Vec<crate::pull_requests::ProjectSource>, _) = {
                     let mut inner = daemon.lock();
                     let projects = inner
@@ -2047,7 +2050,6 @@ impl Daemon {
                     state
                 });
 
-                daemon.lock().pr_refreshing = false;
                 daemon
                     .registry
                     .broadcast_domain(DaemonEvent::PullRequestsUpdated { state });
@@ -2562,7 +2564,9 @@ impl Daemon {
             domain::SearchKind::Name => fs_service::SearchKind::Name,
             domain::SearchKind::Content => fs_service::SearchKind::Content,
             domain::SearchKind::Definition => fs_service::SearchKind::Definition,
-            _ => fs_service::SearchKind::Name,
+            _ => {
+                return Err(ProtocolError::invalid_request("unknown search kind"));
+            }
         };
         let results = fs_service::search_files(&path, query, kind, limit).map_err(fs_err)?;
         Ok(Response::SearchResults(domain::SearchResults {
@@ -2700,6 +2704,10 @@ impl Daemon {
         std::thread::Builder::new()
             .name("forge-pr".into())
             .spawn(move || {
+                let _guard = PrOpeningGuard {
+                    daemon: Arc::clone(&daemon),
+                    workspace_id,
+                };
                 let result = (|| -> Result<String, git_service::GitError> {
                     let remote = git_service::default_remote(&path)?.ok_or_else(|| {
                         git_service::GitError::CommandFailed {
@@ -2718,11 +2726,6 @@ impl Daemon {
                     )?;
                     Ok(pr.url)
                 })();
-
-                {
-                    let mut inner = daemon.lock();
-                    inner.pr_opening.remove(&workspace_id);
-                }
 
                 match result {
                     Ok(url) => {
@@ -5637,11 +5640,27 @@ fn describe_detection(status: &DetectionStatus) -> String {
 ///
 /// `Daemon::lock` recovers from poisoning, so a panicked worker that left the
 /// flag set would make that workspace unprovisionable until the daemon
-/// restarted — the same reason `fetching` and `pr_opening` are unwound by a
-/// `Drop` impl rather than by the happy path.
+/// restarted. `fetching`, `pr_opening`, and `pr_refreshing` use the same shape.
 struct ProvisioningGuard {
     daemon: Arc<Daemon>,
     workspace_id: WorkspaceId,
+}
+
+/// Releases a project's fetch flag however the worker ends.
+struct FetchingGuard {
+    daemon: Arc<Daemon>,
+    project_id: ProjectId,
+}
+
+/// Releases a workspace's PR-open flag however the worker ends.
+struct PrOpeningGuard {
+    daemon: Arc<Daemon>,
+    workspace_id: WorkspaceId,
+}
+
+/// Releases the global PR-refresh flag however the worker ends.
+struct PrRefreshingGuard {
+    daemon: Arc<Daemon>,
 }
 
 /// Releases a workspace's Juva flag however the worker ends, for the reason
@@ -5663,6 +5682,26 @@ impl Drop for ProvisioningGuard {
     fn drop(&mut self) {
         let mut inner = self.daemon.lock();
         inner.provisioning.remove(&self.workspace_id);
+    }
+}
+
+impl Drop for FetchingGuard {
+    fn drop(&mut self) {
+        let mut inner = self.daemon.lock();
+        inner.fetching.remove(&self.project_id);
+    }
+}
+
+impl Drop for PrOpeningGuard {
+    fn drop(&mut self) {
+        let mut inner = self.daemon.lock();
+        inner.pr_opening.remove(&self.workspace_id);
+    }
+}
+
+impl Drop for PrRefreshingGuard {
+    fn drop(&mut self) {
+        self.daemon.lock().pr_refreshing = false;
     }
 }
 

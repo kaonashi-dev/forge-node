@@ -1,9 +1,8 @@
-//! Read-only repository queries built on the ADR-008 command list (§14.1).
+//! Read-only repository queries (ADR-008).
 //!
-//! These functions return lightweight, crate-local result structs
-//! ([`RepoStatus`], [`WorktreeEntry`]). They deliberately do **not** construct
-//! `domain::Workspace` values — the daemon's `WorkspaceService` owns that
-//! mapping (§9.3, §17); this crate only reports what git says.
+//! Returns crate-local structs ([`RepoStatus`], [`WorktreeEntry`]). Does not
+//! construct `domain::Workspace` — this crate reports what git says; the
+//! daemon maps that into domain objects.
 
 use crate::command::{run_git, GitError};
 use std::path::{Path, PathBuf};

@@ -15,6 +15,7 @@
 #   scripts/harness root         # absolute path of the checkout that owns harness/
 #   scripts/harness doctor [id] # orchestrator link + events (no Forge needed)
 #   scripts/harness watch [id]  # poll doctor every 2s
+#   scripts/harness validate     # features.json coherence
 #   scripts/harness gate [--fast]# ./init.sh (full or --fast)
 set -euo pipefail
 cd "$(dirname "$0")/.."

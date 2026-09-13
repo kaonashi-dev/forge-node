@@ -1,12 +1,7 @@
-//! Daemon logging setup (§15.1, §22).
+//! Daemon logging: `daemon.log` plus stderr.
 //!
-//! Writes structured `tracing` output to `daemon.log` in the logs directory and
-//! to stderr, which is what `scripts/dev daemon` reads. Log lines never contain
-//! terminal content or environment values (§22, §23).
-//!
-//! The plan calls for size-based rotation (5×10 MB). `tracing-appender` rotates
-//! by time, so we approximate with daily rotation capped at 5 files; true
-//! size-based rotation is a post-MVP refinement.
+//! Lines never contain terminal content or environment values.
+//! `tracing-appender` rotates daily, capped at 5 files.
 
 use std::path::Path;
 use tracing_appender::non_blocking::WorkerGuard;

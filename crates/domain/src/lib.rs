@@ -1,25 +1,8 @@
-//! # domain
+//! Shared serializable model: ids, projects, workspaces, sessions, agents,
+//! and the terminal grid wire types.
 //!
-//! Shared domain model for Forge (ForgeNode). This crate is the base of the
-//! dependency graph (§17): it depends only on `serde`, `uuid`, `time` and
-//! `thiserror`, and every other backend crate builds on it.
-//!
-//! Modules mirror §7 of the plan:
-//! - [`ids`]: typed identifiers and [`ids::Timestamp`].
-//! - [`project`]: [`project::Project`] (§7.1).
-//! - [`workspace`]: [`workspace::Workspace`] (§7.2).
-//! - [`branch`]: [`branch::BranchRef`], the git refs the picker offers (§14.3).
-//! - [`session`]: [`session::Session`] and its state machine (§7.3).
-//! - [`agent`]: descriptors and shared runtime types (§7.5, §7.6).
-//! - [`context`]: [`context::ContextEnvelope`] (§8.3).
-//! - [`change`]: working-tree context and Juva drafts for commit/PR flows.
-//! - [`pull_request`]: cached remote pull-request state.
-//! - [`rebase`]: the stopped sequencer of one checkout (§14).
-//! - [`job`]: [`job::Job`], a headless agent run that exits when it is done.
-//! - [`share`]: [`share::ShareRule`], the files a project shares between its
-//!   workspaces (§14.2).
-//! - [`worktree_ignore`]: [`worktree_ignore::WorktreeIgnore`], the worktrees a
-//!   project asked Forge to forget (§14.4).
+//! No I/O, Git, or PTY. Depends on `serde`, `uuid`, `time`, `thiserror`, and
+//! `compact_str`. Glossary: `docs/domain.md`.
 
 pub mod agent;
 pub mod branch;

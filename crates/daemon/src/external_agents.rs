@@ -1,46 +1,9 @@
-//! Discovery of agent sessions the daemon did not launch.
+//! Best-effort discovery of agent sessions the daemon did not launch.
 //!
-//! Agent CLIs keep their own per-directory transcript history on disk. We
-//! surface that history in the GUI's session panel without ever attaching to
-//! it: for every directory Forge knows — each project root *and* each of its
-//! worktrees — we locate the provider's transcript store, read the cheap
-//! metadata out of the recent transcripts, and return a read-only
-//! [`ExternalAgentSession`] per run.
-//!
-//! Two providers are supported:
-//!
-//! - **Claude Code**: transcripts at `~/.claude/projects/<slug>/<sessionId>.jsonl`,
-//!   where `<slug>` is the directory with every `/` and `.` replaced by `-`.
-//!   Each `.jsonl` is a stream of JSON records; we scan for the recorded
-//!   `cwd`/`gitBranch`, the min/max `timestamp`, the latest `aiTitle`, the
-//!   turn count, and the last assistant message with the model that wrote it.
-//!   Subagent runs live beside it in `<sessionId>/subagents/*.jsonl`.
-//! - **opencode**: two layouts, both read. Current versions (≥ 1.17) record
-//!   every session in `~/.local/share/opencode/opencode.db`, which
-//!   [`crate::opencode_db`] queries directly. Older ones wrote the tree below,
-//!   which upgraded machines still carry with its last pre-upgrade contents —
-//!   so it is scanned too, and a session found in both is listed once.
-//!
-//! - **opencode (legacy tree)**: metadata at `~/.local/share/opencode/storage`. A
-//!   `project/<hash>.json` records its `worktree`; that project's sessions are
-//!   one JSON file each under `session/<hash>/`, carrying an `id`, `title`,
-//!   `directory` and `time.created`/`time.updated` (epoch millis). The
-//!   conversation itself is split across `message/<sessionID>/*.json` and
-//!   `part/<messageID>/*.json`, which is where the turn count and the last
-//!   agent message come from. A session with a `parentID` is a subagent run:
-//!   it is counted against its parent rather than listed on its own.
-//!
-//! Every store is read once per **account**: the default one, plus one per
-//! launch profile that moved the provider's config directory (§13.4). A
-//! profile is how a user runs a second login, and its transcripts live under
-//! its own directory — scanning only the default one is why a `Personal`
-//! profile's history used to be invisible here.
-//!
-//! Everything here is best-effort: an unreadable file, a malformed line or a
-//! missing directory yields fewer results, never an error. It runs off the
-//! daemon lock (see `Daemon::snapshot`) so transcript IO never blocks state,
-//! and only the [`SCAN_LIMIT`] most recently touched transcripts per directory
-//! are read — a year of history must not make opening the panel slower.
+//! Runs off the core lock. One scan per account (default login plus each
+//! profile that moved the config directory). Unreadable files yield fewer
+//! rows, never an error. [`SCAN_LIMIT`] caps how many transcripts are read
+//! per directory so a year of history cannot slow `GetSnapshot`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};

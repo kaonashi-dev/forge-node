@@ -21,6 +21,8 @@ export const [harnessStore, setHarnessStore] = createStore({
   initialized: true,
   listError: null as string | null,
   loadingList: false,
+  /** True after the first list answer (including an empty one). */
+  listReady: false,
 
   /** The feature the centre tab is on, `null` when it is showing the list. */
   openFeature: null as number | null,
@@ -84,6 +86,7 @@ export function focusHarnessProject(project: string | null): void {
     initialized: true,
     listError: null,
     loadingList: false,
+    listReady: false,
     openFeature: null,
     detail: null,
     timeline: [],
@@ -108,7 +111,13 @@ export function applyFeatureList(
   initialized: boolean,
 ): void {
   if (harnessStore.project !== project) return;
-  setHarnessStore({ features, initialized, listError: null, loadingList: false });
+  setHarnessStore({
+    features,
+    initialized,
+    listError: null,
+    loadingList: false,
+    listReady: true,
+  });
   const open = harnessStore.detail;
   if (!open) return;
   const fresh = features.find((item) => item.id === open.id);

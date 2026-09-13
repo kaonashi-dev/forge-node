@@ -193,6 +193,5 @@ has a schema, and from the last line of `review_<id>.md` when it does not.
 - Does not replace CI (`scripts/dev check`).
 - Does not commit unless `/feature-commit` launches the `committer`.
 
-See also: `docs/plan-subagent-harness.md` for design history and
-[`plan-agnostic-orchestrator.md`](./plan-agnostic-orchestrator.md) for the next
-orchestrator phases.
+Design history lives in local `plan/` and is not the gate. The current cycle
+is this page plus `crates/harness-service`.

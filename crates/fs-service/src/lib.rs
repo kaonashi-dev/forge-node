@@ -1188,29 +1188,29 @@ fn resolve_inside(root: &Path, relative: &str) -> Result<PathBuf, FsError> {
             Component::CurDir | Component::Normal(_) => {}
         }
     }
-    let joined = root.join(rel);
-    // For writes to new files the path may not exist yet — canonicalize the
-    // parent and re-join the file name.
-    if joined.exists() {
-        let canon = fs::canonicalize(&joined)?;
-        if !canon.starts_with(root) {
-            return Err(FsError::EscapesWorkspace(relative.to_string()));
-        }
-        return Ok(canon);
-    }
-    if let Some(parent) = joined.parent() {
-        if parent.exists() {
-            let parent = fs::canonicalize(parent)?;
-            if !parent.starts_with(root) {
+    // Walk one component at a time and canonicalize every existing prefix.
+    // A missing nested path under a symlink (`vendor` → `/tmp`, then
+    // `vendor/out/file`) would otherwise pass a lexical `starts_with` and
+    // `create_dir_all` would write outside the checkout.
+    let mut current = root.to_path_buf();
+    for c in rel.components() {
+        let Component::Normal(name) = c else {
+            continue;
+        };
+        current.push(name);
+        if current.symlink_metadata().is_ok() {
+            let canon = fs::canonicalize(&current)
+                .map_err(|_| FsError::EscapesWorkspace(relative.to_string()))?;
+            if !canon.starts_with(root) {
                 return Err(FsError::EscapesWorkspace(relative.to_string()));
             }
-            return Ok(parent.join(joined.file_name().unwrap_or_default()));
+            current = canon;
         }
     }
-    if !joined.starts_with(root) {
+    if !current.starts_with(root) {
         return Err(FsError::EscapesWorkspace(relative.to_string()));
     }
-    Ok(joined)
+    Ok(current)
 }
 
 fn normalize_rel(path: &str) -> String {
@@ -1616,6 +1616,16 @@ mod tests {
         let tmp = git_repo();
         let err = read_file(tmp.path(), "../outside").unwrap_err();
         assert!(matches!(err, FsError::EscapesWorkspace(_)));
+    }
+
+    #[test]
+    fn create_refuses_a_symlink_prefix_that_leaves_the_workspace() {
+        let tmp = git_repo();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("vendor")).unwrap();
+        let err = create_path(tmp.path(), "vendor/out/file.rs", PathKind::File).unwrap_err();
+        assert!(matches!(err, FsError::EscapesWorkspace(_)));
+        assert!(!outside.path().join("out").exists());
     }
 
     #[test]

@@ -1,5 +1,4 @@
-// The shell's actions and their default bindings — port of
-// `theme tokens::actions` (§16.6).
+// Named chrome actions and their default bindings.
 //
 // Every chrome shortcut is a named action bound in a context, not a match on a
 // raw keystroke. That distinction is load-bearing for a terminal app: the
@@ -13,11 +12,9 @@
 
 import { CLIPBOARD_MOD, MOD, PASTE_CHORD, isMac, parseChord, type Chord } from "./keys";
 
-/** The context on the window root: everything the shell can do from anywhere. */
+/** Bindings that fire with focus anywhere in the window. */
 export const APP = "App";
-/** The project rail. */
 export const SIDEBAR = "Sidebar";
-/** The terminal grid. */
 export const TERMINAL = "Terminal";
 /** The in-app file editor, while its pane holds the keyboard (ADR-012). */
 export const EDITOR = "Editor";
@@ -49,7 +46,7 @@ export type ContextId =
 /**
  * Innermost first. A binding in an earlier context wins.
  *
- * `EDITOR` sits above `FILES` deliberately (`plan-ui-ux.md` §8.1): CodeMirror's
+ * `EDITOR` sits above `FILES` deliberately: CodeMirror's
  * own keymap runs *inside* the editor context, and a chord the editor claims
  * must not be answered by a tree that merely happens to be on screen beside
  * it. `FILES` is only entered while the tree actually holds focus, so in

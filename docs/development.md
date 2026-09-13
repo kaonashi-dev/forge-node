@@ -4,9 +4,9 @@
 
 - Rust 1.89 (pinned in `rust-toolchain.toml`; `rustup show` installs it).
 - `git` and a C toolchain (bundled SQLite compiles from source).
-- [Bun](https://bun.sh) 1.1+ — runs the subagent harness CLI
-  (`scripts/harness`, `./init.sh` step 3). No other JS runtime is needed;
-  the harness is TypeScript executed directly by Bun, with no build step.
+- [Bun](https://bun.sh) **1.4.1** (pinned in [`.bun-version`](../.bun-version)
+  and `apps/tauri` `engines`). Runs the frontend gate and the subagent harness
+  CLI (`scripts/harness`, `./init.sh` step 3). No other JS runtime is needed.
 - macOS or Linux. The code uses Unix sockets, PTYs and signals directly;
   Windows is not a target.
 - For prompt icons in the terminal canvas, install
@@ -104,11 +104,12 @@ Release LTO and codegen settings remain defined in the root `Cargo.toml`.
 ## Running the daemon by hand
 
 ```sh
-scripts/dev daemon               # cargo run -p daemon --bin forge-daemon (RUST_LOG=debug)
-scripts/dev daemon info          # print resolved paths + effective config, then exit
+scripts/dev daemon               # isolated runtime under $FORGE_DEV_DIR (fresh mktemp)
+scripts/dev daemon info          # scratch paths for that isolated run, not the daily ones
+cargo run -p daemon --bin forge-daemon -- info   # daily per-user paths (no FORGE_* override)
 forge-daemon run                 # acquire the singleton lock, bind, serve (default)
-forge-daemon dump --json         # NOT wired yet — no-op
-forge-daemon stats               # NOT wired yet — no-op
+forge-daemon dump --json         # not wired — prints a notice and exits 0
+forge-daemon stats               # GetStats against a running daemon; does not start one
 ```
 
 The Tauri app connects to the per-user daemon or starts the adjacent
@@ -116,10 +117,14 @@ The Tauri app connects to the per-user daemon or starts the adjacent
 project, and creates or reuses a live shell. Run `scripts/dev daemon` separately
 only when backend logs need to remain in the foreground.
 
-`scripts/dev daemon` uses the **real** per-user paths (config, DB, logs,
-worktrees). The daemon is a singleton per user via an advisory `flock` on
-`daemon.lock`; a second `run` exits **0** while the first holds the lock, so
-exit code 0 does not prove a new daemon started — check the log.
+`scripts/dev daemon` **isolates**: a fresh `mktemp` directory gets `FORGE_SOCKET`,
+`FORGE_DATA_DIR`, and `FORGE_CONFIG_DIR` unless `FORGE_DEV_DIR` is already set.
+The daily singleton (the one the GUI talks to) is untouched. The table below is
+what that daily daemon uses.
+
+The daemon is a singleton **per set of paths** via an advisory `flock` on
+`daemon.lock`. A second `run` against the same lock exits **0** while the first
+holds it, so exit code 0 does not prove a new daemon started — check the log.
 
 Paths (macOS shown; Linux uses `$XDG_RUNTIME_DIR`, `$XDG_DATA_HOME`,
 `$XDG_CONFIG_HOME`):
@@ -145,14 +150,20 @@ restart (no hot reload). See [`config.example.toml`](./config.example.toml).
 | terminal rendering data, input mapping, delta/seq rules | `crates/terminal-core`, `crates/terminal-input`, `crates/daemon/src/terminal.rs`, `crates/client/src/store.rs` → [terminal.md](./terminal.md) |
 | a provider, detection, launch args | `crates/agents` only → [agents.md](./agents.md) |
 | git behavior, worktree safety | `crates/git-service`, `core.rs` workspace handlers → [worktrees.md](./worktrees.md) |
+| workspace files (list/read/write/search) | `crates/fs-service` → [protocol.md](./protocol.md) |
+| harness files and transitions | `crates/harness-service` → [harness.md](./harness.md) |
+| pull requests / `gh` | `crates/git-service/src/github.rs`, `crates/daemon/src/pull_requests.rs` |
+| Juva drafts | `crates/daemon/src/juva.rs` |
+| idle policy | `crates/daemon/src/idle.rs` |
 | the schema | `crates/persistence/src/migrations.rs` (append only) → [persistence.md](./persistence.md) |
 | paths, config, logging, singleton | `crates/daemon/src/{paths,config,logging,lockfile}.rs` |
 | Tauri frontend layout, panels, terminal | `apps/tauri/src` → [ui.md](./ui.md) |
-| theme tokens | `apps/tauri/src/theme/tokens.ts` |
+| theme tokens | `apps/tauri/src/theme/tokens.ts` → [theming.md](./theming.md) |
+| cost rungs | [performance.md](./performance.md) |
 
 Dependency direction is one-way and enforced by `Cargo.toml`:
 `forge-tauri → client → {protocol, terminal-input} → domain` and
-`daemon → {agents, git-service, persistence, terminal-core} → domain`.
+`daemon → {agents, git-service, fs-service, harness-service, persistence, terminal-core} → domain`.
 
 ## Testing notes
 

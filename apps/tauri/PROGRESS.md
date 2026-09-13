@@ -1,5 +1,9 @@
 # Tauri UI — progress register
 
+> Historical phase register from the Tauri shell rewrite. Not the gate.
+> Current layout and behaviour: [`docs/ui.md`](../../docs/ui.md) and
+> [`README.md`](./README.md).
+
 Status for the Tauri + Solid shell.
 
 | Document                 | Role               |

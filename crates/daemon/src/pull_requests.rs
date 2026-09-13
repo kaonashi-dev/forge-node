@@ -567,11 +567,11 @@ fn classify_host_error(
                 cli.program().display()
             ),
         ),
-        GitError::Timeout => (
+        GitError::Timeout { timeout } => (
             PullRequestFailureKind::TimedOut,
             format!(
                 "GitHub CLI timed out after {}s while refreshing {host}",
-                cli.timeout.as_secs()
+                timeout.as_secs()
             ),
         ),
         GitError::CommandFailed { status, stderr, .. } => {

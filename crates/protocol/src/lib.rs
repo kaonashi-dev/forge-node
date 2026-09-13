@@ -1,20 +1,11 @@
-//! # protocol
+//! Transport-agnostic wire protocol: framing (ADR-004), handshake, and the
+//! request/response/event vocabulary.
 //!
-//! The wire protocol between the Forge GUI client and the daemon (§10). This
-//! crate is transport-agnostic: it defines the message types, the
-//! length-prefixed MessagePack framing (ADR-004, [`framing`]), the handshake
-//! (§9.2, [`hello`]), and the request/response/event vocabulary. It depends
-//! only on `domain` for the shared wire types and never on `tokio` or any
-//! socket, so both the daemon's blocking accept loop and the client's async IPC
-//! thread build on it (§17).
+//! Depends only on `domain`. No tokio, no sockets. Both the daemon's blocking
+//! accept loop and the client's reader thread use these types.
 //!
-//! Modules mirror §17: [`framing`], [`hello`], [`request`], [`response`],
-//! [`event`], [`error`].
-//!
-//! Every protocol enum is `#[non_exhaustive]`; closed-set unit enums
-//! ([`error::ErrorCode`], [`hello::ClientKind`], [`request::Signal`],
-//! [`event::NoticeLevel`]) additionally carry a `#[serde(other)] Unknown`
-//! variant so decoding tolerates variants added by a newer peer (§10.1).
+//! Enums are `#[non_exhaustive]`; closed-set unit enums also carry
+//! `#[serde(other)] Unknown` so a newer peer's variant still decodes.
 
 pub mod error;
 pub mod event;
@@ -35,57 +26,13 @@ pub use hello::{ClientKind, Hello, HelloAck, HelloReject};
 pub use request::{RemoveProjectPolicy, Request, SendContextSpawn, Signal};
 pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 
-/// The single integer protocol version (§9.2). In the MVP the GUI and daemon
-/// are distributed together and require exact equality; N/N-1 compatibility is
-/// a post-MVP decision.
+/// Handshake equality check. Bump when [`Request`], [`Response`], or
+/// [`DaemonEvent`] gains, loses, or reshapes a variant.
 ///
-/// Bump this whenever [`Request`], [`Response`] or [`DaemonEvent`] gains,
-/// loses or reshapes a variant. A daemon left running from an older build
-/// still passes the handshake on an unchanged number and then fails every new
-/// request with an undecodable frame — the connection dies with no `Response`,
-/// so the caller waits on a reply that never comes. Equality at connect turns
-/// that silent stall into `ClientError::VersionMismatch`.
-///
-/// - 7 → 8: the harness requests (`ListHarnessFeatures` … `ValidateHarness`).
-/// - 8 → 9: `workspace_id` on the two harness register requests.
-/// - 9 → 10: jobs — headless agent runs (`StartJob` … `ReadJobLog`,
-///   `JobUpdated`, `JobOutput`, and `jobs` in the snapshot).
-/// - 10 → 11: `RunHarnessStep`, `HarnessFeatureChanged`, and `schema` on a
-///   `JobRequest`.
-/// - 11 → 12: `prompt` on a `Job` and `job` on a `HarnessEvent`, so a client
-///   can show what a step was asked and can still find the transcript of a
-///   step the daemon no longer remembers running.
-/// - 12 → 13: `FactoryReset` request and event.
-/// - 13 → 14: session baselines and the surfaces that read them —
-///   `GetSessionChanges`, `GetWorkspaceReview`, `GetSessionTranscript`,
-///   `base_commit` on a `Session`, and `JuvaDraftReady`, which is what
-///   `DraftWithJuva` now answers with instead of `Response::JuvaDraft`.
-/// - 14 → 15: `SearchKind::Definition` and `query` on `SearchResults`. Both
-///   are additions and neither is optional on the wire: a fieldless variant an
-///   old peer has never heard of, and a struct field that changes the encoded
-///   arity, are decode failures rather than ignored extras — which is a closed
-///   connection with no explanation unless this number moves with them.
-/// - 15 → 16: a launch profile is a directory, not an environment:
-///   `AgentProfile.env` is gone and `config_dir` takes its place, and
-///   `AgentDescriptor.profile_fields` is now `config_dir`. Both change the
-///   encoded arity of a struct every snapshot carries.
-/// - 16 → 17: two struct fields that change an encoded arity, plus the surface
-///   that reads them — `ignored` on a `FileEntry`, `store` on an
-///   `ExternalAgentSession`, and `GetExternalTranscript` /
-///   `DeleteExternalSession` with `Response::ExternalTranscript`.
-/// - 17 → 18: cross-session mediation — `SendContext` / `ListContextEnvelopes`
-///   with `Response::ContextEnvelopes`, so one Forge session can cite another
-///   and spawn a child with any provider without peer-to-peer agent APIs.
-/// - 18 → 19: terminal history generation, column patches, and compact cells.
-///   `TerminalSnapshot`/`TerminalDelta`/`ScrollbackRows` change encoded arity,
-///   and MessagePack cells drop repeated field names.
-/// - 19 → 20: `ReadImage` with `Response::ImageContents`, for the Markdown
-///   preview. An old daemon closes the connection on a request it cannot
-///   decode, so a new GUI must be refused at the handshake instead.
-/// - 20 → 21: removal of `AskHarness`, the harness Lieutenant's question box.
-/// - 21 → 22: persistent worktree forgetting (§14.4) — `ListWorktreeIgnores` /
-///   `SetWorktreeIgnores` with `Response::WorktreeIgnores`, `worktree_ignores`
-///   in the snapshot, and `ProjectWorktreeIgnoresChanged`.
+/// An older daemon that still advertises the previous number will then fail
+/// every new request with an undecodable frame and no `Response` — the caller
+/// waits on a reply that never comes. Equality at connect turns that stall
+/// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
 pub const PROTOCOL_VERSION: u32 = 22;
 
 /// A message sent by a client to the daemon (§10.1).

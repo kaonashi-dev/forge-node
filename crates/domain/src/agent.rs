@@ -1,10 +1,7 @@
-//! Agent descriptors and the shared runtime types used to launch and detect
-//! providers (§7.5, §7.6, §8.2).
+//! Agent descriptors and the runtime types used to launch and detect them.
 //!
-//! Note: the plan sketches `AgentDescriptor` with `&'static str` fields. We use
-//! owned `String`/`Vec` here so descriptors can also travel over IPC
-//! (`ListAgentProviders`) and support future custom agents. Built-ins are
-//! constructed as owned values in the `agents` crate.
+//! Fields are owned so a descriptor can travel over IPC (`ListAgentProviders`).
+//! Built-ins are constructed in the `agents` crate.
 
 use crate::ids::{AgentProfileId, AgentProviderId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};

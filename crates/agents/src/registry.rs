@@ -1,11 +1,7 @@
-//! The in-process agent registry (§9.3, §13).
+//! In-process registry of descriptors, executable overrides, and detection.
 //!
-//! [`AgentRegistry`] holds the built-in descriptors (each wrapped in a
-//! [`DescriptorAdapter`], ADR-007), the user's per-provider executable
-//! overrides (`SetProviderExecutable`, §10.2), and the most recent detection
-//! results. The daemon's `AgentService` is thin orchestration over it. It is
-//! deliberately synchronous: detection runs on the caller's thread (the daemon
-//! runs it off the snapshot path, §13.1).
+//! Synchronous: detection runs on the caller's thread. The daemon keeps it
+//! off the snapshot path so a GUI reconnect does not re-probe every binary.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

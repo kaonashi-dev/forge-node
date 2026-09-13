@@ -1,14 +1,10 @@
-//! Length-prefixed MessagePack framing (ADR-004, §10).
+//! Length-prefixed MessagePack framing (ADR-004).
 //!
-//! Every message on the wire is a frame: a `u32` big-endian payload length
-//! followed by that many bytes of MessagePack (via `rmp-serde`). The helpers
-//! here are transport-agnostic — they operate on byte buffers, never on sockets
-//! — so the same code serves the daemon's blocking `std::io` accept loop and
-//! the GUI client's `tokio` IPC thread without this crate depending on either.
-//!
-//! Structs are encoded as MessagePack *maps* (field names as keys) via
-//! [`rmp_serde::to_vec_named`], so an older peer skips fields a newer peer added
-//! rather than misreading a positional array (§10.1, forward compatibility).
+//! A frame is a `u32` big-endian payload length plus that many bytes of
+//! MessagePack. Helpers operate on buffers, never sockets, so both the
+//! daemon's blocking accept loop and the client's reader thread can share
+//! them. Structs are named maps (`rmp_serde::to_vec_named`) so an older peer
+//! skips unknown fields instead of misreading a positional array.
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;

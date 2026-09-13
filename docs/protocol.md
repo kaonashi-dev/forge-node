@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 21`.
+`PROTOCOL_VERSION = 22` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -59,6 +59,7 @@ DaemonMessage::Event    (DaemonEvent)
 | | `FactoryReset` | Stops every session and job, transactionally clears the Forge metadata database, force-removes worktrees created by Forge, and broadcasts `FactoryReset` so clients bootstrap again. Repository files, branches, commits, `config.toml`, logs, and repository-owned `harness/` files are retained. |
 | | `GetAppState { key }` / `SetAppState { key, value }` | Opaque key/value for GUI layout etc. `GetAppState` answers `Response::AppState { value }`. |
 | | `RefreshPullRequests` | `Ack` **as soon as the refresh starts**, then `PullRequestsUpdated` when it finishes. Resolves each project's default remote locally, then makes at most one `gh api graphql` call per eligible host. Coalescing is global — one refresh already covers every repository — and a result younger than 60 s is re-broadcast from the cache instead of re-queried. |
+| | `GetStats` | `Response::DaemonStats` — session counts, open terminals, connected clients, uptime. Local and **synchronous**, like `GetWorkspaceDiff`. `forge-daemon stats` is this request; `dump --json` is still unwired. |
 | Projects | `AddProject { path }` | `Ack`; `ProjectAdded` (+ `WorkspaceCreated` for the main workspace). Git root detected via `rev-parse`. |
 | | `AddProjectToGroup { path, project_group_id }` | Adds a new project directly to an organizational workspace. |
 | | `CreateProjectGroup { name }` / `RenameProjectGroup { project_group_id, name }` | Creates or renames an organizational workspace; no filesystem or Git operation. |

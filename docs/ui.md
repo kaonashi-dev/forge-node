@@ -16,7 +16,6 @@ Day-to-day layout and behaviour details live next to the code:
 | Control kit | `apps/tauri/src/ui/` |
 | Theme tokens | `apps/tauri/src/theme/` + [theming.md](./theming.md) |
 | Actions / keymap | `apps/tauri/src/actions/` |
-| Feature checklist | `apps/tauri/PARITY.md`, `apps/tauri/PROGRESS.md` |
 | App README | `apps/tauri/README.md` |
 
 ## Layout (summary)
