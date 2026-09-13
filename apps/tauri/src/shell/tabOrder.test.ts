@@ -2,16 +2,27 @@ import { describe, expect, it } from "vitest";
 import { sessionFixture } from "../runtime/sessions.fixture";
 import type { Session } from "../runtime/types";
 import {
+  clampGapToKind,
   dropFromGap,
   gapAtX,
   gapAtY,
   moveTabToGap,
   openSessions,
   orderFromSessions,
+  stripIndex,
+  stripItems,
 } from "./tabOrder";
 
 const session = (id: string, created_at?: string): Session =>
   sessionFixture({ id, ...(created_at ? { created_at } : {}) });
+
+const agent = (id: string, created_at?: string): Session =>
+  sessionFixture({
+    id,
+    kind: "Agent",
+    agent_provider_id: "claude",
+    ...(created_at ? { created_at } : {}),
+  });
 
 describe("tabOrder", () => {
   it("moves a tab to every gap, including after the last tab", () => {
@@ -59,6 +70,79 @@ describe("tabOrder", () => {
     ];
     expect(openSessions(sessions, []).map((item) => item.id)).toEqual(["a", "b", "c"]);
     expect(orderFromSessions(sessions, [])).toEqual(["a", "b", "c"]);
+  });
+
+  it("groups shells before agents, keeping relative order inside each group", () => {
+    const sessions = [
+      session("t1", "2026-01-01T00:00:00Z"),
+      agent("a1", "2026-01-02T00:00:00Z"),
+      session("t2", "2026-01-03T00:00:00Z"),
+      agent("a2", "2026-01-04T00:00:00Z"),
+    ];
+    expect(openSessions(sessions, []).map((item) => item.id)).toEqual(["t1", "t2", "a1", "a2"]);
+    expect(openSessions(sessions, ["a1", "t2", "t1", "a2"]).map((item) => item.id)).toEqual([
+      "t2",
+      "t1",
+      "a1",
+      "a2",
+    ]);
+  });
+
+  it("places a new shell after the existing shells, before agents", () => {
+    // Code, terminal 1, three agents, then another terminal → that terminal
+    // becomes third, not last.
+    const sessions = [
+      session("t1", "2026-01-01T00:00:00Z"),
+      agent("a1", "2026-01-02T00:00:00Z"),
+      agent("a2", "2026-01-03T00:00:00Z"),
+      agent("a3", "2026-01-04T00:00:00Z"),
+      session("t2", "2026-01-05T00:00:00Z"),
+    ];
+    expect(openSessions(sessions, ["t1", "a1", "a2", "a3"]).map((item) => item.id)).toEqual([
+      "t1",
+      "t2",
+      "a1",
+      "a2",
+      "a3",
+    ]);
+  });
+
+  it("places a new agent at the end", () => {
+    const sessions = [
+      session("t1", "2026-01-01T00:00:00Z"),
+      agent("a1", "2026-01-02T00:00:00Z"),
+      agent("a2", "2026-01-03T00:00:00Z"),
+    ];
+    expect(openSessions(sessions, ["t1", "a1"]).map((item) => item.id)).toEqual(["t1", "a1", "a2"]);
+  });
+
+  it("puts Code first on the strip so Option+1 lands on it", () => {
+    const sessions = [session("t1"), agent("a1")];
+    expect(stripItems(sessions, true)).toEqual([
+      { kind: "code" },
+      { kind: "session", id: "t1" },
+      { kind: "session", id: "a1" },
+    ]);
+    expect(stripItems(sessions, false)).toEqual([
+      { kind: "session", id: "t1" },
+      { kind: "session", id: "a1" },
+    ]);
+  });
+
+  it("names the current strip tab from Code vs the active session", () => {
+    const items = stripItems([session("t1"), agent("a1")], true);
+    expect(stripIndex(items, true, "t1")).toBe(0);
+    expect(stripIndex(items, false, "t1")).toBe(1);
+    expect(stripIndex(items, false, "a1")).toBe(2);
+    expect(stripIndex(items, false, null)).toBe(-1);
+  });
+
+  it("keeps a shell drag inside the shell group", () => {
+    const sessions = [session("t1"), session("t2"), agent("a1"), agent("a2")];
+    expect(clampGapToKind(sessions, "t1", 3)).toBe(2);
+    expect(clampGapToKind(sessions, "t2", 0)).toBe(0);
+    expect(clampGapToKind(sessions, "a1", 0)).toBe(2);
+    expect(clampGapToKind(sessions, "a2", 4)).toBe(4);
   });
 
   it("names the gap a pointer is in from tab boxes", () => {

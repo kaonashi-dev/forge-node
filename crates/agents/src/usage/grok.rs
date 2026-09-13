@@ -185,7 +185,7 @@ fn parse_billing(body: &Value) -> Vec<UsageWindow> {
 }
 
 /// `USAGE_PERIOD_TYPE_WEEKLY` → `"week"`, to sit beside Codex's own `"week"`
-/// in one status bar rather than shouting an enum name at the reader.
+/// rather than shouting an enum name at the reader.
 ///
 /// An unknown period keeps its own tail lowercased instead of being forced
 /// into one of the four: a label nobody recognises is still better than a

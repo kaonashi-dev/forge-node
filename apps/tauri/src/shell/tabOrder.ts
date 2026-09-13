@@ -7,10 +7,32 @@ function byCreatedAt(sessions: Session[]): Session[] {
   );
 }
 
+/** Same discriminator the tab labels use: a shell has no agent provider. */
+function isShell(session: Session): boolean {
+  return session.agent_provider_id == null;
+}
+
+/**
+ * Shells, then agents, preserving relative order inside each group.
+ *
+ * A new terminal then lands after the existing shells rather than after the
+ * last agent, and a new agent still appends. Drag order inside a group
+ * survives; a drop across groups does not.
+ */
+function groupShellsThenAgents(sessions: Session[]): Session[] {
+  const shells: Session[] = [];
+  const agents: Session[] = [];
+  for (const session of sessions) {
+    if (isShell(session)) shells.push(session);
+    else agents.push(session);
+  }
+  return [...shells, ...agents];
+}
+
 /** Apply a persisted tab order over the daemon's session list. */
 export function openSessions(sessions: Session[], order: string[]): Session[] {
   const chronological = byCreatedAt(sessions);
-  if (order.length === 0) return chronological;
+  if (order.length === 0) return groupShellsThenAgents(chronological);
   const byId = new Map(chronological.map((session) => [session.id, session]));
   const ordered: Session[] = [];
   for (const id of order) {
@@ -23,7 +45,54 @@ export function openSessions(sessions: Session[], order: string[]): Session[] {
   for (const session of chronological) {
     if (byId.has(session.id)) ordered.push(session);
   }
-  return ordered;
+  return groupShellsThenAgents(ordered);
+}
+
+/** One entry in the window strip, including the Code tab when it exists. */
+export type StripItem = { kind: "code" } | { kind: "session"; id: string };
+
+/**
+ * What Option+N and the next/previous chords walk.
+ *
+ * Code leads so Option+1 is the files when they are open; sessions follow in
+ * strip order (shells, then agents).
+ */
+export function stripItems(sessions: readonly Session[], codeOpen: boolean): StripItem[] {
+  const items: StripItem[] = [];
+  if (codeOpen) items.push({ kind: "code" });
+  for (const session of sessions) items.push({ kind: "session", id: session.id });
+  return items;
+}
+
+/** Index of the tab the window is showing, or `-1` when none of them is. */
+export function stripIndex(
+  items: readonly StripItem[],
+  codeActive: boolean,
+  activeSession: string | null,
+): number {
+  if (codeActive) return items.findIndex((item) => item.kind === "code");
+  if (!activeSession) return -1;
+  return items.findIndex((item) => item.kind === "session" && item.id === activeSession);
+}
+
+/**
+ * Keep a drag inside its kind: dropping a shell among agents (or the reverse)
+ * would only snap back on the next paint.
+ */
+export function clampGapToKind(sessions: readonly Session[], fromId: string, gap: number): number {
+  const from = sessions.find((session) => session.id === fromId);
+  if (!from) return gap;
+  const draggingShell = isShell(from);
+  let start = 0;
+  let end = sessions.length;
+  for (let i = 0; i < sessions.length; i++) {
+    if (draggingShell && !isShell(sessions[i])) {
+      end = i;
+      break;
+    }
+    if (!draggingShell && isShell(sessions[i])) start = i + 1;
+  }
+  return Math.max(start, Math.min(gap, end));
 }
 
 /** Move a tab into a gap: 0 is before the first tab, length is after the last. */

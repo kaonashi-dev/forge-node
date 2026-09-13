@@ -39,9 +39,9 @@ and refuses to open it — the app appears "damaged" until the attribute is
 cleared. You pay this once, on the first install.
 
 Every other build after that arrives on its own: the app checks for a release
-shortly after launch and every six hours, offers it as a pill in the status bar,
-and applies it on one click. The runtime is a separate process that an update
-never touches, so your sessions, terminals and scrollback survive the reload.
+shortly after launch and every six hours. Apply it from Check for Updates in
+the app menu. The runtime is a separate process that an update never touches,
+so your sessions, terminals and scrollback survive the reload.
 It will not replace a running daemon in place — that stays a deliberate restart.
 
 Intel Macs and Linux are not published yet — build them from source with

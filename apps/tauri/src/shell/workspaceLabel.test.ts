@@ -1,24 +1,11 @@
 import { describe, expect, it } from "vitest";
-import {
-  pathBasename,
-  workspaceBranchMeta,
-  workspaceFolderLabel,
-  workspacePathSegment,
-} from "./workspaceLabel";
+import { pathBasename, workspaceBranchMeta, workspaceFolderLabel } from "./workspaceLabel";
 
 describe("workspaceLabel", () => {
   it("takes the last path segment", () => {
     expect(pathBasename("/Users/me/worktrees/abc/test")).toBe("test");
     expect(pathBasename("/r/main/")).toBe("main");
-  });
-
-  it("shows folder only when it differs from the branch", () => {
-    const same = { branch: "test", path: "/Users/me/worktrees/abc/test" };
-    expect(workspaceFolderLabel(same)).toBe("test");
-    expect(workspacePathSegment(same)).toBeNull();
-
-    const different = { branch: "feature/foo", path: "/Users/me/worktrees/abc/my-folder" };
-    expect(workspacePathSegment(different)).toBe("my-folder");
+    expect(workspaceFolderLabel({ branch: "main", path: "/r/checkout-a" })).toBe("checkout-a");
   });
 
   it("falls back to folder for branch meta when branch is missing", () => {

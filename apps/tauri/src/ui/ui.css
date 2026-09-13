@@ -1159,10 +1159,10 @@
 
 /* ---------------------------------------------------------------- toast --- */
 
-/* §4.2 U16. Bottom-right, above the status bar: top-centre would sit over the
-   title bar and the tab strip, which is where the pointer usually is. */
+/* Bottom-right: top-centre would sit over the title bar and the tab strip,
+   which is where the pointer usually is. */
 .forge-toast-list {
-  bottom: calc(var(--forge-status-h) + var(--space-8));
+  bottom: var(--space-8);
   display: flex;
   flex-direction: column;
   gap: var(--space-6);

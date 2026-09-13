@@ -5,7 +5,7 @@ import { createStore } from "solid-js/store";
  *
  * Deliberately small and deliberately *not* the frame: the rows go straight to
  * the canvas (see `runtime/bus.ts`), and only the handful of values something
- * outside the pane reads — the status bar's p95, the tab strip's OSC title —
+ * outside the pane reads — Settings' p95, the tab strip's OSC title —
  * are written here, at most a few times a second.
  */
 export const [terminalStore, setTerminalStore] = createStore({

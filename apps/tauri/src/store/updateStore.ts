@@ -7,8 +7,8 @@ import type { UpdateState } from "../runtime/types";
  * The last thing the host said about updates.
  *
  * The host owns the schedule, the network and the protocol classification
- * (`src-tauri/src/updates.rs`); this is a mailbox for its one event, so the
- * status bar can render without asking anything.
+ * (`src-tauri/src/updates.rs`); this is a mailbox for its one event, so
+ * chrome can render without asking anything.
  */
 const [state, setState] = createSignal<UpdateState | null>(null);
 
