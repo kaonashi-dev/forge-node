@@ -9,7 +9,7 @@ Day-to-day layout and behaviour details live next to the code:
 
 | Area | Where |
 |------|--------|
-| Shell (title, sidebar and its Projects view, tabs, status) | `apps/tauri/src/shell/` |
+| Shell (title, sidebar and its Projects view, tabs) | `apps/tauri/src/shell/` |
 | Other sidebar views (files, git, history, PR, harness) | `apps/tauri/src/panels/` |
 | Workbench (editor, diff, feature, PR) | `apps/tauri/src/workbench/` |
 | Terminal Canvas | `apps/tauri/src/terminal/` |
@@ -27,9 +27,7 @@ Day-to-day layout and behaviour details live next to the code:
 ├─────────────────────┬────────────────────────────────────────┤
 │ sidebar view strip  │  centre: terminal / workbench tabs      │
 │ then one view       │                                         │
-├─────────────────────┴────────────────────────────────────────┤
-│ status bar                                                    │
-└──────────────────────────────────────────────────────────────┘
+└─────────────────────┴────────────────────────────────────────┘
 ```
 
 One left sidebar holds a strip of view icons above a single visible view, in the

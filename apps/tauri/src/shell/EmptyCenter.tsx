@@ -11,8 +11,8 @@ import { Icon, type ForgeIconName } from "../theme/icons";
  *
  * The terminal pane paints the last frame it was sent and keeps painting it,
  * so a window whose last session just closed went on showing that session's
- * scrollback — a dead terminal that reads exactly like a live one, down to the
- * grid size in the status bar. The only thing separating them was a toast.
+ * scrollback — a dead terminal that reads exactly like a live one. The only
+ * thing separating them was a toast.
  *
  * Every row here goes back through the dispatcher rather than calling the
  * runtime itself: these are second ways in to the actions the menus and the

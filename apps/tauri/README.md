@@ -73,7 +73,7 @@ apps/tauri/
     panels/            sidebar views: history, PR, features, files, git
     settings/          the settings route and its sections
     shell/             title bar, sidebar container (Sidebar.tsx), projects view
-                       (ProjectsView.tsx), tabs, status bar, attention bar
+                       (ProjectsView.tsx), tabs, attention bar
     store/             Solid stores: forge, runtime, workbench, harness, views
     terminal/          canvas renderer, viewport, selection, latency
     theme/             tokens, controls, icons

@@ -64,7 +64,6 @@ import { applyThemeBase, type ThemePreference } from "../theme/ThemeProvider";
 import { DENSITIES, applyDensity } from "../theme/density";
 import { ResizeHandle } from "./ResizeHandle";
 import { Sidebar } from "./Sidebar";
-import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { BranchPicker } from "./BranchPicker";
 import { JuvaDraftDialog } from "./JuvaDraftDialog";
@@ -551,16 +550,6 @@ export function AppShell() {
           onCloseSettings={() => setSettings(false)}
         />
       </div>
-      <StatusBar
-        onViewDetails={() => {
-          setSettingsSection("Stats & Usage");
-          setSettings(true);
-        }}
-        onManageAccounts={() => {
-          setSettingsSection("Agents");
-          setSettings(true);
-        }}
-      />
       {/* What the host refused, and why. Dismissed by hand rather than on a
           timer: a message that vanishes before it is read is not a message. */}
       <Show when={runtimeStore.notice}>

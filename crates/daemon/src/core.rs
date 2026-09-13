@@ -108,7 +108,7 @@ pub(crate) struct Inner {
     status_checks: HashMap<WorkspaceId, Instant>,
     /// Last usage reading per *account* — one provider can report several
     /// (§13.4); `GetSnapshot` must not re-probe CLIs. Kept in probe order so
-    /// the status bar does not reshuffle between sweeps.
+    /// a later reader does not reshuffle between sweeps.
     usage: Vec<domain::ProviderUsage>,
     /// Login-shell fallback notice, once per daemon rather than once per spawn.
     env_fallback_noticed: bool,

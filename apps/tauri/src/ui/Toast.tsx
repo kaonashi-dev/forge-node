@@ -64,8 +64,8 @@ export function toast(request: ToastRequest): void {
 /**
  * The region toasts appear in. Mounted once, by the shell.
  *
- * Bottom-right, above the status bar: top-centre would sit over the title bar
- * and the tab strip, which is where the pointer is most of the time.
+ * Bottom-right: top-centre would sit over the title bar and the tab strip,
+ * which is where the pointer is most of the time.
  */
 export function ToastRegion() {
   return (

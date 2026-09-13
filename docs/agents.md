@@ -230,7 +230,7 @@ reuses `AcpSpec::args` rather than spelling `agent stdio` twice, and the
 credentials are never opened here — the binary that owns them is asked. The
 reply's `config.creditUsagePercent` is the percentage and `config.currentPeriod`
 names and dates the window (`USAGE_PERIOD_TYPE_WEEKLY` → `week`, to sit beside
-Codex's own `week` in one status bar).
+Codex's own `week`).
 
 One non-obvious thing that handshake depends on: stdin stays **open** until the
 reply arrives. Grok reads EOF on the ACP wire as the client hanging up and shuts

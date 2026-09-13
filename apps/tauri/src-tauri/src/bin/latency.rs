@@ -18,7 +18,7 @@ use forge_tauri::{connect_or_spawn, Locator};
 
 /// The gate: `p95 ≤ 50 ms`.
 const BUDGET: Duration = Duration::from_millis(50);
-/// Keystrokes to time. 120 is the window the status bar's readout keeps.
+/// Keystrokes to time. 120 is the rolling p95 window.
 const SAMPLES: usize = 120;
 /// How long one echo may take before it is counted as lost.
 const ECHO_TIMEOUT: Duration = Duration::from_secs(2);
