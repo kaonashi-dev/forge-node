@@ -61,16 +61,46 @@ describe("conflictLabel", () => {
 describe("conflictPrompt", () => {
   const prompt = conflictPrompt(state());
 
-  it("names the replay, the branches, the step and the commit it stopped on", () => {
-    expect(prompt).toContain("A Rebase of feat/strategy onto origin/develop (step 3 of 7)");
-    expect(prompt).toContain("It stopped on commit 018895e.");
+  it("names the replay, the branches and the step", () => {
+    expect(prompt).toContain("A rebase of `feat/strategy` onto `origin/develop` at step 3 of 7");
+    expect(prompt).toContain("2 unmerged paths");
   });
 
-  it("lists every unmerged path with what each side did", () => {
-    expect(prompt).toContain("Unmerged paths (2):");
-    expect(prompt).toContain("- src/main/StrategySpecController.kt — both modified");
+  /*
+   * `head` is the tip of the replay so far — on a rebase that is the `onto`
+   * side, not the commit that failed to apply. Calling it "the commit it
+   * stopped on" is how an agent ends up reading the wrong commit message.
+   */
+  it("calls HEAD the replay so far rather than the commit that failed", () => {
+    expect(prompt).toContain("HEAD is detached at 018895e");
+    expect(prompt).toContain("not the commit that failed to apply");
+  });
+
+  /*
+   * The one mistake that produces a resolution which compiles and silently
+   * reverts the commit being replayed. Verified against git itself: during a
+   * rebase, stage `:2:` holds the `onto` branch and `:3:` holds your own
+   * commit, which is the reverse of what "ours" and "theirs" suggest.
+   */
+  it("says which side is which, and that a rebase inverts them", () => {
+    expect(prompt).toContain("git's words for the two sides are the reverse");
     expect(prompt).toContain(
-      "- src/test/StrategySpecUseCaseTest.kt — deleted by us, modified by them",
+      "`--ours`, stage `:2:`, `HEAD` — `origin/develop`, the branch being rebased onto — not your work.",
+    );
+    expect(prompt).toContain(
+      "`--theirs`, stage `:3:`, `REBASE_HEAD` — the commit of `feat/strategy` being replayed — this is your work.",
+    );
+  });
+
+  it("points at the replayed commit's message, which is what the conflict is about", () => {
+    expect(prompt).toContain("git log --oneline -1 REBASE_HEAD");
+    expect(prompt).toContain("git show REBASE_HEAD");
+  });
+
+  it("reads each status code with the sides named, not as `us` and `them`", () => {
+    expect(prompt).toContain("- `src/main/StrategySpecController.kt` — changed on both sides");
+    expect(prompt).toContain(
+      "- `src/test/StrategySpecUseCaseTest.kt` — deleted by `origin/develop`, changed by the replayed commit",
     );
   });
 
@@ -79,8 +109,28 @@ describe("conflictPrompt", () => {
   });
 
   it("forbids continuing the replay, which stays a human gesture", () => {
-    expect(prompt).toContain("Do not run `git rebase --continue`");
+    expect(prompt).toContain("Do not run `git rebase --continue`, `--skip` or `--abort`");
     expect(prompt).toContain("Forge Node's Git panel");
+  });
+
+  it("forbids the other ways of moving or throwing away the replay", () => {
+    for (const escape of [
+      "git reset",
+      "git checkout <branch>",
+      "git stash",
+      "git commit --amend",
+    ]) {
+      expect(prompt).toContain(escape);
+    }
+  });
+
+  it("refuses a guess on a conflict that cannot be resolved both ways", () => {
+    expect(prompt).toContain("leave");
+    expect(prompt).toContain("unstaged");
+  });
+
+  it("requires no conflict marker survives into the index", () => {
+    expect(prompt).toContain("git diff --cached --check");
   });
 
   it("admits a capped list rather than looking exhaustive", () => {
@@ -88,13 +138,46 @@ describe("conflictPrompt", () => {
     expect(prompt).not.toContain("capped");
   });
 
-  it("still reads as a sentence with the facts missing", () => {
+  it("puts `ours` on the current branch for the operations that do not invert", () => {
+    const merge = conflictPrompt(state({ operation: "Merge", branch: "main", onto: null }));
+    expect(merge).toContain("The two sides are:");
+    expect(merge).toContain("`HEAD` — the branch you are standing on.");
+    expect(merge).toContain("`MERGE_HEAD` — the branch being merged in.");
+    expect(merge).not.toContain("the reverse");
+
+    const pick = conflictPrompt(state({ operation: "CherryPick", onto: null }));
+    expect(pick).toContain("`CHERRY_PICK_HEAD` — the commit being cherry-picked.");
+    expect(pick).toContain("Do not run `git cherry-pick --continue`");
+  });
+
+  it("names no branch for an operation it does not know the shape of", () => {
+    const odd = conflictPrompt(state({ operation: "Bisect" }));
+    expect(odd).toContain("`HEAD` — what is already in the working tree.");
+    expect(odd).toContain("the side being applied.");
+    expect(odd).not.toContain("REBASE_HEAD");
+  });
+
+  it("still reads as prose with the facts missing", () => {
     const bare = conflictPrompt(
       state({ operation: null, branch: null, onto: null, head: null, step: null, total: null }),
     );
-    expect(bare).toContain("A rebase of this checkout has stopped on conflicts.");
+    expect(bare).toContain("A rebase in this checkout stopped with 2 unmerged paths.");
+    expect(bare).toContain("the branch being rebased onto — not your work");
+    expect(bare).not.toContain("HEAD is detached");
     expect(bare).not.toContain("undefined");
     expect(bare).not.toContain("null");
+    expect(bare).not.toContain("``");
+  });
+
+  it("counts one path in the singular", () => {
+    const one = conflictPrompt(state({ conflicts: [{ path: "a.txt", code: "UU" }] }));
+    expect(one).toContain("stopped with 1 unmerged path.");
+    expect(one).toContain("## Unmerged paths (1)");
+  });
+
+  it("never leaves a blank run where an absent fact was", () => {
+    expect(conflictPrompt(state({ head: null, step: null, total: null }))).not.toMatch(/\n\n\n/);
+    expect(prompt).not.toMatch(/\n\n\n/);
   });
 });
 
