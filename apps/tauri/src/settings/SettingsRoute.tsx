@@ -16,7 +16,7 @@ import {
   Settings as SettingsIcon,
   Workflow,
 } from "lucide-solid";
-import { Badge, Button, Disclosure, RadioGroup, Switch, Tabs, TextField } from "../ui";
+import { Badge, Button, Disclosure, RadioGroup, Select, Switch, Tabs, TextField } from "../ui";
 import { Icon, SessionGlyph } from "../theme/icons";
 import {
   configPaths,
@@ -58,11 +58,33 @@ import { DENSITIES, applyDensity, type Density } from "../theme/density";
 import {
   AUTOSAVE_KEY,
   DENSITY_KEY,
+  EDITOR_FONT_SIZE_KEY,
+  EDITOR_FONT_SIZE_RANGE,
+  EDITOR_LINE_HEIGHT_KEY,
+  EDITOR_LINE_HEIGHT_RANGE,
   readChoice,
   readFlag,
+  readScale,
   writeChoice,
   writeFlag,
 } from "../shell/layout";
+
+/**
+ * The sizes offered, rather than a free number.
+ *
+ * Whole pixels only: the gutter, the overlay and the textarea are positioned
+ * against the same line box, and a fractional size rounds differently in the
+ * three of them.
+ */
+const FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20] as const;
+
+/** Line spacing, named rather than numbered — nobody wants to pick `1.35`. */
+const LINE_HEIGHTS = [
+  { value: 1.2, label: "Tight" },
+  { value: 1.35, label: "Default" },
+  { value: 1.5, label: "Relaxed" },
+  { value: 1.8, label: "Loose" },
+] as const;
 
 /** Sections, in `apps/tauri order. */
 const SECTIONS = [
@@ -497,6 +519,53 @@ function Personalization() {
               hideLabel
               checked={readFlag(AUTOSAVE_KEY, false)}
               onChange={(on) => writeFlag(AUTOSAVE_KEY, on)}
+            />
+          }
+        />
+        {/* Kept apart from the theme's mono scale on purpose: the terminal and
+            the panels stay where the theme put them, and only the surface being
+            read for hours moves. */}
+        <Row
+          label="Font size"
+          description="The editor's type size, in pixels. The gutter, the syntax overlay and the text share it, so they stay on one line box."
+          control={
+            <Select
+              aria-label="Font size"
+              value={String(
+                readScale(
+                  EDITOR_FONT_SIZE_KEY,
+                  EDITOR_FONT_SIZE_RANGE.min,
+                  EDITOR_FONT_SIZE_RANGE.max,
+                  EDITOR_FONT_SIZE_RANGE.fallback,
+                ),
+              )}
+              onChange={(next) => writeChoice(EDITOR_FONT_SIZE_KEY, next)}
+              options={FONT_SIZES.map((value) => ({
+                value: String(value),
+                label: `${value} px`,
+              }))}
+            />
+          }
+        />
+        <Row
+          label="Line spacing"
+          description="A multiplier on the type size. Looser is easier on a long file; tighter fits more of one on screen."
+          control={
+            <Select
+              aria-label="Line spacing"
+              value={String(
+                readScale(
+                  EDITOR_LINE_HEIGHT_KEY,
+                  EDITOR_LINE_HEIGHT_RANGE.min,
+                  EDITOR_LINE_HEIGHT_RANGE.max,
+                  EDITOR_LINE_HEIGHT_RANGE.fallback,
+                ),
+              )}
+              onChange={(next) => writeChoice(EDITOR_LINE_HEIGHT_KEY, next)}
+              options={LINE_HEIGHTS.map(({ value, label }) => ({
+                value: String(value),
+                label,
+              }))}
             />
           }
         />

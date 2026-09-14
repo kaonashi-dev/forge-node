@@ -254,20 +254,27 @@ export function clearEditorReveal(): void {
 }
 
 /**
- * Open the Files sidebar in content-search mode.
+ * Open the Files sidebar in content-search mode, optionally pre-filled.
  *
  * Same shape as `treeReveal`: the Files panel may not be mounted yet (another
  * sidebar view, or the bar collapsed). The request stands until the panel
  * picks it up.
+ *
+ * `query` is what separates the two callers. `Mod-shift-f` asks for the field
+ * and nothing else, so it sends `null` and the panel leaves whatever was typed
+ * there alone. "Find All References" arrives with a symbol, and the panel runs
+ * it — a references search is a content grep with the query already decided.
  */
-const [pendingFindInFiles, setPendingFindInFiles] = createSignal(false);
+const [pendingFindInFiles, setPendingFindInFiles] = createSignal<{ query: string | null } | null>(
+  null,
+);
 
 export const findInFilesPending = pendingFindInFiles;
 
-export function requestFindInFiles(): void {
-  setPendingFindInFiles(true);
+export function requestFindInFiles(query: string | null = null): void {
+  setPendingFindInFiles({ query });
 }
 
 export function clearFindInFiles(): void {
-  setPendingFindInFiles(false);
+  setPendingFindInFiles(null);
 }

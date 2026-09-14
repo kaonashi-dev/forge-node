@@ -159,6 +159,15 @@ defaults use CSS system colors and monospace, with no imported app theme:
 | `--fw-added`, `--fw-modified`, `--fw-deleted` | Optional decorations                       |
 | `--fw-font`, `--fw-font-size`                 | Monospaced typography                      |
 | `--fw-row-height`                             | Unitless row height in pixels, at least 16 |
+| `--fw-editor-line-height`                     | Unitless line height for the editor only   |
+
+The editor's own type is set two different ways, because the two behave
+differently. Font size is ordinary inheritance — `.fw-editor` is `font:
+inherit`, so setting `font-size` on the host element is enough. Line height is
+a custom property, because the gutter, the highlight layer and the textarea
+each read `--fw-line-height` and have to agree to the pixel: one override on
+`--fw-editor-line-height` moves all three together, where three separate
+`line-height` declarations would drift apart the moment one was missed.
 
 ## Standalone example
 

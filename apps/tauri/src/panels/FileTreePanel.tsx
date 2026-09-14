@@ -273,9 +273,13 @@ export function FileTreePanel() {
   // `Mod-shift-f` may fire while this panel is unmounted; the pending flag
   // stands until we open and focus the content-search field.
   createEffect(() => {
-    if (!findInFilesPending()) return;
+    const asked = findInFilesPending();
+    if (!asked) return;
     clearFindInFiles();
     setMode("content");
+    // A request that names a symbol runs it; one that does not is the chord
+    // asking for the field, and must not wipe what is already typed there.
+    if (asked.query !== null) setContentQuery(asked.query);
     requestAnimationFrame(() => filterInput?.focus({ preventScroll: true }));
   });
   createEffect(() => {

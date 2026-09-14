@@ -59,11 +59,33 @@ export type FileEditorHandle = {
   revealLine: (line: number) => void;
   /** The name under the caret and the 1-based line it is on, or `null`. */
   symbolAtCursor: () => { symbol: string; line: number } | null;
+  /**
+   * Put the caret where a pointer is, for a right-click whose menu has to act
+   * on what was clicked rather than on wherever the caret last sat.
+   *
+   * A point inside an existing selection leaves it alone, so that Copy in the
+   * menu about to open still has something to copy — the same rule every
+   * native text field follows.
+   */
+  caretAtPoint: (clientX: number, clientY: number) => void;
+  /** The selected text; empty when the caret is a point rather than a range. */
+  selectedText: () => string;
+  /**
+   * Replace the selection, as an edit the person made.
+   *
+   * Cut is this with `""` and paste is this with the clipboard. Goes through
+   * the same path as typing, so undo, the highlight and `onChange` all behave
+   * as they do for a keystroke. A no-op on a read-only editor.
+   */
+  replaceSelection: (text: string) => void;
   focus: () => void;
   destroy: () => void;
 };
 
 const MATCH_CAP = 5_000;
+
+/** Mirrors `tab-size` in `style.css`; the column math has to agree with it. */
+const TAB_COLUMNS = 2;
 
 type Match = { from: number; to: number };
 
@@ -168,6 +190,9 @@ export function createFileEditor(host: HTMLElement, options: FileEditorOptions):
   let cachedMatches: Match[] = [];
   let cursorLine = 1;
   let input: HTMLTextAreaElement;
+  let measureCanvas: HTMLCanvasElement | undefined;
+  let measuredFont = "";
+  let measuredChar = 0;
 
   const root = document.createElement("div");
   root.className = "fw-editor";
@@ -641,6 +666,75 @@ export function createFileEditor(host: HTMLElement, options: FileEditorOptions):
     input.focus({ preventScroll: true });
   }
 
+  /**
+   * Width of one character, measured and cached against the font it was
+   * measured with.
+   *
+   * Re-measured when the font string changes, which is not hypothetical: the
+   * shell drives editor font size from a preference, and a cached width from
+   * the old size would put every right-click in the wrong column.
+   */
+  function charWidth(): number {
+    const style = getComputedStyle(input);
+    const font = style.font || `${style.fontSize} ${style.fontFamily}`;
+    if (font === measuredFont && measuredChar > 0) return measuredChar;
+    measuredFont = font;
+    measureCanvas ??= document.createElement("canvas");
+    const context = measureCanvas.getContext("2d");
+    if (context) {
+      context.font = font;
+      measuredChar = context.measureText("0").width;
+    }
+    // A canvas-less environment still has to return something usable rather
+    // than a zero that would divide every column into infinity.
+    if (!(measuredChar > 0)) measuredChar = (Number.parseFloat(style.fontSize) || 13) * 0.6;
+    return measuredChar;
+  }
+
+  function offsetAtPoint(clientX: number, clientY: number): number {
+    const box = input.getBoundingClientRect();
+    const style = getComputedStyle(input);
+    const lineHeight = Number.parseFloat(style.lineHeight) || 20;
+    const padLeft = Number.parseFloat(style.paddingLeft) || 0;
+    const padTop = Number.parseFloat(style.paddingTop) || 0;
+    const text = input.value;
+    const starts = lineStarts(text);
+    const row = Math.min(
+      Math.max(Math.floor((clientY - box.top + input.scrollTop - padTop) / lineHeight), 0),
+      starts.length - 1,
+    );
+    const start = starts[row]!;
+    const end = row + 1 < starts.length ? starts[row + 1]! - 1 : text.length;
+    const target = (clientX - box.left + input.scrollLeft - padLeft) / charWidth();
+    // Walked rather than divided, because a tab is one character and up to
+    // TAB_COLUMNS columns: dividing would land the caret in the wrong word on
+    // every line of a tab-indented file.
+    let column = 0;
+    for (let at = start; at < end; at += 1) {
+      const width = text[at] === "\t" ? TAB_COLUMNS - (column % TAB_COLUMNS) : 1;
+      if (target < column + width / 2) return at;
+      column += width;
+    }
+    return end;
+  }
+
+  function caretAtPoint(clientX: number, clientY: number): void {
+    const at = offsetAtPoint(clientX, clientY);
+    const { selectionStart, selectionEnd } = input;
+    if (selectionStart !== selectionEnd && at >= selectionStart && at <= selectionEnd) return;
+    input.setSelectionRange(at, at);
+    reportCursor();
+  }
+
+  function replaceSelection(text: string): void {
+    if (options.readOnly) return;
+    const { selectionStart, selectionEnd } = input;
+    applyUserText(
+      input.value.slice(0, selectionStart) + text + input.value.slice(selectionEnd),
+      selectionStart + text.length,
+    );
+  }
+
   function symbolAtCursor(): { symbol: string; line: number } | null {
     const text = input.value;
     const at = input.selectionStart;
@@ -775,6 +869,9 @@ export function createFileEditor(host: HTMLElement, options: FileEditorOptions):
     },
     revealLine,
     symbolAtCursor,
+    caretAtPoint,
+    selectedText: () => input.value.slice(input.selectionStart, input.selectionEnd),
+    replaceSelection,
     focus: () => input.focus(),
     destroy: () => {
       window.clearTimeout(highlightTimer);

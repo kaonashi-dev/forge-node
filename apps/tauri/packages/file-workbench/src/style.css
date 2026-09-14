@@ -279,8 +279,12 @@
   background: inherit;
   color: inherit;
   font: inherit;
-  /* Match terminal metrics: vim/zed gutters and rows share one line box. */
-  --fw-line-height: var(--forge-mono-lh, 1.35);
+  /* Match terminal metrics: vim/zed gutters and rows share one line box.
+     A host that sets `--fw-editor-line-height` wins; unset, this is the value
+     it always was. The gutter, the highlight layer and the textarea all read
+     `--fw-line-height`, so overriding the one keeps the three in step — which
+     is the whole reason the override lands here and not on each of them. */
+  --fw-line-height: var(--fw-editor-line-height, var(--forge-mono-lh, 1.35));
 }
 .fw-editor-body {
   position: relative;

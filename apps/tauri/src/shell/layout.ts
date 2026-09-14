@@ -32,6 +32,19 @@ export const TERMINAL_ZOOM_KEY = "ui.terminal.zoom";
 /** Write the open file on blur and after a pause. Off by default (§2.2 A8). */
 export const AUTOSAVE_KEY = "ui.editor.autosave";
 /**
+ * Editor type metrics, kept apart from the theme's `--forge-mono-*` tokens.
+ *
+ * Reading code is not reading the shell, and the two want different numbers:
+ * the terminal and the panels stay on the theme's scale while the editor is
+ * pushed up for a long session or down to fit a wide diff. Both fall back to
+ * the mono tokens, so an untouched install looks exactly as it did.
+ */
+export const EDITOR_FONT_SIZE_KEY = "ui.editor.font_size";
+export const EDITOR_LINE_HEIGHT_KEY = "ui.editor.line_height";
+/** Bounds for the two above. Past either end the gutter stops lining up. */
+export const EDITOR_FONT_SIZE_RANGE = { min: 9, max: 24, fallback: 13 };
+export const EDITOR_LINE_HEIGHT_RANGE = { min: 1.1, max: 2.2, fallback: 1.35 };
+/**
  * The checkout the window was last pointed at, so a relaunch opens where the
  * person left off rather than on whichever worktree happens to be first.
  *

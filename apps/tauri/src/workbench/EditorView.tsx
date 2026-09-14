@@ -10,12 +10,14 @@ import {
 } from "solid-js";
 import { EDITOR } from "../actions/actions";
 import { enterContext, registerAction } from "../actions/dispatch";
+import { CLIPBOARD_MOD, MOD, describeChord, parseChord } from "../actions/keys";
 import { setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import {
   clearEditorReveal,
   editorReveal,
   openDiff,
   openEditorAt,
+  requestFindInFiles,
   revealInTree,
 } from "../store/viewsStore";
 import { showView } from "../store/sidebarStore";
@@ -34,13 +36,21 @@ import { candidateLabel, stepLookup, type Lookup } from "./definition";
 import type { SearchMatch } from "./types";
 import { grammarFor } from "./language";
 import { actionForDiskRead } from "./editor/conflict";
-import { createEditor, type EditorHandle } from "./editor/createEditor";
+import { createEditor, type EditorHandle, type EditorMetrics } from "./editor/createEditor";
 import { gitChangesFor, marksForChanges, patchFor } from "./editor/gitMarks";
 import { lineAt, rulerTicks } from "./editor/overviewRuler";
 import { ensureDiff, refreshDiff } from "./decorations";
 import { CompareView } from "./editor/CompareView";
-import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
-import { Button, Tooltip } from "../ui";
+import {
+  AUTOSAVE_KEY,
+  EDITOR_FONT_SIZE_KEY,
+  EDITOR_FONT_SIZE_RANGE,
+  EDITOR_LINE_HEIGHT_KEY,
+  EDITOR_LINE_HEIGHT_RANGE,
+  readFlag,
+  readScale,
+} from "../shell/layout";
+import { Button, ContextMenu, Tooltip, type MenuItem } from "../ui";
 import { Markdown, type MdImageLoader } from "./Markdown";
 import { imageSource } from "./previewImages";
 import { previewImageReader } from "./api";
@@ -70,6 +80,17 @@ const AUTOSAVE_IDLE_MS = 1_000;
 /** How a Markdown file is shown: its source, or the document it renders to. */
 type MarkdownMode = "code" | "preview";
 
+/**
+ * A chord spec as the platform spells it, for a menu's right-hand column.
+ *
+ * Through `parseChord`/`describeChord` rather than a literal, so the menu and
+ * the keymap cannot drift, and so Linux gets `Ctrl+Shift+C` for a copy that is
+ * `⌘C` on a Mac instead of a Mac label on every platform.
+ */
+function chordLabel(spec: string): string {
+  return describeChord(parseChord(spec));
+}
+
 export function EditorView(props: { path: string }) {
   let host!: HTMLDivElement;
   let handle: EditorHandle | undefined;
@@ -87,6 +108,31 @@ export function EditorView(props: { path: string }) {
    */
   const autosave = () => readFlag(AUTOSAVE_KEY, false);
   let idleTimer: number | undefined;
+
+  /**
+   * The reader's type metrics, read reactively.
+   *
+   * A plain accessor rather than a signal seeded once: `forgeStore.app_state`
+   * arrives after the window paints, and a value snapshotted at creation would
+   * keep the fallback forever (`seedFromAppState` documents the same trap).
+   */
+  const metrics = (): EditorMetrics => ({
+    fontSize: readScale(
+      EDITOR_FONT_SIZE_KEY,
+      EDITOR_FONT_SIZE_RANGE.min,
+      EDITOR_FONT_SIZE_RANGE.max,
+      EDITOR_FONT_SIZE_RANGE.fallback,
+    ),
+    lineHeight: readScale(
+      EDITOR_LINE_HEIGHT_KEY,
+      EDITOR_LINE_HEIGHT_RANGE.min,
+      EDITOR_LINE_HEIGHT_RANGE.max,
+      EDITOR_LINE_HEIGHT_RANGE.fallback,
+    ),
+  });
+
+  /** Where a right-click landed, and so where the menu hangs. `null` is closed. */
+  const [menuAt, setMenuAt] = createSignal<{ x: number; y: number } | null>(null);
 
   function scheduleAutosave(): void {
     clearTimeout(idleTimer);
@@ -297,10 +343,121 @@ export function EditorView(props: { path: string }) {
     if (at) goToDefinition(at.symbol, at.line);
   }
 
+  /**
+   * A references search is the content grep, with the symbol filled in.
+   *
+   * Not a semantic one: there is no language server behind any of this, so
+   * this finds the word and the person reads the hits. That is the same
+   * bargain "Go to Definition" already makes (`fs-service::definition_rank`
+   * ranks grep hits), and calling it references rather than "find this word"
+   * is the honest name for what a reader wants from it.
+   */
+  function findReferencesAtCursor(): void {
+    const at = handle?.symbolAtCursor();
+    if (!at) return;
+    requestFindInFiles(at.symbol);
+    showView("Files");
+  }
+
+  /**
+   * Open the menu on what was right-clicked.
+   *
+   * The caret is moved first: every item below reads the caret or the
+   * selection, and a menu that acted on wherever the caret last sat would be
+   * a menu about the wrong word. A click inside a selection leaves it, so
+   * Copy still has its range.
+   */
+  function openMenu(event: MouseEvent): void {
+    event.preventDefault();
+    handle?.caretAtPoint(event.clientX, event.clientY);
+    setMenuAt({ x: event.clientX, y: event.clientY });
+  }
+
+  /**
+   * What the right-click menu offers, given where the caret ended up.
+   *
+   * Everything here is something this editor can actually do. The rest of what
+   * a language-server editor puts in this menu — declaration, type definition,
+   * implementation, call hierarchy, rename, code actions — is absent rather
+   * than disabled, because there is no language server to turn on later and no
+   * honest way to grey out an item that is not coming.
+   */
+  function menuItems(): MenuItem[] {
+    const symbol = handle?.symbolAtCursor()?.symbol ?? null;
+    const selected = (handle?.selectedText() ?? "").length > 0;
+    const editable = !previewing();
+    return [
+      {
+        kind: "item",
+        label: "Go to Definition",
+        detail: chordLabel(`${MOD}-b`),
+        disabled: !symbol,
+        run: askForDefinitionAtCursor,
+      },
+      {
+        kind: "item",
+        label: "Find All References",
+        disabled: !symbol,
+        run: findReferencesAtCursor,
+      },
+      { kind: "rule" },
+      {
+        kind: "item",
+        label: "Cut",
+        detail: chordLabel(`${CLIPBOARD_MOD}-x`),
+        disabled: !selected || !editable,
+        run: () => void cutSelection(),
+      },
+      {
+        kind: "item",
+        label: "Copy",
+        detail: chordLabel(`${CLIPBOARD_MOD}-c`),
+        disabled: !selected,
+        run: () => void copySelection(),
+      },
+      {
+        kind: "item",
+        label: "Paste",
+        detail: chordLabel(`${CLIPBOARD_MOD}-v`),
+        disabled: !editable,
+        run: () => void pasteIntoSelection(),
+      },
+      { kind: "rule" },
+      {
+        kind: "item",
+        label: "Reveal in Files",
+        run: () => {
+          revealInTree(props.path);
+          showView("Files");
+        },
+      },
+    ];
+  }
+
+  async function copySelection(): Promise<void> {
+    const text = handle?.selectedText();
+    if (text) await navigator.clipboard.writeText(text).catch(() => undefined);
+  }
+
+  async function cutSelection(): Promise<void> {
+    const text = handle?.selectedText();
+    if (!text) return;
+    await navigator.clipboard.writeText(text).catch(() => undefined);
+    handle?.replaceSelection("");
+  }
+
+  /* Reads the clipboard before touching the document: a denied or empty read
+     must leave the selection standing rather than delete it for nothing. */
+  async function pasteIntoSelection(): Promise<void> {
+    const text = await navigator.clipboard.readText().catch(() => "");
+    if (text) handle?.replaceSelection(text);
+  }
+
   onMount(() => {
     handle = createEditor(host, {
       doc: file()?.text ?? "",
       base: themeBase(),
+      metrics: metrics(),
       onCursor: setPosition,
       onChange: () => {
         setDirty(true);
@@ -470,6 +627,12 @@ export function EditorView(props: { path: string }) {
   createEffect(() => {
     const base = themeBase();
     handle?.setBase(base);
+  });
+
+  /* Tracked rather than seeded: `app_state` lands after the window paints, so
+     the first read here is the fallback and this is what corrects it. */
+  createEffect(() => {
+    handle?.setMetrics(metrics());
   });
 
   createEffect(() => {
@@ -682,7 +845,17 @@ export function EditorView(props: { path: string }) {
         class="editor-code-row"
         classList={{ hidden: comparing() || previewing() || unopenable() !== null || !file() }}
       >
-        <div ref={host} class="editor-code" />
+        <div ref={host} class="editor-code" onContextMenu={openMenu} />
+        <Show when={menuAt()}>
+          {(at) => (
+            <ContextMenu
+              x={at().x}
+              y={at().y}
+              items={menuItems()}
+              onDismiss={() => setMenuAt(null)}
+            />
+          )}
+        </Show>
         {/* A5: the gutter answers "did this line change" for the lines on
             screen; the ruler answers "where else" for the ones that are not. */}
         <Show when={ticks().length > 0}>
