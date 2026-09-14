@@ -158,6 +158,7 @@ restart (no hot reload). See [`config.example.toml`](./config.example.toml).
 | the schema | `crates/persistence/src/migrations.rs` (append only) → [persistence.md](./persistence.md) |
 | paths, config, logging, singleton | `crates/daemon/src/{paths,config,logging,lockfile}.rs` |
 | Tauri frontend layout, panels, terminal | `apps/tauri/src` → [ui.md](./ui.md) |
+| the standalone editor spike | `crates/editor-cli` → [editor.md](./editor.md) |
 | theme tokens | `apps/tauri/src/theme/tokens.ts` → [theming.md](./theming.md) |
 | cost rungs | [performance.md](./performance.md) |
 
