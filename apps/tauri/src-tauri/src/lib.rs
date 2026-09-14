@@ -129,6 +129,7 @@ fn app_menus(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &[
             &item(app, "open_command_palette", "Command Palette…")?,
             &item(app, "open_file_palette", "Open File…")?,
+            &item(app, "find_in_project", "Find in Files…")?,
             &PredefinedMenuItem::separator(app)?,
             &item(app, "toggle_sidebar", "Toggle Sidebar")?,
             &item(app, "toggle_projects", "Projects")?,

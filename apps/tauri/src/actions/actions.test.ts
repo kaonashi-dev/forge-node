@@ -78,11 +78,17 @@ describe("default bindings (actions.rs port)", () => {
     expect(actionLabel("new_terminal")).toBe("New Terminal");
   });
 
-  // Declared before `MOD-shift-f`: the palette draws an action's first chord.
-  it("draws Files from its number chord, not the letter", () => {
+  // Declared before any letter chord: the palette draws an action's first chord.
+  it("draws Files from its number chord", () => {
     const chord = chordFor("toggle_files");
     expect(chord?.key).toBe("2");
     expect(chord?.shift).toBe(false);
+  });
+
+  it("opens Find in Files on Mod-shift-f", () => {
+    const binding = defaultBindings().find((item) => item.action === "find_in_project");
+    expect(binding?.chord).toEqual(parseChord(`${MOD}-shift-f`));
+    expect(binding?.context).toBe("App");
   });
 
   // The editor convention is the one a new user guesses; taking it away to pay
@@ -181,6 +187,7 @@ describe("firesOnRepeat", () => {
       "toggle_sidebar",
       "toggle_projects",
       "toggle_files",
+      "find_in_project",
       "toggle_history",
       "toggle_pull_requests",
       "toggle_features",

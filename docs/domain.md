@@ -279,7 +279,9 @@ concurrency token `WriteFile` must present back. `SearchResults.query` echoes
 what was asked: the answer arrives as an event with no request id, so it is the
 only thing that tells a second lookup from the first one's answer.
 
-`SearchKind::Definition` is not a content search with a crafted pattern. The
+`SearchKind::Content` is a fixed-string find (`git grep -F`): typed project
+search, not a regex. `SearchKind::Definition` is not a content search with a
+crafted pattern. The
 service greps for the bare word (`git grep -w -F`, so a symbol from a click can
 never become a regex) and keeps the lines whose *shape* declares it — a
 declaring keyword before the name, a binding keyword, or a bare signature that

@@ -173,7 +173,7 @@ pub struct ImageBytes {
 pub enum SearchKind {
     /// Subsequence match against the relative path.
     Name,
-    /// Line match against file contents (`git grep`).
+    /// Fixed-string line match against file contents (`git grep -F`).
     Content,
     /// Lines that declare the queried symbol (`git grep -w -F`, then filtered).
     Definition,
@@ -840,6 +840,8 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
     if !is_git_repo(&root) {
         return search_content_walk(&root, query, limit);
     }
+    // Fixed-string (`-F`): find-in-project takes typed text, not a regex. `-e`
+    // still wraps the needle so a query that starts with `-` is not a flag.
     // `git grep` exits 1 when there are no matches — that is success.
     let out = run_git(
         Some(&root),
@@ -850,6 +852,7 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
             "--no-color",
             "--untracked",
             "-z",
+            "-F",
             "-e",
             query,
             "--",
@@ -865,6 +868,7 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
                 "--no-color".into(),
                 "--untracked".into(),
                 "-z".into(),
+                "-F".into(),
                 "-e".into(),
                 query.into(),
             ],
@@ -1921,6 +1925,23 @@ mod tests {
         assert_eq!(r.matches.len(), 1);
         assert_eq!(r.matches[0].line, 2);
         assert!(r.matches[0].text.contains("world"));
+    }
+
+    /// Metacharacters stay literal: Content is find-in-project text, not a regex.
+    #[test]
+    fn content_search_is_fixed_string() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join("a.rs"), "hello.*world\nother line\n").unwrap();
+        assert!(Command::new("git")
+            .args(["add", "a.rs"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+        let r = search_files(tmp.path(), ".*", SearchKind::Content, 50).unwrap();
+        assert_eq!(r.matches.len(), 1);
+        assert_eq!(r.matches[0].line, 1);
+        assert!(r.matches[0].text.contains("hello.*world"));
     }
 
     /// The whole path, against a real `git grep`: the word boundary is git's,

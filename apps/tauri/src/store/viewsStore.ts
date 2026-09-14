@@ -252,3 +252,22 @@ export const editorReveal = pendingLine;
 export function clearEditorReveal(): void {
   setPendingLine(null);
 }
+
+/**
+ * Open the Files sidebar in content-search mode.
+ *
+ * Same shape as `treeReveal`: the Files panel may not be mounted yet (another
+ * sidebar view, or the bar collapsed). The request stands until the panel
+ * picks it up.
+ */
+const [pendingFindInFiles, setPendingFindInFiles] = createSignal(false);
+
+export const findInFilesPending = pendingFindInFiles;
+
+export function requestFindInFiles(): void {
+  setPendingFindInFiles(true);
+}
+
+export function clearFindInFiles(): void {
+  setPendingFindInFiles(false);
+}

@@ -87,7 +87,7 @@ pub struct ImageContents {
 pub enum SearchKind {
     /// Subsequence match against the relative path.
     Name,
-    /// Line match against file contents.
+    /// Fixed-string line match against file contents (`git grep -F`).
     Content,
     /// Lines that *declare* the queried symbol, not every line that mentions it.
     ///
