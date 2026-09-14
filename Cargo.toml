@@ -87,6 +87,7 @@ compact_str = { version = "0.10", features = ["serde"] }
 # System
 nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user"] }
 directories = "6"
+notify = "7"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

@@ -323,6 +323,17 @@ const BY_EXTENSION: Record<string, LangIconName> = {
   rdb: "redis",
 };
 
+/**
+ * Where a mark's artwork lives.
+ *
+ * Two variants because the SVGs carry their own fills: a pale ground needs the
+ * set drawn for it rather than a filter over the dark one. Shared so the tree's
+ * imperative rows and `LangIcon` can never name the file differently.
+ */
+export function langIconUrl(path: string, light: boolean): string {
+  return `/icons/lang/${light ? "light" : "dark"}/${langIconFor(path)}.svg`;
+}
+
 /** The last path segment, lowercased. Callers pass a name or a whole path. */
 function fileName(path: string): string {
   const cut = path.lastIndexOf("/");

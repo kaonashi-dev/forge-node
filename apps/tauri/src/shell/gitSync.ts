@@ -7,9 +7,12 @@
 // `git checkout main` into a shell reaches none of them, so the rail went on
 // naming the branch the worktree was created on — for the rest of the session.
 //
-// A filesystem watcher would be the general answer and there is a
-// `DaemonEvent::FileChanged` reserved for one, but nothing emits it: no
-// watcher exists, and adding one is a subsystem, not a fix.
+// The file watcher (`daemon::file_watch`) does not replace this. It is
+// non-recursive and bounded to the folders a file surface has open, so a
+// `git checkout` that rewrites a subtree nobody expanded moves nothing it can
+// see — and with neither the Files panel nor an editor mounted there is no
+// watch at all. It also watches one checkout, the focused one, while the rail
+// names every worktree.
 //
 // So this asks at the two moments a person can tell something happened. It is
 // deliberately *not* a poll: a `git status` on a large checkout is real

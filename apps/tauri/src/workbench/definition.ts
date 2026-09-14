@@ -45,6 +45,42 @@ export function resolveDefinition(
   };
 }
 
+/** A lookup that is out: the symbol asked about, and the line it was asked on. */
+export type Lookup = { symbol: string; line: number };
+
+/**
+ * What the view watching a lookup should do with the state it can see.
+ *
+ * `wait` covers both "nothing is out" and "the answer on the store belongs to
+ * an older question"; only `failed` and `settled` end the lookup.
+ */
+export type LookupStep =
+  | { kind: "wait" }
+  | { kind: "failed" }
+  | { kind: "settled"; answer: Resolution };
+
+/**
+ * Decide whether the lookup `asked` is still out, dead, or answered.
+ *
+ * `error` is the *search's* error and never the file surface's: a `ReadFile`
+ * that failed earlier says nothing about a `git grep`, and a lookup read
+ * against the wrong field is a silent no-op with no way back.
+ */
+export function stepLookup(
+  asked: Lookup | null,
+  results: SearchResults | null,
+  error: string | null,
+  from: string,
+): LookupStep {
+  if (!asked) return { kind: "wait" };
+  if (error) return { kind: "failed" };
+  if (!results || results.query !== asked.symbol) return { kind: "wait" };
+  return {
+    kind: "settled",
+    answer: resolveDefinition(results, asked.symbol, { path: from, line: asked.line }),
+  };
+}
+
 /** One candidate as `path:line` — the shape the rest of the shell links in. */
 export function candidateLabel(match: SearchMatch): string {
   return `${match.path}:${match.line}`;

@@ -754,10 +754,21 @@ impl Client {
         }
     }
 
-    /// List files under a workspace (ADR-012).
-    ///
-    /// Local and synchronous like [`Client::workspace_diff`]: belongs on the
-    /// runtime thread, never the render one.
+    /// Replace directory watches on this connection; an empty list releases them.
+    pub fn watch_files(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        directories: Vec<String>,
+    ) -> Result<(), ClientError> {
+        match self.request(Request::WatchFiles {
+            workspace_id,
+            directories,
+        })? {
+            Response::Ack => Ok(()),
+            _ => Err(ClientError::UnexpectedResponse { expected: "Ack" }),
+        }
+    }
+
     pub fn list_files(
         &self,
         workspace_id: domain::WorkspaceId,

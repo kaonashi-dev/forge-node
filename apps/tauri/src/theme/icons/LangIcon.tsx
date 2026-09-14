@@ -1,6 +1,6 @@
 import { themeBase } from "../ThemeProvider";
 import { baseIsLight } from "../tokens";
-import { langIconFor } from "./langIcons";
+import { langIconUrl } from "./langIcons";
 
 type LangIconProps = {
   /** A file name or a whole path — the mark is read off the last segment. */
@@ -25,7 +25,6 @@ type LangIconProps = {
  */
 export function LangIcon(props: LangIconProps) {
   const size = () => props.size ?? 14;
-  const variant = () => (baseIsLight(themeBase()) ? "light" : "dark");
   return (
     <span
       class={`forge-lang-icon ${props.class ?? ""}`}
@@ -35,7 +34,7 @@ export function LangIcon(props: LangIconProps) {
       style={{
         width: `${size()}px`,
         height: `${size()}px`,
-        "--icon-url": `url(/icons/lang/${variant()}/${langIconFor(props.path)}.svg)`,
+        "--icon-url": `url(${langIconUrl(props.path, baseIsLight(themeBase()))})`,
       }}
     />
   );

@@ -108,13 +108,13 @@ function chrome(colors: EditorPalette, dark: boolean): Extension {
        * changed set compares equal to the old one and the gutter never
        * repaints. The stripes disappear entirely.
        */
-      ".cm-lineNumbers .cm-gutterElement.forge-git-added": {
+      ".cm-lineNumbers .cm-gutterElement.fw-git-added": {
         boxShadow: `inset 2px 0 0 ${colors.gitAdded}`,
       },
-      ".cm-lineNumbers .cm-gutterElement.forge-git-modified": {
+      ".cm-lineNumbers .cm-gutterElement.fw-git-modified": {
         boxShadow: `inset 2px 0 0 ${colors.gitModified}`,
       },
-      ".cm-lineNumbers .cm-gutterElement.forge-git-deleted": {
+      ".cm-lineNumbers .cm-gutterElement.fw-git-deleted": {
         boxShadow: `inset 2px 0 0 ${colors.gitDeleted}`,
       },
     },

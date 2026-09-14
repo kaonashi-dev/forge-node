@@ -36,7 +36,10 @@ export type GrammarId =
   | "markdown"
   | "css"
   | "html"
-  | "shellscript";
+  | "shellscript"
+  | "kotlin"
+  | "sql"
+  | "prisma";
 
 /** What the daemon's `language` hint maps to. */
 const FROM_DAEMON: Record<string, GrammarId> = {
@@ -78,6 +81,10 @@ const FROM_EXTENSION: Record<string, GrammarId> = {
   sh: "shellscript",
   bash: "shellscript",
   zsh: "shellscript",
+  kt: "kotlin",
+  kts: "kotlin",
+  sql: "sql",
+  prisma: "prisma",
 };
 
 /** Files that carry their language in the whole name rather than a suffix. */

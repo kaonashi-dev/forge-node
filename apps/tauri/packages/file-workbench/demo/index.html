@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>File workbench · standalone</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font: 13px/1.5 monospace;
+      }
+      body {
+        margin: 0;
+        background: Canvas;
+        color: CanvasText;
+      }
+      main {
+        display: grid;
+        grid-template-columns: minmax(210px, 24%) minmax(0, 1fr);
+        height: calc(100vh - 54px);
+      }
+      #explorer {
+        display: flex;
+        min-height: 0;
+        border-right: 1px solid GrayText;
+      }
+      .demo-head {
+        height: 54px;
+        display: flex;
+        align-items: center;
+        gap: 2ch;
+        padding: 0 2ch;
+        border-bottom: 1px solid GrayText;
+      }
+      .demo-head span {
+        margin-right: auto;
+      }
+      #editor {
+        height: 100%;
+      }
+      @media (max-width: 600px) {
+        main {
+          grid-template-columns: 180px minmax(0, 1fr);
+        }
+        .demo-head {
+          gap: 1ch;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="demo-head">
+      <span>file-workbench / standalone</span
+      ><button id="change" class="fw-button">Simulate disk change</button
+      ><button id="large" class="fw-button">50,000 files</button>
+    </header>
+    <main>
+      <div id="explorer"></div>
+      <section class="fw-document">
+        <header class="fw-document-head">
+          <span id="path" class="fw-path"></span><button id="save" class="fw-button">Save</button>
+        </header>
+        <div class="fw-document-content"><div id="editor"></div></div>
+        <footer class="fw-document-foot">
+          <span id="status">Saved</span><span class="fw-position" id="position">Ln 1, Col 1</span>
+        </footer>
+      </section>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

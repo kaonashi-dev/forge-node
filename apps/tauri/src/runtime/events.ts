@@ -1,3 +1,5 @@
+import { fileWatchReady, reconnectFileWatches, failFileWatch } from "../workbench/fileWatch";
+import { fileChangesChannel } from "./bus";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "../ui";
 import type { CellsPayload } from "../terminal/types";
@@ -13,6 +15,7 @@ import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenc
 import { refreshDiff } from "../workbench/decorations";
 import { previewImageReader } from "../workbench/api";
 import { dataUrl } from "../workbench/previewImages";
+import { sameListing } from "../workbench/fileInvalidation";
 import type {
   Branches,
   FileContents,
@@ -61,6 +64,12 @@ import {
 export function applyConnected(payload: ConnectedPayload): void {
   applyShellSnapshot(payload.store);
   adoptPendingLaunches();
+  reconnectFileWatches();
+  // A workbench command queued across a drop is answered by nothing, and its
+  // `loading` flag is what every one of these reads is guarded by: left up, the
+  // tree, the file and the decorations are never asked for again. The reads are
+  // idempotent and their surfaces re-ask on the next effect run.
+  setWorkbenchStore("loading", {});
   setRuntimeStore({
     connection: {
       kind: "connected",
@@ -122,6 +131,14 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
     listen<Tagged<T>>(event, ({ payload: [session, value] }) => apply(session, value));
 
   return Promise.all([
+    listen<[string, string]>("workbench:file_changed", ({ payload }) =>
+      fileChangesChannel.publish(payload),
+    ),
+    listen<string>("workbench:watch_ready", ({ payload }) => fileWatchReady(payload)),
+    listen<Failure>("workbench:watch_failed", ({ payload }) => {
+      const { workspace } = payload;
+      if (workspace && forCurrent(workspace)) failFileWatch(workspace, payload.error);
+    }),
     answer<WorkspaceDiff>("workbench:diff", "diff", (diff) =>
       setWorkbenchStore({ diff, diffError: null }),
     ),
@@ -147,8 +164,13 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
     listen<SessionFailure>("workbench:external_transcript_failed", ({ payload }) =>
       failTranscript(payload.session, payload.error),
     ),
+    /* A re-listing that says nothing new is dropped rather than stored: every
+       surface downstream keys off the object, and a save that changed no name
+       would otherwise repaint the tree. */
     answer<FileTree>("workbench:file_tree", "tree", (tree) =>
-      setWorkbenchStore({ tree, treeError: null }),
+      setWorkbenchStore(
+        sameListing(workbenchStore.tree, tree) ? { treeError: null } : { tree, treeError: null },
+      ),
     ),
     failure("workbench:file_tree_failed", "tree", "treeError"),
     answer<FileContents>("workbench:file", "file", (file) =>
@@ -172,8 +194,10 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
       ({ payload }) =>
         previewImageReader.settle(payload.workspace, payload.path, { error: payload.error }),
     ),
-    answer<SearchResults>("workbench:search", "search", (search) => setWorkbenchStore({ search })),
-    failure("workbench:search_failed", "search", "fileError"),
+    answer<SearchResults>("workbench:search", "search", (search) =>
+      setWorkbenchStore({ search, searchError: null }),
+    ),
+    failure("workbench:search_failed", "search", "searchError"),
     answer<RebaseState>("workbench:rebase", "rebase", (rebase) =>
       setWorkbenchStore({ rebase, rebaseError: null }),
     ),

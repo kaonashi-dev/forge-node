@@ -402,32 +402,28 @@
   overflow: hidden;
 }
 
+/*
+ * The pane wears `@forge-node/file-workbench`'s document chrome — the same
+ * terminal bar the file tree beside it is now drawn with — and Forge supplies
+ * only the token values behind it (`workbench/fileSurface.css`). So the head,
+ * the foot and their metrics are the package's; what stays here is the box the
+ * package cannot see and the two controls that are not its own.
+ */
+/* `.center-view` is a grid cell and not a flex parent, so `.fw-document`'s
+   `flex: 1` has nothing to grow against and the height comes from the cell. */
 .editor-view {
-  display: flex;
-  flex-direction: column;
   height: 100%;
-  min-height: 0;
-}
-.editor-head {
-  align-items: center;
-  border-bottom: 1px solid var(--border-subtle);
-  display: flex;
-  font-size: var(--text-sm);
-  gap: var(--space-8);
-  padding: var(--space-6) var(--space-10);
 }
 .editor-dirty {
   color: var(--warning-solid);
-  font-size: var(--text-xs);
 }
 /* Code / Preview for a Markdown file: one control in two halves, so it reads
-   as a choice between views rather than as two commands beside Save. */
+   as a choice between views rather than as two commands beside Save. Square
+   and gapless — a rounded pill in a `╭─` bar reads as a piece of another app. */
 .editor-mode {
-  background: var(--bg-subtle);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
   display: flex;
-  gap: var(--space-2);
-  padding: var(--space-2);
+  gap: 0;
 }
 /* The rendered document. A reading column rather than the pane's full width:
    a 1 600px line of prose is not readable, and a table or a diagram that
@@ -572,9 +568,9 @@
 /* A git gutter mark is a stripe on the inside edge of the line-number gutter
    (`plan-ui-ux.md` A5). The colours come from the theme extension; only the
    hit area is here, so the whole gutter row answers a click. */
-.editor-code .cm-gutterElement.forge-git-added,
-.editor-code .cm-gutterElement.forge-git-modified,
-.editor-code .cm-gutterElement.forge-git-deleted {
+.editor-code .cm-gutterElement.fw-git-added,
+.editor-code .cm-gutterElement.fw-git-modified,
+.editor-code .cm-gutterElement.fw-git-deleted {
   cursor: pointer;
 }
 

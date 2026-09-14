@@ -470,6 +470,11 @@ pub enum Request {
         /// The account the run was found in, `None` for the default one.
         profile_id: Option<AgentProfileId>,
     },
+    /// Replace this connection's non-recursive directory watches; empty directories stop them.
+    WatchFiles {
+        workspace_id: WorkspaceId,
+        directories: Vec<String>,
+    },
     /// List files under a workspace → [`crate::response::Response::FileTree`].
     ///
     /// Local and synchronous like `GetWorkspaceDiff`: the daemon reads the

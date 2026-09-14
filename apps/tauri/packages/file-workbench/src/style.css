@@ -1,0 +1,278 @@
+.fw-mount {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.fw-explorer,
+.fw-document {
+  --fw-row-height: 26;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--fw-foreground, CanvasText);
+  background: var(--fw-background, Canvas);
+  font: var(--fw-font-size, 13px) / 1.5 var(--fw-font, monospace);
+  text-align: start;
+}
+
+.fw-explorer *,
+.fw-document * {
+  box-sizing: border-box;
+}
+
+.fw-explorer-head,
+.fw-document-head,
+.fw-document-foot,
+.fw-explorer-foot {
+  display: flex;
+  align-items: center;
+  gap: 1ch;
+  flex: none;
+  min-height: 32px;
+  padding: 0.35em 1ch;
+  border-block-end: 1px solid var(--fw-border, GrayText);
+}
+
+.fw-explorer-title {
+  flex: 1;
+}
+.fw-explorer-title::before {
+  content: "├ ";
+  color: var(--fw-accent, LinkText);
+}
+.fw-document-head::before {
+  content: "╭─";
+  color: var(--fw-accent, LinkText);
+}
+.fw-explorer-foot,
+.fw-document-foot {
+  gap: 2ch;
+  min-height: 27px;
+  border-block-end: none;
+  border-block-start: 1px solid var(--fw-border, GrayText);
+  color: var(--fw-muted, GrayText);
+  font-size: 0.9em;
+}
+.fw-document-foot .fw-position {
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+}
+.fw-document-foot [data-dirty="true"] {
+  color: var(--fw-accent, LinkText);
+}
+
+.fw-button {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  padding: 0 0.6ch;
+  min-width: 24px;
+  min-height: 24px;
+  border-radius: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.fw-button:hover:not(:disabled) {
+  background: var(--fw-hover, ButtonFace);
+}
+.fw-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.fw-button:focus-visible,
+.fw-filter:focus-visible {
+  outline: 1px solid var(--fw-accent, Highlight);
+  outline-offset: -1px;
+}
+.fw-button[hidden] {
+  display: none;
+}
+
+.fw-filter {
+  appearance: none;
+  width: calc(100% - 2ch);
+  min-width: 0;
+  flex: none;
+  margin: 0.75em 1ch;
+  padding: 0.3em 0.7ch;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--fw-border, GrayText);
+  border-radius: 0;
+  font: inherit;
+}
+.fw-filter::placeholder {
+  color: var(--fw-muted, GrayText);
+}
+.fw-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+}
+.fw-tree-space {
+  position: relative;
+}
+.fw-tree-items {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+}
+.fw-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7ch;
+  height: calc(var(--fw-row-height) * 1px);
+  padding-inline-end: 1ch;
+  border-inline-start: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fw-tree-row:hover {
+  background: var(--fw-hover, ButtonFace);
+}
+.fw-tree-row[aria-selected="true"] {
+  background: var(--fw-selection, Highlight);
+}
+.fw-tree:focus .fw-tree-row[aria-selected="true"] {
+  border-inline-start-color: var(--fw-accent, HighlightText);
+}
+.fw-tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fw-tree-branch {
+  width: 1ch;
+  flex: none;
+  color: var(--fw-muted, GrayText);
+}
+/* A language mark keeps the artwork's own colours, so it is a background and
+   not a mask: the hue is the information. The host supplies the URL. */
+.fw-tree-icon {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+  background-image: var(--fw-icon-url);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+/* A structural mark — a folder — is the other case: it says what the row is,
+   not what is in it, so the same URL becomes a mask over `currentColor` and
+   the host decides that colour by styling this element. */
+.fw-tree-icon[data-tint="true"] {
+  background-image: none;
+  background-color: currentColor;
+  -webkit-mask-image: var(--fw-icon-url);
+  mask-image: var(--fw-icon-url);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+.fw-tree-mark {
+  margin-inline-start: auto;
+  flex: none;
+}
+/* The inline name field, absolutely placed over the row it edits inside the
+   scrolled content, so it rides the scroll without being re-parented. Its
+   line repeats `.fw-tree-row`'s gap and leading spans so the input starts
+   exactly where the label it replaces did. */
+.fw-tree-edit {
+  position: absolute;
+  inset-inline: 0;
+  z-index: 1;
+  padding-inline-end: 1ch;
+  background: var(--fw-background, Canvas);
+}
+.fw-tree-edit-line {
+  display: flex;
+  align-items: center;
+  gap: 0.7ch;
+  height: calc(var(--fw-row-height) * 1px);
+}
+.fw-tree-edit-field {
+  flex: 1;
+  min-width: 0;
+  appearance: none;
+  padding: 0 0.4ch;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--fw-accent, Highlight);
+  border-radius: 0;
+  font: inherit;
+  outline: none;
+}
+.fw-tree-edit-field[aria-invalid="true"] {
+  border-color: var(--fw-deleted, currentColor);
+}
+.fw-tree-edit-error {
+  margin: 0;
+  padding: 0.25em 0.4ch 0.5em;
+  color: var(--fw-deleted, GrayText);
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+.fw-tree-row[data-ignored="true"] {
+  color: var(--fw-muted, GrayText);
+}
+.fw-tree-row[data-tone="added"],
+.fw-tree-row[data-tone="untracked"] {
+  color: var(--fw-added, inherit);
+}
+.fw-tree-row[data-tone="modified"] {
+  color: var(--fw-modified, inherit);
+}
+.fw-tree-row[data-tone="deleted"],
+.fw-tree-row[data-tone="conflict"] {
+  color: var(--fw-deleted, inherit);
+}
+.fw-empty {
+  padding: 1ch;
+  color: var(--fw-muted, GrayText);
+}
+.fw-empty[hidden],
+.fw-mount[hidden],
+.fw-tree-edit[hidden],
+.fw-tree-edit-error[hidden],
+.fw-tree-icon[hidden],
+.fw-tree-mark[hidden],
+.fw-tree[hidden] {
+  display: none;
+}
+.fw-explorer-foot {
+  margin-block-start: auto;
+}
+
+.fw-document-head {
+  flex-wrap: wrap;
+}
+.fw-document-head .fw-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fw-document-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.fw-document .cm-editor {
+  height: 100%;
+  font-size: inherit;
+  background: inherit;
+}
+.fw-document .cm-scroller {
+  font-family: var(--fw-font, monospace);
+}

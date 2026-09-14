@@ -1,0 +1,43 @@
+/* The package consumes semantic roles; Forge owns their values. */
+.fw-host,
+.fw-document {
+  --fw-background: var(--bg-base);
+  --fw-foreground: var(--fg-default);
+  --fw-muted: var(--fg-subtle);
+  --fw-border: var(--border-subtle);
+  --fw-accent: var(--accent-solid);
+  --fw-hover: var(--bg-hover);
+  --fw-selection: var(--accent-soft);
+  --fw-added: var(--forge-git-added);
+  --fw-modified: var(--forge-git-modified);
+  --fw-deleted: var(--forge-git-deleted);
+  --fw-font: var(--font-mono);
+  --fw-font-size: var(--forge-mono-size);
+}
+/* The Files panel runs the explorer in `chrome: "list"`, so it is an ordinary
+   `.panel-body` in the sidebar — whose ground is the subtle one, which both
+   the explorer's surface and the opaque inline name field have to match. */
+.fw-host {
+  --fw-background: var(--bg-subtle);
+}
+/* The folder glyph is masked with `currentColor`; Forge picks the muted tone
+   the lucide `Icon` carried, so structure never outranks the name beside it. */
+.fw-host .fw-tree-icon[data-tint="true"] {
+  color: var(--fg-muted);
+}
+.fw-document .fw-document-head {
+  background: var(--bg-base);
+}
+.fw-document .editor-breadcrumb {
+  font-family: var(--font-mono);
+}
+.fw-document .editor-crumb {
+  font: inherit;
+  border-radius: 0;
+}
+.fw-document .fw-document-head .forge-button {
+  border-radius: 0;
+}
+.fw-document-foot {
+  padding-inline: var(--space-12);
+}

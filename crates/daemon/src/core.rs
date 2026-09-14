@@ -2774,7 +2774,10 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
-    fn workspace_path(&self, workspace_id: WorkspaceId) -> Result<PathBuf, ProtocolError> {
+    pub(crate) fn workspace_path(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<PathBuf, ProtocolError> {
         let inner = self.lock();
         inner
             .workspaces

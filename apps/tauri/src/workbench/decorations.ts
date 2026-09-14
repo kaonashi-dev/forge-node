@@ -12,12 +12,25 @@
 // call; `refreshDiff` is what a write goes through.
 
 import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
+import { fileChangesChannel } from "../runtime/bus";
 import { loadDiff } from "./api";
 
 /** A burst of autosaves is one read, not one per keystroke pause. */
 const COALESCE_MS = 150;
 
+/**
+ * The fastest an agent's writes may re-read the diff.
+ *
+ * A `git diff` of a large checkout is seconds of subprocess, and an agent
+ * writing for a minute produces events for the whole minute. This is
+ * `sessionChangesStore`'s `REFRESH_FLOOR_MS` applied to the same problem: the
+ * marks follow the work without the work paying for the marks. A save and any
+ * other explicit gesture goes through `refreshDiff`, which ignores the floor.
+ */
+const WATCH_FLOOR_MS = 10_000;
+
 let pending: ReturnType<typeof setTimeout> | undefined;
+let watchedAt = 0;
 
 function read(workspace: string): void {
   setLoading("diff", true);
@@ -36,7 +49,18 @@ function read(workspace: string): void {
  */
 export function ensureDiff(): void {
   const workspace = workbenchStore.workspace;
-  if (!workspace || workbenchStore.diff || workbenchStore.loading.diff) return;
+  // `diffError` is part of the guard for the same reason it is in
+  // `warmFileTree`: the callers are tracking effects that re-run when the
+  // failure lands, and a read that only ever fails would otherwise be asked
+  // for again on every one of them, forever. `refreshDiff` is the retry.
+  if (
+    !workspace ||
+    workbenchStore.diff ||
+    workbenchStore.loading.diff ||
+    workbenchStore.diffError
+  ) {
+    return;
+  }
   read(workspace);
 }
 
@@ -50,6 +74,7 @@ export function ensureDiff(): void {
 export function refreshDiff(): void {
   const workspace = workbenchStore.workspace;
   if (!workspace) return;
+  setWorkbenchStore("diffError", null);
   clearTimeout(pending);
   pending = setTimeout(() => {
     pending = undefined;
@@ -60,3 +85,24 @@ export function refreshDiff(): void {
     if (current) read(current);
   }, COALESCE_MS);
 }
+
+/**
+ * Follow the checkout, not just this window's saves.
+ *
+ * Without this the marks and the gutter stripes are painted from whatever the
+ * diff was when the panel mounted: an agent writing forty files moves the tree
+ * and the open buffer — both watch the same events — and leaves the decorations
+ * on them describing the state before the work. `checkoutWatch` only catches
+ * what moves `head` or flips `dirty` once, which an ordinary write does not.
+ *
+ * Subscribed once at module scope, like the channel it reads: the decorations
+ * belong to the focused checkout and not to any one panel, and a panel-owned
+ * subscription would stop following the moment that panel unmounted.
+ */
+fileChangesChannel.subscribe(([workspace]) => {
+  if (workspace !== workbenchStore.workspace || workbenchStore.loading.diff) return;
+  const now = Date.now();
+  if (now - watchedAt < WATCH_FLOOR_MS) return;
+  watchedAt = now;
+  refreshDiff();
+});

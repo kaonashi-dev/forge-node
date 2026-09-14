@@ -62,6 +62,10 @@ pub enum WorkbenchCommand {
         provider: String,
         profile: Option<AgentProfileId>,
     },
+    WatchFiles {
+        workspace: WorkspaceId,
+        directories: Vec<String>,
+    },
     LoadFileTree {
         workspace: WorkspaceId,
     },
@@ -385,6 +389,13 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
                 session,
                 &error,
             ),
+        },
+        WorkbenchCommand::WatchFiles {
+            workspace,
+            directories,
+        } => match client.watch_files(workspace, directories) {
+            Ok(()) => emit(app, "workbench:watch_ready", &workspace),
+            Err(error) => fail(app, "workbench:watch_failed", Some(workspace), &error),
         },
         WorkbenchCommand::LoadFileTree { workspace } => match client.list_files(workspace) {
             Ok(tree) => emit(app, "workbench:file_tree", &(workspace, tree)),

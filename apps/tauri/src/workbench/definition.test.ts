@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_CANDIDATES, candidateLabel, resolveDefinition } from "./definition";
+import { MAX_CANDIDATES, candidateLabel, resolveDefinition, stepLookup } from "./definition";
 import type { SearchMatch, SearchResults } from "./types";
 
 function hit(path: string, line: number): SearchMatch {
@@ -67,6 +67,44 @@ describe("resolveDefinition", () => {
       here,
     );
     expect(answer).toMatchObject({ kind: "choose", truncated: true });
+  });
+});
+
+describe("stepLookup", () => {
+  const asked = { symbol: "thing", line: 10 };
+
+  it("waits while nothing is out", () => {
+    expect(stepLookup(null, results("thing", [hit("src/b.ts", 3)]), null, here.path).kind).toBe(
+      "wait",
+    );
+  });
+
+  it("waits for the answer to this question", () => {
+    expect(stepLookup(asked, null, null, here.path).kind).toBe("wait");
+    expect(stepLookup(asked, results("other", [hit("src/b.ts", 3)]), null, here.path).kind).toBe(
+      "wait",
+    );
+  });
+
+  it("settles against the line the question was asked on", () => {
+    const step = stepLookup(asked, results("thing", [hit("src/b.ts", 3)]), null, here.path);
+    expect(step).toEqual({ kind: "settled", answer: { kind: "jump", target: hit("src/b.ts", 3) } });
+    expect(
+      stepLookup(asked, results("thing", [hit("src/a.ts", 10)]), null, here.path),
+    ).toMatchObject({ kind: "settled", answer: { kind: "none" } });
+  });
+
+  /*
+   * A search that failed has no answer coming, so the lookup ends rather than
+   * leaving "Looking for…" up forever — and it ends on the *search's* error,
+   * because a `ReadFile` that failed earlier would otherwise kill every later
+   * `cmd-b` before it was sent.
+   */
+  it("ends on a failed search, before any answer is matched", () => {
+    expect(stepLookup(asked, null, "no such workspace", here.path).kind).toBe("failed");
+    expect(
+      stepLookup(asked, results("thing", [hit("src/b.ts", 3)]), "grep timed out", here.path).kind,
+    ).toBe("failed");
   });
 });
 
