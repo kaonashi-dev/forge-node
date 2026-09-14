@@ -3,6 +3,7 @@ import {
   Show,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   onCleanup,
   onMount,
@@ -52,7 +53,7 @@ import {
 } from "../shell/layout";
 import { Button, ContextMenu, Tooltip, type MenuItem } from "../ui";
 import { Markdown, type MdImageLoader } from "./Markdown";
-import { imageSource } from "./previewImages";
+import { imageMime, imageSource, svgDataUrl } from "./previewImages";
 import { previewImageReader } from "./api";
 
 /**
@@ -77,8 +78,8 @@ import { previewImageReader } from "./api";
  */
 const AUTOSAVE_IDLE_MS = 1_000;
 
-/** How a Markdown file is shown: its source, or the document it renders to. */
-type MarkdownMode = "code" | "preview";
+/** How a file with a rendered form is shown: its source, or what it renders to. */
+type SourceMode = "code" | "preview";
 
 /**
  * A chord spec as the platform spells it, for a menu's right-hand column.
@@ -148,7 +149,7 @@ export function EditorView(props: { path: string }) {
   const [conflict, setConflict] = createSignal(false);
   const [comparing, setComparing] = createSignal(false);
   /** A Markdown file opens as the document it renders to (see `previewing`). */
-  const [markdownMode, setMarkdownMode] = createSignal<MarkdownMode>("preview");
+  const [sourceMode, setSourceMode] = createSignal<SourceMode>("preview");
   /**
    * Bumped whenever the buffer's text changes, so the preview can re-read it.
    * The editor's text is not a signal, and a keystroke with no preview on
@@ -249,6 +250,16 @@ export function EditorView(props: { path: string }) {
     const contents = file();
     const workspace = workbenchStore.workspace;
     if (!contents || !workspace || !handle) return;
+    /*
+     * Never write the buffer back over a file the buffer never came from.
+     *
+     * A binary or over-budget read hands back no text, so the editor holds an
+     * empty document — and `⌘S` reaches `save` directly, past the disabled
+     * button, whether or not anything is on screen to type into. Saving there
+     * truncates the file: the PNG this is now happy to draw, or the large one
+     * somebody opened to look at and left.
+     */
+    if (contents.binary || contents.too_large) return;
     beginWorkbenchRequest("file");
     // Dirty and conflict wait for the re-read: sending the command is not a
     // save. A `PreconditionFailed` must leave the draft marked unsaved.
@@ -496,7 +507,7 @@ export function EditorView(props: { path: string }) {
     setComparing(false);
     setLookup(null);
     dismissDefinition();
-    setMarkdownMode("preview");
+    setSourceMode("preview");
     handle?.setDoc("", false);
     touchDoc();
     setWorkbenchStore({ fileError: null, searchError: null });
@@ -619,7 +630,7 @@ export function EditorView(props: { path: string }) {
     const contents = file();
     if (!reveal || reveal.path !== props.path || !contents) return;
     // A line is a place in the source; the rendered document has no lines.
-    setMarkdownMode("code");
+    setSourceMode("code");
     handle?.revealLine(reveal.line);
     clearEditorReveal();
   });
@@ -647,14 +658,69 @@ export function EditorView(props: { path: string }) {
   const unopenable = () => {
     const contents = file();
     if (!contents) return null;
+    // A raster image is binary, and that is not a problem here: `ReadFile`
+    // is right to refuse it and the picture comes from `ReadImage` instead.
+    // Saying "Binary file." over a PNG we can draw is the bug this skips.
+    if (raster()) return null;
     if (contents.binary) return "Binary file.";
     if (contents.too_large) return "Too large to open.";
     return null;
   };
 
   const markdown = () => grammar() === "markdown";
+  /** An SVG is both: text to edit, and a picture to look at. */
+  const svg = () => imageMime(props.path) === "image/svg+xml";
+  /**
+   * An image with no source worth showing — PNG, JPEG, GIF, WebP and the rest.
+   *
+   * Keyed off the path rather than off `contents.binary`, because the question
+   * is not "can this be parsed as text" but "will the daemon hand over the
+   * bytes": `read_image` gates on the extension, and this list is the mirror
+   * of that one.
+   */
+  const raster = () => {
+    const mime = imageMime(props.path);
+    return mime !== null && mime !== "image/svg+xml";
+  };
+  /** The kinds that have a rendered form *and* a source, so a toggle applies. */
+  const renderable = () => markdown() || svg();
   const previewing = () =>
-    markdown() && markdownMode() === "preview" && !comparing() && unopenable() === null;
+    renderable() && sourceMode() === "preview" && !comparing() && unopenable() === null;
+  /** Whether a picture is what is on screen right now. */
+  const showingImage = () => raster() || (svg() && previewing());
+
+  /*
+   * A raster image's bytes, read once per path.
+   *
+   * `ReadImage` and not the text read: it is a separate command, gated in the
+   * daemon on the extension, which is what stops a preview from naming `.env`
+   * and being handed raw bytes for it.
+   */
+  const [rasterImage] = createResource(
+    () => (raster() ? { workspace: workbenchStore.workspace, path: props.path } : null),
+    async (key: { workspace: string | null; path: string }) =>
+      key.workspace === null ? null : await previewImageReader.read(key.workspace, key.path),
+  );
+
+  /*
+   * An SVG's picture, drawn from the buffer rather than from disk.
+   *
+   * The bytes are already here, so a `ReadImage` would be a round trip that
+   * also showed the version before the edit just made. Tracks `docVersion`
+   * only while the preview is up, so typing in the source pays for nothing.
+   */
+  const svgImage = createMemo(() => {
+    if (!(svg() && previewing())) return null;
+    docVersion();
+    return svgDataUrl(handle?.text() ?? "");
+  });
+
+  /** What went wrong reading the picture, in the daemon's own words. */
+  const imageError = () => {
+    const failure: unknown = rasterImage.error;
+    if (!failure) return null;
+    return failure instanceof Error ? failure.message : String(failure);
+  };
 
   createEffect(() => {
     if (!previewing()) applyPreviewDraft();
@@ -700,15 +766,15 @@ export function EditorView(props: { path: string }) {
         <Show when={dirty()}>
           <span class="editor-dirty">unsaved</span>
         </Show>
-        <Show when={markdown() && file() && unopenable() === null}>
+        <Show when={renderable() && file() && unopenable() === null}>
           <div class="editor-mode" role="group" aria-label="Show as">
             <Button
               variant="ghost"
               size="xs"
-              selected={markdownMode() === "code"}
+              selected={sourceMode() === "code"}
               onClick={() => {
                 applyPreviewDraft();
-                setMarkdownMode("code");
+                setSourceMode("code");
               }}
             >
               Code
@@ -716,8 +782,8 @@ export function EditorView(props: { path: string }) {
             <Button
               variant="ghost"
               size="xs"
-              selected={markdownMode() === "preview"}
-              onClick={() => setMarkdownMode("preview")}
+              selected={sourceMode() === "preview"}
+              onClick={() => setSourceMode("preview")}
             >
               Preview
             </Button>
@@ -822,11 +888,30 @@ export function EditorView(props: { path: string }) {
       </Show>
 
       <Show when={unopenable()}>{(reason) => <p class="empty-copy">{reason()}</p>}</Show>
+
+      {/* Drawn through `<img>`, never inlined into the document. An SVG in an
+          `<img>` cannot run script or fetch anything external; the same markup
+          inlined very much can, and these files come out of a checkout that
+          agents write to. */}
+      <Show when={showingImage()}>
+        <div class="editor-image">
+          <Show
+            when={svg() ? svgImage() : rasterImage()}
+            fallback={
+              <p class="empty-copy">
+                {imageError() ?? (rasterImage.loading ? "Reading the image\u2026" : "")}
+              </p>
+            }
+          >
+            {(url) => <img class="editor-image-canvas" src={url()} alt={props.path} />}
+          </Show>
+        </div>
+      </Show>
       <Show when={!file() && !workbenchStore.fileError}>
         <p class="empty-copy">{workbenchStore.loading.file ? "Reading…" : "Nothing open."}</p>
       </Show>
 
-      <Show when={previewing() && file()}>
+      <Show when={markdown() && previewing() && file()}>
         <div class="editor-preview">
           <Markdown
             text={previewText()}
@@ -843,7 +928,9 @@ export function EditorView(props: { path: string }) {
           history and the scroll position with it. It is hidden instead. */}
       <div
         class="editor-code-row"
-        classList={{ hidden: comparing() || previewing() || unopenable() !== null || !file() }}
+        classList={{
+          hidden: comparing() || previewing() || showingImage() || unopenable() !== null || !file(),
+        }}
       >
         <div ref={host} class="editor-code" onContextMenu={openMenu} />
         <Show when={menuAt()}>

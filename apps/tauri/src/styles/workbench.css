@@ -487,6 +487,39 @@
   margin: 0 auto;
   max-width: 880px;
 }
+/* An image file, drawn at its own size and no larger. Icons are the common
+   case here and a 16px glyph blown up to the pane is not a preview of
+   anything, so nothing is scaled up — only down, to fit. */
+.editor-image {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-24);
+  place-items: center;
+}
+.editor-image-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  /* A checkerboard, so transparent and white are told apart: most of these
+     files are icons with an alpha channel, and on a dark ground a white logo
+     and a transparent one look identical without it. */
+  background-color: var(--bg-subtle);
+  background-image:
+    linear-gradient(45deg, var(--bg-raised) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--bg-raised) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--bg-raised) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--bg-raised) 75%);
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  background-size: 16px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
 /* Go to definition: a note while the search is out, a note when it found
    nothing, and a list when it found several. The list is a list and not a jump
    because the search is a heuristic — picking one of five silently is how a
