@@ -820,6 +820,9 @@ impl Daemon {
                 profile_id,
             } => self.delete_external_session(&session_id, &provider, profile_id),
             Request::ListFiles { workspace_id } => self.list_files(workspace_id),
+            Request::ListDirectory { workspace_id, path } => {
+                self.list_directory(workspace_id, &path)
+            }
             Request::ReadFile { workspace_id, path } => self.read_file(workspace_id, &path),
             Request::ReadImage { workspace_id, path } => self.read_image(workspace_id, &path),
             Request::WriteFile {
@@ -2428,22 +2431,18 @@ impl Daemon {
     fn list_files(&self, workspace_id: WorkspaceId) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
         let tree = fs_service::list_files(&path).map_err(fs_err)?;
-        Ok(Response::FileTree(domain::FileTree {
-            workspace_id,
-            entries: tree
-                .entries
-                .into_iter()
-                .map(|e| domain::FileEntry {
-                    path: e.path,
-                    kind: match e.kind {
-                        fs_service::EntryKind::File => domain::FileKind::File,
-                        fs_service::EntryKind::Directory => domain::FileKind::Directory,
-                    },
-                    ignored: e.ignored,
-                })
-                .collect(),
-            truncated: tree.truncated,
-        }))
+        Ok(Response::FileTree(file_tree_response(workspace_id, tree)))
+    }
+
+    /// Peel one directory under a workspace (ADR-012). Lock released before IO.
+    fn list_directory(
+        &self,
+        workspace_id: WorkspaceId,
+        relative: &str,
+    ) -> Result<Response, ProtocolError> {
+        let path = self.workspace_path(workspace_id)?;
+        let tree = fs_service::list_directory(&path, relative).map_err(fs_err)?;
+        Ok(Response::FileTree(file_tree_response(workspace_id, tree)))
     }
 
     /// Read one file (ADR-012). Lock released before IO.
@@ -2774,7 +2773,10 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
-    fn workspace_path(&self, workspace_id: WorkspaceId) -> Result<PathBuf, ProtocolError> {
+    pub(crate) fn workspace_path(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<PathBuf, ProtocolError> {
         let inner = self.lock();
         inner
             .workspaces
@@ -6389,6 +6391,25 @@ fn fs_err(e: fs_service::FsError) -> ProtocolError {
         }
         fs_service::FsError::Git(g) => git_err(g),
         fs_service::FsError::Io(io) => ProtocolError::new(ErrorCode::IoError, io.to_string()),
+    }
+}
+
+fn file_tree_response(workspace_id: WorkspaceId, tree: fs_service::FileTree) -> domain::FileTree {
+    domain::FileTree {
+        workspace_id,
+        entries: tree
+            .entries
+            .into_iter()
+            .map(|e| domain::FileEntry {
+                path: e.path,
+                kind: match e.kind {
+                    fs_service::EntryKind::File => domain::FileKind::File,
+                    fs_service::EntryKind::Directory => domain::FileKind::Directory,
+                },
+                ignored: e.ignored,
+            })
+            .collect(),
+        truncated: tree.truncated,
     }
 }
 

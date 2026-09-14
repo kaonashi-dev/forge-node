@@ -199,6 +199,44 @@ fn add_main_workspace(client: &Client, repo: &Path) -> WorkspaceId {
         .id
 }
 
+#[test]
+fn file_watches_follow_atomic_saves_and_are_connection_scoped() {
+    let td = start_daemon();
+    let client = Client::connect(&td.socket, "file-watch-test").expect("connect");
+    let other = Client::connect(&td.socket, "file-watch-observer").expect("connect");
+    let repo = test_support::init_repo().expect("git repo");
+    let workspace = add_main_workspace(&client, repo.path());
+    let events = client.events();
+    let others = other.events();
+    client
+        .watch_files(workspace, vec![String::new()])
+        .expect("watch");
+    std::fs::write(repo.path().join("watched.txt"), "first").expect("write");
+    let matches_file = |event: &DaemonEvent| matches!(event, DaemonEvent::FileChanged { workspace_id, path } if *workspace_id == workspace && (path == "watched.txt" || path.is_empty()));
+    assert!(wait_for(&events, Duration::from_secs(5), matches_file).is_some());
+    assert!(!others
+        .try_iter()
+        .any(|event| matches!(event, DaemonEvent::FileChanged { .. })));
+
+    // Atomic saves replace the inode; watching only the old file misses this update.
+    std::fs::write(repo.path().join("replacement.tmp"), "second").expect("write");
+    std::fs::rename(
+        repo.path().join("replacement.tmp"),
+        repo.path().join("watched.txt"),
+    )
+    .expect("rename");
+    assert!(wait_for(&events, Duration::from_secs(5), matches_file).is_some());
+    assert_eq!(
+        client
+            .read_file(workspace, "watched.txt")
+            .expect("read")
+            .text,
+        "second"
+    );
+    client.watch_files(workspace, vec![]).expect("unwatch");
+    stop_daemon(&client);
+}
+
 /// Create a shell session and wait until it reaches `Running`, returning its ids.
 fn create_shell_session(
     client: &Client,

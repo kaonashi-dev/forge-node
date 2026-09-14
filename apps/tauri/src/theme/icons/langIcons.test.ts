@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_LANG_ICON, LANG_ICON_NAMES, langIconFor } from "./langIcons";
+import { DEFAULT_LANG_ICON, LANG_ICON_NAMES, langIconFor, langIconUrl } from "./langIcons";
 
 /*
  * The vendored set, read off disk by the bundler rather than by `node:fs`:
@@ -87,5 +87,22 @@ describe("langIconFor", () => {
     expect(langIconFor("LICENSE")).toBe(DEFAULT_LANG_ICON);
     expect(langIconFor("data.msgpack")).toBe(DEFAULT_LANG_ICON);
     expect(langIconFor("")).toBe(DEFAULT_LANG_ICON);
+  });
+
+  it("marks the languages this checkout is written in", () => {
+    expect(langIconFor("main.js")).toBe("javascript");
+    expect(langIconFor("bus.ts")).toBe("typescript");
+    expect(langIconFor("core.rs")).toBe("rust");
+    expect(langIconFor("Main.kt")).toBe("kotlin");
+    expect(langIconFor("deny.json")).toBe("json");
+    expect(langIconFor("schema.prisma")).toBe("prisma");
+    expect(langIconFor("0001_init.sql")).toBe("sql");
+    expect(langIconFor("EditorView.tsx")).toBe("tsx");
+  });
+
+  it("names one file per mark and base, for the component and the tree alike", () => {
+    expect(langIconUrl("crates/daemon/src/core.rs", false)).toBe("/icons/lang/dark/rust.svg");
+    expect(langIconUrl("crates/daemon/src/core.rs", true)).toBe("/icons/lang/light/rust.svg");
+    expect(langIconUrl("LICENSE", false)).toBe(`/icons/lang/dark/${DEFAULT_LANG_ICON}.svg`);
   });
 });

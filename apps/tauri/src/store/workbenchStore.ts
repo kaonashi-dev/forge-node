@@ -37,6 +37,9 @@ export const [workbenchStore, setWorkbenchStore] = createStore({
   file: null as FileContents | null,
   fileError: null as string | null,
   search: null as SearchResults | null,
+  /* Its own field and not `fileError`: a failed `git grep` must not read as a
+     failed `ReadFile`, which is what the editor's re-read is guarded by. */
+  searchError: null as string | null,
   rebase: null as RebaseState | null,
   rebaseError: null as string | null,
   branches: null as Branches | null,
@@ -79,6 +82,7 @@ export function focusWorkspace(workspace: string | null): void {
     file: null,
     fileError: null,
     search: null,
+    searchError: null,
     rebase: null,
     rebaseError: null,
     loading: {},

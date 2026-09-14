@@ -21,6 +21,7 @@
         "@codemirror/search": "^6.7.2",
         "@codemirror/state": "^6.7.2",
         "@codemirror/view": "^6.43.10",
+        "@forge-node/file-workbench": "workspace:*",
         "@kobalte/core": "^0.13.13",
         "@lezer/highlight": "^1.2.3",
         "@tauri-apps/api": "^2.0.0",
@@ -37,6 +38,21 @@
         "vite": "^6.0.0",
         "vite-plugin-solid": "^2.11.0",
         "vitest": "^2.1.0",
+      },
+    },
+    "packages/file-workbench": {
+      "name": "@forge-node/file-workbench",
+      "version": "0.1.0",
+      "devDependencies": {
+        "typescript": "^5.6.0",
+      },
+      "peerDependencies": {
+        "@codemirror/autocomplete": "^6.0.0",
+        "@codemirror/commands": "^6.0.0",
+        "@codemirror/language": "^6.0.0",
+        "@codemirror/search": "^6.0.0",
+        "@codemirror/state": "^6.0.0",
+        "@codemirror/view": "^6.0.0",
       },
     },
   },
@@ -187,6 +203,8 @@
     "@floating-ui/dom": ["@floating-ui/dom@1.8.0", "", { "dependencies": { "@floating-ui/core": "1.8.0", "@floating-ui/utils": "0.2.12" } }, "sha512-yXSrzeHZBTZadLOlfyhCkJHNeLJnHRnRInwdZ40L7ZiaAtrBwoYlsDrX3v5zB1Utk7CLfzcOVnVVWoXEky7Ceg=="],
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.12", "", {}, "sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww=="],
+
+    "@forge-node/file-workbench": ["@forge-node/file-workbench@workspace:packages/file-workbench"],
 
     "@iconify/types": ["@iconify/types@2.0.0", "", {}, "sha512-+wluvCrRhXrhyOmRDJ3q8mux9JkKy5SJ/v8ol2tu4FVjyYvtEzkc/3pK15ET6RKg4b4w4BmTk1+gsCUhf21Ykg=="],
 

@@ -10,6 +10,7 @@ mod context_xfer;
 pub mod core;
 pub mod environment;
 pub mod external_agents;
+mod file_watch;
 pub mod harness_io;
 pub mod harness_runner;
 pub mod idle;

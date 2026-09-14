@@ -100,11 +100,14 @@ export function openEditor(path: string): void {
  * the view — `viewKey` is the path alone, so a second jump into a file already
  * open moves the caret in the tab that is there rather than opening a rival
  * one, and a parked tab reopened later is not stuck on an old line.
+ *
+ * No `revealInTree`: the Files panel follows the active view on its own
+ * (`workbench/treeFollow.ts`), and following keeps the filter the person is
+ * working in — an explicit reveal would drop it for a jump that did not ask.
  */
 export function openEditorAt(path: string, line: number): void {
   openEditor(path);
   setPendingLine({ path, line });
-  revealInTree(path);
 }
 
 export function openPrDetail(key: string): void {

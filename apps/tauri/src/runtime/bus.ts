@@ -36,3 +36,5 @@ export const cellsChannel = channel<CellsPayload>();
  */
 export const previewCellsChannel = channel<CellsPayload>();
 export const clipboardChannel = channel<string>();
+
+export const fileChangesChannel = channel<[workspace: string, path: string]>();

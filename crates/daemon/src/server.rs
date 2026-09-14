@@ -3,7 +3,7 @@
 //! spawn) is offloaded with `spawn_blocking` so the accept loop never stalls.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -184,6 +184,7 @@ async fn read_loop(
     read_half: &mut (impl AsyncReadExt + Unpin),
 ) -> std::io::Result<()> {
     let mut in_flight = tokio::task::JoinSet::new();
+    let file_watch = Arc::new(Mutex::new(None));
 
     while let Some(payload) = read_frame(read_half).await? {
         // Reap finished handlers so the set does not grow across a long session.
@@ -221,12 +222,37 @@ async fn read_loop(
         );
 
         let handler_daemon = daemon.clone();
+        let file_watch = Arc::clone(&file_watch);
         in_flight.spawn(async move {
             let daemon = handler_daemon;
             let dispatch = daemon.clone();
             let response = tokio::task::spawn_blocking(move || {
                 let _entered = span.entered();
-                dispatch.handle_request(body)
+                if let Request::WatchFiles {
+                    workspace_id,
+                    directories,
+                } = body
+                {
+                    let mut watch = file_watch
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let next = if directories.is_empty() {
+                        None
+                    } else {
+                        let root = dispatch.workspace_path(workspace_id)?;
+                        Some(crate::file_watch::Subscription::start(
+                            &dispatch,
+                            client_id,
+                            workspace_id,
+                            &root,
+                            &directories,
+                        )?)
+                    };
+                    *watch = next;
+                    Ok(protocol::Response::Ack)
+                } else {
+                    dispatch.handle_request(body)
+                }
             })
             .await
             .unwrap_or_else(|_| {
@@ -327,6 +353,8 @@ fn request_name(request: &Request) -> &'static str {
         Request::GetChangeContext { .. } => "GetChangeContext",
         Request::GetWorkspaceDiff { .. } => "GetWorkspaceDiff",
         Request::ListFiles { .. } => "ListFiles",
+        Request::ListDirectory { .. } => "ListDirectory",
+        Request::WatchFiles { .. } => "WatchFiles",
         Request::ReadFile { .. } => "ReadFile",
         Request::ReadImage { .. } => "ReadImage",
         Request::WriteFile { .. } => "WriteFile",

@@ -93,6 +93,14 @@ channel carries keystrokes, and the local reads that answer inline — `git diff
 file tree, a search, the harness's own files — are seconds of subprocess, so
 running them there would freeze typing.
 
+The file surface splits presentation from IO the same way. The windowed explorer
+and the CodeMirror document live in `apps/tauri/packages/file-workbench`, which
+has no Solid, Tauri or filesystem dependency; `apps/tauri` adapts that package
+to the daemon's reads and Forge's theme. External edits arrive through
+connection-scoped directory watches (`WatchFiles`): `daemon::file_watch`
+coalesces native events into `FileChanged`, the GUI re-reads only what it shows,
+and every read and write still goes through `fs-service` (ADR-012).
+
 ## Authoritative terminal (ADR-011)
 
 Exactly one VT engine runs, in the daemon. On attach it sends a full

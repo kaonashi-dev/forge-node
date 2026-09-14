@@ -4,6 +4,8 @@ import { applyThemeBase } from "./theme/ThemeProvider";
 import "./theme/tokens.css";
 import "./ui/ui.css";
 import "./styles/index.css";
+import "@forge-node/file-workbench/style.css";
+import "./workbench/fileSurface.css";
 
 applyThemeBase("gruvbox-hard");
 

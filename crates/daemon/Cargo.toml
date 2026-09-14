@@ -37,6 +37,7 @@ rmp-serde.workspace = true
 ureq.workspace = true
 directories.workspace = true
 nix.workspace = true
+notify.workspace = true
 uuid.workspace = true
 time.workspace = true
 

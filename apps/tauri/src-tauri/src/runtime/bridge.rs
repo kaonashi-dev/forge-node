@@ -686,6 +686,9 @@ struct AgentProfileSavePayload {
 
 fn emit_job_event(app: &AppHandle, event: &DaemonEvent) {
     match event {
+        DaemonEvent::FileChanged { workspace_id, path } => {
+            let _ = app.emit("workbench:file_changed", &(*workspace_id, path));
+        }
         DaemonEvent::JobUpdated(job) => {
             let _ = app.emit("runtime:job_updated", job.as_ref());
         }
@@ -1787,6 +1790,7 @@ fn changes_shell(event: &DaemonEvent, store: &Store) -> bool {
         // Provisioning results are a read with their own event, not shell
         // state: republishing the whole snapshot per applied rule would put
         // `from_store` on a path a `pnpm install` can drive.
+        DaemonEvent::FileChanged { .. } => false,
         DaemonEvent::SharesApplied { .. } => false,
         // A draft is a read with its own event, for the same reason.
         DaemonEvent::JuvaDraftReady { .. } => false,

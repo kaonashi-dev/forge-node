@@ -754,15 +754,43 @@ impl Client {
         }
     }
 
-    /// List files under a workspace (ADR-012).
-    ///
-    /// Local and synchronous like [`Client::workspace_diff`]: belongs on the
-    /// runtime thread, never the render one.
+    /// Replace directory watches on this connection; an empty list releases them.
+    pub fn watch_files(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        directories: Vec<String>,
+    ) -> Result<(), ClientError> {
+        match self.request(Request::WatchFiles {
+            workspace_id,
+            directories,
+        })? {
+            Response::Ack => Ok(()),
+            _ => Err(ClientError::UnexpectedResponse { expected: "Ack" }),
+        }
+    }
+
     pub fn list_files(
         &self,
         workspace_id: domain::WorkspaceId,
     ) -> Result<domain::FileTree, ClientError> {
         match self.request(Request::ListFiles { workspace_id })? {
+            Response::FileTree(tree) => Ok(tree),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "FileTree",
+            }),
+        }
+    }
+
+    /// Immediate children of one directory (ADR-012), for peeling an opaque ignored folder.
+    pub fn list_directory(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        path: impl Into<String>,
+    ) -> Result<domain::FileTree, ClientError> {
+        match self.request(Request::ListDirectory {
+            workspace_id,
+            path: path.into(),
+        })? {
             Response::FileTree(tree) => Ok(tree),
             _ => Err(ClientError::UnexpectedResponse {
                 expected: "FileTree",

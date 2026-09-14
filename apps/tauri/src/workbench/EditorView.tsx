@@ -19,6 +19,7 @@ import {
   revealInTree,
 } from "../store/viewsStore";
 import { showView } from "../store/sidebarStore";
+import { runtimeStore } from "../store/runtimeStore";
 import { themeBase } from "../theme/ThemeProvider";
 import {
   beginWorkbenchRequest,
@@ -27,7 +28,9 @@ import {
   saveFile,
   searchFiles,
 } from "./api";
-import { candidateLabel, resolveDefinition } from "./definition";
+import { fileAffected } from "./fileInvalidation";
+import { watchFiles, fileWatchError } from "./fileWatch";
+import { candidateLabel, stepLookup, type Lookup } from "./definition";
 import type { SearchMatch } from "./types";
 import { grammarFor } from "./language";
 import { actionForDiskRead } from "./editor/conflict";
@@ -110,6 +113,8 @@ export function EditorView(props: { path: string }) {
    * screen has nothing subscribed to this.
    */
   const [docVersion, setDocVersion] = createSignal(0);
+  const [invalidated, setInvalidated] = createSignal(false);
+  const [position, setPosition] = createSignal({ line: 1, column: 1, lines: 1 });
   const touchDoc = (): void => {
     setDocVersion((version) => version + 1);
   };
@@ -202,7 +207,7 @@ export function EditorView(props: { path: string }) {
    * the question was asked: the declaration the caret is already on is not
    * somewhere to go, and only the asker knows which line that was.
    */
-  const [lookup, setLookup] = createSignal<{ symbol: string; line: number } | null>(null);
+  const [lookup, setLookup] = createSignal<Lookup | null>(null);
   const [candidates, setCandidates] = createSignal<SearchMatch[]>([]);
   const [candidatesOf, setCandidatesOf] = createSignal<string | null>(null);
   const [moreCandidates, setMoreCandidates] = createSignal(false);
@@ -227,11 +232,19 @@ export function EditorView(props: { path: string }) {
   function goToDefinition(symbol: string, line: number): void {
     const workspace = workbenchStore.workspace;
     if (!workspace) return;
+    // One grep at a time. The workbench worker is a single thread on one
+    // queue, so a held-down `cmd-b` would put a search per repeat — each with
+    // its own 30 s timeout — in front of the tree, the open file and the diff.
+    if (lookup()) return;
     dismissDefinition();
+    // The answer is correlated by its query and nothing else, so last time's
+    // answer to the same symbol is indistinguishable from this one's and would
+    // resolve it synchronously against a line the edit has moved.
+    setWorkbenchStore({ search: null, searchError: null });
     setLookup({ symbol, line });
-    void searchFiles(workspace, symbol, "definition").catch((error) => {
+    void searchFiles(workspace, symbol, "definition").catch((error: unknown) => {
       setLookup(null);
-      failWorkbenchRequest("file", error);
+      setWorkbenchStore("searchError", error instanceof Error ? error.message : String(error));
     });
   }
 
@@ -244,6 +257,7 @@ export function EditorView(props: { path: string }) {
     handle = createEditor(host, {
       doc: file()?.text ?? "",
       base: themeBase(),
+      onCursor: setPosition,
       onChange: () => {
         setDirty(true);
         touchDoc();
@@ -280,9 +294,9 @@ export function EditorView(props: { path: string }) {
     setLookup(null);
     dismissDefinition();
     setMarkdownMode("preview");
-    handle?.setDoc("");
+    handle?.setDoc("", false);
     touchDoc();
-    setWorkbenchStore("fileError", null);
+    setWorkbenchStore({ fileError: null, searchError: null });
   });
 
   // Parked editor views are mounted without a content cache. Ask for the
@@ -292,6 +306,26 @@ export function EditorView(props: { path: string }) {
     const path = props.path;
     if (!workspace || file() || workbenchStore.loading.file || workbenchStore.fileError) return;
     requestFile(workspace, path);
+  });
+
+  createEffect(() => {
+    const workspace = workbenchStore.workspace;
+    const path = props.path;
+    if (!workspace) return;
+    const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    onCleanup(
+      watchFiles(workspace, [parent], (changed) => {
+        if (fileAffected(path, changed)) setInvalidated(true);
+      }),
+    );
+  });
+  createEffect(() => {
+    if (!invalidated() || workbenchStore.loading.file) return;
+    const workspace = workbenchStore.workspace;
+    const path = props.path;
+    if (!workspace) return;
+    setInvalidated(false);
+    untrack(() => requestFile(workspace, path));
   });
 
   // A fresh read replaces the document only when nothing is unsaved: landing
@@ -339,20 +373,13 @@ export function EditorView(props: { path: string }) {
    */
   createEffect(() => {
     const asked = lookup();
-    if (!asked) return;
-    const results = workbenchStore.search;
-    // A failed search reports on the file surface; drop the lookup rather than
-    // leave "Looking for…" up forever.
-    if (workbenchStore.fileError) {
-      setLookup(null);
-      return;
-    }
-    if (!results || results.query !== asked.symbol) return;
+    const step = stepLookup(asked, workbenchStore.search, workbenchStore.searchError, props.path);
+    if (step.kind === "wait" || !asked) return;
     setLookup(null);
-    const answer = resolveDefinition(results, asked.symbol, {
-      path: props.path,
-      line: asked.line,
-    });
+    // The error is already on screen; dropping the lookup is what stops
+    // "Looking for…" standing there for an answer that is not coming.
+    if (step.kind === "failed") return;
+    const answer = step.answer;
     if (answer.kind === "jump") {
       openEditorAt(answer.target.path, answer.target.line);
       return;
@@ -364,6 +391,15 @@ export function EditorView(props: { path: string }) {
       return;
     }
     setMissing(asked.symbol);
+  });
+
+  /*
+   * A drop is the one way a lookup ends without an answer, and the in-flight
+   * guard in `goToDefinition` would otherwise leave `cmd-b` dead for the life
+   * of the tab. Nothing is said about it: the reconnect banner already is.
+   */
+  createEffect(() => {
+    if (runtimeStore.connection.kind !== "connected") setLookup(null);
   });
 
   /*
@@ -397,11 +433,19 @@ export function EditorView(props: { path: string }) {
       return;
     }
     const path = props.path;
-    void support.then((loaded) => {
-      // The chunk may land after the tab moved on; installing a parser for a
-      // file that is no longer open would colour the next one wrong.
-      if (path === props.path) handle?.setLanguage(loaded);
-    });
+    void support.then(
+      (loaded) => {
+        // The chunk may land after the tab moved on; installing a parser for a
+        // file that is no longer open would colour the next one wrong.
+        if (path === props.path) handle?.setLanguage(loaded);
+      },
+      // `editor/language.ts` rejects rather than caching a chunk that failed,
+      // so a 404 after an update lands here: the file is edited as plain text,
+      // which `language.ts` already treats as the answer for "no grammar".
+      () => {
+        if (path === props.path) handle?.setLanguage(null);
+      },
+    );
   });
 
   createEffect(() => {
@@ -455,8 +499,8 @@ export function EditorView(props: { path: string }) {
   });
 
   return (
-    <div class="editor-view">
-      <header class="editor-head">
+    <div class="editor-view fw-document">
+      <header class="fw-document-head">
         <Breadcrumb path={props.path} />
         <Show when={dirty()}>
           <span class="editor-dirty">unsaved</span>
@@ -481,7 +525,23 @@ export function EditorView(props: { path: string }) {
             </Button>
           </div>
         </Show>
-        <Button variant="secondary" size="xs" onClick={save} disabled={!dirty()}>
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={() => {
+            const workspace = workbenchStore.workspace;
+            if (workspace) requestFile(workspace, props.path);
+          }}
+          disabled={workbenchStore.loading.file}
+        >
+          Reload
+        </Button>
+        <Button
+          variant="secondary"
+          size="xs"
+          onClick={save}
+          disabled={!dirty() || conflict() || workbenchStore.loading.file}
+        >
           Save
         </Button>
       </header>
@@ -509,6 +569,9 @@ export function EditorView(props: { path: string }) {
         </div>
       </Show>
       <Show when={workbenchStore.fileError}>{(error) => <p class="panel-error">{error()}</p>}</Show>
+      <Show when={workbenchStore.searchError}>
+        {(error) => <p class="panel-error">Could not search for a definition: {error()}</p>}
+      </Show>
 
       {/* The search is a heuristic, so what it found is shown as what it is:
           one answer is jumped to, several are offered, and none says so. */}
@@ -604,6 +667,26 @@ export function EditorView(props: { path: string }) {
           </div>
         </Show>
       </div>
+      <footer class="fw-document-foot">
+        <span data-dirty={dirty()}>
+          {conflict()
+            ? "Changed on disk"
+            : dirty()
+              ? "Unsaved"
+              : workbenchStore.loading.file
+                ? "Reading…"
+                : "Saved"}
+        </span>
+        <span>{grammar() ?? "text"}</span>
+        <Show when={fileWatchError()}>
+          {(error) => <span title={error()}>Manual refresh</span>}
+        </Show>
+        <Show when={!previewing()}>
+          <span class="fw-position">
+            Ln {position().line}, Col {position().column}
+          </span>
+        </Show>
+      </footer>
     </div>
   );
 }

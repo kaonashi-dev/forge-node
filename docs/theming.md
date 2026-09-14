@@ -60,7 +60,10 @@ with one deliberate exception, the language marks on file rows (`LangIcon`),
 which are JetBrains' file-type icons and carry their own fills. They are
 vendored in a dark and a light set under `apps/tauri/public/icons/lang`, chosen
 by `baseIsLight`, because their colour is the information they carry and a
-tint would flatten every file type to one hue.
+tint would flatten every file type to one hue. `langIconUrl` is the one place
+that names the file, so the `LangIcon` component and the file tree — which
+paints its rows imperatively, through the package's `icon` hook — can never
+disagree about which artwork a name gets.
 
 ## How to extend
 

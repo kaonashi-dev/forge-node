@@ -212,7 +212,7 @@ pub enum DaemonEvent {
     FileChanged {
         /// Workspace the path belongs to.
         workspace_id: WorkspaceId,
-        /// Workspace-relative path.
+        /// Workspace-relative path; empty means reconcile after lost watcher events.
         path: String,
     },
     /// A headless run was accepted, started, or reached its end; carries its

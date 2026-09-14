@@ -118,6 +118,16 @@ export function viewTitle(view: WorkbenchView): string {
 }
 
 /**
+ * The file an editor view has open, or `null` for every other kind.
+ *
+ * A diff, a terminal or a pull-request tab is not something the file tree
+ * follows: the tree is about the checkout, and those views may not be in it.
+ */
+export function activeEditorPath(view: WorkbenchView): string | null {
+  return view.kind === "editor" ? view.path : null;
+}
+
+/**
  * Open a view, or focus it when it is already open.
  *
  * Re-opening never duplicates and never reorders: a strip that reshuffles

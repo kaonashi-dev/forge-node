@@ -129,6 +129,7 @@ the allocation.
 | reader wrapped in `.take(cap)` | `agents::detection::read_all` (`MAX_PROBE_OUTPUT`) |
 | checked arithmetic on a client-supplied offset | `fetch_scrollback` (`MAX_SCROLLBACK_FETCH`) |
 | bounded scan that reports what it skipped | `analytics::recent_transcripts` |
+| event count and path bytes checked in the watch callback | `daemon::file_watch` (`MAX_PATHS`, `MAX_PATH_BYTES`) |
 
 A bounded scan that silently truncates is worse than one that refuses: report
 `skipped`/`truncated` rather than looking exhaustive.
@@ -162,6 +163,26 @@ per keystroke.
 **Rule.** An accumulator whose drain is conditional needs a second,
 unconditional bound: a cap, a clear on session switch, or both.
 
+### Watches are bounded and coalesced
+
+A directory watch is a producer the OS runs at its own pace. `file_watch.rs`
+gives it the same shape as the delta path: the notify callback does no I/O, no
+canonicalization and no unbounded growth — it `try_send`s a `Vec<PathBuf>` into
+`flume::bounded(16)` and, on a full queue, an oversized batch or a needed
+rescan, sets one resync flag. A worker thread coalesces for 150 ms, caps a
+batch at `MAX_PATHS = 32`, and clears the set for a single empty-path
+`FileChanged` when the flag is up. The interests are capped before anything is
+watched (128 directories, 4096 bytes per path, canonicalized inside the
+checkout) and the whole subscription dies with the connection.
+
+The alternative — one recursive `notify` watch on the workspace root — is one
+OS watch for the tree and an unbounded event stream for a build spike, handed
+to a client whose outbound queue is already carrying terminal deltas.
+
+**Rule.** A native event source is hostile input exactly like the wire: bound
+its queue and its batch before the allocation, coalesce, and let the consumer
+resync instead of replaying a backlog.
+
 ## CPU
 
 ### Compute on change, not on frame
@@ -183,6 +204,27 @@ from one instant; that is the pattern.
 Build menus inside the lazy `dropdown_menu` closure, not beside the row: a menu
 that only appears on click must not cost anything on the frames where nobody
 clicked.
+
+### An answer that says nothing is not an update
+
+A watcher fires on every write, and the write that dominates — a file that
+already existed being saved again — produces a listing identical to the one on
+screen. Three layers each stop it rather than paying for it: `sameListing`
+drops a re-listing that names the same paths in the same order, so the store
+object never moves; the explorer re-derives its rows only when the tree, the
+folds or the filter change, so a loading flag going up and down costs nothing;
+and a paint rewrites only the rows whose content moved, reusing the nodes, so
+a decoration arriving does not drop the row under the pointer.
+
+The watch ack is held to the same rule. The daemon's `WatchFiles` replaces the
+directory set in place, which happens on every fold and every file opened
+outside the tree; treating each ack as "everything changed" made an ordinary
+click re-list the checkout and re-read the open document. Only an *arm* — the
+first watch, a new checkout, a reconnect, a retry after a failure — had a
+window where events could be lost, and only an arm asks the views to reconcile.
+
+**Rule.** Before a read's answer is stored, ask whether it differs from what is
+already shown. A repaint the user can see is a promise that something changed.
 
 ### No allocations and no global locks per cell
 

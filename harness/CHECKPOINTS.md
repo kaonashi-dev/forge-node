@@ -178,6 +178,13 @@ Every box is a `grep` over the diff, not a general impression.
       embed the content in the error. The Tauri editor still sends reads and
       writes through the runtime bridge rather than doing workspace filesystem
       work in the WebView.
+- [ ] Directory watches are connection-scoped and bounded: `WatchFiles`
+      canonicalizes every path inside the checkout before watching it (128
+      directories, 4096 bytes per path), the notify callback only `try_send`s
+      into a bounded queue, and a lost event becomes one empty-path
+      `FileChanged` resync instead of a growing path set. The watcher does no
+      blocking work under the core lock, and the subscription dies with the
+      connection.
 
 - [ ] The two usage readings stay separate: `ProviderUsage` (what the provider
       says is left) and `UsageAnalytics` (what we count as spent). Token parsing

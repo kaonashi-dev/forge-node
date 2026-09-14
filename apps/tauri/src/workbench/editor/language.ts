@@ -16,12 +16,12 @@ import type { GrammarId } from "../language";
 type Loader = () => Promise<LanguageSupport>;
 
 /**
- * Lezer has no first-party TOML or shell grammar.
+ * Lezer has no first-party grammar for TOML, shell, Kotlin, SQL or Prisma.
  *
- * `@codemirror/legacy-modes` covers both through `StreamLanguage`, which is
+ * `@codemirror/legacy-modes` covers them through `StreamLanguage`, which is
  * CodeMirror 5's line-at-a-time tokeniser rather than a real parse tree: it
  * colours correctly and gives up folding and structural selection. That is the
- * trade `plan-ui-ux.md` §8.2 accepted, and it is why these two go through a
+ * trade `plan-ui-ux.md` §8.2 accepted, and it is why these go through a
  * different door from the rest.
  */
 async function fromLegacyMode(
@@ -50,7 +50,32 @@ const LOADERS: Record<GrammarId, Loader> = {
   toml: () => fromLegacyMode(async () => (await import("@codemirror/legacy-modes/mode/toml")).toml),
   shellscript: () =>
     fromLegacyMode(async () => (await import("@codemirror/legacy-modes/mode/shell")).shell),
+  kotlin: () =>
+    fromLegacyMode(async () => (await import("@codemirror/legacy-modes/mode/clike")).kotlin),
+  sql: () =>
+    fromLegacyMode(async () => (await import("@codemirror/legacy-modes/mode/sql")).standardSQL),
+  /* Prisma has no mode of its own anywhere. Its schema is a C-like block
+     language — `model User { id Int @id }` — so the generic `clike` tokeniser
+     with the schema's own word lists colours it correctly rather than leaving
+     it grey; the rule this module opens with still holds, because these are
+     Prisma's words and not another language's guessed at. */
+  prisma: () =>
+    fromLegacyMode(async () =>
+      (await import("@codemirror/legacy-modes/mode/clike")).clike({
+        name: "prisma",
+        keywords: words("model enum datasource generator type view"),
+        types: words("String Boolean Int BigInt Float Decimal DateTime Json Bytes Unsupported"),
+        atoms: words("true false null"),
+        blockKeywords: words("model enum datasource generator type view"),
+        indentStatements: false,
+      }),
+    ),
 };
+
+/** A space-separated list as `clike` wants it: a set keyed by word. */
+function words(list: string): Record<string, boolean> {
+  return Object.fromEntries(list.split(" ").map((word) => [word, true]));
+}
 
 /**
  * A parser can only be loaded once.
