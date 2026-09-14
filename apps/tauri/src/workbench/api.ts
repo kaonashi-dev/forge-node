@@ -122,6 +122,11 @@ export async function loadFileTree(workspace: string): Promise<void> {
   await send({ type: "load_file_tree", workspace });
 }
 
+/** Peel one opaque ignored directory into the listing. */
+export async function loadFileDirectory(workspace: string, path: string): Promise<void> {
+  await send({ type: "load_file_directory", workspace, path });
+}
+
 /**
  * Read the listing unless one is already in hand or on its way.
  *

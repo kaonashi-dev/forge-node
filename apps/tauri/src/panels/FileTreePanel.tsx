@@ -19,14 +19,15 @@ import {
 } from "solid-js";
 import { FILES } from "../actions/actions";
 import { enterContext, registerAction } from "../actions/dispatch";
-import { clearTreeReveal, openEditor, treeReveal } from "../store/viewsStore";
+import { clearTreeReveal, currentViews, openEditor, treeReveal } from "../store/viewsStore";
 import { forgeStore } from "../store/forgeStore";
-import { setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
+import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import {
   beginWorkbenchRequest,
   createPath,
   deletePath,
   failWorkbenchRequest,
+  loadFileDirectory,
   loadFileTree,
   openFile,
   renamePath,
@@ -34,6 +35,7 @@ import {
 } from "../workbench/api";
 import { watchFiles, fileWatchError } from "../workbench/fileWatch";
 import { ensureDiff } from "../workbench/decorations";
+import { installTreeFollow } from "../workbench/treeFollow";
 import { requestConfirm } from "../store/runtimeStore";
 import { fileDecorations, folderCounts } from "../workbench/treeDecorations";
 import { Icon, langIconUrl } from "../theme/icons";
@@ -136,6 +138,15 @@ export function FileTreePanel() {
       },
       onFilterFocus: () => filterInput?.focus({ preventScroll: true }),
       onContextMenu: (row, point) => setMenu({ ...point, path: row.path, isFile: row.isFile }),
+      onExpandOpaque: (path) => {
+        const workspace = workbenchStore.workspace;
+        if (!workspace) return;
+        setLoading("directory", true);
+        void loadFileDirectory(workspace, path).catch((error) => {
+          setLoading("directory", false);
+          failWorkbenchRequest("tree", error);
+        });
+      },
     });
     const bindings = [
       registerAction("file_tree_next", () => explorer?.action("next")),
@@ -200,6 +211,18 @@ export function FileTreePanel() {
     const workspace = workbenchStore.workspace;
     if (workspace) warmFileTree(workspace);
     ensureDiff();
+  });
+  /* The tree follows the active editor on its own rather than being pushed by
+     each opener: the palette, a path link, a tab click and a close falling
+     back to a neighbour all end in `active`, and a parked view restored on a
+     workspace switch is not a call at all. Registered before the reveal effect
+     below so an explicit "show me this path" — a breadcrumb segment, a
+     changes-list row — still wins when the panel is mounting. */
+  installTreeFollow({
+    mounted,
+    tree: () => workbenchStore.tree,
+    view: () => currentViews().active,
+    follow: (path) => explorer?.follow(path),
   });
   createEffect(() => {
     if (!mounted() || !workbenchStore.tree) return;

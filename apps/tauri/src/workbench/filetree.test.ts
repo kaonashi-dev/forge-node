@@ -49,7 +49,8 @@ describe("an ignored directory", () => {
    * `fs-service` collapses a wholly-ignored directory with `--directory`, so
    * it arrives as one entry standing for contents nothing walked. Without
    * that collapse this repository answers with 385 751 ignored paths against
-   * a budget of 10 000.
+   * a budget of 10 000. Language dependency dirs are omitted from the listing
+   * entirely; build output and local excludes stay as this opaque row.
    */
   const collapsed: FileTree = {
     workspace_id: "w1",
@@ -57,7 +58,7 @@ describe("an ignored directory", () => {
     entries: [
       { path: ".env", kind: "File", ignored: true },
       { path: "app.js", kind: "File", ignored: false },
-      { path: "node_modules", kind: "Directory", ignored: true },
+      { path: "dist", kind: "Directory", ignored: true },
     ],
   };
 
@@ -65,9 +66,9 @@ describe("an ignored directory", () => {
 
   it("is one row with nothing under it", () => {
     const rows = treeRows(collapsed, new Set());
-    expect(rowFor("node_modules")?.opaque).toBe(true);
-    expect(rowFor("node_modules")?.ignored).toBe(true);
-    expect(rows.some((row) => row.path.startsWith("node_modules/"))).toBe(false);
+    expect(rowFor("dist")?.opaque).toBe(true);
+    expect(rowFor("dist")?.ignored).toBe(true);
+    expect(rows.some((row) => row.path.startsWith("dist/"))).toBe(false);
   });
 
   it("still lists an individually ignored file by name", () => {
@@ -78,7 +79,7 @@ describe("an ignored directory", () => {
 
   // Merging it into a chain would hide the fact that the listing stopped.
   it("never merges into a single-child chain", () => {
-    expect(treeRows(collapsed, new Set()).map((row) => row.label)).toContain("node_modules");
+    expect(treeRows(collapsed, new Set()).map((row) => row.label)).toContain("dist");
   });
 
   it("is kept out of the fold bookkeeping", () => {
@@ -87,11 +88,37 @@ describe("an ignored directory", () => {
     expect(directoryPaths(collapsed)).toEqual([]);
   });
 
-  it("answers neither fold chord", () => {
+  it("answers neither fold chord until peeled", () => {
     const rows = treeRows(collapsed, new Set());
-    const index = rows.findIndex((row) => row.path === "node_modules");
+    const index = rows.findIndex((row) => row.path === "dist");
     expect(collapseTarget(rows[index], new Set())).toBeNull();
     expect(expandTarget(rows[index], new Set(), rows, index)).toBeNull();
+  });
+
+  it("shows children once the host peels it", () => {
+    const peeled: FileTree = {
+      workspace_id: "w1",
+      truncated: false,
+      entries: [
+        { path: "app.js", kind: "File", ignored: false },
+        { path: "dist/out.js", kind: "File", ignored: true },
+      ],
+    };
+    const rows = treeRows(peeled, new Set());
+    expect(rows.find((row) => row.path === "dist")?.opaque).toBe(false);
+    expect(rows.some((row) => row.path === "dist/out.js")).toBe(true);
+  });
+
+  it("stays visible when peeled empty via openedIgnored", () => {
+    const empty: FileTree = {
+      workspace_id: "w1",
+      truncated: false,
+      entries: [{ path: "plan", kind: "Directory", ignored: true }],
+    };
+    expect(treeRows(empty, new Set()).find((row) => row.path === "plan")?.opaque).toBe(true);
+    expect(
+      treeRows(empty, new Set(), new Set(["plan"])).find((row) => row.path === "plan")?.opaque,
+    ).toBe(false);
   });
 });
 

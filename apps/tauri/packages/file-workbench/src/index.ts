@@ -1,4 +1,4 @@
-export { createFileExplorer, editedName, nameSelection } from "./explorer.js";
+export { createFileExplorer, editedName, nameSelection, planFollow } from "./explorer.js";
 export type {
   EditRequest,
   ExplorerOptions,
@@ -8,6 +8,7 @@ export type {
   ExplorerDerived,
   ExplorerHandle,
   FileDecoration,
+  FollowPlan,
   RowIcon,
 } from "./explorer.js";
 export type { FileEntry, FileTree, TreeRow } from "./tree.js";

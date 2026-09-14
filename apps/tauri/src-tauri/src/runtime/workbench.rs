@@ -69,6 +69,11 @@ pub enum WorkbenchCommand {
     LoadFileTree {
         workspace: WorkspaceId,
     },
+    /// Immediate children of one directory, for peeling an opaque ignored folder.
+    LoadFileDirectory {
+        workspace: WorkspaceId,
+        path: String,
+    },
     OpenFile {
         workspace: WorkspaceId,
         path: String,
@@ -401,6 +406,17 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             Ok(tree) => emit(app, "workbench:file_tree", &(workspace, tree)),
             Err(error) => fail(app, "workbench:file_tree_failed", Some(workspace), &error),
         },
+        WorkbenchCommand::LoadFileDirectory { workspace, path } => {
+            match client.list_directory(workspace, path.clone()) {
+                Ok(tree) => emit(app, "workbench:file_directory", &(workspace, path, tree)),
+                Err(error) => fail(
+                    app,
+                    "workbench:file_directory_failed",
+                    Some(workspace),
+                    &error,
+                ),
+            }
+        }
         WorkbenchCommand::OpenFile { workspace, path } => {
             match client.read_file(workspace, path.clone()) {
                 Ok(contents) => emit(app, "workbench:file", &(workspace, contents)),

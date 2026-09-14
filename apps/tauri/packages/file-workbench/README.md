@@ -69,12 +69,21 @@ out of the initial bundle. `/tree` exposes pure listing/filter/navigation helper
   editor instance. Normal editors use ordinary text editing, undo, selection,
   mouse input and find; there are no Vim modes or exit gestures.
 - A `FileTree` contains relative paths. `Directory` entries can represent empty
-  folders; ignored directory entries are opaque. Directories implied by file
+  folders; ignored directory entries are opaque until the host peels them
+  (`onExpandOpaque` → one-level listing merged in). Directories implied by file
   paths are synthesized. The package does not crawl them.
 - `setState` updates the listing and optional decorations without discarding
-  expanded directories. `reset` clears workspace-local navigation. `reveal`
-  opens a path's ancestors, selects it and scrolls it into view; it also drops
-  the filter, so a host-drawn filter box has to be cleared with it.
+  expanded directories. `reset` clears workspace-local navigation.
+- `reveal(path)` is the explicit _show this path in the tree_ gesture: it opens
+  the path's ancestors, selects it, scrolls it into view and drops the filter,
+  so a host-drawn filter box has to be cleared with it. `follow(path)` is the
+  passive counterpart, for when the host's active document changed — a tab
+  click, the palette, a path link. It selects without dropping the filter,
+  opens ancestors but never folds one back, and holds the selection still when
+  the listing does not name the path (a truncated scan, a file deleted under
+  its open tab, a path outside the checkout). A row already selected and on
+  screen is not scrolled. Which one a host calls _is_ the setting: there is no
+  toggle inside the package.
 - `chrome` decides how much of the surface the package draws. `"full"` (the
   default, and what the demo runs) is the standalone frame: header, refresh
   button, filter box, message and footer. `"list"` is for a host with a

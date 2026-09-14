@@ -16,6 +16,7 @@ import { refreshDiff } from "../workbench/decorations";
 import { previewImageReader } from "../workbench/api";
 import { dataUrl } from "../workbench/previewImages";
 import { sameListing } from "../workbench/fileInvalidation";
+import { mergeDirectory } from "../workbench/mergeDirectory";
 import type {
   Branches,
   FileContents,
@@ -173,6 +174,24 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
       ),
     ),
     failure("workbench:file_tree_failed", "tree", "treeError"),
+    listen<[string, string, FileTree]>("workbench:file_directory", ({ payload }) => {
+      const [workspace, path, listing] = payload;
+      if (!forCurrent(workspace) || !workbenchStore.tree) return;
+      setLoading("directory", false);
+      setWorkbenchStore({
+        tree: mergeDirectory(workbenchStore.tree, path, listing),
+        treeError: null,
+      });
+    }),
+    listen<{ workspace: string | null; error: string }>(
+      "workbench:file_directory_failed",
+      ({ payload }) => {
+        setLoading("directory", false);
+        if (payload.workspace === null || forCurrent(payload.workspace)) {
+          setWorkbenchStore("treeError", payload.error);
+        }
+      },
+    ),
     answer<FileContents>("workbench:file", "file", (file) =>
       setWorkbenchStore({ file, fileError: null }),
     ),

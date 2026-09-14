@@ -77,6 +77,13 @@ export type ExplorerOptions = {
   onEditCommit?: (request: EditRequest, name: string) => void;
   /** The field closed itself — Escape, a click away, or a name that changed nothing. */
   onEditCancel?: (request: EditRequest) => void;
+  /**
+   * An opaque ignored directory was opened. The host peels it with
+   * `ListDirectory` and merges the answer into the listing; the package has
+   * already marked the path as opened so a later `setState` does not fold it
+   * shut again.
+   */
+  onExpandOpaque?: (path: string) => void;
 };
 export type ExplorerState = {
   tree: FileTree | null;
@@ -107,6 +114,14 @@ export type ExplorerHandle = {
   setFilter: (query: string) => void;
   reset: () => void;
   reveal: (path: string) => void;
+  /**
+   * Follow the host's active document.
+   *
+   * Unlike `reveal` it never drops the filter — following is not a "show me
+   * this" gesture — and a path the listing does not have leaves the selection
+   * alone rather than falling back to the first row.
+   */
+  follow: (path: string) => void;
   /** Open the inline field, or close it (`null`) once the host has written. */
   edit: (request: EditRequest | null) => void;
   /** Keep the open field and say, on the row, why the last name was refused. */
@@ -144,6 +159,46 @@ export function nameSelection(name: string, isFile: boolean): { start: number; e
 export function editedName(value: string, original: string): string | null {
   const name = value.trim();
   return name === "" || name === original ? null : name;
+}
+
+/**
+ * What following the active editor should do to the tree.
+ *
+ * Pure because the decision is data: the listing, the selected path and the
+ * fold state are all in hand, and none of it is a paint. `hold` is the case
+ * that matters — a path the listing does not name is not an instruction to
+ * select the first row, and a path an active filter hides is not an
+ * instruction to drop the filter.
+ */
+export type FollowPlan = { kind: "select"; index: number } | { kind: "reopen" } | { kind: "hold" };
+
+export function planFollow(request: {
+  /** The active editor's path. */
+  path: string;
+  /** The rows the tree is showing, after folds and filter. */
+  rows: readonly TreeRow[];
+  /** The row the tree has selected, if any. */
+  selectedPath: string | null;
+  /** The selected row is on screen, so selecting it again need not scroll. */
+  visible: boolean;
+  /** A filter narrows the listing. */
+  filtered: boolean;
+  /** The unfiltered listing contains the path at all. */
+  present: boolean;
+}): FollowPlan {
+  const at = request.rows.findIndex((row) => row.path === request.path);
+  if (at >= 0) {
+    if (request.path === request.selectedPath && request.visible) return { kind: "hold" };
+    return { kind: "select", index: at };
+  }
+  // A filtered listing is flat: the path was filtered out, and expanding
+  // folds underneath the filter would fight the person typing it.
+  if (request.filtered) return { kind: "hold" };
+  // Not a row: it may sit under a fold, or not be in the listing at all.
+  // `present` separates the two — truncated listings, deleted files and paths
+  // outside the checkout leave the selection where it is.
+  if (!request.present) return { kind: "hold" };
+  return { kind: "reopen" };
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(
@@ -238,6 +293,8 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   let drafts = 0;
   let collapsed = new Set<string>();
   let seen = new Set<string>();
+  /** Ignored directories the host has peeled; keeps them non-opaque after merge. */
+  let openedIgnored = new Set<string>();
   let selectedPath: string | null = null;
   let index = 0;
   let rowHeight = 24;
@@ -490,7 +547,11 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     const signature = `${revision}\u0000${folds}\u0000${drafts}\u0000${query}`;
     if (signature !== built) {
       built = signature;
-      rows = treeRows(filterTree(state.tree, query), filtered ? new Set() : collapsed);
+      rows = treeRows(
+        filterTree(state.tree, query),
+        filtered ? new Set() : collapsed,
+        openedIgnored,
+      );
       files = 0;
       for (const row of rows) if (row.isFile) files += 1;
       const paths = [
@@ -508,11 +569,16 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       // is not a file, and an unwritten row is nothing to watch.
       if (editing?.kind === "create") rows = withDraft(rows, editing.parent, editing.directory);
     }
-    index = Math.max(
-      0,
-      rows.findIndex((row) => row.path === selectedPath),
-    );
-    selectedPath = rows[index]?.path ?? null;
+    if (selectedPath === null) {
+      // No selection yet: the first row stands in, so the keyboard has a
+      // start.
+      index = Math.max(0, Math.min(rows.length - 1, index));
+      selectedPath = rows[index]?.path ?? null;
+    } else {
+      // A path the listing does not have keeps `-1` and the path itself: it
+      // must not silently become row 0, and it may come back.
+      index = rows.findIndex((row) => row.path === selectedPath);
+    }
     spacer.style.height = `${rows.length * rowHeight}px`;
     list.scrollTop = Math.min(list.scrollTop, Math.max(0, rows.length * rowHeight - viewport));
     list.hidden = rows.length === 0;
@@ -552,15 +618,50 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     schedule();
   }
 
+  /** Whether the row at `at` is inside the visible range. */
+  function visibleIndex(at: number): boolean {
+    const top = at * rowHeight;
+    return top >= list.scrollTop && top + rowHeight <= list.scrollTop + viewport;
+  }
+
+  /** Open every directory leading to `path`; reports whether a fold moved. */
+  function expandAncestors(path: string): boolean {
+    const parts = path.split("/");
+    let moved = false;
+    for (let i = 1; i <= parts.length; i++) {
+      if (collapsed.delete(parts.slice(0, i).join("/"))) moved = true;
+    }
+    return moved;
+  }
+
+  /** Whether the unfiltered listing names the path at all. */
+  function treeHasPath(path: string): boolean {
+    return state.tree?.entries.some((entry) => entry.path === path) ?? false;
+  }
+
   function activate(): void {
     const row = rows[index];
-    if (!row || row.opaque || row.path === DRAFT) return;
+    if (!row || row.path === DRAFT) return;
+    if (row.opaque) {
+      peelOpaque(row.path);
+      return;
+    }
     if (row.isFile) options.onOpen(row.path);
     else {
       row.folded ? collapsed.delete(row.path) : collapsed.add(row.path);
       folds += 1;
       rebuild();
     }
+  }
+
+  /** Ask the host for one level under an opaque ignored directory. */
+  function peelOpaque(path: string): void {
+    openedIgnored.add(path);
+    seen.add(path);
+    collapsed.delete(path);
+    folds += 1;
+    options.onExpandOpaque?.(path);
+    rebuild();
   }
 
   function action(command: ExplorerAction): void {
@@ -578,6 +679,11 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     else if (command === "last") select(rows.length - 1);
     else if (command === "open") activate();
     else {
+      const row = rows[index];
+      if (command === "expand" && row?.opaque) {
+        peelOpaque(row.path);
+        return;
+      }
       const target =
         command === "collapse"
           ? collapseTarget(rows[index], collapsed)
@@ -716,6 +822,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       closeEdit(false);
       collapsed.clear();
       seen.clear();
+      openedIgnored.clear();
       folds += 1;
       selectedPath = null;
       query = "";
@@ -729,12 +836,37 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       closeEdit(false);
       query = "";
       search.value = "";
-      const parts = path.split("/");
-      for (let i = 1; i <= parts.length; i++) collapsed.delete(parts.slice(0, i).join("/"));
+      expandAncestors(path);
       folds += 1;
       selectedPath = path;
       rebuild();
-      select(index);
+      // A path the listing does not have stays unselected rather than
+      // selecting row 0; `rebuild` has already kept the wanted path.
+      if (rows[index]?.path === path) select(index);
+    },
+    follow(path) {
+      // A name being typed is not interrupted by an unrelated tab change; the
+      // next follow catches up.
+      if (editing) return;
+      const plan = planFollow({
+        path,
+        rows,
+        selectedPath,
+        visible: index >= 0 && visibleIndex(index),
+        filtered: query.trim() !== "",
+        present: treeHasPath(path),
+      });
+      if (plan.kind === "hold") return;
+      if (plan.kind === "select") {
+        select(plan.index);
+        return;
+      }
+      // Hidden under a fold: open the way to it like `reveal`, but only ever
+      // open — someone comparing three folders keeps all three.
+      if (expandAncestors(path)) folds += 1;
+      selectedPath = path;
+      rebuild();
+      if (rows[index]?.path === path) select(index);
     },
     action,
     // Never the draft: a row with no path yet is nothing a host can act on.

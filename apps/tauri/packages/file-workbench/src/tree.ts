@@ -38,7 +38,11 @@ function allIgnored(node: Node): boolean {
   );
 }
 
-export function treeRows<T extends FileTree>(tree: T | null, collapsed: Set<string>): TreeRow[] {
+export function treeRows<T extends FileTree>(
+  tree: T | null,
+  collapsed: Set<string>,
+  openedIgnored: ReadonlySet<string> = new Set(),
+): TreeRow[] {
   if (!tree) return [];
 
   const root = emptyNode();
@@ -67,7 +71,7 @@ export function treeRows<T extends FileTree>(tree: T | null, collapsed: Set<stri
   }
 
   const rows: TreeRow[] = [];
-  flatten(root, "", 0, collapsed, rows);
+  flatten(root, "", 0, collapsed, openedIgnored, rows);
   return rows;
 }
 
@@ -84,6 +88,7 @@ function flatten(
   prefix: string,
   depth: number,
   collapsed: Set<string>,
+  openedIgnored: ReadonlySet<string>,
   rows: TreeRow[],
 ): void {
   const dirs = [...node.dirs.entries()].sort(([a], [b]) => compareNames(a, b));
@@ -98,7 +103,11 @@ function flatten(
       child = next;
     }
 
-    const folded = child.opaque || collapsed.has(path);
+    // Children listed under an ignored directory clear opacity; an explicit
+    // peel of an empty folder uses `openedIgnored` for the same.
+    const opaque =
+      child.opaque && child.files.length === 0 && child.dirs.size === 0 && !openedIgnored.has(path);
+    const folded = opaque || collapsed.has(path);
     rows.push({
       depth,
       label,
@@ -106,9 +115,9 @@ function flatten(
       isFile: false,
       folded,
       ignored: allIgnored(child),
-      opaque: child.opaque,
+      opaque,
     });
-    if (!folded) flatten(child, path, depth + 1, collapsed, rows);
+    if (!folded) flatten(child, path, depth + 1, collapsed, openedIgnored, rows);
   }
 
   for (const file of [...node.files].sort((a, b) => compareNames(a.name, b.name))) {
