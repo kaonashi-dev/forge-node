@@ -11,6 +11,7 @@ members = [
     "crates/harness-service",
     "crates/persistence",
     "crates/test-support",
+    "crates/editor-cli",
     "crates/client",
     "crates/daemon",
     "apps/tauri/src-tauri",
@@ -83,6 +84,11 @@ rusqlite_migration = "2.3"
 alacritty_terminal = "0.26"
 portable-pty = "0.9"
 compact_str = { version = "0.10", features = ["serde"] }
+
+# Standalone editor (F1 spike): raw terminal control and cell arithmetic.
+crossterm = "0.29"
+unicode-width = "0.2"
+unicode-segmentation = "1"
 
 # System
 nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user"] }
