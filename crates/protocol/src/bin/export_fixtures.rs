@@ -683,6 +683,14 @@ fn main() {
     );
     write(
         &out,
+        "request_list_directory",
+        &Request::ListDirectory {
+            workspace_id: workspace_id(),
+            path: "dist".to_string(),
+        },
+    );
+    write(
+        &out,
         "request_read_file",
         &Request::ReadFile {
             workspace_id: workspace_id(),

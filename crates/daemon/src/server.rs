@@ -353,6 +353,7 @@ fn request_name(request: &Request) -> &'static str {
         Request::GetChangeContext { .. } => "GetChangeContext",
         Request::GetWorkspaceDiff { .. } => "GetWorkspaceDiff",
         Request::ListFiles { .. } => "ListFiles",
+        Request::ListDirectory { .. } => "ListDirectory",
         Request::WatchFiles { .. } => "WatchFiles",
         Request::ReadFile { .. } => "ReadFile",
         Request::ReadImage { .. } => "ReadImage",

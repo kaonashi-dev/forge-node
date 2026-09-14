@@ -781,6 +781,23 @@ impl Client {
         }
     }
 
+    /// Immediate children of one directory (ADR-012), for peeling an opaque ignored folder.
+    pub fn list_directory(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        path: impl Into<String>,
+    ) -> Result<domain::FileTree, ClientError> {
+        match self.request(Request::ListDirectory {
+            workspace_id,
+            path: path.into(),
+        })? {
+            Response::FileTree(tree) => Ok(tree),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "FileTree",
+            }),
+        }
+    }
+
     /// Read one file relative to a workspace (ADR-012).
     pub fn read_file(
         &self,

@@ -484,6 +484,17 @@ pub enum Request {
         /// Workspace whose checkout is listed.
         workspace_id: WorkspaceId,
     },
+    /// List the immediate children of one directory → [`crate::response::Response::FileTree`].
+    ///
+    /// Peels an opaque ignored folder the root [`Request::ListFiles`] collapsed.
+    /// One level only; language dependency directories are omitted. Local and
+    /// synchronous like [`Request::ListFiles`] (ADR-012).
+    ListDirectory {
+        /// Workspace the path is relative to.
+        workspace_id: WorkspaceId,
+        /// Workspace-relative directory. Must be non-empty.
+        path: String,
+    },
     /// Read one file → [`crate::response::Response::FileContents`].
     ///
     /// Returns a `revision` the next [`Request::WriteFile`] must present.

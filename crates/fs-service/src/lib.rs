@@ -30,8 +30,31 @@ pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 /// Soft ceiling for how many paths a tree listing returns.
 pub const MAX_TREE_ENTRIES: usize = 10_000;
 
+/// Soft ceiling for one [`list_directory`] answer (a single folder's children).
+pub const MAX_DIRECTORY_ENTRIES: usize = 2_000;
+
 /// Soft ceiling for search hits.
 pub const MAX_SEARCH_RESULTS: usize = 200;
+
+/// Package-manager / language dependency directories the file tree never names.
+///
+/// Matched on a path component (case-insensitive), the same set
+/// `daemon::shares::detect` buckets as `ShareClass::Dependencies`. Build
+/// output (`dist`, `target`, …) stays visible as an opaque ignored row so the
+/// GUI can peel it with [`list_directory`].
+fn is_dependency_dir_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "node_modules" | ".venv" | "venv" | "vendor" | "pods" | ".bundle" | "bower_components"
+    )
+}
+
+/// True when any path component is a [`is_dependency_dir_name`].
+fn path_under_dependency_dir(rel: &str) -> bool {
+    rel.split('/')
+        .filter(|s| !s.is_empty())
+        .any(is_dependency_dir_name)
+}
 
 /// Raw `git grep` hits a definition search will read before giving up.
 ///
@@ -181,7 +204,9 @@ pub struct SearchResults {
 /// List every tracked and untracked-but-not-ignored file under `root`.
 ///
 /// Prefers `git ls-files`. Falls back to a recursive `read_dir` when `root` is
-/// not inside a git repository.
+/// not inside a git repository. Wholly-ignored directories (except language
+/// dependency dirs, which are omitted) arrive as one [`EntryKind::Directory`]
+/// row so the GUI can peel them with [`list_directory`].
 pub fn list_files(root: &Path) -> Result<FileTree, FsError> {
     let root = canonicalize_root(root)?;
     if is_git_repo(&root) {
@@ -189,6 +214,120 @@ pub fn list_files(root: &Path) -> Result<FileTree, FsError> {
     } else {
         list_via_walk(&root)
     }
+}
+
+/// List the immediate children of one directory under `root`.
+///
+/// Used to peel an opaque ignored folder the root listing collapsed. One level
+/// only: a child that is itself a wholly-ignored directory comes back as a
+/// single [`EntryKind::Directory`] row. Dependency package directories are
+/// omitted, never peeled. `relative` must be non-empty and resolve to a
+/// directory inside the checkout.
+pub fn list_directory(root: &Path, relative: &str) -> Result<FileTree, FsError> {
+    let root = canonicalize_root(root)?;
+    let rel = normalize_rel(relative.trim_matches('/'));
+    if rel.is_empty() {
+        return Err(FsError::EscapesWorkspace(relative.to_string()));
+    }
+    if path_under_dependency_dir(&rel) {
+        return Ok(FileTree {
+            entries: Vec::new(),
+            truncated: false,
+        });
+    }
+    let dir = resolve_inside(&root, &rel)?;
+    let meta = fs::metadata(&dir).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            FsError::NotFound(rel.clone())
+        } else {
+            FsError::Io(e)
+        }
+    })?;
+    if !meta.is_dir() {
+        return Err(FsError::NotFound(rel));
+    }
+
+    let read = match fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Ok(FileTree {
+                entries: Vec::new(),
+                truncated: false,
+            });
+        }
+        Err(e) => return Err(FsError::Io(e)),
+    };
+
+    let mut children: Vec<(String, bool)> = Vec::new();
+    let mut truncated = false;
+    for entry in read {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == ".git" || is_dependency_dir_name(&name) {
+            continue;
+        }
+        if children.len() >= MAX_DIRECTORY_ENTRIES {
+            truncated = true;
+            break;
+        }
+        let child_rel = format!("{rel}/{name}");
+        let ft = entry.file_type()?;
+        children.push((child_rel, ft.is_dir()));
+    }
+    children.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let ignored = if is_git_repo(&root) {
+        ignored_paths_among(&root, children.iter().map(|(p, _)| p.as_str()))?
+    } else {
+        HashSet::new()
+    };
+
+    let mut entries = Vec::with_capacity(children.len());
+    for (path, is_dir) in children {
+        let path_ignored = ignored.contains(path.as_str());
+        entries.push(FileEntry {
+            path,
+            kind: if is_dir {
+                EntryKind::Directory
+            } else {
+                EntryKind::File
+            },
+            // A directory under an ignored parent is almost always ignored
+            // itself; flag it so the GUI keeps nested package/build dirs opaque
+            // until the next peel. Non-dir ignored files stay openable by name.
+            ignored: path_ignored,
+        });
+    }
+    Ok(FileTree { entries, truncated })
+}
+
+/// Paths `git check-ignore` reports as ignored, among `candidates`.
+fn ignored_paths_among<'a>(
+    root: &Path,
+    candidates: impl IntoIterator<Item = &'a str>,
+) -> Result<HashSet<String>, FsError> {
+    let paths: Vec<&str> = candidates.into_iter().collect();
+    if paths.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let mut ignored = HashSet::new();
+    // One argv per chunk: `run_git` has no stdin (`check-ignore -z` needs
+    // `--stdin`), and a 2 000-child folder would otherwise blow past ARG_MAX.
+    for chunk in paths.chunks(128) {
+        let mut args: Vec<&str> = Vec::with_capacity(2 + chunk.len());
+        args.push("check-ignore");
+        args.push("--");
+        args.extend(chunk.iter().copied());
+        let out = run_git(Some(root), &args)?;
+        for path in out.stdout.lines() {
+            if path.is_empty() {
+                continue;
+            }
+            ignored.insert(normalize_rel(path));
+        }
+    }
+    Ok(ignored)
 }
 
 /// Read one file relative to `root`, rejecting binaries and oversize files.
@@ -524,6 +663,9 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
             continue;
         }
         let path = normalize_rel(path);
+        if path_under_dependency_dir(&path) {
+            continue;
+        }
         if !seen.insert(path.clone()) {
             continue;
         }
@@ -549,6 +691,11 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
      * ignored *whole* comes back as its own name with a trailing slash,
      * standing for contents nothing needs to walk, while a file ignored on its
      * own — the `.env` someone actually wants to open — still arrives by name.
+     *
+     * Language dependency directories (`node_modules`, `vendor`, …) are dropped
+     * entirely: they are never useful in the tree and would only be peeled for
+     * curiosity. Build output and local excludes (`dist`, `plan`, …) stay as
+     * one opaque row for [`list_directory`].
      *
      * Appended after the tracked rows and never interleaved, so the budget is
      * spent on the work first.
@@ -578,7 +725,7 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
             // The trailing slash is git saying "and everything under it".
             let directory = path.ends_with('/');
             let path = normalize_rel(path.trim_end_matches('/'));
-            if path.is_empty() || !seen.insert(path.clone()) {
+            if path.is_empty() || path_under_dependency_dir(&path) || !seen.insert(path.clone()) {
                 continue;
             }
             extra.push(FileEntry {
@@ -623,7 +770,11 @@ fn walk(
     for entry in read {
         let entry = entry?;
         let name = entry.file_name();
-        if name == ".git" || name == "node_modules" || name == "target" {
+        if name == ".git" {
+            continue;
+        }
+        let name = name.to_string_lossy();
+        if is_dependency_dir_name(&name) {
             continue;
         }
         let path = entry.path();
@@ -1545,24 +1696,91 @@ mod tests {
     #[test]
     fn an_ignored_directory_never_lists_its_contents() {
         let tmp = git_repo();
-        fs::write(tmp.path().join(".gitignore"), "node_modules/\n").unwrap();
-        fs::create_dir_all(tmp.path().join("node_modules/left-pad/deep")).unwrap();
+        fs::write(tmp.path().join(".gitignore"), "dist/\n").unwrap();
+        fs::create_dir_all(tmp.path().join("dist/assets/deep")).unwrap();
         for name in ["a.js", "b.js", "c.js"] {
-            fs::write(tmp.path().join("node_modules/left-pad/deep").join(name), "").unwrap();
+            fs::write(tmp.path().join("dist/assets/deep").join(name), "").unwrap();
         }
         fs::write(tmp.path().join("app.js"), "source").unwrap();
 
         let tree = list_files(tmp.path()).unwrap();
-        let modules: Vec<_> = tree
+        let dist: Vec<_> = tree
             .entries
             .iter()
-            .filter(|e| e.path.starts_with("node_modules"))
+            .filter(|e| e.path.starts_with("dist"))
             .collect();
-        assert_eq!(modules.len(), 1, "got {modules:?}");
-        assert_eq!(modules[0].path, "node_modules");
-        assert_eq!(modules[0].kind, EntryKind::Directory);
-        assert!(modules[0].ignored);
+        assert_eq!(dist.len(), 1, "got {dist:?}");
+        assert_eq!(dist[0].path, "dist");
+        assert_eq!(dist[0].kind, EntryKind::Directory);
+        assert!(dist[0].ignored);
         assert!(!tree.truncated);
+    }
+
+    /// Language dependency directories are omitted from the root listing entirely.
+    #[test]
+    fn dependency_directories_are_not_listed() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join(".gitignore"), "node_modules/\nvendor/\n").unwrap();
+        fs::create_dir_all(tmp.path().join("node_modules/left-pad")).unwrap();
+        fs::write(tmp.path().join("node_modules/left-pad/index.js"), "").unwrap();
+        fs::create_dir_all(tmp.path().join("vendor/pkg")).unwrap();
+        fs::write(tmp.path().join("vendor/pkg/lib.go"), "").unwrap();
+        fs::write(tmp.path().join("app.js"), "source").unwrap();
+
+        let tree = list_files(tmp.path()).unwrap();
+        assert!(
+            tree.entries
+                .iter()
+                .all(|e| !e.path.starts_with("node_modules") && !e.path.starts_with("vendor")),
+            "got {tree:?}"
+        );
+    }
+
+    #[test]
+    fn list_directory_peels_one_ignored_folder() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join(".gitignore"), "plan/\n").unwrap();
+        fs::create_dir_all(tmp.path().join("plan/nested")).unwrap();
+        fs::write(tmp.path().join("plan/notes.md"), "x").unwrap();
+        fs::write(tmp.path().join("plan/nested/more.md"), "y").unwrap();
+
+        let peeled = list_directory(tmp.path(), "plan").unwrap();
+        let paths: Vec<_> = peeled
+            .entries
+            .iter()
+            .map(|e| (e.path.as_str(), e.kind, e.ignored))
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                ("plan/nested", EntryKind::Directory, true),
+                ("plan/notes.md", EntryKind::File, true),
+            ]
+        );
+        assert!(!peeled.truncated);
+
+        let nested = list_directory(tmp.path(), "plan/nested").unwrap();
+        assert_eq!(nested.entries.len(), 1);
+        assert_eq!(nested.entries[0].path, "plan/nested/more.md");
+        assert!(nested.entries[0].ignored);
+    }
+
+    #[test]
+    fn list_directory_skips_dependency_children() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join(".gitignore"), "build/\n").unwrap();
+        fs::create_dir_all(tmp.path().join("build/node_modules/x")).unwrap();
+        fs::write(tmp.path().join("build/out.js"), "").unwrap();
+
+        let peeled = list_directory(tmp.path(), "build").unwrap();
+        assert_eq!(
+            peeled
+                .entries
+                .iter()
+                .map(|e| e.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["build/out.js"]
+        );
     }
 
     #[test]

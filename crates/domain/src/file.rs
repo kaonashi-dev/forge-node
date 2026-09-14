@@ -27,8 +27,10 @@ pub struct FileEntry {
     /// File or directory.
     pub kind: FileKind,
     /// Excluded by `.gitignore`. Listed so a build directory is reachable, and
-    /// flagged so the tree can grey it and keep it collapsed: an ignored path
-    /// is not part of the work, but it is still a file someone opens.
+    /// flagged so the tree can grey it and keep it collapsed until the GUI
+    /// peels it with `ListDirectory`: an ignored path is not part of the work,
+    /// but it is still a file someone opens. Language dependency directories
+    /// (`node_modules`, `vendor`, …) are omitted from the listing entirely.
     pub ignored: bool,
 }
 
