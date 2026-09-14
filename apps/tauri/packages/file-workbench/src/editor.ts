@@ -468,9 +468,18 @@ export function createFileEditor(host: HTMLElement, options: FileEditorOptions):
     count.textContent = `${matchIndex + 1}/${total}`;
   }
 
+  /**
+   * Select a match and scroll to it, leaving the caret in the find bar.
+   *
+   * This runs on every keystroke of the query, so it must not move the focus:
+   * the second character of a search would otherwise be typed into the
+   * document. It also must not collapse the selection it just made, which is
+   * why it scrolls rather than reveals — the range stays selected and is
+   * what the user sees when Escape hands the editor back.
+   */
   function selectMatch(match: Match): void {
     input.setSelectionRange(match.from, match.to);
-    revealLine(lineColumnAt(input.value, match.from).line);
+    scrollToLine(lineColumnAt(input.value, match.from).line);
     reportCursor();
   }
 
@@ -598,18 +607,37 @@ export function createFileEditor(host: HTMLElement, options: FileEditorOptions):
     });
   }
 
-  function revealLine(line: number): void {
-    const text = input.value;
-    const starts = lineStarts(text);
-    if (line < 1 || line > starts.length) return;
-    const from = starts[line - 1]!;
-    input.setSelectionRange(from, from);
+  /**
+   * Scroll a line to the middle of the viewport, and nothing else.
+   *
+   * Deliberately touches neither the selection nor the focus: the find bar
+   * scrolls to the match it just selected while the caret is still in the
+   * query field, and both of those would be taken away from it.
+   */
+  function scrollToLine(line: number): void {
     const style = getComputedStyle(input);
     const lineHeight = Number.parseFloat(style.lineHeight) || 20;
     input.scrollTop = Math.max(0, (line - 1) * lineHeight - input.clientHeight / 2);
     syncScroll();
     cursorLine = line;
     paintGutter();
+  }
+
+  /**
+   * Put the caret on a line and go there — a jump the user asked for.
+   *
+   * Every caller but the find bar is a gesture that means "take me to this
+   * line": go-to-line, a gutter click, stepping through git changes, the host
+   * opening a diff. Those want the focus. Find does not, and calls
+   * [`scrollToLine`] instead.
+   */
+  function revealLine(line: number): void {
+    const text = input.value;
+    const starts = lineStarts(text);
+    if (line < 1 || line > starts.length) return;
+    const from = starts[line - 1]!;
+    input.setSelectionRange(from, from);
+    scrollToLine(line);
     input.focus({ preventScroll: true });
   }
 
