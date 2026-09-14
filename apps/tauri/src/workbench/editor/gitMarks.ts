@@ -1,62 +1,78 @@
-// A5: which lines of the working copy a patch touched.
-//
-// Derived from the same `git diff` the Diff tab renders — the daemon is asked
-// once and both surfaces read the answer, so the gutter and the patch can
-// never disagree about what changed.
-//
-// Its own module because the mapping has a right and a wrong answer and the
-// wrong one is invisible: a stripe one line off is worse than no stripe.
+// Gutter marks and change details share the cached workspace patch.
 
 import { parsePatch } from "../patch";
+import { intraLine } from "../diff/patchDocument";
+import type { GitChange } from "@forge-node/file-workbench/editor";
 import type { GitMark, GitMarks } from "./createEditor";
 
-/**
- * Mark every line of the *new* file the patch reaches.
- *
- * Three cases and one subtlety. An added line is marked where it now is. A run
- * of removals with no additions beside it has no line of its own in the new
- * file, so it is marked on the line that now follows the deletion — the only
- * place a reader can be shown that something used to be there. A removal
- * immediately followed by additions is a modification, and the additions carry
- * the mark, because marking both would draw two stripes for one edit.
- */
 export function gitMarksFor(patch: string): GitMarks {
+  return marksForChanges(gitChangesFor(patch));
+}
+
+export function marksForChanges(changes: readonly GitChange[]): GitMarks {
   const marks = new Map<number, GitMark>();
-  const rows = parsePatch(patch);
+  for (const change of changes) {
+    for (let line = change.from; line <= change.to; line += 1) {
+      if (change.kind !== "deleted" || !marks.has(line)) marks.set(line, change.kind);
+    }
+  }
+  return marks;
+}
 
-  /** Lines removed since the last row that had a place in the new file. */
-  let pendingDeletion = false;
-  /** The new-file line number the next row would occupy. */
+/** `lineCount` clamps deletion anchors to the saved document, including an empty file. */
+export function gitChangesFor(patch: string, lineCount?: number): GitChange[] {
+  const changes: GitChange[] = [];
+  let rows: GitChange["rows"] = [];
   let next = 1;
+  let hunkEnd = 1;
+  let inHunk = false;
 
-  for (const row of rows) {
-    if (row.kind === "added" && row.after !== null) {
-      // A removal directly above an addition is one edit, not two.
-      marks.set(row.after, pendingDeletion ? "modified" : "added");
-      pendingDeletion = false;
-      next = row.after + 1;
-      continue;
+  function flush(): void {
+    if (!rows.length) return;
+    const added = rows.filter((row) => row.kind === "added");
+    const removed = rows.filter((row) => row.kind === "removed");
+    if (!added.length && !removed.length) {
+      rows = [];
+      return;
     }
-    if (row.kind === "removed") {
-      pendingDeletion = true;
-      continue;
+    const anchor = Math.max(1, Math.min(next, lineCount ?? hunkEnd));
+    for (let index = 0; index < Math.min(added.length, removed.length); index += 1) {
+      const spans = intraLine(removed[index].text, added[index].text);
+      if (spans) {
+        removed[index].emphasis = spans.before;
+        added[index].emphasis = spans.after;
+      }
     }
-    if (row.kind === "context" && row.after !== null) {
-      // A deletion with nothing added in its place: the gap closed, and the
-      // line that closed it is where it is shown. `deleted` never overwrites a
-      // mark already on that line — an addition there says more.
-      if (pendingDeletion && !marks.has(row.after)) marks.set(row.after, "deleted");
-      pendingDeletion = false;
-      next = row.after + 1;
-      continue;
-    }
-    if (row.kind === "hunk") pendingDeletion = false;
+    changes.push({
+      from: added[0]?.after ?? anchor,
+      to: added.at(-1)?.after ?? anchor,
+      kind: added.length ? (removed.length ? "modified" : "added") : "deleted",
+      rows,
+    });
+    rows = [];
   }
 
-  // A file that ends with a deletion has no following line; the mark goes on
-  // the last line there is.
-  if (pendingDeletion && next > 1 && !marks.has(next - 1)) marks.set(next - 1, "deleted");
-  return marks;
+  for (const row of parsePatch(patch)) {
+    if (row.kind === "hunk") {
+      flush();
+      const header = /\+(\d+)(?:,(\d+))? @@/.exec(row.text);
+      const start = Number(header?.[1] ?? 1);
+      const count = Number(header?.[2] ?? 1);
+      next = count === 0 ? start + 1 : start;
+      hunkEnd = Math.max(1, start + count - 1);
+      inHunk = true;
+    } else if (row.kind === "context") {
+      flush();
+      next = (row.after ?? next) + 1;
+    } else if (inHunk && (row.kind === "added" || row.kind === "removed")) {
+      rows.push({ ...row, kind: row.kind });
+      if (row.after !== null) next = row.after + 1;
+    } else if (rows.length && row.text.startsWith("\\")) {
+      rows.push({ ...row, kind: "meta" });
+    }
+  }
+  flush();
+  return changes;
 }
 
 /** The patch for one path in a workspace diff, or `null`. */

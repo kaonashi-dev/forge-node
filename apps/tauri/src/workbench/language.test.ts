@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { languageFor, loadableGrammars } from "./editor/language";
 import { extensionOf, grammarFor } from "./language";
 
 describe("grammarFor", () => {
@@ -50,14 +49,5 @@ describe("extensionOf", () => {
     expect(extensionOf(".gitignore")).toBe("");
     expect(extensionOf(".env.local")).toBe("local");
     expect(extensionOf("Makefile")).toBe("");
-  });
-});
-
-describe("loadableGrammars", () => {
-  it("loads a Python parser when a Python file is opened", async () => {
-    expect(loadableGrammars()).toContain("python");
-    const support = languageFor("python");
-    if (!support) throw new Error("Python must have a language loader");
-    await expect(support).resolves.toBeDefined();
   });
 });

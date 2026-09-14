@@ -126,9 +126,9 @@ const NON_TEXT_INPUTS = ["checkbox", "radio", "button", "submit", "reset", "rang
 /**
  * Whether a keystroke is destined for something that takes text.
  *
- * Includes `contenteditable`, which is what CodeMirror's content element is:
- * the editor's own keymap has to see every key it is given, and a bare-letter
- * app chord firing inside it would eat the letter.
+ * Includes `contenteditable` so a custom editable surface's own keymap sees
+ * every key it is given, and a bare-letter app chord firing inside it would
+ * not eat the letter.
  *
  * Duck-typed rather than `instanceof HTMLElement`, which is also what makes it
  * testable under vitest's node environment: `instanceof` is per-realm, and the
@@ -163,8 +163,8 @@ export function nativeClipboardIn(event: KeyboardEvent): boolean {
  *
  * The terminal's hidden textarea is a typing target, but selecting it
  * selects nothing the user can see — leave that chord alone there.
- * CodeMirror's content element is `contenteditable`, not an `<input>`,
- * so this returns false and the editor's own keymap takes it.
+ * A `contenteditable` is not an `<input>`, so this returns false and that
+ * surface's own keymap takes it.
  */
 export function selectAllIn(target: EventTarget | null): boolean {
   const element = target as {

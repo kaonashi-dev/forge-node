@@ -158,7 +158,7 @@ describe("isTypingTarget", () => {
     expect(target({ tagName: "INPUT" })).toBe(true);
     expect(target({ tagName: "TEXTAREA" })).toBe(true);
     expect(target({ tagName: "SELECT" })).toBe(true);
-    // CodeMirror's content element, which must see every key it is given.
+    // A contenteditable surface must see every key it is given.
     expect(target({ tagName: "DIV", isContentEditable: true })).toBe(true);
   });
 

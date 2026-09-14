@@ -1,13 +1,8 @@
 // The editor's own colours, derived from the same palette as everything else.
 //
-// CodeMirror ships themes, and none of them is this app's theme: an editor
-// painted in One Dark inside a gruvbox shell is the seam the whole token
-// pipeline exists to remove. So the scopes are assigned here, from `palettes`,
-// and `workbench/editor/theme.ts` turns them into CM6 extensions.
-//
-// Nothing in this module imports CodeMirror. The assignment is the part with a
-// right and a wrong answer — a scope too dim to read is a defect — so it stays
-// importable by a node test that has no DOM (`AGENTS.md`, TypeScript section).
+// Scope assignment stays importable by a node test that has no DOM
+// (`AGENTS.md`, TypeScript section). The file editor paints these as
+// `--fw-scope-*` CSS variables on its host.
 
 import { contrast, hex, mix, parseHex, pct } from "./mix";
 import { palettes, type Palette, type ThemeBaseId } from "./tokens";
@@ -39,7 +34,7 @@ export type EditorPalette = {
   matchingBracket: string;
   searchMatch: string;
   searchMatchSelected: string;
-  /** Syntax, by lezer tag family. Keys are read by `workbench/editor/theme.ts`. */
+  /** Syntax, by tag family. Reserved for a future highlighter. */
   scopes: EditorScopes;
   /** The three git gutter marks (A5). */
   gitAdded: string;

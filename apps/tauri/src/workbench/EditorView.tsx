@@ -35,10 +35,9 @@ import type { SearchMatch } from "./types";
 import { grammarFor } from "./language";
 import { actionForDiskRead } from "./editor/conflict";
 import { createEditor, type EditorHandle } from "./editor/createEditor";
-import { gitMarksFor, patchFor } from "./editor/gitMarks";
+import { gitChangesFor, marksForChanges, patchFor } from "./editor/gitMarks";
 import { lineAt, rulerTicks } from "./editor/overviewRuler";
 import { ensureDiff, refreshDiff } from "./decorations";
-import { languageFor } from "./editor/language";
 import { CompareView } from "./editor/CompareView";
 import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
 import { Button, Tooltip } from "../ui";
@@ -55,12 +54,9 @@ import { previewImageReader } from "./api";
  * this was open — the daemon refuses, and the choice of what to keep is put to
  * the person rather than resolved here.
  *
- * The text itself is CodeMirror's. What used to be here — a transparent
- * `<textarea>` over a `<pre>` shiki had coloured — painted the whole file on
- * every settle, capped colour at 6 000 lines, and kept two layers on the same
- * pixel by duplicating every metric that affects layout. This component now
- * owns the daemon conversation and nothing else; `editor/createEditor.ts` owns
- * what is on screen (`plan-ui-ux.md` §2.1).
+ * The text itself is the portable file-workbench editor. This component owns
+ * the daemon conversation and nothing else; `editor/createEditor.ts` owns what
+ * is on screen.
  */
 /**
  * How long the draft has to stand still before an autosave fires.
@@ -118,6 +114,48 @@ export function EditorView(props: { path: string }) {
   const touchDoc = (): void => {
     setDocVersion((version) => version + 1);
   };
+  /**
+   * The preview's in-progress block. Cmd+S is captured before the textarea
+   * blurs, so a save has to pick this up itself rather than waiting for a
+   * commit.
+   */
+  let previewDraft: { start: number; end: number; text: string } | null = null;
+
+  function applyPreviewDraft(): void {
+    const draft = previewDraft;
+    const editor = handle;
+    if (!draft || !editor) return;
+    previewDraft = null;
+    const current = editor.text();
+    const next = current.slice(0, draft.start) + draft.text + current.slice(draft.end);
+    if (next === current) return;
+    editor.setDoc(next);
+    setDirty(true);
+    touchDoc();
+    scheduleAutosave();
+  }
+
+  function onPreviewDraft(draft: { start: number; end: number; text: string } | null): void {
+    previewDraft = draft;
+    if (!draft || !handle) return;
+    if (draft.text !== handle.text().slice(draft.start, draft.end)) {
+      setDirty(true);
+      scheduleAutosave();
+    }
+  }
+
+  function onPreviewEdit(start: number, end: number, next: string): void {
+    previewDraft = null;
+    const editor = handle;
+    if (!editor) return;
+    const current = editor.text();
+    const spliced = current.slice(0, start) + next + current.slice(end);
+    if (spliced === current) return;
+    editor.setDoc(spliced);
+    setDirty(true);
+    touchDoc();
+    scheduleAutosave();
+  }
 
   const file = () => (workbenchStore.file?.path === props.path ? workbenchStore.file : null);
   const grammar = createMemo(() => {
@@ -134,11 +172,15 @@ export function EditorView(props: { path: string }) {
     if (workbenchStore.workspace) ensureDiff();
   });
 
-  /** The patch for this path, if the Diff tab's answer covers it (A5). */
-  const marks = createMemo(() => {
+  const changes = createMemo(() => {
+    const contents = file();
+    if (!contents || dirty() || conflict()) return [];
+    // A re-read invalidates the details even when the saved line count is unchanged.
+    contents.revision;
     const patch = patchFor(workbenchStore.diff?.files ?? [], props.path);
-    return patch === null ? new Map() : gitMarksFor(patch);
+    return patch === null ? [] : gitChangesFor(patch, contents.text.split("\n").length);
   });
+  const marks = createMemo(() => marksForChanges(changes()));
 
   /*
    * The ruler's geometry, from the file the daemon read rather than from the
@@ -157,6 +199,7 @@ export function EditorView(props: { path: string }) {
   }
 
   function save(): void {
+    applyPreviewDraft();
     const contents = file();
     const workspace = workbenchStore.workspace;
     if (!contents || !workspace || !handle) return;
@@ -174,6 +217,7 @@ export function EditorView(props: { path: string }) {
   function takeDisk(): void {
     const workspace = workbenchStore.workspace;
     if (!workspace) return;
+    previewDraft = null;
     setDirty(false);
     setConflict(false);
     setComparing(false);
@@ -268,13 +312,14 @@ export function EditorView(props: { path: string }) {
         clearTimeout(idleTimer);
         if (autosave() && dirty() && !conflict()) save();
       },
-      // A5: a click on a gutter stripe is a request to see the hunk, not to
-      // put the caret on the line — the line is already right there.
       onRevealDiff: () => openDiff(),
       onOpenDefinition: goToDefinition,
     });
     const editor = handle;
-    onCleanup(() => editor.destroy());
+    onCleanup(() => {
+      applyPreviewDraft();
+      editor.destroy();
+    });
     onCleanup(enterContext(EDITOR));
     onCleanup(registerAction("save_file", save));
     onCleanup(registerAction("go_to_definition", askForDefinitionAtCursor));
@@ -288,6 +333,7 @@ export function EditorView(props: { path: string }) {
     if (path === previousPath) return;
     previousPath = path;
     lastRevision = undefined;
+    previewDraft = null;
     setDirty(false);
     setConflict(false);
     setComparing(false);
@@ -427,30 +473,12 @@ export function EditorView(props: { path: string }) {
   });
 
   createEffect(() => {
-    const support = languageFor(grammar());
-    if (!support) {
-      handle?.setLanguage(null);
-      return;
-    }
-    const path = props.path;
-    void support.then(
-      (loaded) => {
-        // The chunk may land after the tab moved on; installing a parser for a
-        // file that is no longer open would colour the next one wrong.
-        if (path === props.path) handle?.setLanguage(loaded);
-      },
-      // `editor/language.ts` rejects rather than caching a chunk that failed,
-      // so a 404 after an update lands here: the file is edited as plain text,
-      // which `language.ts` already treats as the answer for "no grammar".
-      () => {
-        if (path === props.path) handle?.setLanguage(null);
-      },
-    );
+    handle?.setGrammar(grammar());
   });
 
   createEffect(() => {
-    const next = marks();
-    handle?.setGitMarks(next);
+    const next = changes();
+    handle?.setGitChanges(next);
   });
 
   const unopenable = () => {
@@ -464,6 +492,10 @@ export function EditorView(props: { path: string }) {
   const markdown = () => grammar() === "markdown";
   const previewing = () =>
     markdown() && markdownMode() === "preview" && !comparing() && unopenable() === null;
+
+  createEffect(() => {
+    if (!previewing()) applyPreviewDraft();
+  });
 
   /*
    * The preview draws the buffer, not the last read: what is being looked at
@@ -511,7 +543,10 @@ export function EditorView(props: { path: string }) {
               variant="ghost"
               size="xs"
               selected={markdownMode() === "code"}
-              onClick={() => setMarkdownMode("code")}
+              onClick={() => {
+                applyPreviewDraft();
+                setMarkdownMode("code");
+              }}
             >
               Code
             </Button>
@@ -620,9 +655,7 @@ export function EditorView(props: { path: string }) {
       </Show>
 
       <Show when={comparing() && file()}>
-        {(contents) => (
-          <CompareView disk={contents().text} mine={handle?.text() ?? ""} base={themeBase()} />
-        )}
+        {(contents) => <CompareView disk={contents().text} mine={handle?.text() ?? ""} />}
       </Show>
 
       <Show when={unopenable()}>{(reason) => <p class="empty-copy">{reason()}</p>}</Show>
@@ -632,7 +665,13 @@ export function EditorView(props: { path: string }) {
 
       <Show when={previewing() && file()}>
         <div class="editor-preview">
-          <Markdown text={previewText()} class="forge-md-doc" images={previewImages()} />
+          <Markdown
+            text={previewText()}
+            class="forge-md-doc"
+            images={previewImages()}
+            onEdit={onPreviewEdit}
+            onDraft={onPreviewDraft}
+          />
         </div>
       </Show>
 
@@ -681,10 +720,15 @@ export function EditorView(props: { path: string }) {
         <Show when={fileWatchError()}>
           {(error) => <span title={error()}>Manual refresh</span>}
         </Show>
-        <Show when={!previewing()}>
-          <span class="fw-position">
-            Ln {position().line}, Col {position().column}
-          </span>
+        <Show
+          when={previewing()}
+          fallback={
+            <span class="fw-position">
+              {position().line}:{position().column}
+            </span>
+          }
+        >
+          <span>Click a block to edit</span>
         </Show>
       </footer>
     </div>

@@ -381,12 +381,57 @@
   overflow-x: auto;
   padding: var(--space-4) 0;
 }
-/* CodeMirror draws the patch itself (D1); everything below it in this file is
-   the box, not the rows. The row colours live in `PatchView`'s own theme,
-   which is where CM6 will accept them. */
-.diff-patch .cm-editor,
-.diff-split .cm-editor {
-  background: transparent;
+/* Patch rows are plain DOM; washes and gutters live here. */
+.diff-patch {
+  font-family: var(--forge-mono);
+  font-size: var(--forge-mono-size);
+  line-height: var(--forge-mono-lh);
+  overflow: auto;
+  background: var(--forge-editor);
+}
+.diff-row {
+  display: grid;
+  grid-template-columns: 3.5ch 3.5ch 1.5ch minmax(0, 1fr);
+  white-space: pre;
+}
+.diff-split .diff-row {
+  grid-template-columns: 3.5ch minmax(0, 1fr);
+}
+.diff-row-text {
+  overflow: hidden;
+  padding: 0 1.5ch;
+}
+.forge-diff-added {
+  background-color: var(--forge-diff-added-bg);
+}
+.forge-diff-removed {
+  background-color: var(--forge-diff-removed-bg);
+}
+.forge-diff-hunk,
+.forge-diff-meta {
+  color: var(--fg-subtle);
+  background-color: color-mix(in srgb, var(--fg-default) 4%, var(--forge-editor));
+}
+.forge-diff-filler {
+  background-color: color-mix(in srgb, var(--fg-default) 4%, var(--forge-editor));
+  opacity: 0.7;
+}
+.forge-diff-intra {
+  background-color: var(--bg-selected);
+  border-radius: 0;
+  color: inherit;
+}
+.forge-diff-gutter {
+  color: var(--fg-subtle);
+  opacity: 0.55;
+  padding: 0 0.5ch;
+  text-align: right;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.forge-diff-gutter-marker {
+  text-align: center;
+  opacity: 0.8;
 }
 .diff-split {
   display: grid;
@@ -399,7 +444,11 @@
 .diff-split-side {
   background: var(--forge-editor);
   min-width: 0;
-  overflow: hidden;
+  overflow: auto;
+  max-height: 60vh;
+  font-family: var(--forge-mono);
+  font-size: var(--forge-mono-size);
+  line-height: var(--forge-mono-lh);
 }
 
 /*
@@ -510,12 +559,7 @@
   gap: var(--space-10);
   padding: var(--space-8) var(--space-10);
 }
-/* The editor's host.
-   CodeMirror draws everything inside it and brings its own stylesheet, built
-   per theme base by `workbench/editor/theme.ts`. What is left here is the box
-   it fills and the two chrome pieces around it — so the metrics that used to
-   be duplicated between a `<pre>` and a `<textarea>`, and could drift apart by
-   a fraction of a pixel, now exist once, inside CM6. */
+/* The editor's host — the portable textarea editor fills it. */
 .editor-code {
   flex: 1;
   min-height: 0;
@@ -556,22 +600,6 @@
 }
 .editor-ruler-tick.deleted {
   background: var(--forge-git-deleted);
-}
-.editor-code .cm-editor {
-  height: 100%;
-}
-.editor-code .cm-editor.cm-focused {
-  /* CM6 draws a UA focus ring on the editor box; the caret and the active
-     line already say where the keyboard is. */
-  outline: none;
-}
-/* A git gutter mark is a stripe on the inside edge of the line-number gutter
-   (`plan-ui-ux.md` A5). The colours come from the theme extension; only the
-   hit area is here, so the whole gutter row answers a click. */
-.editor-code .cm-gutterElement.fw-git-added,
-.editor-code .cm-gutterElement.fw-git-modified,
-.editor-code .cm-gutterElement.fw-git-deleted {
-  cursor: pointer;
 }
 
 .editor-compare {
@@ -828,19 +856,6 @@
 .feature-preview-body:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: -2px;
-}
-
-/* A9/A10: the mode pill, in CodeMirror's own bottom panel. Only drawn by the
-   Helix keymap — vim's own status line is part of that extension. */
-.editor-code .forge-editor-mode {
-  color: var(--fg-subtle);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  letter-spacing: 0.08em;
-  padding: var(--space-2) var(--space-8);
-}
-.editor-code .forge-editor-mode[data-mode="insert"] {
-  color: var(--accent-solid);
 }
 
 /* --------------------------------------------------------- pull requests --- */
@@ -1200,11 +1215,54 @@
   font-size: var(--text-md);
   line-height: 1.65;
 }
-.forge-md > *:first-child {
+.forge-md > *:first-child,
+.forge-md > .forge-md-hit:first-child > *:first-child {
   margin-top: 0;
 }
-.forge-md > *:last-child {
+.forge-md > *:last-child,
+.forge-md > .forge-md-hit:last-child > *:last-child {
   margin-bottom: 0;
+}
+.forge-md-hit {
+  border-radius: var(--radius-xs);
+  cursor: text;
+}
+.forge-md[data-editable] .forge-md-hit:hover {
+  background: color-mix(in srgb, var(--fg-default) 5%, transparent);
+}
+.forge-md-empty {
+  color: var(--fg-muted);
+  cursor: text;
+}
+.forge-md-edit {
+  background: var(--bg-raised);
+  border: 1px solid var(--accent-solid);
+  border-radius: var(--radius-xs);
+  box-sizing: border-box;
+  color: inherit;
+  display: block;
+  font: inherit;
+  line-height: inherit;
+  margin: 0 0 var(--space-12);
+  overflow: hidden;
+  padding: var(--space-8);
+  resize: none;
+  width: 100%;
+  white-space: pre-wrap;
+}
+.forge-md-edit[data-kind="heading"] {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: var(--space-24) 0 var(--space-10);
+}
+.forge-md-edit[data-kind="code"],
+.forge-md-edit[data-kind="table"] {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.forge-md-edit:focus {
+  outline: none;
 }
 .forge-md-heading {
   font-weight: 600;
@@ -1255,9 +1313,8 @@
   min-width: 0;
   white-space: pre-wrap;
 }
-/* Not a `Checkbox`: the box is the host's record of what someone else ticked,
-   and a control that looked pressable would offer an edit this tab cannot
-   make. `role="img"` is what says so. */
+/* A PR body keeps this as `role="img"`: that tab cannot write. The editor
+   preview uses the same mark as a button that flips the source. */
 .forge-md-box {
   align-items: center;
   background: var(--bg-base);
@@ -1274,6 +1331,12 @@
 .forge-md-box[data-checked] {
   background: var(--accent-soft);
   border-color: var(--accent-solid);
+}
+button.forge-md-box {
+  appearance: none;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
 }
 .forge-md-inline-code {
   background: var(--bg-raised);
@@ -1421,4 +1484,13 @@
 }
 .forge-md-doc .forge-md-heading[data-level="4"] {
   color: var(--fg-default);
+}
+.forge-md-doc .forge-md-edit[data-kind="heading"][data-level="1"] {
+  font-size: calc(var(--text-xl) * 1.35);
+}
+.forge-md-doc .forge-md-edit[data-kind="heading"][data-level="2"] {
+  font-size: var(--text-xl);
+}
+.forge-md-doc .forge-md-edit[data-kind="heading"][data-level="3"] {
+  font-size: var(--text-lg);
 }

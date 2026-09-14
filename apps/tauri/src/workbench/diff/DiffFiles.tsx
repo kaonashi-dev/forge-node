@@ -1,5 +1,4 @@
 import { For, Show, createSignal } from "solid-js";
-import { themeBase } from "../../theme/ThemeProvider";
 import { LangIcon } from "../../theme/icons";
 import { Tooltip } from "../../ui";
 import { PatchView } from "./PatchView";
@@ -13,9 +12,9 @@ import type { DiffFile } from "../types";
  * collapsible section, the budget notes and the double-click-to-open are the
  * same contract in each, and a second copy is a second thing to keep right.
  *
- * Each patch is rendered by CodeMirror and only while its section is open, so
- * a checkout with forty changed files costs the DOM of the ones being read
- * rather than of all of them (§2.3 D1).
+ * Each patch is rendered only while its section is open, so a checkout with
+ * forty changed files costs the DOM of the ones being read rather than of all
+ * of them.
  */
 export function DiffFiles(props: {
   files: DiffFile[];
@@ -73,14 +72,12 @@ export function DiffFiles(props: {
                       fallback={
                         <PatchView
                           patch={file.patch}
-                          base={themeBase()}
                           onOpenLine={(line) => props.onOpenLine(file.path, line)}
                         />
                       }
                     >
                       <SplitPatchView
                         patch={file.patch}
-                        base={themeBase()}
                         onOpenLine={(line) => props.onOpenLine(file.path, line)}
                       />
                     </Show>

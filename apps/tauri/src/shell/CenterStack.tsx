@@ -56,11 +56,11 @@ import {
 /**
  * P11: the three heaviest surfaces load when they are first opened.
  *
- * CodeMirror and its parsers are ~200 kB gzipped, and a window that only ever
- * shows a terminal should never download them; Settings is a route of its own
- * and is reached from a menu. `lazy` at module scope, not inside the render:
- * a component created per render is a component remounted per render, which
- * would throw away the editor's undo history every time the strip re-drew.
+ * Editor, Diff and Settings stay out of the initial shell so a window that
+ * only ever shows a terminal never downloads them. `lazy` at module scope,
+ * not inside the render: a component created per render is a component
+ * remounted per render, which would throw away the editor's undo history
+ * every time the strip re-drew.
  */
 const EditorView = lazy(() =>
   import("../workbench/EditorView").then((module) => ({ default: module.EditorView })),

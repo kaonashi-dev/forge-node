@@ -8,6 +8,8 @@ import {
   createMemo,
   createSignal,
   onCleanup,
+  onMount,
+  untrack,
   useContext,
   type JSX,
 } from "solid-js";
@@ -16,10 +18,32 @@ import { openUrl } from "../runtime/api";
 import { Icon } from "../theme/icons";
 import { themeBase } from "../theme/ThemeProvider";
 import { isDiagram, renderDiagram } from "./diagram";
-import { parseMarkdown, safeHref, type MdBlock, type MdImage, type MdSpan } from "./markdownBlocks";
+import {
+  parseMarkdown,
+  safeHref,
+  toggleTaskMarker,
+  type MdBlock,
+  type MdImage,
+  type MdListItem,
+  type MdSpan,
+} from "./markdownBlocks";
 import { PathText } from "./PathText";
 
 type MdText = Extract<MdSpan, { kind: "text" }>;
+
+type Draft = { start: number; end: number; text: string };
+
+type EditApi = {
+  draft: () => Draft | null;
+  begin: (start: number, end: number, event: MouseEvent) => void;
+  setText: (text: string) => void;
+  commit: () => void;
+  cancel: () => void;
+  toggle: (start: number, end: number) => void;
+};
+
+const Edit = createContext<EditApi | null>(null);
+const Nested = createContext(false);
 
 /**
  * Where an image the document names is drawn from: a URL to put in `src`, or
@@ -49,128 +73,360 @@ const HEADING_TAG = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
  * as a navigation — this is a webview, and letting it follow an `href` would
  * replace the app with the page.
  */
-export function Markdown(props: { text: string; class?: string; images?: MdImageLoader }) {
+export function Markdown(props: {
+  text: string;
+  class?: string;
+  images?: MdImageLoader;
+  /**
+   * When set, a click on a block edits its source and a click on a task box
+   * flips the marker. The next string is that range's new markdown. A pull
+   * request body does not pass this.
+   */
+  onEdit?: (start: number, end: number, next: string) => void;
+  /** The in-progress block, so a capture-phase save can write it without a blur. */
+  onDraft?: (draft: Draft | null) => void;
+}) {
   const blocks = createMemo(() => parseMarkdown(props.text));
+  const [draft, setDraft] = createSignal<Draft | null>(null);
+  let committing = false;
+  let justClosed = false;
+
+  function closeDraft(): void {
+    setDraft(null);
+    props.onDraft?.(null);
+    justClosed = true;
+    queueMicrotask(() => {
+      justClosed = false;
+    });
+  }
+
+  function commit(): void {
+    const current = draft();
+    if (!current || !props.onEdit) {
+      closeDraft();
+      return;
+    }
+    if (current.text === props.text.slice(current.start, current.end)) {
+      closeDraft();
+      return;
+    }
+    committing = true;
+    props.onEdit(current.start, current.end, current.text);
+    closeDraft();
+    queueMicrotask(() => {
+      committing = false;
+    });
+  }
+
+  const api: EditApi = {
+    draft,
+    begin: (start, end, event) => {
+      if (!props.onEdit || justClosed || ignoreEditClick(event)) return;
+      const current = draft();
+      if (current) {
+        if (current.start === start && current.end === end) return;
+        commit();
+        return;
+      }
+      const next = { start, end, text: props.text.slice(start, end) };
+      setDraft(next);
+      props.onDraft?.(next);
+    },
+    setText: (text) => {
+      const current = draft();
+      if (!current) return;
+      const next = { ...current, text };
+      setDraft(next);
+      props.onDraft?.(next);
+    },
+    commit,
+    cancel: closeDraft,
+    toggle: (start, end) => {
+      if (!props.onEdit || justClosed || draft()) return;
+      const next = toggleTaskMarker(props.text.slice(start, end));
+      if (next === null) return;
+      committing = true;
+      props.onEdit(start, end, next);
+      queueMicrotask(() => {
+        committing = false;
+      });
+    },
+  };
+
+  createEffect(() => {
+    props.text;
+    // A reload or take-disk rewrites the source; a commit sets `committing`
+    // so this does not drop the block we just wrote.
+    if (committing) return;
+    if (untrack(draft)) untrack(closeDraft);
+  });
+
   return (
     <ImageLoader.Provider value={() => props.images}>
-      <div class={`forge-md ${props.class ?? ""}`}>
-        <Blocks blocks={blocks()} />
-      </div>
+      <Edit.Provider value={props.onEdit ? api : null}>
+        <div class={`forge-md ${props.class ?? ""}`} data-editable={props.onEdit ? "" : undefined}>
+          <Blocks blocks={blocks()} nested={!props.onEdit} />
+          <Show when={props.onEdit && blocks().length === 0}>
+            <p
+              class="forge-md-p forge-md-empty"
+              onClick={(event) => api.begin(0, props.text.length, event)}
+            >
+              Write…
+            </p>
+          </Show>
+        </div>
+      </Edit.Provider>
     </ImageLoader.Provider>
   );
 }
 
-function Blocks(props: { blocks: MdBlock[] }) {
+function ignoreEditClick(event: MouseEvent): boolean {
+  const target = event.target;
+  if (target instanceof Element && target.closest("a, button, input, textarea")) return true;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !(event.currentTarget instanceof Node)) return false;
+  return event.currentTarget.contains(sel.anchorNode);
+}
+
+function Blocks(props: { blocks: MdBlock[]; nested?: boolean }) {
   return (
-    <For each={props.blocks}>
-      {(block) => (
-        <Switch>
-          <Match when={block.kind === "heading" && block}>
-            {(heading) => (
-              <Dynamic
-                component={HEADING_TAG[heading().level - 1] ?? "h6"}
-                class="forge-md-heading"
-                data-level={heading().level}
-              >
-                <Spans spans={heading().spans} />
-              </Dynamic>
-            )}
-          </Match>
-          <Match when={block.kind === "paragraph" && block}>
-            {(paragraph) => (
-              <p class="forge-md-p">
-                <Spans spans={paragraph().spans} />
-              </p>
-            )}
-          </Match>
-          <Match when={block.kind === "list" && block}>
-            {(list) => (
-              <Dynamic component={list().ordered ? "ol" : "ul"} class="forge-md-list">
-                {/* Depth is an attribute rather than a nested list: the parser
-                    reads indent, and one flat pass cannot know where a level
-                    ends. It indents the same and needs no closing. */}
-                <For each={list().items}>
-                  {(item) => (
-                    <li
-                      class="forge-md-item"
-                      data-depth={item.depth}
-                      data-task={item.checked === null ? undefined : ""}
-                    >
-                      <Show when={item.checked !== null}>
-                        <span
-                          class="forge-md-box"
-                          data-checked={item.checked === true ? "" : undefined}
-                          role="img"
-                          aria-label={item.checked === true ? "Done" : "Not done"}
-                        >
-                          <Show when={item.checked === true}>
-                            <Icon name="check" size={10} />
-                          </Show>
-                        </span>
-                      </Show>
-                      <span class="forge-md-item-text">
-                        <Spans spans={item.spans} />
-                      </span>
-                    </li>
-                  )}
-                </For>
-              </Dynamic>
-            )}
-          </Match>
-          <Match when={block.kind === "code" && block}>
-            {(code) => (
-              <Show when={isDiagram(code().lang)} fallback={<CodeBlock {...code()} />}>
-                <Diagram text={code().text} />
-              </Show>
-            )}
-          </Match>
-          <Match when={block.kind === "quote" && block}>
-            {(quote) => (
-              <blockquote class="forge-md-quote">
-                <Blocks blocks={quote().blocks} />
-              </blockquote>
-            )}
-          </Match>
-          <Match when={block.kind === "table" && block}>
-            {(table) => (
-              <div class="forge-md-table-scroll">
-                <table class="forge-md-table">
-                  <thead>
+    <Nested.Provider value={!!props.nested}>
+      <For each={props.blocks}>
+        {(block) => (
+          <Show when={!props.nested} fallback={<BlockView block={block} />}>
+            <Editable block={block}>
+              <BlockView block={block} />
+            </Editable>
+          </Show>
+        )}
+      </For>
+    </Nested.Provider>
+  );
+}
+
+function Editable(props: { block: MdBlock; children: JSX.Element }) {
+  const edit = useContext(Edit);
+  return (
+    <Show when={edit} fallback={props.children}>
+      {(api) => (
+        <Show
+          when={editing(api(), props.block)}
+          fallback={
+            <div
+              class="forge-md-hit"
+              onClick={(event) => api().begin(props.block.start, props.block.end, event)}
+            >
+              {props.children}
+            </div>
+          }
+        >
+          <BlockEditor
+            kind={props.block.kind}
+            level={props.block.kind === "heading" ? props.block.level : undefined}
+          />
+        </Show>
+      )}
+    </Show>
+  );
+}
+
+function editing(api: EditApi, block: MdBlock): boolean {
+  const current = api.draft();
+  return current !== null && current.start === block.start && current.end === block.end;
+}
+
+function BlockEditor(props: { kind: MdBlock["kind"]; level?: number }) {
+  const edit = useContext(Edit);
+  let area!: HTMLTextAreaElement;
+
+  const fit = (): void => {
+    area.style.height = "0px";
+    area.style.height = `${area.scrollHeight}px`;
+  };
+
+  onMount(() => {
+    area.value = edit?.draft()?.text ?? "";
+    fit();
+    area.focus();
+    const n = area.value.length;
+    area.setSelectionRange(n, n);
+  });
+
+  return (
+    <textarea
+      ref={area}
+      class="forge-md-edit"
+      data-kind={props.kind}
+      data-level={props.level}
+      spellcheck={props.kind !== "code" && props.kind !== "table"}
+      rows={1}
+      aria-label="Edit markdown"
+      onInput={(event) => {
+        edit?.setText(event.currentTarget.value);
+        fit();
+      }}
+      onBlur={() => edit?.commit()}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          edit?.cancel();
+        } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          edit?.commit();
+        }
+      }}
+    />
+  );
+}
+
+function asKind<K extends MdBlock["kind"]>(
+  block: MdBlock,
+  kind: K,
+): Extract<MdBlock, { kind: K }> | undefined {
+  return block.kind === kind ? (block as Extract<MdBlock, { kind: K }>) : undefined;
+}
+
+function BlockView(props: { block: MdBlock }) {
+  return (
+    <Switch>
+      <Match when={asKind(props.block, "heading")}>
+        {(heading) => (
+          <Dynamic
+            component={HEADING_TAG[heading().level - 1] ?? "h6"}
+            class="forge-md-heading"
+            data-level={heading().level}
+          >
+            <Spans spans={heading().spans} />
+          </Dynamic>
+        )}
+      </Match>
+      <Match when={asKind(props.block, "paragraph")}>
+        {(paragraph) => (
+          <p class="forge-md-p">
+            <Spans spans={paragraph().spans} />
+          </p>
+        )}
+      </Match>
+      <Match when={asKind(props.block, "list")}>
+        {(list) => (
+          <Dynamic component={list().ordered ? "ol" : "ul"} class="forge-md-list">
+            {/* Depth is an attribute rather than a nested list: the parser
+                reads indent, and one flat pass cannot know where a level
+                ends. It indents the same and needs no closing. */}
+            <For each={list().items}>
+              {(item) => (
+                <li
+                  class="forge-md-item"
+                  data-depth={item.depth}
+                  data-task={item.checked === null ? undefined : ""}
+                >
+                  <Show when={item.checked !== null}>
+                    <TaskMark item={item} />
+                  </Show>
+                  <span class="forge-md-item-text">
+                    <Spans spans={item.spans} />
+                  </span>
+                </li>
+              )}
+            </For>
+          </Dynamic>
+        )}
+      </Match>
+      <Match when={asKind(props.block, "code")}>
+        {(code) => (
+          <Show
+            when={isDiagram(code().lang)}
+            fallback={<CodeBlock lang={code().lang} text={code().text} />}
+          >
+            <Diagram text={code().text} />
+          </Show>
+        )}
+      </Match>
+      <Match when={asKind(props.block, "quote")}>
+        {(quote) => (
+          <blockquote class="forge-md-quote">
+            <Blocks blocks={quote().blocks} nested />
+          </blockquote>
+        )}
+      </Match>
+      <Match when={asKind(props.block, "table")}>
+        {(table) => (
+          <div class="forge-md-table-scroll">
+            <table class="forge-md-table">
+              <thead>
+                <tr>
+                  <For each={table().head}>
+                    {(cell) => (
+                      <th>
+                        <Spans spans={cell} />
+                      </th>
+                    )}
+                  </For>
+                </tr>
+              </thead>
+              <tbody>
+                <For each={table().rows}>
+                  {(row) => (
                     <tr>
-                      <For each={table().head}>
+                      <For each={row}>
                         {(cell) => (
-                          <th>
+                          <td>
                             <Spans spans={cell} />
-                          </th>
+                          </td>
                         )}
                       </For>
                     </tr>
-                  </thead>
-                  <tbody>
-                    <For each={table().rows}>
-                      {(row) => (
-                        <tr>
-                          <For each={row}>
-                            {(cell) => (
-                              <td>
-                                <Spans spans={cell} />
-                              </td>
-                            )}
-                          </For>
-                        </tr>
-                      )}
-                    </For>
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Match>
-          <Match when={block.kind === "rule"}>
-            <hr class="forge-md-rule" />
-          </Match>
-        </Switch>
-      )}
-    </For>
+                  )}
+                </For>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Match>
+      <Match when={asKind(props.block, "rule")}>
+        <hr class="forge-md-rule" />
+      </Match>
+    </Switch>
+  );
+}
+
+function TaskMark(props: { item: MdListItem }) {
+  const edit = useContext(Edit);
+  const nested = useContext(Nested);
+  const checked = () => props.item.checked === true;
+  const mark = () => (
+    <Show when={checked()}>
+      <Icon name="check" size={10} />
+    </Show>
+  );
+  return (
+    <Show
+      when={edit && !nested}
+      fallback={
+        <span
+          class="forge-md-box"
+          data-checked={checked() ? "" : undefined}
+          role="img"
+          aria-label={checked() ? "Done" : "Not done"}
+        >
+          {mark()}
+        </span>
+      }
+    >
+      <button
+        type="button"
+        class="forge-md-box"
+        data-checked={checked() ? "" : undefined}
+        aria-pressed={checked()}
+        aria-label={checked() ? "Mark as not done" : "Mark as done"}
+        onClick={(event) => {
+          event.stopPropagation();
+          edit?.toggle(props.item.start, props.item.end);
+        }}
+      >
+        {mark()}
+      </button>
+    </Show>
   );
 }
 

@@ -1,7 +1,7 @@
 // What the find bar's counter says, as a pure function of a search cursor.
 //
-// Split from `searchPanel.ts` because that half builds DOM: this one has a
-// right and a wrong answer, so it stays importable by a node test.
+// Split from the find UI because that half builds DOM: this one has a right
+// and a wrong answer, so it stays importable by a node test.
 
 /**
  * How many matches are counted before the tally stops.

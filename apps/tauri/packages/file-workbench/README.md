@@ -1,6 +1,6 @@
 # File workbench
 
-A non-modal, terminal-styled file explorer and CodeMirror editor. The DOM API
+A non-modal, terminal-styled file explorer and plain-text editor. The DOM API
 works with plain TypeScript or a framework: mount into an element, update through
 the handle, and call `destroy()` on unmount. There are no Solid, React, Tauri,
 filesystem, network, global keyboard or application-store dependencies.
@@ -11,7 +11,6 @@ In Forge, run `bun install` in `apps/tauri`, then `bun run build:file-workbench`
 The app uses this package through its workspace dependency. To use it elsewhere,
 copy this directory, run `npm install`, then `npm pack`. The tarball includes ESM,
 TypeScript declarations and the stylesheet. Install the tarball in the consumer.
-CodeMirror packages are peer dependencies so the host can share one instance.
 
 ```ts
 import { createFileExplorer } from "@forge-node/file-workbench";
@@ -51,9 +50,9 @@ explorer.destroy();
 editor.destroy();
 ```
 
-The root entry only loads the explorer. Import `/editor` lazily to keep CodeMirror
-out of the initial bundle. `/tree` exposes pure listing/filter/navigation helpers.
-`/symbol` exposes identifier extraction without importing an editor.
+The root entry only loads the explorer. Import `/editor` lazily to keep the
+editor out of the initial bundle. `/tree` exposes pure listing/filter/navigation
+helpers. `/symbol` exposes identifier extraction without importing an editor.
 
 ## Ownership and extension points
 
@@ -62,12 +61,17 @@ out of the initial bundle. `/tree` exposes pure listing/filter/navigation helper
   call `editor.text()` when saving or otherwise needing the complete text.
 - `setDoc()` is silent: it never calls `onChange`. It does report cursor changes.
   The host must resolve conflicts before applying external content.
-- Supply CodeMirror `theme` and `findExtension` extensions at construction;
-  `setTheme`, `setLanguage` and `setGitMarks` update the editor in place.
-  `onOpenDefinition` and `onRevealDiff` bridge navigation to the host.
-- `readOnly` disables both editing and editing commands. It is fixed for that
-  editor instance. Normal editors use ordinary text editing, undo, selection,
-  mouse input and find; there are no Vim modes or exit gestures.
+- `setGitMarks` updates the gutter in place. `onOpenDefinition` and `onRevealDiff`
+  bridge navigation to the host. Theme comes from CSS variables on the host.
+- `setGitChanges` supplies contiguous change blocks with saved line ranges and
+  before/after rows. Their gutter marks open a contextual detail panel with
+  previous/next navigation, intraline emphasis, Escape and outside-click dismissal.
+  `onRevealDiff` becomes the panel's full-diff action. A preview renders at most
+  200 rows and reports omitted lines. Editing or replacing the document clears
+  marks and details; the host must supply fresh saved changes after a read/save.
+- `readOnly` disables editing. It is fixed for that editor instance. Chrome is
+  vim/Zed-minimal: `/` find, `→` replace, `:` go-to-line (`Mod-g`), tabular
+  gutters, no form borders or pills. There are no Vim modes or exit gestures.
 - A `FileTree` contains relative paths. `Directory` entries can represent empty
   folders; ignored directory entries are opaque until the host peels them
   (`onExpandOpaque` → one-level listing merged in). Directories implied by file

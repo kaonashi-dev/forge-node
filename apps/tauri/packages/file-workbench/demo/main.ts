@@ -28,10 +28,64 @@ const editor = createFileEditor(node("editor"), {
     node("status").textContent = "Unsaved";
   },
   onCursor(at) {
-    node("position").textContent = `Ln ${at.line}, Col ${at.column}`;
+    node("position").textContent = `${at.line}:${at.column}`;
   },
 });
 node("path").textContent = path;
+node("changes").onclick = () => {
+  if (dirty) {
+    node("status").textContent = "Save this draft before switching files in the demo.";
+    return;
+  }
+  path = "changes.ts";
+  editor.setDoc(
+    'const editor = "plain-text";\n\nexport const enabled = true;\n\nexport default editor;\n',
+    false,
+  );
+  node("path").textContent = path;
+  editor.setGrammar("typescript");
+  editor.setGitChanges([
+    {
+      from: 1,
+      to: 1,
+      kind: "modified",
+      rows: [
+        {
+          kind: "removed",
+          before: 1,
+          after: null,
+          text: 'const editor = "CodeMirror";',
+          emphasis: { from: 16, to: 26 },
+        },
+        {
+          kind: "added",
+          before: null,
+          after: 1,
+          text: 'const editor = "plain-text";',
+          emphasis: { from: 16, to: 26 },
+        },
+      ],
+    },
+    {
+      from: 3,
+      to: 3,
+      kind: "added",
+      rows: [{ kind: "added", before: null, after: 3, text: "export const enabled = true;" }],
+    },
+    {
+      from: 5,
+      to: 5,
+      kind: "deleted",
+      rows: Array.from({ length: 240 }, (_, index) => ({
+        kind: "removed",
+        before: index + 4,
+        after: null,
+        text: `const removed${index} = ${index};`,
+      })),
+    },
+  ]);
+  node("status").textContent = "Click a gutter mark to inspect the change";
+};
 const explorer = createFileExplorer(node("explorer"), {
   onOpen(next) {
     if (dirty) {
