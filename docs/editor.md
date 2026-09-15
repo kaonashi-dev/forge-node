@@ -155,6 +155,7 @@ living with no window pill of its own.
 | Ctrl-P | toggle closing brackets as you type |
 | Ctrl-Space | complete from the buffer's own words; Up/Down choose, Enter accepts |
 | Alt-I / Alt-W | show whitespace / wrap long lines |
+| Alt-D | go to the definition of the word at the caret |
 | Ctrl-R | replace (Tab switches field, **Enter** replaces this match, **Ctrl-R** replaces the rest) |
 | Ctrl-G | go to line |
 | Alt-N / Alt-P | next / previous changed block (Ctrl-N and Ctrl-B are the find bar's) |
@@ -383,6 +384,19 @@ theme, which is the right answer there too.
 | string | green | constant | dark yellow |
 | number | yellow | plain | default |
 
+**Go to definition is a request, not a lookup.** The editor never opens the
+checkout, so `Alt-D` sends the word at the caret to the daemon, which greps the
+tree through `fs-service`. The symbol is validated as an identifier on both
+sides before it reaches `git grep` — a name that arrives from a caret must never
+be able to become a regex (`SearchKind::Definition`). What comes back is
+*candidates*, capped at 64: the ranking is a heuristic, so the editor offers the
+list rather than jumping somewhere it cannot justify, and a single candidate is
+still a list because a wrong answer taken silently is the worst of the three
+outcomes. Following one is another request — one buffer per process means the
+editor cannot open a second — and the daemon opens it as an ordinary editor
+session, the same path a click in the file tree takes. The search runs on the
+editor's control thread, off the core lock and off the PTY's paint thread.
+
 **Completion is the buffer's own vocabulary.** `Ctrl-Space` offers the words
 already in the file that continue the identifier at the caret — no language
 server, no index, nothing that leaves the process. Two characters minimum, a
@@ -477,9 +491,8 @@ agent.
 
 What is left. A rendered Markdown document,
 an SVG and a raster image still open on the DOM side — a terminal cannot draw
-them, so that split is the design rather than a gap. What *is* a gap: go-to-definition and
-find-references, which need a channel from the editor to `SearchFiles` and are
-the one item here that changes shape rather than filling in; the change
+them, so that split is the design rather than a gap. What *is* a gap: find-references, which is the
+same channel as go-to-definition asking a different question; the change
 *details* panel, where the gutter has the marks but not the before/after rows.
 The pane does draw a scrollbar thumb: `EditorState`
 carries `top_line` / `visible_lines` / `total_lines`, so the GUI reports where

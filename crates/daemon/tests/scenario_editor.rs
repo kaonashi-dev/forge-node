@@ -83,6 +83,13 @@ def state(path, line=1):
     inner = pack_map([("request_id", pack_nil()), ("state", st)])
     return frame(pack_map([("State", inner)]))
 
+def find_definition(request_id, symbol):
+    inner = pack_map([
+        ("request_id", pack_int(request_id)),
+        ("symbol", pack_str(symbol)),
+    ])
+    return frame(pack_map([("FindDefinition", inner)]))
+
 def save_request(request_id, text, document_version):
     inner = pack_map([
         ("request_id", pack_int(request_id)),
@@ -243,6 +250,14 @@ if mode == "save_twice":
         answers.append(name)
     with open(".forge-editor-save", "w") as fh:
         fh.write(" ".join(answers) + "\n")
+
+if mode == "definition":
+    sock.sendall(find_definition(1500, "answer"))
+    _, body = await_message(sock, "Definitions")
+    with open(".forge-editor-definitions", "w") as fh:
+        for place in body["places"]:
+            fh.write("%s:%s %s\n" % (place["path"], place["line"], place["text"].strip()))
+        fh.write("end\n")
 
 if mode == "copy":
     # Written only once the test has attached: the escape is a single burst,
@@ -779,6 +794,37 @@ fn install_editor_mode(harness: &common::Harness, mode: &str, text: Option<&str>
     let mut perms = fs::metadata(&path).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&path, perms).unwrap();
+}
+
+/// Go-to-definition is a request, because the editor never opens the checkout.
+///
+/// The symbol travels, the daemon greps the tree through `fs-service` — which
+/// validates it as an identifier first, so a caret cannot become a regex — and
+/// the candidates come back ranked. Candidates and not a jump: the ranking is a
+/// heuristic, so the editor offers the list.
+#[test]
+fn the_editor_asks_the_daemon_where_a_symbol_is_declared() {
+    let harness = common::Harness::new();
+    install_editor_mode(&harness, "definition", None);
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("a.rs"), "let x = answer();\n").unwrap();
+    fs::write(
+        repo.path().join("lib.rs"),
+        "pub fn answer() -> u8 {\n    42\n}\n",
+    )
+    .unwrap();
+    commit_all(repo.path(), "seed");
+    let running = harness.boot();
+    let client = running.connect("editor-definition");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (_session, _terminal) = create_editor(&client, &events, workspace, "a.rs", None);
+
+    let found = await_receipt(&repo.path().join(".forge-editor-definitions"));
+    assert!(
+        found.contains("lib.rs:1") && found.contains("pub fn answer"),
+        "the declaration was not offered:\n{found}"
+    );
 }
 
 /// A copy in the editor reaches the host, not just the editor's own register.

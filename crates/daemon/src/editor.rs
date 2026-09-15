@@ -514,6 +514,38 @@ fn serve(
             Ok(EditorMessage::Refused { request_id, .. }) => {
                 daemon.finish_editor_reload(session_id, request_id);
             }
+            // Disk work, on this thread and off the core lock — the rule
+            // go-to-definition exists under (AGENTS.md). The symbol is
+            // validated as an identifier by `fs-service` before it reaches
+            // `git grep`, so a caret in a buffer cannot become a regex.
+            Ok(EditorMessage::FindDefinition { request_id, symbol }) => {
+                let places = daemon.editor_definitions(session_id, &symbol);
+                let answer = DaemonMessage::Definitions {
+                    request_id,
+                    symbol,
+                    places,
+                };
+                if send(&writer, &answer).is_err() {
+                    return;
+                }
+            }
+            Ok(EditorMessage::OpenPath {
+                request_id,
+                path: wanted,
+                line,
+            }) => {
+                // A refusal is worth saying: the candidate came from a grep of
+                // a tree that may have moved since.
+                if let Err(error) = daemon.editor_open_path(session_id, &wanted, line) {
+                    let answer = DaemonMessage::SaveRefused {
+                        request_id,
+                        reason: format!("could not open {wanted}: {}", error.message),
+                    };
+                    if send(&writer, &answer).is_err() {
+                        return;
+                    }
+                }
+            }
             Ok(other) => {
                 tracing::debug!(%session_id, message = ?other, "editor message");
             }

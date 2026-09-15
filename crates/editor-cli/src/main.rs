@@ -166,6 +166,7 @@ fn run(options: cli::Options) -> anyhow::Result<()> {
             // The save goes out before the state, so the daemon's write and the
             // `dirty` the GUI paints cannot arrive in the wrong order.
             flush_save(&mut app, channel)?;
+            flush_lookups(&mut app, channel)?;
             publish_state(&app, channel, &mut last_state)?;
         }
     };
@@ -252,6 +253,9 @@ fn handle_control(
             Err(reason) => control.send(&EditorMessage::Refused { request_id, reason })?,
         },
         DaemonMessage::GitMarks { marks, .. } => app.set_marks(&marks),
+        DaemonMessage::Definitions { symbol, places, .. } => {
+            app.definitions_arrived(symbol, places);
+        }
         DaemonMessage::SetAutosave { autosave, .. } => app.set_autosave(autosave),
         DaemonMessage::Save { request_id } => {
             // The answer is the `SaveRequest` the main loop flushes next, and
@@ -302,6 +306,21 @@ fn flush_save(app: &mut App, control: &mut ControlChannel) -> anyhow::Result<()>
         text,
         document_version,
     })?;
+    Ok(())
+}
+
+/// Send the definition lookup and the open request, if the last key made one.
+fn flush_lookups(app: &mut App, control: &mut ControlChannel) -> anyhow::Result<()> {
+    if let Some((request_id, symbol)) = app.take_definition_request() {
+        control.send(&EditorMessage::FindDefinition { request_id, symbol })?;
+    }
+    if let Some((request_id, path, line)) = app.take_open_request() {
+        control.send(&EditorMessage::OpenPath {
+            request_id,
+            path,
+            line,
+        })?;
+    }
     Ok(())
 }
 

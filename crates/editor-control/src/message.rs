@@ -98,6 +98,18 @@ pub enum DaemonMessage {
     /// The *keep mine* half. The daemon cannot write the draft on its own — it
     /// does not have it — so the save stays a request the editor makes.
     Save { request_id: u64 },
+    /// Candidate declarations for a symbol the editor asked about.
+    ///
+    /// The answer to [`EditorMessage::FindDefinition`]. *Candidates*, not a
+    /// resolution: `fs-service` ranks them with a heuristic, so the editor
+    /// offers the list rather than jumping somewhere it cannot justify. Capped
+    /// by the daemon before it is sent.
+    Definitions {
+        request_id: u64,
+        /// Echoed, because the editor may have moved on.
+        symbol: String,
+        places: Vec<WirePlace>,
+    },
     /// Replace byte ranges, refused when the document moved under the caller.
     ///
     /// Reserved for a preview surface; H1's daemon does not send it yet, so an
@@ -157,6 +169,24 @@ pub enum EditorMessage {
     State {
         request_id: Option<u64>,
         state: EditorStateWire,
+    },
+    /// Where is this symbol declared?
+    ///
+    /// The daemon owns the checkout, so the editor cannot grep it. `symbol` is
+    /// validated as an identifier on both sides before it reaches `git grep`:
+    /// a name that arrives from a click must never be able to become a regex
+    /// (`SearchKind::Definition`, AGENTS.md).
+    FindDefinition { request_id: u64, symbol: String },
+    /// Open another file in the workbench, at a line.
+    ///
+    /// The editor holds one buffer per process and cannot open a second, so
+    /// following a definition is a request: the daemon opens the file the way
+    /// the GUI would have.
+    OpenPath {
+        request_id: u64,
+        /// Workspace-relative, as [`DaemonMessage::Definitions`] gave it.
+        path: String,
+        line: u32,
     },
     /// The editor is exiting (quit command, fatal error). The daemon treats the
     /// socket EOF the same way, so this is a courtesy reason, not the signal.
@@ -219,6 +249,24 @@ pub struct EditorStateWire {
 /// A line can be as long as the document; a screen reader announcing one is
 /// reading a sentence, not a file. Clamped before the copy, never after.
 pub const MAX_CARET_LINE_BYTES: usize = 2 * 1024;
+
+/// One place a symbol is declared, or a diagnostic points at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WirePlace {
+    /// Workspace-relative.
+    pub path: String,
+    /// 1-based.
+    pub line: u32,
+    /// The line's text, so a list reads without a second read per row.
+    pub text: String,
+}
+
+/// Most places one answer carries.
+///
+/// A list is chosen from, not scrolled: past this the symbol was too common to
+/// be a question, and the daemon says so by truncating rather than by sending
+/// a thousand rows through a socket sized for a buffer.
+pub const MAX_PLACES: usize = 64;
 
 /// What one line's gutter mark says happened to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

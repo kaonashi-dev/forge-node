@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use editor_control::{EditorStateWire, WireEdit, WireMark, WireMarkKind};
+use editor_control::{EditorStateWire, WireEdit, WireMark, WireMarkKind, WirePlace};
 use editor_core::{
     execute, metrics, Command, Document, Edit, Grammar, Origin, Query, Range, Refusal, Selection,
     Snapshot, Syntax, Transaction,
@@ -49,6 +49,17 @@ pub enum Prompt {
     },
     /// A close with unsaved changes: save, discard or cancel.
     ConfirmClose,
+    /// Candidate declarations for a symbol, to choose between.
+    ///
+    /// Candidates and not a jump: the daemon ranks them with a heuristic, so
+    /// the editor offers the list rather than moving somewhere it cannot
+    /// justify. One candidate is still a list — a wrong single answer taken
+    /// silently is the worst of the three outcomes.
+    Definitions {
+        symbol: String,
+        places: Vec<WirePlace>,
+        selected: usize,
+    },
 }
 
 /// Largest copy that travels as an OSC 52.
@@ -113,6 +124,10 @@ pub struct App {
     in_flight_save: Option<(u64, Snapshot)>,
     /// The save request the control loop has not sent yet.
     outbox: Option<(u64, String, u64)>,
+    /// A definition lookup the control loop has not sent yet.
+    lookup: Option<(u64, String)>,
+    /// A file the control loop has to ask the daemon to open.
+    open_request: Option<(u64, String, u32)>,
     next_request_id: u64,
     register: String,
     query: Query,
@@ -271,6 +286,8 @@ impl App {
             syntax: Syntax::default(),
             in_flight_save: None,
             outbox: None,
+            lookup: None,
+            open_request: None,
             // The daemon mints ids from 1 for its own requests; the editor's
             // start past them so a log line names one side unambiguously.
             next_request_id: 1_000,
@@ -891,6 +908,54 @@ impl App {
         self.wrap = true;
     }
 
+    /// Ask the daemon where the word at the caret is declared.
+    ///
+    /// The editor never opens the checkout, so this is a request. An empty
+    /// word or one that is not an identifier is refused here as well as on the
+    /// far side: a symbol that reaches `git grep` must be a name.
+    fn find_definition(&mut self) {
+        if !self.integrated {
+            self.status = Some("go to definition needs the daemon".to_string());
+            return;
+        }
+        let (start, end) =
+            editor_core::movement::word_span(self.document.text(), self.document.caret());
+        let symbol = self.document.text().as_str()[start..end].to_string();
+        if symbol.is_empty() || !is_identifier(&symbol) {
+            self.status = Some("no symbol under the caret".to_string());
+            return;
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.lookup = Some((request_id, symbol));
+        self.status = Some("looking…".to_string());
+    }
+
+    /// Take the definition request the control loop has to send.
+    pub fn take_definition_request(&mut self) -> Option<(u64, String)> {
+        self.lookup.take()
+    }
+
+    /// Take the open request the control loop has to send.
+    pub fn take_open_request(&mut self) -> Option<(u64, String, u32)> {
+        self.open_request.take()
+    }
+
+    /// The daemon answered a definition lookup.
+    pub fn definitions_arrived(&mut self, symbol: String, places: Vec<WirePlace>) {
+        self.damage_all = true;
+        if places.is_empty() {
+            self.status = Some(format!("{symbol}: not declared anywhere I can see"));
+            return;
+        }
+        self.status = None;
+        self.prompt = Some(Prompt::Definitions {
+            symbol,
+            places,
+            selected: 0,
+        });
+    }
+
     /// Take the save request the control loop has to send, if there is one.
     ///
     /// Returns `(request_id, text, document_version)`. The snapshot stays here
@@ -1340,6 +1405,8 @@ impl App {
             Some(Prompt::GotoLine { input }) => {
                 input.extend(text.chars().filter(char::is_ascii_digit));
             }
+            // A paste into a list of candidates is not a gesture the list has.
+            Some(Prompt::Definitions { .. }) => {}
             Some(Prompt::ConfirmClose) | None => self.run(Command::Paste(text.to_string())),
         }
         self.damage_all = true;
@@ -1716,6 +1783,7 @@ impl App {
                 }
             }
             EditorAction::Complete => self.open_completion(),
+            EditorAction::FindDefinition => self.find_definition(),
             EditorAction::ToggleSpecialChars => {
                 self.special_chars = !self.special_chars;
                 self.damage_all = true;
@@ -1804,6 +1872,44 @@ impl App {
         };
         self.damage_all = true;
         match prompt {
+            Prompt::Definitions {
+                symbol,
+                places,
+                mut selected,
+            } => match key.code {
+                KeyCode::Up => {
+                    selected = (selected + places.len() - 1) % places.len();
+                    self.prompt = Some(Prompt::Definitions {
+                        symbol,
+                        places,
+                        selected,
+                    });
+                }
+                KeyCode::Down => {
+                    selected = (selected + 1) % places.len();
+                    self.prompt = Some(Prompt::Definitions {
+                        symbol,
+                        places,
+                        selected,
+                    });
+                }
+                KeyCode::Enter => {
+                    if let Some(place) = places.get(selected) {
+                        let request_id = self.next_request_id;
+                        self.next_request_id += 1;
+                        self.open_request = Some((request_id, place.path.clone(), place.line));
+                        self.status = Some(format!("opening {}", place.path));
+                    }
+                }
+                KeyCode::Esc => {}
+                _ => {
+                    self.prompt = Some(Prompt::Definitions {
+                        symbol,
+                        places,
+                        selected,
+                    });
+                }
+            },
             Prompt::ConfirmClose => match key.code {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
                     self.save();
@@ -2248,6 +2354,7 @@ impl App {
             (KeyCode::Char('e'), true, _) => Action::Editor(EditorAction::ToggleRegex),
             (KeyCode::Char('p'), true, _) => Action::Editor(EditorAction::ToggleCloseBrackets),
             (KeyCode::Char(' '), true, _) => Action::Editor(EditorAction::Complete),
+            (KeyCode::Char('d'), _, true) => Action::Editor(EditorAction::FindDefinition),
             (KeyCode::Char('i'), _, true) => Action::Editor(EditorAction::ToggleSpecialChars),
             (KeyCode::Char('w'), _, true) => Action::Editor(EditorAction::ToggleWrap),
             // Alt, not Ctrl: Ctrl-N and Ctrl-B are already the find bar's.
@@ -2333,6 +2440,7 @@ enum EditorAction {
     ToggleSpecialChars,
     ToggleWrap,
     Complete,
+    FindDefinition,
     ToggleWholeWord,
     ToggleRegex,
     PasteRegister,
@@ -2389,6 +2497,19 @@ fn describe(refusal: Refusal) -> String {
             format!("refused: more than {limit} matches, nothing was replaced")
         }
     }
+}
+
+/// Whether a word may be searched for as a declaration.
+///
+/// The same shape `fs-service` validates on the far side, checked here too so
+/// a refusal costs no round trip: a symbol that reaches `git grep` is a name,
+/// never anything that could be read as a pattern.
+fn is_identifier(word: &str) -> bool {
+    !word.is_empty()
+        && !word.starts_with(|c: char| c.is_ascii_digit())
+        && word
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
 }
 
 fn on_off(value: bool) -> &'static str {
@@ -3887,5 +4008,77 @@ mod tests {
         app.handle_key(control(' '));
         assert!(app.completion().is_none());
         assert_eq!(app.status(), Some("no completions"));
+    }
+
+    fn place(path: &str, line: u32, text: &str) -> WirePlace {
+        WirePlace {
+            path: path.to_string(),
+            line,
+            text: text.to_string(),
+        }
+    }
+
+    /// The editor never opens the checkout, so the symbol travels and the
+    /// answer comes back as candidates to choose between.
+    #[test]
+    fn go_to_definition_asks_the_daemon_and_offers_the_answers() {
+        let mut app = app("let x = answer();\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        // Onto `answer`.
+        for _ in 0..9 {
+            app.handle_key(key(KeyCode::Right));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        let (_, symbol) = app.take_definition_request().expect("a lookup");
+        assert_eq!(symbol, "answer");
+
+        app.definitions_arrived(
+            symbol,
+            vec![
+                place("lib.rs", 1, "pub fn answer() -> u8 {"),
+                place("other.rs", 9, "fn answer() {}"),
+            ],
+        );
+        assert!(matches!(app.prompt(), Some(Prompt::Definitions { .. })));
+
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Enter));
+        let (_, path, line) = app.take_open_request().expect("an open");
+        assert_eq!((path.as_str(), line), ("other.rs", 9));
+    }
+
+    /// A caret on whitespace has no symbol, and a standalone editor has no
+    /// daemon to ask. Both say so rather than sending a request that cannot be
+    /// answered.
+    #[test]
+    fn go_to_definition_refuses_what_it_cannot_ask() {
+        let mut blank = app("   \n", false);
+        blank.set_integrated();
+        blank.resize(60, 10);
+        blank.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        assert_eq!(blank.status(), Some("no symbol under the caret"));
+        assert!(blank.take_definition_request().is_none());
+
+        let mut standalone = app("answer\n", false);
+        standalone.resize(60, 10);
+        standalone.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        assert_eq!(
+            standalone.status(),
+            Some("go to definition needs the daemon")
+        );
+    }
+
+    #[test]
+    fn a_symbol_with_no_declaration_says_so() {
+        let mut app = app("answer\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.definitions_arrived("answer".to_string(), Vec::new());
+        assert!(app.prompt().is_none());
+        assert_eq!(
+            app.status(),
+            Some("answer: not declared anywhere I can see")
+        );
     }
 }

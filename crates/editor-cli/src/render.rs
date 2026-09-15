@@ -344,6 +344,23 @@ fn status_text(app: &App) -> String {
             Prompt::ConfirmClose => {
                 "unsaved changes — (s)ave, (d)iscard, any other key cancels".to_string()
             }
+            Prompt::Definitions {
+                symbol,
+                places,
+                selected,
+            } => {
+                let at = selected + 1;
+                let count = places.len();
+                match places.get(*selected) {
+                    Some(place) => format!(
+                        "{symbol} {at}/{count}: {}:{}  {}   (Up/Down, Enter opens, Esc cancels)",
+                        place.path,
+                        place.line,
+                        place.text.trim()
+                    ),
+                    None => format!("{symbol}: {count} places"),
+                }
+            }
         };
     }
     if let Some(message) = app.status() {

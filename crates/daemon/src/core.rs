@@ -5503,6 +5503,76 @@ impl Daemon {
         )
     }
 
+    /// Where a symbol is declared, for the editor's go-to-definition.
+    ///
+    /// `git grep -w -F` through `fs-service`, which validates the symbol as an
+    /// identifier first: a name that arrives from a caret in a buffer must
+    /// never be able to become a regex (`SearchKind::Definition`). Candidates
+    /// and not a resolution — the ranking is a heuristic, so the editor offers
+    /// the list. Runs on the editor's own control thread, off the core lock,
+    /// which is only taken to read the workspace id.
+    pub(crate) fn editor_definitions(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        symbol: &str,
+    ) -> Vec<editor_control::WirePlace> {
+        let Some(workspace_id) = ({
+            let inner = self.lock();
+            inner.sessions.get(&session_id).map(|s| s.workspace_id)
+        }) else {
+            return Vec::new();
+        };
+        let Ok(root) = self.workspace_path(workspace_id) else {
+            return Vec::new();
+        };
+        let found = fs_service::search_files(
+            &root,
+            symbol,
+            fs_service::SearchKind::Definition,
+            editor_control::MAX_PLACES,
+        );
+        match found {
+            Ok(results) => results
+                .matches
+                .into_iter()
+                .take(editor_control::MAX_PLACES)
+                .map(|hit| editor_control::WirePlace {
+                    path: hit.path,
+                    line: hit.line,
+                    text: hit.text,
+                })
+                .collect(),
+            Err(error) => {
+                tracing::debug!(%session_id, %error, "definition search failed");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Open a second file for an editor that cannot open one itself.
+    ///
+    /// One buffer per process, so following a definition is a request. The
+    /// answer is an ordinary editor session in the same workspace, which the
+    /// GUI already opens on `EditorOpened` — this is the same path a click in
+    /// the file tree takes, not a second kind of editor.
+    pub(crate) fn editor_open_path(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        path: &str,
+        line: u32,
+    ) -> Result<(), ProtocolError> {
+        let workspace_id = {
+            let inner = self.lock();
+            inner
+                .sessions
+                .get(&session_id)
+                .map(|s| s.workspace_id)
+                .ok_or_else(|| ProtocolError::invalid_request("no such editor session"))?
+        };
+        self.create_editor_session(workspace_id, path, Some(line), false, false)
+            .map(|_| ())
+    }
+
     pub(crate) fn drop_editor_port(&self, session_id: SessionId) {
         self.lock().editors.remove(&session_id);
         self.clear_editor_conflict(session_id);
