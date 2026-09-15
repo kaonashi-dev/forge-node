@@ -416,6 +416,18 @@ impl Document {
             return Ok(ReplaceOutcome::Replaced(0));
         }
         let count = ranges.len();
+        let removed: usize = ranges.iter().map(|range| range.end - range.start).sum();
+        let size = replacement
+            .len()
+            .checked_mul(count)
+            .and_then(|inserted| (self.text.len() - removed).checked_add(inserted))
+            .unwrap_or(usize::MAX);
+        if size > MAX_DOCUMENT_BYTES {
+            return Err(EditError::TooLarge {
+                size,
+                limit: MAX_DOCUMENT_BYTES,
+            });
+        }
         let edits = ranges
             .into_iter()
             .map(|range| Edit::replace(range, replacement))

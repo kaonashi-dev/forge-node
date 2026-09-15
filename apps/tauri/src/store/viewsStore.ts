@@ -92,8 +92,22 @@ export function openDiff(): void {
   open({ kind: "diff" });
 }
 
-export function openEditorTerminal(session: string, path: string): void {
-  open({ kind: "editor-terminal", session, path });
+export function openEditorTerminal(
+  session: string,
+  path: string,
+  workspace = workbenchStore.workspace,
+): void {
+  if (!workspace) return;
+  setStore(
+    "byWorkspace",
+    workspace,
+    openView(store.byWorkspace[workspace] ?? emptyViews(), {
+      kind: "editor-terminal",
+      session,
+      path,
+    }),
+  );
+  if (workspace === workbenchStore.workspace) setMode("code");
 }
 
 /**

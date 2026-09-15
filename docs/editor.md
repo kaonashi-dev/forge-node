@@ -195,8 +195,17 @@ HTML context menu).
 
 - Regular-expression search is not implemented: it needs a dependency this
   workspace has not approved. Find is literal, with match-case and whole-word.
-- One buffer per process. No splits, no wrapping, no Vim profile. The mouse
-  places the caret, extends a selection and scrolls, but not more than that.
+- One buffer per process. No splits, no Vim profile. The mouse places the
+  caret, extends a selection and scrolls, but not more than that.
+- Long lines wrap under the daemon and scroll sideways standalone. Integrated,
+  the pane is a fixed width the person cannot widen, so a line too wide for the
+  text column continues onto the next row (with a blank gutter) rather than
+  running off the edge; the caret, a click and the wheel all follow the wrapped
+  rows. Standalone, where the terminal can be widened and code reads better
+  unwrapped, the view scrolls horizontally to follow the caret instead. The
+  scroll anchor is a whole line, so a single logical line taller than the
+  viewport cannot be scrolled through within itself — fine for prose, where a
+  line wraps to a few rows, and the case a future sub-row anchor would cover.
 - The save is optimistic, not exclusive: it compares the revision it loaded
   against the disk before writing and refuses once when they differ, which
   catches an agent that already wrote. It is not a compare-and-swap against a

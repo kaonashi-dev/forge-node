@@ -86,6 +86,8 @@ pub struct App {
     clipboard_escape: Option<String>,
     /// Save on a pause. The opener's preference; off standalone.
     autosave: bool,
+    autosave_suspended: bool,
+    close_after_save: bool,
     /// When the pause is up, if one is running. Cleared by the save it fires.
     autosave_at: Option<Instant>,
     /// Spans per line, rescanned when the document changes and never per row:
@@ -106,6 +108,12 @@ pub struct App {
     status: Option<String>,
     top: usize,
     left: usize,
+    /// Wrap long lines onto continuation rows instead of scrolling sideways.
+    /// On under the daemon, where the pane is a fixed width and the files are
+    /// as often prose as code; off standalone, where a terminal user can widen
+    /// the window and a code file reads better unwrapped. When on, `left` stays
+    /// 0 — there is nothing to scroll horizontally past.
+    wrap: bool,
     width: u16,
     height: u16,
     quit: bool,
@@ -134,6 +142,8 @@ impl App {
             marks: BTreeMap::new(),
             clipboard_escape: None,
             autosave: false,
+            autosave_suspended: false,
+            close_after_save: false,
             autosave_at: None,
             syntax: Syntax::default(),
             in_flight_save: None,
@@ -148,6 +158,7 @@ impl App {
             status: None,
             top: 0,
             left: 0,
+            wrap: false,
             width: 80,
             height: 24,
             quit: false,
@@ -181,6 +192,9 @@ impl App {
         self.quit
     }
 
+    /// The first visible line. Only the tests read it now that the renderer
+    /// walks rows through `row_line_sub`.
+    #[cfg(test)]
     pub fn top(&self) -> usize {
         self.top
     }
@@ -238,6 +252,8 @@ impl App {
         self.autosave = autosave;
         if !autosave {
             self.autosave_at = None;
+        } else {
+            self.arm_autosave();
         }
     }
 
@@ -258,14 +274,18 @@ impl App {
             return;
         }
         self.autosave_at = None;
-        if self.document.is_dirty() && !self.document.is_read_only() {
+        if !self.autosave_suspended && self.document.is_dirty() && !self.document.is_read_only() {
             self.save();
         }
     }
 
     /// Restart the pause, because the document just changed.
     fn arm_autosave(&mut self) {
-        if self.autosave && self.document.is_dirty() && !self.document.is_read_only() {
+        if self.autosave
+            && !self.autosave_suspended
+            && self.document.is_dirty()
+            && !self.document.is_read_only()
+        {
             self.autosave_at = Some(Instant::now() + AUTOSAVE_PAUSE);
         }
     }
@@ -319,6 +339,111 @@ impl App {
         (self.width as usize).saturating_sub(self.gutter_width())
     }
 
+    /// Whether long lines wrap onto continuation rows.
+    pub fn wrap(&self) -> bool {
+        self.wrap
+    }
+
+    /// How many screen rows a 0-based logical line occupies.
+    ///
+    /// One unless wrapping is on and the line is wider than the text column, in
+    /// which case it is split into as many rows as it takes. Always at least
+    /// one, so an empty line is still a row.
+    pub fn line_rows(&self, line: usize) -> usize {
+        if !self.wrap {
+            return 1;
+        }
+        let text = self.document.text();
+        if line >= text.line_count() {
+            return 1;
+        }
+        let width = self.content_width().max(1);
+        let cells = metrics::display_column(text.line(line), text.line(line).len());
+        cells.div_ceil(width).max(1)
+    }
+
+    /// The `(line, sub)` shown at screen `row`, or `None` past the last line.
+    ///
+    /// `sub` is the wrapped segment within the line — 0 is its first row. Walked
+    /// from `top`, which always sits at a line's first segment, so the walk is
+    /// bounded by the viewport height.
+    pub fn row_line_sub(&self, row: usize) -> Option<(usize, usize)> {
+        let count = self.document.text().line_count();
+        if !self.wrap {
+            let line = self.top + row;
+            return (line < count).then_some((line, 0));
+        }
+        let mut remaining = row;
+        let mut line = self.top;
+        while line < count {
+            let rows = self.line_rows(line);
+            if remaining < rows {
+                return Some((line, remaining));
+            }
+            remaining -= rows;
+            line += 1;
+        }
+        None
+    }
+
+    /// The screen row a line's segment lands on, or `None` when it is scrolled
+    /// out of the viewport.
+    fn line_sub_to_row(&self, target: usize, sub: usize) -> Option<usize> {
+        if target < self.top {
+            return None;
+        }
+        let height = self.content_height();
+        if !self.wrap {
+            let row = target - self.top;
+            return (row < height).then_some(row);
+        }
+        let mut row = 0;
+        for line in self.top..target {
+            row += self.line_rows(line);
+            if row >= height {
+                return None;
+            }
+        }
+        let row = row + sub;
+        (row < height).then_some(row)
+    }
+
+    /// The last logical line with any row on screen, for a wheel scroll's caret
+    /// clamp.
+    fn last_visible_line(&self) -> usize {
+        let count = self.document.text().line_count().saturating_sub(1);
+        if !self.wrap {
+            return (self.top + self.content_height().saturating_sub(1)).min(count);
+        }
+        let height = self.content_height().max(1);
+        let mut rows = 0;
+        let mut line = self.top;
+        while line < count {
+            rows += self.line_rows(line);
+            if rows >= height {
+                break;
+            }
+            line += 1;
+        }
+        line.min(count)
+    }
+
+    /// The caret's cell on screen — `(row, column)` — or `None` when it is
+    /// scrolled out of view. The column includes the gutter.
+    pub fn caret_screen(&self) -> Option<(usize, usize)> {
+        let (line1, column) = self.caret_position();
+        let line = line1 - 1;
+        if self.wrap {
+            let width = self.content_width().max(1);
+            let row = self.line_sub_to_row(line, column / width)?;
+            Some((row, self.gutter_width() + column % width))
+        } else {
+            let row = line.checked_sub(self.top)?;
+            (row < self.content_height()).then_some(())?;
+            Some((row, self.gutter_width() + column.saturating_sub(self.left)))
+        }
+    }
+
     /// Caret as a 1-based line and its display column.
     pub fn caret_position(&self) -> (usize, usize) {
         let position = self.document.caret_line_col();
@@ -364,6 +489,10 @@ impl App {
     /// write is conditioned on.
     pub fn set_integrated(&mut self) {
         self.integrated = true;
+        // The pane is a fixed width the person cannot widen, so a long line has
+        // to wrap or it is unreachable without a horizontal scroll the GUI does
+        // not offer.
+        self.wrap = true;
     }
 
     /// Take the save request the control loop has to send, if there is one.
@@ -389,6 +518,11 @@ impl App {
             return;
         }
         self.document.confirm_save(&snapshot, revision);
+        self.autosave_suspended = false;
+        if std::mem::take(&mut self.close_after_save) && !self.document.is_dirty() {
+            self.quit = true;
+        }
+        self.arm_autosave();
         self.status = Some(if self.document.is_dirty() {
             "saved — newer keystrokes are still unsaved".to_string()
         } else {
@@ -405,6 +539,9 @@ impl App {
             }
             _ => {}
         }
+        self.autosave_suspended = true;
+        self.autosave_at = None;
+        self.close_after_save = false;
         self.status = Some(reason.to_string());
     }
 
@@ -466,6 +603,9 @@ impl App {
         // A save that was in flight described text that is no longer here.
         self.in_flight_save = None;
         self.outbox = None;
+        self.close_after_save = false;
+        self.autosave_suspended = false;
+        self.autosave_at = None;
         self.rescan();
         self.goto_line(line);
         self.damage_all = true;
@@ -527,7 +667,13 @@ impl App {
     pub fn take_frame(&mut self) -> Frame {
         let height = self.content_height();
         let viewport = (self.top, self.left, height, self.width);
-        let full = self.damage_all || self.painted != Some(viewport);
+        // Wrapping breaks the row-per-line map a partial frame relies on: an
+        // edit that changes one line's width reflows every row beneath it, so
+        // any damage repaints the whole viewport. Standalone keeps the cheap
+        // per-row path.
+        let full = self.damage_all
+            || self.painted != Some(viewport)
+            || (self.wrap && !self.damaged.is_empty());
         let clear = self
             .painted
             .is_none_or(|(_, _, rows, cols)| rows != height || cols != self.width);
@@ -742,6 +888,7 @@ impl App {
             Prompt::ConfirmClose => match key.code {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
                     self.save();
+                    self.close_after_save = self.in_flight_save.is_some();
                     if !self.document.is_dirty() {
                         self.quit = true;
                     }
@@ -894,6 +1041,8 @@ impl App {
                 self.status =
                     Some("the file changed on disk — press Ctrl-S again to overwrite".to_string());
                 self.revision = Some(current);
+                self.autosave_suspended = true;
+                self.autosave_at = None;
                 return;
             }
         }
@@ -902,6 +1051,7 @@ impl App {
             Ok(revision) => {
                 self.document.confirm_save(&snapshot, revision.clone());
                 self.revision = Some(revision);
+                self.autosave_suspended = false;
                 self.status = Some(if self.document.is_dirty() {
                     "saved — newer keystrokes are still unsaved".to_string()
                 } else {
@@ -935,8 +1085,14 @@ impl App {
             return;
         }
         let text = self.document.text();
-        let line = (self.top + row).min(text.line_count().saturating_sub(1));
-        let display = (col as usize).saturating_sub(self.gutter_width()) + self.left;
+        // A wrapped row names a segment of its line, so the click's display
+        // column is measured from that segment's start, not the line's; an
+        // empty row past the end lands on the last line.
+        let (line, base) = match self.row_line_sub(row) {
+            Some((line, sub)) => (line, sub * self.content_width().max(1)),
+            None => (text.line_count().saturating_sub(1), 0),
+        };
+        let display = (col as usize).saturating_sub(self.gutter_width()) + base + self.left;
         let line_text = text.line(line);
         let column = display.min(metrics::display_column(line_text, line_text.len()));
         let offset = text.line_start(line) + metrics::byte_column_for_display(line_text, column);
@@ -973,10 +1129,8 @@ impl App {
         self.top = new_top;
         self.damage_all = true;
 
-        let height = self.content_height().max(1);
-        let last_row = self.top + height - 1;
         let caret_line = self.document.caret_line_col().line;
-        let target_line = caret_line.clamp(self.top, last_row);
+        let target_line = caret_line.clamp(self.top, self.last_visible_line());
         if target_line == caret_line {
             return;
         }
@@ -993,6 +1147,26 @@ impl App {
     fn ensure_visible(&mut self) {
         let height = self.content_height().max(1);
         let position = self.document.caret_line_col();
+
+        if self.wrap {
+            // No sideways scroll to keep in step; the line wraps instead.
+            self.left = 0;
+            if position.line < self.top {
+                self.top = position.line;
+            }
+            let width = self.content_width().max(1);
+            let column =
+                metrics::display_column(self.document.text().line(position.line), position.column);
+            let sub = column / width;
+            // Advance the top line until the caret's wrapped row fits. Bounded:
+            // each step drops the caret at least one row nearer, and it stops
+            // once `top` reaches the caret's own line.
+            while self.line_sub_to_row(position.line, sub).is_none() && self.top < position.line {
+                self.top += 1;
+            }
+            return;
+        }
+
         if position.line < self.top {
             self.top = position.line;
         }
@@ -1596,8 +1770,51 @@ mod tests {
         assert_eq!(app.caret_position(), (3, 2));
     }
 
-    /// An integrated save never touches the disk from here: it leaves a request
-    /// for the control loop and waits for the daemon's revision.
+    #[test]
+    fn refusal_suspends_autosave_until_an_explicit_save_succeeds() {
+        let mut app = app("hello", false);
+        app.set_integrated();
+        app.set_autosave(true);
+        app.handle_key(key(KeyCode::Char('!')));
+        app.save();
+        let (id, _, _) = app.take_save_request().unwrap();
+        app.save_refused(id, "conflict");
+        app.handle_key(key(KeyCode::Char('?')));
+        app.set_autosave(false);
+        app.set_autosave(true);
+        assert!(app.autosave_deadline().is_none());
+        app.autosave_if_due();
+        assert!(app.take_save_request().is_none());
+        app.request_save();
+        let (id, _, _) = app.take_save_request().unwrap();
+        app.save_confirmed(id, "new".into());
+        app.handle_key(key(KeyCode::Char('.')));
+        assert!(app.autosave_deadline().is_some());
+    }
+
+    #[test]
+    fn asynchronous_save_and_close_waits_and_preserves_newer_edits_or_refusals() {
+        for outcome in 0..3 {
+            let mut app = app("hello", false);
+            app.set_integrated();
+            app.handle_key(key(KeyCode::Char('!')));
+            app.request_close();
+            app.handle_key(key(KeyCode::Char('s')));
+            assert!(!app.should_quit());
+            let (id, _, _) = app.take_save_request().unwrap();
+            if outcome == 1 {
+                app.handle_key(key(KeyCode::Char('?')));
+            }
+            if outcome == 2 {
+                app.save_refused(id, "conflict");
+            } else {
+                app.save_confirmed(id, "new".into());
+            }
+            assert_eq!(app.should_quit(), outcome == 0);
+            assert!(!app.close_after_save);
+        }
+    }
+
     #[test]
     fn an_integrated_save_asks_the_daemon_instead_of_writing() {
         let mut app = app("hello", false);
@@ -1801,6 +2018,84 @@ mod tests {
             KeyModifiers::NONE,
         ));
         assert_eq!(app.document().caret(), before);
+    }
+
+    /// Integrated mode wraps a line wider than the text column onto as many
+    /// rows as it takes, and the rows below it shift down.
+    #[test]
+    fn wrapping_spreads_a_long_line_across_rows() {
+        // First line is 25 cells wide; at content_width 10 that is three rows.
+        let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
+        app.set_integrated();
+        app.resize(13, 10);
+        assert!(app.wrap());
+        assert_eq!(app.content_width(), 10);
+        assert_eq!(app.line_rows(0), 3);
+        assert_eq!(app.line_rows(1), 1);
+        assert_eq!(app.row_line_sub(0), Some((0, 0)));
+        assert_eq!(app.row_line_sub(1), Some((0, 1)));
+        assert_eq!(app.row_line_sub(2), Some((0, 2)));
+        assert_eq!(app.row_line_sub(3), Some((1, 0)));
+    }
+
+    /// The caret at the end of a wrapped line shows on the continuation row it
+    /// falls on, not off the right edge of the first.
+    #[test]
+    fn the_caret_follows_a_wrapped_line_onto_its_continuation_row() {
+        let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
+        app.set_integrated();
+        app.resize(13, 10);
+        app.handle_key(key(KeyCode::End));
+        assert_eq!(app.caret_position(), (1, 25));
+        // Column 25 is the sixth cell of the third segment (25 / 10, 25 % 10),
+        // three cells of gutter in.
+        assert_eq!(app.caret_screen(), Some((2, 8)));
+    }
+
+    /// A click on a continuation row measures its column from that segment's
+    /// start, so it lands deep in the logical line.
+    #[test]
+    fn a_click_on_a_continuation_row_lands_past_the_wrap() {
+        let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
+        app.set_integrated();
+        app.resize(13, 10);
+        let gutter = app.gutter_width() as u16;
+        // Third row (segment 2), three cells in: 2 * 10 + 3.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter + 3,
+            2,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.document().caret(), 23);
+    }
+
+    /// Moving onto a line below a screenful of wrapped rows scrolls the top down
+    /// by whole lines until the caret fits.
+    #[test]
+    fn wrapping_scrolls_to_keep_the_caret_visible() {
+        let line = "0123456789abcdefghijklmno\n"; // 25 cells → three rows each
+        let mut app = app(&line.repeat(4), false);
+        app.set_integrated();
+        app.resize(13, 5);
+        assert_eq!(app.content_height(), 5);
+        app.goto_line(4);
+        assert_eq!(
+            app.top(),
+            2,
+            "the top line advanced to bring line 4 on screen"
+        );
+        assert!(matches!(app.caret_screen(), Some((row, _)) if row < 5));
+    }
+
+    /// Standalone never wraps: a long line is one row and scrolls sideways.
+    #[test]
+    fn standalone_does_not_wrap() {
+        let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
+        app.resize(13, 10);
+        assert!(!app.wrap());
+        assert_eq!(app.line_rows(0), 1);
+        assert_eq!(app.row_line_sub(1), Some((1, 0)));
     }
 
     /// Shift-click keeps the anchor and moves the head, like a shifted arrow.

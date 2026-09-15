@@ -13,7 +13,9 @@ import { asSessionTranscript } from "./externalTranscript";
 import { applySessionChanges, failSessionChanges } from "../store/sessionChangesStore";
 import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import { refreshDiff } from "../workbench/decorations";
-import { previewImageReader } from "../workbench/api";
+import { createEditorAutosaveSync } from "./editorAutosave";
+import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
+import { previewImageReader, setEditorAutosave } from "../workbench/api";
 import { dataUrl } from "../workbench/previewImages";
 import { sameListing } from "../workbench/fileInvalidation";
 import { mergeDirectory } from "../workbench/mergeDirectory";
@@ -64,8 +66,11 @@ import {
   setSharesError,
 } from "../store/sharesStore";
 
+const syncEditorAutosave = createEditorAutosaveSync(setEditorAutosave);
+
 export function applyConnected(payload: ConnectedPayload): void {
   applyShellSnapshot(payload.store);
+  syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false), true);
   adoptPendingLaunches();
   reconnectFileWatches();
   // A workbench command queued across a drop is answered by nothing, and its
@@ -428,6 +433,7 @@ export async function bindRuntimeEvents(): Promise<UnlistenFn> {
     }),
     listen<StatePayload>("runtime:state", (event) => {
       applyShellSnapshot(event.payload.store);
+      syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false));
       adoptPendingLaunches();
       setRuntimeStore("activeSession", event.payload.active_session);
       setRuntimeStore("activeTerminal", event.payload.active_terminal);
@@ -459,7 +465,7 @@ export async function bindRuntimeEvents(): Promise<UnlistenFn> {
       workspace: string;
       path: string;
     }>("runtime:editor_opened", (event) => {
-      openEditorTerminal(event.payload.session_id, event.payload.path);
+      openEditorTerminal(event.payload.session_id, event.payload.path, event.payload.workspace);
     }),
     listen<{ reason: string }>("runtime:notice", (event) => {
       setRuntimeStore("notice", event.payload.reason);

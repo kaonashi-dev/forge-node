@@ -68,6 +68,10 @@ pub enum WorkbenchCommand {
     OverwriteEditorBuffer {
         session: SessionId,
     },
+    SetEditorAutosave {
+        session: SessionId,
+        autosave: bool,
+    },
     /// Remove a discovered run's transcript from disk.
     DeleteExternalSession {
         session: String,
@@ -366,6 +370,11 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
         }
         WorkbenchCommand::OverwriteEditorBuffer { session } => {
             if let Err(error) = client.overwrite_editor_buffer(session) {
+                fail_session(app, "workbench:editor_conflict_failed", session, &error);
+            }
+        }
+        WorkbenchCommand::SetEditorAutosave { session, autosave } => {
+            if let Err(error) = client.set_editor_autosave(session, autosave) {
                 fail_session(app, "workbench:editor_conflict_failed", session, &error);
             }
         }

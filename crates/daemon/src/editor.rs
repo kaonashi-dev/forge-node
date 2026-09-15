@@ -35,6 +35,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bounded command queue toward one editor. Full means busy, never a drop.
 pub const COMMAND_QUEUE: usize = 8;
 
+// At most 32 encoded bytes per mark leaves room for framing and message fields.
+pub const MAX_GIT_MARKS: usize = 65_536;
+
 /// A request the daemon wants the editor to run, in order.
 #[derive(Clone, Debug)]
 pub enum Outgoing {
@@ -107,17 +110,68 @@ impl Outgoing {
 #[derive(Clone, Debug)]
 pub struct CommandPort {
     tx: flume::Sender<Outgoing>,
+    reload: Arc<Mutex<Option<PendingReload>>>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingReload {
+    request_id: u64,
+    revision: Option<String>,
 }
 
 impl CommandPort {
     #[must_use]
     pub fn new(tx: flume::Sender<Outgoing>) -> Self {
-        Self { tx }
+        Self {
+            tx,
+            reload: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// Enqueue, or say busy. Never drops a `request_id` on the floor.
-    pub fn try_send(&self, command: Outgoing) -> Result<(), Busy> {
+    pub fn try_send(&self, mut command: Outgoing) -> Result<(), Busy> {
+        if let Outgoing::GitMarks { marks, .. } = &mut command {
+            if marks.len() > MAX_GIT_MARKS {
+                tracing::warn!(
+                    count = marks.len(),
+                    "editor gutter marks skipped: over budget"
+                );
+                marks.clear();
+            }
+        }
+        if let Outgoing::Reload {
+            request_id,
+            revision,
+            ..
+        } = &command
+        {
+            let mut pending = self.reload.lock().unwrap_or_else(|e| e.into_inner());
+            if pending.is_some() {
+                return Err(Busy);
+            }
+            *pending = Some(PendingReload {
+                request_id: *request_id,
+                revision: revision.clone(),
+            });
+            if self.tx.try_send(command).is_err() {
+                *pending = None;
+                return Err(Busy);
+            }
+            return Ok(());
+        }
         self.tx.try_send(command).map_err(|_| Busy)
+    }
+
+    pub fn finish_reload(&self, request_id: u64) -> Option<Option<String>> {
+        let mut pending = self.reload.lock().unwrap_or_else(|e| e.into_inner());
+        if pending
+            .as_ref()
+            .is_some_and(|reload| reload.request_id == request_id)
+        {
+            pending.take().map(|reload| reload.revision)
+        } else {
+            None
+        }
     }
 }
 
@@ -336,8 +390,15 @@ fn serve(
             .name("forge-editor-cmd".to_owned())
             .spawn(move || {
                 while let Ok(command) = commands.recv() {
-                    if send(&writer, &command.into_message()).is_err() {
-                        break;
+                    let optional = matches!(command, Outgoing::GitMarks { .. });
+                    match send(&writer, &command.into_message()) {
+                        Ok(()) => {}
+                        Err(ControlError::Encode(_) | ControlError::FrameTooLarge { .. })
+                            if optional =>
+                        {
+                            tracing::warn!("editor gutter marks skipped: encoding failed");
+                        }
+                        Err(_) => break,
                     }
                 }
             })
@@ -357,6 +418,7 @@ fn serve(
 
     let mut last_broadcast: Option<Instant> = None;
     let mut pending: Option<EditorStateWire> = None;
+    let mut decoder = editor_control::FrameReader::default();
     loop {
         let wait = pending.as_ref().map(|_| {
             let since = last_broadcast.unwrap_or_else(Instant::now);
@@ -364,8 +426,8 @@ fn serve(
                 .checked_sub(since.elapsed())
                 .unwrap_or(Duration::ZERO)
         });
-        let _ = stream.set_read_timeout(wait);
-        match read_frame::<EditorMessage>(&mut stream) {
+        let _ = stream.set_read_timeout(wait.map(|wait| wait.max(Duration::from_millis(1))));
+        match decoder.read::<EditorMessage>(&mut stream) {
             Ok(EditorMessage::State { state, .. }) => {
                 pending = Some(state);
                 if due(last_broadcast) {
@@ -438,6 +500,19 @@ fn serve(
                 if send(&writer, &answer).is_err() {
                     return;
                 }
+            }
+            Ok(EditorMessage::Applied { request_id, .. }) => {
+                if let Some(loaded) = daemon.finish_editor_reload(session_id, request_id) {
+                    if let Some(loaded) = loaded {
+                        revision = loaded;
+                    }
+                    conflict = false;
+                    pending = None;
+                    daemon.clear_editor_conflict(session_id);
+                }
+            }
+            Ok(EditorMessage::Refused { request_id, .. }) => {
+                daemon.finish_editor_reload(session_id, request_id);
             }
             Ok(other) => {
                 tracing::debug!(%session_id, message = ?other, "editor message");
@@ -727,6 +802,54 @@ mod tests {
             started.elapsed() < Duration::from_secs(2),
             "the accept deadline must not hang"
         );
+    }
+
+    #[test]
+    fn reload_acknowledgements_only_commit_the_matching_revision() {
+        let (tx, rx) = flume::bounded(2);
+        let port = CommandPort::new(tx);
+        let reload = |id| Outgoing::Reload {
+            request_id: id,
+            text: "disk".into(),
+            revision: Some("new".into()),
+        };
+        port.try_send(reload(10)).unwrap();
+        assert_eq!(port.try_send(reload(11)), Err(Busy));
+        assert_eq!(port.finish_reload(9), None);
+        assert_eq!(port.finish_reload(10), Some(Some("new".into())));
+        rx.recv().unwrap();
+        port.try_send(reload(11)).unwrap();
+    }
+
+    #[test]
+    fn oversized_marks_leave_the_control_queue_usable() {
+        let (tx, rx) = flume::bounded(2);
+        let port = CommandPort::new(tx);
+        let mark = editor_control::WireMark {
+            line: u32::MAX,
+            kind: editor_control::WireMarkKind::Modified,
+        };
+        let maximum = Outgoing::GitMarks {
+            request_id: u64::MAX,
+            marks: vec![mark; MAX_GIT_MARKS],
+        };
+        assert!(editor_control::encode(&maximum.into_message()).is_ok());
+        port.try_send(Outgoing::GitMarks {
+            request_id: 0,
+            marks: vec![mark; 200_000],
+        })
+        .unwrap();
+        port.try_send(Outgoing::Reveal {
+            request_id: 1,
+            line: 10,
+            column: None,
+        })
+        .unwrap();
+        assert!(matches!(rx.recv().unwrap(), Outgoing::GitMarks { marks, .. } if marks.is_empty()));
+        assert!(matches!(
+            rx.recv().unwrap(),
+            Outgoing::Reveal { request_id: 1, .. }
+        ));
     }
 
     #[test]

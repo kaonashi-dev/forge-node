@@ -503,6 +503,7 @@ mod integrated {
             command.arg("--control");
             command.arg(&socket);
             command.arg(display_path);
+            command.env_remove("NO_COLOR");
             command.env("TERM", "xterm-256color");
             command.env("FORGE_SESSION_ID", SESSION_ID);
             let child = ChildGuard(pair.slave.spawn_command(command).expect("spawn editor"));

@@ -142,6 +142,20 @@ fn a_transaction_over_the_budget_leaves_the_document_untouched() {
 }
 
 #[test]
+fn oversized_replace_all_is_refused_before_cloning_per_match() {
+    let original = "x".repeat(200_000);
+    let mut document = Document::from_string(original.clone(), false);
+    let result = document.replace_all(&Query::literal("x"), &"y".repeat(64 * 1024));
+    assert!(matches!(
+        result,
+        Err(editor_core::EditError::TooLarge { .. })
+    ));
+    assert_eq!(document.as_str(), original);
+    assert!(!document.is_dirty());
+    assert!(!document.can_undo());
+}
+
+#[test]
 fn replace_all_is_atomic_across_the_whole_document() {
     let mut document = Document::from_string("ab\nab\nab\n".to_string(), false);
     execute(

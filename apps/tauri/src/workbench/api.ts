@@ -68,6 +68,10 @@ export async function overwriteEditorBuffer(session: string): Promise<void> {
   await send({ type: "overwrite_editor_buffer", session });
 }
 
+export async function setEditorAutosave(session: string, autosave: boolean): Promise<void> {
+  await send({ type: "set_editor_autosave", session, autosave });
+}
+
 /** The changes split's read: one session, no patches (§16.7). */
 export async function loadSessionChanges(session: string): Promise<void> {
   await send({ type: "load_session_changes", session });

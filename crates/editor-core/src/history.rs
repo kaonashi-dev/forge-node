@@ -54,6 +54,7 @@ impl History {
         state_after: u64,
         resume_at: usize,
     ) {
+        self.retained -= self.redo.iter().map(|entry| entry.retained).sum::<usize>();
         self.redo.clear();
         let retained = undo.retained_bytes() + redo.retained_bytes();
 
@@ -298,6 +299,28 @@ mod tests {
         assert!(history.can_redo());
         history.record(inverse(0, 1), typing(0, "z"), 0, 2, 1);
         assert!(!history.can_redo());
+        assert_eq!(history.stats().retained_bytes, 2);
+    }
+
+    #[test]
+    fn discarded_redo_bytes_do_not_evict_the_surviving_undo_branch() {
+        let mut history = History::default();
+        history.record(inverse(0, 1), typing(0, "a"), 0, 1, 1);
+        let big = "x".repeat(64 * 1024);
+        for index in 0..80 {
+            history.seal();
+            history.record(
+                inverse(1, big.len()),
+                typing(1, &big),
+                1,
+                index + 2,
+                big.len() + 1,
+            );
+            assert_eq!(history.stats().undo_entries, 2);
+            assert_eq!(history.stats().dropped, 0);
+            assert_eq!(history.stats().retained_bytes, 2 + 2 * big.len());
+            assert!(history.pop_undo().is_some());
+        }
     }
 
     #[test]

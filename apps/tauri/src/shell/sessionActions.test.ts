@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyShellSnapshot, emptySnapshot } from "../store/forgeStore";
-import { centerMode, currentViews, showSession } from "../store/viewsStore";
+import {
+  centerMode,
+  currentViews,
+  showSession,
+  openEditorTerminal,
+  viewsStore,
+} from "../store/viewsStore";
 import { focusWorkspace, workbenchStore } from "../store/workbenchStore";
 import { sessionFixture } from "../runtime/sessions.fixture";
 import type { EditorState, Workspace } from "../runtime/types";
@@ -46,9 +52,23 @@ describe("focusSession", () => {
       ],
     });
 
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke } });
     focusSession("e1");
 
     expect(workbenchStore.workspace).toBe("dev-main");
+    expect(invoke).toHaveBeenCalledWith(
+      "send_runtime_command",
+      {
+        command: {
+          type: "reopen_editor",
+          session_id: "e1",
+        },
+      },
+      undefined,
+    );
+    expect(centerMode()).toBe("session");
+    openEditorTerminal("e1", "src/main.rs", "dev-main");
     expect(centerMode()).toBe("code");
     expect({ ...currentViews().active }).toEqual({
       kind: "editor-terminal",
@@ -56,6 +76,21 @@ describe("focusSession", () => {
       path: "src/main.rs",
     });
 
+    focusWorkspace(null);
+    vi.unstubAllGlobals();
+  });
+  it("parks a late editor response in its workspace without raising it", () => {
+    focusWorkspace("other-workspace");
+    showSession();
+    openEditorTerminal("late-editor", "original.rs", "original-workspace");
+    expect(centerMode()).toBe("session");
+    expect(workbenchStore.workspace).toBe("other-workspace");
+    expect(viewsStore.byWorkspace["original-workspace"]?.active).toEqual({
+      kind: "editor-terminal",
+      session: "late-editor",
+      path: "original.rs",
+    });
+    expect(currentViews().active).not.toMatchObject({ session: "late-editor" });
     focusWorkspace(null);
   });
 });

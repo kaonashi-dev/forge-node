@@ -246,6 +246,9 @@ pub enum RuntimeCommand {
         #[serde(default)]
         autosave: bool,
     },
+    ReopenEditor {
+        session_id: SessionId,
+    },
     InputEditor {
         session_id: SessionId,
         key: KeyPress,

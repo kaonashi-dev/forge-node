@@ -20,6 +20,14 @@ import { revealInTree } from "../store/viewsStore";
 import { showView } from "../store/sidebarStore";
 import { openDiff } from "../store/viewsStore";
 import { editorCellsChannel } from "../runtime/bus";
+import { runtimeStore } from "../store/runtimeStore";
+import {
+  EDITOR_FONT_SIZE_KEY,
+  EDITOR_FONT_SIZE_RANGE,
+  EDITOR_LINE_HEIGHT_KEY,
+  EDITOR_LINE_HEIGHT_RANGE,
+  readScale,
+} from "../shell/layout";
 import { forgeStore } from "../store/forgeStore";
 import { metrics as tokens } from "../theme/tokens";
 import { measureCell, gridSize, type CellMetrics } from "./metrics";
@@ -28,6 +36,7 @@ import { TerminalRenderer } from "./renderer";
 import { Viewport } from "./viewport";
 import { clipboardPaste } from "./clipboard";
 import { CursorBlink, prefersReducedMotion } from "./cursorBlink";
+import { editorKeyForMeta } from "./editorChords";
 import type { CellsPayload } from "./types";
 import { LatencyProbe } from "./latency";
 
@@ -178,18 +187,37 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     schedule();
   }
 
-  /*
-   * Follow the sub-tab. Switching files keeps this one pane mounted and only
-   * swaps `props.session`, so the frame stream has to be re-asked for: the new
-   * session reaches no terminal on a client-side tab switch, and an idle editor
-   * sends nothing on its own. Runs on mount too, which is harmless — the open
-   * already sent a full frame, and a second is idempotent.
-   */
   createEffect(() => {
     const id = props.session;
+    if (runtimeStore.connection.kind !== "connected") return;
+    window.clearTimeout(resizeTimer);
+    lastSize = { cols: 0, rows: 0 };
     repaintAll = true;
     dirty.clear();
     void repaintEditor(id).catch(() => undefined);
+    measurePane();
+  });
+
+  createEffect(() => {
+    const size = readScale(
+      EDITOR_FONT_SIZE_KEY,
+      EDITOR_FONT_SIZE_RANGE.min,
+      EDITOR_FONT_SIZE_RANGE.max,
+      tokens.monoSize,
+    );
+    const spacing = readScale(
+      EDITOR_LINE_HEIGHT_KEY,
+      EDITOR_LINE_HEIGHT_RANGE.min,
+      EDITOR_LINE_HEIGHT_RANGE.max,
+      tokens.monoLineHeight,
+    );
+    cell = measureCell(size, tokens.mono, spacing);
+    if (renderer) {
+      renderer.metrics = cell;
+      renderer.invalidateFonts();
+    }
+    repaintAll = true;
+    measurePane();
   });
 
   function measurePane(): void {
@@ -202,14 +230,11 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     if (size.cols !== lastSize.cols || size.rows !== lastSize.rows) {
       lastSize = size;
       window.clearTimeout(resizeTimer);
+      const id = props.session;
       resizeTimer = window.setTimeout(() => {
-        void resizeEditor(
-          props.session,
-          size.cols,
-          size.rows,
-          Math.round(width),
-          Math.round(height),
-        ).catch(() => undefined);
+        void resizeEditor(id, size.cols, size.rows, Math.round(width), Math.round(height)).catch(
+          () => undefined,
+        );
       }, RESIZE_DEBOUNCE_MS);
     }
     schedule();
@@ -240,7 +265,15 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     // Typing restarts the phase *shown*, so a burst of keys never spends half
     // its frames with the caret hidden under the character about to be placed.
     blink.wake();
-    if (event.metaKey) return;
+    if (event.metaKey) {
+      const chord = editorKeyForMeta(event);
+      // ⌘V and every chord the editor does not own keep their default: the
+      // platform's `paste` event is what carries the clipboard into the pane.
+      if (!chord) return;
+      event.preventDefault();
+      void sendEditorKey(props.session, chord, probe.send()).catch(() => undefined);
+      return;
+    }
     event.preventDefault();
     void sendEditorKey(
       props.session,

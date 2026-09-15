@@ -102,6 +102,10 @@ export async function openTerminalEditor(
   await send({ type: "open_editor", workspace, path, line: line ?? null, autosave });
 }
 
+export async function reopenTerminalEditor(sessionId: string): Promise<void> {
+  await send({ type: "reopen_editor", session_id: sessionId });
+}
+
 export async function sendEditorKey(session: string, key: KeyPress, id: number): Promise<void> {
   await send({ type: "input_editor", session_id: session, key, id });
 }

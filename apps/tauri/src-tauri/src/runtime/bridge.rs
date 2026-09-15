@@ -1530,6 +1530,30 @@ fn run_command(
                 autosave,
             },
         ),
+        RuntimeCommand::ReopenEditor { session_id } => {
+            let terminal_id = attach_editor(client, store, editors, session_id)?;
+            let session = store
+                .sessions
+                .iter()
+                .find(|session| session.id == session_id)
+                .ok_or_else(|| CommandError::refused("the editor session is no longer running"))?;
+            let path = session
+                .editor
+                .as_ref()
+                .map(|state| state.path.clone())
+                .ok_or_else(|| CommandError::refused("the editor buffer has not opened yet"))?;
+            Ok(Effect {
+                editor_opened: Some(EditorOpened {
+                    session_id,
+                    terminal_id,
+                    workspace: session.workspace_id,
+                    path,
+                }),
+                editor_damage: Some((terminal_id, Damage::Full)),
+                shell: true,
+                ..Effect::nothing()
+            })
+        }
         RuntimeCommand::InputEditor {
             session_id,
             key,
@@ -1598,14 +1622,10 @@ fn run_command(
         RuntimeCommand::ResizeEditor { session_id, size } => {
             resize_editor(client, store, editors, session_id, size)
         }
-        // Repaint from the store's grid, no daemon round trip: the editor's
-        // attachment is live, so the viewport is already here to re-send.
         RuntimeCommand::RepaintEditor { session_id } => {
-            let Some(open) = editors.get(&session_id) else {
-                return Ok(Effect::nothing());
-            };
+            let terminal = attach_editor(client, store, editors, session_id)?;
             Ok(Effect {
-                editor_damage: Some((open.terminal, Damage::Full)),
+                editor_damage: Some((terminal, Damage::Full)),
                 ..Effect::nothing()
             })
         }
@@ -1763,6 +1783,34 @@ fn detach_preview(client: &Client, preview: &mut Option<Preview>, main: Terminal
     }
 }
 
+fn attach_editor(
+    client: &Client,
+    store: &mut Store,
+    editors: &mut HashMap<SessionId, EditorAttachment>,
+    session_id: SessionId,
+) -> Result<TerminalId, CommandError> {
+    if let Some(open) = editors.get(&session_id) {
+        return Ok(open.terminal);
+    }
+    let terminal = store
+        .sessions
+        .iter()
+        .find(|session| {
+            session.id == session_id
+                && session.kind == domain::SessionKind::Editor
+                && !session.state.is_terminal()
+        })
+        .and_then(|session| session.terminal_id)
+        .ok_or_else(|| CommandError::refused("the editor session is no longer running"))?;
+    let size = DEFAULT_SIZE;
+    let snapshot = client
+        .attach_terminal(terminal, size)
+        .map_err(CommandError::from_client)?;
+    store.attach_terminal(terminal, &snapshot);
+    editors.insert(session_id, EditorAttachment { terminal, size });
+    Ok(terminal)
+}
+
 fn open_editor(
     client: &Client,
     store: &mut Store,
@@ -1780,20 +1828,27 @@ fn open_editor(
     // already has it: a rival editor would be a second process, a second PTY
     // and a second draft of one file. The same rule `editorReveal` follows for
     // the DOM editor, one layer down.
-    if let Some(open) = live_editor_for(store, editors, workspace, &path) {
+    if let Some((session_id, terminal_id)) = live_editor_for(store, editors, workspace, &path) {
+        // A closed view detached the terminal, not the editor: the process
+        // still holds the draft. Re-attach rather than open the disk state
+        // under it, which would strand the draft in a process nothing shows.
+        attach_editor(client, store, editors, session_id)?;
+        client
+            .set_editor_autosave(session_id, autosave)
+            .map_err(CommandError::from_client)?;
         if let Some(line) = line {
             client
-                .reveal_in_editor_session(open.0, line, None)
+                .reveal_in_editor_session(session_id, line, None)
                 .map_err(CommandError::from_client)?;
         }
         return Ok(Effect {
             editor_opened: Some(EditorOpened {
-                session_id: open.0,
-                terminal_id: open.1,
+                session_id,
+                terminal_id,
                 workspace,
                 path,
             }),
-            editor_damage: Some((open.1, Damage::Full)),
+            editor_damage: Some((terminal_id, Damage::Full)),
             shell: true,
             ..Effect::nothing()
         });
@@ -1843,8 +1898,9 @@ struct EditorOpen {
 /// The editor session already holding `path` in `workspace`, if one is live.
 ///
 /// Matched on the daemon's own `EditorState.path` — what the editor reported
-/// through its control channel — and only for a session this window is still
-/// attached to, because a detached one has no terminal to paint.
+/// through its control channel — and never on this window's attachment map
+/// alone: a closed view detaches without stopping the editor, and the draft it
+/// still holds is exactly what reopening the file must show.
 fn live_editor_for(
     store: &Store,
     editors: &HashMap<SessionId, EditorAttachment>,
@@ -1866,9 +1922,11 @@ fn live_editor_for(
                 .is_some_and(|state| state.path == path)
         })
         .and_then(|session| {
-            editors
+            let terminal = editors
                 .get(&session.id)
-                .map(|open| (session.id, open.terminal))
+                .map(|open| open.terminal)
+                .or(session.terminal_id)?;
+            Some((session.id, terminal))
         })
 }
 
@@ -3266,5 +3324,50 @@ mod tests {
         let store = Store::new();
         let pending = HashSet::from([vanished]);
         assert_eq!(due_closes(&pending, &store), vec![vanished]);
+    }
+
+    /// Closing the Code view detaches the terminal, not the editor: the
+    /// process keeps running with its draft. Reopening the same path must find
+    /// that session — by the daemon's `editor.path`, not by this window's
+    /// attachments — so the pane re-attaches instead of opening the disk state
+    /// under the draft.
+    #[test]
+    fn a_detached_editor_session_is_still_the_one_holding_the_path() {
+        let workspace = WorkspaceId::new();
+        let terminal = TerminalId::new();
+        let mut session = sample_session(domain::SessionState::Running);
+        session.workspace_id = workspace;
+        session.kind = domain::SessionKind::Editor;
+        session.terminal_id = Some(terminal);
+        session.editor = Some(domain::EditorState {
+            path: "src/main.rs".to_string(),
+            ..domain::EditorState::default()
+        });
+
+        let mut store = Store::new();
+        let _ = store.apply_event(&DaemonEvent::SessionCreated(session.clone()));
+        let detached = HashMap::new();
+        assert_eq!(
+            live_editor_for(&store, &detached, workspace, "src/main.rs"),
+            Some((session.id, terminal)),
+            "a detached session still names the terminal to re-attach"
+        );
+        assert_eq!(
+            live_editor_for(&store, &detached, workspace, "src/other.rs"),
+            None,
+            "a different path is a different file"
+        );
+
+        session.state = domain::SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        };
+        let mut dead = Store::new();
+        let _ = dead.apply_event(&DaemonEvent::SessionCreated(session));
+        assert_eq!(
+            live_editor_for(&dead, &detached, workspace, "src/main.rs"),
+            None,
+            "an exited editor is history, not a session to re-attach"
+        );
     }
 }

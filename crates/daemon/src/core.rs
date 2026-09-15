@@ -5483,6 +5483,10 @@ impl Daemon {
         };
         let root = self.workspace_path(workspace_id).ok()?;
         let lines = u32::try_from(text.lines().count()).unwrap_or(u32::MAX);
+        if lines as usize > crate::editor::MAX_GIT_MARKS {
+            tracing::warn!(%session_id, lines, "editor gutter marks skipped: over budget");
+            return Some(Vec::new());
+        }
         let marks = git_service::file_marks(&root, relative, lines).ok()?;
         Some(
             marks
@@ -5510,6 +5514,7 @@ impl Daemon {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(session_id, conflict);
+        self.publish_editor_conflict(session_id, true);
     }
 
     /// Forget it: the save went through, or the session is gone.
@@ -5518,6 +5523,37 @@ impl Daemon {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&session_id);
+        self.publish_editor_conflict(session_id, false);
+    }
+
+    fn publish_editor_conflict(&self, session_id: SessionId, conflict: bool) {
+        let session = {
+            let mut inner = self.lock();
+            let Some(session) = inner.sessions.get_mut(&session_id) else {
+                return;
+            };
+            let Some(state) = session.editor.as_mut() else {
+                return;
+            };
+            if state.conflict == conflict {
+                return;
+            }
+            state.conflict = conflict;
+            session.clone()
+        };
+        self.registry
+            .broadcast_domain(DaemonEvent::SessionUpdated(session));
+    }
+
+    pub(crate) fn finish_editor_reload(
+        &self,
+        session_id: SessionId,
+        request_id: u64,
+    ) -> Option<Option<String>> {
+        self.lock()
+            .editors
+            .get(&session_id)?
+            .finish_reload(request_id)
     }
 
     /// Answer `GetEditorConflict` with the two sides, if a save is refused.
@@ -9981,6 +10017,176 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_millis(750),
             "a blocking accept must not sit on the core lock"
+        );
+    }
+
+    #[test]
+    fn editor_conflict_is_published_and_reload_updates_the_save_revision() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (daemon, _worktrees, _) = editor_daemon(tmp.path(), FakePtyBackend::empty());
+        let ws = checkout_with_file(&daemon, tmp.path(), "a.rs", b"hello\n");
+        let Response::SessionCreated { session_id, .. } = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "a.rs".into(),
+                line: None,
+                autosave: false,
+                read_only: false,
+            })
+            .expect("create")
+        else {
+            panic!("expected SessionCreated");
+        };
+        let client = ClientId::new();
+        let rx = daemon.registry.register(client);
+        let socket = crate::editor::control_socket_path(session_id).expect("socket path");
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        use editor_control::{read_frame, write_frame, DaemonMessage as ControlOut, EditorMessage};
+        write_frame(
+            &mut stream,
+            &EditorMessage::Hello {
+                version: editor_control::CONTROL_VERSION,
+                session_id: session_id.to_string(),
+                pid: 1,
+            },
+        )
+        .unwrap();
+        match read_frame::<ControlOut>(&mut stream).unwrap() {
+            ControlOut::Welcome { .. } => {}
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+        let open = match read_frame::<ControlOut>(&mut stream).unwrap() {
+            ControlOut::Open {
+                request_id, text, ..
+            } => {
+                assert_eq!(text, "hello\n");
+                request_id
+            }
+            other => panic!("expected Open, got {other:?}"),
+        };
+        write_frame(
+            &mut stream,
+            &EditorMessage::Opened {
+                request_id: open,
+                document_version: 1,
+            },
+        )
+        .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let wire = editor_control::EditorStateWire {
+            path: "a.rs".into(),
+            line: 1,
+            column: 1,
+            dirty: true,
+            read_only: false,
+            document_version: 1,
+        };
+        fn next_reply(stream: &mut std::os::unix::net::UnixStream) -> ControlOut {
+            loop {
+                let message = read_frame::<ControlOut>(stream).unwrap();
+                if !matches!(message, ControlOut::GitMarks { .. }) {
+                    return message;
+                }
+            }
+        }
+        let wait_state = |conflict: bool| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let message = rx
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .unwrap();
+                if let DaemonMessage::Event(DaemonEvent::SessionUpdated(session)) = message {
+                    if session.id == session_id
+                        && session
+                            .editor
+                            .as_ref()
+                            .is_some_and(|state| state.conflict == conflict)
+                    {
+                        return;
+                    }
+                }
+            }
+        };
+        write_frame(
+            &mut stream,
+            &EditorMessage::State {
+                request_id: None,
+                state: wire,
+            },
+        )
+        .unwrap();
+        wait_state(false);
+        let file = tmp.path().join("repo/a.rs");
+        std::fs::write(&file, "external").unwrap();
+        write_frame(
+            &mut stream,
+            &EditorMessage::SaveRequest {
+                request_id: 1000,
+                text: "draft".into(),
+                document_version: 2,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            next_reply(&mut stream),
+            ControlOut::SaveRefused {
+                request_id: 1000,
+                ..
+            }
+        ));
+        wait_state(true);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "external");
+        assert!(daemon.editor_conflict(session_id).is_ok());
+
+        std::fs::write(&file, "third writer").unwrap();
+        daemon.reload_editor_buffer(session_id).unwrap();
+        let request_id = match next_reply(&mut stream) {
+            ControlOut::Reload {
+                request_id,
+                text,
+                revision,
+            } => {
+                assert_eq!(text, "third writer");
+                assert_eq!(revision, Some(fs_service::revision_of(text.as_bytes())));
+                request_id
+            }
+            other => panic!("expected Reload, got {other:?}"),
+        };
+        assert!(
+            daemon.editor_conflict(session_id).is_ok(),
+            "keep conflict until Applied"
+        );
+        write_frame(
+            &mut stream,
+            &EditorMessage::Applied {
+                request_id,
+                document_version: 1,
+            },
+        )
+        .unwrap();
+        wait_state(false);
+        assert!(daemon.editor_conflict(session_id).is_err());
+        write_frame(
+            &mut stream,
+            &EditorMessage::SaveRequest {
+                request_id: 1001,
+                text: "edited after reload".into(),
+                document_version: 2,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            next_reply(&mut stream),
+            ControlOut::Saved {
+                request_id: 1001,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "edited after reload"
         );
     }
 

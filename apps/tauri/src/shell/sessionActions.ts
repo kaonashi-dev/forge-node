@@ -14,9 +14,9 @@ import {
   runtimeStore,
 } from "../store/runtimeStore";
 import { setSplitOpen, splitOpen } from "../store/sessionChangesStore";
-import { openEditorTerminal, openReview, showSession } from "../store/viewsStore";
+import { openReview, showSession } from "../store/viewsStore";
 import { focusWorkspace, workbenchStore } from "../store/workbenchStore";
-import { newAgent, newShell, selectSession } from "../runtime/api";
+import { newAgent, newShell, selectSession, reopenTerminalEditor } from "../runtime/api";
 import {
   draftWithJuva,
   loadExternalTranscript,
@@ -25,7 +25,6 @@ import {
 } from "../workbench/api";
 import { sessionTabLabel } from "../runtime/attention";
 import { focusTerminal } from "../terminal/focus";
-import { sessionTitle } from "../runtime/types";
 import type { ExternalAgentSession, Session, Workspace } from "../runtime/types";
 import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "./layout";
 import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
@@ -84,7 +83,7 @@ export function focusSession(session: string): void {
   // opens the file there rather than raising the main terminal (§16.7).
   if (row?.kind === "Editor") {
     if (row.workspace_id) focusWorkspace(row.workspace_id);
-    openEditorTerminal(row.id, row.editor?.path ?? sessionTitle(row));
+    void reopenTerminalEditor(row.id).catch(() => undefined);
     return;
   }
   showSession();

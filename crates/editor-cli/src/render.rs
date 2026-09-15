@@ -46,39 +46,53 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         cursor::MoveTo(0, row as u16),
         terminal::Clear(terminal::ClearType::CurrentLine)
     )?;
-    let line = app.top() + row;
     let text = app.document().text();
-    if line >= text.line_count() {
+    // A wrapped line spreads across rows; the row names which line and which of
+    // its segments. Past the last line the row is blank.
+    let Some((line, sub)) = app.row_line_sub(row) else {
         return Ok(());
-    }
-    queue!(
-        out,
-        style::SetForegroundColor(style::Color::DarkGrey),
-        style::Print(format!(
-            "{number:>width$}",
-            number = line + 1,
-            width = app.number_width()
-        ))
-    )?;
-    // The mark column, then the space the text starts after. Both are always
-    // printed: a gutter that widened the first time git answered would shift
-    // every line of the file sideways.
-    match app.mark_at(line + 1) {
-        Some(kind) => queue!(
+    };
+    if sub == 0 {
+        queue!(
             out,
-            style::SetForegroundColor(mark_colour(kind)),
-            style::Print(mark_glyph(kind)),
-        )?,
-        None => queue!(out, style::Print(" "))?,
+            style::SetForegroundColor(style::Color::DarkGrey),
+            style::Print(format!(
+                "{number:>width$}",
+                number = line + 1,
+                width = app.number_width()
+            ))
+        )?;
+        // The mark column, then the space the text starts after. Both are always
+        // printed: a gutter that widened the first time git answered would shift
+        // every line of the file sideways.
+        match app.mark_at(line + 1) {
+            Some(kind) => queue!(
+                out,
+                style::SetForegroundColor(mark_colour(kind)),
+                style::Print(mark_glyph(kind)),
+            )?,
+            None => queue!(out, style::Print(" "))?,
+        }
+        queue!(
+            out,
+            style::SetForegroundColor(style::Color::Reset),
+            style::Print(" ")
+        )?;
+    } else {
+        // A continuation row has no number and no mark, but keeps the width so
+        // the wrapped text stays under the line it belongs to.
+        queue!(out, style::Print(" ".repeat(app.gutter_width())))?;
     }
-    queue!(
-        out,
-        style::SetForegroundColor(style::Color::Reset),
-        style::Print(" ")
-    )?;
+    // The window starts at this segment's cell offset when wrapping, or at the
+    // horizontal scroll when not.
+    let base = if app.wrap() {
+        sub * app.content_width()
+    } else {
+        app.left()
+    };
     let parts = view::window_parts(
         text.line(line),
-        app.left(),
+        base,
         app.content_width(),
         app.selection_in_line(line),
         app.syntax_line(line),
@@ -243,11 +257,10 @@ fn place_caret(app: &App, out: &mut impl Write, height: usize) -> io::Result<()>
         // the status row would fight it in the Replace prompt's second field.
         return queue!(out, cursor::Hide);
     }
-    let (line, column) = app.caret_position();
-    let row = (line - 1).checked_sub(app.top());
-    let cell = app.gutter_width() + column.saturating_sub(app.left());
-    match row {
-        Some(row) if row < height && cell < app.width() as usize => {
+    // `caret_screen` already accounts for wrapping and the horizontal scroll,
+    // and returns `None` when the caret is off screen.
+    match app.caret_screen() {
+        Some((row, cell)) if row < height && cell < app.width() as usize => {
             queue!(out, cursor::MoveTo(cell as u16, row as u16), cursor::Show)
         }
         _ => queue!(out, cursor::Hide),

@@ -90,6 +90,44 @@ pub fn read_frame<M: DeserializeOwned>(reader: &mut impl Read) -> Result<M, Cont
     Ok(rmp_serde::from_slice(&payload)?)
 }
 
+/// Retains partial headers and payloads when a read deadline expires.
+#[derive(Default)]
+pub struct FrameReader {
+    header: [u8; 4],
+    header_read: usize,
+    payload: Vec<u8>,
+    payload_read: usize,
+}
+
+impl FrameReader {
+    pub fn read<M: DeserializeOwned>(&mut self, reader: &mut impl Read) -> Result<M, ControlError> {
+        read_remaining(reader, &mut self.header, &mut self.header_read)?;
+        let len = u32::from_be_bytes(self.header) as usize;
+        if len > MAX_CONTROL_FRAME {
+            return Err(ControlError::FrameTooLarge { len });
+        }
+        self.payload.resize(len, 0);
+        read_remaining(reader, &mut self.payload, &mut self.payload_read)?;
+        let message = rmp_serde::from_slice(&self.payload)?;
+        self.header_read = 0;
+        self.payload_read = 0;
+        self.payload.clear();
+        Ok(message)
+    }
+}
+
+fn read_remaining(reader: &mut impl Read, bytes: &mut [u8], read: &mut usize) -> io::Result<()> {
+    while *read < bytes.len() {
+        match reader.read(&mut bytes[*read..]) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(count) => *read += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +148,40 @@ mod tests {
             self.read = true;
             buf[..4].copy_from_slice(&self.header);
             Ok(4)
+        }
+    }
+
+    #[test]
+    fn a_deadline_preserves_every_partial_header_and_payload() {
+        struct UntilDeadline<'a>(&'a [u8]);
+        impl Read for UntilDeadline<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if self.0.is_empty() {
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                self.0.read(out)
+            }
+        }
+        let message = EditorMessage::SaveRequest {
+            request_id: 42,
+            text: "draft".repeat(100),
+            document_version: 3,
+        };
+        let frame = encode(&message).unwrap();
+        for split in 1..frame.len() {
+            let mut decoder = FrameReader::default();
+            assert!(
+                matches!(decoder.read::<EditorMessage>(&mut UntilDeadline(&frame[..split])),
+                Err(ControlError::Io(error)) if error.kind() == io::ErrorKind::TimedOut)
+            );
+            let mut tail = &frame[split..];
+            assert_eq!(decoder.read::<EditorMessage>(&mut tail).unwrap(), message);
+            assert_eq!(
+                decoder
+                    .read::<EditorMessage>(&mut frame.as_slice())
+                    .unwrap(),
+                message
+            );
         }
     }
 
