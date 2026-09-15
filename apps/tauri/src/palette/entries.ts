@@ -9,7 +9,7 @@ import { ACTIONS, type ActionId } from "../actions/actions";
 import { boundChord } from "../actions/bindings";
 import { actionIsBound } from "../actions/dispatch";
 import { describeChord } from "../actions/keys";
-import { filter } from "./fuzzy";
+import { filter, filterPaths } from "./fuzzy";
 import type { ShellSnapshot } from "../runtime/types";
 import {
   sessionIsActive,
@@ -289,11 +289,19 @@ export function rank(entries: PaletteEntry[], query: string): PaletteEntry[] {
   for (const group of groups) {
     if (seen.has(group)) continue;
     seen.add(group);
-    const matched = filter(
-      entries.filter((entry) => entry.group === group),
-      query,
-    );
-    ranked.push(...(group === FILES ? matched.slice(0, FILE_LIMIT) : matched));
+    const inGroup = entries.filter((entry) => entry.group === group);
+    if (group === FILES) {
+      // Paths are ranked by their own rules — basename over directory — which
+      // is what stops eight files called `SKILL.md` from being ordered by the
+      // folder above them. See `scorePath`.
+      const matched = filterPaths(
+        inGroup.map((entry) => ({ path: entry.search ?? entry.label, entry })),
+        query,
+      );
+      ranked.push(...matched.slice(0, FILE_LIMIT).map((item) => item.entry));
+      continue;
+    }
+    ranked.push(...filter(inGroup, query));
   }
   return ranked;
 }

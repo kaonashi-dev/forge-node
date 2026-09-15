@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { workbenchStore } from "./workbenchStore";
+import { noteFileOpened } from "../workbench/recentFiles";
 import {
   closeOthers,
   closeToRight,
@@ -90,6 +91,11 @@ export function openDiff(): void {
 }
 
 export function openEditor(path: string): void {
+  // Opening is the whole of what "recent" means here — the tree carries no
+  // mtime, so this is where the palette's opening list comes from. Hooked at
+  // the one choke point rather than at each caller, so the file tree, a
+  // definition jump and a diff all count the same as the palette itself.
+  noteFileOpened(workbenchStore.workspace, path);
   open({ kind: "editor", path });
 }
 

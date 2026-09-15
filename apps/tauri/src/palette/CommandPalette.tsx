@@ -17,9 +17,10 @@ import {
   type PaletteScope,
 } from "./entries";
 import { workbenchStore } from "../store/workbenchStore";
+import { initialFiles, recentPaths } from "../workbench/recentFiles";
 
 /** Rows shown before the list scrolls. */
-const VISIBLE_ROWS = 9;
+const VISIBLE_ROWS = 12;
 
 export type CommandPaletteProps = {
   scope: PaletteScope;
@@ -43,20 +44,57 @@ export type CommandPaletteProps = {
 export function CommandPalette(props: CommandPaletteProps) {
   const [query, setQuery] = createSignal("");
 
-  /**
-   * Files are built separately from everything else because they come from a
-   * different store and only exist once a workspace's tree has been read —
-   * but they are the same kind of row, so once built they go through the same
-   * ranking, and a scope that admits both lists both.
+  /*
+   * Files are built separately from everything else: they come from another
+   * store, exist only once a checkout's tree has been read, and — unlike every
+   * other group — are too many to build before they are wanted. Once built
+   * they are the same kind of row and go through the same ranking.
    */
-  const files = createMemo(() =>
-    admits(props.scope, FILES)
-      ? fileEntries(
-          workbenchStore.workspace,
-          workbenchStore.tree?.entries.map((entry) => entry.path) ?? null,
-        )
+
+  /**
+   * Whether the repository listing has been needed yet.
+   *
+   * The palette opens on the recent files, so the thousands of paths under
+   * them are not built until somebody types — and then built once, because
+   * this is what `allFiles` depends on rather than the query itself. A memo
+   * keyed on the query would rebuild every entry object on every keystroke.
+   */
+  const [searching, setSearching] = createSignal(false);
+
+  const treePaths = () => workbenchStore.tree?.entries.map((entry) => entry.path) ?? null;
+
+  /** Every file in the checkout. Not built until the first character. */
+  const allFiles = createMemo(() =>
+    searching() && admits(props.scope, FILES)
+      ? fileEntries(workbenchStore.workspace, treePaths())
       : [],
   );
+
+  /**
+   * What the file list opens on: recently opened here, then whatever has
+   * uncommitted changes.
+   *
+   * The tree is `git ls-files` and carries no mtime, so this is as close to
+   * "recently edited" as the shell can get without asking the daemon a new
+   * question — and in a checkout an agent has been writing to, the changed
+   * files are the better half of the answer anyway.
+   */
+  const recentFiles = createMemo(() => {
+    if (!admits(props.scope, FILES)) return [];
+    const paths = treePaths();
+    if (!paths) return [];
+    const workspace = workbenchStore.workspace;
+    return fileEntries(
+      workspace,
+      initialFiles(
+        recentPaths(workspace),
+        workbenchStore.diff?.files.map((file) => file.path) ?? [],
+        new Set(paths),
+      ),
+    );
+  });
+
+  const files = () => (query().trim() === "" ? recentFiles() : allFiles());
 
   const entries = createMemo(() => {
     const base =
@@ -93,11 +131,14 @@ export function CommandPalette(props: CommandPaletteProps) {
   });
 
   return (
-    <Dialog title="Command palette" hideTitle flush onDismiss={props.onDismiss}>
+    <Dialog title="Command palette" hideTitle flush size="lg" onDismiss={props.onDismiss}>
       <Combobox
         options={options()}
         query={query()}
-        onQuery={setQuery}
+        onQuery={(next) => {
+          if (next.trim() !== "") setSearching(true);
+          setQuery(next);
+        }}
         onChoose={props.onChoose}
         label={scopePlaceholder(props.scope)}
         placeholder={scopePlaceholder(props.scope)}
