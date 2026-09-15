@@ -291,10 +291,15 @@ HTML context menu).
   unmatched brace at the top of a file costs a bounded walk on a caret move
   rather than the whole buffer. A brace inside a string or a comment is text:
   the grammar already said which bytes those are.
-- **The three decorations do not collide.** The selection owns reverse video, a
-  search hit is underlined, a bracket is underlined and bold, and the caret's
-  line number is bold in the default foreground rather than the gutter grey.
-  None of them picks a colour, so none of them fights the terminal's theme.
+- **The decorations do not collide, and none of them picks a colour.** The
+  selection owns reverse video, a search hit is underlined, a bracket is
+  underlined and bold, an extra caret is one reversed cell, and the caret's line
+  number is bold in the default foreground rather than the gutter grey. The
+  caret's *row* gets no background wash: the ANSI 16 resolve through the
+  theme (see § Language), but none of the sixteen is "the background, slightly
+  lifted", and a hard-coded RGB would fight every scheme but the one it was
+  picked against. The active-line gutter is the theme-safe half of
+  `highlightActiveLine`, and it is the half this surface can have.
 
 ## Limits, and what replaces them
 
