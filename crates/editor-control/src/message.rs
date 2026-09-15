@@ -179,6 +179,16 @@ pub struct EditorStateWire {
     pub read_only: bool,
     /// Monotonic document version from `editor-core`.
     pub document_version: u64,
+    /// 1-based first line on screen. The TUI owns the viewport; this is what
+    /// lets the GUI draw a scrollbar thumb without a second copy of the text.
+    #[serde(default)]
+    pub top_line: u32,
+    /// Logical lines the viewport currently shows, at least 1.
+    #[serde(default)]
+    pub visible_lines: u32,
+    /// Lines in the buffer, so a thumb has a denominator.
+    #[serde(default)]
+    pub total_lines: u32,
 }
 
 /// What one line's gutter mark says happened to it.

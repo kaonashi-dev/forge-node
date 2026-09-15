@@ -707,6 +707,9 @@ fn flush(
             dirty: state.dirty,
             read_only: state.read_only,
             document_version: state.document_version,
+            top_line: state.top_line,
+            visible_lines: state.visible_lines,
+            total_lines: state.total_lines,
             conflict,
         },
     );

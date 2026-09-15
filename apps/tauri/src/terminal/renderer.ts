@@ -55,6 +55,16 @@ export class TerminalRenderer {
   link: LinkSpan[] = [];
   /** Held steady while unfocused or under reduced motion; see `cursorBlink`. */
   cursorVisible = true;
+  /**
+   * Whether `scrollOffset` describes what is on the canvas.
+   *
+   * True for a shell, where the wheel walks the terminal's own scrollback and
+   * the cursor's line is genuinely off screen. False for the editor, where the
+   * wheel is reported to the TUI and *it* moves the viewport: the grid always
+   * shows the live screen, so hiding the caret on a non-zero offset would hide
+   * it for a scroll that already brought it back.
+   */
+  followsScrollback = true;
 
   /** P4: one `#rrggbb` per colour rather than one per run per frame. */
   private colors: ColorCache;
@@ -229,13 +239,15 @@ export class TerminalRenderer {
   /**
    * Paint the cursor over the row it sits on.
    *
-   * Nothing is drawn while the viewport is scrolled: the cursor belongs to a
-   * line that is no longer on screen, and one painted at its old coordinates
-   * would sit on unrelated text.
+   * Nothing is drawn while the terminal's own scrollback is scrolled: the
+   * cursor belongs to a line that is no longer on screen, and one painted at
+   * its old coordinates would sit on unrelated text. An editor pane opts out
+   * through `followsScrollback` — there the TUI owns the viewport.
    */
   private paintCursor(context: CanvasRenderingContext2D, viewport: Viewport, row: number): void {
     const cursor = viewport.cursor;
-    if (!this.focused || viewport.scrollOffset !== 0 || !this.cursorVisible) return;
+    if (!this.focused || !this.cursorVisible) return;
+    if (this.followsScrollback && viewport.scrollOffset !== 0) return;
     if (!cursor.visible || cursor.shape === "hidden" || cursor.line !== row) return;
 
     const cell = viewport.cellAt(row, cursor.col);

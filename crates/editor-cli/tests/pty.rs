@@ -216,6 +216,14 @@ impl Harness {
         self.seen.clear();
     }
 
+    /// Whether the raw stream carried a byte sequence — escapes included, which
+    /// `expect` cannot see once it has gone through the lossy conversion.
+    fn saw_raw(&self, needle: &str) -> bool {
+        self.seen
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
     fn on_disk(&self) -> String {
         fs::read_to_string(&self.path).expect("read back")
     }
@@ -329,6 +337,33 @@ fn a_crlf_file_keeps_its_terminators_through_an_edit_and_a_save() {
 fn opening_with_a_line_number_starts_there() {
     let mut editor = Harness::start("one\ntwo\nthree\n", &["+3"]);
     editor.expect("3:1");
+}
+
+/// `CSI 2J` between two frames is the flicker: a client reading the delta
+/// while the rows are still being written paints a blank screen. Only a grid
+/// that changed width may send it, and neither a scroll nor a keystroke does.
+#[test]
+fn neither_a_scroll_nor_a_keystroke_blanks_the_screen() {
+    let text: String = (0..200)
+        .map(|n| format!("line {n}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let mut editor = Harness::start(&text, &[]);
+    editor.expect("line 0");
+    // The opening frame owns the alternate screen and is allowed its clear.
+    editor.forget();
+
+    // SGR wheel-down at the top-left cell, the way a terminal reports it.
+    editor.send(b"\x1b[<65;1;1M");
+    editor.expect("line 11");
+    editor.send(b"X");
+    editor.expect("Xline");
+
+    assert!(
+        !editor.saw_raw("\x1b[2J"),
+        "a scroll or a keystroke cleared the screen; stream was:\n{:?}",
+        String::from_utf8_lossy(&editor.seen)
+    );
 }
 
 // ---- integrated mode (feature 19) ------------------------------------------

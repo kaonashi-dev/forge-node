@@ -10082,6 +10082,7 @@ mod tests {
             dirty: true,
             read_only: false,
             document_version: 1,
+            ..Default::default()
         };
         fn next_reply(stream: &mut std::os::unix::net::UnixStream) -> ControlOut {
             loop {
@@ -10256,6 +10257,7 @@ mod tests {
             dirty: false,
             read_only: true,
             document_version: 1,
+            ..Default::default()
         };
         for line in 1..=20 {
             let mut state = wire.clone();

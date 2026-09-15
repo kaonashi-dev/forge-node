@@ -242,6 +242,10 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
 
   onMount(() => {
     renderer = new TerminalRenderer(canvas, cell, readPalette());
+    // The wheel is reported to the TUI, which moves its own viewport: the grid
+    // always shows the live screen, so the caret must not be hidden for a
+    // scrollback offset that never changes here.
+    renderer.followsScrollback = false;
     measurePane();
     const unsubscribe = editorCellsChannel.subscribe(onFrame);
     const observer = new ResizeObserver(() => measurePane());
@@ -439,6 +443,21 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
         }}
       >
         <canvas ref={canvas} />
+        {/* The editor owns its viewport; this only reports where it is. The
+            wheel still goes to the TUI, so the thumb is not a handle. */}
+        <Show when={chrome().scroll}>
+          {(scroll) => (
+            <div class="editor-terminal-scrollbar" aria-hidden="true">
+              <div
+                class="editor-terminal-thumb"
+                style={{
+                  top: `${scroll().top * 100}%`,
+                  height: `${Math.max(scroll().size * 100, 4)}%`,
+                }}
+              />
+            </div>
+          )}
+        </Show>
         <Show when={menuAt()}>
           {(at) => (
             <ContextMenu

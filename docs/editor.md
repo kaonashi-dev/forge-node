@@ -247,7 +247,12 @@ clipboard, where `Ctrl-C` still fills an internal register, so a copy does not
 leave the editor (the pane's own menu pastes from the system clipboard, and a
 mouse selection copies through the terminal's existing path); the change
 *details* panel, where the gutter has the marks but not the before/after rows;
-and the overview ruler. `forge-editor` now ships in the bundle
+and the overview ruler. The pane does draw a scrollbar thumb: `EditorState`
+carries `top_line` / `visible_lines` / `total_lines`, so the GUI reports where
+the editor's viewport is without keeping a second copy of the text. It is a
+read-out and not a handle — the wheel still goes to the TUI, which owns the
+viewport, and the pane's renderer opts out of hiding the caret for a scrollback
+offset that the editor never moves. `forge-editor` now ships in the bundle
 (`scripts/package-macos`, `scripts/package-linux`), so `[editor] executable`
 falling back to a `PATH` lookup resolves in a packaged install and not only in
 a dev checkout.

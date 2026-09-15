@@ -39,6 +39,9 @@ describe("generated fixtures", () => {
       dirty: false,
       read_only: true,
       document_version: 1,
+      top_line: 1,
+      visible_lines: 30,
+      total_lines: 120,
       conflict: false,
     });
 

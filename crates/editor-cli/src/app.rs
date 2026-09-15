@@ -107,6 +107,10 @@ pub struct App {
     help: bool,
     status: Option<String>,
     top: usize,
+    /// Wrap segment of `top` the first row shows. Always 0 without wrap, and
+    /// non-zero only for a logical line taller than the viewport — without it
+    /// the tail of such a line is unreachable.
+    top_sub: usize,
     left: usize,
     /// Wrap long lines onto continuation rows instead of scrolling sideways.
     /// On under the daemon, where the pane is a fixed width and the files are
@@ -119,8 +123,24 @@ pub struct App {
     quit: bool,
     damaged: BTreeSet<usize>,
     damage_all: bool,
-    /// Viewport the last frame was painted for; a change invalidates everything.
-    painted: Option<(usize, usize, usize, u16)>,
+    /// Shape the last frame was painted for; a change invalidates everything.
+    painted: Option<Painted>,
+}
+
+/// What the last frame was painted against.
+///
+/// The row heights are the half that a wrapped buffer needs: an edit that
+/// changes how many rows a line takes reflows every row under it, and comparing
+/// against what is already on screen is the only way to tell that from an edit
+/// that just changed some characters.
+struct Painted {
+    top: usize,
+    top_sub: usize,
+    left: usize,
+    height: usize,
+    width: u16,
+    /// Screen rows each visible line occupied, from `top`. Empty without wrap.
+    rows_per_line: Vec<usize>,
 }
 
 impl App {
@@ -157,6 +177,7 @@ impl App {
             help: false,
             status: None,
             top: 0,
+            top_sub: 0,
             left: 0,
             wrap: false,
             width: 80,
@@ -197,6 +218,11 @@ impl App {
     #[cfg(test)]
     pub fn top(&self) -> usize {
         self.top
+    }
+
+    #[cfg(test)]
+    pub fn top_sub(&self) -> usize {
+        self.top_sub
     }
 
     pub fn left(&self) -> usize {
@@ -375,13 +401,17 @@ impl App {
         }
         let mut remaining = row;
         let mut line = self.top;
+        // The anchor line may start part-way down: `top_sub` is the segment the
+        // first row shows, so that line contributes only the rows below it.
+        let mut skip = self.top_sub;
         while line < count {
-            let rows = self.line_rows(line);
+            let rows = self.line_rows(line).saturating_sub(skip);
             if remaining < rows {
-                return Some((line, remaining));
+                return Some((line, skip + remaining));
             }
             remaining -= rows;
             line += 1;
+            skip = 0;
         }
         None
     }
@@ -397,14 +427,19 @@ impl App {
             let row = target - self.top;
             return (row < height).then_some(row);
         }
+        if target == self.top && sub < self.top_sub {
+            return None;
+        }
         let mut row = 0;
+        let mut skip = self.top_sub;
         for line in self.top..target {
-            row += self.line_rows(line);
+            row += self.line_rows(line).saturating_sub(skip);
+            skip = 0;
             if row >= height {
                 return None;
             }
         }
-        let row = row + sub;
+        let row = row + sub - skip;
         (row < height).then_some(row)
     }
 
@@ -418,14 +453,36 @@ impl App {
         let height = self.content_height().max(1);
         let mut rows = 0;
         let mut line = self.top;
+        let mut skip = self.top_sub;
         while line < count {
-            rows += self.line_rows(line);
+            rows += self.line_rows(line).saturating_sub(skip);
+            skip = 0;
             if rows >= height {
                 break;
             }
             line += 1;
         }
         line.min(count)
+    }
+
+    /// Screen rows each visible line occupies, from `top`, clipped to `height`.
+    ///
+    /// The first entry is the anchor line's rows *below* `top_sub`, so the
+    /// vector reads as what is on screen rather than what the lines are worth.
+    fn visible_line_rows(&self, height: usize) -> Vec<usize> {
+        let count = self.document.text().line_count();
+        let mut out = Vec::new();
+        let mut rows = 0;
+        let mut line = self.top;
+        let mut skip = self.top_sub;
+        while line < count && rows < height {
+            let taken = self.line_rows(line).saturating_sub(skip);
+            out.push(taken);
+            rows += taken;
+            line += 1;
+            skip = 0;
+        }
+        out
     }
 
     /// The caret's cell on screen — `(row, column)` — or `None` when it is
@@ -575,6 +632,7 @@ impl App {
     /// the next state reports back.
     pub fn wire_state(&self) -> EditorStateWire {
         let (line, column) = self.caret_position();
+        let visible = self.last_visible_line() + 1 - self.top;
         EditorStateWire {
             path: self.path.to_string_lossy().into_owned(),
             line: u32::try_from(line).unwrap_or(u32::MAX),
@@ -582,6 +640,9 @@ impl App {
             dirty: self.document.is_dirty(),
             read_only: self.document.is_read_only(),
             document_version: self.document.version().0,
+            top_line: u32::try_from(self.top + 1).unwrap_or(u32::MAX),
+            visible_lines: u32::try_from(visible.max(1)).unwrap_or(u32::MAX),
+            total_lines: u32::try_from(self.document.text().line_count()).unwrap_or(u32::MAX),
         }
     }
 
@@ -651,6 +712,7 @@ impl App {
             .document
             .apply(transaction)
             .map_err(|error| error.to_string())?;
+        self.rescan_edited(applied);
         self.damage_all = true;
         self.ensure_visible();
         Ok(applied.version.0)
@@ -659,6 +721,9 @@ impl App {
     pub fn resize(&mut self, width: u16, height: u16) {
         self.width = width.max(1);
         self.height = height.max(1);
+        // A narrower column gives the anchor line more rows, a wider one fewer;
+        // a `top_sub` past the end would anchor the viewport on nothing.
+        self.top_sub = self.top_sub.min(self.line_rows(self.top).saturating_sub(1));
         self.ensure_visible();
         self.damage_all = true;
     }
@@ -666,19 +731,30 @@ impl App {
     /// Rows to repaint, and whether the grid changed shape.
     pub fn take_frame(&mut self) -> Frame {
         let height = self.content_height();
-        let viewport = (self.top, self.left, height, self.width);
-        // Wrapping breaks the row-per-line map a partial frame relies on: an
-        // edit that changes one line's width reflows every row beneath it, so
-        // any damage repaints the whole viewport. Standalone keeps the cheap
-        // per-row path.
-        let full = self.damage_all
-            || self.painted != Some(viewport)
-            || (self.wrap && !self.damaged.is_empty());
+        let rows_per_line = if self.wrap {
+            self.visible_line_rows(height)
+        } else {
+            Vec::new()
+        };
+        let moved = self.painted.as_ref().is_none_or(|painted| {
+            painted.top != self.top
+                || painted.top_sub != self.top_sub
+                || painted.left != self.left
+                || painted.height != height
+                || painted.width != self.width
+        });
+        // Only a narrower or wider grid needs the blank: every row a frame
+        // paints clears itself first, so a viewport that only grew taller just
+        // paints the rows it gained. Blanking is what makes a client reading the
+        // delta between two writes paint an empty screen.
         let clear = self
             .painted
-            .is_none_or(|(_, _, rows, cols)| rows != height || cols != self.width);
-        let rows = if full {
+            .as_ref()
+            .is_none_or(|painted| painted.width != self.width);
+        let rows = if self.damage_all || moved {
             (0..height).collect()
+        } else if self.wrap {
+            self.reflowed_rows(&rows_per_line, height)
         } else {
             self.damaged
                 .iter()
@@ -688,8 +764,43 @@ impl App {
         };
         self.damaged.clear();
         self.damage_all = false;
-        self.painted = Some(viewport);
+        self.painted = Some(Painted {
+            top: self.top,
+            top_sub: self.top_sub,
+            left: self.left,
+            height,
+            width: self.width,
+            rows_per_line,
+        });
         Frame { rows, clear }
+    }
+
+    /// Rows a wrapped viewport must repaint for the damaged lines.
+    ///
+    /// A line that still takes the same number of rows repaints only its own;
+    /// the first line whose height changed reflows the row↔line map under it,
+    /// and from there down every row is somebody else's text now.
+    fn reflowed_rows(&self, current: &[usize], height: usize) -> Vec<usize> {
+        let previous = self
+            .painted
+            .as_ref()
+            .map_or(&[][..], |painted| painted.rows_per_line.as_slice());
+        let mut rows = Vec::new();
+        let mut row = 0;
+        for (index, taken) in current.iter().copied().enumerate() {
+            if row >= height {
+                break;
+            }
+            if previous.get(index).copied() != Some(taken) {
+                rows.extend(row..height);
+                break;
+            }
+            if self.damaged.contains(&(self.top + index)) {
+                rows.extend(row..(row + taken).min(height));
+            }
+            row += taken;
+        }
+        rows
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -785,6 +896,25 @@ impl App {
         };
     }
 
+    /// Re-colour what one edit can have reached.
+    ///
+    /// The scan restarts above the edit and stops as soon as the grammar is
+    /// back in the state the previous one was in, so typing on line 4000 does
+    /// not re-lex the 3999 lines over it.
+    fn rescan_edited(&mut self, applied: editor_core::Applied) {
+        if self.document.text().len() > MAX_HIGHLIGHT_BYTES {
+            self.syntax = Syntax::default();
+            return;
+        }
+        self.syntax = self.syntax.edited(
+            self.document.as_str(),
+            self.grammar,
+            applied.first_line,
+            applied.last_line,
+            applied.line_delta,
+        );
+    }
+
     /// The colouring of one 0-based line, for the renderer.
     #[must_use]
     pub fn syntax_line(&self, line: usize) -> &[editor_core::Span] {
@@ -793,8 +923,8 @@ impl App {
 
     /// Damage the rows an outcome can have changed.
     fn mark(&mut self, before: Selection, outcome: &editor_core::Outcome) {
-        if outcome.applied.is_some() {
-            self.rescan();
+        if let Some(applied) = outcome.applied {
+            self.rescan_edited(applied);
             self.arm_autosave();
         }
         if let Some(applied) = outcome.applied {
@@ -1121,12 +1251,17 @@ impl App {
     /// off screen, and then just to the nearest visible line, keeping its
     /// column so typing resumes where it reads that it will.
     fn scroll(&mut self, delta: isize) {
-        let max_top = self.document.text().line_count().saturating_sub(1) as isize;
-        let new_top = (self.top as isize + delta).clamp(0, max_top) as usize;
-        if new_top == self.top {
+        let before = (self.top, self.top_sub);
+        for _ in 0..delta.unsigned_abs() {
+            if delta > 0 {
+                self.advance_anchor();
+            } else {
+                self.retreat_anchor();
+            }
+        }
+        if (self.top, self.top_sub) == before {
             return;
         }
-        self.top = new_top;
         self.damage_all = true;
 
         let caret_line = self.document.caret_line_col().line;
@@ -1143,6 +1278,40 @@ impl App {
         self.document.set_selection(Selection::caret(offset));
     }
 
+    /// Move the viewport anchor down one screen row.
+    ///
+    /// A row and not a line: with wrap on, a logical line taller than the
+    /// viewport would otherwise scroll past in one notch, and its middle would
+    /// be unreachable.
+    fn advance_anchor(&mut self) {
+        let last = self.document.text().line_count().saturating_sub(1);
+        if self.wrap && self.top_sub + 1 < self.line_rows(self.top) {
+            self.top_sub += 1;
+            return;
+        }
+        if self.top < last {
+            self.top += 1;
+            self.top_sub = 0;
+        }
+    }
+
+    /// Move the viewport anchor up one screen row.
+    fn retreat_anchor(&mut self) {
+        if self.top_sub > 0 {
+            self.top_sub -= 1;
+            return;
+        }
+        if self.top == 0 {
+            return;
+        }
+        self.top -= 1;
+        self.top_sub = if self.wrap {
+            self.line_rows(self.top).saturating_sub(1)
+        } else {
+            0
+        };
+    }
+
     /// Scroll just enough to keep the caret visible, never a cell more.
     fn ensure_visible(&mut self) {
         let height = self.content_height().max(1);
@@ -1153,16 +1322,25 @@ impl App {
             self.left = 0;
             if position.line < self.top {
                 self.top = position.line;
+                self.top_sub = 0;
             }
             let width = self.content_width().max(1);
             let column =
                 metrics::display_column(self.document.text().line(position.line), position.column);
             let sub = column / width;
-            // Advance the top line until the caret's wrapped row fits. Bounded:
-            // each step drops the caret at least one row nearer, and it stops
-            // once `top` reaches the caret's own line.
-            while self.line_sub_to_row(position.line, sub).is_none() && self.top < position.line {
-                self.top += 1;
+            if position.line == self.top && sub < self.top_sub {
+                self.top_sub = sub;
+            }
+            // Advance the anchor one *row* at a time until the caret's row fits.
+            // The guard is the bound, not a line count: a caret that sits
+            // exactly on a wrap boundary has no row of its own, and the anchor
+            // at the end of the buffer would otherwise spin on it.
+            while self.line_sub_to_row(position.line, sub).is_none() {
+                let before = (self.top, self.top_sub);
+                self.advance_anchor();
+                if (self.top, self.top_sub) == before {
+                    break;
+                }
             }
             return;
         }
@@ -2070,8 +2248,8 @@ mod tests {
         assert_eq!(app.document().caret(), 23);
     }
 
-    /// Moving onto a line below a screenful of wrapped rows scrolls the top down
-    /// by whole lines until the caret fits.
+    /// Moving onto a line below a screenful of wrapped rows scrolls the anchor
+    /// down one *row* at a time, not one line, so it never overshoots.
     #[test]
     fn wrapping_scrolls_to_keep_the_caret_visible() {
         let line = "0123456789abcdefghijklmno\n"; // 25 cells → three rows each
@@ -2081,11 +2259,32 @@ mod tests {
         assert_eq!(app.content_height(), 5);
         app.goto_line(4);
         assert_eq!(
-            app.top(),
-            2,
-            "the top line advanced to bring line 4 on screen"
+            (app.top(), app.top_sub()),
+            (1, 2),
+            "the anchor advanced the five rows it took, and no more"
         );
         assert!(matches!(app.caret_screen(), Some((row, _)) if row < 5));
+    }
+
+    /// A single logical line taller than the viewport is still reachable: the
+    /// anchor names one of its wrapped rows rather than the whole line.
+    #[test]
+    fn a_line_taller_than_the_viewport_scrolls_within_itself() {
+        let mut app = app(&"x".repeat(95), false);
+        app.set_integrated();
+        app.resize(13, 4);
+        // 95 cells over a 10-cell column is ten rows; the viewport holds four.
+        assert_eq!(app.line_rows(0), 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        assert_eq!(
+            (app.top(), app.top_sub()),
+            (0, 6),
+            "the anchor walked into the line instead of past it"
+        );
+        assert!(
+            app.caret_screen().is_some(),
+            "the caret at the end of the line is on screen"
+        );
     }
 
     /// Standalone never wraps: a long line is one row and scrolls sideways.
@@ -2183,10 +2382,57 @@ mod tests {
         assert!(!frame.clear, "a move is not a resize");
 
         app.resize(40, 20);
+        let taller = app.take_frame();
+        assert!(
+            !taller.clear,
+            "a taller viewport paints the rows it gained; it does not blank"
+        );
+        assert_eq!(taller.rows.len(), app.content_height());
+
+        app.resize(50, 20);
         assert!(
             app.take_frame().clear,
-            "only a shape change needs the clear"
+            "only a width change can leave half a grapheme behind"
         );
+    }
+
+    /// Typing inside a wrapped line repaints that line's rows and nothing above
+    /// them: the row↔line map only moves when a line's height changes.
+    #[test]
+    fn a_keystroke_in_a_wrapped_buffer_repaints_one_line() {
+        let line = "0123456789abcdefghijklmno\n"; // 25 cells → three rows each
+        let mut app = app(&line.repeat(6), false);
+        app.set_integrated();
+        app.resize(13, 9);
+        app.take_frame();
+        app.goto_line(2);
+        app.take_frame();
+
+        app.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(
+            app.take_frame().rows,
+            vec![3, 4, 5],
+            "only the edited line's own rows"
+        );
+    }
+
+    /// A line that gains a row reflows everything under it, and only under it.
+    #[test]
+    fn a_wrapped_line_that_grows_repaints_from_itself_down() {
+        let line = "0123456789abcdefghijk\n"; // 21 cells → three rows
+        let mut app = app(&line.repeat(6), false);
+        app.set_integrated();
+        app.resize(13, 9);
+        app.take_frame();
+        app.goto_line(2);
+        app.take_frame();
+
+        // Line 2 is 21 cells over a 10-cell column: ten more take it to four
+        // rows, and every row below it is somebody else's text now.
+        for _ in 0..10 {
+            app.handle_key(key(KeyCode::Char('X')));
+        }
+        assert_eq!(app.take_frame().rows, (3..9).collect::<Vec<_>>());
     }
 
     /// When the scroll pushes the caret off screen it follows to the edge.

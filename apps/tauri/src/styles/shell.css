@@ -251,6 +251,23 @@
   position: relative;
   user-select: none;
 }
+/* A read-out of the editor's own viewport, not a control: the wheel is
+   reported to the TUI, so the thumb must not swallow the pointer. */
+.editor-terminal-scrollbar {
+  bottom: var(--space-8);
+  pointer-events: none;
+  position: absolute;
+  right: 2px;
+  top: var(--space-8);
+  width: 4px;
+}
+.editor-terminal-thumb {
+  background: var(--fg-muted);
+  border-radius: 2px;
+  opacity: 0.4;
+  position: absolute;
+  width: 100%;
+}
 
 .terminal-pane {
   background: var(--forge-term-bg);

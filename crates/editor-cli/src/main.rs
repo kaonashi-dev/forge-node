@@ -31,6 +31,13 @@ use crate::control::{ControlChannel, Incoming};
 /// Bounded so a stuck main loop is backpressure, not unbounded growth.
 const EVENT_QUEUE: usize = 64;
 
+/// Floor between two paints while input is still arriving.
+///
+/// The same 8 ms `daemon::terminal::FRAME` holds an attached terminal to: a
+/// paste or a key repeat that lands ten events in one millisecond is one frame
+/// on the wire, not ten, and the delta rung is priced per frame either way.
+const FRAME: std::time::Duration = std::time::Duration::from_millis(8);
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match cli::parse(&args) {
@@ -90,9 +97,16 @@ fn run(options: cli::Options) -> anyhow::Result<()> {
     }
 
     let out = std::io::stdout();
+    let mut painted = std::time::Instant::now() - FRAME;
     let result = loop {
-        if let Err(error) = render::draw(&mut app, &mut out.lock()) {
-            break Err(error.into());
+        // Paint only when the input has caught up, or the floor has passed.
+        // Damage accumulates either way, so a skipped frame costs nothing but
+        // the write it did not make.
+        if events_rx.is_empty() || painted.elapsed() >= FRAME {
+            if let Err(error) = render::draw(&mut app, &mut out.lock()) {
+                break Err(error.into());
+            }
+            painted = std::time::Instant::now();
         }
         let incoming = control.as_ref().map(|channel| channel.incoming().clone());
         let input = match &incoming {

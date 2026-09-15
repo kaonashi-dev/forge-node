@@ -8,6 +8,12 @@ export type EditorState = {
   dirty: boolean;
   read_only: boolean;
   document_version: number;
+  /** 1-based first line on screen, as the editor's own viewport reports it. */
+  top_line: number;
+  /** Logical lines the viewport shows. */
+  visible_lines: number;
+  /** Lines in the buffer. */
+  total_lines: number;
   /** A save was refused because the file moved under the buffer. */
   conflict: boolean;
 };

@@ -278,6 +278,9 @@ mod tests {
                     dirty: false,
                     read_only: true,
                     document_version: 1,
+                    top_line: 1,
+                    visible_lines: 24,
+                    total_lines: 200,
                 },
             },
             EditorMessage::State {

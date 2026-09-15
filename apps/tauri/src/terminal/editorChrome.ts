@@ -14,7 +14,27 @@ export type EditorChrome = {
   position: string | null;
   /** The dirty/read-only mark, or what to say instead of stale values. */
   mark: string;
+  /**
+   * Where the scrollbar thumb sits, as two fractions of the buffer, or `null`
+   * when the whole file is on screen and a thumb would say nothing.
+   */
+  scroll: { top: number; size: number } | null;
 };
+
+/**
+ * The thumb for a viewport, or `null` when there is nothing to scroll.
+ *
+ * Derived from what the editor reports rather than measured off the canvas:
+ * the pane paints a passive cell grid and has no second copy of the text, so
+ * the only honest denominator is the editor's own line count.
+ */
+function scrollThumb(state: EditorState): EditorChrome["scroll"] {
+  const total = state.total_lines;
+  const visible = state.visible_lines;
+  if (total <= 0 || visible <= 0 || visible >= total) return null;
+  const top = Math.max(0, state.top_line - 1);
+  return { top: Math.min(1, top / total), size: Math.min(1, visible / total) };
+}
 
 /** Said instead of a position or a mark before the first state arrives. */
 export const UNKNOWN_MARK = "state unknown";
@@ -32,7 +52,9 @@ export function editorChrome(
   state: EditorState | null | undefined,
   openedPath: string,
 ): EditorChrome {
-  if (!state) return { path: openedPath, position: null, mark: UNKNOWN_MARK };
+  if (!state) {
+    return { path: openedPath, position: null, mark: UNKNOWN_MARK, scroll: null };
+  }
   const flags = [state.dirty ? "dirty" : null, state.read_only ? "read-only" : null].filter(
     (flag): flag is string => flag !== null,
   );
@@ -40,5 +62,6 @@ export function editorChrome(
     path: state.path,
     position: `${state.line}:${state.column}`,
     mark: flags.join(" · ") || "clean",
+    scroll: scrollThumb(state),
   };
 }
