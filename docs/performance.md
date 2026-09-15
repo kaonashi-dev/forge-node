@@ -399,8 +399,8 @@ measured against.
 
 | Surface | Budget | How it is held |
 |---|---|---|
-| Editor | keystroke → paint p95 ≤ 16 ms on a 20 000-line file; open ≤ 100 ms after `ReadFile` returns | CodeMirror renders the viewport only (`workbench/editor/`). The `<textarea>` under a `<pre>` this replaced painted every token of the file on every settle and capped colour at 6 000 lines. |
-| Diff | expand a 2 000-line patch ≤ 50 ms | The patch is a CodeMirror document (`workbench/diff/PatchView.tsx`), so an expanded file costs its viewport rather than a `<div>` per patch line. |
+| Editor | keystroke → paint p95 ≤ 16 ms on a 20 000-line file; open ≤ 100 ms after `ReadFile` returns | Portable textarea editor in `file-workbench` / `workbench/editor/`. Syntax highlighting is deferred to a future local editor; large-file paint cost is the browser's. |
+| Diff | expand a 2 000-line patch ≤ 50 ms | Patch rows are DOM (`workbench/diff/PatchView.tsx`), mounted only while a file section is open. |
 | Job stream | 1 000 lines/s with main-thread idle ≥ 70 % | `store/jobOutput.ts` appends at absolute store paths and copies the tail only when it overshoots budget by `OUTPUT_SLACK`; `JobStreamView` uses `Index`, and reads layout on scroll rather than per batch. |
 | File tree | 50 000 paths at 60 fps; filter keystroke ≤ 8 ms | Windowed rows with an overscan; the filter narrows the daemon's listing rather than re-scoring it. |
 | Bundle | initial JS ≤ 350 kB gz; editor chunk ≤ 250 kB gz | `apps/tauri/scripts/check-bundle.ts`, run by `bun run build`. Fails the build when either is exceeded. |

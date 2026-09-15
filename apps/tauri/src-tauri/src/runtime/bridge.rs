@@ -12,7 +12,7 @@
 //! every frame, as this bridge did while the canvas was a placeholder, put the
 //! whole session tree through `serde_json` on the delta rung.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -191,6 +191,16 @@ struct Preview {
     size: PtySize,
 }
 
+/// A Code-region editor terminal. Not the main attachment.
+///
+/// Keyed by `SessionId` in the `editors` map, so the session is the key and
+/// not a field: the pane addresses an editor by its session and the bridge
+/// resolves the terminal from it.
+struct EditorAttachment {
+    terminal: TerminalId,
+    size: PtySize,
+}
+
 /// Emits the two event streams and keeps the `connect` command's cached
 /// snapshot in step with them.
 struct Emitter<'a> {
@@ -263,6 +273,24 @@ impl Emitter<'_> {
             cells::frame(preview.terminal, grid, 0, damage, false, 0),
         );
     }
+
+    fn editor_cells(&self, store: &mut Store, terminal: TerminalId, damage: &Damage) {
+        let Some(grid) = store.terminal(&terminal) else {
+            return;
+        };
+        let _ = self.app.emit(
+            "runtime:editor_cells",
+            cells::frame(terminal, grid, 0, damage, false, 0),
+        );
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct EditorOpened {
+    session_id: SessionId,
+    terminal_id: TerminalId,
+    workspace: WorkspaceId,
+    path: String,
 }
 
 fn runtime_loop(
@@ -313,6 +341,7 @@ fn runtime_loop(
         // Bound to this connection like the workbench worker: a reconnect
         // starts with no preview rather than one pointing at a dead terminal.
         let mut preview: Option<Preview> = None;
+        let mut editors: HashMap<SessionId, EditorAttachment> = HashMap::new();
         // A worker per connection: dropping the previous sender ends the one
         // bound to the client that just died.
         *lock(&workbench) = Some(workbench::start(app.clone(), Arc::clone(&client)));
@@ -366,6 +395,7 @@ fn runtime_loop(
                     &mut store,
                     &mut at,
                     &mut preview,
+                    &mut editors,
                     &mut size,
                     &mut pending_echo,
                 ) {
@@ -403,6 +433,15 @@ fn runtime_loop(
                         }
                         if effect.preview_detached {
                             let _ = app.emit("runtime:preview_detached", ());
+                        }
+                        if let Some((terminal, damage)) = effect.editor_damage {
+                            emitter.editor_cells(&mut store, terminal, &damage);
+                        }
+                        if let Some(opened) = effect.editor_opened {
+                            let _ = app.emit("runtime:editor_opened", opened);
+                        }
+                        if let Some(session) = effect.editor_detached {
+                            let _ = app.emit("runtime:editor_detached", session);
                         }
                         if let Some((workspace, reason)) = effect.worktree_blocked {
                             let _ = app.emit(
@@ -502,6 +541,7 @@ fn runtime_loop(
                 let mut batch = Batch::default();
                 batch.absorb(&event, &store, &at, preview.as_ref());
                 emit_job_event(&app, &event);
+                emit_clipboard_event(&app, &event, &at, &editors);
                 batch.apply(
                     &event,
                     &mut store,
@@ -520,6 +560,7 @@ fn runtime_loop(
                     };
                     batch.absorb(&more, &store, &at, preview.as_ref());
                     emit_job_event(&app, &more);
+                    emit_clipboard_event(&app, &more, &at, &editors);
                     batch.apply(
                         &more,
                         &mut store,
@@ -536,6 +577,10 @@ fn runtime_loop(
                 if batch.preview_session_removed {
                     preview = None;
                     let _ = app.emit("runtime:preview_detached", ());
+                }
+                for id in &batch.editor_sessions_removed {
+                    editors.remove(id);
+                    let _ = app.emit("runtime:editor_detached", *id);
                 }
 
                 if batch.active_session_removed {
@@ -570,6 +615,9 @@ fn runtime_loop(
                     if let Some(open) = preview.as_ref() {
                         emitter.preview_cells(&mut store, open, &damage);
                     }
+                }
+                for (terminal, damage) in batch.editor_damage {
+                    emitter.editor_cells(&mut store, terminal, &damage);
                 }
                 if let Some(damage) = batch.damage {
                     // A cells-only burst inside the floor is held and merged;
@@ -684,6 +732,39 @@ struct AgentProfileSavePayload {
     error: Option<String>,
 }
 
+/// Forward an OSC 52 clipboard store, but only from a terminal on screen.
+///
+/// The guard is the point: OSC 52 lets whatever runs in a PTY set the person's
+/// clipboard, and a background agent quietly replacing it would be a real
+/// hazard. A terminal this window is attached to — the focused one, or an open
+/// editor pane — is one the person is looking at; everything else is refused.
+fn emit_clipboard_event(
+    app: &AppHandle,
+    event: &DaemonEvent,
+    at: &Attached,
+    editors: &HashMap<SessionId, EditorAttachment>,
+) {
+    let DaemonEvent::ClipboardStore { terminal_id, text } = event else {
+        return;
+    };
+    if !clipboard_is_allowed(*terminal_id, at, editors) {
+        return;
+    }
+    let _ = app.emit("runtime:clipboard", ClipboardPayload { text: text.clone() });
+}
+
+/// Whether a terminal may set the clipboard: only one this window shows.
+///
+/// Its own function so the rule can be tested without an `AppHandle` — it is
+/// the security property here, not the emit.
+fn clipboard_is_allowed(
+    terminal_id: TerminalId,
+    at: &Attached,
+    editors: &HashMap<SessionId, EditorAttachment>,
+) -> bool {
+    terminal_id == at.terminal || editors.values().any(|open| open.terminal == terminal_id)
+}
+
 fn emit_job_event(app: &AppHandle, event: &DaemonEvent) {
     match event {
         DaemonEvent::FileChanged { workspace_id, path } => {
@@ -778,6 +859,12 @@ struct Effect {
     preview_damage: Option<Damage>,
     /// The preview was let go; the tab clears its canvas.
     preview_detached: bool,
+    /// A side editor terminal has to repaint.
+    editor_damage: Option<(TerminalId, Damage)>,
+    /// A new editor session was spawned; the WebView opens its Code view.
+    editor_opened: Option<EditorOpened>,
+    /// The Code pane let an editor go; the process is still running.
+    editor_detached: Option<SessionId>,
     /// An unforced worktree removal needs a second confirmation.
     worktree_blocked: Option<(WorkspaceId, String)>,
     /// A create refusal belongs in the dialog that initiated it.
@@ -865,12 +952,19 @@ fn flush_pending_closes(pending: &mut HashSet<SessionId>, store: &Store, client:
 }
 
 /// Run one command. `Err` means the connection is gone and the loop reconnects.
+///
+/// The arguments are the whole of one connection's mutable state — the main
+/// attachment, the two side attachments, the viewport size and the echo
+/// watermark. Bundling them into a struct would only move the same fields
+/// behind a name and make every borrow in the loop go through it.
+#[allow(clippy::too_many_arguments)]
 fn run_command(
     command: RuntimeCommand,
     client: &Client,
     store: &mut Store,
     at: &mut Attached,
     preview: &mut Option<Preview>,
+    editors: &mut HashMap<SessionId, EditorAttachment>,
     size: &mut PtySize,
     pending_echo: &mut u64,
 ) -> Result<Effect, CommandError> {
@@ -1419,6 +1513,126 @@ fn run_command(
             Ok(Effect::nothing())
         }
 
+        RuntimeCommand::OpenEditor {
+            workspace,
+            path,
+            line,
+            autosave,
+        } => open_editor(
+            client,
+            store,
+            at,
+            editors,
+            EditorOpen {
+                workspace,
+                path,
+                line,
+                autosave,
+            },
+        ),
+        RuntimeCommand::ReopenEditor { session_id } => {
+            let terminal_id = attach_editor(client, store, editors, session_id)?;
+            let session = store
+                .sessions
+                .iter()
+                .find(|session| session.id == session_id)
+                .ok_or_else(|| CommandError::refused("the editor session is no longer running"))?;
+            let path = session
+                .editor
+                .as_ref()
+                .map(|state| state.path.clone())
+                .ok_or_else(|| CommandError::refused("the editor buffer has not opened yet"))?;
+            Ok(Effect {
+                editor_opened: Some(EditorOpened {
+                    session_id,
+                    terminal_id,
+                    workspace: session.workspace_id,
+                    path,
+                }),
+                editor_damage: Some((terminal_id, Damage::Full)),
+                shell: true,
+                ..Effect::nothing()
+            })
+        }
+        RuntimeCommand::InputEditor {
+            session_id,
+            key,
+            id,
+        } => input_editor(client, store, editors, pending_echo, session_id, key, id),
+        RuntimeCommand::InputEditorText {
+            session_id,
+            text,
+            id,
+        } => input_editor_bytes(
+            client,
+            editors,
+            pending_echo,
+            session_id,
+            input::encode_text(&text),
+            id,
+        ),
+        RuntimeCommand::PasteEditor {
+            session_id,
+            text,
+            id,
+        } => {
+            let Some(open) = editors.get(&session_id) else {
+                return Ok(Effect::nothing());
+            };
+            let modes = store
+                .terminal(&open.terminal)
+                .map(|grid| grid.modes)
+                .unwrap_or_default();
+            let bytes = input::encode_paste(&text, &modes);
+            input_editor_bytes(client, editors, pending_echo, session_id, bytes, id)
+        }
+        // The editor sibling of `Mouse`: the pane only sends these while the
+        // editor asked to read the mouse, and the encoder refuses whatever the
+        // active mode does not report, so an event that encodes to nothing is
+        // simply one this mode does not want.
+        RuntimeCommand::MouseEditor {
+            session_id,
+            button,
+            kind,
+            col,
+            row,
+            ctrl,
+            alt,
+            shift,
+        } => {
+            let Some(open) = editors.get(&session_id) else {
+                return Ok(Effect::nothing());
+            };
+            let modes = store
+                .terminal(&open.terminal)
+                .map(|grid| grid.modes)
+                .unwrap_or_default();
+            let mods = client::Modifiers { ctrl, alt, shift };
+            let Some(bytes) = input::encode_mouse_event(&button, &kind, col, row, mods, &modes)
+            else {
+                return Ok(Effect::nothing());
+            };
+            client
+                .write_terminal_input(open.terminal, bytes)
+                .map_err(CommandError::from_client)?;
+            // No echo id: a mouse report is not typing, so there is no latency
+            // sample to close.
+            Ok(Effect::nothing())
+        }
+        RuntimeCommand::ResizeEditor { session_id, size } => {
+            resize_editor(client, store, editors, session_id, size)
+        }
+        RuntimeCommand::RepaintEditor { session_id } => {
+            let terminal = attach_editor(client, store, editors, session_id)?;
+            Ok(Effect {
+                editor_damage: Some((terminal, Damage::Full)),
+                ..Effect::nothing()
+            })
+        }
+        RuntimeCommand::CloseEditor { session_id } => {
+            Ok(detach_editor(client, editors, at.terminal, session_id))
+        }
+
         // The daemon going away is the connection going away, so the loop
         // reconnecting afterwards is correct: it finds nothing, says so, and
         // keeps retrying until the user starts one again.
@@ -1569,6 +1783,269 @@ fn detach_preview(client: &Client, preview: &mut Option<Preview>, main: Terminal
     }
 }
 
+fn attach_editor(
+    client: &Client,
+    store: &mut Store,
+    editors: &mut HashMap<SessionId, EditorAttachment>,
+    session_id: SessionId,
+) -> Result<TerminalId, CommandError> {
+    if let Some(open) = editors.get(&session_id) {
+        return Ok(open.terminal);
+    }
+    let terminal = store
+        .sessions
+        .iter()
+        .find(|session| {
+            session.id == session_id
+                && session.kind == domain::SessionKind::Editor
+                && !session.state.is_terminal()
+        })
+        .and_then(|session| session.terminal_id)
+        .ok_or_else(|| CommandError::refused("the editor session is no longer running"))?;
+    let size = DEFAULT_SIZE;
+    let snapshot = client
+        .attach_terminal(terminal, size)
+        .map_err(CommandError::from_client)?;
+    store.attach_terminal(terminal, &snapshot);
+    editors.insert(session_id, EditorAttachment { terminal, size });
+    Ok(terminal)
+}
+
+fn open_editor(
+    client: &Client,
+    store: &mut Store,
+    at: &Attached,
+    editors: &mut HashMap<SessionId, EditorAttachment>,
+    open: EditorOpen,
+) -> Result<Effect, CommandError> {
+    let EditorOpen {
+        workspace,
+        path,
+        line,
+        autosave,
+    } = open;
+    // A second open of the same file moves the caret in the session that
+    // already has it: a rival editor would be a second process, a second PTY
+    // and a second draft of one file. The same rule `editorReveal` follows for
+    // the DOM editor, one layer down.
+    if let Some((session_id, terminal_id)) = live_editor_for(store, editors, workspace, &path) {
+        // A closed view detached the terminal, not the editor: the process
+        // still holds the draft. Re-attach rather than open the disk state
+        // under it, which would strand the draft in a process nothing shows.
+        attach_editor(client, store, editors, session_id)?;
+        client
+            .set_editor_autosave(session_id, autosave)
+            .map_err(CommandError::from_client)?;
+        if let Some(line) = line {
+            client
+                .reveal_in_editor_session(session_id, line, None)
+                .map_err(CommandError::from_client)?;
+        }
+        return Ok(Effect {
+            editor_opened: Some(EditorOpened {
+                session_id,
+                terminal_id,
+                workspace,
+                path,
+            }),
+            editor_damage: Some((terminal_id, Damage::Full)),
+            shell: true,
+            ..Effect::nothing()
+        });
+    }
+
+    let (session_id, terminal_id) = client
+        .create_editor_session(workspace, &path, line, false, autosave)
+        .map_err(CommandError::from_client)?;
+    if terminal_id == at.terminal {
+        return Err(CommandError::refused(
+            "the editor session must not replace the main terminal",
+        ));
+    }
+    let size = DEFAULT_SIZE;
+    let snapshot = client
+        .attach_terminal(terminal_id, size)
+        .map_err(CommandError::from_client)?;
+    store.attach_terminal(terminal_id, &snapshot);
+    editors.insert(
+        session_id,
+        EditorAttachment {
+            terminal: terminal_id,
+            size,
+        },
+    );
+    Ok(Effect {
+        editor_opened: Some(EditorOpened {
+            session_id,
+            terminal_id,
+            workspace,
+            path,
+        }),
+        editor_damage: Some((terminal_id, Damage::Full)),
+        shell: true,
+        ..Effect::nothing()
+    })
+}
+
+/// What one `OpenEditor` names. Grouped so the call is not eight positionals.
+struct EditorOpen {
+    workspace: WorkspaceId,
+    path: String,
+    line: Option<u32>,
+    autosave: bool,
+}
+
+/// The editor session already holding `path` in `workspace`, if one is live.
+///
+/// Matched on the daemon's own `EditorState.path` — what the editor reported
+/// through its control channel — and never on this window's attachment map
+/// alone: a closed view detaches without stopping the editor, and the draft it
+/// still holds is exactly what reopening the file must show.
+fn live_editor_for(
+    store: &Store,
+    editors: &HashMap<SessionId, EditorAttachment>,
+    workspace: WorkspaceId,
+    path: &str,
+) -> Option<(SessionId, TerminalId)> {
+    store
+        .sessions
+        .iter()
+        .filter(|session| {
+            session.kind == domain::SessionKind::Editor
+                && session.workspace_id == workspace
+                && !session.state.is_terminal()
+        })
+        .find(|session| {
+            session
+                .editor
+                .as_ref()
+                .is_some_and(|state| state.path == path)
+        })
+        .and_then(|session| {
+            let terminal = editors
+                .get(&session.id)
+                .map(|open| open.terminal)
+                .or(session.terminal_id)?;
+            Some((session.id, terminal))
+        })
+}
+
+/// Which terminal an editor keystroke is written to, and the bytes for it.
+///
+/// The editor's own terminal, never the main attachment: the pane is a side
+/// attachment, so typing into it must not reach the session the shell is on.
+/// `None` for a session with no editor open and for a key that is not input
+/// (a bare modifier, a composition placeholder).
+fn editor_input_target(
+    store: &Store,
+    editors: &HashMap<SessionId, EditorAttachment>,
+    session_id: SessionId,
+    key: &super::input::KeyPress,
+) -> Option<(TerminalId, Vec<u8>)> {
+    let open = editors.get(&session_id)?;
+    let modes = store.terminal(&open.terminal).map(|grid| grid.modes);
+    let bytes = input::encode(key, &modes.unwrap_or_default())?;
+    Some((open.terminal, bytes))
+}
+
+fn input_editor(
+    client: &Client,
+    store: &Store,
+    editors: &HashMap<SessionId, EditorAttachment>,
+    pending_echo: &mut u64,
+    session_id: SessionId,
+    key: super::input::KeyPress,
+    id: u64,
+) -> Result<Effect, CommandError> {
+    let Some((_, bytes)) = editor_input_target(store, editors, session_id, &key) else {
+        return Ok(Effect::nothing());
+    };
+    input_editor_bytes(client, editors, pending_echo, session_id, bytes, id)
+}
+
+fn input_editor_bytes(
+    client: &Client,
+    editors: &HashMap<SessionId, EditorAttachment>,
+    pending_echo: &mut u64,
+    session_id: SessionId,
+    bytes: Vec<u8>,
+    id: u64,
+) -> Result<Effect, CommandError> {
+    let Some(open) = editors.get(&session_id) else {
+        return Ok(Effect::nothing());
+    };
+    if bytes.is_empty() {
+        return Ok(Effect::nothing());
+    }
+    client
+        .write_terminal_input(open.terminal, bytes)
+        .map_err(CommandError::from_client)?;
+    *pending_echo = (*pending_echo).max(id);
+    Ok(Effect::nothing())
+}
+
+/// The terminal to re-attach at `requested`, recording the new size, or `None`
+/// when nothing has to move.
+///
+/// A pane measures itself on every animation frame of a drag and sends what it
+/// measured; re-attaching for a size the terminal already has would put a
+/// round trip and a full repaint on that rung (`docs/performance.md`), so an
+/// unchanged size is not a resize.
+fn editor_resize_target(
+    editors: &mut HashMap<SessionId, EditorAttachment>,
+    session_id: SessionId,
+    requested: PtySize,
+) -> Option<TerminalId> {
+    let open = editors.get_mut(&session_id)?;
+    if open.size == requested {
+        return None;
+    }
+    open.size = requested;
+    Some(open.terminal)
+}
+
+fn resize_editor(
+    client: &Client,
+    store: &mut Store,
+    editors: &mut HashMap<SessionId, EditorAttachment>,
+    session_id: SessionId,
+    requested: PtySize,
+) -> Result<Effect, CommandError> {
+    let requested = requested.sanitized();
+    let Some(terminal) = editor_resize_target(editors, session_id, requested) else {
+        return Ok(Effect::nothing());
+    };
+    // A re-attach would not resize: the daemon adopts an attach size only for
+    // the first subscriber, and this connection is already one. Resize first,
+    // like the main terminal does (`resize_and_reattach`), or the editor keeps
+    // the geometry it was born with.
+    resize_and_reattach(client, store, terminal, requested)?;
+    Ok(Effect {
+        editor_damage: Some((terminal, Damage::Full)),
+        ..Effect::nothing()
+    })
+}
+
+fn detach_editor(
+    client: &Client,
+    editors: &mut HashMap<SessionId, EditorAttachment>,
+    main: TerminalId,
+    session_id: SessionId,
+) -> Effect {
+    let Some(open) = editors.remove(&session_id) else {
+        return Effect::nothing();
+    };
+    if open.terminal != main {
+        if let Err(error) = client.detach_terminal(open.terminal) {
+            tracing::warn!(%error, "failed to detach the editor terminal");
+        }
+    }
+    Effect {
+        editor_detached: Some(session_id),
+        ..Effect::nothing()
+    }
+}
+
 /// Write encoded bytes to the attached terminal.
 ///
 /// Typing snaps the viewport back to the live output: input that lands
@@ -1654,6 +2131,10 @@ struct Batch {
     departing: Option<Departing>,
     /// The previewed session went away; the tab clears its canvas.
     preview_session_removed: bool,
+    /// Side editor terminals that have to repaint, keyed so two editors
+    /// in the Code strip do not merge their damage.
+    editor_damage: HashMap<TerminalId, Damage>,
+    editor_sessions_removed: Vec<SessionId>,
 }
 
 /// The active session as the store last described it, kept past its removal.
@@ -1701,6 +2182,11 @@ impl Batch {
             if preview.is_some_and(|open| open.session == *session_id) {
                 self.preview_session_removed = true;
             }
+            if store.sessions.iter().any(|session| {
+                session.id == *session_id && session.kind == domain::SessionKind::Editor
+            }) {
+                self.editor_sessions_removed.push(*session_id);
+            }
         }
         if let Some(open) = preview {
             let preview_damage = match event {
@@ -1729,6 +2215,23 @@ impl Batch {
             }
             DaemonEvent::TerminalResync { terminal_id, .. } if *terminal_id == at.terminal => {
                 Some(Damage::Full)
+            }
+            DaemonEvent::TerminalDelta { terminal_id, delta }
+                if preview.is_none_or(|open| open.terminal != *terminal_id) =>
+            {
+                let d = delta_damage(delta);
+                let merged = match self.editor_damage.remove(terminal_id) {
+                    Some(existing) => existing.merge(d),
+                    None => d,
+                };
+                self.editor_damage.insert(*terminal_id, merged);
+                None
+            }
+            DaemonEvent::TerminalResync { terminal_id, .. }
+                if preview.is_none_or(|open| open.terminal != *terminal_id) =>
+            {
+                self.editor_damage.insert(*terminal_id, Damage::Full);
+                None
             }
             _ => None,
         };
@@ -2201,6 +2704,78 @@ mod tests {
     }
 
     #[test]
+    fn the_editor_attachment_does_not_replace_the_main_pane() {
+        let at = attached(TerminalId::new(), SessionId::new(), 0);
+        let editor = TerminalId::new();
+        let store = Store::new();
+        let mut batch = Batch::default();
+        batch.absorb(&delta(editor, vec![1], 0), &store, &at, None);
+        assert_eq!(batch.damage, None);
+        assert_eq!(
+            batch.editor_damage.get(&editor).cloned(),
+            Some(Damage::Rows(vec![1]))
+        );
+        assert!(!batch.shell);
+    }
+
+    /// R27/R29: the pane types and resizes through its own side attachment.
+    /// The main terminal is what the shell is on, and an editor keystroke that
+    /// reached it would be typing into somebody else's session.
+    #[test]
+    fn the_editor_attachment_forwards_input_and_resize() {
+        let main = TerminalId::new();
+        let session = SessionId::new();
+        let terminal = TerminalId::new();
+        let store = Store::new();
+        let mut editors = HashMap::new();
+        editors.insert(
+            session,
+            EditorAttachment {
+                terminal,
+                size: DEFAULT_SIZE,
+            },
+        );
+
+        let key = super::super::input::KeyPress {
+            key: "a".to_owned(),
+            ctrl: false,
+            alt: false,
+            shift: false,
+        };
+        let (target, bytes) = editor_input_target(&store, &editors, session, &key)
+            .expect("an open editor takes the keystroke");
+        assert_eq!(target, terminal, "input goes to the editor's own terminal");
+        assert_ne!(target, main, "never the main attachment");
+        assert_eq!(bytes, b"a".to_vec());
+
+        // A session with no editor open swallows the keystroke rather than
+        // routing it anywhere.
+        assert!(editor_input_target(&store, &editors, SessionId::new(), &key).is_none());
+
+        // The pane re-measures every frame of a drag; only a size it does not
+        // already have is a resize.
+        assert_eq!(
+            editor_resize_target(&mut editors, session, DEFAULT_SIZE),
+            None,
+            "the size it already has is not a resize"
+        );
+        let wider = PtySize {
+            cols: DEFAULT_SIZE.cols + 10,
+            ..DEFAULT_SIZE
+        };
+        assert_eq!(
+            editor_resize_target(&mut editors, session, wider),
+            Some(terminal)
+        );
+        assert_eq!(
+            editors.get(&session).map(|open| open.size),
+            Some(wider),
+            "the new size is remembered, so the next identical frame is a no-op"
+        );
+        assert_eq!(editor_resize_target(&mut editors, session, wider), None);
+    }
+
+    #[test]
     fn a_preview_delta_repaints_the_preview_and_nothing_else() {
         let at = attached(TerminalId::new(), SessionId::new(), 0);
         let open = Preview {
@@ -2239,6 +2814,35 @@ mod tests {
         let mut second = Batch::default();
         second.absorb(&event, &store, &at, None);
         assert!(!second.shell, "the badge was already on");
+    }
+
+    /// OSC 52 lets whatever runs in a PTY set the clipboard, so only a
+    /// terminal the person is looking at may.
+    #[test]
+    fn only_a_terminal_on_screen_may_set_the_clipboard() {
+        let focused = TerminalId::new();
+        let editor = TerminalId::new();
+        let background = TerminalId::new();
+        let at = attached(focused, SessionId::new(), 0);
+        let mut editors = HashMap::new();
+        editors.insert(
+            SessionId::new(),
+            EditorAttachment {
+                terminal: editor,
+                size: DEFAULT_SIZE,
+            },
+        );
+
+        assert!(clipboard_is_allowed(focused, &at, &editors));
+        assert!(clipboard_is_allowed(editor, &at, &editors));
+        assert!(
+            !clipboard_is_allowed(background, &at, &editors),
+            "a background agent must not be able to replace the clipboard"
+        );
+        assert!(
+            !clipboard_is_allowed(editor, &at, &HashMap::new()),
+            "a detached editor is not on screen either"
+        );
     }
 
     #[test]
@@ -2685,6 +3289,7 @@ mod tests {
             parent_session_id: None,
             root_session_id: id,
             terminal_id: None,
+            editor: None,
             agent_provider_id: None,
             agent_profile_id: None,
             title: domain::SessionTitle::default(),
@@ -2719,5 +3324,50 @@ mod tests {
         let store = Store::new();
         let pending = HashSet::from([vanished]);
         assert_eq!(due_closes(&pending, &store), vec![vanished]);
+    }
+
+    /// Closing the Code view detaches the terminal, not the editor: the
+    /// process keeps running with its draft. Reopening the same path must find
+    /// that session — by the daemon's `editor.path`, not by this window's
+    /// attachments — so the pane re-attaches instead of opening the disk state
+    /// under the draft.
+    #[test]
+    fn a_detached_editor_session_is_still_the_one_holding_the_path() {
+        let workspace = WorkspaceId::new();
+        let terminal = TerminalId::new();
+        let mut session = sample_session(domain::SessionState::Running);
+        session.workspace_id = workspace;
+        session.kind = domain::SessionKind::Editor;
+        session.terminal_id = Some(terminal);
+        session.editor = Some(domain::EditorState {
+            path: "src/main.rs".to_string(),
+            ..domain::EditorState::default()
+        });
+
+        let mut store = Store::new();
+        let _ = store.apply_event(&DaemonEvent::SessionCreated(session.clone()));
+        let detached = HashMap::new();
+        assert_eq!(
+            live_editor_for(&store, &detached, workspace, "src/main.rs"),
+            Some((session.id, terminal)),
+            "a detached session still names the terminal to re-attach"
+        );
+        assert_eq!(
+            live_editor_for(&store, &detached, workspace, "src/other.rs"),
+            None,
+            "a different path is a different file"
+        );
+
+        session.state = domain::SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        };
+        let mut dead = Store::new();
+        let _ = dead.apply_event(&DaemonEvent::SessionCreated(session));
+        assert_eq!(
+            live_editor_for(&dead, &detached, workspace, "src/main.rs"),
+            None,
+            "an exited editor is history, not a session to re-attach"
+        );
     }
 }

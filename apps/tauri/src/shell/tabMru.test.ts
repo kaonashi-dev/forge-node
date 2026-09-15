@@ -61,6 +61,23 @@ describe("tabMru", () => {
     ).toEqual(["new", "old"]);
   });
 
+  it("keeps editors out of the foreign switcher list", () => {
+    // An editor holds a terminal, but it belongs to the Code strip, so it must
+    // not surface as a recent session in the Ctrl+Tab ring.
+    expect(
+      liveIdsByActivity([
+        { id: "term", terminal_id: "t1", created_at: "2026-01-01T00:00:00Z" },
+        {
+          id: "editor",
+          kind: "Editor",
+          terminal_id: "t2",
+          last_activity_at: "2026-06-01T00:00:00Z",
+          created_at: "2026-01-02T00:00:00Z",
+        },
+      ]),
+    ).toEqual(["term"]);
+  });
+
   it("starts one step away from the current tab", () => {
     expect(initialIndex(1, 1)).toBe(0);
     expect(initialIndex(4, 1)).toBe(1);

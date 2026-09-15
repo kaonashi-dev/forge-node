@@ -18,6 +18,58 @@ export const MAX_IMAGE_READS = 4;
 /** How long an answer is waited for: a command the host dropped never gets one. */
 export const IMAGE_READ_TIMEOUT_MS = 20_000;
 
+/**
+ * Media type for an image extension a WebView can draw, or `null`.
+ *
+ * Mirrors `fs-service::image_mime`, and has to keep mirroring it: the daemon's
+ * copy is the gate on `ReadImage`, so an extension this claims and that one
+ * does not becomes a preview that asks for bytes it will never be given.
+ */
+export function imageMime(path: string): string | null {
+  const name = path.replace(/[?#].*$/, "");
+  const dot = name.lastIndexOf(".");
+  const slash = name.lastIndexOf("/");
+  if (dot <= slash + 1) return null;
+  switch (name.slice(dot + 1).toLowerCase()) {
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "svg":
+      return "image/svg+xml";
+    case "avif":
+      return "image/avif";
+    case "bmp":
+      return "image/bmp";
+    case "ico":
+      return "image/x-icon";
+    default:
+      return null;
+  }
+}
+
+/**
+ * An SVG's preview, built from the text in the buffer.
+ *
+ * Not a `ReadImage`, for two reasons. An SVG is text, so the buffer is what
+ * the person is looking at and a disk read would show them the version before
+ * the edit they just made. And the round trip buys nothing: the bytes are
+ * already here.
+ *
+ * The result is for an `<img>` and nothing else. An SVG drawn that way cannot
+ * run script or fetch anything external, which an SVG inlined into the
+ * document very much can — these files come out of a checkout an agent writes
+ * to, so that difference is the whole security story of this preview.
+ */
+export function svgDataUrl(text: string): string {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
+}
+
 const REMOTE = /^https?:\/\/\S+$/i;
 const INLINE = /^data:image\/(?:png|jpe?g|gif|webp|avif|bmp|svg\+xml);base64,[a-z0-9+/=\s]+$/i;
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;

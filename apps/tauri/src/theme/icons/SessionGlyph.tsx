@@ -57,7 +57,12 @@ export function SessionGlyph(props: SessionGlyphProps) {
         <Show
           when={face() === "done"}
           fallback={
-            <IdentityGlyph providerId={props.providerId} emphasis={emphasis()} size={props.size} />
+            <IdentityGlyph
+              providerId={props.providerId}
+              kind={props.session?.kind}
+              emphasis={emphasis()}
+              size={props.size}
+            />
           }
         >
           <Icon
@@ -81,9 +86,13 @@ export function SessionGlyph(props: SessionGlyphProps) {
 
 function IdentityGlyph(props: {
   providerId: string | null;
+  kind?: string;
   emphasis: IconEmphasis;
   size?: number;
 }) {
+  if (props.kind === "Editor") {
+    return <Icon name="file-code" emphasis={props.emphasis} size={props.size} />;
+  }
   if (props.providerId) {
     const brand = brandForProvider(props.providerId);
     if (brand) {

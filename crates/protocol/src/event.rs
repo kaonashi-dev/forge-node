@@ -82,6 +82,16 @@ pub enum DaemonEvent {
         /// The removed session.
         session_id: SessionId,
     },
+    /// A program in a terminal asked to put text on the clipboard (OSC 52).
+    ///
+    /// The *store* half only: OSC 52's read is never answered, because that
+    /// would hand the person's clipboard to whatever is running in the PTY.
+    /// Clamped in `terminal-core` before it is stored, so this is bounded by
+    /// `MAX_CLIPBOARD_BYTES` and not by what a program felt like sending.
+    ClipboardStore {
+        terminal_id: TerminalId,
+        text: String,
+    },
     /// Changed rows for an attached terminal (§10.5). Sent only to subscribers.
     TerminalDelta {
         /// The terminal the delta belongs to.

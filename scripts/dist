@@ -131,6 +131,8 @@ case "$(uname -s)" in
     [ -x "$bin" ] || die "broken bundle: CFBundleExecutable is '$exe' but $bin is missing"
     [ -x "$app/Contents/MacOS/forge-daemon" ] \
       || die "broken bundle: missing $app/Contents/MacOS/forge-daemon (the GUI spawns its sibling)"
+    [ -x "$app/Contents/MacOS/forge-editor" ] \
+      || die "broken bundle: missing $app/Contents/MacOS/forge-editor (the daemon spawns it for an Editor session)"
 
     # Refuse (or warn about) an architecture mismatch early instead of letting
     # the kernel kill the app with a cryptic "Code Signature Invalid".

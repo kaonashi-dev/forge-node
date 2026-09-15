@@ -17,8 +17,16 @@ import {
 } from "./views";
 
 const diff = { kind: "diff" } as const;
-const lib = { kind: "editor", path: "crates/client/src/lib.rs" } as const;
-const store = { kind: "editor", path: "crates/client/src/store.rs" } as const;
+const lib = {
+  kind: "editor-terminal",
+  session: "s-lib",
+  path: "crates/client/src/lib.rs",
+} as const;
+const store = {
+  kind: "editor-terminal",
+  session: "s-store",
+  path: "crates/client/src/store.rs",
+} as const;
 
 describe("parked views", () => {
   it("starts on the terminal with nothing else open", () => {
@@ -32,7 +40,7 @@ describe("parked views", () => {
   // same pane would have two places to be selected from.
   it("keeps the terminal off the Code strip", () => {
     const views = openView(openView(emptyViews(), diff), lib);
-    expect(strip(views).map(viewKey)).toEqual(["diff", "editor:crates/client/src/lib.rs"]);
+    expect(strip(views).map(viewKey)).toEqual(["diff", "editor-terminal:s-lib"]);
     expect(hasCode(views)).toBe(true);
   });
 
@@ -40,7 +48,7 @@ describe("parked views", () => {
   // before every click.
   it("focuses without duplicating or reordering on re-open", () => {
     const views = openView(openView(openView(emptyViews(), diff), lib), diff);
-    expect(views.open.map(viewKey)).toEqual(["diff", "editor:crates/client/src/lib.rs"]);
+    expect(views.open.map(viewKey)).toEqual(["diff", "editor-terminal:s-lib"]);
     expect(views.active).toEqual(diff);
   });
 
@@ -57,6 +65,13 @@ describe("parked views", () => {
   it("names an editor after its file, not its path", () => {
     expect(viewLabel(lib)).toBe("lib.rs");
     expect(viewLabel(diff)).toBe("Diff");
+    const terminal = {
+      kind: "editor-terminal" as const,
+      session: "s1",
+      path: "crates/daemon/src/editor.rs",
+    };
+    expect(viewKey(terminal)).toBe("editor-terminal:s1");
+    expect(viewLabel(terminal)).toBe("editor.rs");
   });
 
   // Two `mod.rs` tabs are indistinguishable by label alone.
@@ -82,7 +97,7 @@ describe("parked views", () => {
       const views = openView(openView(emptyViews(), diff), lib);
       const after = closeView(views, diff);
       expect(after.active).toEqual(lib);
-      expect(after.open.map(viewKey)).toEqual(["editor:crates/client/src/lib.rs"]);
+      expect(after.open.map(viewKey)).toEqual(["editor-terminal:s-lib"]);
     });
 
     it("ignores a view that is not open", () => {
@@ -162,5 +177,5 @@ describe("stepView", () => {
 });
 
 function editor(path: string) {
-  return { kind: "editor" as const, path };
+  return { kind: "editor-terminal" as const, session: `s-${path}`, path };
 }

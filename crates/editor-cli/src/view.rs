@@ -1,16 +1,22 @@
 //! Display-cell arithmetic for the viewport.
 //!
 //! A cell grid has no DOM: a wide grapheme occupies two cells, a combining mark
-//! none, and a control byte in the file must never reach the terminal as one
-//! (plan §11). Every function here is pure, because a window one cell off is
-//! invisible until it is not.
+//! none, and a control byte in the file must never reach the terminal as one.
+//! Everything here is pure — a window one cell off is invisible until it is not.
 
+use editor_core::metrics::{grapheme_width, single_control};
+use editor_core::{Scope, Span};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
-/// Columns a tab advances to. Four is the terminal convention; the web editor's
-/// two-space `indentUnit` never applied to tabs.
-pub const TAB_WIDTH: usize = 4;
+/// A run of cells that share one highlight state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Part {
+    pub text: String,
+    pub selected: bool,
+    /// The syntax scope these cells carry. `Plain` when the grammar is unknown
+    /// or has nothing to say about them.
+    pub scope: Scope,
+}
 
 /// The printable stand-in for a control character.
 ///
@@ -24,96 +30,101 @@ fn control_glyph(ch: char) -> char {
     }
 }
 
-fn single_control(grapheme: &str) -> Option<char> {
-    let mut chars = grapheme.chars();
-    let first = chars.next()?;
-    if chars.next().is_none() && first.is_control() {
-        Some(first)
-    } else {
-        None
-    }
-}
-
-/// Width of one grapheme starting at display column `cell`, tabs and controls
-/// included.
-pub fn grapheme_width(grapheme: &str, cell: usize) -> usize {
-    if grapheme == "\t" {
-        return TAB_WIDTH - cell % TAB_WIDTH;
-    }
-    if single_control(grapheme).is_some() {
-        return 1;
-    }
-    UnicodeWidthStr::width(grapheme)
-}
-
-/// Number of graphemes in `line` — the cursor's unit of movement.
-pub fn grapheme_count(line: &str) -> usize {
-    line.graphemes(true).count()
-}
-
-/// Display column of a grapheme index within `line`.
-pub fn display_col(line: &str, grapheme_index: usize) -> usize {
-    let mut cell = 0;
-    for grapheme in line.graphemes(true).take(grapheme_index) {
-        cell += grapheme_width(grapheme, cell);
-    }
-    cell
-}
-
-/// The cells `[left, left + width)` of `line`, ready to write.
+/// The cells `[left, left + width)` of `line`, split where the selection starts
+/// and ends. `selected` is a byte range within `line`.
 ///
 /// A grapheme straddling an edge becomes spaces: half a wide character cannot
-/// be drawn, and silently dropping cells would shift every column after it.
-pub fn cell_window(line: &str, left: usize, width: usize) -> String {
-    let mut out = String::new();
+/// be drawn, and dropping the cells would shift every column after it.
+#[must_use]
+pub fn window_parts(
+    line: &str,
+    left: usize,
+    width: usize,
+    selected: Option<(usize, usize)>,
+    scopes: &[Span],
+) -> Vec<Part> {
+    let mut parts: Vec<Part> = Vec::new();
     let mut cell = 0;
     let mut produced = 0;
 
-    for grapheme in line.graphemes(true) {
-        let w = grapheme_width(grapheme, cell);
-        let start = cell;
-        cell += w;
+    // Runs merge on selection *and* scope: a colour change starts a new part
+    // the same way the selection edge does, so the painter never has to split
+    // a string it was handed.
+    let push = |text: &str, selected: bool, scope: Scope, parts: &mut Vec<Part>| match parts
+        .last_mut()
+    {
+        Some(last) if last.selected == selected && last.scope == scope => last.text.push_str(text),
+        _ => parts.push(Part {
+            text: text.to_string(),
+            selected,
+            scope,
+        }),
+    };
 
-        if cell <= left {
-            continue;
-        }
-        if start < left {
-            let pad = (cell - left).min(width - produced);
-            push_spaces(&mut out, pad);
-            produced += pad;
-        } else if produced + w > width {
-            push_spaces(&mut out, width - produced);
-            produced = width;
-        } else if grapheme == "\t" {
-            push_spaces(&mut out, w);
-            produced += w;
-        } else if let Some(ch) = single_control(grapheme) {
-            out.push(control_glyph(ch));
-            produced += 1;
-        } else {
-            out.push_str(grapheme);
-            produced += w;
-        }
-
+    for (offset, grapheme) in line.grapheme_indices(true) {
         if produced >= width {
             break;
         }
+        let w = grapheme_width(grapheme, cell);
+        let start = cell;
+        cell += w;
+        if cell <= left {
+            continue;
+        }
+        let inside = selected.is_some_and(|(from, to)| offset >= from && offset < to);
+        let scope = scope_of(scopes, offset);
+
+        if start < left {
+            let pad = (cell - left).min(width - produced);
+            push(&" ".repeat(pad), inside, scope, &mut parts);
+            produced += pad;
+        } else if produced + w > width {
+            push(&" ".repeat(width - produced), inside, scope, &mut parts);
+            produced = width;
+        } else if grapheme == "\t" {
+            push(&" ".repeat(w), inside, scope, &mut parts);
+            produced += w;
+        } else if let Some(ch) = single_control(grapheme) {
+            push(&control_glyph(ch).to_string(), inside, scope, &mut parts);
+            produced += 1;
+        } else {
+            push(grapheme, inside, scope, &mut parts);
+            produced += w;
+        }
     }
-    out
+    // An empty selection at the end of a line still has to read as selected, so
+    // the trailing cell is padded when the range reaches past the last grapheme.
+    if let Some((from, to)) = selected {
+        if to > line.len() && from <= line.len() && produced < width {
+            push(" ", true, Scope::Plain, &mut parts);
+        }
+    }
+    parts
 }
 
-fn push_spaces(out: &mut String, count: usize) {
-    for _ in 0..count {
-        out.push(' ');
-    }
+/// The scope covering a byte offset, `Plain` when none does.
+fn scope_of(scopes: &[Span], offset: usize) -> Scope {
+    scopes
+        .iter()
+        .find(|span| offset >= span.start && offset < span.end)
+        .map_or(Scope::Plain, |span| span.scope)
+}
+
+/// The cells `[left, left + width)` of `line`, with no highlighting.
+#[must_use]
+pub fn cell_window(line: &str, left: usize, width: usize) -> String {
+    window_parts(line, left, width, None, &[])
+        .into_iter()
+        .map(|part| part.text)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn width(line: &str) -> usize {
-        display_col(line, usize::MAX)
+    fn width_of(line: &str) -> usize {
+        editor_core::metrics::display_column(line, line.len())
     }
 
     #[test]
@@ -123,20 +134,19 @@ mod tests {
         assert_eq!(cell_window(line, 1, 2), "中");
         assert_eq!(cell_window(line, 2, 2), " b");
         assert_eq!(cell_window(line, 0, 2), "a ");
-        assert_eq!(width(line), 4);
+        assert_eq!(width_of(line), 4);
     }
 
     #[test]
     fn tabs_expand_to_the_next_stop() {
         assert_eq!(cell_window("a\tb", 0, 5), "a   b");
         assert_eq!(cell_window("\tb", 0, 5), "    b");
-        assert_eq!(width("\t"), TAB_WIDTH);
+        assert_eq!(width_of("\t"), editor_core::metrics::TAB_WIDTH);
     }
 
     #[test]
     fn combining_marks_do_not_take_cells() {
-        assert_eq!(width("e\u{301}"), 1);
-        assert_eq!(grapheme_count("e\u{301}"), 1);
+        assert_eq!(width_of("e\u{301}"), 1);
         assert_eq!(cell_window("e\u{301}x", 0, 2), "e\u{301}x");
     }
 
@@ -144,11 +154,74 @@ mod tests {
     fn control_characters_render_as_pictures() {
         assert_eq!(cell_window("\u{1b}[31m", 0, 6), "␛[31m");
         assert_eq!(cell_window("\u{7f}", 0, 1), "␡");
-        assert_eq!(grapheme_width("\u{1b}", 0), 1);
     }
 
     #[test]
     fn a_narrow_window_shows_nothing_when_width_is_zero() {
         assert_eq!(cell_window("abc", 3, 0), "");
+    }
+
+    #[test]
+    fn a_selection_splits_the_row_into_runs() {
+        let parts = window_parts("abcdef", 0, 6, Some((2, 4)), &[]);
+        assert_eq!(
+            parts,
+            vec![
+                Part {
+                    text: "ab".to_string(),
+                    selected: false,
+                    scope: Scope::Plain,
+                },
+                Part {
+                    text: "cd".to_string(),
+                    selected: true,
+                    scope: Scope::Plain,
+                },
+                Part {
+                    text: "ef".to_string(),
+                    selected: false,
+                    scope: Scope::Plain,
+                },
+            ]
+        );
+    }
+
+    /// A colour change starts a run, and a selection edge inside one splits it
+    /// again: the painter is handed strings it never has to cut.
+    #[test]
+    fn a_scope_splits_the_row_and_composes_with_the_selection() {
+        let scopes = [Span {
+            start: 0,
+            end: 2,
+            scope: Scope::Keyword,
+        }];
+        let plain = window_parts("fn main", 0, 7, None, &scopes);
+        assert_eq!(plain.len(), 2);
+        assert_eq!(plain[0].text, "fn");
+        assert_eq!(plain[0].scope, Scope::Keyword);
+        assert_eq!(plain[1].scope, Scope::Plain);
+
+        let split = window_parts("fn main", 0, 7, Some((1, 4)), &scopes);
+        let runs: Vec<_> = split
+            .iter()
+            .map(|part| (part.text.as_str(), part.selected, part.scope))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("f", false, Scope::Keyword),
+                ("n", true, Scope::Keyword),
+                (" m", true, Scope::Plain),
+                ("ain", false, Scope::Plain),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_selection_that_swallows_the_line_break_shows_one_trailing_cell() {
+        let parts = window_parts("ab", 0, 8, Some((0, 3)), &[]);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].text, "ab ");
+        assert!(parts[0].selected);
     }
 }

@@ -1,6 +1,6 @@
 {
   "HelloReject": {
-    "daemon_protocol_version": 22,
+    "daemon_protocol_version": 23,
     "reason": "protocol version mismatch"
   }
 }

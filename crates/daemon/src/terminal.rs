@@ -97,6 +97,15 @@ impl TerminalRuntime {
         let publish_damage = self.engine.feed(bytes);
         (self.engine.take_pty_writes(), publish_damage)
     }
+
+    /// Text an OSC 52 asked to put on the clipboard. Take-and-clear.
+    ///
+    /// Drained on every pump rather than only on an emitted frame: a copy is a
+    /// gesture, and holding it back behind the delta clock would land it late
+    /// or, at EOF, not at all.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.engine.take_clipboard()
+    }
 }
 
 pub(crate) struct PumpStatus {

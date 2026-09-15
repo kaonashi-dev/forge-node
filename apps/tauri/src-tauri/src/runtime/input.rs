@@ -186,6 +186,13 @@ mod tests {
     }
 
     #[test]
+    fn shift_enter_is_esc_cr() {
+        let mut key = press("Enter");
+        key.shift = true;
+        assert_eq!(encode(&key, &modes()), Some(vec![0x1b, b'\r']));
+    }
+
+    #[test]
     fn a_bare_modifier_press_is_not_input() {
         for name in ["Shift", "Control", "Alt", "Meta", "CapsLock", "Dead"] {
             assert_eq!(

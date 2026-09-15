@@ -9,6 +9,7 @@ pub mod change;
 pub mod command;
 pub mod diff;
 pub mod github;
+pub mod marks;
 pub mod rebase;
 pub mod remote;
 pub mod repository;
@@ -29,6 +30,7 @@ pub use github::{
     PullRequest, PullRequestLabel, PullRequestPage, PullRequestReviewDecision, GH_TIMEOUT,
     MAX_PR_BODY,
 };
+pub use marks::{file_marks, marks_from_hunks, Mark, MarkKind};
 pub use rebase::{
     abort as abort_sequencer, continue_sequencer, mark_resolved, state as sequencer_state,
     Conflict, Continued, Sequencer, SequencerState, MAX_CONFLICTS,

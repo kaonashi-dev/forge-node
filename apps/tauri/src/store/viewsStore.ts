@@ -1,6 +1,9 @@
 import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { workbenchStore } from "./workbenchStore";
+import { noteFileOpened } from "../workbench/recentFiles";
+import { openTerminalEditor } from "../runtime/api";
+import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
 import {
   closeOthers,
   closeToRight,
@@ -89,8 +92,51 @@ export function openDiff(): void {
   open({ kind: "diff" });
 }
 
-export function openEditor(path: string): void {
-  open({ kind: "editor", path });
+export function openEditorTerminal(
+  session: string,
+  path: string,
+  workspace = workbenchStore.workspace,
+): void {
+  if (!workspace) return;
+  setStore(
+    "byWorkspace",
+    workspace,
+    openView(store.byWorkspace[workspace] ?? emptyViews(), {
+      kind: "editor-terminal",
+      session,
+      path,
+    }),
+  );
+  if (workspace === workbenchStore.workspace) setMode("code");
+}
+
+/**
+ * Open a file on whichever surface owns it.
+ *
+ * Text goes to the terminal editor: the daemon creates (or re-uses) the
+ * session and the `EditorOpened` event opens the tab, so there is no view to
+ * add here. What stays on the DOM side is the rendered kinds a TUI cannot
+ * draw — Markdown, SVG, a raster image — which `editorRouteFor` decides.
+ *
+ * `line` rides along so the daemon can reveal it at creation; a jump into a
+ * file that is already open becomes a `Reveal` on the live session rather than
+ * a second editor process.
+ */
+export function openEditor(path: string, line?: number): void {
+  // Opening is the whole of what "recent" means here — the tree carries no
+  // mtime, so this is where the palette's opening list comes from. Hooked at
+  // the one choke point rather than at each caller, so the file tree, a
+  // definition jump and a diff all count the same as the palette itself.
+  noteFileOpened(workbenchStore.workspace, path);
+  const workspace = workbenchStore.workspace;
+  if (!workspace) return;
+  // The tab arrives with `EditorOpened`; a failure leaves the current view
+  // alone rather than opening an empty one. The autosave preference travels
+  // with the open: the daemon holds no opinion about it and the editor process
+  // is what acts on it.
+  void openTerminalEditor(workspace, path, line, readFlag(AUTOSAVE_KEY, false)).catch(
+    () => undefined,
+  );
 }
 
 /**
@@ -106,8 +152,7 @@ export function openEditor(path: string): void {
  * working in — an explicit reveal would drop it for a jump that did not ask.
  */
 export function openEditorAt(path: string, line: number): void {
-  openEditor(path);
-  setPendingLine({ path, line });
+  openEditor(path, line);
 }
 
 export function openPrDetail(key: string): void {
@@ -149,6 +194,11 @@ export function focus(view: WorkbenchView): void {
  */
 export function close(view: WorkbenchView): void {
   remember(view);
+  if (view.kind === "editor-terminal") {
+    void import("../runtime/api").then(({ closeEditor }) =>
+      closeEditor(view.session).catch(() => undefined),
+    );
+  }
   update((views) => closeView(views, view));
   if (!hasCode(currentViews())) setMode("session");
 }
@@ -180,7 +230,7 @@ function remember(view: WorkbenchView): void {
   const workspace = workbenchStore.workspace;
   // The terminal is never closed, and re-opening a diff is a refresh, not a
   // restoration — only a file has a place to come back to.
-  if (!workspace || view.kind === "terminal") return;
+  if (!workspace || view.kind === "terminal" || view.kind === "editor-terminal") return;
   const kept = (closedByWorkspace[workspace] ?? []).filter((item) => !sameView(item, view));
   setClosedByWorkspace(workspace, [...kept, view].slice(-CLOSED_DEPTH));
 }
@@ -251,4 +301,30 @@ export const editorReveal = pendingLine;
 
 export function clearEditorReveal(): void {
   setPendingLine(null);
+}
+
+/**
+ * Open the Files sidebar in content-search mode, optionally pre-filled.
+ *
+ * Same shape as `treeReveal`: the Files panel may not be mounted yet (another
+ * sidebar view, or the bar collapsed). The request stands until the panel
+ * picks it up.
+ *
+ * `query` is what separates the two callers. `Mod-shift-f` asks for the field
+ * and nothing else, so it sends `null` and the panel leaves whatever was typed
+ * there alone. "Find All References" arrives with a symbol, and the panel runs
+ * it — a references search is a content grep with the query already decided.
+ */
+const [pendingFindInFiles, setPendingFindInFiles] = createSignal<{ query: string | null } | null>(
+  null,
+);
+
+export const findInFilesPending = pendingFindInFiles;
+
+export function requestFindInFiles(query: string | null = null): void {
+  setPendingFindInFiles({ query });
+}
+
+export function clearFindInFiles(): void {
+  setPendingFindInFiles(null);
 }

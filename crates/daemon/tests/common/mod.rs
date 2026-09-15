@@ -717,6 +717,31 @@ pub fn attach_and_read_line(
     found
 }
 
+/// Attach, then find a row matching `pred` in the snapshot or in a later delta.
+///
+/// A terminal that painted before the attach carries its text in the snapshot
+/// and never repeats it as a delta, so waiting only on deltas loses every row
+/// that was already on screen — the reason [`attach_and_read_line`] exists.
+/// This is the same read for a predicate that is not a prefix.
+pub fn attach_and_wait_for_row(
+    client: &Client,
+    events: &flume::Receiver<DaemonEvent>,
+    terminal_id: TerminalId,
+    mut pred: impl FnMut(&str) -> bool,
+) -> Option<String> {
+    let snapshot = attach(client, terminal_id, 80, 24);
+    let seen = snapshot
+        .scrollback_tail
+        .iter()
+        .chain(snapshot.visible.iter())
+        .map(row_text)
+        .find(|text| pred(text));
+    if seen.is_some() {
+        return seen;
+    }
+    wait_for_row(events, DEADLINE, pred)
+}
+
 /// The first line of `snapshot` that starts with `prefix`.
 fn snapshot_line_starting_with(
     snapshot: &domain::TerminalSnapshot,

@@ -43,6 +43,7 @@ import {
   openEditor,
   openFeatureCompose,
   reopenClosed,
+  requestFindInFiles,
   showCode,
   showSession,
   stepCodeView,
@@ -449,6 +450,10 @@ export function AppShell() {
       // bar it lives in rather than going quiet.
       registerAction("toggle_projects", () => toggleView("Projects")),
       registerAction("toggle_files", () => toggleView("Files")),
+      registerAction("find_in_project", () => {
+        requestFindInFiles();
+        showView("Files");
+      }),
       registerAction("toggle_pull_requests", () => toggleView("PR")),
       registerAction("toggle_features", () => toggleView("Features")),
       registerAction("toggle_git", () => toggleView("Git")),

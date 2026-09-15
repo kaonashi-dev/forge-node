@@ -8,12 +8,17 @@ use std::time::Duration;
 /// ADR-010). `root` is depth 1.
 pub const MAX_GRAPH_DEPTH: u32 = 8;
 
-/// A session is either a plain shell or an agent CLI running in a PTY.
+/// A session is a plain shell, an agent CLI or a file-editing terminal process
+/// running in a PTY.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum SessionKind {
     Shell,
     Agent,
+    /// `forge-editor` under the daemon's PTY (feature 19, H1). It is an
+    /// ordinary session with an ordinary terminal; what it adds is the
+    /// control channel that opens the buffer and reports [`EditorState`].
+    Editor,
 }
 
 /// Unified session state machine (§7.3). This is the single source of truth;
@@ -131,6 +136,37 @@ fn present_title(value: Option<&str>) -> Option<&str> {
     value.filter(|s| !s.trim().is_empty())
 }
 
+/// Metadata of the buffer an editor session holds.
+///
+/// Published by the editor process over its control channel and stored on the
+/// session so it rides `SessionUpdated` and every snapshot. It carries no
+/// document text: the draft lives in the editor process, and this is what the
+/// GUI needs to draw a path and a position.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorState {
+    /// Workspace-relative path, display metadata only. The daemon owns
+    /// resolution; the editor never touches the checkout.
+    pub path: String,
+    /// 1-based.
+    pub line: u32,
+    /// 1-based.
+    pub column: u32,
+    pub dirty: bool,
+    pub read_only: bool,
+    /// `editor_core::DocumentVersion` as a number: monotonic per mutation.
+    /// Kept opaque here so `domain` does not depend on the editor crate.
+    pub document_version: u64,
+    /// A save was refused because the file moved under the buffer.
+    ///
+    /// The daemon's word, not the editor's: the editor only learns a reason
+    /// string, while the daemon is the one that saw the revision mismatch. A
+    /// flag and never the texts — the draft lives in the editor process, and
+    /// the two sides of the comparison are fetched with `GetEditorConflict`
+    /// when somebody asks to see them, not carried on every `SessionUpdated`.
+    #[serde(default)]
+    pub conflict: bool,
+}
+
 /// A persistent unit of work in the domain; a node of the session graph.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
@@ -144,6 +180,12 @@ pub struct Session {
     pub root_session_id: SessionId,
     /// `None` in `Failed`/`Orphaned` or while a restart is pending (§7.3).
     pub terminal_id: Option<TerminalId>,
+    /// Buffer metadata for an `Editor` session, `None` for every other kind.
+    ///
+    /// Runtime state like `terminal_id`: never a column, `None` on load. The
+    /// daemon writes it from the editor's control channel, coalesced, and the
+    /// GUI reads it off the snapshot rather than parsing ANSI.
+    pub editor: Option<EditorState>,
     pub agent_provider_id: Option<AgentProviderId>,
     /// The launch profile this session ran with, when it was started from one
     /// (§13.4). Kept even after the profile is deleted: the row is history, and
@@ -302,6 +344,75 @@ mod tests {
         assert_eq!(
             SessionTitle::from_osc(Some(" Cursor ")).as_deref(),
             Some("Cursor")
+        );
+    }
+
+    #[test]
+    fn every_kind_has_a_distinct_tag() {
+        let tags: Vec<String> = [SessionKind::Shell, SessionKind::Agent, SessionKind::Editor]
+            .into_iter()
+            .map(|kind| serde_json::to_string(&kind).unwrap())
+            .collect();
+        assert_eq!(tags, ["\"Shell\"", "\"Agent\"", "\"Editor\""]);
+    }
+
+    #[test]
+    fn editor_state_round_trips_with_its_session() {
+        let state = EditorState {
+            path: "src/main.rs".into(),
+            line: 3,
+            column: 12,
+            dirty: true,
+            read_only: false,
+            document_version: 7,
+            conflict: true,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert_eq!(serde_json::from_str::<EditorState>(&json).unwrap(), state);
+        assert_eq!(EditorState::default().document_version, 0);
+        assert!(!EditorState::default().conflict, "a fresh buffer is clean");
+    }
+
+    #[test]
+    fn editor_state_is_runtime_only() {
+        // Present on the wire so a snapshot recovers it; persistence skips it
+        // (see `a_session_row_never_stores_editor_state`).
+        let id = SessionId::new();
+        let session = Session {
+            id,
+            workspace_id: WorkspaceId::new(),
+            kind: SessionKind::Editor,
+            role: SessionRole::Generic,
+            parent_session_id: None,
+            root_session_id: id,
+            terminal_id: None,
+            editor: Some(EditorState {
+                path: "src/main.rs".into(),
+                line: 1,
+                column: 1,
+                dirty: false,
+                read_only: true,
+                document_version: 1,
+                conflict: false,
+            }),
+            agent_provider_id: None,
+            agent_profile_id: None,
+            title: SessionTitle::default(),
+            state: SessionState::Running,
+            created_at: Timestamp::now(),
+            launch_command: None,
+            last_activity_at: Timestamp::now(),
+            ended_at: None,
+            base_commit: None,
+        };
+        let json = serde_json::to_value(&session).unwrap();
+        assert!(
+            json.get("editor").and_then(|v| v.get("path")).is_some(),
+            "the snapshot must carry buffer metadata"
+        );
+        assert!(
+            json.get("terminal_id").is_some(),
+            "runtime-only is not the same as omitted from the wire"
         );
     }
 

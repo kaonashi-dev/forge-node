@@ -46,11 +46,11 @@ export type ContextId =
 /**
  * Innermost first. A binding in an earlier context wins.
  *
- * `EDITOR` sits above `FILES` deliberately: CodeMirror's
- * own keymap runs *inside* the editor context, and a chord the editor claims
- * must not be answered by a tree that merely happens to be on screen beside
- * it. `FILES` is only entered while the tree actually holds focus, so in
- * practice the two are never active at once — this is the belt to that brace.
+ * `EDITOR` sits above `FILES` deliberately: the editor's own keymap runs
+ * *inside* the editor context, and a chord the editor claims must not be
+ * answered by a tree that merely happens to be on screen beside it. `FILES`
+ * is only entered while the tree actually holds focus, so in practice the
+ * two are never active at once — this is the belt to that brace.
  */
 export const CONTEXT_ORDER: ContextId[] = [COMMAND_PALETTE, EDITOR, FILES, TERMINAL, SIDEBAR, APP];
 
@@ -79,6 +79,7 @@ export type ActionId =
   | "cycle_sidebar_views"
   | "add_project"
   | "open_file_palette"
+  | "find_in_project"
   | "save_file"
   | "go_to_definition"
   | "file_tree_next"
@@ -275,6 +276,13 @@ export const ACTIONS: Action[] = [
     label: "Open File…",
     detail: "Find a file in the active workspace",
     palette: true,
+  },
+  {
+    id: "find_in_project",
+    label: "Find in Files",
+    detail: "Search file contents in the active workspace",
+    palette: true,
+    repeats: false,
   },
   {
     id: "save_file",
@@ -577,7 +585,9 @@ export function defaultBindings(): Binding[] {
     bind(`${MOD}-2`, "toggle_files", APP),
     bind(`${MOD}-3`, "cycle_sidebar_views", APP),
     bind(`${MOD}-shift-r`, "toggle_pull_requests", APP),
-    bind(`${MOD}-shift-f`, "toggle_files", APP),
+    // Files stays on `MOD-2`; this chord opens the same tab in content-search
+    // mode (literal text across the checkout), not a second sidebar view.
+    bind(`${MOD}-shift-f`, "find_in_project", APP),
     // `shift-h` for the harness: `${MOD}-h` alone is macOS's hide-application,
     // and on Linux `ctrl-h` is a terminal's backspace.
     bind(`${MOD}-shift-h`, "toggle_features", APP),
@@ -625,10 +635,10 @@ export function defaultBindings(): Binding[] {
      * only for whoever knew to open the palette and type its name.
      *
      * `${MOD}-f` is deliberately *not* claimed app-wide: inside the editor it
-     * is CodeMirror's find, and the editor's own keymap is the right place for
-     * it (§8.1). Find-in-terminal, which §4.1 U3 also asks for, is not here
-     * yet — it needs a search over the scrollback and a highlight in the cell
-     * renderer, and a chord bound to nothing is the thing U3 exists to remove.
+     * is the editor's find, and the editor's own keymap is the right place for
+     * it. Project-wide content search is `${MOD}-shift-f` → `find_in_project`.
+     * Find-in-terminal is not here yet — it needs a search over the
+     * scrollback and a highlight in the cell renderer.
      */
     bind(`${MOD}-=`, "terminal_zoom_in", TERMINAL),
     bind(`${MOD}--`, "terminal_zoom_out", TERMINAL),

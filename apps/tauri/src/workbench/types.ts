@@ -139,6 +139,8 @@ export type SearchMatch = {
  * `definition` is not a content search with a clever query: the daemon greps
  * for the bare word and decides what a declaration looks like, so no regex
  * that has to be right in eleven languages ever leaves this side.
+ *
+ * `content` is fixed-string find-in-project text (`git grep -F`), not a regex.
  */
 export type SearchKind = "name" | "content" | "definition";
 

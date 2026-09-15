@@ -29,21 +29,26 @@ export type MdImage = {
   width: string | null;
 };
 
+/** Character offsets into the source this parse is reading (`slice` end). */
+export type MdLoc = { start: number; end: number };
+
 export type MdListItem = {
   spans: MdSpan[];
   depth: number;
   /** `null` for an ordinary bullet; the box's state for a GFM task. */
   checked: boolean | null;
+  start: number;
+  end: number;
 };
 
 export type MdBlock =
-  | { kind: "heading"; level: number; spans: MdSpan[] }
-  | { kind: "paragraph"; spans: MdSpan[] }
-  | { kind: "list"; ordered: boolean; items: MdListItem[] }
-  | { kind: "code"; lang: string | null; text: string }
-  | { kind: "quote"; blocks: MdBlock[] }
-  | { kind: "table"; head: MdSpan[][]; rows: MdSpan[][][] }
-  | { kind: "rule" };
+  | { kind: "heading"; level: number; spans: MdSpan[]; start: number; end: number }
+  | { kind: "paragraph"; spans: MdSpan[]; start: number; end: number }
+  | { kind: "list"; ordered: boolean; items: MdListItem[]; start: number; end: number }
+  | { kind: "code"; lang: string | null; text: string; start: number; end: number }
+  | { kind: "quote"; blocks: MdBlock[]; start: number; end: number }
+  | { kind: "table"; head: MdSpan[][]; rows: MdSpan[][][]; start: number; end: number }
+  | { kind: "rule"; start: number; end: number };
 
 /** Indent deeper than this folds back: a description is prose, not a tree. */
 const MAX_DEPTH = 2;
@@ -77,7 +82,9 @@ const LAYOUT_TAGS = new Set(["a", "p", "div", "center", "picture", "source", "sp
 
 /** The blocks of one Markdown document, in reading order. */
 export function parseMarkdown(source: string): MdBlock[] {
-  return parseBlocks(source.replace(/\r\n?/g, "\n").split("\n"));
+  const text = source.replace(/\r\n?/g, "\n");
+  const lines = text.split("\n");
+  return parseBlocks(lines, locOf(lines, text.length));
 }
 
 /**
@@ -92,7 +99,41 @@ export function safeHref(href: string): string | null {
   return /^(?:https?:\/\/|mailto:)\S+$/i.test(trimmed) ? trimmed : null;
 }
 
-function parseBlocks(lines: string[]): MdBlock[] {
+/**
+ * Flip the first GFM task marker in a list item's source, or `null` if none.
+ *
+ * Only called for items the parser already classified as tasks, so the first
+ * `[ ]` / `[x]` is the box, not a later one in the prose.
+ */
+export function toggleTaskMarker(itemSource: string): string | null {
+  const next = itemSource.replace(/\[([ xX])\]/, (_all, mark: string) =>
+    mark === " " ? "[x]" : "[ ]",
+  );
+  return next === itemSource ? null : next;
+}
+
+type LineLoc = { starts: number[]; total: number };
+
+function locOf(lines: string[], total: number): LineLoc {
+  const starts: number[] = [];
+  let offset = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    starts.push(offset);
+    offset += lines[i].length + (i < lines.length - 1 ? 1 : 0);
+  }
+  return { starts, total };
+}
+
+/** The source of `lines[from]..lines[toExclusive-1]`, without a trailing newline. */
+function offsets(loc: LineLoc, fromLine: number, toExclusive: number): MdLoc {
+  const start = loc.starts[fromLine] ?? loc.total;
+  const last = Math.min(toExclusive, loc.starts.length) - 1;
+  if (last < fromLine) return { start, end: start };
+  const next = loc.starts[last + 1];
+  return { start, end: next === undefined ? loc.total : next - 1 };
+}
+
+function parseBlocks(lines: string[], loc: LineLoc): MdBlock[] {
   const blocks: MdBlock[] = [];
   let index = 0;
 
@@ -107,15 +148,27 @@ function parseBlocks(lines: string[]): MdBlock[] {
     // An unclosed one hides the rest of the document, as it does in a browser.
     if (COMMENT_OPEN.test(line)) {
       while (index < lines.length && !lines[index].includes("-->")) index += 1;
+      const closeLine = index < lines.length ? index : lines.length - 1;
       const closing = index < lines.length ? lines[index] : "";
       const after = closing.slice(closing.indexOf("-->") + 3).trim();
       index += 1;
-      if (after !== "") blocks.push({ kind: "paragraph", spans: inlineSpans(after) });
+      if (after !== "") {
+        const lineStart = loc.starts[closeLine] ?? loc.total;
+        const col = closing.indexOf(after, closing.indexOf("-->") + 3);
+        const start = lineStart + Math.max(col, 0);
+        blocks.push({
+          kind: "paragraph",
+          spans: inlineSpans(after),
+          start,
+          end: start + after.length,
+        });
+      }
       continue;
     }
 
     const fence = FENCE.exec(line);
     if (fence) {
+      const from = index;
       const marker = fence[1] ?? "```";
       const body: string[] = [];
       index += 1;
@@ -125,37 +178,57 @@ function parseBlocks(lines: string[]): MdBlock[] {
       }
       // Past the closing fence, or past the end when the body never closed it.
       index += 1;
-      blocks.push({ kind: "code", lang: fence[2] || null, text: body.join("\n") });
+      blocks.push({
+        kind: "code",
+        lang: fence[2] || null,
+        text: body.join("\n"),
+        ...offsets(loc, from, index),
+      });
       continue;
     }
 
     const heading = HEADING.exec(line);
     if (heading) {
-      const level = (heading[1] ?? "#").length;
-      blocks.push({ kind: "heading", level, spans: inlineSpans(heading[2] ?? "") });
+      const from = index;
       index += 1;
+      const level = (heading[1] ?? "#").length;
+      blocks.push({
+        kind: "heading",
+        level,
+        spans: inlineSpans(heading[2] ?? ""),
+        ...offsets(loc, from, index),
+      });
       continue;
     }
 
     if (RULE.test(line)) {
-      blocks.push({ kind: "rule" });
+      const from = index;
       index += 1;
+      blocks.push({ kind: "rule", ...offsets(loc, from, index) });
       continue;
     }
 
     if (QUOTE.test(line)) {
+      const from = index;
       const inner: string[] = [];
       while (index < lines.length && QUOTE.test(lines[index])) {
         inner.push(QUOTE.exec(lines[index])?.[1] ?? "");
         index += 1;
       }
-      blocks.push({ kind: "quote", blocks: parseBlocks(inner) });
+      const innerText = inner.join("\n");
+      blocks.push({
+        kind: "quote",
+        // Inner offsets are in the un-prefixed body, not the original source.
+        blocks: parseBlocks(inner, locOf(inner, innerText.length)),
+        ...offsets(loc, from, index),
+      });
       continue;
     }
 
     // A table is only a table with its delimiter row: one `|` in a sentence is
     // a pipe, and drawing a one-column grid around it loses the sentence.
     if (line.includes("|") && index + 1 < lines.length && isDelimiterRow(lines[index + 1])) {
+      const from = index;
       const head = tableCells(line).map(inlineSpans);
       const rows: MdSpan[][][] = [];
       index += 2;
@@ -163,21 +236,28 @@ function parseBlocks(lines: string[]): MdBlock[] {
         rows.push(tableCells(lines[index]).map(inlineSpans));
         index += 1;
       }
-      blocks.push({ kind: "table", head, rows });
+      blocks.push({ kind: "table", head, rows, ...offsets(loc, from, index) });
       continue;
     }
 
     const first = ITEM.exec(line);
     if (first) {
+      const from = index;
       const ordered = first[3] !== undefined;
-      const raw: { depth: number; checked: boolean | null; text: string }[] = [];
+      const raw: {
+        depth: number;
+        checked: boolean | null;
+        text: string;
+        from: number;
+        toExclusive: number;
+      }[] = [];
       while (index < lines.length) {
         const item = ITEM.exec(lines[index]);
         if (item) {
           // A bullet list under a numbered one is a second list, not a row of
           // this one: they are numbered differently and must not share a count.
           if ((item[3] !== undefined) !== ordered) break;
-          raw.push(rawItem(item));
+          raw.push({ ...rawItem(item), from: index, toExclusive: index + 1 });
           index += 1;
           continue;
         }
@@ -185,6 +265,7 @@ function parseBlocks(lines: string[]): MdBlock[] {
         if (current === undefined || lines[index].trim() === "" || startsBlock(lines[index])) break;
         current.text += `\n${lines[index].trim()}`;
         index += 1;
+        current.toExclusive = index;
       }
       blocks.push({
         kind: "list",
@@ -193,7 +274,9 @@ function parseBlocks(lines: string[]): MdBlock[] {
           depth: entry.depth,
           checked: entry.checked,
           spans: inlineSpans(entry.text),
+          ...offsets(loc, entry.from, entry.toExclusive),
         })),
+        ...offsets(loc, from, index),
       });
       continue;
     }
@@ -201,6 +284,7 @@ function parseBlocks(lines: string[]): MdBlock[] {
     // Soft breaks are kept as newlines rather than collapsed to spaces: a forge
     // host renders them as breaks, and a wrapped checklist reads as one line
     // per item there and must here too.
+    const from = index;
     const text = [line.trim()];
     index += 1;
     while (index < lines.length && lines[index].trim() !== "" && !startsBlock(lines[index])) {
@@ -209,7 +293,9 @@ function parseBlocks(lines: string[]): MdBlock[] {
     }
     // A line that was only a layout tag leaves nothing, and must leave no gap.
     const spans = trimSpans(inlineSpans(text.join("\n")));
-    if (spans.length > 0) blocks.push({ kind: "paragraph", spans });
+    if (spans.length > 0) {
+      blocks.push({ kind: "paragraph", spans, ...offsets(loc, from, index) });
+    }
   }
 
   return blocks;

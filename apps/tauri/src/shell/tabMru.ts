@@ -69,17 +69,23 @@ export function switcherIds(
   return { ids: [...local, ...foreign], foreignAt: local.length };
 }
 
-/** Live terminals, newest activity first — fallback order for foreign rows. */
+/**
+ * Live terminals, newest activity first — fallback order for foreign rows.
+ *
+ * Editors are excluded: an open file belongs to the Code strip, not the
+ * Ctrl+Tab ring, so it must not surface as a recent session from a checkout.
+ */
 export function liveIdsByActivity(
   sessions: readonly {
     id: string;
+    kind?: string;
     terminal_id: string | null;
     last_activity_at?: string;
     created_at: string;
   }[],
 ): string[] {
   return sessions
-    .filter((session) => session.terminal_id != null)
+    .filter((session) => session.terminal_id != null && session.kind !== "Editor")
     .slice()
     .sort((a, b) => {
       const aAt = a.last_activity_at ?? a.created_at;

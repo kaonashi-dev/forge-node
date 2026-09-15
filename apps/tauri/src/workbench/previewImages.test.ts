@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createImageReader, imageSource } from "./previewImages";
+import { createImageReader, imageMime, imageSource, svgDataUrl } from "./previewImages";
 
 describe("imageSource", () => {
   it("resolves a relative path against the document's directory", () => {
@@ -87,5 +87,61 @@ describe("createImageReader", () => {
     const read = reader.read("w", "a.png");
     vi.advanceTimersByTime(50);
     await expect(read).rejects.toThrow("Timed out");
+  });
+});
+
+describe("imageMime", () => {
+  it("names every type the daemon's `image_mime` will hand over", () => {
+    expect(imageMime("a/b/forge-1024.png")).toBe("image/png");
+    expect(imageMime("shot.jpg")).toBe("image/jpeg");
+    expect(imageMime("shot.jpeg")).toBe("image/jpeg");
+    expect(imageMime("loop.gif")).toBe("image/gif");
+    expect(imageMime("photo.webp")).toBe("image/webp");
+    expect(imageMime("icons/bot.svg")).toBe("image/svg+xml");
+    expect(imageMime("photo.avif")).toBe("image/avif");
+    expect(imageMime("old.bmp")).toBe("image/bmp");
+    expect(imageMime("favicon.ico")).toBe("image/x-icon");
+  });
+
+  it("matches the extension whatever case it is written in", () => {
+    expect(imageMime("docs/SHOT.PNG")).toBe("image/png");
+    expect(imageMime("docs/Shot.JpEg")).toBe("image/jpeg");
+  });
+
+  /* The daemon refuses a path with no image extension, so anything this
+     claimed and `read_image` did not would be a preview asking for bytes it
+     never gets. */
+  it("claims nothing the daemon would refuse", () => {
+    expect(imageMime("src/main.rs")).toBeNull();
+    expect(imageMime("README")).toBeNull();
+    expect(imageMime(".env")).toBeNull();
+    expect(imageMime("archive.png.gz")).toBeNull();
+    expect(imageMime("")).toBeNull();
+  });
+
+  it("reads the extension, not a directory that happens to end in one", () => {
+    expect(imageMime("assets.png/notes.txt")).toBeNull();
+    expect(imageMime("assets.png/logo.svg")).toBe("image/svg+xml");
+  });
+
+  it("ignores a query or fragment, as `imageSource` does", () => {
+    expect(imageMime("logo.svg?v=2")).toBe("image/svg+xml");
+    expect(imageMime("logo.png#top")).toBe("image/png");
+  });
+});
+
+describe("svgDataUrl", () => {
+  /* Percent-encoded rather than raw: an unescaped `#` opens a fragment and
+     truncates the document at the first fill colour. */
+  it("encodes the markup so a colour does not cut the document short", () => {
+    const url = svgDataUrl('<svg><rect fill="#abc"/></svg>');
+    expect(url.startsWith("data:image/svg+xml;charset=utf-8,")).toBe(true);
+    expect(url).not.toContain("#abc");
+    expect(decodeURIComponent(url.split(",")[1]!)).toBe('<svg><rect fill="#abc"/></svg>');
+  });
+
+  it("round-trips non-ASCII content", () => {
+    const svg = "<svg><text>caf\u00e9 \u2014 \u00f1</text></svg>";
+    expect(decodeURIComponent(svgDataUrl(svg).split(",")[1]!)).toBe(svg);
   });
 });

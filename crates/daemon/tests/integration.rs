@@ -607,6 +607,35 @@ fn resize_terminal_reaches_the_grid_and_the_pty() {
     stop_daemon(&client);
 }
 
+/// A second `AttachTerminal` is a snapshot read, not a resize. The daemon
+/// adopts a size only for the subscriber that created the terminal, because two
+/// windows attaching at their own geometry would fight over one PTY — a host
+/// resizing a side attachment says `ResizeTerminal` first.
+#[test]
+fn a_second_attach_keeps_the_geometry_it_adopted() {
+    let td = start_daemon();
+    let client = Client::connect(&td.socket, "itest").expect("connect");
+    let events = client.events();
+    let repo = test_support::init_repo().expect("git repo");
+    let workspace_id = add_main_workspace(&client, repo.path());
+    let (session_id, terminal_id) = create_shell_session(&client, &events, workspace_id);
+
+    let first = attach(&client, terminal_id, 80, 24);
+    assert_eq!((first.size.cols, first.size.rows), (80, 24));
+    assert_eq!(first.visible.len(), 24);
+
+    let again = attach(&client, terminal_id, 120, 40);
+    assert_eq!(
+        (again.size.cols, again.size.rows),
+        (80, 24),
+        "the established geometry wins over a later attach"
+    );
+    assert_eq!(again.visible.len(), 24);
+
+    assert!(kill_and_wait(&client, &events, session_id));
+    stop_daemon(&client);
+}
+
 /// §11.3, the invariant the plan spells out: the kill signal goes to `-pgid`,
 /// never to the individual pid, "which would orphan grandchildren".
 #[test]

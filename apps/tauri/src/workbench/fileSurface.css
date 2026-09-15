@@ -13,6 +13,9 @@
   --fw-deleted: var(--forge-git-deleted);
   --fw-font: var(--font-mono);
   --fw-font-size: var(--forge-mono-size);
+  --fw-editor-ground: var(--forge-editor);
+  /* Soft active-line wash; same idea as editorTheme.activeLine. */
+  --fw-active-line: color-mix(in srgb, var(--fg-default) 5%, var(--forge-editor));
 }
 /* The Files panel runs the explorer in `chrome: "list"`, so it is an ordinary
    `.panel-body` in the sidebar — whose ground is the subtle one, which both

@@ -236,6 +236,80 @@ pub enum RuntimeCommand {
         editor: String,
         path: String,
     },
+    /// Open a file in a daemon-supervised `forge-editor` (feature 19).
+    OpenEditor {
+        workspace: WorkspaceId,
+        path: String,
+        #[serde(default)]
+        line: Option<u32>,
+        /// The caller's autosave preference, carried to the editor process.
+        #[serde(default)]
+        autosave: bool,
+    },
+    ReopenEditor {
+        session_id: SessionId,
+    },
+    InputEditor {
+        session_id: SessionId,
+        key: KeyPress,
+        #[serde(default)]
+        id: u64,
+    },
+    InputEditorText {
+        session_id: SessionId,
+        text: String,
+        #[serde(default)]
+        id: u64,
+    },
+    PasteEditor {
+        session_id: SessionId,
+        text: String,
+        #[serde(default)]
+        id: u64,
+    },
+    /// A mouse event for a Code editor pane whose `forge-editor` asked to read
+    /// the mouse.
+    ///
+    /// The editor sibling of [`RuntimeCommand::Mouse`]: same shape, but the
+    /// bytes go to the editor's side attachment rather than the focused
+    /// terminal. `shift` is carried through rather than held back for local
+    /// selection — the canvas has none, and the editor reads shift-click as an
+    /// extend.
+    MouseEditor {
+        session_id: SessionId,
+        /// `left`, `middle`, `right`, `wheel_up`, `wheel_down`.
+        button: String,
+        /// `press`, `release`, `motion`.
+        kind: String,
+        /// 0-based cell coordinates; the protocol's 1-based values are the
+        /// encoder's business.
+        col: u16,
+        row: u16,
+        #[serde(default)]
+        ctrl: bool,
+        #[serde(default)]
+        alt: bool,
+        #[serde(default)]
+        shift: bool,
+    },
+    ResizeEditor {
+        session_id: SessionId,
+        size: PtySize,
+    },
+    /// Re-send an editor's whole viewport.
+    ///
+    /// The editor sibling of [`RuntimeCommand::Repaint`]: several files share
+    /// one Code pane, so switching sub-tabs is pure client-side view state and
+    /// reaches no terminal. The freshly-shown pane asks for the frame it would
+    /// otherwise wait on output for — and on an idle editor that output never
+    /// comes.
+    RepaintEditor {
+        session_id: SessionId,
+    },
+    /// Detach the Code pane; the editor process survives.
+    CloseEditor {
+        session_id: SessionId,
+    },
     /// Reveal a path in the desktop file manager.
     OpenInFileManager {
         path: String,

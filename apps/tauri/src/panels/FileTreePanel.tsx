@@ -9,6 +9,7 @@ import {
   type TreeRow,
 } from "@forge-node/file-workbench";
 import {
+  For,
   Show,
   createEffect,
   createMemo,
@@ -19,7 +20,15 @@ import {
 } from "solid-js";
 import { FILES } from "../actions/actions";
 import { enterContext, registerAction } from "../actions/dispatch";
-import { clearTreeReveal, currentViews, openEditor, treeReveal } from "../store/viewsStore";
+import {
+  clearFindInFiles,
+  clearTreeReveal,
+  currentViews,
+  findInFilesPending,
+  openEditor,
+  openEditorAt,
+  treeReveal,
+} from "../store/viewsStore";
 import { forgeStore } from "../store/forgeStore";
 import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import {
@@ -31,6 +40,7 @@ import {
   loadFileTree,
   openFile,
   renamePath,
+  searchFiles,
   warmFileTree,
 } from "../workbench/api";
 import { watchFiles, fileWatchError } from "../workbench/fileWatch";
@@ -50,6 +60,13 @@ import {
   Tooltip,
   type MenuItem,
 } from "../ui";
+import {
+  CONTENT_SEARCH_DEBOUNCE_MS,
+  groupContentHits,
+  shouldSearchContent,
+} from "./fileContentSearch";
+
+type FilesMode = "filter" | "content";
 
 /* The two folder glyphs the package cannot render.
  *
@@ -70,10 +87,11 @@ export function FileTreePanel() {
   const [directories, setDirectories] = createSignal<string[]>([""]);
   const [invalidated, setInvalidated] = createSignal(false);
   const [mounted, setMounted] = createSignal(false);
-  const [query, setQuery] = createSignal("");
-  /* What the package derived from the listing, so the Forge chrome around it
-     — the empty copy, the count, the truncation note — never walks the rows a
-     second time. */
+  const [mode, setMode] = createSignal<FilesMode>("filter");
+  const [filterQuery, setFilterQuery] = createSignal("");
+  const [contentQuery, setContentQuery] = createSignal("");
+  /** Needle we last asked the daemon for in content mode; correlates the answer. */
+  const [contentAsked, setContentAsked] = createSignal<string | null>(null);
   const [derived, setDerived] = createSignal<ExplorerDerived>({
     rows: 0,
     files: 0,
@@ -90,6 +108,16 @@ export function FileTreePanel() {
     path: string;
     isFile: boolean;
   } | null>(null);
+  const contentResults = createMemo(() => {
+    const asked = contentAsked();
+    const results = workbenchStore.search;
+    if (asked === null || !results || results.query !== asked) return null;
+    return results;
+  });
+  const contentGroups = createMemo(() => {
+    const results = contentResults();
+    return results ? groupContentHits(results.matches) : [];
+  });
   const decorations = createMemo(() => {
     const marks = fileDecorations(workbenchStore.diff?.files ?? []);
     const result = new Map<string, FileDecoration>();
@@ -156,7 +184,10 @@ export function FileTreePanel() {
       registerAction("file_tree_open", () => explorer?.action("open")),
       registerAction("file_tree_first", () => explorer?.action("first")),
       registerAction("file_tree_last", () => explorer?.action("last")),
-      registerAction("file_tree_filter", () => explorer?.action("filter")),
+      registerAction("file_tree_filter", () => {
+        setMode("filter");
+        explorer?.action("filter");
+      }),
       registerAction("file_tree_refresh", refresh),
       registerAction("file_tree_rename", () => {
         const row = explorer?.selected();
@@ -194,7 +225,10 @@ export function FileTreePanel() {
     if (workspace !== previousWorkspace) {
       previousWorkspace = workspace;
       explorer?.reset();
-      setQuery("");
+      setFilterQuery("");
+      setContentQuery("");
+      setContentAsked(null);
+      setMode("filter");
       setMenu(null);
     }
     // No `error`: in `chrome: "list"` the package draws no message, and the
@@ -228,12 +262,47 @@ export function FileTreePanel() {
     if (!mounted() || !workbenchStore.tree) return;
     const path = treeReveal();
     if (path) {
+      setMode("filter");
       explorer?.reveal(path);
       // `reveal` drops the filter to guarantee the row is in the listing, so
       // the box the person can see has to drop it too.
-      setQuery("");
+      setFilterQuery("");
       clearTreeReveal();
     }
+  });
+  // `Mod-shift-f` may fire while this panel is unmounted; the pending flag
+  // stands until we open and focus the content-search field.
+  createEffect(() => {
+    const asked = findInFilesPending();
+    if (!asked) return;
+    clearFindInFiles();
+    setMode("content");
+    // A request that names a symbol runs it; one that does not is the chord
+    // asking for the field, and must not wipe what is already typed there.
+    if (asked.query !== null) setContentQuery(asked.query);
+    requestAnimationFrame(() => filterInput?.focus({ preventScroll: true }));
+  });
+  createEffect(() => {
+    if (mode() !== "content") return;
+    const workspace = workbenchStore.workspace;
+    const needle = contentQuery().trim();
+    if (!workspace || !shouldSearchContent(needle)) {
+      setContentAsked(null);
+      return;
+    }
+    // Depend only on mode / workspace / query — not on the shared search slot
+    // or `contentAsked`. Clearing that slot before a request must not schedule
+    // another grep.
+    const timer = setTimeout(() => {
+      setWorkbenchStore({ search: null, searchError: null });
+      setContentAsked(needle);
+      setLoading("search", true);
+      void searchFiles(workspace, needle, "content").catch((error: unknown) => {
+        setLoading("search", false);
+        setWorkbenchStore("searchError", error instanceof Error ? error.message : String(error));
+      });
+    }, CONTENT_SEARCH_DEBOUNCE_MS);
+    onCleanup(() => clearTimeout(timer));
   });
   function dirname(path: string): string {
     const cut = path.lastIndexOf("/");
@@ -387,13 +456,32 @@ export function FileTreePanel() {
       }}
     >
       <FilterHeader
-        label="Filter files"
-        placeholder="Filter files…"
-        query={query()}
+        label={mode() === "filter" ? "Filter files" : "Search in files"}
+        placeholder={mode() === "filter" ? "Filter files…" : "Search in files…"}
+        query={mode() === "filter" ? filterQuery() : contentQuery()}
         onQuery={(value) => {
-          setQuery(value);
-          explorer?.setFilter(value);
+          if (mode() === "filter") {
+            setFilterQuery(value);
+            explorer?.setFilter(value);
+          } else {
+            setContentQuery(value);
+          }
         }}
+        rows={[
+          {
+            label: "Files panel mode",
+            value: mode(),
+            options: [
+              { value: "filter" as const, label: "files" },
+              { value: "content" as const, label: "text" },
+            ],
+            onChange: (value: FilesMode) => {
+              setMode(value);
+              if (value === "filter") explorer?.setFilter(filterQuery());
+              else setContentAsked(null);
+            },
+          },
+        ]}
         ref={(element) => (filterInput = element)}
       >
         <Tooltip label="Re-read the checkout" contents>
@@ -408,47 +496,113 @@ export function FileTreePanel() {
       </FilterHeader>
       <Show when={workbenchStore.treeError}>{(error) => <p class="panel-error">{error()}</p>}</Show>
       <Show when={fileWatchError()}>{(error) => <p class="panel-note">{error()}</p>}</Show>
-      {/* The mount is always in the tree — the package owns that element from
-          `onMount` on — and collapses out of the layout while the panel is
-          showing a message instead of a listing. */}
-      <div ref={host} class="fw-mount" hidden={derived().rows === 0} />
-      <Show
-        when={workbenchStore.tree}
-        fallback={
+      {/* The mount stays in the tree for the panel's life — the package owns
+          that element from `onMount` on. Content mode only hides it. */}
+      <div ref={host} class="fw-mount" hidden={mode() === "content" || derived().rows === 0} />
+      <Show when={mode() === "content"}>
+        <Show when={workbenchStore.searchError}>
+          {(error) => <p class="panel-error">{error()}</p>}
+        </Show>
+        <Show
+          when={workbenchStore.workspace !== null}
+          fallback={<EmptyState message="No checkout selected." />}
+        >
           <Show
-            when={!derived().loading}
-            fallback={<Skeleton label="Reading the checkout" rows={8} />}
+            when={shouldSearchContent(contentQuery())}
+            fallback={
+              <p class="empty-copy">Type at least two characters to search the checkout.</p>
+            }
           >
-            <EmptyState
-              message={
-                workbenchStore.workspace === null
-                  ? "No checkout selected."
-                  : "Unable to read the checkout."
-              }
-              actions={
-                workbenchStore.workspace === null
-                  ? [
-                      { action: "add_project", label: "Add a project", icon: "folder-open" },
-                      { action: "new_worktree", label: "New worktree", icon: "git-branch" },
-                    ]
-                  : []
-              }
-            />
+            <Show when={workbenchStore.loading.search && !contentResults()}>
+              <p class="panel-note">Searching…</p>
+            </Show>
+            <Show when={contentResults()}>
+              {(results) => (
+                <>
+                  <Show
+                    when={results().matches.length > 0}
+                    fallback={<p class="empty-copy">Nothing matches that.</p>}
+                  >
+                    <p class="panel-note">
+                      {`${results().matches.length} match${results().matches.length === 1 ? "" : "es"}`}
+                      {results().truncated ? " (truncated)" : ""}
+                    </p>
+                    <ul class="file-search-hits">
+                      <For each={contentGroups()}>
+                        {(group) => (
+                          <li class="file-search-group">
+                            <div class="file-search-path">{group.path}</div>
+                            <ul>
+                              <For each={group.matches}>
+                                {(match) => (
+                                  <li>
+                                    <button
+                                      type="button"
+                                      class="forge-row file-search-hit"
+                                      onClick={() => openEditorAt(match.path, match.line)}
+                                    >
+                                      <span class="file-search-line">{match.line}</span>
+                                      <span class="file-search-text">{match.text.trim()}</span>
+                                    </button>
+                                  </li>
+                                )}
+                              </For>
+                            </ul>
+                          </li>
+                        )}
+                      </For>
+                    </ul>
+                  </Show>
+                  <Show when={results().truncated}>
+                    <p class="panel-note">
+                      Search stopped at the hit budget — not every match is here.
+                    </p>
+                  </Show>
+                </>
+              )}
+            </Show>
           </Show>
-        }
-      >
-        <Show when={derived().rows === 0}>
-          <p class="empty-copy">
-            {derived().filtered ? "Nothing matches that." : "This checkout has no files."}
-          </p>
         </Show>
-        <Show when={derived().rows > 0}>
-          <p class="panel-note">{`${derived().files} files shown`}</p>
-        </Show>
-        {/* A truncated listing that reads as exhaustive is worse than one that
-            admits it stopped. */}
-        <Show when={derived().truncated}>
-          <p class="panel-note">Listing stopped at the scan budget — not every file is here.</p>
+      </Show>
+      <Show when={mode() === "filter"}>
+        <Show
+          when={workbenchStore.tree}
+          fallback={
+            <Show
+              when={!derived().loading}
+              fallback={<Skeleton label="Reading the checkout" rows={8} />}
+            >
+              <EmptyState
+                message={
+                  workbenchStore.workspace === null
+                    ? "No checkout selected."
+                    : "Unable to read the checkout."
+                }
+                actions={
+                  workbenchStore.workspace === null
+                    ? [
+                        { action: "add_project", label: "Add a project", icon: "folder-open" },
+                        { action: "new_worktree", label: "New worktree", icon: "git-branch" },
+                      ]
+                    : []
+                }
+              />
+            </Show>
+          }
+        >
+          <Show when={derived().rows === 0}>
+            <p class="empty-copy">
+              {derived().filtered ? "Nothing matches that." : "This checkout has no files."}
+            </p>
+          </Show>
+          <Show when={derived().rows > 0}>
+            <p class="panel-note">{`${derived().files} files shown`}</p>
+          </Show>
+          {/* A truncated listing that reads as exhaustive is worse than one that
+              admits it stopped. */}
+          <Show when={derived().truncated}>
+            <p class="panel-note">Listing stopped at the scan budget — not every file is here.</p>
+          </Show>
         </Show>
       </Show>
       <Show when={menu()}>

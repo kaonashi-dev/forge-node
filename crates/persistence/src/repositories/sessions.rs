@@ -231,6 +231,9 @@ impl RawSession {
             root_session_id: id_from_str::<SessionId>("SessionId", &self.root_session_id)?,
             // Pure runtime state, never persisted (§15.2): always None on load.
             terminal_id: None,
+            // The editor's buffer state is runtime-only too: the draft lives in
+            // the editor process and a row on disk carries no buffer.
+            editor: None,
             agent_provider_id: self.agent_provider_id.map(AgentProviderId::new),
             agent_profile_id: id_from_opt::<AgentProfileId>(
                 "AgentProfileId",

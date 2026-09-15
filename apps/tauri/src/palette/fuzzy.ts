@@ -54,6 +54,68 @@ export function score(query: string, candidate: string): number | null {
 }
 
 /**
+ * How much a hit inside the basename beats one that only the directory made.
+ *
+ * Large enough to outrank any path score, because these are answers to
+ * different questions: `pal` meaning `CommandPalette.tsx` and `pal` meaning
+ * "something under src/palette/" are not two degrees of the same match, and
+ * interleaving them puts the file being reached for below eight it is not.
+ */
+const BASENAME_BONUS = 1_000;
+
+/** An exact basename, which is as good as this gets. */
+const EXACT_BONUS = 500;
+
+/** Per directory between the checkout root and the file, for a path-only hit. */
+const DEPTH_PENALTY = 2;
+
+/**
+ * Score a workspace path the way a "go to file" box should.
+ *
+ * The basename is tried first and, when it matches, wins outright. That is the
+ * difference between this and scoring the whole path: eight files called
+ * `SKILL.md` score identically on their path prefixes and fall back to
+ * alphabetical order, so the list reads as a directory dump rather than as an
+ * answer. A separator in the query means the directory *is* the question, so
+ * that case skips straight to the path.
+ *
+ * Deliberately not folded into `scoreWith`: commands, sessions and branches
+ * are labels rather than paths, and giving them a basename would mean deciding
+ * that the half of "New Terminal" after a space is the important half.
+ */
+export function scorePath(needle: string[], path: string): number | null {
+  if (needle.length === 0) return 0;
+  const depth = path.split("/").length - 1;
+
+  if (!needle.includes("/")) {
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    const onBase = scoreWith(needle, base);
+    if (onBase !== null) {
+      const exact = base.toLowerCase() === needle.join("") ? EXACT_BONUS : 0;
+      return onBase + BASENAME_BONUS + exact - depth;
+    }
+  }
+
+  const onPath = scoreWith(needle, path);
+  // A shallow file that matched on its path is likelier to be the one meant
+  // than a deep one that matched on the same letters spread over more folders.
+  return onPath === null ? null : onPath - depth * DEPTH_PENALTY;
+}
+
+/** Filter and rank workspace paths, best first. Ties keep the input order. */
+export function filterPaths<T extends { path: string }>(entries: T[], query: string): T[] {
+  if (query.trim() === "") return entries;
+  const needle = needleOf(query);
+  const scored: { score: number; index: number; entry: T }[] = [];
+  entries.forEach((entry, index) => {
+    const value = scorePath(needle, entry.path);
+    if (value !== null) scored.push({ score: value, index, entry });
+  });
+  scored.sort((a, b) => b.score - a.score || a.index - b.index);
+  return scored.map((item) => item.entry);
+}
+
+/**
  * Filter by `query`, best match first.
  *
  * An empty query keeps the presentation order — the palette opens on a menu,

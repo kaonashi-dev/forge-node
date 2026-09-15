@@ -1,21 +1,14 @@
-// D1: a unified patch, arranged for a virtualised renderer.
+// D1: a unified patch, arranged for a row renderer.
 //
-// `@codemirror/merge`'s `unifiedMergeView` was the plan's first answer and it
-// wants two whole documents. The daemon sends neither: `DiffFile.patch` is
-// `git diff` output — hunks with headers and no file around them — and
-// reconstructing "before" and "after" from it produces two files with holes
-// where the unchanged regions were, which is a different and worse thing to
-// show. So the patch itself becomes the document, and CodeMirror virtualises
-// *that*: same 50ms budget on a 2 000-line patch, same intra-line marking, and
-// both line-number columns survive, which reconstruction would have lost.
-//
-// Pure and its own module: the line numbering is arithmetic with a right and a
-// wrong answer, and being one off is invisible until someone quotes a line.
+// The daemon sends `git diff` output — hunks with headers and no full file —
+// so the patch itself is the document. Line numbering is arithmetic with a
+// right and a wrong answer; being one off is invisible until someone quotes a
+// line.
 
 import { parsePatch, type PatchRow, type PatchRowKind } from "../patch";
 
 export type PatchDocument = {
-  /** The patch body as CodeMirror will hold it, one row per line. */
+  /** The patch body, one row per line. */
   text: string;
   rows: PatchRow[];
   /** Row indexes (0-based) that start a hunk, for `]c` / `[c`. */

@@ -1,7 +1,7 @@
 import { createRoot } from "solid-js";
 import { describe, expect, it } from "vitest";
 import { applyShellSnapshot, emptySnapshot } from "../store/forgeStore";
-import { SIDEBAR_WIDTH_KEY, SIDEBAR_RANGE, readWidth, seedFromAppState } from "./layout";
+import { SIDEBAR_WIDTH_KEY, SIDEBAR_RANGE, readFlag, readWidth, seedFromAppState } from "./layout";
 
 /** Land a snapshot the way `applyConnected` does, and let the effects run. */
 async function snapshotWith(app_state: Record<string, string>): Promise<void> {

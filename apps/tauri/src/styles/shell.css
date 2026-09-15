@@ -24,6 +24,41 @@
 .tab-strip-scroll::-webkit-scrollbar {
   display: none;
 }
+/* Soften the scrollport edge so a tab mid-clip fades out instead of a hard cut. */
+.tab-strip-scroll[data-fade="right"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 calc(100% - var(--space-24)),
+    transparent
+  );
+  mask-image: linear-gradient(to right, #000 0%, #000 calc(100% - var(--space-24)), transparent);
+}
+.tab-strip-scroll[data-fade="left"] {
+  -webkit-mask-image: linear-gradient(
+    to left,
+    #000 0%,
+    #000 calc(100% - var(--space-24)),
+    transparent
+  );
+  mask-image: linear-gradient(to left, #000 0%, #000 calc(100% - var(--space-24)), transparent);
+}
+.tab-strip-scroll[data-fade="both"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--space-24),
+    #000 calc(100% - var(--space-24)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--space-24),
+    #000 calc(100% - var(--space-24)),
+    transparent
+  );
+}
 
 .tab-strip {
   align-items: center;
@@ -182,6 +217,39 @@
 .session-menu {
   position: relative;
   flex-shrink: 0;
+}
+
+.editor-terminal-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+}
+.editor-terminal-chrome {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+}
+.editor-terminal-path {
+  color: var(--fg-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-terminal-body {
+  background: var(--forge-term-bg);
+  cursor: text;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: var(--space-8);
+  position: relative;
+  user-select: none;
 }
 
 .terminal-pane {

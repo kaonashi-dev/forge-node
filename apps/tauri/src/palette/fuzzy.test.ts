@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filter, score } from "./fuzzy";
+import { filter, filterPaths, score } from "./fuzzy";
 
 describe("fuzzy score", () => {
   it("requires every query character, in order", () => {
@@ -61,5 +61,63 @@ describe("filter", () => {
   it("keeps the original order on ties", () => {
     const tied = [{ label: "aa x" }, { label: "aa y" }, { label: "aa z" }];
     expect(filter(tied, "aa").map((entry) => entry.label)).toEqual(["aa x", "aa y", "aa z"]);
+  });
+});
+
+describe("scorePath", () => {
+  const rank = (query: string, paths: string[]) =>
+    filterPaths(
+      paths.map((path) => ({ path })),
+      query,
+    ).map((entry) => entry.path);
+
+  /*
+   * The whole reason this exists. Eight files named `SKILL.md` score the same
+   * on their paths and fall back to alphabetical, so the palette reads as a
+   * directory dump. A basename hit has to beat any directory hit.
+   */
+  it("puts a basename hit above a directory hit", () => {
+    expect(
+      rank("entries", [
+        "src/entries-helpers/notes.md",
+        "docs/entries/overview.md",
+        "src/palette/entries.ts",
+      ])[0],
+    ).toBe("src/palette/entries.ts");
+  });
+
+  it("prefers an exact basename over a longer one that contains it", () => {
+    expect(rank("entries.ts", ["src/palette/entries.test.ts", "src/palette/entries.ts"])[0]).toBe(
+      "src/palette/entries.ts",
+    );
+  });
+
+  // JetBrains' camelCase initials: `cp` is how anyone reaches for that file.
+  it("matches camelCase initials", () => {
+    expect(rank("cp", ["src/store/copyPath.ts", "src/palette/CommandPalette.tsx"])[0]).toBe(
+      "src/palette/CommandPalette.tsx",
+    );
+  });
+
+  /* A separator means the directory *is* the question, so the basename
+     shortcut has to step aside and let the whole path be scored. */
+  it("treats a query with a separator as being about the path", () => {
+    expect(rank("palette/entries", ["docs/entries.md", "src/palette/entries.ts"])[0]).toBe(
+      "src/palette/entries.ts",
+    );
+  });
+
+  it("prefers the shallower file when both matched on their path alone", () => {
+    const ranked = rank("srcx", ["src/a/b/c/x.ts", "src/x.ts"]);
+    expect(ranked[0]).toBe("src/x.ts");
+  });
+
+  it("still requires every character, in order", () => {
+    expect(rank("zzz", ["src/palette/entries.ts"])).toEqual([]);
+  });
+
+  it("keeps the input order on an empty query", () => {
+    const paths = ["b.ts", "a.ts", "c.ts"];
+    expect(rank("  ", paths)).toEqual(paths);
   });
 });

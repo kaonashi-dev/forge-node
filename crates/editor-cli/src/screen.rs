@@ -6,7 +6,9 @@
 
 use std::io;
 
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, size, DisableLineWrap, EnableLineWrap, EnterAlternateScreen,
     LeaveAlternateScreen,
@@ -19,11 +21,15 @@ impl Screen {
     pub fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut out = io::stdout();
+        // Mouse capture makes the terminal emit the SGR mouse sequences
+        // (crossterm's `EnableMouseCapture` writes `CSI ?1000h` … `?1006h`), so
+        // a host VT engine sees mouse mode on and forwards clicks and the wheel.
         if let Err(error) = execute!(
             out,
             EnterAlternateScreen,
             DisableLineWrap,
-            EnableBracketedPaste
+            EnableBracketedPaste,
+            EnableMouseCapture
         ) {
             let _ = disable_raw_mode();
             return Err(error);
@@ -45,6 +51,7 @@ impl Drop for Screen {
             cursor::Show,
             LeaveAlternateScreen,
             DisableBracketedPaste,
+            DisableMouseCapture,
             EnableLineWrap
         );
         let _ = disable_raw_mode();

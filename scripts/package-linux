@@ -132,10 +132,13 @@ note "building the Solid frontend"
 (cd "$repo_root/apps/tauri" && bun run build)
 
 note "building release binaries${target:+ for $target}"
-cargo build --release --locked "${cargo_target_args[@]}" -p "$gui_crate" -p daemon \
-  --bin "$gui_bin" --bin forge-daemon --features "$gui_crate/custom-protocol"
+# forge-editor ships too: the daemon spawns it for an Editor session, and
+# `[editor] executable` defaults to a PATH lookup that a packaged install
+# cannot satisfy from a dev checkout's target/debug.
+cargo build --release --locked "${cargo_target_args[@]}" -p "$gui_crate" -p daemon -p editor-cli \
+  --bin "$gui_bin" --bin forge-daemon --bin forge-editor --features "$gui_crate/custom-protocol"
 
-for bin in "$gui_bin" forge-daemon; do
+for bin in "$gui_bin" forge-daemon forge-editor; do
   [ -x "$bin_dir/$bin" ] || die "expected binary not found: $bin_dir/$bin"
 done
 
@@ -181,6 +184,7 @@ build_deb() {
 
   install -m 755 "$bin_dir/$gui_bin"     "$stage/usr/bin/$gui_bin"
   install -m 755 "$bin_dir/forge-daemon" "$stage/usr/bin/forge-daemon"
+  install -m 755 "$bin_dir/forge-editor" "$stage/usr/bin/forge-editor"
   desktop_entry >"$stage/usr/share/applications/forge.desktop"
   install -m 644 README.md "$stage/usr/share/doc/forge/README.md"
 
@@ -240,6 +244,7 @@ build_appimage() {
 
   install -m 755 "$bin_dir/$gui_bin"     "$appdir/usr/bin/$gui_bin"
   install -m 755 "$bin_dir/forge-daemon" "$appdir/usr/bin/forge-daemon"
+  install -m 755 "$bin_dir/forge-editor" "$appdir/usr/bin/forge-editor"
 
   desktop_entry >"$appdir/usr/share/applications/forge.desktop"
   cp "$appdir/usr/share/applications/forge.desktop" "$appdir/forge.desktop"

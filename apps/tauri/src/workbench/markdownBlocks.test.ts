@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inlineSpans, parseMarkdown, safeHref } from "./markdownBlocks";
+import { inlineSpans, parseMarkdown, safeHref, toggleTaskMarker } from "./markdownBlocks";
 
 const BODY = [
   "## Summary",
@@ -38,7 +38,7 @@ describe("parseMarkdown", () => {
 
   it("keeps a fenced block whole, including the lines that look like markup", () => {
     const blocks = parseMarkdown("```sh\n# not a heading\n- not a bullet\n```\nafter");
-    expect(blocks[0]).toEqual({
+    expect(blocks[0]).toMatchObject({
       kind: "code",
       lang: "sh",
       text: "# not a heading\n- not a bullet",
@@ -48,7 +48,7 @@ describe("parseMarkdown", () => {
 
   it("closes an unterminated fence at the end of the body", () => {
     const blocks = parseMarkdown("```\nstill open");
-    expect(blocks).toEqual([{ kind: "code", lang: null, text: "still open" }]);
+    expect(blocks).toMatchObject([{ kind: "code", lang: null, text: "still open" }]);
   });
 
   it("nests by indent, up to the cap", () => {
@@ -64,7 +64,7 @@ describe("parseMarkdown", () => {
 
   it("reads a table only when the delimiter row is there", () => {
     const table = parseMarkdown("| a | b |\n| --- | :-: |\n| 1 | 2 |");
-    expect(table[0]).toEqual({
+    expect(table[0]).toMatchObject({
       kind: "table",
       head: [
         [{ kind: "text", text: "a", strong: false, em: false }],
@@ -93,7 +93,7 @@ describe("parseMarkdown", () => {
 
   it("drops the tags a README centres an image with, and the gap they leave", () => {
     const blocks = parseMarkdown('<p align="center">\n  <img src="logo.png" width="120">\n</p>');
-    expect(blocks).toEqual([
+    expect(blocks).toMatchObject([
       {
         kind: "paragraph",
         spans: [{ kind: "image", alt: "", src: "logo.png", href: null, width: "120px" }],
@@ -105,13 +105,45 @@ describe("parseMarkdown", () => {
     const blocks = parseMarkdown(
       "<!-- a note -->\nkept <!-- inline --> here\n\n<!--\nhidden\n-->\nafter",
     );
-    expect(blocks).toEqual([
+    expect(blocks).toMatchObject([
       {
         kind: "paragraph",
         spans: [{ kind: "text", text: "kept  here", strong: false, em: false }],
       },
       { kind: "paragraph", spans: [{ kind: "text", text: "after", strong: false, em: false }] },
     ]);
+  });
+
+  it("names the source of each top-level block", () => {
+    const source = ["# Title", "", "A paragraph.", "", "- [ ] one", "- [x] two"].join("\n");
+    const blocks = parseMarkdown(source);
+    expect(blocks.map((block) => source.slice(block.start, block.end))).toEqual([
+      "# Title",
+      "A paragraph.",
+      "- [ ] one\n- [x] two",
+    ]);
+    const list = blocks[2];
+    if (list.kind !== "list") throw new Error("expected a list");
+    expect(list.items.map((item) => source.slice(item.start, item.end))).toEqual([
+      "- [ ] one",
+      "- [x] two",
+    ]);
+  });
+
+  it("keeps a quote's range on the prefixed source", () => {
+    const source = "> a\n> b\n\nout";
+    const blocks = parseMarkdown(source);
+    expect(source.slice(blocks[0].start, blocks[0].end)).toBe("> a\n> b");
+    expect(source.slice(blocks[1].start, blocks[1].end)).toBe("out");
+  });
+});
+
+describe("toggleTaskMarker", () => {
+  it("flips the first box and leaves a later one alone", () => {
+    expect(toggleTaskMarker("- [ ] see [x] later")).toBe("- [x] see [x] later");
+    expect(toggleTaskMarker("- [x] see [ ] later")).toBe("- [ ] see [ ] later");
+    expect(toggleTaskMarker("- [X] mixed")).toBe("- [ ] mixed");
+    expect(toggleTaskMarker("- no box")).toBeNull();
   });
 });
 

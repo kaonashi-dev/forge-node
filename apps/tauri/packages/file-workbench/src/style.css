@@ -246,8 +246,10 @@
 .fw-tree-edit-error[hidden],
 .fw-tree-icon[hidden],
 .fw-tree-mark[hidden],
-.fw-tree[hidden] {
-  display: none;
+.fw-tree[hidden],
+.fw-find[hidden],
+.fw-find-row[hidden] {
+  display: none !important;
 }
 .fw-explorer-foot {
   margin-block-start: auto;
@@ -268,11 +270,349 @@
   min-height: 0;
   overflow: hidden;
 }
-.fw-document .cm-editor {
+
+.fw-editor {
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  font-size: inherit;
+  min-height: 0;
   background: inherit;
+  color: inherit;
+  font: inherit;
+  /* Match terminal metrics: vim/zed gutters and rows share one line box.
+     A host that sets `--fw-editor-line-height` wins; unset, this is the value
+     it always was. The gutter, the highlight layer and the textarea all read
+     `--fw-line-height`, so overriding the one keeps the three in step — which
+     is the whole reason the override lands here and not on each of them. */
+  --fw-line-height: var(--fw-editor-line-height, var(--forge-mono-lh, 1.35));
 }
-.fw-document .cm-scroller {
-  font-family: var(--fw-font, monospace);
+.fw-editor-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--fw-editor-ground, var(--fw-background, Canvas));
+}
+.fw-gutter {
+  flex: none;
+  overflow: hidden;
+  padding: 0 1ch 0 0.5ch;
+  border-inline-end: none;
+  color: var(--fw-muted, GrayText);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+  white-space: pre;
+  line-height: var(--fw-line-height);
+}
+.fw-gutter-line {
+  height: calc(1em * var(--fw-line-height));
+  box-sizing: border-box;
+  color: color-mix(in srgb, var(--fw-muted, GrayText) 70%, transparent);
+}
+.fw-gutter-line.fw-gutter-active {
+  color: var(--fw-foreground, CanvasText);
+  background: var(--fw-active-line, transparent);
+}
+.fw-gutter-line.fw-git-added,
+.fw-gutter-line.fw-git-modified,
+.fw-gutter-line.fw-git-deleted {
+  cursor: pointer;
+}
+.fw-gutter-line.fw-git-added {
+  box-shadow: inset 2px 0 0 var(--fw-added, currentColor);
+}
+.fw-gutter-line.fw-git-modified {
+  box-shadow: inset 2px 0 0 var(--fw-modified, currentColor);
+}
+.fw-gutter-line.fw-git-deleted {
+  box-shadow: inset 2px 0 0 var(--fw-deleted, currentColor);
+}
+.fw-code {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.fw-highlight {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0 1.5ch;
+  overflow: hidden;
+  pointer-events: none;
+  white-space: pre;
+  tab-size: 2;
+  font: inherit;
+  line-height: var(--fw-line-height);
+  color: var(--fw-foreground, CanvasText);
+  background: transparent;
+  z-index: 0;
+}
+.fw-input {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  resize: none;
+  border: 0;
+  margin: 0;
+  padding: 0 1.5ch;
+  /* Transparent glyphs over the highlight layer; caret stays visible. */
+  color: transparent;
+  caret-color: var(--fw-accent, Highlight);
+  background: transparent;
+  font: inherit;
+  line-height: var(--fw-line-height);
+  outline: none;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+.fw-input::selection {
+  background: var(--fw-selection, Highlight);
+  color: transparent;
+}
+.fw-tok-comment {
+  color: var(--fw-scope-comment, GrayText);
+}
+.fw-tok-keyword {
+  color: var(--fw-scope-keyword, inherit);
+}
+.fw-tok-controlKeyword {
+  color: var(--fw-scope-controlKeyword, var(--fw-scope-keyword, inherit));
+}
+.fw-tok-string {
+  color: var(--fw-scope-string, inherit);
+}
+.fw-tok-number,
+.fw-tok-constant {
+  color: var(--fw-scope-number, inherit);
+}
+.fw-tok-type {
+  color: var(--fw-scope-type, inherit);
+}
+.fw-tok-function {
+  color: var(--fw-scope-function, inherit);
+}
+.fw-tok-property {
+  color: var(--fw-scope-property, inherit);
+}
+.fw-tok-operator {
+  color: var(--fw-scope-operator, inherit);
+}
+.fw-tok-punctuation {
+  color: var(--fw-scope-punctuation, inherit);
+}
+.fw-tok-meta {
+  color: var(--fw-scope-meta, inherit);
+}
+.fw-tok-attribute,
+.fw-tok-tag {
+  color: var(--fw-scope-tag, inherit);
+}
+
+/* Command strip: `/` find, `→` replace, `:` go-to-line — closed until Mod-f / Mod-g. */
+.fw-find {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  flex: none;
+  padding: 0.25em 1ch;
+  border-block-end: 1px solid var(--fw-border, GrayText);
+  background: var(--fw-background, Canvas);
+  font-variant-numeric: tabular-nums;
+}
+.fw-find-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75ch;
+  min-height: 1.75em;
+}
+.fw-find-prompt {
+  flex: none;
+  color: var(--fw-accent, Highlight);
+  user-select: none;
+}
+.fw-find-query,
+.fw-find-replace,
+.fw-find-goto {
+  appearance: none;
+  min-width: 8ch;
+  flex: 1;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font: inherit;
+  outline: none;
+}
+.fw-find-query::placeholder,
+.fw-find-replace::placeholder,
+.fw-find-goto::placeholder {
+  color: var(--fw-muted, GrayText);
+  opacity: 0.7;
+}
+.fw-find-count {
+  flex: none;
+  color: var(--fw-muted, GrayText);
+  font-size: 0.9em;
+  min-width: 4ch;
+  text-align: end;
+}
+.fw-find-toggle,
+.fw-find-action {
+  appearance: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fw-muted, GrayText);
+  padding: 0 0.2ch;
+  min-height: 0;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.fw-find-toggle[aria-pressed="true"] {
+  color: var(--fw-accent, Highlight);
+}
+.fw-find-toggle:hover,
+.fw-find-action:hover {
+  color: var(--fw-foreground, CanvasText);
+  background: transparent;
+}
+.fw-find-toggle:focus-visible,
+.fw-find-action:focus-visible,
+.fw-find-query:focus-visible,
+.fw-find-replace:focus-visible,
+.fw-find-goto:focus-visible {
+  outline: 1px solid var(--fw-accent, Highlight);
+  outline-offset: 1px;
+}
+
+.fw-gutter-line[role="button"]:hover,
+.fw-gutter-line[aria-expanded="true"] {
+  background: var(--fw-active-line, transparent);
+  color: var(--fw-foreground, CanvasText);
+}
+.fw-gutter-line[role="button"]:focus-visible {
+  outline: 1px solid var(--fw-accent, Highlight);
+  outline-offset: -1px;
+}
+.fw-change {
+  position: absolute;
+  z-index: 3;
+  inset-inline: 0.5ch 1ch;
+  display: flex;
+  flex-direction: column;
+  max-height: min(65%, 26em);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--fw-border, GrayText);
+  border-inline-start: 3px solid var(--fw-modified, Highlight);
+  background: var(--fw-editor-ground, var(--fw-background, Canvas));
+  color: var(--fw-foreground, CanvasText);
+  font: inherit;
+  line-height: var(--fw-line-height);
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--fw-foreground, CanvasText) 12%, transparent);
+}
+.fw-change[data-kind="added"] {
+  border-inline-start-color: var(--fw-added, Highlight);
+}
+.fw-change[data-kind="deleted"] {
+  border-inline-start-color: var(--fw-deleted, Highlight);
+}
+.fw-change:focus-visible {
+  outline: 1px solid var(--fw-accent, Highlight);
+  outline-offset: -1px;
+}
+.fw-change-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5ch;
+  flex: none;
+  padding: 0.35em 0.75ch;
+  border-bottom: 1px solid var(--fw-border, GrayText);
+}
+.fw-change-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fw-change-head button {
+  flex: none;
+  padding: 0 0.5ch;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.fw-change-head button:hover:not(:disabled) {
+  background: var(--fw-hover, Highlight);
+}
+.fw-change-head button:focus-visible {
+  outline: 1px solid var(--fw-accent, Highlight);
+}
+.fw-change-head button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.fw-change-content {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.fw-change-row {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  white-space: pre;
+  tab-size: 2;
+}
+.fw-change-added {
+  --fw-change-color: var(--fw-added, Highlight);
+  background: color-mix(in srgb, var(--fw-change-color) 12%, transparent);
+}
+.fw-change-removed {
+  --fw-change-color: var(--fw-deleted, Highlight);
+  background: color-mix(in srgb, var(--fw-change-color) 12%, transparent);
+}
+.fw-change-number {
+  width: 6ch;
+  padding-inline: 0.5ch;
+  text-align: right;
+  color: var(--fw-muted, GrayText);
+  user-select: none;
+}
+.fw-change-sign {
+  width: 2ch;
+  text-align: center;
+  color: var(--fw-change-color, currentColor);
+  user-select: none;
+}
+.fw-change-text {
+  padding-inline-end: 1.5ch;
+}
+.fw-change-text mark {
+  color: inherit;
+  background: color-mix(in srgb, var(--fw-change-color) 30%, transparent);
+}
+.fw-change-meta,
+.fw-change-foot {
+  color: var(--fw-muted, GrayText);
+}
+.fw-change-foot {
+  flex: none;
+  padding: 0.25em 1ch;
+  border-top: 1px solid var(--fw-border, GrayText);
+  font-size: 0.9em;
 }

@@ -151,7 +151,9 @@ pub struct FileContents {
     /// A language hint from the extension (`"rust"`, `"typescript"`, …), or
     /// empty when unknown.
     pub language: String,
-    /// True when a `NUL` was found in the probe window.
+    /// True when a `NUL` was found in the probe window, or the bytes are not
+    /// valid UTF-8. Both mean the same thing to a caller: there is no text
+    /// here that can be edited and written back without changing the file.
     pub binary: bool,
     /// True when the file exceeded [`MAX_FILE_BYTES`] and was not opened.
     pub too_large: bool,
@@ -173,7 +175,7 @@ pub struct ImageBytes {
 pub enum SearchKind {
     /// Subsequence match against the relative path.
     Name,
-    /// Line match against file contents (`git grep`).
+    /// Fixed-string line match against file contents (`git grep -F`).
     Content,
     /// Lines that declare the queried symbol (`git grep -w -F`, then filtered).
     Definition,
@@ -351,23 +353,51 @@ pub fn read_file(root: &Path, relative: &str) -> Result<FileContents, FsError> {
             too_large: true,
         });
     }
-    let mut file = File::open(&path)?;
-    let mut buf = Vec::with_capacity(meta.len() as usize);
-    file.read_to_end(&mut buf)?;
-    if is_binary(&buf) {
+    let mut buf = Vec::with_capacity(meta.len() as usize + 1);
+    // The file can grow between `metadata` and the read; `take` holds the cap,
+    // and a result over it is the same answer as an oversize `metadata`.
+    File::open(&path)?
+        .take(MAX_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut buf)?;
+    if buf.len() > MAX_FILE_BYTES {
         return Ok(FileContents {
             path: normalize_rel(relative),
             text: String::new(),
-            revision: revision_of(&buf),
+            revision: String::new(),
             language: language_for(relative).to_string(),
-            binary: true,
-            too_large: false,
+            binary: false,
+            too_large: true,
         });
     }
-    let text = String::from_utf8_lossy(&buf).into_owned();
+    // A lossy decode is reported as binary rather than repaired: the editor
+    // writes `text` back, and U+FFFD in place of a byte it could not read
+    // would rewrite the file with content that was never in it.
+    let text = match String::from_utf8(buf) {
+        Ok(text) if !is_binary(text.as_bytes()) => text,
+        Ok(text) => {
+            return Ok(FileContents {
+                path: normalize_rel(relative),
+                text: String::new(),
+                revision: revision_of(text.as_bytes()),
+                language: language_for(relative).to_string(),
+                binary: true,
+                too_large: false,
+            })
+        }
+        Err(error) => {
+            return Ok(FileContents {
+                path: normalize_rel(relative),
+                text: String::new(),
+                revision: revision_of(error.as_bytes()),
+                language: language_for(relative).to_string(),
+                binary: true,
+                too_large: false,
+            })
+        }
+    };
     Ok(FileContents {
         path: normalize_rel(relative),
-        revision: revision_of(&buf),
+        revision: revision_of(text.as_bytes()),
         language: language_for(relative).to_string(),
         text,
         binary: false,
@@ -464,17 +494,45 @@ pub fn write_file(
 
     let mode = path.metadata().ok().map(|m| m.permissions());
 
-    let tmp = path.with_extension(format!("forge-tmp-{}", std::process::id()));
+    let tmp = temp_path(&path)?;
     {
-        let mut out = File::create(&tmp)?;
-        out.write_all(text.as_bytes())?;
-        out.sync_all()?;
+        // `create_new`, and a name built from the whole file name: with
+        // `with_extension` a save of `a.rs` and a save of `a.md` in the same
+        // directory pick the same temp path and race for it.
+        let mut out = File::options().write(true).create_new(true).open(&tmp)?;
+        if let Err(error) = out.write_all(text.as_bytes()).and_then(|()| out.sync_all()) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error.into());
+        }
     }
     if let Some(perms) = mode {
         let _ = fs::set_permissions(&tmp, perms);
     }
-    fs::rename(&tmp, &path)?;
+    if let Err(error) = fs::rename(&tmp, &path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.into());
+    }
     Ok(())
+}
+
+/// A temp name next to `path` that no concurrent save can pick.
+fn temp_path(path: &Path) -> Result<PathBuf, FsError> {
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let pid = std::process::id();
+    for attempt in 0..64 {
+        let candidate = directory.join(format!(".{name}.forge-tmp.{pid}.{attempt}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(FsError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no free temporary name next to the target",
+    )))
 }
 
 /// What a `CreatePath` is asked to make.
@@ -840,6 +898,8 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
     if !is_git_repo(&root) {
         return search_content_walk(&root, query, limit);
     }
+    // Fixed-string (`-F`): find-in-project takes typed text, not a regex. `-e`
+    // still wraps the needle so a query that starts with `-` is not a flag.
     // `git grep` exits 1 when there are no matches — that is success.
     let out = run_git(
         Some(&root),
@@ -850,6 +910,7 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
             "--no-color",
             "--untracked",
             "-z",
+            "-F",
             "-e",
             query,
             "--",
@@ -865,6 +926,7 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
                 "--no-color".into(),
                 "--untracked".into(),
                 "-z".into(),
+                "-F".into(),
                 "-e".into(),
                 query.into(),
             ],
@@ -1856,6 +1918,66 @@ mod tests {
     }
 
     #[test]
+    fn a_lossy_decode_is_reported_as_binary_instead_of_repaired() {
+        let tmp = git_repo();
+        // Latin-1 "café": no NUL, so the probe passes, but it is not UTF-8.
+        fs::write(tmp.path().join("latin.txt"), [b'c', b'a', b'f', 0xe9]).unwrap();
+        let contents = read_file(tmp.path(), "latin.txt").unwrap();
+        assert!(contents.binary, "a lossy decode must not look like text");
+        assert!(contents.text.is_empty());
+
+        // And the write path refuses it, so the bytes cannot be replaced by
+        // their replacement characters.
+        let err = write_file(tmp.path(), "latin.txt", "cafe", &contents.revision).unwrap_err();
+        assert!(matches!(err, FsError::RevisionMismatch { .. }));
+        assert_eq!(
+            fs::read(tmp.path().join("latin.txt")).unwrap(),
+            [b'c', b'a', b'f', 0xe9]
+        );
+    }
+
+    #[test]
+    fn a_file_that_grows_past_the_budget_after_metadata_is_reported_too_large() {
+        let tmp = git_repo();
+        let path = tmp.path().join("big.txt");
+        fs::write(&path, vec![b'a'; MAX_FILE_BYTES + 1]).unwrap();
+        let contents = read_file(tmp.path(), "big.txt").unwrap();
+        assert!(contents.too_large);
+        assert!(contents.text.is_empty());
+    }
+
+    #[test]
+    fn two_names_sharing_a_stem_do_not_share_a_temp_file() {
+        let tmp = git_repo();
+        assert_ne!(
+            temp_path(&tmp.path().join("a.rs")).unwrap(),
+            temp_path(&tmp.path().join("a.md")).unwrap()
+        );
+    }
+
+    #[test]
+    fn writing_leaves_no_temp_file_behind() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join("note.txt"), "old").unwrap();
+        let contents = read_file(tmp.path(), "note.txt").unwrap();
+        write_file(tmp.path(), "note.txt", "new", &contents.revision).unwrap();
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("note.txt")).unwrap(),
+            "new"
+        );
+        let leftovers: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("forge-tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
     fn reads_an_image_whole_with_its_media_type() {
         let tmp = git_repo();
         fs::create_dir_all(tmp.path().join("docs")).unwrap();
@@ -1921,6 +2043,23 @@ mod tests {
         assert_eq!(r.matches.len(), 1);
         assert_eq!(r.matches[0].line, 2);
         assert!(r.matches[0].text.contains("world"));
+    }
+
+    /// Metacharacters stay literal: Content is find-in-project text, not a regex.
+    #[test]
+    fn content_search_is_fixed_string() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join("a.rs"), "hello.*world\nother line\n").unwrap();
+        assert!(Command::new("git")
+            .args(["add", "a.rs"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+        let r = search_files(tmp.path(), ".*", SearchKind::Content, 50).unwrap();
+        assert_eq!(r.matches.len(), 1);
+        assert_eq!(r.matches[0].line, 1);
+        assert!(r.matches[0].text.contains("hello.*world"));
     }
 
     /// The whole path, against a real `git grep`: the word boundary is git's,

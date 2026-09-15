@@ -19,6 +19,7 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Row as AlacRow};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell as AlacCell, Flags};
+use alacritty_terminal::term::ClipboardType;
 use alacritty_terminal::term::{Config, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{
     self, Color as AnsiColor, CursorShape as AnsiCursorShape, CursorStyle as AnsiCursorStyle,
@@ -36,6 +37,14 @@ pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 /// Hard cap on configurable scrollback (§11.4).
 pub const MAX_SCROLLBACK_LINES: usize = 100_000;
 
+/// Largest OSC 52 payload accepted onto the clipboard.
+///
+/// A copy is a selection, not a document. The cap is what keeps a program in a
+/// PTY from pushing a megabyte through the event channel every time it feels
+/// like it — the same reason every other byte count here is clamped before it
+/// is stored rather than after.
+pub const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
+
 /// Events captured from the emulator between polls. `send_event` takes `&self`,
 /// so the state lives behind a mutex and is drained by the engine after each
 /// mutating operation.
@@ -47,6 +56,8 @@ struct ProxyState {
     bell: bool,
     /// Bytes the emulator wants written back to the PTY (DA/DSR replies, etc.).
     pty_writes: Vec<u8>,
+    /// Text an OSC 52 asked to put on the clipboard, if one did.
+    clipboard: Option<String>,
 }
 
 /// Cloneable handle to the shared [`ProxyState`], installed as the [`Term`]'s
@@ -65,6 +76,18 @@ impl EventListener for EventProxy {
             Event::ResetTitle => st.title = None,
             Event::Bell => st.bell = true,
             Event::PtyWrite(text) => st.pty_writes.extend_from_slice(text.as_bytes()),
+            // OSC 52 write. Only the clipboard selection: `p` is X11's primary
+            // and has no meaning here. Oversize is dropped rather than
+            // truncated — half of what someone copied is not what they copied.
+            Event::ClipboardStore(ClipboardType::Clipboard, text)
+                if text.len() <= MAX_CLIPBOARD_BYTES =>
+            {
+                st.clipboard = Some(text);
+            }
+            // `ClipboardLoad` is OSC 52's *read*, and it is deliberately
+            // unanswered: it would let any program in a PTY pull the clipboard
+            // into its own stdin, which is an exfiltration primitive and not a
+            // feature. Most terminals refuse it by default for the same reason.
             _ => {}
         }
     }
@@ -98,6 +121,7 @@ pub struct AlacrittyEngine {
     title: Option<String>,
     bell: bool,
     pty_writes: Vec<u8>,
+    clipboard: Option<String>,
     history_generation: u64,
 }
 
@@ -136,6 +160,7 @@ impl AlacrittyEngine {
             title: None,
             bell: false,
             pty_writes: Vec::new(),
+            clipboard: None,
             history_generation: 0,
         }
     }
@@ -146,6 +171,14 @@ impl AlacrittyEngine {
     /// programs that query the terminal don't stall. Take-and-clear.
     pub fn take_pty_writes(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.pty_writes)
+    }
+
+    /// Text an OSC 52 asked to put on the clipboard. Take-and-clear.
+    ///
+    /// Not part of [`TerminalEngine`] for the same reason `take_pty_writes` is
+    /// not: it is the daemon's PTY loop that decides what to do with it.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.take()
     }
 
     #[must_use]
@@ -181,6 +214,11 @@ impl AlacrittyEngine {
         }
         if !st.pty_writes.is_empty() {
             self.pty_writes.append(&mut st.pty_writes);
+        }
+        if let Some(text) = st.clipboard.take() {
+            // Last writer wins: a burst of copies means the person meant the
+            // one they made last.
+            self.clipboard = Some(text);
         }
     }
 
@@ -493,7 +531,66 @@ impl TerminalEngine for AlacrittyEngine {
 mod tests {
     use super::*;
     use crate::engine::TerminalEngine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
     use domain::{CursorShape, PtySize};
+
+    /// OSC 52 writes reach the clipboard; its read never answers.
+    #[test]
+    fn osc_52_stores_the_clipboard_and_never_serves_it() {
+        let mut engine = AlacrittyEngine::new(PtySize::default());
+        assert_eq!(engine.take_clipboard(), None);
+
+        // `ESC ] 52 ; c ; <base64> BEL`
+        engine.feed(b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(engine.take_clipboard().as_deref(), Some("hello"));
+        assert_eq!(engine.take_clipboard(), None, "take-and-clear");
+
+        // The read form (`?`) is an exfiltration primitive, not a feature: it
+        // must neither answer down the PTY nor set anything.
+        engine.feed(b"\x1b]52;c;?\x07");
+        assert_eq!(engine.take_clipboard(), None);
+        assert!(
+            engine.take_pty_writes().is_empty(),
+            "a clipboard query must not be answered"
+        );
+    }
+
+    /// The primary selection is X11's and means nothing here.
+    #[test]
+    fn osc_52_ignores_selections_other_than_the_clipboard() {
+        let mut engine = AlacrittyEngine::new(PtySize::default());
+        engine.feed(b"\x1b]52;p;aGVsbG8=\x07");
+        assert_eq!(engine.take_clipboard(), None);
+    }
+
+    /// Clamped before it is stored, and dropped whole: half of what someone
+    /// copied is not what they copied.
+    #[test]
+    fn an_oversize_clipboard_payload_is_refused_not_truncated() {
+        let mut engine = AlacrittyEngine::new(PtySize::default());
+        let big = "a".repeat(MAX_CLIPBOARD_BYTES + 1);
+        let encoded = BASE64.encode(big.as_bytes());
+        engine.feed(format!("\x1b]52;c;{encoded}\x07").as_bytes());
+        assert_eq!(engine.take_clipboard(), None);
+
+        // And one just inside the cap still lands.
+        let ok = "b".repeat(MAX_CLIPBOARD_BYTES);
+        let encoded = BASE64.encode(ok.as_bytes());
+        engine.feed(format!("\x1b]52;c;{encoded}\x07").as_bytes());
+        assert_eq!(
+            engine.take_clipboard().map(|text| text.len()),
+            Some(ok.len())
+        );
+    }
+
+    /// A burst of copies means the one made last.
+    #[test]
+    fn the_last_clipboard_write_wins() {
+        let mut engine = AlacrittyEngine::new(PtySize::default());
+        engine.feed(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07");
+        assert_eq!(engine.take_clipboard().as_deref(), Some("second"));
+    }
 
     #[test]
     fn decscusr_explicit_block_resets_to_beam() {

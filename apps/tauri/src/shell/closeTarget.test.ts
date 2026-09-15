@@ -11,18 +11,22 @@ describe("closeTarget", () => {
 
   it("closes the open file rather than the session it came from", () => {
     const views: ParkedViews = {
-      open: [{ kind: "editor", path: "src/main.rs" }],
-      active: { kind: "editor", path: "src/main.rs" },
+      open: [{ kind: "editor-terminal", session: "s-1", path: "src/main.rs" }],
+      active: { kind: "editor-terminal", session: "s-1", path: "src/main.rs" },
     };
     expect(closeTarget("code", views)).toEqual({
       kind: "view",
-      view: { kind: "editor", path: "src/main.rs" },
+      view: { kind: "editor-terminal", session: "s-1", path: "src/main.rs" },
     });
   });
 
   it("closes only the active file when several are open", () => {
     const views: ParkedViews = {
-      open: [{ kind: "editor", path: "a.rs" }, { kind: "diff" }, { kind: "editor", path: "b.rs" }],
+      open: [
+        { kind: "editor-terminal", session: "s-1", path: "a.rs" },
+        { kind: "diff" },
+        { kind: "editor-terminal", session: "s-1", path: "b.rs" },
+      ],
       active: { kind: "diff" },
     };
     expect(closeTarget("code", views)).toEqual({ kind: "view", view: { kind: "diff" } });
@@ -32,8 +36,8 @@ describe("closeTarget", () => {
   // is pointing at — even though it is still parked.
   it("closes the session when the terminal is showing over parked views", () => {
     const views: ParkedViews = {
-      open: [{ kind: "editor", path: "a.rs" }],
-      active: { kind: "editor", path: "a.rs" },
+      open: [{ kind: "editor-terminal", session: "s-1", path: "a.rs" }],
+      active: { kind: "editor-terminal", session: "s-1", path: "a.rs" },
     };
     expect(closeTarget("session", views)).toEqual({ kind: "session" });
   });

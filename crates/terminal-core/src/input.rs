@@ -198,7 +198,16 @@ pub fn encode_key(key: Key, mods: Modifiers, modes: &TermModes) -> Vec<u8> {
                 with_alt(mods, char_bytes(c))
             }
         }
-        Key::Enter => with_alt(mods, vec![b'\r']),
+        Key::Enter => {
+            // Shift+Enter must not collapse to CR: agent TUIs (Claude Code and
+            // peers) bind it to newline. Same ESC-CR bytes `/terminal-setup`
+            // writes for VS Code — not Kitty CSI-u; we do not speak that protocol.
+            if mods.shift {
+                vec![ESC, b'\r']
+            } else {
+                with_alt(mods, vec![b'\r'])
+            }
+        }
         Key::Escape => with_alt(mods, vec![ESC]),
         Key::Backspace => {
             let b = if mods.ctrl { 0x08 } else { 0x7f };
@@ -421,6 +430,12 @@ mod tests {
         assert_eq!(
             encode_key(Key::Enter, Modifiers::none(), &modes()),
             vec![b'\r']
+        );
+        // Distinct from plain Enter so a TUI can bind newline without a
+        // Kitty keyboard protocol negotiation.
+        assert_eq!(
+            encode_key(Key::Enter, Modifiers::shift(), &modes()),
+            vec![ESC, b'\r']
         );
         assert_eq!(
             encode_key(Key::Backspace, Modifiers::none(), &modes()),

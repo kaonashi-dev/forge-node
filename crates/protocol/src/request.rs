@@ -681,6 +681,62 @@ pub enum Request {
         #[serde(default)]
         read_only: bool,
     },
+    /// Open a file in a daemon-supervised `forge-editor` process (feature 19)
+    /// → `SessionCreated`; buffer state arrives as `SessionUpdated`.
+    ///
+    /// The daemon reads the file through `fs-service` and hands the text to the
+    /// editor over its control channel; the editor never opens the checkout —
+    /// a save travels back the same way and the daemon writes it, so
+    /// `read_only` is a real choice rather than the only supported one.
+    CreateEditorSession {
+        /// Workspace whose checkout owns the file.
+        workspace_id: WorkspaceId,
+        /// Workspace-relative path of the file to open.
+        path: String,
+        /// 1-based line to reveal, or `None` for the start of the file.
+        line: Option<u32>,
+        /// Open the buffer read-only: no save request is accepted from it.
+        #[serde(default)]
+        read_only: bool,
+        /// Save on a pause, without being asked. The caller's own preference —
+        /// the daemon holds no opinion about it and only carries it across.
+        #[serde(default)]
+        autosave: bool,
+    },
+    /// Turn saving-on-a-pause on or off for a live editor session → `Ack`.
+    SetEditorAutosave {
+        session_id: SessionId,
+        autosave: bool,
+    },
+    /// Move the caret in a live editor session → `Ack`.
+    ///
+    /// The way a second jump into an already-open file behaves: it moves the
+    /// caret in that session rather than opening a rival one, the same rule
+    /// `editorReveal` follows in the GUI. `PreconditionFailed` when the
+    /// editor's command queue is saturated — the caller retries.
+    RevealInEditorSession {
+        session_id: SessionId,
+        /// 1-based.
+        line: u32,
+        /// 1-based display column, or `None` to leave the column alone.
+        column: Option<u32>,
+    },
+    /// The two sides of a refused editor save → `EditorConflict`.
+    ///
+    /// A synchronous read like `GetWorkspaceDiff`: the daemon answers from the
+    /// draft it refused and the bytes that were on disk instead. `NotFound`
+    /// when that session has no standing conflict, which is the ordinary case.
+    GetEditorConflict { session_id: SessionId },
+    /// Reload an editor's buffer from disk, discarding the draft → `Ack`.
+    ///
+    /// The *take disk* half of resolving a conflict. `PreconditionFailed` when
+    /// the editor's command queue is saturated.
+    ReloadEditorBuffer { session_id: SessionId },
+    /// Write the editor's draft over whatever is on disk now → `Ack`.
+    ///
+    /// The *keep mine* half. The daemon already learned the disk's revision
+    /// when it refused, so this is the second `Ctrl-S` by another name.
+    OverwriteEditorBuffer { session_id: SessionId },
     /// Create a child session under a parent, choosing its workspace via
     /// `workspace_policy` (§8.2) → `Ack`; `SessionCreated`.
     CreateChildSession {

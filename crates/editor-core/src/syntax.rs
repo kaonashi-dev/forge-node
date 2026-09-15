@@ -1,0 +1,946 @@
+//! Line-oriented syntax colouring for a terminal editor.
+//!
+//! A handful of scopes, not a parse tree: a wrong colour is worse than none, so
+//! an unknown grammar stays plain and a construct this does not understand
+//! falls back to [`Scope::Plain`] rather than guessing.
+//!
+//! The renderer paints one row at a time, so the document is scanned once into
+//! per-line spans and rows are looked up. Scanning per row would be quadratic,
+//! and scanning only the visible rows cannot work: a block comment opened
+//! above decides the colour of everything below it.
+
+use std::collections::HashSet;
+
+/// What a span of text is. Mirrors the GUI's scope list so one theme covers
+/// both surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Comment,
+    Keyword,
+    ControlKeyword,
+    String,
+    Number,
+    Type,
+    Function,
+    Property,
+    Constant,
+    Plain,
+}
+
+/// A coloured run inside one line, as byte offsets into that line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub scope: Scope,
+}
+
+/// Which grammar a buffer is read with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grammar {
+    Rust,
+    CLike,
+    Python,
+    Json,
+    Keyed,
+    Shell,
+    Markdown,
+    /// No colouring: an extension this build does not know.
+    None,
+}
+
+impl Grammar {
+    /// The grammar for a path's extension, `None` when it is not one of these.
+    ///
+    /// Extension only: sniffing content would have to be undone the moment a
+    /// person types, and a shebang is a later milestone, not a guess.
+    #[must_use]
+    pub fn for_path(path: &str) -> Self {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let Some(dot) = name.rfind('.').filter(|at| *at > 0) else {
+            return Self::None;
+        };
+        match name[dot + 1..].to_ascii_lowercase().as_str() {
+            "rs" => Self::Rust,
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "go" | "java" | "kt" | "c" | "h"
+            | "cc" | "cpp" | "hpp" | "cs" | "swift" | "scala" | "php" | "dart" => Self::CLike,
+            "py" | "pyi" => Self::Python,
+            "json" => Self::Json,
+            "toml" | "yaml" | "yml" | "ini" | "cfg" | "conf" | "env" => Self::Keyed,
+            "sh" | "bash" | "zsh" | "fish" => Self::Shell,
+            "md" | "markdown" | "mdx" => Self::Markdown,
+            _ => Self::None,
+        }
+    }
+}
+
+/// The colouring of one document, indexed by line.
+#[derive(Debug, Default)]
+pub struct Syntax {
+    lines: Vec<Vec<Span>>,
+}
+
+impl Syntax {
+    /// Scan `text`. An unknown grammar produces nothing, which is plain.
+    #[must_use]
+    pub fn parse(text: &str, grammar: Grammar) -> Self {
+        if grammar == Grammar::None {
+            return Self::default();
+        }
+        let mut out = Scanner::new(text);
+        match grammar {
+            Grammar::Rust => out.c_like(&rust_keywords(), true),
+            Grammar::CLike => out.c_like(&c_keywords(), false),
+            Grammar::Python => out.python(),
+            Grammar::Json => out.json(),
+            Grammar::Keyed => out.keyed(),
+            Grammar::Shell => out.shell(),
+            Grammar::Markdown => out.markdown(),
+            Grammar::None => {}
+        }
+        Self {
+            lines: out.finish(),
+        }
+    }
+
+    /// The spans on one 0-based line; empty when it has none.
+    #[must_use]
+    pub fn line(&self, index: usize) -> &[Span] {
+        self.lines.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    /// The scope covering a byte offset within a line.
+    #[must_use]
+    pub fn scope_at(&self, line: usize, offset: usize) -> Scope {
+        self.line(line)
+            .iter()
+            .find(|span| offset >= span.start && offset < span.end)
+            .map_or(Scope::Plain, |span| span.scope)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lines.iter().all(Vec::is_empty)
+    }
+}
+
+/// Walks the document once, emitting spans split at every newline.
+struct Scanner<'a> {
+    text: &'a str,
+    bytes: &'a [u8],
+    at: usize,
+    /// Start of the line `at` is in, and that line's index.
+    line_start: usize,
+    line: usize,
+    lines: Vec<Vec<Span>>,
+}
+
+impl<'a> Scanner<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            bytes: text.as_bytes(),
+            at: 0,
+            line_start: 0,
+            line: 0,
+            lines: vec![Vec::new(); text.lines().count().max(1) + 1],
+        }
+    }
+
+    fn finish(self) -> Vec<Vec<Span>> {
+        self.lines
+    }
+
+    fn byte(&self, at: usize) -> u8 {
+        self.bytes.get(at).copied().unwrap_or(0)
+    }
+
+    fn done(&self) -> bool {
+        self.at >= self.bytes.len()
+    }
+
+    /// Advance one byte, tracking which line we are on.
+    ///
+    /// Stops at the end rather than running past it: a scan looking for a
+    /// closer that never comes (`/*` at the end of a file) bumps more times
+    /// than there are bytes, and an `at` past the end slices out of bounds
+    /// when the span is emitted.
+    fn bump(&mut self) {
+        if self.done() {
+            return;
+        }
+        // A whole character, not a byte: every `Mark` and every span bound is
+        // a slice index into the document, and one that lands inside a
+        // multi-byte character panics. ASCII — which is all the grammars match
+        // on — advances by one either way.
+        let width = match self.byte(self.at) {
+            0x00..=0x7f => 1,
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf7 => 4,
+            // A continuation byte here means the scan already lost the
+            // boundary; stepping one byte finds it again.
+            _ => 1,
+        };
+        if self.byte(self.at) == b'\n' {
+            self.line += 1;
+            self.line_start = self.at + 1;
+        }
+        self.at = (self.at + width).min(self.bytes.len());
+    }
+
+    /// Where a token starts, captured before it is consumed.
+    fn mark(&self) -> Mark {
+        Mark {
+            at: self.at,
+            line: self.line,
+            column: self.at - self.line_start,
+        }
+    }
+
+    /// Emit `[mark, self.at)` as `scope`, split at every newline it crosses.
+    ///
+    /// Splitting here is what lets the renderer look a row up: a block comment
+    /// is one construct to the scanner and one span per row to the painter.
+    /// The start position is carried in rather than recomputed — searching the
+    /// document for it would make colouring quadratic in its length.
+    fn emit(&mut self, mark: Mark, scope: Scope) {
+        let to = self.at;
+        if mark.at >= to || scope == Scope::Plain {
+            return;
+        }
+        let mut start = mark.at;
+        let mut line = mark.line;
+        let mut column = mark.column;
+        while start < to {
+            match self.text[start..to].find('\n') {
+                Some(offset) => {
+                    let end = start + offset;
+                    if end > start {
+                        self.push(line, column, column + (end - start), scope);
+                    }
+                    start = end + 1;
+                    line += 1;
+                    column = 0;
+                }
+                None => {
+                    self.push(line, column, column + (to - start), scope);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn push(&mut self, line: usize, start: usize, end: usize, scope: Scope) {
+        if line >= self.lines.len() {
+            self.lines.resize(line + 1, Vec::new());
+        }
+        self.lines[line].push(Span { start, end, scope });
+    }
+}
+
+/// A position remembered before a token is consumed.
+#[derive(Clone, Copy)]
+struct Mark {
+    at: usize,
+    line: usize,
+    column: usize,
+}
+
+/// Keywords that read as control flow, coloured apart from the rest.
+fn control() -> HashSet<&'static str> {
+    [
+        "if", "else", "for", "while", "loop", "do", "switch", "case", "match", "break", "continue",
+        "return", "throw", "try", "catch", "finally", "await", "yield", "goto",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn rust_keywords() -> HashSet<&'static str> {
+    [
+        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
+        "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait",
+        "true", "type", "unsafe", "use", "where", "while", "union",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn c_keywords() -> HashSet<&'static str> {
+    [
+        "abstract",
+        "as",
+        "async",
+        "await",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "declare",
+        "default",
+        "delete",
+        "do",
+        "else",
+        "enum",
+        "export",
+        "extends",
+        "false",
+        "final",
+        "finally",
+        "for",
+        "from",
+        "func",
+        "function",
+        "go",
+        "if",
+        "implements",
+        "import",
+        "in",
+        "instanceof",
+        "interface",
+        "let",
+        "new",
+        "null",
+        "package",
+        "private",
+        "protected",
+        "public",
+        "readonly",
+        "return",
+        "static",
+        "struct",
+        "super",
+        "switch",
+        "this",
+        "throw",
+        "throws",
+        "true",
+        "try",
+        "type",
+        "typeof",
+        "undefined",
+        "var",
+        "void",
+        "while",
+        "with",
+        "yield",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn is_word(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+}
+
+impl Scanner<'_> {
+    /// Rust, and the C family: line and block comments, quoted strings,
+    /// numbers, keywords, `Type` by leading capital, `name(` as a call.
+    fn c_like(&mut self, keywords: &HashSet<&'static str>, rust: bool) {
+        let control = control();
+        while !self.done() {
+            let byte = self.byte(self.at);
+            let mark = self.mark();
+            match byte {
+                b'/' if self.at_pair(b'/', b'/') => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'/' if self.at_pair(b'/', b'*') => {
+                    self.bump();
+                    self.bump();
+                    while !self.done() && !self.at_pair(b'*', b'/') {
+                        self.bump();
+                    }
+                    self.bump();
+                    self.bump();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'#' if rust && self.byte(self.at + 1) == b'[' => {
+                    // An attribute is meta, and it is not a comment: it runs to
+                    // its closing bracket, not to the end of the line.
+                    self.take_bracketed(b'[', b']');
+                    self.emit(mark, Scope::Comment);
+                }
+                b'"' | b'\'' | b'`' => {
+                    // A Rust lifetime is not a string: `'a` has no closer.
+                    if rust && byte == b'\'' && !self.is_char_literal() {
+                        self.bump();
+                        continue;
+                    }
+                    self.take_quoted(byte);
+                    self.emit(mark, Scope::String);
+                }
+                b'0'..=b'9' => {
+                    while !self.done()
+                        && (self.byte(self.at).is_ascii_alphanumeric()
+                            || self.byte(self.at) == b'.'
+                            || self.byte(self.at) == b'_')
+                    {
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::Number);
+                }
+                b if is_word(b) && !b.is_ascii_digit() => {
+                    while !self.done() && is_word(self.byte(self.at)) {
+                        self.bump();
+                    }
+                    let word = &self.text[mark.at..self.at];
+                    let scope = if control.contains(word) {
+                        Scope::ControlKeyword
+                    } else if keywords.contains(word) {
+                        Scope::Keyword
+                    } else if word.starts_with(|c: char| c.is_ascii_uppercase()) {
+                        Scope::Type
+                    } else if self.peek_nonspace() == b'(' {
+                        Scope::Function
+                    } else {
+                        Scope::Plain
+                    };
+                    self.emit(mark, scope);
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    /// `'a` is a lifetime unless the quote closes within a few bytes.
+    fn is_char_literal(&self) -> bool {
+        let mut at = self.at + 1;
+        if self.byte(at) == b'\\' {
+            at += 1;
+        }
+        // One char plus a closer; anything longer is a lifetime or a label.
+        for step in 0..5 {
+            if self.byte(at + step) == b'\'' {
+                return true;
+            }
+            if self.byte(at + step) == 0 || self.byte(at + step) == b'\n' {
+                return false;
+            }
+        }
+        false
+    }
+
+    fn python(&mut self) {
+        let keywords: HashSet<&str> = [
+            "and", "as", "assert", "async", "await", "class", "def", "del", "elif", "else",
+            "except", "False", "finally", "for", "from", "global", "if", "import", "in", "is",
+            "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "try",
+            "while", "with", "yield",
+        ]
+        .into_iter()
+        .collect();
+        let control = control();
+        while !self.done() {
+            let byte = self.byte(self.at);
+            let mark = self.mark();
+            match byte {
+                b'#' => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'"' | b'\'' => {
+                    if self.at_triple(byte) {
+                        self.bump();
+                        self.bump();
+                        self.bump();
+                        while !self.done() && !self.at_triple(byte) {
+                            self.bump();
+                        }
+                        self.bump();
+                        self.bump();
+                        self.bump();
+                    } else {
+                        self.take_quoted(byte);
+                    }
+                    self.emit(mark, Scope::String);
+                }
+                b'0'..=b'9' => {
+                    while !self.done()
+                        && (self.byte(self.at).is_ascii_alphanumeric()
+                            || self.byte(self.at) == b'.')
+                    {
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::Number);
+                }
+                b if is_word(b) && !b.is_ascii_digit() => {
+                    while !self.done() && is_word(self.byte(self.at)) {
+                        self.bump();
+                    }
+                    let word = &self.text[mark.at..self.at];
+                    let scope = if control.contains(word) {
+                        Scope::ControlKeyword
+                    } else if keywords.contains(word) {
+                        Scope::Keyword
+                    } else if word.starts_with(|c: char| c.is_ascii_uppercase()) {
+                        Scope::Type
+                    } else if self.peek_nonspace() == b'(' {
+                        Scope::Function
+                    } else {
+                        Scope::Plain
+                    };
+                    self.emit(mark, scope);
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    fn json(&mut self) {
+        while !self.done() {
+            let byte = self.byte(self.at);
+            let mark = self.mark();
+            match byte {
+                b'"' => {
+                    self.take_quoted(b'"');
+                    // A string followed by a colon is a key, not a value.
+                    let scope = if self.peek_nonspace() == b':' {
+                        Scope::Property
+                    } else {
+                        Scope::String
+                    };
+                    self.emit(mark, scope);
+                }
+                b'0'..=b'9' | b'-' => {
+                    while !self.done()
+                        && (self.byte(self.at).is_ascii_digit()
+                            || matches!(self.byte(self.at), b'.' | b'e' | b'E' | b'+' | b'-'))
+                    {
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::Number);
+                }
+                b't' | b'f' | b'n' => {
+                    while !self.done() && self.byte(self.at).is_ascii_alphabetic() {
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::Constant);
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    /// TOML, YAML, ini, dotenv: a key before a separator, then a value.
+    fn keyed(&mut self) {
+        while !self.done() {
+            let mark = self.mark();
+            match self.byte(self.at) {
+                b'#' | b';' => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'"' | b'\'' => {
+                    let quote = self.byte(self.at);
+                    self.take_quoted(quote);
+                    self.emit(mark, Scope::String);
+                }
+                b'[' => {
+                    self.take_bracketed(b'[', b']');
+                    self.emit(mark, Scope::Type);
+                }
+                b if is_word(b) || b == b'-' => {
+                    let at_line_start = self.only_space_before();
+                    while !self.done()
+                        && (is_word(self.byte(self.at))
+                            || matches!(self.byte(self.at), b'-' | b'.'))
+                    {
+                        self.bump();
+                    }
+                    let scope = if at_line_start && matches!(self.peek_nonspace(), b'=' | b':') {
+                        Scope::Property
+                    } else if self.text[mark.at..self.at]
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || c == '.')
+                    {
+                        Scope::Number
+                    } else if matches!(&self.text[mark.at..self.at], "true" | "false" | "null") {
+                        Scope::Constant
+                    } else {
+                        Scope::Plain
+                    };
+                    self.emit(mark, scope);
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    fn shell(&mut self) {
+        let keywords: HashSet<&str> = [
+            "if", "then", "elif", "else", "fi", "for", "in", "do", "done", "while", "until",
+            "case", "esac", "function", "return", "exit", "local", "export", "set", "echo",
+            "source", "read",
+        ]
+        .into_iter()
+        .collect();
+        let control = control();
+        while !self.done() {
+            let mark = self.mark();
+            match self.byte(self.at) {
+                b'#' => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'"' | b'\'' => {
+                    let quote = self.byte(self.at);
+                    self.take_quoted(quote);
+                    self.emit(mark, Scope::String);
+                }
+                b'$' => {
+                    self.bump();
+                    if self.byte(self.at) == b'{' {
+                        self.take_bracketed(b'{', b'}');
+                    } else {
+                        while !self.done() && is_word(self.byte(self.at)) {
+                            self.bump();
+                        }
+                    }
+                    self.emit(mark, Scope::Property);
+                }
+                b if is_word(b) && !b.is_ascii_digit() => {
+                    while !self.done() && is_word(self.byte(self.at)) {
+                        self.bump();
+                    }
+                    let word = &self.text[mark.at..self.at];
+                    let scope = if control.contains(word) {
+                        Scope::ControlKeyword
+                    } else if keywords.contains(word) {
+                        Scope::Keyword
+                    } else {
+                        Scope::Plain
+                    };
+                    self.emit(mark, scope);
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    /// Markdown: the marks that carry structure, not a full renderer.
+    fn markdown(&mut self) {
+        while !self.done() {
+            let mark = self.mark();
+            let at_line_start = self.only_space_before();
+            match self.byte(self.at) {
+                b'#' if at_line_start => {
+                    self.take_line();
+                    self.emit(mark, Scope::Keyword);
+                }
+                b'>' if at_line_start => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'`' if self.at_triple(b'`') => {
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    while !self.done() && !self.at_triple(b'`') {
+                        self.bump();
+                    }
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    self.emit(mark, Scope::String);
+                }
+                b'`' => {
+                    self.take_quoted(b'`');
+                    self.emit(mark, Scope::String);
+                }
+                b'[' => {
+                    self.take_bracketed(b'[', b']');
+                    self.emit(mark, Scope::Function);
+                }
+                b'-' | b'*' | b'+' if at_line_start && self.byte(self.at + 1) == b' ' => {
+                    self.bump();
+                    self.emit(mark, Scope::ControlKeyword);
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    // --- shared scanning helpers ---
+
+    fn take_line(&mut self) {
+        while !self.done() && self.byte(self.at) != b'\n' {
+            self.bump();
+        }
+    }
+
+    /// Consume a quoted run, honouring backslash escapes. An unterminated
+    /// quote stops at the newline, so one stray `"` cannot colour the rest of
+    /// the file.
+    fn take_quoted(&mut self, quote: u8) {
+        self.bump();
+        while !self.done() {
+            let byte = self.byte(self.at);
+            if byte == b'\\' {
+                self.bump();
+                self.bump();
+                continue;
+            }
+            // A backtick or triple-quote may span lines; a plain quote may not.
+            if byte == b'\n' && quote != b'`' {
+                return;
+            }
+            self.bump();
+            if byte == quote {
+                return;
+            }
+        }
+    }
+
+    fn take_bracketed(&mut self, open: u8, close: u8) {
+        let mut depth = 0;
+        while !self.done() {
+            let byte = self.byte(self.at);
+            if byte == open {
+                depth += 1;
+            } else if byte == close {
+                depth -= 1;
+                if depth == 0 {
+                    self.bump();
+                    return;
+                }
+            } else if byte == b'\n' && depth > 0 && open == b'[' {
+                // A bracket left open is a typo, not a construct.
+                return;
+            }
+            self.bump();
+        }
+    }
+
+    /// Whether the next two bytes are `first` then `second`.
+    fn at_pair(&self, first: u8, second: u8) -> bool {
+        self.byte(self.at) == first && self.byte(self.at + 1) == second
+    }
+
+    /// Whether the next three bytes are all `byte` — a triple quote or fence.
+    fn at_triple(&self, byte: u8) -> bool {
+        self.byte(self.at) == byte
+            && self.byte(self.at + 1) == byte
+            && self.byte(self.at + 2) == byte
+    }
+
+    /// The next byte that is not a space or tab, or 0 at the end.
+    fn peek_nonspace(&self) -> u8 {
+        let mut at = self.at;
+        while matches!(self.byte(at), b' ' | b'\t') {
+            at += 1;
+        }
+        self.byte(at)
+    }
+
+    /// Whether only whitespace stands between here and the start of the line.
+    fn only_space_before(&self) -> bool {
+        self.text[self.line_start..self.at]
+            .bytes()
+            .all(|b| b == b' ' || b == b'\t')
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The text one span covers, so a test names what it sees.
+    fn spans(text: &str, grammar: Grammar, line: usize) -> Vec<(&str, Scope)> {
+        let syntax = Syntax::parse(text, grammar);
+        let body = text.lines().nth(line).unwrap_or("");
+        syntax
+            .line(line)
+            .iter()
+            .map(|span| (&body[span.start..span.end], span.scope))
+            .collect()
+    }
+
+    #[test]
+    fn a_grammar_is_chosen_by_extension() {
+        assert_eq!(Grammar::for_path("src/main.rs"), Grammar::Rust);
+        assert_eq!(Grammar::for_path("app.TSX"), Grammar::CLike);
+        assert_eq!(Grammar::for_path("a/b/notes.md"), Grammar::Markdown);
+        assert_eq!(Grammar::for_path("Cargo.toml"), Grammar::Keyed);
+        // A dotfile's name is not an extension, and neither is a directory's.
+        assert_eq!(Grammar::for_path(".gitignore"), Grammar::None);
+        assert_eq!(Grammar::for_path("docs.md/main.rs"), Grammar::Rust);
+        assert_eq!(Grammar::for_path("LICENSE"), Grammar::None);
+    }
+
+    #[test]
+    fn an_unknown_grammar_colours_nothing() {
+        assert!(Syntax::parse("anything at all\n", Grammar::None).is_empty());
+    }
+
+    #[test]
+    fn rust_keywords_strings_and_calls() {
+        let found = spans("fn main() { let x = \"hi\"; }\n", Grammar::Rust, 0);
+        assert!(found.contains(&("fn", Scope::Keyword)), "{found:?}");
+        assert!(found.contains(&("main", Scope::Function)), "{found:?}");
+        assert!(found.contains(&("let", Scope::Keyword)), "{found:?}");
+        assert!(found.contains(&("\"hi\"", Scope::String)), "{found:?}");
+    }
+
+    #[test]
+    fn control_flow_is_its_own_scope() {
+        let found = spans("if x { return 1; }\n", Grammar::Rust, 0);
+        assert!(found.contains(&("if", Scope::ControlKeyword)), "{found:?}");
+        assert!(
+            found.contains(&("return", Scope::ControlKeyword)),
+            "{found:?}"
+        );
+        assert!(found.contains(&("1", Scope::Number)), "{found:?}");
+    }
+
+    /// The reason the scanner is whole-document: a block comment decides the
+    /// colour of lines below the one it opened on.
+    #[test]
+    fn a_block_comment_spans_lines_as_one_span_each() {
+        let text = "let a = 1;\n/* one\n   two */\nlet b = 2;\n";
+        assert_eq!(spans(text, Grammar::Rust, 1), [("/* one", Scope::Comment)]);
+        assert_eq!(
+            spans(text, Grammar::Rust, 2),
+            [("   two */", Scope::Comment)]
+        );
+        // The line after it is code again.
+        assert!(spans(text, Grammar::Rust, 3)
+            .iter()
+            .any(|(text, scope)| *text == "let" && *scope == Scope::Keyword));
+    }
+
+    /// One stray quote must not colour the rest of the file.
+    #[test]
+    fn an_unterminated_quote_stops_at_the_newline() {
+        let text = "let a = \"oops\nlet b = 2;\n";
+        assert_eq!(
+            spans(text, Grammar::Rust, 0),
+            [("let", Scope::Keyword), ("\"oops", Scope::String)]
+        );
+        assert!(spans(text, Grammar::Rust, 1)
+            .iter()
+            .any(|(text, scope)| *text == "let" && *scope == Scope::Keyword));
+    }
+
+    /// `'a` has no closer; treating it as a string would swallow the line.
+    #[test]
+    fn a_rust_lifetime_is_not_a_string() {
+        let found = spans("fn f<'a>(x: &'a str) -> bool { true }\n", Grammar::Rust, 0);
+        assert!(
+            !found.iter().any(|(_, scope)| *scope == Scope::String),
+            "a lifetime must not open a string: {found:?}"
+        );
+        let literal = spans("let c = 'x';\n", Grammar::Rust, 0);
+        assert!(literal.contains(&("'x'", Scope::String)), "{literal:?}");
+    }
+
+    #[test]
+    fn json_tells_a_key_from_a_value() {
+        let found = spans("{\"name\": \"forge\", \"n\": 3}\n", Grammar::Json, 0);
+        assert!(found.contains(&("\"name\"", Scope::Property)), "{found:?}");
+        assert!(found.contains(&("\"forge\"", Scope::String)), "{found:?}");
+        assert!(found.contains(&("3", Scope::Number)), "{found:?}");
+    }
+
+    #[test]
+    fn a_keyed_file_colours_keys_sections_and_comments() {
+        let text = "# note\n[table]\nkey = \"value\"\n";
+        assert_eq!(spans(text, Grammar::Keyed, 0), [("# note", Scope::Comment)]);
+        assert_eq!(spans(text, Grammar::Keyed, 1), [("[table]", Scope::Type)]);
+        let row = spans(text, Grammar::Keyed, 2);
+        assert!(row.contains(&("key", Scope::Property)), "{row:?}");
+        assert!(row.contains(&("\"value\"", Scope::String)), "{row:?}");
+    }
+
+    #[test]
+    fn python_handles_triple_quotes_and_defs() {
+        let text = "def go():\n    \"\"\"doc\n    more\"\"\"\n    return 1\n";
+        let head = spans(text, Grammar::Python, 0);
+        assert!(head.contains(&("def", Scope::Keyword)), "{head:?}");
+        assert!(head.contains(&("go", Scope::Function)), "{head:?}");
+        // The docstring covers both of its lines.
+        assert!(spans(text, Grammar::Python, 1)
+            .iter()
+            .any(|(_, scope)| *scope == Scope::String));
+        assert!(spans(text, Grammar::Python, 2)
+            .iter()
+            .any(|(_, scope)| *scope == Scope::String));
+    }
+
+    #[test]
+    fn shell_colours_variables_and_words() {
+        let found = spans("if [ -n $HOME ]; then echo \"hi\"; fi\n", Grammar::Shell, 0);
+        assert!(found.contains(&("if", Scope::ControlKeyword)), "{found:?}");
+        assert!(found.contains(&("$HOME", Scope::Property)), "{found:?}");
+        // A `$` inside double quotes stays part of the string: interpolation
+        // is a shell rule this scanner deliberately does not model.
+        assert!(found.contains(&("\"hi\"", Scope::String)), "{found:?}");
+    }
+
+    #[test]
+    fn markdown_colours_structure() {
+        let text = "# Title\n\n- item\n\n```rs\ncode\n```\n";
+        assert_eq!(
+            spans(text, Grammar::Markdown, 0),
+            [("# Title", Scope::Keyword)]
+        );
+        assert_eq!(
+            spans(text, Grammar::Markdown, 2),
+            [("-", Scope::ControlKeyword)]
+        );
+    }
+
+    /// Offsets index the line they are on, and never run past it.
+    #[test]
+    fn every_span_is_inside_its_line() {
+        let text = "fn main() {\n  let s = \"a\\nb\";\n  /* c */\n}\n";
+        let syntax = Syntax::parse(text, Grammar::Rust);
+        for (index, line) in text.lines().enumerate() {
+            for span in syntax.line(index) {
+                assert!(span.start < span.end, "empty span on line {index}");
+                assert!(
+                    span.end <= line.len(),
+                    "span {span:?} runs past line {index} ({:?})",
+                    line
+                );
+                assert!(line.is_char_boundary(span.start) && line.is_char_boundary(span.end));
+            }
+        }
+    }
+
+    /// Whatever the input, scanning terminates and stays in bounds.
+    #[test]
+    fn hostile_input_does_not_hang_or_panic() {
+        for grammar in [
+            Grammar::Rust,
+            Grammar::CLike,
+            Grammar::Python,
+            Grammar::Json,
+            Grammar::Keyed,
+            Grammar::Shell,
+            Grammar::Markdown,
+        ] {
+            for text in [
+                "",
+                "\n\n\n",
+                "\"",
+                "'",
+                "`",
+                "/*",
+                "[[[[[[",
+                "${",
+                "```",
+                "\u{1f600} é 漢字\n",
+                "a\u{0}b\n",
+            ] {
+                let syntax = Syntax::parse(text, grammar);
+                let _ = syntax.scope_at(0, 0);
+            }
+        }
+    }
+}

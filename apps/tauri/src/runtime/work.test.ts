@@ -39,6 +39,15 @@ describe("sessionWork", () => {
     expect(sessionWork(shell, quiet, NOW)).toBe("running");
   });
 
+  it("does not give an editor session the shell running marker", () => {
+    const editor = sessionFixture({
+      kind: "Editor",
+      agent_provider_id: null,
+      last_activity_at: "2026-08-30T09:00:00Z",
+    });
+    expect(sessionWork(editor, quiet, NOW)).toBe("idle");
+  });
+
   it("reports the process before the work when the process is the news", () => {
     expect(sessionWork(agent(undefined, { state: "Starting" }), quiet, NOW)).toBe("starting");
     expect(sessionWork(agent(undefined, { state: "Orphaned" }), quiet, NOW)).toBe("failed");

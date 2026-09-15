@@ -1,6 +1,6 @@
 # File workbench
 
-A non-modal, terminal-styled file explorer and CodeMirror editor. The DOM API
+A non-modal, terminal-styled file explorer and plain-text editor. The DOM API
 works with plain TypeScript or a framework: mount into an element, update through
 the handle, and call `destroy()` on unmount. There are no Solid, React, Tauri,
 filesystem, network, global keyboard or application-store dependencies.
@@ -11,11 +11,9 @@ In Forge, run `bun install` in `apps/tauri`, then `bun run build:file-workbench`
 The app uses this package through its workspace dependency. To use it elsewhere,
 copy this directory, run `npm install`, then `npm pack`. The tarball includes ESM,
 TypeScript declarations and the stylesheet. Install the tarball in the consumer.
-CodeMirror packages are peer dependencies so the host can share one instance.
 
 ```ts
 import { createFileExplorer } from "@forge-node/file-workbench";
-import { createFileEditor } from "@forge-node/file-workbench/editor";
 import "@forge-node/file-workbench/style.css";
 
 const editor = createFileEditor(editorElement, {
@@ -51,9 +49,9 @@ explorer.destroy();
 editor.destroy();
 ```
 
-The root entry only loads the explorer. Import `/editor` lazily to keep CodeMirror
-out of the initial bundle. `/tree` exposes pure listing/filter/navigation helpers.
-`/symbol` exposes identifier extraction without importing an editor.
+The root entry only loads the explorer. Import `/editor` lazily to keep the
+editor out of the initial bundle. `/tree` exposes pure listing/filter/navigation
+helpers. `/symbol` exposes identifier extraction without importing an editor.
 
 ## Ownership and extension points
 
@@ -62,12 +60,6 @@ out of the initial bundle. `/tree` exposes pure listing/filter/navigation helper
   call `editor.text()` when saving or otherwise needing the complete text.
 - `setDoc()` is silent: it never calls `onChange`. It does report cursor changes.
   The host must resolve conflicts before applying external content.
-- Supply CodeMirror `theme` and `findExtension` extensions at construction;
-  `setTheme`, `setLanguage` and `setGitMarks` update the editor in place.
-  `onOpenDefinition` and `onRevealDiff` bridge navigation to the host.
-- `readOnly` disables both editing and editing commands. It is fixed for that
-  editor instance. Normal editors use ordinary text editing, undo, selection,
-  mouse input and find; there are no Vim modes or exit gestures.
 - A `FileTree` contains relative paths. `Directory` entries can represent empty
   folders; ignored directory entries are opaque until the host peels them
   (`onExpandOpaque` → one-level listing merged in). Directories implied by file
@@ -155,6 +147,15 @@ defaults use CSS system colors and monospace, with no imported app theme:
 | `--fw-added`, `--fw-modified`, `--fw-deleted` | Optional decorations                       |
 | `--fw-font`, `--fw-font-size`                 | Monospaced typography                      |
 | `--fw-row-height`                             | Unitless row height in pixels, at least 16 |
+| `--fw-editor-line-height`                     | Unitless line height for the editor only   |
+
+The editor's own type is set two different ways, because the two behave
+differently. Font size is ordinary inheritance — `.fw-editor` is `font:
+inherit`, so setting `font-size` on the host element is enough. Line height is
+a custom property, because the gutter, the highlight layer and the textarea
+each read `--fw-line-height` and have to agree to the pixel: one override on
+`--fw-editor-line-height` moves all three together, where three separate
+`line-height` declarations would drift apart the moment one was missed.
 
 ## Standalone example
 

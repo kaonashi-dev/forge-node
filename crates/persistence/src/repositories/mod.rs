@@ -114,6 +114,7 @@ pub(crate) fn session_kind_to_str(kind: SessionKind) -> Result<&'static str, DbE
     match kind {
         SessionKind::Shell => Ok("Shell"),
         SessionKind::Agent => Ok("Agent"),
+        SessionKind::Editor => Ok("Editor"),
         other => Err(DbError::Encode(format!(
             "unhandled SessionKind variant: {other:?}"
         ))),
@@ -124,6 +125,7 @@ pub(crate) fn session_kind_from_str(s: &str) -> Result<SessionKind, DbError> {
     match s {
         "Shell" => Ok(SessionKind::Shell),
         "Agent" => Ok(SessionKind::Agent),
+        "Editor" => Ok(SessionKind::Editor),
         _ => Err(DbError::decode_msg("SessionKind", s, "unknown kind tag")),
     }
 }
@@ -247,10 +249,22 @@ mod tests {
             let tag = workspace_kind_to_str(kind).unwrap();
             assert_eq!(workspace_kind_from_str(tag).unwrap(), kind);
         }
-        for kind in [SessionKind::Shell, SessionKind::Agent] {
+        for kind in [SessionKind::Shell, SessionKind::Agent, SessionKind::Editor] {
             let tag = session_kind_to_str(kind).unwrap();
             assert_eq!(session_kind_from_str(tag).unwrap(), kind);
         }
+    }
+
+    /// An `Editor` session is stored with the plain tag `"Editor"`; a client
+    /// from before feature 19 decoding that row is the reason `PROTOCOL_VERSION`
+    /// moved, not a reason to hide the kind.
+    #[test]
+    fn session_kind_editor_round_trips() {
+        assert_eq!(session_kind_to_str(SessionKind::Editor).unwrap(), "Editor");
+        assert_eq!(
+            session_kind_from_str("Editor").unwrap(),
+            SessionKind::Editor
+        );
     }
 
     #[test]
