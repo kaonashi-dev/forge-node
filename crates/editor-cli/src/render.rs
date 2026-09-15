@@ -24,7 +24,6 @@ pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     }
     for row in frame.rows {
         draw_row(app, out, row)?;
-        draw_ruler_cell(app, out, row)?;
     }
     // Integrated mode leaves the idle status bar to the GUI pane and only
     // claims the row for a prompt or a message; standalone always paints it.
@@ -43,17 +42,22 @@ pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     out.flush()
 }
 
+/// Paint one row as a single write of exactly `width` cells.
+///
+/// No `Clear(CurrentLine)` anywhere: a clear followed by the content is two
+/// states, and the daemon reads the PTY in batches — a read boundary landing
+/// between them is a blanked row on somebody's screen. That is the flicker the
+/// whole-screen clear used to cause, at row granularity and twenty-four times a
+/// frame. Padding to the width costs the trailing spaces and cannot be split
+/// into a state that reads as empty.
 fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
-    queue!(
-        out,
-        cursor::MoveTo(0, row as u16),
-        terminal::Clear(terminal::ClearType::CurrentLine)
-    )?;
+    queue!(out, cursor::MoveTo(0, row as u16))?;
     let text = app.document().text();
     // A wrapped line spreads across rows; the row names which line and which of
-    // its segments. Past the last line the row is blank.
+    // its segments. Past the last line the row is blank — written out, not
+    // cleared.
     let Some((line, sub)) = app.row_line_sub(row) else {
-        return Ok(());
+        return finish_row(app, out, row, 0);
     };
     if sub == 0 {
         // The caret's own line number reads in the default foreground rather
@@ -116,13 +120,14 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         // A folded block says how much it swallowed, where the body would be.
         if app.fold_state(line) == Some(true) {
             let hidden = app.folded_line_count(line);
+            let note = format!("  \u{2026} {hidden} lines");
             queue!(
                 out,
                 style::SetForegroundColor(style::Color::DarkGrey),
-                style::Print(format!("  \u{2026} {hidden} lines")),
+                style::Print(&note),
                 style::SetForegroundColor(style::Color::Reset)
             )?;
-            return Ok(());
+            return finish_row(app, out, row, app.gutter_width() + display_cells(&note));
         }
     } else {
         // A continuation row has no number and no mark, but keeps the width so
@@ -152,7 +157,9 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
             special_chars: app.special_chars(),
         },
     );
+    let mut cells = app.gutter_width();
     for part in parts {
+        cells += display_cells(&part.text);
         // Colour first, then the attributes: a selected or marked run keeps its
         // scope colour as the foreground the terminal swaps, so selecting a
         // keyword does not flatten it to the default.
@@ -192,7 +199,37 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         }
     }
     queue!(out, style::SetForegroundColor(style::Color::Reset))?;
-    Ok(())
+    finish_row(app, out, row, cells)
+}
+
+/// Pad a row out to the grid's width and put the ruler in its last cell.
+///
+/// The other half of "a row is one write": the text column is only as wide as
+/// the line happens to be, so the cells past it are *written* blank rather than
+/// left to a clear, and the ruler rides in the same write instead of arriving
+/// as a second one after it.
+fn finish_row(app: &App, out: &mut impl Write, row: usize, cells: usize) -> io::Result<()> {
+    let width = app.width() as usize;
+    let ruler = usize::from(app.ruler_visible());
+    let pad = width.saturating_sub(ruler).saturating_sub(cells);
+    if pad > 0 {
+        queue!(out, style::Print(" ".repeat(pad)))?;
+    }
+    if ruler == 0 {
+        return Ok(());
+    }
+    match app.ruler_at(row) {
+        Some(mark) => {
+            let (glyph, colour) = ruler_style(mark);
+            queue!(
+                out,
+                style::SetForegroundColor(colour),
+                style::Print(glyph),
+                style::SetForegroundColor(style::Color::Reset)
+            )
+        }
+        None => queue!(out, style::Print(" ")),
+    }
 }
 
 /// What the change at the caret replaced, over the rows it is about.
@@ -292,30 +329,17 @@ fn draw_completion(app: &App, out: &mut impl Write, height: usize) -> io::Result
     Ok(())
 }
 
-/// The overview ruler's one cell on this row.
+/// What one ruler mark looks like: a glyph and a colour.
 ///
-/// Painted after the row so it survives the row's own `Clear`, and only where
-/// there is something to say: an empty ruler is an empty column, not a rule.
-fn draw_ruler_cell(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
-    if !app.ruler_visible() {
-        return Ok(());
-    }
-    let Some(mark) = app.ruler_at(row) else {
-        return Ok(());
-    };
+/// The caret is a pointer rather than a bar so it reads as *where you are*
+/// against the marks around it.
+fn ruler_style(mark: crate::app::RulerMark) -> (char, style::Color) {
     use crate::app::RulerMark;
-    let (glyph, colour) = match mark {
+    match mark {
         RulerMark::Change => ('\u{2502}', style::Color::Yellow),
         RulerMark::Match => ('\u{2502}', style::Color::Blue),
         RulerMark::Caret => ('\u{25c0}', style::Color::Reset),
-    };
-    queue!(
-        out,
-        cursor::MoveTo(app.ruler_column() as u16, row as u16),
-        style::SetForegroundColor(colour),
-        style::Print(glyph),
-        style::SetForegroundColor(style::Color::Reset)
-    )
+    }
 }
 
 /// What a gutter mark looks like. One cell, and the same three shapes a diff
@@ -383,17 +407,20 @@ fn scope_colour(scope: editor_core::Scope) -> Option<style::Color> {
     })
 }
 
+/// The status row, padded to the width like every other row.
+///
+/// No clear here either, for the same reason: reverse video over a cleared row
+/// is a black bar for however long the two writes are apart.
 fn draw_status(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
+    let width = app.width() as usize;
+    let text = view::cell_window(&status_text(app), 0, width);
+    let pad = width.saturating_sub(display_cells(&text));
     queue!(
         out,
         cursor::MoveTo(0, row as u16),
-        terminal::Clear(terminal::ClearType::CurrentLine),
         style::SetAttribute(style::Attribute::Reverse),
-        style::Print(view::cell_window(
-            &status_text(app),
-            0,
-            app.width() as usize
-        )),
+        style::Print(text),
+        style::Print(" ".repeat(pad)),
         style::SetAttribute(style::Attribute::NoReverse)
     )
 }

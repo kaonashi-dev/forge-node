@@ -268,11 +268,20 @@ HTML context menu).
   still takes the same rows repaints only its own, and the first line whose
   height changed reflows the row↔line map, so everything under it repaints and
   nothing over it does.
-- **A clear is a width change, and nothing else.** A scroll, and a viewport that
-  only grew taller, repaint their rows without blanking first: a client reading
-  the delta between the clear and the rows would paint the gap as a flash.
+- **A row is one write, and a clear is a shape change.** No row ever blanks
+  itself before its content: the daemon reads this PTY in batches, so a read
+  boundary landing between a clear and what it was making room for is a blank on
+  somebody's screen — `CSI 2J` for the whole grid, `CSI 2K` for one row, the
+  same defect at two scales. Instead every row is padded to the grid's width, so
+  any prefix of the write is a correct partial row, and the overview ruler rides
+  in the same write rather than arriving as a second one after it. It costs the
+  trailing spaces — about 40% more bytes on a full-viewport frame, which only
+  happens on a scroll or a resize — and buys a paint that cannot be split into a
+  state that reads as empty.
   `neither_a_scroll_nor_a_keystroke_blanks_the_screen` reads the raw PTY stream
-  for `CSI 2J` and fails on it.
+  for both sequences and fails on either. The two clears left are the alternate
+  screen's first frame and a width change, where the grid is being reshaped
+  anyway.
 - **One paint per frame under a burst.** The loop paints when the input has
   caught up or 8 ms have passed, whichever comes first — the same
   `daemon::terminal::FRAME` floor an attached terminal has. A key repeat that

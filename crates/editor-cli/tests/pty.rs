@@ -339,9 +339,13 @@ fn opening_with_a_line_number_starts_there() {
     editor.expect("3:1");
 }
 
-/// `CSI 2J` between two frames is the flicker: a client reading the delta
-/// while the rows are still being written paints a blank screen. Only a grid
-/// that changed width may send it, and neither a scroll nor a keystroke does.
+/// Blanking anything between two frames is the flicker.
+///
+/// `CSI 2J` is the whole screen and `CSI 2K` is one row, and both are the same
+/// defect: the daemon reads this PTY in batches, so a read boundary landing
+/// between the clear and the content it was making room for is a blank on
+/// somebody's screen. A row is one write, padded to the width, and only a grid
+/// that changed *shape* may clear at all.
 #[test]
 fn neither_a_scroll_nor_a_keystroke_blanks_the_screen() {
     let text: String = (0..200)
@@ -359,10 +363,21 @@ fn neither_a_scroll_nor_a_keystroke_blanks_the_screen() {
     editor.send(b"X");
     editor.expect("Xline");
 
+    for blank in ["\x1b[2J", "\x1b[2K"] {
+        assert!(
+            !editor.saw_raw(blank),
+            "a scroll or a keystroke emitted {blank:?}; stream was:\n{:?}",
+            String::from_utf8_lossy(&editor.seen)
+        );
+    }
+
+    // The padding is what replaced the clear, so a short line must still reach
+    // the right-hand edge: a row that stopped early would leave the tail of
+    // whatever was under it.
+    let rows = String::from_utf8_lossy(&editor.seen);
     assert!(
-        !editor.saw_raw("\x1b[2J"),
-        "a scroll or a keystroke cleared the screen; stream was:\n{:?}",
-        String::from_utf8_lossy(&editor.seen)
+        rows.contains("line 11") && rows.contains("            "),
+        "rows are no longer padded to the width:\n{rows}"
     );
 }
 
