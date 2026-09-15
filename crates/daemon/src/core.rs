@@ -5549,6 +5549,24 @@ impl Daemon {
         }
     }
 
+    /// What the changed block at `line` replaced, for the editor's gutter.
+    ///
+    /// A `git diff` on the editor's own control thread, off the core lock —
+    /// the same rule the definition search runs under, for the same reason.
+    pub(crate) fn editor_change_details(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        relative: &str,
+        line: u32,
+    ) -> Option<git_service::Hunk> {
+        let workspace_id = {
+            let inner = self.lock();
+            inner.sessions.get(&session_id)?.workspace_id
+        };
+        let root = self.workspace_path(workspace_id).ok()?;
+        git_service::file_hunk(&root, relative, line).ok().flatten()
+    }
+
     /// Open a second file for an editor that cannot open one itself.
     ///
     /// One buffer per process, so following a definition is a request. The

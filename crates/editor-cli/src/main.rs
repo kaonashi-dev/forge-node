@@ -256,6 +256,13 @@ fn handle_control(
         DaemonMessage::Definitions { symbol, places, .. } => {
             app.definitions_arrived(symbol, places);
         }
+        DaemonMessage::ChangeDetails {
+            line,
+            before,
+            after,
+            truncated,
+            ..
+        } => app.details_arrived(line, before, after, truncated),
         DaemonMessage::SetAutosave { autosave, .. } => app.set_autosave(autosave),
         DaemonMessage::Save { request_id } => {
             // The answer is the `SaveRequest` the main loop flushes next, and
@@ -313,6 +320,9 @@ fn flush_save(app: &mut App, control: &mut ControlChannel) -> anyhow::Result<()>
 fn flush_lookups(app: &mut App, control: &mut ControlChannel) -> anyhow::Result<()> {
     if let Some((request_id, symbol)) = app.take_definition_request() {
         control.send(&EditorMessage::FindDefinition { request_id, symbol })?;
+    }
+    if let Some((request_id, line)) = app.take_details_request() {
+        control.send(&EditorMessage::ChangeDetails { request_id, line })?;
     }
     if let Some((request_id, path, line)) = app.take_open_request() {
         control.send(&EditorMessage::OpenPath {

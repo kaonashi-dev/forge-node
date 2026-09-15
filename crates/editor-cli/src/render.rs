@@ -31,6 +31,7 @@ pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     if app.needs_status_row() {
         draw_status(app, out, height)?;
     }
+    draw_change_details(app, out, height)?;
     draw_completion(app, out, height)?;
     place_caret(app, out, height)?;
     // A copy leaves an OSC 52 for the terminal that owns the clipboard. Written
@@ -181,6 +182,53 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         }
     }
     queue!(out, style::SetForegroundColor(style::Color::Reset))?;
+    Ok(())
+}
+
+/// What the change at the caret replaced, over the rows it is about.
+///
+/// A panel and not a row: before and after are two lists, and a status line
+/// that had to summarise them would be saying what the person just asked to
+/// see. Painted over the text like the completion list, so it needs no layout
+/// of its own and nothing under it moves.
+fn draw_change_details(app: &App, out: &mut impl Write, height: usize) -> io::Result<()> {
+    let Some(Prompt::ChangeDetails {
+        before,
+        after,
+        offset,
+        ..
+    }) = app.prompt()
+    else {
+        return Ok(());
+    };
+    // Removed lines and then added ones, the way a hunk reads: a modification
+    // is what it was before what it became, not two columns to compare.
+    let lines: Vec<(char, style::Color, &str)> = before
+        .iter()
+        .map(|text| ('-', style::Color::Red, text.as_str()))
+        .chain(
+            after
+                .iter()
+                .map(|text| ('+', style::Color::Green, text.as_str())),
+        )
+        .skip(*offset)
+        .take(height.saturating_sub(1))
+        .collect();
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let width = app.width() as usize;
+    for (row, (sign, colour, text)) in lines.into_iter().enumerate() {
+        queue!(
+            out,
+            cursor::MoveTo(0, row as u16),
+            style::SetForegroundColor(colour),
+            style::SetAttribute(style::Attribute::Reverse),
+            style::Print(view::cell_window(&format!("{sign} {text}"), 0, width)),
+            style::SetAttribute(style::Attribute::NoReverse),
+            style::SetForegroundColor(style::Color::Reset)
+        )?;
+    }
     Ok(())
 }
 
@@ -343,6 +391,20 @@ fn status_text(app: &App) -> String {
             Prompt::GotoLine { input } => format!("go to line: {input}_"),
             Prompt::ConfirmClose => {
                 "unsaved changes — (s)ave, (d)iscard, any other key cancels".to_string()
+            }
+            Prompt::ChangeDetails {
+                line,
+                before,
+                after,
+                truncated,
+                ..
+            } => {
+                let cut = if *truncated { " (truncated)" } else { "" };
+                format!(
+                    "line {line}: {} removed, {} added{cut}   (Up/Down scroll, Esc closes)",
+                    before.len(),
+                    after.len()
+                )
             }
             Prompt::Definitions {
                 symbol,

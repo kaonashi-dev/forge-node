@@ -30,7 +30,9 @@ pub use github::{
     PullRequest, PullRequestLabel, PullRequestPage, PullRequestReviewDecision, GH_TIMEOUT,
     MAX_PR_BODY,
 };
-pub use marks::{file_marks, marks_from_hunks, Mark, MarkKind};
+pub use marks::{
+    file_hunk, file_marks, hunk_at, marks_from_hunks, Hunk, Mark, MarkKind, MAX_DETAIL_LINES,
+};
 pub use rebase::{
     abort as abort_sequencer, continue_sequencer, mark_resolved, state as sequencer_state,
     Conflict, Continued, Sequencer, SequencerState, MAX_CONFLICTS,

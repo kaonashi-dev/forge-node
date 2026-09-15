@@ -529,6 +529,28 @@ fn serve(
                     return;
                 }
             }
+            Ok(EditorMessage::ChangeDetails { request_id, line }) => {
+                let found = daemon.editor_change_details(session_id, &path, line);
+                let answer = match found {
+                    Some(hunk) => DaemonMessage::ChangeDetails {
+                        request_id,
+                        line: hunk.line,
+                        before: hunk.before,
+                        after: hunk.after,
+                        truncated: hunk.truncated,
+                    },
+                    None => DaemonMessage::ChangeDetails {
+                        request_id,
+                        line: 0,
+                        before: Vec::new(),
+                        after: Vec::new(),
+                        truncated: false,
+                    },
+                };
+                if send(&writer, &answer).is_err() {
+                    return;
+                }
+            }
             Ok(EditorMessage::OpenPath {
                 request_id,
                 path: wanted,

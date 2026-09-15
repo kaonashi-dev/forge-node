@@ -110,6 +110,20 @@ pub enum DaemonMessage {
         symbol: String,
         places: Vec<WirePlace>,
     },
+    /// What the changed block at a line replaced.
+    ///
+    /// The answer to [`EditorMessage::ChangeDetails`]. The gutter says *which*
+    /// lines changed; this is the question a person asks about one of them, so
+    /// it is answered on demand rather than carried with every mark.
+    ChangeDetails {
+        request_id: u64,
+        /// 1-based line the block starts at, or 0 when there is no block.
+        line: u32,
+        before: Vec<String>,
+        after: Vec<String>,
+        /// Either side was longer than the daemon's budget.
+        truncated: bool,
+    },
     /// Replace byte ranges, refused when the document moved under the caller.
     ///
     /// Reserved for a preview surface; H1's daemon does not send it yet, so an
@@ -188,6 +202,11 @@ pub enum EditorMessage {
         path: String,
         line: u32,
     },
+    /// What did the changed block at this line replace?
+    ///
+    /// The editor does not open the checkout and never runs git, so the diff
+    /// that produced its gutter marks is the daemon's to read again.
+    ChangeDetails { request_id: u64, line: u32 },
     /// The editor is exiting (quit command, fatal error). The daemon treats the
     /// socket EOF the same way, so this is a courtesy reason, not the signal.
     Closed { reason: String },

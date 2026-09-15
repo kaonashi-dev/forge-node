@@ -49,6 +49,19 @@ pub enum Prompt {
     },
     /// A close with unsaved changes: save, discard or cancel.
     ConfirmClose,
+    /// What the changed block at the caret replaced.
+    ///
+    /// The gutter says which lines changed; this is the question about one of
+    /// them. Scrolled with Up/Down when the block is taller than the row, and
+    /// stepped between blocks with Alt-N / Alt-P as the gutter always was.
+    ChangeDetails {
+        line: u32,
+        before: Vec<String>,
+        after: Vec<String>,
+        truncated: bool,
+        /// First shown row of the pair of lists.
+        offset: usize,
+    },
     /// Candidate declarations for a symbol, to choose between.
     ///
     /// Candidates and not a jump: the daemon ranks them with a heuristic, so
@@ -128,6 +141,8 @@ pub struct App {
     lookup: Option<(u64, String)>,
     /// A file the control loop has to ask the daemon to open.
     open_request: Option<(u64, String, u32)>,
+    /// A change-details request the control loop has not sent yet.
+    details_request: Option<(u64, u32)>,
     next_request_id: u64,
     register: String,
     query: Query,
@@ -288,6 +303,7 @@ impl App {
             outbox: None,
             lookup: None,
             open_request: None,
+            details_request: None,
             // The daemon mints ids from 1 for its own requests; the editor's
             // start past them so a log line names one side unambiguously.
             next_request_id: 1_000,
@@ -931,6 +947,51 @@ impl App {
         self.status = Some("looking…".to_string());
     }
 
+    /// Ask the daemon what the change at the caret replaced.
+    fn ask_change_details(&mut self) {
+        if !self.integrated {
+            self.status = Some("change details need the daemon".to_string());
+            return;
+        }
+        let line = self.caret_position().0;
+        if self.mark_at(line).is_none() {
+            self.status = Some("this line did not change".to_string());
+            return;
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.details_request = Some((request_id, u32::try_from(line).unwrap_or(u32::MAX)));
+        self.status = Some("reading…".to_string());
+    }
+
+    /// Take the change-details request the control loop has to send.
+    pub fn take_details_request(&mut self) -> Option<(u64, u32)> {
+        self.details_request.take()
+    }
+
+    /// The daemon answered a change-details request.
+    pub fn details_arrived(
+        &mut self,
+        line: u32,
+        before: Vec<String>,
+        after: Vec<String>,
+        truncated: bool,
+    ) {
+        self.damage_all = true;
+        if line == 0 {
+            self.status = Some("no change here any more".to_string());
+            return;
+        }
+        self.status = None;
+        self.prompt = Some(Prompt::ChangeDetails {
+            line,
+            before,
+            after,
+            truncated,
+            offset: 0,
+        });
+    }
+
     /// Take the definition request the control loop has to send.
     pub fn take_definition_request(&mut self) -> Option<(u64, String)> {
         self.lookup.take()
@@ -1405,8 +1466,8 @@ impl App {
             Some(Prompt::GotoLine { input }) => {
                 input.extend(text.chars().filter(char::is_ascii_digit));
             }
-            // A paste into a list of candidates is not a gesture the list has.
-            Some(Prompt::Definitions { .. }) => {}
+            // A paste into a list or a details panel is not a gesture it has.
+            Some(Prompt::Definitions { .. }) | Some(Prompt::ChangeDetails { .. }) => {}
             Some(Prompt::ConfirmClose) | None => self.run(Command::Paste(text.to_string())),
         }
         self.damage_all = true;
@@ -1784,6 +1845,7 @@ impl App {
             }
             EditorAction::Complete => self.open_completion(),
             EditorAction::FindDefinition => self.find_definition(),
+            EditorAction::ChangeDetails => self.ask_change_details(),
             EditorAction::ToggleSpecialChars => {
                 self.special_chars = !self.special_chars;
                 self.damage_all = true;
@@ -1872,6 +1934,30 @@ impl App {
         };
         self.damage_all = true;
         match prompt {
+            Prompt::ChangeDetails {
+                line,
+                before,
+                after,
+                truncated,
+                mut offset,
+            } => {
+                let rows = before.len() + after.len();
+                match key.code {
+                    KeyCode::Down => offset = (offset + 1).min(rows.saturating_sub(1)),
+                    KeyCode::Up => offset = offset.saturating_sub(1),
+                    KeyCode::Esc | KeyCode::Enter => return,
+                    // Stepping to the next block closes this panel; the caret
+                    // moves and the next Alt-Enter asks about where it landed.
+                    _ => {}
+                }
+                self.prompt = Some(Prompt::ChangeDetails {
+                    line,
+                    before,
+                    after,
+                    truncated,
+                    offset,
+                });
+            }
             Prompt::Definitions {
                 symbol,
                 places,
@@ -2355,6 +2441,7 @@ impl App {
             (KeyCode::Char('p'), true, _) => Action::Editor(EditorAction::ToggleCloseBrackets),
             (KeyCode::Char(' '), true, _) => Action::Editor(EditorAction::Complete),
             (KeyCode::Char('d'), _, true) => Action::Editor(EditorAction::FindDefinition),
+            (KeyCode::Enter, _, true) => Action::Editor(EditorAction::ChangeDetails),
             (KeyCode::Char('i'), _, true) => Action::Editor(EditorAction::ToggleSpecialChars),
             (KeyCode::Char('w'), _, true) => Action::Editor(EditorAction::ToggleWrap),
             // Alt, not Ctrl: Ctrl-N and Ctrl-B are already the find bar's.
@@ -2441,6 +2528,7 @@ enum EditorAction {
     ToggleWrap,
     Complete,
     FindDefinition,
+    ChangeDetails,
     ToggleWholeWord,
     ToggleRegex,
     PasteRegister,
@@ -4080,5 +4168,57 @@ mod tests {
             app.status(),
             Some("answer: not declared anywhere I can see")
         );
+    }
+
+    /// The gutter says which lines changed; Alt-Enter asks what one of them
+    /// replaced, and the answer is a panel rather than a status line.
+    #[test]
+    fn change_details_ask_the_daemon_and_open_a_panel() {
+        let mut app = app("let x = 2;\nlet y = 3;\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        marked(&mut app, &[(1, WireMarkKind::Modified)]);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        let (_, line) = app.take_details_request().expect("a request");
+        assert_eq!(line, 1);
+
+        app.details_arrived(
+            1,
+            vec!["let x = 1;".to_string()],
+            vec!["let x = 2;".to_string()],
+            false,
+        );
+        assert!(matches!(app.prompt(), Some(Prompt::ChangeDetails { .. })));
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.prompt().is_none());
+    }
+
+    /// An unchanged line has nothing to show, and a standalone editor has no
+    /// daemon to ask. Both say so rather than sending a request.
+    #[test]
+    fn change_details_refuse_what_they_cannot_ask() {
+        let mut integrated = app("a\nb\n", false);
+        integrated.set_integrated();
+        integrated.resize(60, 10);
+        integrated.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert_eq!(integrated.status(), Some("this line did not change"));
+        assert!(integrated.take_details_request().is_none());
+
+        let mut standalone = app("a\n", false);
+        standalone.resize(60, 10);
+        standalone.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert_eq!(standalone.status(), Some("change details need the daemon"));
+    }
+
+    /// The working tree may have moved since the gutter was drawn.
+    #[test]
+    fn a_change_that_is_gone_says_so() {
+        let mut app = app("a\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.details_arrived(0, Vec::new(), Vec::new(), false);
+        assert!(app.prompt().is_none());
+        assert_eq!(app.status(), Some("no change here any more"));
     }
 }

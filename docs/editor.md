@@ -156,6 +156,7 @@ living with no window pill of its own.
 | Ctrl-Space | complete from the buffer's own words; Up/Down choose, Enter accepts |
 | Alt-I / Alt-W | show whitespace / wrap long lines |
 | Alt-D | go to the definition of the word at the caret |
+| Alt-Enter | what the change on this line replaced |
 | Ctrl-R | replace (Tab switches field, **Enter** replaces this match, **Ctrl-R** replaces the rest) |
 | Ctrl-G | go to line |
 | Alt-N / Alt-P | next / previous changed block (Ctrl-N and Ctrl-B are the find bar's) |
@@ -384,6 +385,17 @@ theme, which is the right answer there too.
 | string | green | constant | dark yellow |
 | number | yellow | plain | default |
 
+**The gutter's marks have details.** `Alt-Enter` on a changed line asks the
+daemon what that block replaced and opens a panel with the removed lines and
+then the added ones, the way a hunk reads — a modification is what it was before
+what it became, not two columns to compare. On demand and not carried with every
+mark: the gutter needs only *which* lines changed, and this is the question a
+person asks about one of them. Capped at 200 lines a side, truncated and said
+so, because a reformatted file is one hunk the length of the file and a panel
+that has to be scrolled is not a detail. A block that is gone by the time the
+question is asked says so, since the working tree may have moved since the
+gutter was drawn.
+
 **Go to definition is a request, not a lookup.** The editor never opens the
 checkout, so `Alt-D` sends the word at the caret to the daemon, which greps the
 tree through `fs-service`. The symbol is validated as an identifier on both
@@ -497,8 +509,8 @@ refuse bytes for is worse than opening it as text; text is the default, which is
 every file the grid can show. An SVG is drawn through an `<img>` and never as
 `innerHTML`: it is a file from a checkout an agent may have written, and an
 `<img>` refuses to run the script it may carry. What *is* a gap: find-references, which is the
-same channel as go-to-definition asking a different question; the change
-*details* panel, where the gutter has the marks but not the before/after rows.
+same channel as go-to-definition asking a different question; the diagnostics gutter, which needs a producer
+(`cargo check`, `oxlint`) before it needs a channel.
 The pane does draw a scrollbar thumb: `EditorState`
 carries `top_line` / `visible_lines` / `total_lines`, so the GUI reports where
 the editor's viewport is without keeping a second copy of the text. It is a
