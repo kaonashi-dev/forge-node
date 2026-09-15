@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod movement;
 mod search;
 mod selection;
+mod syntax;
 mod transaction;
 
 pub use command::{execute, Command, Outcome, Refusal};
@@ -22,6 +23,7 @@ pub use search::{
     count_matches, find_all, find_next, find_previous, Match, Matches, Query, ReplaceOutcome,
 };
 pub use selection::{LineCol, Range, Selection};
+pub use syntax::{Grammar, Scope, Span, Syntax};
 pub use transaction::{Edit, EditError, Origin, Transaction};
 
 pub use crate::text::Text;
