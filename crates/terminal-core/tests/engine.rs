@@ -233,21 +233,24 @@ fn snapshot_tail_is_capped_at_the_requested_length() {
 }
 
 #[test]
-fn osc_52_clipboard_writes_are_ignored() {
-    // §11.4: OSC 52 is disabled by default in the MVP. The engine must neither
-    // act on a clipboard *store* nor answer a clipboard *query* — answering
-    // would leak the user's clipboard into the child process.
+fn osc_52_stores_but_never_answers() {
+    // A clipboard *store* is captured for the host to act on; a clipboard
+    // *query* is never answered, because answering would hand the user's
+    // clipboard to the child process. Neither writes to the PTY, and neither
+    // renders.
     let mut e = engine(20, 2);
     e.feed(b"\x1b]52;c;aGVsbG8=\x07"); // store "hello"
+    assert_eq!(e.take_clipboard().as_deref(), Some("hello"));
     assert!(
         e.take_pty_writes().is_empty(),
         "a clipboard store must produce no PTY reply"
     );
 
     e.feed(b"\x1b]52;c;?\x07"); // query the clipboard
+    assert_eq!(e.take_clipboard(), None, "a query must set nothing");
     assert!(
         e.take_pty_writes().is_empty(),
-        "a clipboard query must not be answered while OSC 52 is disabled"
+        "a clipboard query must never be answered"
     );
 
     // The grid itself is untouched by either sequence.
