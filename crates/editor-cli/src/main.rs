@@ -4,20 +4,32 @@
 //! event loop. Editing decisions live in `editor-core`, key bindings in `app`,
 //! and disk access in `disk` — running this must never require the daemon, the
 //! GUI, a network or Node.
+//!
+//! `--control <socket>` is the one integrated route: the daemon owns the
+//! document, hands the buffer over that socket, and the local disk adapter
+//! stays off. See `control.rs`.
 
 mod app;
 mod cli;
+mod control;
 mod disk;
 mod render;
 mod screen;
 mod view;
 
 use std::process::ExitCode;
+use std::thread;
 
 use crossterm::event::{self, Event, KeyEventKind};
+use editor_control::{DaemonMessage, EditorMessage, EditorStateWire};
 use editor_core::Document;
 
 use crate::app::App;
+use crate::control::{ControlChannel, Incoming};
+
+/// How many terminal events may queue while a control request is applied.
+/// Bounded so a stuck main loop is backpressure, not unbounded growth.
+const EVENT_QUEUE: usize = 64;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -44,7 +56,119 @@ fn main() -> ExitCode {
     }
 }
 
+/// The two inputs the loop waits on: a crossterm event, or the daemon.
+enum Input {
+    /// `None`: the terminal event source is gone (the reader thread failed).
+    Terminal(Option<Event>),
+    Control(Incoming),
+}
+
 fn run(options: cli::Options) -> anyhow::Result<()> {
+    let (mut app, mut control) = open(options)?;
+    let screen = screen::Screen::enter()?;
+    let (width, height) = screen.size()?;
+    app.resize(width, height);
+
+    // One thread owns crossterm's process-global event source; the main loop
+    // blocks on both it and the control channel, never on a poll loop.
+    let (events_tx, events_rx) = flume::bounded(EVENT_QUEUE);
+    // A read error is the tty going away, which ends the thread the same way a
+    // closed channel does: there is nobody left to send to either way.
+    thread::spawn(move || {
+        while let Ok(event) = event::read() {
+            if events_tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut last_state: Option<EditorStateWire> = None;
+    if let Some(channel) = control.as_mut() {
+        publish_state(&app, channel, &mut last_state)?;
+    }
+
+    let out = std::io::stdout();
+    let result = loop {
+        if let Err(error) = render::draw(&mut app, &mut out.lock()) {
+            break Err(error.into());
+        }
+        let incoming = control.as_ref().map(|channel| channel.incoming().clone());
+        let input = match &incoming {
+            Some(incoming) => flume::Selector::new()
+                .recv(&events_rx, |result| Input::Terminal(result.ok()))
+                .recv(incoming, |result| {
+                    Input::Control(result.unwrap_or(Incoming::Closed {
+                        reason: "disconnected".to_string(),
+                    }))
+                })
+                .wait(),
+            None => match events_rx.recv() {
+                Ok(event) => Input::Terminal(Some(event)),
+                Err(_) => break Ok(()),
+            },
+        };
+        match input {
+            Input::Terminal(Some(Event::Key(key))) if key.kind != KeyEventKind::Release => {
+                app.handle_key(key);
+            }
+            Input::Terminal(Some(Event::Resize(width, height))) => app.resize(width, height),
+            Input::Terminal(Some(Event::Paste(text))) => app.paste(&text),
+            Input::Terminal(Some(_)) => {}
+            Input::Terminal(None) => break Ok(()),
+            Input::Control(Incoming::Message(message)) => {
+                if let Some(channel) = control.as_mut() {
+                    handle_control(&mut app, channel, message)?;
+                }
+            }
+            Input::Control(Incoming::Closed { reason }) => {
+                break Err(anyhow::anyhow!("daemon control channel closed: {reason}"));
+            }
+        }
+        if app.should_quit() {
+            if let Some(channel) = control.as_mut() {
+                let _ = channel.send(&EditorMessage::Closed {
+                    reason: "quit".to_string(),
+                });
+            }
+            break Ok(());
+        }
+        if let Some(channel) = control.as_mut() {
+            publish_state(&app, channel, &mut last_state)?;
+        }
+    };
+    // Restore the caller's screen before any error is printed on it.
+    drop(screen);
+    result
+}
+
+/// Build the app for the mode the arguments name.
+///
+/// Standalone reads the file through `disk`; integrated hands the buffer to the
+/// daemon and never resolves the path on disk.
+fn open(options: cli::Options) -> anyhow::Result<(App, Option<ControlChannel>)> {
+    if let Some(socket) = &options.control {
+        let (mut channel, opened) = ControlChannel::connect(socket)?;
+        let document = Document::from_bytes(opened.text.as_bytes(), opened.read_only)
+            .map_err(|error| anyhow::anyhow!("{}: {error}", opened.path))?;
+        let mut app = App::new(
+            document,
+            opened.path.clone().into(),
+            opened.revision.clone(),
+        );
+        // Until integrated save with revision exists, the daemon owns the
+        // checkout; this editor must not write it.
+        app.set_integrated("integrated save is not available yet");
+        let line = opened.line.map(|value| value as usize).or(options.line);
+        if let Some(line) = line {
+            app.reveal(line, None);
+        }
+        channel.send(&EditorMessage::Opened {
+            request_id: opened.request_id,
+            document_version: app.document().version().0,
+        })?;
+        return Ok((app, Some(channel)));
+    }
+
     let loaded = disk::load(&options.path)
         .map_err(|error| anyhow::anyhow!("could not read {}: {error}", options.path.display()))?;
     let document = Document::from_bytes(&loaded.bytes, options.read_only)
@@ -54,27 +178,74 @@ fn run(options: cli::Options) -> anyhow::Result<()> {
     if let Some(line) = options.line {
         app.goto_line(line);
     }
-    let screen = screen::Screen::enter()?;
-    let (width, height) = screen.size()?;
-    app.resize(width, height);
+    Ok((app, None))
+}
 
-    let out = std::io::stdout();
-    let result = loop {
-        if let Err(error) = render::draw(&mut app, &mut out.lock()) {
-            break Err(error.into());
+/// Answer the daemon's request on the serialized event thread.
+fn handle_control(
+    app: &mut App,
+    control: &mut ControlChannel,
+    message: DaemonMessage,
+) -> anyhow::Result<()> {
+    match message {
+        DaemonMessage::Reveal {
+            request_id,
+            line,
+            column,
+        } => {
+            app.reveal(line as usize, column.map(|value| value as usize));
+            control.send(&EditorMessage::Revealed { request_id })?;
         }
-        match event::read() {
-            Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => app.handle_key(key),
-            Ok(Event::Resize(width, height)) => app.resize(width, height),
-            Ok(Event::Paste(text)) => app.paste(&text),
-            Ok(_) => {}
-            Err(error) => break Err(error.into()),
+        DaemonMessage::GetState { request_id } => {
+            control.send(&EditorMessage::State {
+                request_id: Some(request_id),
+                state: app.wire_state(),
+            })?;
         }
-        if app.should_quit() {
-            break Ok(());
+        DaemonMessage::ApplyPreviewEdit {
+            request_id,
+            expected_document_version,
+            edits,
+        } => match app.apply_preview_edit(&edits, expected_document_version) {
+            Ok(document_version) => control.send(&EditorMessage::Applied {
+                request_id,
+                document_version,
+            })?,
+            Err(reason) => control.send(&EditorMessage::Refused { request_id, reason })?,
+        },
+        DaemonMessage::Open { request_id, .. } => {
+            // A second open would replace the buffer behind the daemon's back.
+            control.send(&EditorMessage::Refused {
+                request_id,
+                reason: "a buffer is already open".to_string(),
+            })?;
         }
-    };
-    // Restore the caller's screen before any error is printed on it.
-    drop(screen);
-    result
+        // The handshake is over; a second Welcome is a protocol error rather
+        // than something to answer.
+        DaemonMessage::Welcome { .. } => {
+            anyhow::bail!("unexpected Welcome after the control handshake");
+        }
+        // Forward compatibility: a daemon from the future may send a request
+        // this build does not know; ignoring it is the conservative answer.
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Report the buffer state when it changed.
+fn publish_state(
+    app: &App,
+    control: &mut ControlChannel,
+    last: &mut Option<EditorStateWire>,
+) -> anyhow::Result<()> {
+    let state = app.wire_state();
+    if last.as_ref() == Some(&state) {
+        return Ok(());
+    }
+    control.send(&EditorMessage::State {
+        request_id: None,
+        state: state.clone(),
+    })?;
+    *last = Some(state);
+    Ok(())
 }

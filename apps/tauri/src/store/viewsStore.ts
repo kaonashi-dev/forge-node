@@ -90,6 +90,10 @@ export function openDiff(): void {
   open({ kind: "diff" });
 }
 
+export function openEditorTerminal(session: string, path: string): void {
+  open({ kind: "editor-terminal", session, path });
+}
+
 export function openEditor(path: string): void {
   // Opening is the whole of what "recent" means here — the tree carries no
   // mtime, so this is where the palette's opening list comes from. Hooked at
@@ -155,6 +159,11 @@ export function focus(view: WorkbenchView): void {
  */
 export function close(view: WorkbenchView): void {
   remember(view);
+  if (view.kind === "editor-terminal") {
+    void import("../runtime/api").then(({ closeEditor }) =>
+      closeEditor(view.session).catch(() => undefined),
+    );
+  }
   update((views) => closeView(views, view));
   if (!hasCode(currentViews())) setMode("session");
 }
@@ -186,7 +195,7 @@ function remember(view: WorkbenchView): void {
   const workspace = workbenchStore.workspace;
   // The terminal is never closed, and re-opening a diff is a refresh, not a
   // restoration — only a file has a place to come back to.
-  if (!workspace || view.kind === "terminal") return;
+  if (!workspace || view.kind === "terminal" || view.kind === "editor-terminal") return;
   const kept = (closedByWorkspace[workspace] ?? []).filter((item) => !sameView(item, view));
   setClosedByWorkspace(workspace, [...kept, view].slice(-CLOSED_DEPTH));
 }

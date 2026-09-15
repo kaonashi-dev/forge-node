@@ -35,6 +35,13 @@ export const cellsChannel = channel<CellsPayload>();
  * for the one it does not want.
  */
 export const previewCellsChannel = channel<CellsPayload>();
+/**
+ * Frames for a daemon-supervised editor in the Code region.
+ *
+ * Its own channel so the hidden main pane never has to filter terminal ids
+ * on the delta rung (feature 19).
+ */
+export const editorCellsChannel = channel<CellsPayload>();
 export const clipboardChannel = channel<string>();
 
 export const fileChangesChannel = channel<[workspace: string, path: string]>();

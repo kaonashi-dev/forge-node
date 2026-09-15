@@ -116,6 +116,7 @@ fn sample_session() -> Session {
         parent_session_id: None,
         root_session_id: session_id(),
         terminal_id: Some(terminal_id()),
+        editor: None,
         agent_provider_id: Some(AgentProviderId::new("claude")),
         agent_profile_id: None,
         title: SessionTitle {
@@ -652,6 +653,30 @@ fn main() {
             role: SessionRole::Generic,
         },
     );
+    write(
+        &out,
+        "request_create_editor_session",
+        &Request::CreateEditorSession {
+            workspace_id: workspace_id(),
+            path: "src/main.rs".to_string(),
+            line: Some(12),
+            read_only: true,
+        },
+    );
+    write(&out, "session_editor", &{
+        let mut session = sample_session();
+        session.kind = SessionKind::Editor;
+        session.agent_provider_id = None;
+        session.editor = Some(domain::EditorState {
+            path: "src/main.rs".to_string(),
+            line: 12,
+            column: 4,
+            dirty: false,
+            read_only: true,
+            document_version: 1,
+        });
+        session
+    });
     write(
         &out,
         "request_refresh_workspace_status",

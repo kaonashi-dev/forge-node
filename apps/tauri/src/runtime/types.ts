@@ -1,4 +1,14 @@
-export type SessionKind = "Shell" | "Agent" | string;
+export type SessionKind = "Shell" | "Agent" | "Editor" | string;
+
+/** Buffer metadata for an `Editor` session. Runtime-only; never document text. */
+export type EditorState = {
+  path: string;
+  line: number;
+  column: number;
+  dirty: boolean;
+  read_only: boolean;
+  document_version: number;
+};
 
 export type SessionState =
   | "Starting"
@@ -42,6 +52,8 @@ export type Session = {
   title: SessionTitle;
   state: SessionState;
   terminal_id: string | null;
+  /** Present on an `Editor` session once the control channel has published. */
+  editor?: EditorState | null;
   agent_provider_id: string | null;
   /**
    * The launch profile this session ran with (§13.4).
@@ -613,6 +625,7 @@ export function sessionIsAgent(session: Session): boolean {
 }
 
 function fallbackKind(session: Session): string {
+  if (session.kind === "Editor") return "Editor";
   if (sessionIsAgent(session)) {
     return session.agent_provider_id ?? "Agent";
   }

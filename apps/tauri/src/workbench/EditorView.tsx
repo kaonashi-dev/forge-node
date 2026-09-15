@@ -40,10 +40,12 @@ import { actionForDiskRead } from "./editor/conflict";
 import { createEditor, type EditorHandle, type EditorMetrics } from "./editor/createEditor";
 import { gitChangesFor, marksForChanges, patchFor } from "./editor/gitMarks";
 import { lineAt, rulerTicks } from "./editor/overviewRuler";
+import { offersTerminalEditor } from "./editor/terminalAction";
 import { ensureDiff, refreshDiff } from "./decorations";
 import { CompareView } from "./editor/CompareView";
 import {
   AUTOSAVE_KEY,
+  TERMINAL_EDITOR_KEY,
   EDITOR_FONT_SIZE_KEY,
   EDITOR_FONT_SIZE_RANGE,
   EDITOR_LINE_HEIGHT_KEY,
@@ -51,6 +53,7 @@ import {
   readFlag,
   readScale,
 } from "../shell/layout";
+import { openTerminalEditor } from "../runtime/api";
 import { Button, ContextMenu, Tooltip, type MenuItem } from "../ui";
 import { Markdown, type MdImageLoader } from "./Markdown";
 import { imageMime, imageSource, svgDataUrl } from "./previewImages";
@@ -788,6 +791,20 @@ export function EditorView(props: { path: string }) {
               Preview
             </Button>
           </div>
+        </Show>
+        <Show when={offersTerminalEditor(readFlag(TERMINAL_EDITOR_KEY, false), unopenable())}>
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => {
+              const workspace = workbenchStore.workspace;
+              if (!workspace) return;
+              const line = editorReveal()?.path === props.path ? editorReveal()?.line : undefined;
+              void openTerminalEditor(workspace, props.path, line).catch(() => undefined);
+            }}
+          >
+            Open in terminal editor
+          </Button>
         </Show>
         <Button
           variant="ghost"

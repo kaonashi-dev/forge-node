@@ -10,6 +10,13 @@ export type WorkbenchView =
   | { kind: "terminal" }
   | { kind: "diff" }
   | { kind: "editor"; path: string }
+  /**
+   * A daemon-supervised `forge-editor` in the Code region (feature 19).
+   *
+   * Keyed on the session, not the path: the buffer identity is the process,
+   * and a second open of the same file is a second session.
+   */
+  | { kind: "editor-terminal"; session: string; path: string }
   | { kind: "pr_detail"; key: string }
   | { kind: "pr_compose" }
   /**
@@ -66,6 +73,7 @@ export function emptyViews(): ParkedViews {
 /** A stable identity for a view, for keys and comparisons. */
 export function viewKey(view: WorkbenchView): string {
   if (view.kind === "editor") return `editor:${view.path}`;
+  if (view.kind === "editor-terminal") return `editor-terminal:${view.session}`;
   if (view.kind === "pr_detail") return `pr:${view.key}`;
   if (view.kind === "pr_review") return `pr-review:${view.key}`;
   if (view.kind === "review") return `review:${view.workspace}`;
@@ -87,6 +95,8 @@ export function viewLabel(view: WorkbenchView): string {
       return "Diff";
     case "editor":
       return view.path.slice(view.path.lastIndexOf("/") + 1);
+    case "editor-terminal":
+      return view.path.slice(view.path.lastIndexOf("/") + 1) || "Editor";
     case "pr_detail":
       return "Pull Request";
     case "pr_review":
@@ -111,6 +121,7 @@ export function viewLabel(view: WorkbenchView): string {
  */
 export function viewTitle(view: WorkbenchView): string {
   if (view.kind === "editor") return view.path;
+  if (view.kind === "editor-terminal") return view.path;
   // Two review tabs are both called "PR Review"; the key is the only thing
   // that tells the reader which pull request each one is about.
   if (view.kind === "pr_review") return `Review ${view.key}`;
@@ -124,7 +135,7 @@ export function viewTitle(view: WorkbenchView): string {
  * follows: the tree is about the checkout, and those views may not be in it.
  */
 export function activeEditorPath(view: WorkbenchView): string | null {
-  return view.kind === "editor" ? view.path : null;
+  return view.kind === "editor" || view.kind === "editor-terminal" ? view.path : null;
 }
 
 /**

@@ -681,6 +681,24 @@ pub enum Request {
         #[serde(default)]
         read_only: bool,
     },
+    /// Open a file in a daemon-supervised `forge-editor` process (feature 19)
+    /// → `SessionCreated`; buffer state arrives as `SessionUpdated`.
+    ///
+    /// The daemon reads the file through `fs-service` and hands the text to the
+    /// editor over its control channel; the editor never opens the checkout.
+    /// Until integrated save exists, `read_only` is what keeps a draft from
+    /// existing that nothing could persist.
+    CreateEditorSession {
+        /// Workspace whose checkout owns the file.
+        workspace_id: WorkspaceId,
+        /// Workspace-relative path of the file to open.
+        path: String,
+        /// 1-based line to reveal, or `None` for the start of the file.
+        line: Option<u32>,
+        /// Open the buffer read-only; H1 always sends `true`.
+        #[serde(default)]
+        read_only: bool,
+    },
     /// Create a child session under a parent, choosing its workspace via
     /// `workspace_policy` (§8.2) → `Ack`; `SessionCreated`.
     CreateChildSession {

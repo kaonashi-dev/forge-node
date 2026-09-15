@@ -67,7 +67,7 @@ pub use pull_request::{
 };
 pub use rebase::{ConflictFile, RebaseState, SequencerOp};
 pub use session::{
-    Session, SessionKind, SessionRole, SessionState, SessionTitle, SessionTranscript,
+    EditorState, Session, SessionKind, SessionRole, SessionState, SessionTitle, SessionTranscript,
     MAX_GRAPH_DEPTH,
 };
 pub use share::{

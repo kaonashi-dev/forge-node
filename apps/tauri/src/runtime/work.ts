@@ -51,6 +51,9 @@ export function sessionWork(
   if (state === "Orphaned" || (typeof state === "object" && "Failed" in state)) return "failed";
   if (!sessionIsActive(state)) return "exited";
   if (attention.wants_you) return "needs-you";
+  // An editor is not a shell sitting at a prompt: it must not claim the
+  // shell "running" marker. Quiet until it exits.
+  if (session.kind === "Editor") return "idle";
   if (session.agent_provider_id == null) return "running";
 
   const stamp = session.last_activity_at ?? session.created_at;

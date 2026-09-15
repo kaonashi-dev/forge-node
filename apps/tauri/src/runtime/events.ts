@@ -42,7 +42,8 @@ import {
   setHarnessStore,
 } from "../store/harnessStore";
 import type { HarnessArtifactKind, HarnessEvent, HarnessFeature } from "../harness/types";
-import { cellsChannel, clipboardChannel, previewCellsChannel } from "./bus";
+import { cellsChannel, clipboardChannel, editorCellsChannel, previewCellsChannel } from "./bus";
+import { openEditorTerminal } from "../store/viewsStore";
 import type {
   ConnectedPayload,
   DisconnectedPayload,
@@ -437,6 +438,17 @@ export async function bindRuntimeEvents(): Promise<UnlistenFn> {
     }),
     listen("runtime:preview_detached", () => {
       setHarnessStore("previewSession", null);
+    }),
+    listen<CellsPayload>("runtime:editor_cells", (event) => {
+      editorCellsChannel.publish(event.payload);
+    }),
+    listen<{
+      session_id: string;
+      terminal_id: string;
+      workspace: string;
+      path: string;
+    }>("runtime:editor_opened", (event) => {
+      openEditorTerminal(event.payload.session_id, event.payload.path);
     }),
     listen<{ reason: string }>("runtime:notice", (event) => {
       setRuntimeStore("notice", event.payload.reason);

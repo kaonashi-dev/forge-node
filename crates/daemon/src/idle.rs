@@ -108,7 +108,13 @@ impl IdlePolicy {
         if !session.state.is_active() {
             return IdleAction::Keep;
         }
+        // A shell at a prompt is a resting state, not a leak; and an editor
+        // session is never stopped at all: ending one could discard a buffer
+        // the daemon cannot reconstruct. Both exemptions are unconditional.
         if session.kind == SessionKind::Shell && !self.include_shells {
+            return IdleAction::Keep;
+        }
+        if session.kind == SessionKind::Editor {
             return IdleAction::Keep;
         }
 
@@ -205,6 +211,7 @@ mod tests {
             parent_session_id: None,
             root_session_id: id,
             terminal_id: None,
+            editor: None,
             agent_provider_id: None,
             agent_profile_id: None,
             title: SessionTitle::default(),
@@ -378,6 +385,26 @@ mod tests {
     fn a_policy_with_no_thresholds_is_disabled() {
         assert!(!IdlePolicy::default().is_enabled());
         assert!(warn_only(1).is_enabled());
+    }
+
+    #[test]
+    fn idle_never_stops_an_editor_session() {
+        // Both config extremes: every clock on, attached or not. An editor is
+        // exempt by kind so a draft the daemon cannot reconstruct is never
+        // reaped.
+        let policy = IdlePolicy {
+            warn_after: Some(Duration::from_secs(1)),
+            stop_after: Some(Duration::from_secs(1)),
+            long_running_after: Some(Duration::from_secs(1)),
+            stop_attached: true,
+            include_shells: true,
+        };
+        let s = session(SessionKind::Editor, 10_000, 10_000);
+        let now = Timestamp::now();
+        assert_eq!(policy.evaluate(&s, now, false, false), IdleAction::Keep);
+        assert_eq!(policy.evaluate(&s, now, true, false), IdleAction::Keep);
+        let off = IdlePolicy::default();
+        assert_eq!(off.evaluate(&s, now, false, false), IdleAction::Keep);
     }
 
     #[test]

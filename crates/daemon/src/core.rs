@@ -118,6 +118,9 @@ pub(crate) struct Inner {
     /// The rescan reads them without a query; `SetWorktreeIgnores` replaces a
     /// project's list in the same critical section as its rows.
     worktree_ignores: HashMap<ProjectId, Vec<WorktreeIgnore>>,
+    /// Live editor control ports. Runtime-only; dropped when the supervisor
+    /// ends. A full queue answers busy rather than dropping a request_id.
+    editors: HashMap<SessionId, crate::editor::CommandPort>,
 }
 
 /// Shared as `Arc<Daemon>` across the accept loop and PTY threads.
@@ -335,6 +338,7 @@ impl Daemon {
             env_fallback_noticed: false,
             term_selection: None,
             worktree_ignores,
+            editors: HashMap::new(),
         };
 
         let attention_assets = install_attention_assets(&worktrees_root);
@@ -904,6 +908,12 @@ impl Daemon {
                 initial_prompt,
                 read_only,
             ),
+            Request::CreateEditorSession {
+                workspace_id,
+                path,
+                line,
+                read_only,
+            } => self.create_editor_session(workspace_id, &path, line, read_only),
             Request::CreateChildSession {
                 parent_session_id,
                 kind,
@@ -3697,6 +3707,7 @@ impl Daemon {
                     initial_prompt.clone(),
                     read_only,
                 ),
+                None,
                 &cwd,
                 id,
             )?;
@@ -3710,6 +3721,7 @@ impl Daemon {
                 parent_session_id: parent_id,
                 root_session_id,
                 terminal_id: None,
+                editor: None,
                 agent_provider_id: provider_id,
                 agent_profile_id: profile.as_ref().map(|p| p.id),
                 title: SessionTitle::default(),
@@ -3734,7 +3746,7 @@ impl Daemon {
         self.registry
             .broadcast_domain(DaemonEvent::SessionCreated(session.clone()));
 
-        match self.spawn_terminal(session.id, spawn_spec) {
+        match self.spawn_terminal(session.id, spawn_spec, true) {
             Ok(terminal_id) => Ok(Response::SessionCreated {
                 session_id: session.id,
                 terminal_id,
@@ -3742,6 +3754,140 @@ impl Daemon {
             Err(reason) => {
                 self.mark_session_failed(session.id, reason.clone());
                 let _ = cwd;
+                Err(ProtocolError::new(ErrorCode::SpawnError, reason))
+            }
+        }
+    }
+
+    /// Open a file in a daemon-supervised `forge-editor` process (feature 19).
+    ///
+    /// The buffer is read here, through `fs-service`, off the core lock; the
+    /// editor process never touches the checkout. The control socket is bound
+    /// before the spawn, and the supervisor that answers the handshake owns the
+    /// socket file for the session's whole life.
+    fn create_editor_session(
+        self: &Arc<Self>,
+        workspace_id: WorkspaceId,
+        relative: &str,
+        line: Option<u32>,
+        read_only: bool,
+    ) -> Result<Response, ProtocolError> {
+        let _span = tracing::info_span!("editor.create", %workspace_id, path = %relative).entered();
+
+        // H1 is read-only (design D6): until integrated save with revision
+        // exists, an editable integrated buffer would be a draft nothing could
+        // persist. Refused, never silently upgraded.
+        if !read_only {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                "the integrated editor is read-only until integrated save exists",
+            ));
+        }
+
+        // Refusals must not leave a row or a socket, so the read comes first.
+        let root = self.workspace_path(workspace_id)?;
+        if std::fs::metadata(root.join(relative))
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false)
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                format!("{relative} is a directory"),
+            ));
+        }
+        let opened = fs_service::read_file(&root, relative).map_err(fs_err)?;
+        if opened.binary {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                format!("{relative} is binary; the terminal editor opens text only"),
+            ));
+        }
+        if opened.too_large {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "{relative} is larger than the editor's {}-byte budget",
+                    editor_control::MAX_DOCUMENT_BYTES
+                ),
+            ));
+        }
+
+        let session_id = SessionId::new();
+        let supervisor = crate::editor::Supervisor::bind(session_id).map_err(|e| {
+            ProtocolError::new(
+                ErrorCode::IoError,
+                format!("could not bind the editor control socket: {e}"),
+            )
+        })?;
+        let (commands_tx, commands_rx) = flume::bounded(crate::editor::COMMAND_QUEUE);
+
+        let (spec, session) = {
+            let mut inner = self.lock();
+            let ws = inner
+                .workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or_else(|| ProtocolError::not_found("workspace"))?;
+
+            let now = Timestamp::now();
+            let session = Session {
+                id: session_id,
+                workspace_id,
+                kind: SessionKind::Editor,
+                role: SessionRole::Generic,
+                parent_session_id: None,
+                root_session_id: session_id,
+                terminal_id: None,
+                editor: None,
+                agent_provider_id: None,
+                agent_profile_id: None,
+                title: SessionTitle::default(),
+                state: SessionState::Starting,
+                created_at: now,
+                launch_command: None,
+                last_activity_at: now,
+                ended_at: None,
+                base_commit: None,
+            };
+            let spec = self.build_spawn_spec(
+                &mut inner,
+                SessionKind::Editor,
+                None,
+                Some(EditorLaunch {
+                    control_socket: supervisor.socket().to_path_buf(),
+                    display_path: opened.path.clone(),
+                    line,
+                    read_only,
+                }),
+                &ws.path,
+                session_id,
+            )?;
+            inner.db.sessions().upsert(&session).map_err(db_err)?;
+            inner.sessions.insert(session_id, session.clone());
+            inner
+                .editors
+                .insert(session_id, crate::editor::CommandPort::new(commands_tx));
+            (spec, session)
+        };
+
+        self.registry
+            .broadcast_domain(DaemonEvent::SessionCreated(session.clone()));
+
+        match self.spawn_terminal(
+            session.id, spec,
+            // `Starting` until the control handshake opens the buffer.
+            false,
+        ) {
+            Ok(terminal_id) => {
+                supervisor.supervise(self.clone(), opened, line, commands_rx);
+                Ok(Response::SessionCreated {
+                    session_id: session.id,
+                    terminal_id,
+                })
+            }
+            Err(reason) => {
+                self.drop_editor_port(session.id);
+                self.mark_session_failed(session.id, reason.clone());
                 Err(ProtocolError::new(ErrorCode::SpawnError, reason))
             }
         }
@@ -4060,7 +4206,10 @@ impl Daemon {
         Some(snapshot)
     }
 
-    fn kill_session(self: &Arc<Self>, session_id: SessionId) -> Result<Response, ProtocolError> {
+    pub(crate) fn kill_session(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
         let _span = tracing::info_span!("session.kill", %session_id).entered();
         let (pgid, kind) = {
             let inner = self.lock();
@@ -4350,6 +4499,14 @@ impl Daemon {
                 .get(&session_id)
                 .cloned()
                 .ok_or_else(|| ProtocolError::not_found("session"))?;
+            // An editor's file path and draft are not daemon state, so there is
+            // nothing to replay; reopening from Files is the way back.
+            if session.kind == SessionKind::Editor {
+                return Err(ProtocolError::new(
+                    ErrorCode::InvalidRequest,
+                    "an editor session restarts by reopening its file; the buffer is not daemon state",
+                ));
+            }
             if !session.state.is_terminal() {
                 return Err(ProtocolError::precondition_failed(
                     "session is not in a terminal state",
@@ -4374,6 +4531,7 @@ impl Daemon {
                     None,
                     read_only,
                 ),
+                None,
                 &cwd,
                 session_id,
             )?;
@@ -4407,7 +4565,7 @@ impl Daemon {
         self.registry
             .broadcast_domain(DaemonEvent::SessionUpdated(session));
 
-        match self.spawn_terminal(session_id, spec) {
+        match self.spawn_terminal(session_id, spec, true) {
             Ok(_) => Ok(Response::Ack),
             Err(reason) => {
                 self.mark_session_failed(session_id, reason.clone());
@@ -4460,11 +4618,36 @@ impl Daemon {
 
     // --- Terminals ---
 
+    /// Resolve `forge-editor` for an integrated session: `[editor] executable`
+    /// when set, else the name on the login-shell `PATH` — which already
+    /// carries the daemon's own directory, so a dev checkout finds
+    /// `target/debug/forge-editor` without configuration.
+    fn editor_program(&self, env: &ResolvedEnvironment) -> Result<PathBuf, ProtocolError> {
+        let configured = self.config.editor.executable.trim();
+        let requested = if configured.is_empty() {
+            Path::new("forge-editor")
+        } else {
+            Path::new(configured)
+        };
+        agents::resolve_executable(requested, env)
+            .filter(|path| is_executable_file(path))
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::SpawnError,
+                    format!(
+                        "forge-editor is not runnable (configured: {configured:?}); build it with \
+                         `cargo build -p editor-cli` or point `[editor] executable` at it"
+                    ),
+                )
+            })
+    }
+
     fn build_spawn_spec(
         &self,
         inner: &mut Inner,
         kind: SessionKind,
         agent: Option<AgentLaunch>,
+        editor: Option<EditorLaunch>,
         cwd: &Path,
         session_id: SessionId,
     ) -> Result<SpawnSpec, ProtocolError> {
@@ -4591,6 +4774,54 @@ impl Daemon {
                 }
                 spec
             }
+            SessionKind::Editor => {
+                let EditorLaunch {
+                    control_socket,
+                    display_path,
+                    line,
+                    read_only,
+                } = editor.ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::InvalidRequest,
+                        "an editor session is created by CreateEditorSession",
+                    )
+                })?;
+                let mut vars: Vec<(String, String)> = env.vars.clone();
+                let term = self.session_term(inner, &vars);
+                upsert_var(&mut vars, "TERM", &term.term);
+                if let Some(dir) = &term.terminfo_dir {
+                    upsert_var(&mut vars, "TERMINFO", &dir.to_string_lossy());
+                }
+                upsert_var(&mut vars, "COLORTERM", "truecolor");
+                // The socket rides the environment, not argv: a path in argv is
+                // visible in `ps`, and the editor takes the env as its default.
+                upsert_var(
+                    &mut vars,
+                    "FORGE_EDITOR_CONTROL",
+                    &control_socket.to_string_lossy(),
+                );
+                // `--control` is how the binary selects integrated mode; the
+                // env names the same socket so a `ps` of the child still shows
+                // it, and so a wrapper that dropped argv can recover.
+                let mut args = vec![
+                    "--control".to_owned(),
+                    control_socket.to_string_lossy().into_owned(),
+                ];
+                if read_only {
+                    args.push("--read-only".to_owned());
+                }
+                if let Some(line) = line {
+                    args.push(format!("+{line}"));
+                }
+                args.push("--".to_owned());
+                args.push(display_path);
+                SpawnSpec {
+                    program: self.editor_program(&env)?,
+                    args,
+                    cwd: cwd.to_path_buf(),
+                    env: vars,
+                }
+            }
             _ => {
                 return Err(ProtocolError::new(
                     ErrorCode::InvalidRequest,
@@ -4614,6 +4845,7 @@ impl Daemon {
         self: &Arc<Self>,
         session_id: SessionId,
         spec: SpawnSpec,
+        run_to_running: bool,
     ) -> Result<TerminalId, String> {
         let _span = tracing::info_span!("terminal.spawn", %session_id).entered();
         let size = PtySize {
@@ -4654,12 +4886,26 @@ impl Daemon {
         let session = {
             let mut inner = self.lock();
             inner.terminals.insert(terminal_id, runtime);
-            let Some(snapshot) = Self::set_session_state(
-                &mut inner,
-                session_id,
-                SessionState::Running,
-                Some(terminal_id),
-            ) else {
+            // An editor session stays `Starting` until its control handshake
+            // opens the buffer: the supervisor flips it to `Running`, or fails
+            // it when the editor never answers. Everything else runs the
+            // moment its PTY exists.
+            let session = if run_to_running {
+                Self::set_session_state(
+                    &mut inner,
+                    session_id,
+                    SessionState::Running,
+                    Some(terminal_id),
+                )
+            } else {
+                let session = inner
+                    .sessions
+                    .get_mut(&session_id)
+                    .ok_or("session left Starting during spawn")?;
+                session.terminal_id = Some(terminal_id);
+                Some(session.clone())
+            };
+            let Some(snapshot) = session else {
                 inner.terminals.remove(&terminal_id);
                 return Err("session left Starting during spawn".into());
             };
@@ -5053,7 +5299,60 @@ impl Daemon {
         }
     }
 
-    fn mark_session_failed(self: &Arc<Self>, session_id: SessionId, reason: String) {
+    /// The editor's control handshake completed: the buffer is open and the
+    /// session may run. Keeps the terminal id `set_session_state` would clear.
+    pub(crate) fn set_editor_running(self: &Arc<Self>, session_id: SessionId) -> Option<Session> {
+        let session = {
+            let mut inner = self.lock();
+            let terminal_id = inner.sessions.get(&session_id)?.terminal_id;
+            Self::set_session_state(&mut inner, session_id, SessionState::Running, terminal_id)?
+        };
+        self.registry
+            .broadcast_domain(DaemonEvent::SessionUpdated(session.clone()));
+        Some(session)
+    }
+
+    /// Store the editor's buffer metadata on the session (runtime-only), and
+    /// answer with the snapshot a caller may broadcast.
+    pub(crate) fn record_editor_state(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        state: domain::EditorState,
+    ) -> Option<Session> {
+        let mut inner = self.lock();
+        let session = inner.sessions.get_mut(&session_id)?;
+        session.editor = Some(state);
+        Some(session.clone())
+    }
+
+    pub(crate) fn drop_editor_port(&self, session_id: SessionId) {
+        self.lock().editors.remove(&session_id);
+    }
+
+    /// Enqueue a control request for a live editor. A full queue is busy, never
+    /// a silent drop: the request_id would otherwise go unanswered.
+    ///
+    /// H1 opens the buffer from the handshake and recovers state off the
+    /// session snapshot, so no request path drives this yet; it is the seam
+    /// `Reveal`/`GetState` arrive on (R13), and the saturation behaviour it
+    /// owns is what `a_full_control_queue_answers_busy_on_the_daemon` asserts.
+    #[allow(dead_code)]
+    pub(crate) fn send_editor_command(
+        &self,
+        session_id: SessionId,
+        command: crate::editor::Outgoing,
+    ) -> Result<(), ProtocolError> {
+        let inner = self.lock();
+        let port = inner
+            .editors
+            .get(&session_id)
+            .ok_or_else(|| ProtocolError::not_found("editor session"))?;
+        port.try_send(command).map_err(|_| {
+            ProtocolError::precondition_failed("the editor is busy; retry the request")
+        })
+    }
+
+    pub(crate) fn mark_session_failed(self: &Arc<Self>, session_id: SessionId, reason: String) {
         let session = {
             let mut inner = self.lock();
             // Anything other than Starting → Failed is a race.
@@ -5334,6 +5633,7 @@ impl Daemon {
                 .agent_provider_id
                 .as_ref()
                 .map_or("Agent", |p| p.as_str()),
+            SessionKind::Editor => "Editor",
             _ => "Shell",
         };
         let name = session.title.resolve(what);
@@ -6169,6 +6469,18 @@ impl AgentLaunch {
     }
 }
 
+/// What one editor spawn needs that the session row cannot carry.
+struct EditorLaunch {
+    /// The supervisor's control socket, bound before the spawn.
+    control_socket: PathBuf,
+    /// Workspace-relative display path; the buffer's real content arrives over
+    /// the control channel, and the editor never resolves this on disk.
+    display_path: String,
+    /// 1-based line to reveal at startup.
+    line: Option<u32>,
+    read_only: bool,
+}
+
 fn profile_has_executable(profile: Option<&AgentProfile>) -> bool {
     profile.is_some_and(|p| p.executable.is_some())
 }
@@ -6246,6 +6558,8 @@ fn session_fallback_title(session: &Session) -> &str {
             .agent_provider_id
             .as_ref()
             .map_or("Agent", |id| id.as_str()),
+        SessionKind::Editor => "Editor",
+        // `SessionKind` is `#[non_exhaustive]`: Shell, and any future kind.
         _ => "Shell",
     }
 }
@@ -6581,6 +6895,7 @@ mod tests {
             parent_session_id: parent,
             root_session_id,
             terminal_id: None,
+            editor: None,
             agent_provider_id: None,
             agent_profile_id: None,
             title: SessionTitle::default(),
@@ -9063,5 +9378,408 @@ mod tests {
             DaemonMessage::Event(DaemonEvent::TerminalDelta { delta, .. }) if delta.seq == 5
         ));
         assert_eq!(state(&daemon), (5, 10));
+    }
+
+    // ---------------------------------------------------------------
+    // Editor sessions (feature 19)
+    // ---------------------------------------------------------------
+
+    fn write_executable(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write fake editor");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
+        path
+    }
+
+    fn editor_daemon(
+        tmp: &Path,
+        backend: FakePtyBackend,
+    ) -> (Arc<Daemon>, tempfile::TempDir, FakePtyBackend) {
+        let editor = write_executable(tmp, "forge-editor");
+        let mut config = Config::default();
+        config.sessions.term = terminfo::FALLBACK_TERM.to_owned();
+        config.editor.executable = editor.to_string_lossy().into_owned();
+        test_daemon_with_config(backend, config)
+    }
+
+    fn checkout_with_file(daemon: &Daemon, tmp: &Path, rel: &str, bytes: &[u8]) -> WorkspaceId {
+        let root = tmp.join("repo");
+        if let Some(parent) = Path::new(rel).parent() {
+            std::fs::create_dir_all(root.join(parent)).unwrap();
+        } else {
+            std::fs::create_dir_all(&root).unwrap();
+        }
+        std::fs::write(root.join(rel), bytes).unwrap();
+        seeded_workspace(daemon, &root)
+    }
+
+    #[test]
+    fn editor_program_resolution_prefers_the_override() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let backend = FakePtyBackend::empty();
+        let (daemon, _worktrees, backend) = editor_daemon(tmp.path(), backend);
+        let ws = checkout_with_file(&daemon, tmp.path(), "src/main.rs", b"fn main() {}\n");
+        let response = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "src/main.rs".into(),
+                line: Some(3),
+                read_only: true,
+            })
+            .expect("create");
+        assert!(matches!(response, Response::SessionCreated { .. }));
+        let spec = backend.last_spawn().expect("spawned");
+        assert_eq!(spec.program, tmp.path().join("forge-editor"));
+        let socket = spec
+            .env
+            .iter()
+            .find(|(k, _)| k == "FORGE_EDITOR_CONTROL")
+            .map(|(_, v)| v.as_str())
+            .expect("FORGE_EDITOR_CONTROL");
+        assert_eq!(spec.args.first().map(String::as_str), Some("--control"));
+        assert_eq!(spec.args.get(1).map(String::as_str), Some(socket));
+        assert!(spec.args.iter().any(|a| a == "--read-only"));
+        assert!(spec.args.iter().any(|a| a == "+3"));
+        assert!(
+            spec.env.iter().any(|(k, _)| k == "FORGE_EDITOR_CONTROL"),
+            "the process must see the control socket in its environment"
+        );
+        assert!(spec.env.iter().any(|(k, _)| k == "FORGE_SESSION_ID"));
+        assert!(spec.env.iter().any(|(k, _)| k == "FORGE_WORKSPACE"));
+    }
+
+    #[test]
+    fn editor_session_missing_binary_fails_the_spawn() {
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let ws = checkout_with_file(&daemon, tmp.path(), "src/main.rs", b"fn main() {}\n");
+        let error = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "src/main.rs".into(),
+                line: None,
+                read_only: true,
+            })
+            .expect_err("no forge-editor on PATH");
+        assert_eq!(error.code, ErrorCode::SpawnError);
+        assert!(
+            backend.last_spawn().is_none(),
+            "must not spawn a shell instead"
+        );
+        assert!(
+            daemon.lock().sessions.is_empty(),
+            "a refused spawn leaves no session row"
+        );
+    }
+
+    #[test]
+    fn editor_session_create_answers_ids() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (daemon, _worktrees, _) = editor_daemon(tmp.path(), FakePtyBackend::empty());
+        let ws = checkout_with_file(&daemon, tmp.path(), "src/lib.rs", b"pub fn x() {}\n");
+        let Response::SessionCreated {
+            session_id,
+            terminal_id,
+        } = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "src/lib.rs".into(),
+                line: None,
+                read_only: true,
+            })
+            .expect("create")
+        else {
+            panic!("expected SessionCreated");
+        };
+        let session = daemon.lock().sessions.get(&session_id).cloned().unwrap();
+        assert_eq!(session.kind, SessionKind::Editor);
+        assert_eq!(session.terminal_id, Some(terminal_id));
+        assert_eq!(session.state, SessionState::Starting);
+        assert!(session.editor.is_none());
+    }
+
+    #[test]
+    fn editor_session_refuses_binary_and_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (daemon, _worktrees, _) = editor_daemon(tmp.path(), FakePtyBackend::empty());
+        let ws = checkout_with_file(&daemon, tmp.path(), "src/ok.rs", b"ok\n");
+        std::fs::create_dir_all(tmp.path().join("repo/lib")).unwrap();
+        std::fs::write(tmp.path().join("repo/blob.bin"), b"ok\0nope").unwrap();
+
+        let missing = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "nope.rs".into(),
+                line: None,
+                read_only: true,
+            })
+            .expect_err("missing");
+        assert_eq!(missing.code, ErrorCode::InvalidRequest);
+
+        let directory = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "lib".into(),
+                line: None,
+                read_only: true,
+            })
+            .expect_err("directory");
+        assert_eq!(directory.code, ErrorCode::InvalidRequest);
+
+        let binary = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "blob.bin".into(),
+                line: None,
+                read_only: true,
+            })
+            .expect_err("binary");
+        assert_eq!(binary.code, ErrorCode::InvalidRequest);
+
+        assert!(daemon.lock().sessions.is_empty());
+    }
+
+    #[test]
+    fn restarting_an_editor_session_is_refused() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (daemon, _worktrees, _) = editor_daemon(tmp.path(), FakePtyBackend::empty());
+        let ws = checkout_with_file(&daemon, tmp.path(), "a.rs", b"a\n");
+        let Response::SessionCreated { session_id, .. } = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "a.rs".into(),
+                line: None,
+                read_only: true,
+            })
+            .expect("create")
+        else {
+            panic!("expected SessionCreated");
+        };
+        daemon.mark_session_failed(session_id, "test".into());
+        let error = daemon
+            .handle_request(Request::RestartSession { session_id })
+            .expect_err("restart");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains("buffer"),
+            "the refusal must say why: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn an_editor_session_falls_back_to_the_editor_title() {
+        let id = SessionId::new();
+        let session = Session {
+            id,
+            workspace_id: WorkspaceId::new(),
+            kind: SessionKind::Editor,
+            role: SessionRole::Generic,
+            parent_session_id: None,
+            root_session_id: id,
+            terminal_id: None,
+            editor: None,
+            agent_provider_id: None,
+            agent_profile_id: None,
+            title: SessionTitle::default(),
+            state: SessionState::Running,
+            created_at: Timestamp::now(),
+            launch_command: None,
+            last_activity_at: Timestamp::now(),
+            ended_at: None,
+            base_commit: None,
+        };
+        assert_eq!(session_fallback_title(&session), "Editor");
+    }
+
+    #[test]
+    fn editor_supervisor_never_holds_the_core_lock() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (daemon, _worktrees, _) = editor_daemon(tmp.path(), FakePtyBackend::empty());
+        let ws = checkout_with_file(&daemon, tmp.path(), "a.rs", b"a\n");
+        daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "a.rs".into(),
+                line: None,
+                read_only: true,
+            })
+            .expect("create");
+        // The supervisor is blocked on accept. Creating a shell must not wait
+        // on that socket.
+        let started = Instant::now();
+        daemon
+            .create_session(
+                ws,
+                SessionKind::Shell,
+                None,
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .expect("shell");
+        assert!(
+            started.elapsed() < Duration::from_millis(750),
+            "a blocking accept must not sit on the core lock"
+        );
+    }
+
+    #[test]
+    fn editor_state_broadcasts_are_coalesced() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (daemon, _worktrees, _) = editor_daemon(tmp.path(), FakePtyBackend::empty());
+        let ws = checkout_with_file(&daemon, tmp.path(), "a.rs", b"hello\n");
+        let Response::SessionCreated { session_id, .. } = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "a.rs".into(),
+                line: None,
+                read_only: true,
+            })
+            .expect("create")
+        else {
+            panic!("expected SessionCreated");
+        };
+        let client = ClientId::new();
+        let rx = daemon.registry.register(client);
+        let socket = crate::editor::control_socket_path(session_id).expect("socket path");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut stream = loop {
+            if let Ok(stream) = std::os::unix::net::UnixStream::connect(&socket) {
+                break stream;
+            }
+            assert!(Instant::now() < deadline, "supervisor never accepted");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        use editor_control::{read_frame, write_frame, DaemonMessage as ControlOut, EditorMessage};
+        write_frame(
+            &mut stream,
+            &EditorMessage::Hello {
+                version: editor_control::CONTROL_VERSION,
+                session_id: session_id.to_string(),
+                pid: 1,
+            },
+        )
+        .unwrap();
+        match read_frame::<ControlOut>(&mut stream).unwrap() {
+            ControlOut::Welcome { .. } => {}
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+        let open = match read_frame::<ControlOut>(&mut stream).unwrap() {
+            ControlOut::Open {
+                request_id, text, ..
+            } => {
+                assert_eq!(text, "hello\n");
+                request_id
+            }
+            other => panic!("expected Open, got {other:?}"),
+        };
+        write_frame(
+            &mut stream,
+            &EditorMessage::Opened {
+                request_id: open,
+                document_version: 1,
+            },
+        )
+        .unwrap();
+        let wire = editor_control::EditorStateWire {
+            path: "a.rs".into(),
+            line: 1,
+            column: 1,
+            dirty: false,
+            read_only: true,
+            document_version: 1,
+        };
+        for line in 1..=20 {
+            let mut state = wire.clone();
+            state.line = line;
+            write_frame(
+                &mut stream,
+                &EditorMessage::State {
+                    request_id: None,
+                    state,
+                },
+            )
+            .unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(400));
+        let mut editor_updates = 0;
+        while let Ok(msg) = rx.try_recv() {
+            if let DaemonMessage::Event(DaemonEvent::SessionUpdated(session)) = msg {
+                if session.editor.is_some() {
+                    editor_updates += 1;
+                }
+            }
+        }
+        assert!(
+            (1..=4).contains(&editor_updates),
+            "a burst of caret moves must coalesce, got {editor_updates}"
+        );
+        let last = daemon
+            .lock()
+            .sessions
+            .get(&session_id)
+            .and_then(|s| s.editor.clone())
+            .expect("state stored");
+        assert_eq!(last.line, 20, "the last state always lands");
+        assert!(last.path == "a.rs" && last.document_version == 1);
+    }
+
+    #[test]
+    fn an_editor_session_adds_no_per_delta_core_work() {
+        // The delta path is pump_terminal_batch. Editor state is written by
+        // the supervisor thread via record_editor_state, never from a PTY
+        // batch: a keystroke that only moves the caret must not clone
+        // EditorState on that rung.
+        let src = include_str!("terminal.rs");
+        assert!(!src.contains("record_editor_state"));
+        assert!(!src.contains("EditorState"));
+        assert!(!src.contains("SessionKind::Editor"));
+    }
+
+    #[test]
+    fn a_full_control_queue_answers_busy_on_the_daemon() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (daemon, _worktrees, _) = editor_daemon(tmp.path(), FakePtyBackend::empty());
+        let ws = checkout_with_file(&daemon, tmp.path(), "a.rs", b"a\n");
+        let Response::SessionCreated { session_id, .. } = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "a.rs".into(),
+                line: None,
+                read_only: true,
+            })
+            .expect("create")
+        else {
+            panic!("expected SessionCreated");
+        };
+        // Fill the 8-slot queue; the writer thread is not yet connected so
+        // nothing drains it.
+        for n in 0..crate::editor::COMMAND_QUEUE {
+            daemon
+                .send_editor_command(
+                    session_id,
+                    crate::editor::Outgoing::GetState {
+                        request_id: n as u64,
+                    },
+                )
+                .expect("enqueue");
+        }
+        let busy = daemon
+            .send_editor_command(
+                session_id,
+                crate::editor::Outgoing::GetState { request_id: 99 },
+            )
+            .expect_err("full");
+        assert_eq!(busy.code, ErrorCode::PreconditionFailed);
+        assert!(busy.message.contains("busy"), "{}", busy.message);
     }
 }

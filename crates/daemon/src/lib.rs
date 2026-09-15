@@ -8,6 +8,7 @@ mod acp;
 pub mod config;
 mod context_xfer;
 pub mod core;
+pub mod editor;
 pub mod environment;
 pub mod external_agents;
 mod file_watch;

@@ -9,9 +9,10 @@ Two crates build the terminal editor:
 - `crates/editor-cli` builds `forge-editor`, the standalone binary: argument
   parsing, a bounded read, raw mode, key bindings and the viewport.
 
-The GUI's own editor still lives in `apps/tauri/packages/file-workbench`; the
-integrated route (a daemon-supervised process with its own control channel) is
-not built yet.
+The GUI's own editor still lives in `apps/tauri/packages/file-workbench` and is
+the default surface. The integrated route — the same binary under the daemon's
+PTY, with its own control channel — is built and opt-in; see *The integrated
+route* below.
 
 ## Run it
 
@@ -24,6 +25,44 @@ It is standalone by design: no daemon, no GUI, no network and no Node are
 needed to open, edit and save a file. `forge-editor --help` prints the contract
 (path, `--read-only`, `--line N` or `+N`, `--` before a path that starts with a
 dash).
+
+## The integrated route
+
+The Code tab can run `forge-editor` as a daemon session instead of the DOM
+editor. Turn on `ui.editor.terminal` in Settings → Editor (off by default) and
+the open file grows an **Open in terminal editor** action.
+
+What happens then:
+
+- `CreateEditorSession { workspace_id, path, line, read_only }` reads the file
+  through `fs-service` — off the core lock, and refused for a directory, a
+  binary file or one past the 2 MiB budget — then spawns `forge-editor` under
+  the daemon's PTY as a `SessionKind::Editor` session. `[editor] executable`
+  names the binary; otherwise it is `forge-editor` on the resolved `PATH`. A
+  missing binary fails the spawn and never falls back to a shell.
+- The buffer travels over a private Unix socket named by `FORGE_EDITOR_CONTROL`,
+  not through argv and not through the PTY: `crates/editor-control` owns the
+  framing, the version and the message set. `--control <socket>` is what selects
+  integrated mode, and in it the editor reads no disk at all — the text arrives
+  in `Open`.
+- The editor publishes `path`, 1-based `line:column`, dirty and read-only back
+  over the same socket. The daemon stores the last one on `Session.editor` and
+  broadcasts it through the ordinary `SessionUpdated`, coalesced, so typing does
+  not put a broadcast on every keystroke. The pane's chrome reads that state and
+  says *state unknown* until the first one lands — it never parses the terminal
+  it is painting.
+- Input, resize and ANSI output ride the existing terminal pipeline, on a side
+  attachment with its own frame channel. The main pane keeps its PTY.
+- `Session.editor` is runtime state like `terminal_id`: no column, no migration,
+  gone on restart. An editor session is never idle-stopped, whatever the
+  thresholds say.
+
+**H1 is read-only.** Integrated save with a disk revision does not exist yet, so
+the buffer refuses edits at the transaction entry rather than letting a draft
+exist that nothing could persist; `Ctrl-S` says *integrated save is not
+available* and touches no file. The DOM editor's Save and autosave are not
+offered for the terminal pane, and closing the Code view detaches it — the
+process survives and the session stays in the rail until it is killed.
 
 ## Keys
 
@@ -100,16 +139,24 @@ version compatible with Rust 1.89.
 
 ## What the next milestone still has to prove
 
-The route under the daemon's PTY with its separate control channel, the
-key-to-paint budget through PTY → VT → IPC → canvas, IME behaviour, and the
-control-socket handshake are not covered here. What *is* exercised end to end
-lives in `crates/editor-cli/tests/pty.rs`: a real PTY, a typed character on
-screen, bracketed paste as one undo step, a resize mid-paste, CRLF preserved
-through a save, a control byte drawn rather than executed, a read-only refusal
-and a dirty close that asks first.
+Integrated save with a revision, full parity with the DOM editor, and retiring
+it are later milestones; so is packaging `forge-editor` with the app, which for
+now is found on the `PATH` a dev build shares with `forge-daemon`.
+
+End to end, `crates/editor-cli/tests/pty.rs` drives a real PTY in both modes: a
+typed character on screen, bracketed paste as one undo step, a resize mid-paste,
+CRLF preserved through a save, a control byte drawn rather than executed, a
+read-only refusal, a dirty close that asks first, and — integrated — a buffer
+that came from the socket, a reveal that moves the caret, a save that is refused
+without touching the file, and a display path that is never opened.
+`crates/daemon/tests/scenario_editor.rs` covers the daemon's half: the control
+socket in the child's environment, the text `fs-service` read on the child's
+screen, state surviving a client reconnect, detach leaving the process alive,
+and a crash marking the session and releasing the supervisor.
 
 Bracketed paste still has an unbounded peak: crossterm 0.29 accumulates the
 whole paste into a `String` before it delivers `Event::Paste`, so the document
-budget refuses an oversize paste only after the bytes are already resident. A
-capped reader in front of the parser is the fix, and it belongs with the
-integrated route.
+budget refuses an oversize paste only after the bytes are already resident. It
+is the same debt in both modes — the integrated route reuses the same input loop
+— and capping it means owning the input loop or vendoring crossterm's parser,
+which is a piece of work of its own rather than a line in this one.

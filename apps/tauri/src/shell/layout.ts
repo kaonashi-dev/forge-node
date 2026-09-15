@@ -32,6 +32,11 @@ export const TERMINAL_ZOOM_KEY = "ui.terminal.zoom";
 /** Write the open file on blur and after a pause. Off by default (§2.2 A8). */
 export const AUTOSAVE_KEY = "ui.editor.autosave";
 /**
+ * Open a file in the daemon-supervised `forge-editor` instead of the DOM
+ * editor. Off by default: H1 is opt-in until the route is the product.
+ */
+export const TERMINAL_EDITOR_KEY = "ui.editor.terminal";
+/**
  * Editor type metrics, kept apart from the theme's `--forge-mono-*` tokens.
  *
  * Reading code is not reading the shell, and the two want different numbers:

@@ -1,0 +1,13 @@
+[package]
+name = "editor-control"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Control channel between the daemon and a forge-editor process (feature 19)"
+
+[dependencies]
+serde.workspace = true
+rmp-serde.workspace = true
+thiserror.workspace = true

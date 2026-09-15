@@ -33,7 +33,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// every new request with an undecodable frame and no `Response` — the caller
 /// waits on a reply that never comes. Equality at connect turns that stall
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +112,20 @@ mod tests {
     }
 
     #[test]
+    fn create_editor_session_round_trips() {
+        let msg = ClientMessage::Request {
+            request_id: 43,
+            body: Request::CreateEditorSession {
+                workspace_id: WorkspaceId::new(),
+                path: "src/main.rs".to_string(),
+                line: Some(12),
+                read_only: true,
+            },
+        };
+        assert_eq!(msg, frame_round_trip(&msg));
+    }
+
+    #[test]
     fn daemon_message_ok_and_err_round_trip_through_framing() {
         let ok = DaemonMessage::Response {
             request_id: 7,
@@ -180,6 +194,7 @@ mod tests {
             parent_session_id: None,
             root_session_id: id,
             terminal_id: Some(domain::TerminalId::new()),
+            editor: None,
             agent_provider_id: None,
             agent_profile_id: None,
             title: SessionTitle::default(),

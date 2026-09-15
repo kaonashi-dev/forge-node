@@ -102,6 +102,16 @@ enterprise_hosts = []           # GHES hostnames, e.g. ["github.example.com"].
                                 # github.com is always supported; other hosts
                                 # are never guessed from Git remote syntax.
 
+[editor]
+# The integrated terminal editor: `forge-editor` under the daemon's PTY, opened
+# from the GUI's Code tab when `ui.editor.terminal` is on. Read-only until
+# integrated save with a disk revision exists.
+executable = ""                 # empty searches the login-shell PATH, which in
+                                # a dev checkout is the target/debug that
+                                # already holds forge-daemon. A named binary
+                                # that is missing fails the spawn; there is no
+                                # fallback to a shell.
+
 [juva]
 # Where Juva gets its prose. Off by default, and it stays useful off: every
 # draft falls back to the deterministic local one, so a missing key or a hung

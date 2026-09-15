@@ -764,6 +764,7 @@ mod tests {
             parent_session_id: None,
             root_session_id: id,
             terminal_id: None,
+            editor: None,
             agent_provider_id: None,
             agent_profile_id: None,
             title: SessionTitle::default(),

@@ -17,6 +17,7 @@ pub struct Config {
     pub git: GitConfig,
     pub github: GithubConfig,
     pub juva: JuvaConfig,
+    pub editor: EditorConfig,
     pub daemon: DaemonConfig,
 }
 
@@ -183,6 +184,19 @@ pub struct GithubConfig {
     pub refresh_secs: u64,
     /// Hosts explicitly known to be GitHub Enterprise installations.
     pub enterprise_hosts: Vec<String>,
+}
+
+/// The integrated terminal editor, `forge-editor` under the daemon's PTY.
+///
+/// H1 is read-only: the integrated buffer is opened so its save is refused
+/// rather than let a draft exist that nothing could persist (feature 19).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorConfig {
+    /// `forge-editor` executable or path. Empty searches the login-shell
+    /// `PATH` (§12); a dev checkout shares `target/debug` with `forge-daemon`,
+    /// so the default finds it without configuration.
+    pub executable: String,
 }
 
 /// Where Juva gets its prose, when it gets any.

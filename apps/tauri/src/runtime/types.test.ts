@@ -1,8 +1,34 @@
 import { describe, expect, it } from "vitest";
 import { sessionFixture } from "./sessions.fixture";
-import { sessionIsActive, sessionTitle, type Session } from "./types";
+import { sessionIsActive, sessionIsAgent, sessionTitle, type Session } from "./types";
+import { sessionWork } from "./work";
 
 const session = (partial: Partial<Session>): Session => sessionFixture(partial);
+
+describe("an Editor session", () => {
+  /*
+   * R31: an editor is its own kind everywhere the rail, the window strip and
+   * the glyphs read a session. Falling through to the shell branch would put
+   * a terminal glyph and the word "Shell" on a file, and give it the green
+   * dot a shell earns by sitting at a prompt — which an editor never does.
+   */
+  it("an_editor_session_is_not_rendered_as_a_shell", () => {
+    const editor = session({ kind: "Editor", title: { user: null, terminal: null } });
+
+    expect(sessionTitle(editor)).toBe("Editor");
+    expect(sessionTitle(editor)).not.toBe("Shell");
+    // The glyph branches on the kind, so an editor must not read as an agent
+    // either: it has no provider and is not one.
+    expect(sessionIsAgent(editor)).toBe(false);
+    expect(sessionWork(editor, { wants_you: false }, Date.now())).toBe("idle");
+    expect(sessionWork(editor, { wants_you: false }, Date.now())).not.toBe("running");
+
+    // The OSC title the editor sets still wins, as it does for every kind:
+    // the fallback is what a session with nothing to say is called.
+    const named = session({ kind: "Editor", title: { user: null, terminal: "main.rs" } });
+    expect(sessionTitle(named)).toBe("main.rs");
+  });
+});
 
 describe("session display helpers", () => {
   it("prefers the user title, then OSC, then kind", () => {
@@ -18,6 +44,14 @@ describe("session display helpers", () => {
         }),
       ),
     ).toBe("claude");
+    expect(
+      sessionTitle(
+        session({
+          kind: "Editor",
+          title: { user: null, terminal: null },
+        }),
+      ),
+    ).toBe("Editor");
   });
 
   it("treats empty or whitespace OSC titles as unset", () => {

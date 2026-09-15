@@ -65,6 +65,7 @@ fn mk_session(workspace_id: WorkspaceId, state: SessionState) -> Session {
         parent_session_id: None,
         root_session_id: id,
         terminal_id: None,
+        editor: None,
         agent_provider_id: None,
         agent_profile_id: None,
         title: SessionTitle::default(),
@@ -659,6 +660,7 @@ fn session_roundtrip_custom_role_states_and_graph() {
         parent_session_id: None,
         root_session_id: root_id,
         terminal_id: Some(domain::TerminalId::new()),
+        editor: None,
         agent_provider_id: Some("claude".into()),
         agent_profile_id: None,
         title: SessionTitle {
@@ -719,6 +721,7 @@ fn session_roundtrip_custom_role_states_and_graph() {
         parent_session_id: Some(root_id),
         root_session_id: root_id,
         terminal_id: None,
+        editor: None,
         agent_provider_id: None,
         agent_profile_id: None,
         title: SessionTitle::default(),
@@ -936,6 +939,48 @@ fn reconcile_orphaned_marks_only_live_sessions() {
 
     // A second run is a no-op (nothing left in a live state).
     assert_eq!(db.reconcile_orphaned().unwrap(), 0);
+}
+
+#[test]
+fn sessions_schema_is_unchanged() {
+    // Feature 19 adds `SessionKind::Editor`, a TEXT tag in an unconstrained
+    // column — no migration. A schema version bump here would mean a migration
+    // was appended, which this feature does not do.
+    let db = Db::open_in_memory().unwrap();
+    let version: i64 = db
+        .conn()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 11, "feature 19 adds no migration");
+
+    let (db, _project, workspace_id) = db_with_workspace();
+    let mut session = mk_session(workspace_id, SessionState::Running);
+    session.kind = SessionKind::Editor;
+    db.sessions().upsert(&session).unwrap();
+    assert_eq!(db.purge_sessions().unwrap(), 1);
+    assert!(db.sessions().get(session.id).unwrap().is_none());
+}
+
+#[test]
+fn a_session_row_never_stores_editor_state() {
+    let (db, _project, workspace_id) = db_with_workspace();
+    let mut session = mk_session(workspace_id, SessionState::Running);
+    session.kind = SessionKind::Editor;
+    session.editor = Some(domain::EditorState {
+        path: "src/main.rs".into(),
+        line: 12,
+        column: 4,
+        dirty: true,
+        read_only: false,
+        document_version: 9,
+    });
+    db.sessions().upsert(&session).unwrap();
+
+    let loaded = db.sessions().get(session.id).unwrap().unwrap();
+    assert_eq!(loaded.kind, SessionKind::Editor);
+    // Runtime-only like `terminal_id`: a row on disk describes a buffer whose
+    // process is gone, so it loads without state rather than with a stale one.
+    assert_eq!(loaded.editor, None);
 }
 
 #[test]

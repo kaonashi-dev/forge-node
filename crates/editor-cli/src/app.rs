@@ -9,7 +9,11 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use editor_core::{execute, metrics, Command, Document, Query, Range, Refusal, Selection};
+use editor_control::{EditorStateWire, WireEdit};
+use editor_core::{
+    execute, metrics, Command, Document, Edit, Origin, Query, Range, Refusal, Selection,
+    Transaction,
+};
 
 use crate::disk;
 
@@ -42,6 +46,10 @@ pub struct App {
     document: Document,
     path: PathBuf,
     revision: Option<String>,
+    /// `Some(reason)` when the daemon owns this buffer over the control
+    /// channel: the local disk adapter is off and `Ctrl-S` says why. `None` is
+    /// the standalone editor, which saves through `disk`.
+    integrated: Option<&'static str>,
     register: String,
     query: Query,
     prompt: Option<Prompt>,
@@ -64,6 +72,7 @@ impl App {
             document,
             path,
             revision,
+            integrated: None,
             register: String::new(),
             query: Query::literal(""),
             prompt: None,
@@ -173,6 +182,88 @@ impl App {
     /// Open on a 1-based line, for `forge-editor +42 file.rs`.
     pub fn goto_line(&mut self, line: usize) {
         self.run(Command::GotoLine(line));
+    }
+
+    /// This buffer belongs to the daemon: keep the local disk adapter off.
+    ///
+    /// The reason is shown when a save is attempted; it is a `&'static str`
+    /// because it is a fixed sentence, not remote text.
+    pub fn set_integrated(&mut self, reason: &'static str) {
+        self.integrated = Some(reason);
+    }
+
+    /// Move the viewport to a line, for the daemon's `Reveal` request.
+    ///
+    /// `column` is a 1-based display column, as the wire counts; `None` leaves
+    /// the caret where the goto put it.
+    pub fn reveal(&mut self, line: usize, column: Option<usize>) {
+        self.goto_line(line);
+        if let Some(column) = column {
+            let position = self.document.caret_line_col();
+            let text = self.document.text();
+            let line_text = text.line(position.line);
+            let target = column
+                .saturating_sub(1)
+                .min(metrics::display_column(line_text, line_text.len()));
+            let offset = text.line_start(position.line)
+                + metrics::byte_column_for_display(line_text, target);
+            self.document.set_selection(Selection::caret(offset));
+            self.ensure_visible();
+        }
+        self.damage_all = true;
+    }
+
+    /// State as the control channel reports it: path, position, dirty, version.
+    ///
+    /// The wire counts columns from 1 (`EditorStateWire`, `domain::EditorState`)
+    /// while [`Self::caret_position`] returns the screen column the renderer
+    /// places the caret at, counted from 0. Converting here keeps the whole
+    /// wire 1-based in both directions: what [`Self::reveal`] accepts is what
+    /// the next state reports back.
+    pub fn wire_state(&self) -> EditorStateWire {
+        let (line, column) = self.caret_position();
+        EditorStateWire {
+            path: self.path.to_string_lossy().into_owned(),
+            line: u32::try_from(line).unwrap_or(u32::MAX),
+            column: u32::try_from(column + 1).unwrap_or(u32::MAX),
+            dirty: self.document.is_dirty(),
+            read_only: self.document.is_read_only(),
+            document_version: self.document.version().0,
+        }
+    }
+
+    /// Apply a preview edit, refusing when the document moved under the caller.
+    ///
+    /// The version check and the apply share this one thread, so a keystroke
+    /// cannot slip between them.
+    pub fn apply_preview_edit(
+        &mut self,
+        edits: &[WireEdit],
+        expected_document_version: u64,
+    ) -> Result<u64, String> {
+        let current = self.document.version().0;
+        if current != expected_document_version {
+            return Err(format!(
+                "document is at version {current}, expected {expected_document_version}"
+            ));
+        }
+        let before = self.document.selection();
+        let edits = edits
+            .iter()
+            .map(|edit| Edit {
+                range: Range::new(edit.from as usize, edit.to as usize),
+                insert: edit.insert.clone(),
+            })
+            .collect();
+        let transaction =
+            Transaction::new(edits, Origin::Preview, before).map_err(|error| error.to_string())?;
+        let applied = self
+            .document
+            .apply(transaction)
+            .map_err(|error| error.to_string())?;
+        self.damage_all = true;
+        self.ensure_visible();
+        Ok(applied.version.0)
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
@@ -472,6 +563,11 @@ impl App {
     }
 
     fn save(&mut self) {
+        if let Some(reason) = self.integrated {
+            // The daemon owns the checkout: never stat or write it from here.
+            self.status = Some(reason.to_string());
+            return;
+        }
         if self.document.is_read_only() {
             self.status = Some(describe(Refusal::ReadOnly));
             return;
@@ -858,5 +954,109 @@ mod tests {
         app.handle_key(control('a'));
         assert_eq!(app.selection_in_line(0), Some((0, 3)));
         assert_eq!(app.selection_in_line(1), Some((0, 2)));
+    }
+
+    #[test]
+    fn wire_state_reports_path_position_and_version() {
+        let mut app = app("hello\nworld", false);
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Char('!')));
+        let state = app.wire_state();
+        assert_eq!(state.path, "fixture.txt");
+        assert_eq!(state.line, 2);
+        // The caret sits after the typed `!`: screen column 1, wire column 2.
+        assert_eq!(state.column, 2);
+        assert_eq!(app.caret_position(), (2, 1));
+        assert!(state.dirty);
+        assert!(!state.read_only);
+        assert_eq!(state.document_version, app.document().version().0);
+    }
+
+    #[test]
+    fn one_state_shape_for_notifications_and_requests() {
+        // Notifications and GetState share `wire_state`; a second call without
+        // a mutation must be identical, so a snapshot cannot drift from the
+        // last published state.
+        let mut app = app("hello\nworld", true);
+        app.reveal(2, Some(1));
+        let notified = app.wire_state();
+        let requested = app.wire_state();
+        assert_eq!(notified, requested);
+        assert_eq!(notified.line, 2);
+        assert_eq!(notified.column, 1);
+        assert!(notified.read_only);
+    }
+
+    #[test]
+    fn control_requests_apply_on_the_event_thread() {
+        // Reveal is the same serialized `App` mutation a keystroke uses. The
+        // control reader never touches `Document` itself.
+        let mut app = app("alpha\nbeta\ngamma\n", false);
+        app.reveal(3, Some(2));
+        // `reveal` takes the wire's 1-based column and `wire_state` reports it
+        // back unchanged; `caret_position` is the renderer's 0-based screen
+        // column for the same caret.
+        let state = app.wire_state();
+        assert_eq!((state.line, state.column), (3, 2));
+        assert_eq!(app.caret_position(), (3, 1));
+        app.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(app.document().as_str().lines().nth(2), Some("gxamma"));
+    }
+
+    #[test]
+    fn reveal_moves_the_caret_to_a_line_and_display_column() {
+        // `é` is one grapheme over two bytes, so the column the wire counts is
+        // a display column, not a byte offset.
+        let mut app = app("alpha\nbeta\né_char\n", false);
+        app.reveal(3, Some(3));
+        assert_eq!(app.caret_position(), (3, 2));
+    }
+
+    #[test]
+    fn an_integrated_save_is_refused_and_says_so() {
+        let mut app = app("hello", false);
+        app.set_integrated("integrated save is not available yet");
+        app.save();
+        assert_eq!(app.status(), Some("integrated save is not available yet"));
+        assert!(!app.document().is_dirty());
+        assert_eq!(app.document().as_str(), "hello");
+    }
+
+    #[test]
+    fn a_preview_edit_applies_and_reports_its_version() {
+        let mut app = app("hello", false);
+        let before = app.wire_state().document_version;
+        let edits = vec![WireEdit {
+            from: 0,
+            to: 5,
+            insert: "HELLO".into(),
+        }];
+        let after = app.apply_preview_edit(&edits, before).unwrap();
+        assert_eq!(after, before + 1);
+        assert_eq!(app.document().as_str(), "HELLO");
+        // Undo walks the preview out like any other transaction.
+        app.handle_key(control('z'));
+        assert_eq!(app.document().as_str(), "hello");
+    }
+
+    #[test]
+    fn a_preview_edit_refuses_a_stale_version() {
+        let mut app = app("hello", false);
+        let version = app.wire_state().document_version;
+        app.handle_key(key(KeyCode::Char('X')));
+        let edits: Vec<WireEdit> = vec![];
+        let error = app
+            .apply_preview_edit(&edits, version)
+            .expect_err("stale version");
+        assert!(error.contains("version"), "{error}");
+        assert_eq!(app.document().as_str(), "Xhello");
+    }
+
+    #[test]
+    fn the_control_budget_matches_the_core_budget() {
+        assert_eq!(
+            editor_control::MAX_DOCUMENT_BYTES,
+            editor_core::limits::MAX_DOCUMENT_BYTES
+        );
     }
 }

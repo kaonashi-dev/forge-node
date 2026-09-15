@@ -92,6 +92,46 @@ export async function openInEditor(editor: string, path: string): Promise<void> 
   await send({ type: "open_in_editor", editor, path });
 }
 
+/** Open a file in a daemon-supervised forge-editor (feature 19). */
+export async function openTerminalEditor(
+  workspace: string,
+  path: string,
+  line?: number,
+): Promise<void> {
+  await send({ type: "open_editor", workspace, path, line: line ?? null });
+}
+
+export async function sendEditorKey(session: string, key: KeyPress, id: number): Promise<void> {
+  await send({ type: "input_editor", session_id: session, key, id });
+}
+
+export async function sendEditorText(session: string, text: string, id: number): Promise<void> {
+  await send({ type: "input_editor_text", session_id: session, text, id });
+}
+
+export async function sendEditorPaste(session: string, text: string, id: number): Promise<void> {
+  await send({ type: "paste_editor", session_id: session, text, id });
+}
+
+export async function resizeEditor(
+  session: string,
+  cols: number,
+  rows: number,
+  pixelWidth: number,
+  pixelHeight: number,
+): Promise<void> {
+  await send({
+    type: "resize_editor",
+    session_id: session,
+    size: { cols, rows, pixel_width: pixelWidth, pixel_height: pixelHeight },
+  });
+}
+
+/** Detach the Code pane; the editor process survives. */
+export async function closeEditor(session: string): Promise<void> {
+  await send({ type: "close_editor", session_id: session });
+}
+
 export async function openInFileManager(path: string): Promise<void> {
   await send({ type: "open_in_file_manager", path });
 }

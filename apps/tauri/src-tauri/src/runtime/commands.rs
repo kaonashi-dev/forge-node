@@ -236,6 +236,39 @@ pub enum RuntimeCommand {
         editor: String,
         path: String,
     },
+    /// Open a file in a daemon-supervised `forge-editor` (feature 19).
+    OpenEditor {
+        workspace: WorkspaceId,
+        path: String,
+        #[serde(default)]
+        line: Option<u32>,
+    },
+    InputEditor {
+        session_id: SessionId,
+        key: KeyPress,
+        #[serde(default)]
+        id: u64,
+    },
+    InputEditorText {
+        session_id: SessionId,
+        text: String,
+        #[serde(default)]
+        id: u64,
+    },
+    PasteEditor {
+        session_id: SessionId,
+        text: String,
+        #[serde(default)]
+        id: u64,
+    },
+    ResizeEditor {
+        session_id: SessionId,
+        size: PtySize,
+    },
+    /// Detach the Code pane; the editor process survives.
+    CloseEditor {
+        session_id: SessionId,
+    },
     /// Reveal a path in the desktop file manager.
     OpenInFileManager {
         path: String,

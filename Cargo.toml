@@ -12,6 +12,7 @@ members = [
     "crates/persistence",
     "crates/test-support",
     "crates/editor-core",
+    "crates/editor-control",
     "crates/editor-cli",
     "crates/client",
     "crates/daemon",
@@ -39,6 +40,7 @@ harness-service = { path = "crates/harness-service" }
 persistence = { path = "crates/persistence" }
 test-support = { path = "crates/test-support" }
 editor-core = { path = "crates/editor-core" }
+editor-control = { path = "crates/editor-control" }
 client = { path = "crates/client" }
 
 # Tauri desktop shell. The web frontend is kept outside the Rust workspace;
@@ -93,7 +95,7 @@ unicode-width = "0.2"
 unicode-segmentation = "1"
 
 # System
-nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user"] }
+nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user", "poll"] }
 directories = "6"
 notify = "7"
 

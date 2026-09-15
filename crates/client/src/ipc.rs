@@ -1104,6 +1104,28 @@ impl Client {
         })
     }
 
+    /// Open a file in a daemon-supervised `forge-editor` process (feature 19),
+    /// returning the ids the daemon minted.
+    ///
+    /// # Errors
+    /// [`ClientError`] when the daemon refuses: an unknown workspace, a target
+    /// outside the checkout, a directory, binary or too-large content, or a
+    /// missing `forge-editor` binary.
+    pub fn create_editor_session(
+        &self,
+        workspace_id: WorkspaceId,
+        path: &str,
+        line: Option<u32>,
+        read_only: bool,
+    ) -> Result<(SessionId, TerminalId), ClientError> {
+        self.expect_session_created(Request::CreateEditorSession {
+            workspace_id,
+            path: path.to_owned(),
+            line,
+            read_only,
+        })
+    }
+
     /// Spawn a child agent/shell under a parent session (harness workflow).
     #[allow(clippy::too_many_arguments)]
     pub fn create_child_session(
@@ -2240,6 +2262,40 @@ mod tests {
         }
         drop(client);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn create_editor_session_round_trips() {
+        let sock = socket_path();
+        let listener = UnixListener::bind(&sock.path).unwrap();
+        let session_id = domain::SessionId::new();
+        let terminal_id = TerminalId::new();
+        let server = scripted_server(
+            listener,
+            vec![Ok(Response::SessionCreated {
+                session_id,
+                terminal_id,
+            })],
+        );
+
+        let workspace_id = domain::WorkspaceId::new();
+        let client = Client::connect(&sock.path, "0.1.0").unwrap();
+        let ids = client
+            .create_editor_session(workspace_id, "src/main.rs", Some(7), true)
+            .unwrap();
+        assert_eq!(ids, (session_id, terminal_id));
+        drop(client);
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests,
+            vec![Request::CreateEditorSession {
+                workspace_id,
+                path: "src/main.rs".to_owned(),
+                line: Some(7),
+                read_only: true,
+            }]
+        );
     }
 
     #[test]

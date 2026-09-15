@@ -1,13 +1,27 @@
 import { createRoot } from "solid-js";
 import { describe, expect, it } from "vitest";
 import { applyShellSnapshot, emptySnapshot } from "../store/forgeStore";
-import { SIDEBAR_WIDTH_KEY, SIDEBAR_RANGE, readWidth, seedFromAppState } from "./layout";
+import {
+  SIDEBAR_WIDTH_KEY,
+  SIDEBAR_RANGE,
+  TERMINAL_EDITOR_KEY,
+  readFlag,
+  readWidth,
+  seedFromAppState,
+} from "./layout";
 
 /** Land a snapshot the way `applyConnected` does, and let the effects run. */
 async function snapshotWith(app_state: Record<string, string>): Promise<void> {
   applyShellSnapshot({ ...emptySnapshot(), app_state });
   await Promise.resolve();
 }
+
+describe("the terminal editor flag", () => {
+  it("the_terminal_editor_flag_defaults_to_false", async () => {
+    await snapshotWith({});
+    expect(readFlag(TERMINAL_EDITOR_KEY, false)).toBe(false);
+  });
+});
 
 describe("seedFromAppState", () => {
   it("waits for the snapshot, then seeds once", async () => {

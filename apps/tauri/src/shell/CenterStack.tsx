@@ -65,6 +65,11 @@ import {
 const EditorView = lazy(() =>
   import("../workbench/EditorView").then((module) => ({ default: module.EditorView })),
 );
+const EditorTerminalPane = lazy(() =>
+  import("../terminal/EditorTerminalPane").then((module) => ({
+    default: module.EditorTerminalPane,
+  })),
+);
 const DiffView = lazy(() =>
   import("../workbench/DiffView").then((module) => ({ default: module.DiffView })),
 );
@@ -344,6 +349,14 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
           <EditorView path={(active() as { path: string }).path} />
         </div>
       </Show>
+      <Show when={onCode() && active().kind === "editor-terminal"}>
+        <div class="center-view">
+          <EditorTerminalPane
+            session={(active() as { session: string }).session}
+            path={(active() as { path: string }).path}
+          />
+        </div>
+      </Show>
       <Show when={onCode() && active().kind === "pr_detail"}>
         <div class="center-view">
           <PrDetailView prKey={(active() as { key: string }).key} />
@@ -394,6 +407,8 @@ function ViewGlyph(props: { view: WorkbenchView }) {
       case "feature":
       case "feature_compose":
         return { icon: "agent", tone: "forge-icon-accent" } as const;
+      case "editor-terminal":
+        return { icon: "file-code", tone: "forge-icon-accent" } as const;
       default:
         return { icon: "square-terminal", tone: "forge-icon-faint" } as const;
     }

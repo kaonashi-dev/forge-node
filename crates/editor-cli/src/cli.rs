@@ -12,12 +12,15 @@ forge-editor — terminal editor (standalone spike)
 
 Usage:
   forge-editor [--read-only] [+LINE | --line LINE] [--] <file>
+  forge-editor --control <socket> [--read-only] [+LINE | --line LINE] <display-path>
 
 Options:
-  --read-only   Open the file without allowing edits.
-  --line LINE   Put the caret on LINE (1-based); +LINE does the same.
-  -h, --help    Print this help and exit.
-  -V, --version Print the version and exit.
+  --control SOCK   Integrated mode: open the buffer the daemon sends over the
+                   Unix socket instead of reading <display-path> from disk.
+  --read-only      Open the file without allowing edits.
+  --line LINE      Put the caret on LINE (1-based); +LINE does the same.
+  -h, --help       Print this help and exit.
+  -V, --version    Print the version and exit.
 ";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -29,10 +32,15 @@ pub enum Command {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Options {
+    /// The file to open, or — with `--control` — the display path the daemon
+    /// named the buffer. Integrated mode never resolves it on disk.
     pub path: PathBuf,
     pub read_only: bool,
     /// 1-based line to open on, the way a compiler error counts.
     pub line: Option<usize>,
+    /// `--control <socket>`: the daemon owns the document and the local disk
+    /// adapter is off.
+    pub control: Option<PathBuf>,
 }
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
@@ -40,12 +48,19 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut positional_only = false;
     let mut path: Option<PathBuf> = None;
     let mut line: Option<usize> = None;
+    let mut control: Option<PathBuf> = None;
     let mut expecting_line = false;
+    let mut expecting_control = false;
 
     for arg in args {
         if expecting_line {
             line = Some(parse_line(arg)?);
             expecting_line = false;
+            continue;
+        }
+        if expecting_control {
+            control = Some(PathBuf::from(arg));
+            expecting_control = false;
             continue;
         }
         if !positional_only {
@@ -58,6 +73,10 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 }
                 "--line" => {
                     expecting_line = true;
+                    continue;
+                }
+                "--control" => {
+                    expecting_control = true;
                     continue;
                 }
                 "--" => {
@@ -84,11 +103,15 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     if expecting_line {
         return Err("--line needs a number".to_string());
     }
+    if expecting_control {
+        return Err("--control needs a socket path".to_string());
+    }
     match path {
         Some(path) => Ok(Command::Edit(Options {
             path,
             read_only,
             line,
+            control,
         })),
         None => Err("missing file".to_string()),
     }
@@ -117,6 +140,7 @@ mod tests {
                 path: PathBuf::from("src/main.rs"),
                 read_only: true,
                 line: None,
+                control: None,
             }))
         );
     }
@@ -129,6 +153,7 @@ mod tests {
                 path: PathBuf::from("--read-only"),
                 read_only: false,
                 line: None,
+                control: None,
             }))
         );
     }
@@ -150,11 +175,45 @@ mod tests {
                     path: PathBuf::from("a.rs"),
                     read_only: false,
                     line: Some(12),
+                    control: None,
                 })
             );
         }
         assert!(parse(&args(&["+0", "a.rs"])).is_err());
         assert!(parse(&args(&["--line", "a.rs"])).is_err());
+    }
+
+    #[test]
+    fn control_is_not_a_path() {
+        // `--control` names the socket; the positional stays the display path
+        // the daemon named, and integrated mode never resolves it on disk.
+        assert_eq!(
+            parse(&args(&[
+                "--control",
+                "/tmp/forge-editor.sock",
+                "--read-only",
+                "+9",
+                "harness/tsconfig.json",
+            ])),
+            Ok(Command::Edit(Options {
+                path: PathBuf::from("harness/tsconfig.json"),
+                read_only: true,
+                line: Some(9),
+                control: Some(PathBuf::from("/tmp/forge-editor.sock")),
+            }))
+        );
+        assert!(parse(&args(&["--control"])).is_err());
+        assert!(parse(&args(&["--control", "s.sock"])).is_err());
+        // The socket path is an option value, not a second positional.
+        assert_eq!(
+            parse(&args(&["--control", "s.sock", "a.rs"])),
+            Ok(Command::Edit(Options {
+                path: PathBuf::from("a.rs"),
+                read_only: false,
+                line: None,
+                control: Some(PathBuf::from("s.sock")),
+            }))
+        );
     }
 
     #[test]

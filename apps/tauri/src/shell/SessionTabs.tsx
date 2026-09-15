@@ -33,6 +33,9 @@ type SessionTabsProps = {
 export function SessionTabs(props: SessionTabsProps) {
   let scrollEl: HTMLDivElement | undefined;
   const [overflowing, setOverflowing] = createSignal(false);
+  /* Which edges of the scrollport hide a tab mid-pill. Drives the mask fade
+     so a half-visible current tab dissolves instead of clipping square. */
+  const [edgeFade, setEdgeFade] = createSignal<"none" | "left" | "right" | "both">("none");
   const [dragging, setDragging] = createSignal<string | null>(null);
   const [dropTarget, setDropTarget] = createSignal<{
     id: string;
@@ -61,7 +64,16 @@ export function SessionTabs(props: SessionTabsProps) {
     if (!scrollEl) {
       return;
     }
-    setOverflowing(scrollEl.scrollWidth - scrollEl.clientWidth > 1);
+    const max = scrollEl.scrollWidth - scrollEl.clientWidth;
+    const hasOverflow = max > 1;
+    setOverflowing(hasOverflow);
+    if (!hasOverflow) {
+      setEdgeFade("none");
+      return;
+    }
+    const atLeft = scrollEl.scrollLeft <= 1;
+    const atRight = scrollEl.scrollLeft >= max - 1;
+    setEdgeFade(atLeft ? (atRight ? "none" : "right") : atRight ? "left" : "both");
   };
 
   onMount(() => {
@@ -178,6 +190,7 @@ export function SessionTabs(props: SessionTabsProps) {
         <div
           class="tab-strip-scroll"
           classList={{ reordering: dragging() != null }}
+          data-fade={edgeFade()}
           data-tauri-drag-region="false"
           ref={scrollEl}
           onScroll={onScroll}
