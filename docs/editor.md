@@ -156,6 +156,7 @@ living with no window pill of its own.
 | Ctrl-R | replace (Tab switches field, **Enter** replaces this match, **Ctrl-R** replaces the rest) |
 | Ctrl-G | go to line |
 | Alt-N / Alt-P | next / previous changed block (Ctrl-N and Ctrl-B are the find bar's) |
+| Alt-F / Alt-Shift-F | fold the block at the caret / unfold everything |
 | Ctrl-Q | close; unsaved changes ask save / discard / cancel |
 | F1 | key help |
 | bracketed paste | inserts the pasted text as one undo step |
@@ -185,8 +186,9 @@ entry and says so instead of silently dropping keys.
 
 **The mouse moves the caret.** A left click places the caret; a Shift-click
 extends the selection to the click; a left drag selects; an Alt-click adds a
-caret and an Alt-drag makes a column of them; the wheel scrolls the viewport
-without moving the caret. The editor turns on mouse capture on entry
+caret and an Alt-drag makes a column of them; a click on the gutter's fold
+marker folds that block; a click on the overview ruler jumps to the line it
+stands for; the wheel scrolls the viewport without moving the caret. The editor turns on mouse capture on entry
 (`EnableMouseCapture`), so a real terminal reports the events and the Code pane
 forwards them as the same SGR reports the main terminal sends — the editor reads
 the mouse itself either way. Out of scope for now: go-to-definition on click,
@@ -198,6 +200,23 @@ HTML context menu).
 - **Byte-exact round trip.** The buffer holds the file's bytes, terminators
   included, so a mixed LF/CRLF file, a BOM and a missing final newline all
   survive. A new line takes the terminator the current line already uses.
+- **A fold is indentation, not a grammar.** A region is a line and everything
+  indented under it — the one rule that is right for Rust, TypeScript, Python,
+  YAML and Markdown at once, and a fold that disagreed with the brace a person
+  can see would be worse than none. A blank line belongs to the block around it
+  rather than ending one. Folded lines take *no rows*, so the viewport walk
+  steps over them and the row under a folded block is the line after it; a caret
+  inside what just folded moves to the header, and a fold whose block an edit
+  destroyed is dropped rather than left hiding rows.
+- **The overview ruler is a column, not a strip of HTML.** The plan preferred
+  the DOM; the editor is where the marks, the matches and the caret already are,
+  and the GUI has none of them — a DOM ruler would mean broadcasting every
+  changed line of the file on a channel that exists for a caret position. So it
+  is the rightmost cell of the grid, one bucket per row, strongest signal
+  winning: caret over match over change. It costs exactly one column, appears
+  only at 40 cells or wider, and a click on it jumps to the line that bucket
+  stands for. The search half is a capped document scan that runs only while the
+  find bar is open.
 - **Carets are a set, and a set with rules.** A selection is one or more
   cursors, sorted, never overlapping, one of them primary — the one the status
   line reports and the viewport follows. Two that touch are merged the moment
@@ -347,8 +366,8 @@ an SVG and a raster image still open on the DOM side — a terminal cannot draw
 them, so that split is the design rather than a gap. What *is* a gap: go-to-definition and
 find-references, which need a channel from the editor to `SearchFiles` and are
 the one item here that changes shape rather than filling in; the change
-*details* panel, where the gutter has the marks but not the before/after rows;
-and the overview ruler. The pane does draw a scrollbar thumb: `EditorState`
+*details* panel, where the gutter has the marks but not the before/after rows.
+The pane does draw a scrollbar thumb: `EditorState`
 carries `top_line` / `visible_lines` / `total_lines`, so the GUI reports where
 the editor's viewport is without keeping a second copy of the text. It is a
 read-out and not a handle — the wheel still goes to the TUI, which owns the

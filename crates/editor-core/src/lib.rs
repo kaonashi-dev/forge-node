@@ -8,6 +8,7 @@
 pub mod brackets;
 mod command;
 mod document;
+pub mod fold;
 mod history;
 pub mod indent;
 pub mod limits;

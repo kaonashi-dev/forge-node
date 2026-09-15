@@ -86,6 +86,10 @@ pub struct App {
     /// Gutter marks by 1-based line, as the daemon last computed them. Empty
     /// standalone: this editor never runs git of its own.
     marks: BTreeMap<usize, WireMarkKind>,
+    /// Header lines of the folded blocks, 0-based.
+    folded: BTreeSet<usize>,
+    /// Foldable regions, recomputed when the text changes and never per row.
+    regions: Vec<editor_core::fold::Region>,
     /// Where the pointer went down, for a rectangular drag.
     drag_origin: Option<(u16, u16)>,
     /// An OSC 52 the renderer has not written yet, if a copy just happened.
@@ -121,6 +125,8 @@ pub struct App {
     /// Decorations for the visible rows, and what they were computed against.
     decorations: Vec<(usize, view::Mark)>,
     decor_key: Option<DecorKey>,
+    /// The overview ruler's column, one entry per screen row.
+    ruler: Vec<Option<RulerMark>>,
     prompt: Option<Prompt>,
     help: bool,
     status: Option<String>,
@@ -145,6 +151,17 @@ pub struct App {
     painted: Option<Painted>,
 }
 
+/// What one row of the overview ruler shows.
+///
+/// Ordered by which wins the cell: a row can hold a change, a match and a caret
+/// at once, and the caret is the one a person is looking for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RulerMark {
+    Change,
+    Match,
+    Caret,
+}
+
 /// What the visible decorations were computed against.
 ///
 /// Every input is here, so a mismatch is the whole recompute trigger: nothing
@@ -167,6 +184,12 @@ struct DecorKey {
 /// The viewport bounds the rows, not the bytes: one logical line can be taller
 /// than the screen, and its `line_end` is as far away as the document allows.
 const MAX_DECORATION_WINDOW: usize = 64 * 1024;
+
+/// Narrowest grid that still gets an overview ruler.
+///
+/// One cell of the text column buys the whole document's shape, but not at the
+/// width where the text column is already the problem.
+const MIN_RULER_WIDTH: u16 = 40;
 
 /// Longest selection that marks its own other occurrences.
 ///
@@ -222,6 +245,8 @@ impl App {
             grammar: Grammar::None,
             close_brackets: true,
             marks: BTreeMap::new(),
+            folded: BTreeSet::new(),
+            regions: Vec::new(),
             drag_origin: None,
             clipboard_escape: None,
             autosave: false,
@@ -241,6 +266,7 @@ impl App {
             find_origin: 0,
             decorations: Vec::new(),
             decor_key: None,
+            ruler: Vec::new(),
             prompt: None,
             help: false,
             status: None,
@@ -354,12 +380,27 @@ impl App {
         self.document.text().line_count().max(1).to_string().len()
     }
 
-    /// Line-number column, the mark column, and the space after them.
+    /// Line-number column, the mark column, the fold column, and the space
+    /// after them.
     ///
-    /// The mark column is always there, marks or not: a gutter that widens the
+    /// Every column is always there, marks or not: a gutter that widens the
     /// first time git answers would shift every line of the file sideways.
     pub fn gutter_width(&self) -> usize {
-        self.number_width() + 2
+        self.number_width() + 3
+    }
+
+    /// How many lines the fold on `line` is hiding.
+    #[must_use]
+    pub fn folded_line_count(&self, line: usize) -> usize {
+        self.regions
+            .iter()
+            .find(|region| region.header == line)
+            .map_or(0, |region| region.last - region.header)
+    }
+
+    /// Whether a screen column falls in the fold marker's cell.
+    fn is_fold_column(&self, col: u16) -> bool {
+        col as usize == self.number_width() + 1
     }
 
     /// The OSC 52 a copy left for the renderer to write. Take-and-clear.
@@ -456,7 +497,82 @@ impl App {
     }
 
     pub fn content_width(&self) -> usize {
-        (self.width as usize).saturating_sub(self.gutter_width())
+        let ruler = usize::from(self.ruler_visible());
+        (self.width as usize)
+            .saturating_sub(self.gutter_width())
+            .saturating_sub(ruler)
+    }
+
+    /// Whether the rightmost column is the overview ruler.
+    ///
+    /// A column and not an HTML strip: the editor already holds the marks, the
+    /// matches and the caret, while the GUI holds none of them — a DOM ruler
+    /// would mean a new broadcast carrying every changed line of the file on a
+    /// channel that exists for a caret position.
+    #[must_use]
+    pub fn ruler_visible(&self) -> bool {
+        self.width >= MIN_RULER_WIDTH && self.document.text().line_count() > 1
+    }
+
+    /// The ruler's screen column.
+    #[must_use]
+    pub fn ruler_column(&self) -> usize {
+        (self.width as usize).saturating_sub(1)
+    }
+
+    /// What the ruler shows on `row`, strongest signal first.
+    #[must_use]
+    pub fn ruler_at(&self, row: usize) -> Option<RulerMark> {
+        self.ruler.get(row).copied().flatten()
+    }
+
+    /// The 1-based line a click on the ruler's `row` means.
+    #[must_use]
+    pub fn ruler_line(&self, row: usize) -> usize {
+        let total = self.document.text().line_count().max(1);
+        let height = self.content_height().max(1);
+        (row * total / height).min(total - 1) + 1
+    }
+
+    /// Recompute the ruler's column of marks.
+    ///
+    /// One pass over the document's *signals*, not its rows: the marks are a
+    /// map the daemon already sent, and the matches are a capped scan that only
+    /// runs while the find bar is open.
+    fn refresh_ruler(&mut self, height: usize) {
+        if !self.ruler_visible() || height == 0 {
+            self.ruler.clear();
+            return;
+        }
+        let total = self.document.text().line_count().max(1);
+        let bucket = |line: usize| (line * height / total).min(height - 1);
+        let mut column = vec![None; height];
+        let mut put = |at: usize, what: RulerMark| {
+            let slot = &mut column[at];
+            if slot.is_none_or(|current| what > current) {
+                *slot = Some(what);
+            }
+        };
+        for line in self.marks.keys() {
+            put(bucket(line.saturating_sub(1)), RulerMark::Change);
+        }
+        if self.highlight && !self.query.is_empty() && self.query_error.is_none() {
+            let found = editor_core::find_all(self.document.text(), &self.query);
+            let text = self.document.text();
+            for hit in found.found {
+                put(
+                    bucket(text.line_of_offset(hit.range.start)),
+                    RulerMark::Match,
+                );
+            }
+        }
+        for cursor in self.document.selection().cursors() {
+            put(
+                bucket(self.document.text().line_of_offset(cursor.head)),
+                RulerMark::Caret,
+            );
+        }
+        self.ruler = column;
     }
 
     /// Whether long lines wrap onto continuation rows.
@@ -470,6 +586,9 @@ impl App {
     /// which case it is split into as many rows as it takes. Always at least
     /// one, so an empty line is still a row.
     pub fn line_rows(&self, line: usize) -> usize {
+        if self.is_hidden(line) {
+            return 0;
+        }
         if !self.wrap {
             return 1;
         }
@@ -490,8 +609,21 @@ impl App {
     pub fn row_line_sub(&self, row: usize) -> Option<(usize, usize)> {
         let count = self.document.text().line_count();
         if !self.wrap {
-            let line = self.top + row;
-            return (line < count).then_some((line, 0));
+            if self.folded.is_empty() {
+                let line = self.top + row;
+                return (line < count).then_some((line, 0));
+            }
+            let mut remaining = row;
+            for line in self.top..count {
+                if self.is_hidden(line) {
+                    continue;
+                }
+                if remaining == 0 {
+                    return Some((line, 0));
+                }
+                remaining -= 1;
+            }
+            return None;
         }
         let mut remaining = row;
         let mut line = self.top;
@@ -500,7 +632,7 @@ impl App {
         let mut skip = self.top_sub;
         while line < count {
             let rows = self.line_rows(line).saturating_sub(skip);
-            if remaining < rows {
+            if rows > 0 && remaining < rows {
                 return Some((line, skip + remaining));
             }
             remaining -= rows;
@@ -518,7 +650,16 @@ impl App {
         }
         let height = self.content_height();
         if !self.wrap {
-            let row = target - self.top;
+            if self.is_hidden(target) {
+                return None;
+            }
+            if self.folded.is_empty() {
+                let row = target - self.top;
+                return (row < height).then_some(row);
+            }
+            let row = (self.top..target)
+                .filter(|line| !self.is_hidden(*line))
+                .count();
             return (row < height).then_some(row);
         }
         if target == self.top && sub < self.top_sub {
@@ -986,6 +1127,7 @@ impl App {
     pub fn take_frame(&mut self) -> Frame {
         let height = self.content_height();
         self.refresh_decorations(height);
+        self.refresh_ruler(height);
         let rows_per_line = if self.wrap {
             self.visible_line_rows(height)
         } else {
@@ -1111,6 +1253,16 @@ impl App {
                 self.drag_origin = Some((event.column, event.row));
                 self.add_caret_at(event.column, event.row);
             }
+            MouseEventKind::Down(MouseButton::Left)
+                if self.ruler_visible() && event.column as usize >= self.ruler_column() =>
+            {
+                let line = self.ruler_line(event.row as usize);
+                self.goto_line(line);
+                self.damage_all = true;
+            }
+            MouseEventKind::Down(MouseButton::Left) if self.is_fold_column(event.column) => {
+                self.click_fold(event.row);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.drag_origin = Some((event.column, event.row));
                 let extend = event.modifiers.contains(KeyModifiers::SHIFT);
@@ -1127,6 +1279,22 @@ impl App {
             MouseEventKind::ScrollDown => self.scroll(1),
             _ => {}
         }
+    }
+
+    /// Toggle the fold whose marker sits on `row`.
+    fn click_fold(&mut self, row: u16) {
+        let Some((line, sub)) = self.row_line_sub(row as usize) else {
+            return;
+        };
+        if sub != 0 || self.fold_state(line).is_none() {
+            return;
+        }
+        if !self.folded.remove(&line) {
+            self.folded.insert(line);
+        }
+        self.clamp_anchor();
+        self.ensure_visible();
+        self.damage_all = true;
     }
 
     /// The document offset a screen cell names, clamped into the buffer.
@@ -1243,7 +1411,84 @@ impl App {
     /// the buffer is shown plain: a scan on every keystroke is not worth a
     /// frame once a file is large enough, and the renderer treats an empty
     /// `Syntax` as plain text without a branch of its own.
+    /// Re-read which blocks can be folded, and drop folds that no longer name
+    /// one. A header that stopped being a header must not keep hiding lines.
+    fn refold(&mut self) {
+        self.regions = editor_core::fold::regions(self.document.text());
+        let headers: BTreeSet<usize> = self.regions.iter().map(|region| region.header).collect();
+        self.folded.retain(|line| headers.contains(line));
+    }
+
+    /// Whether `line` is inside a folded block, and so takes no rows.
+    #[must_use]
+    pub fn is_hidden(&self, line: usize) -> bool {
+        self.folded.iter().any(|header| {
+            self.regions
+                .iter()
+                .find(|region| region.header == *header)
+                .is_some_and(|region| region.hidden().contains(&line))
+        })
+    }
+
+    /// The fold marker a line's gutter carries, if it has one.
+    ///
+    /// `Some(true)` is folded, `Some(false)` is foldable and open.
+    #[must_use]
+    pub fn fold_state(&self, line: usize) -> Option<bool> {
+        self.regions
+            .iter()
+            .any(|region| region.header == line)
+            .then(|| self.folded.contains(&line))
+    }
+
+    /// Fold or unfold the block the caret is in.
+    pub fn toggle_fold(&mut self) {
+        let line = self.document.caret_line_col().line;
+        let Some(region) = editor_core::fold::enclosing(&self.regions, line) else {
+            self.status = Some("nothing to fold here".to_string());
+            return;
+        };
+        if !self.folded.remove(&region.header) {
+            self.folded.insert(region.header);
+            // A caret inside what just folded has nowhere to be; the header is
+            // the line the block is now shown as.
+            if region.hidden().contains(&line) {
+                self.goto_line(region.header + 1);
+            }
+        }
+        self.clamp_anchor();
+        self.ensure_visible();
+        self.damage_all = true;
+    }
+
+    /// Open every fold, for the person who cannot find what folded away.
+    pub fn unfold_all(&mut self) {
+        if self.folded.is_empty() {
+            return;
+        }
+        self.folded.clear();
+        self.ensure_visible();
+        self.damage_all = true;
+    }
+
+    /// Pull the viewport anchor onto a visible line.
+    ///
+    /// A `top` inside a fold names a line that takes no rows, and the row walk
+    /// would then start on nothing.
+    fn clamp_anchor(&mut self) {
+        let count = self.document.text().line_count();
+        while self.top < count && self.is_hidden(self.top) {
+            self.top += 1;
+            self.top_sub = 0;
+        }
+        while self.top > 0 && self.is_hidden(self.top) {
+            self.top -= 1;
+            self.top_sub = 0;
+        }
+    }
+
     fn rescan(&mut self) {
+        self.refold();
         self.syntax = if self.document.text().len() > MAX_HIGHLIGHT_BYTES {
             Syntax::default()
         } else {
@@ -1257,6 +1502,7 @@ impl App {
     /// back in the state the previous one was in, so typing on line 4000 does
     /// not re-lex the 3999 lines over it.
     fn rescan_edited(&mut self, applied: editor_core::Applied) {
+        self.refold();
         if self.document.text().len() > MAX_HIGHLIGHT_BYTES {
             self.syntax = Syntax::default();
             return;
@@ -1349,6 +1595,8 @@ impl App {
                     input: String::new(),
                 });
             }
+            EditorAction::ToggleFold => self.toggle_fold(),
+            EditorAction::UnfoldAll => self.unfold_all(),
             EditorAction::NextChange => self.goto_change(1),
             EditorAction::PreviousChange => self.goto_change(-1),
             EditorAction::FindNext => self.find(true),
@@ -1745,9 +1993,14 @@ impl App {
             self.top_sub += 1;
             return;
         }
-        if self.top < last {
+        // A folded block is one row on screen, so the anchor steps over every
+        // line it hides in one go.
+        while self.top < last {
             self.top += 1;
             self.top_sub = 0;
+            if !self.is_hidden(self.top) {
+                return;
+            }
         }
     }
 
@@ -1757,10 +2010,12 @@ impl App {
             self.top_sub -= 1;
             return;
         }
-        if self.top == 0 {
-            return;
+        while self.top > 0 {
+            self.top -= 1;
+            if !self.is_hidden(self.top) {
+                break;
+            }
         }
-        self.top -= 1;
         self.top_sub = if self.wrap {
             self.line_rows(self.top).saturating_sub(1)
         } else {
@@ -1772,6 +2027,7 @@ impl App {
     fn ensure_visible(&mut self) {
         let height = self.content_height().max(1);
         let position = self.document.caret_line_col();
+        self.clamp_anchor();
 
         if self.wrap {
             // No sideways scroll to keep in step; the line wraps instead.
@@ -1842,6 +2098,8 @@ impl App {
             // Alt, not Ctrl: Ctrl-N and Ctrl-B are already the find bar's.
             (KeyCode::Char('n'), _, true) => Action::Editor(EditorAction::NextChange),
             (KeyCode::Char('p'), _, true) => Action::Editor(EditorAction::PreviousChange),
+            (KeyCode::Char('f'), _, true) if shift => Action::Editor(EditorAction::UnfoldAll),
+            (KeyCode::Char('f'), _, true) => Action::Editor(EditorAction::ToggleFold),
             (KeyCode::Char('v'), true, _) => Action::Editor(EditorAction::PasteRegister),
             (KeyCode::Char('c'), true, _) => Action::Command(Command::Copy),
             (KeyCode::Char('x'), true, _) => Action::Command(Command::Cut),
@@ -1923,6 +2181,8 @@ enum EditorAction {
     /// Jump to the next / previous changed block in the gutter.
     NextChange,
     PreviousChange,
+    ToggleFold,
+    UnfoldAll,
     Cancel,
 }
 
@@ -2005,6 +2265,10 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     ("Ctrl-G", "go to line"),
     ("Ctrl-P", "toggle closing brackets as you type"),
+    (
+        "Alt-F / Alt-Shift-F",
+        "fold the block at the caret / unfold everything",
+    ),
     ("Ctrl-Q", "close; unsaved changes ask first"),
     ("F1", "this help"),
 ];
@@ -2775,7 +3039,10 @@ mod tests {
         let mut app = app("hello\nworld\n", false);
         app.resize(80, 24);
         let gutter = app.gutter_width();
-        assert_eq!(gutter, 3, "one number column, a mark cell, and a space");
+        assert_eq!(
+            gutter, 4,
+            "one number column, a mark cell, a fold cell and a space"
+        );
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             (gutter + 2) as u16,
@@ -2811,7 +3078,7 @@ mod tests {
         // First line is 25 cells wide; at content_width 10 that is three rows.
         let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
         app.set_integrated();
-        app.resize(13, 10);
+        app.resize(14, 10);
         assert!(app.wrap());
         assert_eq!(app.content_width(), 10);
         assert_eq!(app.line_rows(0), 3);
@@ -2828,12 +3095,12 @@ mod tests {
     fn the_caret_follows_a_wrapped_line_onto_its_continuation_row() {
         let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
         app.set_integrated();
-        app.resize(13, 10);
+        app.resize(14, 10);
         app.handle_key(key(KeyCode::End));
         assert_eq!(app.caret_position(), (1, 25));
         // Column 25 is the sixth cell of the third segment (25 / 10, 25 % 10),
-        // three cells of gutter in.
-        assert_eq!(app.caret_screen(), Some((2, 8)));
+        // four cells of gutter in.
+        assert_eq!(app.caret_screen(), Some((2, 9)));
     }
 
     /// A click on a continuation row measures its column from that segment's
@@ -2842,7 +3109,7 @@ mod tests {
     fn a_click_on_a_continuation_row_lands_past_the_wrap() {
         let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
         app.set_integrated();
-        app.resize(13, 10);
+        app.resize(14, 10);
         let gutter = app.gutter_width() as u16;
         // Third row (segment 2), three cells in: 2 * 10 + 3.
         app.handle_mouse(mouse(
@@ -2861,7 +3128,7 @@ mod tests {
         let line = "0123456789abcdefghijklmno\n"; // 25 cells → three rows each
         let mut app = app(&line.repeat(4), false);
         app.set_integrated();
-        app.resize(13, 5);
+        app.resize(14, 5);
         assert_eq!(app.content_height(), 5);
         app.goto_line(4);
         assert_eq!(
@@ -2878,7 +3145,7 @@ mod tests {
     fn a_line_taller_than_the_viewport_scrolls_within_itself() {
         let mut app = app(&"x".repeat(95), false);
         app.set_integrated();
-        app.resize(13, 4);
+        app.resize(14, 4);
         // 95 cells over a 10-cell column is ten rows; the viewport holds four.
         assert_eq!(app.line_rows(0), 10);
         app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
@@ -2897,7 +3164,7 @@ mod tests {
     #[test]
     fn standalone_does_not_wrap() {
         let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
-        app.resize(13, 10);
+        app.resize(14, 10);
         assert!(!app.wrap());
         assert_eq!(app.line_rows(0), 1);
         assert_eq!(app.row_line_sub(1), Some((1, 0)));
@@ -3009,7 +3276,7 @@ mod tests {
         let line = "0123456789abcdefghijklmno\n"; // 25 cells → three rows each
         let mut app = app(&line.repeat(6), false);
         app.set_integrated();
-        app.resize(13, 9);
+        app.resize(14, 9);
         app.take_frame();
         app.goto_line(2);
         app.take_frame();
@@ -3028,7 +3295,7 @@ mod tests {
         let line = "0123456789abcdefghijk\n"; // 21 cells → three rows
         let mut app = app(&line.repeat(6), false);
         app.set_integrated();
-        app.resize(13, 9);
+        app.resize(14, 9);
         app.take_frame();
         app.goto_line(2);
         app.take_frame();
@@ -3224,5 +3491,153 @@ mod tests {
         app.handle_key(control('d'));
         assert_eq!(app.document().selection().count(), 2);
         assert_eq!(app.selections_in_line(0), vec![(0, 3), (6, 9)]);
+    }
+
+    /// A folded block takes one row, and the rows under it are the lines that
+    /// come after the block rather than the ones inside it.
+    #[test]
+    fn folding_a_block_takes_its_rows_out_of_the_viewport() {
+        let mut app = app("fn f() {\n    one();\n    two();\n}\nfn g() {}\n", false);
+        app.resize(40, 10);
+        assert_eq!(app.fold_state(0), Some(false), "line 1 is foldable");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(app.fold_state(0), Some(true));
+        assert_eq!(app.row_line_sub(0), Some((0, 0)));
+        assert_eq!(
+            app.row_line_sub(1),
+            Some((3, 0)),
+            "the body is gone, so the closing brace is the next row"
+        );
+        assert_eq!(app.folded_line_count(0), 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(app.row_line_sub(1), Some((1, 0)));
+    }
+
+    /// A caret inside what just folded has nowhere to be, so it moves to the
+    /// header the block is now shown as.
+    #[test]
+    fn folding_pulls_a_caret_out_of_what_it_hid() {
+        let mut app = app("fn f() {\n    one();\n}\n", false);
+        app.resize(40, 10);
+        app.goto_line(2);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(app.caret_position().0, 1);
+        assert!(app.caret_screen().is_some());
+    }
+
+    /// Clicking the fold marker is the same gesture as the key.
+    #[test]
+    fn a_click_on_the_fold_marker_toggles_it() {
+        let mut app = app("fn f() {\n    one();\n}\n", false);
+        app.resize(40, 10);
+        let column = (app.number_width() + 1) as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            0,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.fold_state(0), Some(true));
+        assert_eq!(
+            app.caret_position().0,
+            1,
+            "the click folded, it did not move"
+        );
+    }
+
+    /// An edit that stops a line being a header must not leave it hiding rows.
+    #[test]
+    fn a_fold_whose_block_disappeared_is_dropped() {
+        let mut app = app("fn f() {\n    one();\n}\n", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(app.fold_state(0), Some(true));
+
+        app.handle_key(control('a'));
+        app.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(app.fold_state(0), None);
+        assert!(!app.is_hidden(0));
+    }
+
+    #[test]
+    fn unfold_all_opens_everything() {
+        let mut app = app("a:\n  b:\n    c: 1\n", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        app.goto_line(1);
+        assert!(app.is_hidden(1));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ));
+        assert!(!app.is_hidden(1));
+    }
+
+    /// The ruler is the document's shape in one column: a change, a match and
+    /// the caret, strongest last.
+    #[test]
+    fn the_ruler_shows_changes_matches_and_the_caret() {
+        let text: String = (0..100).map(|n| format!("line {n}\n")).collect();
+        let mut app = app(&text, false);
+        app.resize(60, 11);
+        assert!(app.ruler_visible());
+        marked(&mut app, &[(90, WireMarkKind::Modified)]);
+
+        app.handle_key(control('f'));
+        for character in "line 5".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        app.take_frame();
+
+        let height = app.content_height();
+        assert_eq!(
+            app.ruler_at(0),
+            Some(RulerMark::Caret),
+            "the caret wins its row"
+        );
+        assert_eq!(
+            app.ruler_at(89 * height / 100),
+            Some(RulerMark::Change),
+            "the changed line's bucket"
+        );
+        assert!(
+            (0..height).any(|row| app.ruler_at(row) == Some(RulerMark::Match)),
+            "the matches are on the ruler too"
+        );
+    }
+
+    /// A click on the ruler jumps to the line that bucket stands for.
+    #[test]
+    fn a_click_on_the_ruler_jumps_to_that_line() {
+        let text: String = (0..100).map(|n| format!("line {n}\n")).collect();
+        let mut app = app(&text, false);
+        app.resize(60, 11);
+        let column = app.ruler_column() as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            5,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.caret_position().0, app.ruler_line(5));
+        assert_eq!(app.caret_position().0, 51);
+    }
+
+    /// A narrow grid keeps every cell for the text.
+    #[test]
+    fn a_narrow_grid_has_no_ruler() {
+        let mut app = app("a\nb\n", false);
+        app.resize(30, 10);
+        assert!(!app.ruler_visible());
+        let wide = app.content_width();
+        app.resize(60, 10);
+        assert!(app.ruler_visible());
+        assert_eq!(
+            app.content_width(),
+            wide + 30 - 1,
+            "the ruler costs exactly one cell"
+        );
     }
 }

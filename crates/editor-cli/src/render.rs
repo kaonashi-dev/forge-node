@@ -24,6 +24,7 @@ pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     }
     for row in frame.rows {
         draw_row(app, out, row)?;
+        draw_ruler_cell(app, out, row)?;
     }
     // Integrated mode leaves the idle status bar to the GUI pane and only
     // claims the row for a prompt or a message; standalone always paints it.
@@ -76,9 +77,9 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
             )),
             style::SetAttribute(style::Attribute::NormalIntensity)
         )?;
-        // The mark column, then the space the text starts after. Both are always
-        // printed: a gutter that widened the first time git answered would shift
-        // every line of the file sideways.
+        // The mark column, the fold column, then the space the text starts
+        // after. All three are always printed: a gutter that widened the first
+        // time git answered would shift every line of the file sideways.
         match app.mark_at(line + 1) {
             Some(kind) => queue!(
                 out,
@@ -87,11 +88,30 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
             )?,
             None => queue!(out, style::Print(" "))?,
         }
+        match app.fold_state(line) {
+            Some(folded) => queue!(
+                out,
+                style::SetForegroundColor(style::Color::DarkGrey),
+                style::Print(if folded { '\u{25b8}' } else { '\u{25be}' }),
+            )?,
+            None => queue!(out, style::Print(" "))?,
+        }
         queue!(
             out,
             style::SetForegroundColor(style::Color::Reset),
             style::Print(" ")
         )?;
+        // A folded block says how much it swallowed, where the body would be.
+        if app.fold_state(line) == Some(true) {
+            let hidden = app.folded_line_count(line);
+            queue!(
+                out,
+                style::SetForegroundColor(style::Color::DarkGrey),
+                style::Print(format!("  \u{2026} {hidden} lines")),
+                style::SetForegroundColor(style::Color::Reset)
+            )?;
+            return Ok(());
+        }
     } else {
         // A continuation row has no number and no mark, but keeps the width so
         // the wrapped text stays under the line it belongs to.
@@ -160,6 +180,32 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
     }
     queue!(out, style::SetForegroundColor(style::Color::Reset))?;
     Ok(())
+}
+
+/// The overview ruler's one cell on this row.
+///
+/// Painted after the row so it survives the row's own `Clear`, and only where
+/// there is something to say: an empty ruler is an empty column, not a rule.
+fn draw_ruler_cell(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
+    if !app.ruler_visible() {
+        return Ok(());
+    }
+    let Some(mark) = app.ruler_at(row) else {
+        return Ok(());
+    };
+    use crate::app::RulerMark;
+    let (glyph, colour) = match mark {
+        RulerMark::Change => ('\u{2502}', style::Color::Yellow),
+        RulerMark::Match => ('\u{2502}', style::Color::Blue),
+        RulerMark::Caret => ('\u{25c0}', style::Color::Reset),
+    };
+    queue!(
+        out,
+        cursor::MoveTo(app.ruler_column() as u16, row as u16),
+        style::SetForegroundColor(colour),
+        style::Print(glyph),
+        style::SetForegroundColor(style::Color::Reset)
+    )
 }
 
 /// What a gutter mark looks like. One cell, and the same three shapes a diff
