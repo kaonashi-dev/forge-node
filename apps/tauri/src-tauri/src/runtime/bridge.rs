@@ -1583,7 +1583,14 @@ fn run_command(
                 .terminal(&open.terminal)
                 .map(|grid| grid.modes)
                 .unwrap_or_default();
-            let bytes = input::encode_paste(&text, &modes);
+            let (bytes, clamped) = input::encode_editor_paste(&text, &modes);
+            if clamped {
+                tracing::warn!(
+                    bytes = text.len(),
+                    limit = input::MAX_EDITOR_PASTE_BYTES,
+                    "editor paste clamped to the document budget"
+                );
+            }
             input_editor_bytes(client, editors, pending_echo, session_id, bytes, id)
         }
         // The editor sibling of `Mouse`: the pane only sends these while the

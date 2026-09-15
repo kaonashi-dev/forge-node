@@ -557,9 +557,19 @@ supervisor, a save that reaches the disk through `fs-service`, and a read-only
 session that refuses one. Its stand-in reads `CONTROL_VERSION` rather than
 hardcoding it, so a bumped wire fails loudly instead of as a mute handshake.
 
-Bracketed paste still has an unbounded peak: crossterm 0.29 accumulates the
-whole paste into a `String` before it delivers `Event::Paste`, so the document
-budget refuses an oversize paste only after the bytes are already resident. It
-is the same debt in both modes — the integrated route reuses the same input loop
-— and capping it means owning the input loop or vendoring crossterm's parser,
-which is a piece of work of its own rather than a line in this one.
+Bracketed paste has an unbounded peak **standalone**, and a bounded one
+integrated. crossterm 0.29 accumulates a whole paste into a `String` before it
+delivers `Event::Paste`, so the document budget refuses an oversize paste only
+once the bytes are already resident. The integrated route is clamped at its
+source — `encode_editor_paste` cuts at the document budget, on a character
+boundary, before the bytes reach the PTY — so a paste that arrives through the
+pane cannot make the peak larger than the budget. A *terminal* paste is
+deliberately not clamped: that text is going to a shell, and truncating what
+somebody pasted into one is a worse failure than the allocation.
+
+Standalone, the debt stands, and closing it means owning the input loop rather
+than writing a line: crossterm exposes no hook between the read and the
+`String`, so a cap needs a VT input parser of our own (CSI and SS3 keys, SGR
+mouse, UTF-8, the paste markers). Turning bracketed paste *off* is not the
+cheaper version of that — the markers are exactly what stops pasted code being
+re-indented as it lands, and stops it arriving as one undo step per character.
