@@ -12,6 +12,7 @@ name = "forge-editor"
 path = "src/main.rs"
 
 [dependencies]
+editor-core.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 crossterm.workspace = true

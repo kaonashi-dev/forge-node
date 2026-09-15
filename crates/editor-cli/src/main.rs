@@ -1,16 +1,13 @@
-//! `forge-editor`: the standalone terminal editor spike (F1).
+//! `forge-editor`: the standalone terminal editor.
 //!
-//! Not the product: no syntax highlighting, no undo, no daemon channel. What it
-//! proves is the route the plan needs before F2 builds an engine — a real PTY,
-//! raw input (bracketed paste included), a rendered viewport, and an atomic
-//! save — so F1 can measure it and decide go/no-go.
-//!
-//! The crate depends on no Forge crate on purpose: running it must never
-//! require the daemon, the GUI, a network or Node.
+//! The binary is the adapter: arguments, a bounded read, raw mode, and the
+//! event loop. Editing decisions live in `editor-core`, key bindings in `app`,
+//! and disk access in `disk` — running this must never require the daemon, the
+//! GUI, a network or Node.
 
 mod app;
 mod cli;
-mod document;
+mod disk;
 mod render;
 mod screen;
 mod view;
@@ -18,9 +15,9 @@ mod view;
 use std::process::ExitCode;
 
 use crossterm::event::{self, Event, KeyEventKind};
+use editor_core::Document;
 
 use crate::app::App;
-use crate::document::Document;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -48,32 +45,36 @@ fn main() -> ExitCode {
 }
 
 fn run(options: cli::Options) -> anyhow::Result<()> {
-    let bytes = std::fs::read(&options.path)
+    let loaded = disk::load(&options.path)
         .map_err(|error| anyhow::anyhow!("could not read {}: {error}", options.path.display()))?;
-    let document = Document::from_bytes(&bytes, options.read_only)
+    let document = Document::from_bytes(&loaded.bytes, options.read_only)
         .map_err(|error| anyhow::anyhow!("{}: {error}", options.path.display()))?;
 
-    let mut app = App::new(document, options.path);
+    let mut app = App::new(document, options.path, Some(loaded.revision));
+    if let Some(line) = options.line {
+        app.goto_line(line);
+    }
     let screen = screen::Screen::enter()?;
     let (width, height) = screen.size()?;
     app.resize(width, height);
 
     let out = std::io::stdout();
-    loop {
-        render::draw(&app, &mut out.lock())?;
-        match event::read()? {
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                app.handle_key(key);
-            }
-            Event::Resize(width, height) => app.resize(width, height),
-            Event::Paste(text) => app.paste(&text),
-            _ => {}
+    let result = loop {
+        if let Err(error) = render::draw(&mut app, &mut out.lock()) {
+            break Err(error.into());
+        }
+        match event::read() {
+            Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => app.handle_key(key),
+            Ok(Event::Resize(width, height)) => app.resize(width, height),
+            Ok(Event::Paste(text)) => app.paste(&text),
+            Ok(_) => {}
+            Err(error) => break Err(error.into()),
         }
         if app.should_quit() {
-            break;
+            break Ok(());
         }
-    }
+    };
     // Restore the caller's screen before any error is printed on it.
     drop(screen);
-    Ok(())
+    result
 }
