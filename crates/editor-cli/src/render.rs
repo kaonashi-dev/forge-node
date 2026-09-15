@@ -53,14 +53,28 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         return Ok(());
     };
     if sub == 0 {
+        // The caret's own line number reads in the default foreground rather
+        // than the gutter grey — `highlightActiveLineGutter`, with no colour of
+        // its own to fight the terminal's theme.
+        let active = app.is_active_line(line);
         queue!(
             out,
-            style::SetForegroundColor(style::Color::DarkGrey),
+            style::SetForegroundColor(if active {
+                style::Color::Reset
+            } else {
+                style::Color::DarkGrey
+            }),
+            style::SetAttribute(if active {
+                style::Attribute::Bold
+            } else {
+                style::Attribute::NormalIntensity
+            }),
             style::Print(format!(
                 "{number:>width$}",
                 number = line + 1,
                 width = app.number_width()
-            ))
+            )),
+            style::SetAttribute(style::Attribute::NormalIntensity)
         )?;
         // The mark column, then the space the text starts after. Both are always
         // printed: a gutter that widened the first time git answered would shift
@@ -90,30 +104,50 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
     } else {
         app.left()
     };
+    let marks = app.marks_in_line(line);
     let parts = view::window_parts(
         text.line(line),
         base,
         app.content_width(),
-        app.selection_in_line(line),
-        app.syntax_line(line),
+        view::RowDecor {
+            selected: app.selection_in_line(line),
+            scopes: app.syntax_line(line),
+            marks: &marks,
+        },
     );
     for part in parts {
-        // Colour first, then reverse: a selected run keeps its scope colour as
-        // the foreground the terminal swaps, so selecting a keyword does not
-        // flatten it to the default.
+        // Colour first, then the attributes: a selected or marked run keeps its
+        // scope colour as the foreground the terminal swaps, so selecting a
+        // keyword does not flatten it to the default.
         match scope_colour(part.scope) {
             Some(colour) => queue!(out, style::SetForegroundColor(colour))?,
             None => queue!(out, style::SetForegroundColor(style::Color::Reset))?,
         }
+        // Underline, not another reverse: the selection already owns reverse
+        // video, and the current match *is* the selection, so a search hit has
+        // to read as something else or the two stop being distinguishable.
+        let underline = match part.decoration {
+            view::Decoration::None => false,
+            view::Decoration::Match | view::Decoration::Bracket => true,
+        };
+        if part.decoration == view::Decoration::Bracket {
+            queue!(out, style::SetAttribute(style::Attribute::Bold))?;
+        }
+        if underline {
+            queue!(out, style::SetAttribute(style::Attribute::Underlined))?;
+        }
         if part.selected {
-            queue!(
-                out,
-                style::SetAttribute(style::Attribute::Reverse),
-                style::Print(part.text),
-                style::SetAttribute(style::Attribute::NoReverse)
-            )?;
-        } else {
-            queue!(out, style::Print(part.text))?;
+            queue!(out, style::SetAttribute(style::Attribute::Reverse))?;
+        }
+        queue!(out, style::Print(part.text))?;
+        if part.selected {
+            queue!(out, style::SetAttribute(style::Attribute::NoReverse))?;
+        }
+        if underline {
+            queue!(out, style::SetAttribute(style::Attribute::NoUnderline))?;
+        }
+        if part.decoration == view::Decoration::Bracket {
+            queue!(out, style::SetAttribute(style::Attribute::NormalIntensity))?;
         }
     }
     queue!(out, style::SetForegroundColor(style::Color::Reset))?;
@@ -180,16 +214,20 @@ fn status_text(app: &App) -> String {
     let width = app.width() as usize;
     if let Some(prompt) = app.prompt() {
         return match prompt {
-            Prompt::Find { input } => format!("find: {input}_"),
+            Prompt::Find { input } => format!("find: {input}_{}", app.query_flags()),
             Prompt::Replace {
                 find,
                 with,
                 editing_replacement,
             } => {
+                // Enter and Ctrl-R are different answers, so the row says which
+                // is which: "Enter replaces all" was the copy that made a
+                // one-match intention rewrite the file.
+                let flags = app.query_flags();
                 if *editing_replacement {
-                    format!("replace: {find}  with: {with}_   (Tab switches, Enter replaces all)")
+                    format!("replace: {find}  with: {with}_{flags}   (Tab switches, Enter: this one, Ctrl-R: all)")
                 } else {
-                    format!("replace: {find}_  with: {with}   (Tab switches, Enter replaces all)")
+                    format!("replace: {find}_  with: {with}{flags}   (Tab switches, Enter: this one, Ctrl-R: all)")
                 }
             }
             Prompt::GotoLine { input } => format!("go to line: {input}_"),

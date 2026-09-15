@@ -17,6 +17,7 @@ use editor_core::{
 };
 
 use crate::disk;
+use crate::view;
 
 /// Rows a frame has to repaint.
 pub struct Frame {
@@ -103,6 +104,18 @@ pub struct App {
     next_request_id: u64,
     register: String,
     query: Query,
+    /// Whether the live query paints marks. Escape clears this and keeps the
+    /// pattern, so `Ctrl-N` still works and no marks are left behind.
+    highlight: bool,
+    /// Why the live pattern cannot be searched with, when it cannot. Only a
+    /// regular expression can be invalid.
+    query_error: Option<String>,
+    /// Where find-as-you-type searches from. Fixed when the prompt opens, so
+    /// adding a character narrows the same match instead of walking forward.
+    find_origin: usize,
+    /// Decorations for the visible rows, and what they were computed against.
+    decorations: Vec<(usize, view::Mark)>,
+    decor_key: Option<DecorKey>,
     prompt: Option<Prompt>,
     help: bool,
     status: Option<String>,
@@ -126,6 +139,35 @@ pub struct App {
     /// Shape the last frame was painted for; a change invalidates everything.
     painted: Option<Painted>,
 }
+
+/// What the visible decorations were computed against.
+///
+/// Every input is here, so a mismatch is the whole recompute trigger: nothing
+/// derives them per frame, which is the rule `docs/performance.md` states.
+#[derive(PartialEq, Eq)]
+struct DecorKey {
+    version: u64,
+    selection: Range,
+    caret: usize,
+    top: usize,
+    top_sub: usize,
+    height: usize,
+    width: u16,
+    /// `None` when Escape cleared the marks; the pattern itself stays.
+    query: Option<Query>,
+}
+
+/// Largest slice of the buffer decorations are looked for in.
+///
+/// The viewport bounds the rows, not the bytes: one logical line can be taller
+/// than the screen, and its `line_end` is as far away as the document allows.
+const MAX_DECORATION_WINDOW: usize = 64 * 1024;
+
+/// Longest selection that marks its own other occurrences.
+///
+/// A word, not a paragraph: `highlightSelectionMatches` is for seeing where a
+/// symbol else appears, and a multi-line selection has no siblings to find.
+const MAX_SELECTION_MATCH_BYTES: usize = 128;
 
 /// What the last frame was painted against.
 ///
@@ -173,6 +215,11 @@ impl App {
             next_request_id: 1_000,
             register: String::new(),
             query: Query::literal(""),
+            highlight: false,
+            query_error: None,
+            find_origin: 0,
+            decorations: Vec::new(),
+            decor_key: None,
             prompt: None,
             help: false,
             status: None,
@@ -203,6 +250,32 @@ impl App {
 
     pub fn prompt(&self) -> Option<&Prompt> {
         self.prompt.as_ref()
+    }
+
+    /// The find bar's live modifiers, as the prompt row shows them.
+    ///
+    /// Only what is *on* is named: a row that always said "case:off word:off
+    /// regex:off" would be three words of chrome for the default state.
+    #[must_use]
+    pub fn query_flags(&self) -> String {
+        if let Some(error) = &self.query_error {
+            return format!("  [{error}]");
+        }
+        let mut on = Vec::new();
+        if self.query.case_sensitive {
+            on.push("case");
+        }
+        if self.query.whole_word {
+            on.push("word");
+        }
+        if self.query.regex {
+            on.push("regex");
+        }
+        if on.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", on.join(" "))
+        }
     }
 
     pub fn help_visible(&self) -> bool {
@@ -729,8 +802,142 @@ impl App {
     }
 
     /// Rows to repaint, and whether the grid changed shape.
+    /// The decorations on one 0-based line, for the renderer.
+    #[must_use]
+    pub fn marks_in_line(&self, line: usize) -> Vec<view::Mark> {
+        self.decorations
+            .iter()
+            .filter(|(at, _)| *at == line)
+            .map(|(_, mark)| *mark)
+            .collect()
+    }
+
+    /// Whether `line` holds the caret. The gutter reads brighter there.
+    #[must_use]
+    pub fn is_active_line(&self, line: usize) -> bool {
+        self.document.caret_line_col().line == line
+    }
+
+    /// Recompute the visible decorations when one of their inputs moved, and
+    /// damage every row that gained or lost one.
+    fn refresh_decorations(&mut self, height: usize) {
+        let key = DecorKey {
+            version: self.document.version().0,
+            selection: self.document.selection().range(),
+            caret: self.document.caret(),
+            top: self.top,
+            top_sub: self.top_sub,
+            height,
+            width: self.width,
+            query: (self.highlight && !self.query.is_empty() && self.query_error.is_none())
+                .then(|| self.query.clone()),
+        };
+        if self.decor_key.as_ref() == Some(&key) {
+            return;
+        }
+        let next = self.compute_decorations(&key);
+        if next != self.decorations {
+            let touched: BTreeSet<usize> = self
+                .decorations
+                .iter()
+                .chain(next.iter())
+                .map(|(line, _)| *line)
+                .collect();
+            self.damaged.extend(touched);
+            self.decorations = next;
+        }
+        self.decor_key = Some(key);
+    }
+
+    fn compute_decorations(&self, key: &DecorKey) -> Vec<(usize, view::Mark)> {
+        let text = self.document.text();
+        let start = text.line_start(self.top);
+        let end = text
+            .line_end(self.last_visible_line())
+            .min(start + MAX_DECORATION_WINDOW)
+            .min(text.len());
+        let window = Range::new(start, end.max(start));
+
+        let mut ranges: Vec<(Range, view::Decoration)> = Vec::new();
+        // The live query wins the row: while find is open, an unrelated word
+        // under the caret marking its siblings would read as a second result.
+        let occurrences = match &key.query {
+            Some(query) => editor_core::find_in(text, query, window),
+            None => self.selection_matches(window),
+        };
+        ranges.extend(
+            occurrences
+                .into_iter()
+                .map(|range| (range, view::Decoration::Match)),
+        );
+        if let Some((open, close)) =
+            editor_core::brackets::matching(text, &self.syntax, self.document.caret())
+        {
+            for at in [open, close] {
+                if at >= window.start && at < window.end {
+                    ranges.push((Range::new(at, at + 1), view::Decoration::Bracket));
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for (range, what) in ranges {
+            let first = text.line_of_offset(range.start);
+            let last = text.line_of_offset(range.end.saturating_sub(1).max(range.start));
+            for line in first..=last {
+                let line_start = text.line_start(line);
+                let line_end = text.line_end(line);
+                let from = range.start.max(line_start) - line_start;
+                let to = range.end.min(line_end) - line_start;
+                if to > from {
+                    out.push((line, (from, to, what)));
+                }
+            }
+        }
+        out.sort_unstable_by_key(|(line, (from, _, _))| (*line, *from));
+        out
+    }
+
+    /// Other literal occurrences of a short, single-line selection.
+    ///
+    /// CodeMirror's `highlightSelectionMatches`: select a symbol and see where
+    /// else it is. The selection's own range is left out — it already reads as
+    /// selected, and marking it too would say something the reverse video does
+    /// not.
+    fn selection_matches(&self, window: Range) -> Vec<Range> {
+        let selection = self.document.selection();
+        if selection.is_empty() {
+            return Vec::new();
+        }
+        let range = selection.range();
+        let text = self.document.text();
+        if range.end - range.start > MAX_SELECTION_MATCH_BYTES
+            || text.line_of_offset(range.start) != text.line_of_offset(range.end)
+        {
+            return Vec::new();
+        }
+        let needle = &text.as_str()[range.start..range.end];
+        if needle.trim().is_empty() {
+            return Vec::new();
+        }
+        // Literal, whatever the find bar is set to: this is "where else does
+        // this text appear", and reading a selected `a.c` as a pattern would
+        // mark things the person never asked about.
+        let query = Query {
+            pattern: needle.to_string(),
+            case_sensitive: self.query.case_sensitive,
+            whole_word: false,
+            regex: false,
+        };
+        editor_core::find_in(text, &query, window)
+            .into_iter()
+            .filter(|found| *found != range)
+            .collect()
+    }
+
     pub fn take_frame(&mut self) -> Frame {
         let height = self.content_height();
+        self.refresh_decorations(height);
         let rows_per_line = if self.wrap {
             self.visible_line_rows(height)
         } else {
@@ -962,11 +1169,15 @@ impl App {
             EditorAction::Save => self.save(),
             EditorAction::Close => self.request_close(),
             EditorAction::OpenFind => {
+                self.find_origin = self.document.selection().range().start;
+                self.highlight = true;
                 self.prompt = Some(Prompt::Find {
                     input: self.query.pattern.clone(),
                 });
             }
             EditorAction::OpenReplace => {
+                self.find_origin = self.document.selection().range().start;
+                self.highlight = true;
                 self.prompt = Some(Prompt::Replace {
                     find: self.query.pattern.clone(),
                     with: String::new(),
@@ -994,14 +1205,20 @@ impl App {
             }
             EditorAction::ToggleCase => {
                 self.query.case_sensitive = !self.query.case_sensitive;
-                self.status = Some(format!(
-                    "match case: {}",
-                    if self.query.case_sensitive {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                ));
+                self.status = Some(format!("match case: {}", on_off(self.query.case_sensitive)));
+            }
+            EditorAction::ToggleWholeWord => {
+                self.query.whole_word = !self.query.whole_word;
+                self.set_query(&self.query.pattern.clone());
+                self.status = Some(format!("whole word: {}", on_off(self.query.whole_word)));
+            }
+            EditorAction::ToggleRegex => {
+                self.query.regex = !self.query.regex;
+                self.set_query(&self.query.pattern.clone());
+                self.status = Some(match &self.query_error {
+                    Some(error) => format!("regex: on — {error}"),
+                    None => format!("regex: {}", on_off(self.query.regex)),
+                });
             }
             EditorAction::Cancel => {
                 self.document.break_undo_group();
@@ -1047,15 +1264,19 @@ impl App {
                     self.set_query(&input);
                     self.find(true);
                 }
-                KeyCode::Esc => {}
+                // Closing leaves no marks behind; the pattern stays, so
+                // `Ctrl-N` still steps through what was being looked for.
+                KeyCode::Esc => self.highlight = false,
                 KeyCode::Backspace => {
                     input.pop();
                     self.set_query(&input);
+                    self.find_as_you_type();
                     self.prompt = Some(Prompt::Find { input });
                 }
                 KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     input.push(character);
                     self.set_query(&input);
+                    self.find_as_you_type();
                     self.prompt = Some(Prompt::Find { input });
                 }
                 _ => self.prompt = Some(Prompt::Find { input }),
@@ -1067,7 +1288,20 @@ impl App {
             } => {
                 let mut keep = true;
                 match key.code {
+                    // Enter replaces *this* match and moves to the next, so a
+                    // person can walk a file deciding one at a time; Ctrl-R
+                    // rewrites the rest in one go and closes the prompt.
                     KeyCode::Enter => {
+                        self.set_query(&find);
+                        self.run(Command::ReplaceMatch {
+                            query: self.query.clone(),
+                            replacement: with.clone(),
+                        });
+                        if self.status.is_none() {
+                            self.find(true);
+                        }
+                    }
+                    KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.set_query(&find);
                         self.run(Command::ReplaceAll {
                             query: self.query.clone(),
@@ -1075,13 +1309,18 @@ impl App {
                         });
                         keep = false;
                     }
-                    KeyCode::Esc => keep = false,
+                    KeyCode::Esc => {
+                        self.highlight = false;
+                        keep = false;
+                    }
                     KeyCode::Tab => editing_replacement = !editing_replacement,
                     KeyCode::Backspace => {
                         if editing_replacement {
                             with.pop();
                         } else {
                             find.pop();
+                            self.set_query(&find);
+                            self.find_as_you_type();
                         }
                     }
                     KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1089,6 +1328,8 @@ impl App {
                             with.push(character);
                         } else {
                             find.push(character);
+                            self.set_query(&find);
+                            self.find_as_you_type();
                         }
                     }
                     _ => {}
@@ -1105,13 +1346,14 @@ impl App {
     }
 
     fn set_query(&mut self, pattern: &str) {
-        let case_sensitive = self.query.case_sensitive;
-        let whole_word = self.query.whole_word;
         self.query = Query {
             pattern: pattern.to_string(),
-            case_sensitive,
-            whole_word,
+            ..self.query.clone()
         };
+        // Reported as the pattern changes, not at Enter: a half-typed `(` is
+        // invalid on the way to being valid, and saying so beats a find bar
+        // that silently finds nothing.
+        self.query_error = self.query.validate().err().map(|error| error.to_string());
     }
 
     fn find(&mut self, forward: bool) {
@@ -1119,6 +1361,11 @@ impl App {
             self.status = Some("nothing to find".to_string());
             return;
         }
+        if let Some(error) = &self.query_error {
+            self.status = Some(error.clone());
+            return;
+        }
+        self.highlight = true;
         let command = if forward {
             Command::FindNext(self.query.clone())
         } else {
@@ -1126,18 +1373,55 @@ impl App {
         };
         self.run(command);
         if self.status.is_none() {
-            let total = editor_core::count_matches(
-                self.document.text(),
-                &self.query,
-                editor_core::limits::MAX_SEARCH_RESULTS + 1,
-            );
-            let shown = total.min(editor_core::limits::MAX_SEARCH_RESULTS);
-            self.status = Some(if total > shown {
-                format!("{}: more than {shown} matches", self.query.pattern)
-            } else {
-                format!("{}: {shown} matches", self.query.pattern)
-            });
+            self.status = Some(self.match_tally());
         }
+    }
+
+    /// `pattern: 3/41`, or what it can say when there are more than it counted.
+    ///
+    /// Counted here and not on every caret move: this is a discrete gesture,
+    /// and a tally on each arrow key would be a document scan on the movement
+    /// rung.
+    fn match_tally(&self) -> String {
+        let cap = editor_core::limits::MAX_SEARCH_RESULTS;
+        let text = self.document.text();
+        let total = editor_core::count_matches(text, &self.query, cap + 1);
+        let here = self.document.selection().range().start;
+        let before = editor_core::count_matches_before(text, &self.query, here, cap + 1);
+        let index = (before + 1).min(total.max(1));
+        if total > cap {
+            format!("{}: {index} of more than {cap}", self.query.pattern)
+        } else {
+            format!("{}: {index}/{total}", self.query.pattern)
+        }
+    }
+
+    /// Move to the first match at or after where the prompt opened.
+    ///
+    /// The origin is fixed so that narrowing a query re-searches the same
+    /// place rather than walking forward one match per keystroke — CodeMirror's
+    /// `openSearchPanel` behaviour. A query with no match leaves the caret
+    /// where it is: the person is still typing it.
+    fn find_as_you_type(&mut self) {
+        self.highlight = true;
+        if self.query.is_empty() {
+            self.status = None;
+            return;
+        }
+        if let Some(error) = &self.query_error {
+            self.status = Some(error.clone());
+            return;
+        }
+        let Some(found) =
+            editor_core::find_next(self.document.text(), &self.query, self.find_origin)
+        else {
+            self.status = Some(format!("{}: no matches", self.query.pattern));
+            return;
+        };
+        self.document
+            .set_selection(Selection::new(found.start, found.end));
+        self.ensure_visible();
+        self.status = None;
     }
 
     fn save(&mut self) {
@@ -1380,6 +1664,8 @@ impl App {
             (KeyCode::Char('r'), true, _) => Action::Editor(EditorAction::OpenReplace),
             (KeyCode::Char('g'), true, _) => Action::Editor(EditorAction::OpenGotoLine),
             (KeyCode::Char('t'), true, _) => Action::Editor(EditorAction::ToggleCase),
+            (KeyCode::Char('w'), true, _) => Action::Editor(EditorAction::ToggleWholeWord),
+            (KeyCode::Char('e'), true, _) => Action::Editor(EditorAction::ToggleRegex),
             // Alt, not Ctrl: Ctrl-N and Ctrl-B are already the find bar's.
             (KeyCode::Char('n'), _, true) => Action::Editor(EditorAction::NextChange),
             (KeyCode::Char('p'), _, true) => Action::Editor(EditorAction::PreviousChange),
@@ -1454,6 +1740,8 @@ enum EditorAction {
     FindPrevious,
     ToggleHelp,
     ToggleCase,
+    ToggleWholeWord,
+    ToggleRegex,
     PasteRegister,
     /// Jump to the next / previous changed block in the gutter.
     NextChange,
@@ -1508,6 +1796,14 @@ fn describe(refusal: Refusal) -> String {
     }
 }
 
+fn on_off(value: bool) -> &'static str {
+    if value {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 /// Keys the help overlay lists, in the order it shows them.
 pub const HELP: &[(&str, &str)] = &[
     ("arrows, Home/End, PgUp/PgDn", "move; hold Shift to select"),
@@ -1522,8 +1818,14 @@ pub const HELP: &[(&str, &str)] = &[
     ("Ctrl-F", "find; Enter searches, Esc closes"),
     ("Ctrl-N / F3", "find next"),
     ("Ctrl-B / Shift-F3", "find previous"),
-    ("Ctrl-T", "toggle match case"),
-    ("Ctrl-R", "replace all; Tab switches field"),
+    (
+        "Ctrl-T / Ctrl-W / Ctrl-E",
+        "toggle match case / whole word / regex",
+    ),
+    (
+        "Ctrl-R",
+        "replace; Tab switches field, Enter one, Ctrl-R all",
+    ),
     ("Ctrl-G", "go to line"),
     ("Ctrl-Q", "close; unsaved changes ask first"),
     ("F1", "this help"),
@@ -1675,29 +1977,155 @@ mod tests {
         assert_eq!(app.status(), Some("read-only: editing is off"));
     }
 
+    /// Typing in the find bar moves to a match as it goes, and Enter steps to
+    /// the next one — the same two gestures CodeMirror's search panel has.
     #[test]
-    fn find_moves_the_caret_and_counts_the_matches() {
+    fn find_selects_as_you_type_and_enter_steps_on() {
         let mut app = app("alpha beta alpha", false);
+        app.resize(40, 10);
         app.handle_key(control('f'));
-        for character in "alpha".chars() {
+        for character in "alp".chars() {
             app.handle_key(key(KeyCode::Char(character)));
         }
+        assert_eq!(
+            app.document().selection().range(),
+            Range::new(0, 3),
+            "the first match, without pressing Enter"
+        );
+        app.handle_key(key(KeyCode::Char('h')));
+        app.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            app.document().selection().range(),
+            Range::new(0, 5),
+            "narrowing re-searches the same place instead of walking forward"
+        );
+
         app.handle_key(key(KeyCode::Enter));
-        assert_eq!(app.document().selection().range(), Range::new(0, 5));
-        assert_eq!(app.status(), Some("alpha: 2 matches"));
+        assert_eq!(app.document().selection().range(), Range::new(11, 16));
+        assert_eq!(app.status(), Some("alpha: 2/2"));
         assert!(app.prompt().is_none());
     }
 
+    /// The counter is `n of m`, so a person can tell the third hit of forty
+    /// from the thirtieth.
     #[test]
-    fn replace_all_runs_from_the_prompt() {
+    fn the_status_counts_which_match_the_caret_is_on() {
+        let mut app = app("x x x x", false);
+        app.resize(40, 10);
+        app.handle_key(control('f'));
+        app.handle_key(key(KeyCode::Char('x')));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.status(), Some("x: 2/4"));
+        app.handle_key(control('n'));
+        assert_eq!(app.status(), Some("x: 3/4"));
+    }
+
+    /// Enter replaces the match under the caret and moves on; Ctrl-R is the one
+    /// that rewrites the rest.
+    #[test]
+    fn replace_takes_one_match_on_enter_and_the_rest_on_control_r() {
         let mut app = app("a a a", false);
+        app.resize(40, 10);
         app.handle_key(control('r'));
         app.handle_key(key(KeyCode::Char('a')));
         app.handle_key(key(KeyCode::Tab));
         app.handle_key(key(KeyCode::Char('b')));
         app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.document().as_str(), "b a a");
+        assert!(app.prompt().is_some(), "the prompt stays for the next one");
+
+        app.handle_key(control('r'));
         assert_eq!(app.document().as_str(), "b b b");
-        assert_eq!(app.status(), Some("replaced 3"));
+        assert_eq!(app.status(), Some("replaced 2"));
+        assert!(app.prompt().is_none());
+    }
+
+    /// Every visible hit is marked, not just the one the caret is on.
+    #[test]
+    fn find_marks_every_visible_match() {
+        let mut app = app("cat dog cat\ncat\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('f'));
+        app.handle_key(key(KeyCode::Char('c')));
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('t')));
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![
+                (0, 3, view::Decoration::Match),
+                (8, 11, view::Decoration::Match)
+            ]
+        );
+        assert_eq!(app.marks_in_line(1), vec![(0, 3, view::Decoration::Match)]);
+    }
+
+    /// Escape closes the bar and takes the query's marks with it. What is left
+    /// is the found match *as a selection*, which marks its siblings the way
+    /// any selection does — and the pattern stays, so `Ctrl-N` steps on.
+    #[test]
+    fn escape_clears_the_query_marks_and_keeps_the_pattern() {
+        let mut app = app("cat cat\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('f'));
+        for character in "cat".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![
+                (0, 3, view::Decoration::Match),
+                (4, 7, view::Decoration::Match)
+            ],
+            "the live query marks every hit, the caret's included"
+        );
+
+        app.handle_key(key(KeyCode::Esc));
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![(4, 7, view::Decoration::Match)],
+            "no orphan mark under the caret; the sibling is the selection's"
+        );
+
+        app.handle_key(control('n'));
+        assert_eq!(app.status(), Some("cat: 2/2"));
+    }
+
+    /// A selected symbol marks where else it appears, and never itself.
+    #[test]
+    fn a_selection_marks_its_other_occurrences() {
+        let mut app = app("total = total + 1\n", false);
+        app.resize(40, 10);
+        for _ in 0..5 {
+            app.handle_key(shifted(KeyCode::Right));
+        }
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![(8, 13, view::Decoration::Match)],
+            "the other occurrence, not the selection itself"
+        );
+    }
+
+    /// The caret next to a bracket marks the one that closes it, and a brace in
+    /// a string is text rather than a pair.
+    #[test]
+    fn the_caret_marks_the_bracket_pair_it_is_next_to() {
+        let mut app = app("fn f(a: u8) {}\n", false);
+        app.resize(40, 10);
+        for _ in 0..4 {
+            app.handle_key(key(KeyCode::Right));
+        }
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![
+                (4, 5, view::Decoration::Bracket),
+                (10, 11, view::Decoration::Bracket)
+            ]
+        );
     }
 
     fn marked(app: &mut App, lines: &[(u32, WireMarkKind)]) {
@@ -2461,5 +2889,57 @@ mod tests {
         app.resize(40, 10);
         app.handle_mouse(mouse(MouseEventKind::ScrollUp, 0, 0, KeyModifiers::NONE));
         assert_eq!(app.top(), 0);
+    }
+
+    /// Ctrl-E reads the pattern as a regular expression; the marks and the
+    /// counter follow, and a half-typed group says so instead of finding
+    /// nothing in silence.
+    #[test]
+    fn a_regular_expression_find_marks_and_counts() {
+        let mut app = app("fn one() {}\nfn two() {}\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('e'));
+        app.handle_key(control('f'));
+        for character in "fn .".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        app.take_frame();
+        assert_eq!(app.marks_in_line(0), vec![(0, 4, view::Decoration::Match)]);
+        assert_eq!(app.marks_in_line(1), vec![(0, 4, view::Decoration::Match)]);
+
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.status(), Some("fn .: 2/2"));
+    }
+
+    #[test]
+    fn an_unfinished_pattern_reports_instead_of_searching() {
+        let mut app = app("abc\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('e'));
+        app.handle_key(control('f'));
+        app.handle_key(key(KeyCode::Char('(')));
+        assert!(
+            app.status().is_some_and(|text| text.contains("unclosed")),
+            "said nothing about the pattern: {:?}",
+            app.status()
+        );
+        app.take_frame();
+        assert!(
+            app.marks_in_line(0).is_empty(),
+            "no marks from a bad pattern"
+        );
+    }
+
+    /// The flags a find is running with are on the prompt row, and only the
+    /// ones that are on.
+    #[test]
+    fn the_prompt_names_the_flags_that_are_on() {
+        let mut app = app("abc\n", false);
+        assert_eq!(app.query_flags(), "  [case]");
+        app.handle_key(control('t'));
+        assert_eq!(app.query_flags(), "");
+        app.handle_key(control('w'));
+        app.handle_key(control('e'));
+        assert_eq!(app.query_flags(), "  [word regex]");
     }
 }

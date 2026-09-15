@@ -26,3 +26,16 @@ pub const MAX_SEARCH_RESULTS: usize = 5_000;
 /// Matches one replace-all may rewrite. Above this the whole replacement is
 /// refused, because half a replace-all is not a replace-all.
 pub const MAX_REPLACE_MATCHES: usize = 200_000;
+
+/// Longest find pattern, literal or regular expression.
+///
+/// Clamped before the pattern reaches the engine: a compiled program's size is
+/// a function of its source, and this is the input a person can grow without
+/// bound by holding a key down.
+pub const MAX_PATTERN_BYTES: usize = 1024;
+
+/// Largest compiled regular-expression program, in bytes.
+///
+/// `(a{1000}){1000}` is a short pattern that names a very large program;
+/// `regex` refuses past this instead of allocating it.
+pub const MAX_REGEX_SIZE: usize = 1024 * 1024;

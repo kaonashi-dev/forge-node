@@ -16,6 +16,35 @@ pub struct Part {
     /// The syntax scope these cells carry. `Plain` when the grammar is unknown
     /// or has nothing to say about them.
     pub scope: Scope,
+    pub decoration: Decoration,
+}
+
+/// What a run carries on top of its colour and the selection.
+///
+/// One slot and not a set: a cell is a search hit or a bracket, never both, and
+/// a terminal has few enough attributes that stacking them would stop reading
+/// as either.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Decoration {
+    #[default]
+    None,
+    /// A hit for the live query, or another occurrence of the selected word.
+    Match,
+    /// One half of the pair the caret is next to.
+    Bracket,
+}
+
+/// A byte range inside one line and what it carries.
+pub type Mark = (usize, usize, Decoration);
+
+/// Everything a row needs besides its text and its window.
+#[derive(Clone, Copy, Default)]
+pub struct RowDecor<'a> {
+    /// Byte range of the selection within this line, if it has one.
+    pub selected: Option<(usize, usize)>,
+    pub scopes: &'a [Span],
+    /// Ascending, non-overlapping byte ranges within this line.
+    pub marks: &'a [Mark],
 }
 
 /// The printable stand-in for a control character.
@@ -36,28 +65,36 @@ fn control_glyph(ch: char) -> char {
 /// A grapheme straddling an edge becomes spaces: half a wide character cannot
 /// be drawn, and dropping the cells would shift every column after it.
 #[must_use]
-pub fn window_parts(
-    line: &str,
-    left: usize,
-    width: usize,
-    selected: Option<(usize, usize)>,
-    scopes: &[Span],
-) -> Vec<Part> {
+pub fn window_parts(line: &str, left: usize, width: usize, decor: RowDecor<'_>) -> Vec<Part> {
+    let RowDecor {
+        selected,
+        scopes,
+        marks,
+    } = decor;
     let mut parts: Vec<Part> = Vec::new();
     let mut cell = 0;
     let mut produced = 0;
 
-    // Runs merge on selection *and* scope: a colour change starts a new part
-    // the same way the selection edge does, so the painter never has to split
-    // a string it was handed.
-    let push = |text: &str, selected: bool, scope: Scope, parts: &mut Vec<Part>| match parts
-        .last_mut()
-    {
-        Some(last) if last.selected == selected && last.scope == scope => last.text.push_str(text),
+    // Runs merge on selection, scope *and* decoration: any of the three
+    // changing starts a new part, so the painter never has to split a string it
+    // was handed.
+    let push = |text: &str,
+                selected: bool,
+                scope: Scope,
+                decoration: Decoration,
+                parts: &mut Vec<Part>| match parts.last_mut() {
+        Some(last)
+            if last.selected == selected
+                && last.scope == scope
+                && last.decoration == decoration =>
+        {
+            last.text.push_str(text);
+        }
         _ => parts.push(Part {
             text: text.to_string(),
             selected,
             scope,
+            decoration,
         }),
     };
 
@@ -73,22 +110,35 @@ pub fn window_parts(
         }
         let inside = selected.is_some_and(|(from, to)| offset >= from && offset < to);
         let scope = scope_of(scopes, offset);
+        let decoration = mark_of(marks, offset);
 
         if start < left {
             let pad = (cell - left).min(width - produced);
-            push(&" ".repeat(pad), inside, scope, &mut parts);
+            push(&" ".repeat(pad), inside, scope, decoration, &mut parts);
             produced += pad;
         } else if produced + w > width {
-            push(&" ".repeat(width - produced), inside, scope, &mut parts);
+            push(
+                &" ".repeat(width - produced),
+                inside,
+                scope,
+                decoration,
+                &mut parts,
+            );
             produced = width;
         } else if grapheme == "\t" {
-            push(&" ".repeat(w), inside, scope, &mut parts);
+            push(&" ".repeat(w), inside, scope, decoration, &mut parts);
             produced += w;
         } else if let Some(ch) = single_control(grapheme) {
-            push(&control_glyph(ch).to_string(), inside, scope, &mut parts);
+            push(
+                &control_glyph(ch).to_string(),
+                inside,
+                scope,
+                decoration,
+                &mut parts,
+            );
             produced += 1;
         } else {
-            push(grapheme, inside, scope, &mut parts);
+            push(grapheme, inside, scope, decoration, &mut parts);
             produced += w;
         }
     }
@@ -96,10 +146,18 @@ pub fn window_parts(
     // the trailing cell is padded when the range reaches past the last grapheme.
     if let Some((from, to)) = selected {
         if to > line.len() && from <= line.len() && produced < width {
-            push(" ", true, Scope::Plain, &mut parts);
+            push(" ", true, Scope::Plain, Decoration::None, &mut parts);
         }
     }
     parts
+}
+
+/// The decoration covering a byte offset, `None` when none does.
+fn mark_of(marks: &[Mark], offset: usize) -> Decoration {
+    marks
+        .iter()
+        .find(|(from, to, _)| offset >= *from && offset < *to)
+        .map_or(Decoration::None, |(_, _, what)| *what)
 }
 
 /// The scope covering a byte offset, `Plain` when none does.
@@ -113,7 +171,7 @@ fn scope_of(scopes: &[Span], offset: usize) -> Scope {
 /// The cells `[left, left + width)` of `line`, with no highlighting.
 #[must_use]
 pub fn cell_window(line: &str, left: usize, width: usize) -> String {
-    window_parts(line, left, width, None, &[])
+    window_parts(line, left, width, RowDecor::default())
         .into_iter()
         .map(|part| part.text)
         .collect()
@@ -163,7 +221,15 @@ mod tests {
 
     #[test]
     fn a_selection_splits_the_row_into_runs() {
-        let parts = window_parts("abcdef", 0, 6, Some((2, 4)), &[]);
+        let parts = window_parts(
+            "abcdef",
+            0,
+            6,
+            RowDecor {
+                selected: Some((2, 4)),
+                ..RowDecor::default()
+            },
+        );
         assert_eq!(
             parts,
             vec![
@@ -171,16 +237,19 @@ mod tests {
                     text: "ab".to_string(),
                     selected: false,
                     scope: Scope::Plain,
+                    decoration: Decoration::None,
                 },
                 Part {
                     text: "cd".to_string(),
                     selected: true,
                     scope: Scope::Plain,
+                    decoration: Decoration::None,
                 },
                 Part {
                     text: "ef".to_string(),
                     selected: false,
                     scope: Scope::Plain,
+                    decoration: Decoration::None,
                 },
             ]
         );
@@ -195,13 +264,30 @@ mod tests {
             end: 2,
             scope: Scope::Keyword,
         }];
-        let plain = window_parts("fn main", 0, 7, None, &scopes);
+        let plain = window_parts(
+            "fn main",
+            0,
+            7,
+            RowDecor {
+                scopes: &scopes,
+                ..RowDecor::default()
+            },
+        );
         assert_eq!(plain.len(), 2);
         assert_eq!(plain[0].text, "fn");
         assert_eq!(plain[0].scope, Scope::Keyword);
         assert_eq!(plain[1].scope, Scope::Plain);
 
-        let split = window_parts("fn main", 0, 7, Some((1, 4)), &scopes);
+        let split = window_parts(
+            "fn main",
+            0,
+            7,
+            RowDecor {
+                selected: Some((1, 4)),
+                scopes: &scopes,
+                ..RowDecor::default()
+            },
+        );
         let runs: Vec<_> = split
             .iter()
             .map(|part| (part.text.as_str(), part.selected, part.scope))
@@ -219,7 +305,15 @@ mod tests {
 
     #[test]
     fn a_selection_that_swallows_the_line_break_shows_one_trailing_cell() {
-        let parts = window_parts("ab", 0, 8, Some((0, 3)), &[]);
+        let parts = window_parts(
+            "ab",
+            0,
+            8,
+            RowDecor {
+                selected: Some((0, 3)),
+                ..RowDecor::default()
+            },
+        );
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].text, "ab ");
         assert!(parts[0].selected);

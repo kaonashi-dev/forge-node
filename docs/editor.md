@@ -148,8 +148,8 @@ living with no window pill of its own.
 | Ctrl-C / Ctrl-X / Ctrl-V | copy / cut / paste through an internal register |
 | Ctrl-A / Ctrl-L / Ctrl-K | select all / select line / delete line |
 | Ctrl-F, Ctrl-N, Ctrl-B | find, next match, previous match |
-| Ctrl-T | toggle match case |
-| Ctrl-R | replace all (Tab switches field, Enter applies) |
+| Ctrl-T / Ctrl-W / Ctrl-E | toggle match case / whole word / regular expression |
+| Ctrl-R | replace (Tab switches field, **Enter** replaces this match, **Ctrl-R** replaces the rest) |
 | Ctrl-G | go to line |
 | Alt-N / Alt-P | next / previous changed block (Ctrl-N and Ctrl-B are the find bar's) |
 | Ctrl-Q | close; unsaved changes ask save / discard / cancel |
@@ -157,7 +157,26 @@ living with no window pill of its own.
 | bracketed paste | inserts the pasted text as one undo step |
 
 `Ctrl-C` copies rather than quitting, and `Esc` closes a prompt without
-touching the document. `--read-only` refuses every edit at the transaction
+touching the document — it also takes the find marks with it while keeping the
+pattern, so `Ctrl-N` still steps through what was being looked for.
+
+**Find works as you type.** Each character re-searches from where the bar was
+opened, so narrowing a query lands on the same match instead of walking forward
+one hit per keystroke; Enter steps to the next. Every hit in view is underlined,
+not just the one the caret is on, and the status says `pattern: 3/41` — counted
+at the gesture and never on a caret move, which would be a document scan on the
+movement rung. The counter lives in the editor's own prompt row rather than the
+GUI header: it is on screen exactly when it is relevant, and a second copy in
+the chrome would be stale the moment Escape closed the bar. With the bar closed,
+a short single-line selection underlines its *other* occurrences
+(`highlightSelectionMatches`), and that lookup stays literal even when find is
+in regex mode: a selected `a.c` means `a.c`.
+
+**On a Mac the platform chords reach the editor.** `editorChords.ts` maps ⌘S/C/X,
+⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys. ⌘G is
+find-next and not "go to line" — a Mac user pressing it after a search wants the
+next match — so go-to-line is ⌥⌘L. ⌘V is deliberately unclaimed: the WebView's
+`paste` event is what carries the clipboard into the pane. `--read-only` refuses every edit at the transaction
 entry and says so instead of silently dropping keys.
 
 **The mouse moves the caret.** A left click places the caret; a Shift-click
@@ -189,12 +208,52 @@ HTML context menu).
   replace-all scans past that and either rewrites every match or refuses and
   rewrites none.
 - **Rows, not frames.** A keystroke damages one line and the renderer repaints
-  one row plus the status line.
+  one row plus the status line — wrapped or not. With wrap on, a frame compares
+  each visible line's row count against what is already on screen: a line that
+  still takes the same rows repaints only its own, and the first line whose
+  height changed reflows the row↔line map, so everything under it repaints and
+  nothing over it does.
+- **A clear is a width change, and nothing else.** A scroll, and a viewport that
+  only grew taller, repaint their rows without blanking first: a client reading
+  the delta between the clear and the rows would paint the gap as a flash.
+  `neither_a_scroll_nor_a_keystroke_blanks_the_screen` reads the raw PTY stream
+  for `CSI 2J` and fails on it.
+- **One paint per frame under a burst.** The loop paints when the input has
+  caught up or 8 ms have passed, whichever comes first — the same
+  `daemon::terminal::FRAME` floor an attached terminal has. A key repeat that
+  lands ten events in a millisecond is one frame on the wire.
+- **Colour is re-scanned from the edit, not from the top.** A mutation restarts
+  the scan on the nearest line above it that the previous scan passed at top
+  level, and stops on the first line boundary below it that both scans agree is
+  top level; a span is a column pair inside its own line, so the tail is reused
+  as it stands. Opening a block comment still recolours what is under it,
+  because that is the case where the two scans do not agree again until the
+  comment closes.
+- **Decorations are viewport-bounded.** Search marks and the bracket pair are
+  looked for inside the visible slice (capped at 64 KiB, because one logical
+  line can be taller than the screen), recomputed when one of their inputs moves
+  and never per frame. The bracket scan is capped at 64 KiB either side, so an
+  unmatched brace at the top of a file costs a bounded walk on a caret move
+  rather than the whole buffer. A brace inside a string or a comment is text:
+  the grammar already said which bytes those are.
+- **The three decorations do not collide.** The selection owns reverse video, a
+  search hit is underlined, a bracket is underlined and bold, and the caret's
+  line number is bold in the default foreground rather than the gutter grey.
+  None of them picks a colour, so none of them fights the terminal's theme.
 
 ## Limits, and what replaces them
 
-- Regular-expression search is not implemented: it needs a dependency this
-  workspace has not approved. Find is literal, with match-case and whole-word.
+- Regular-expression search is opt-in (`Ctrl-E`) and runs on `regex`, whose
+  guarantee is linear time in the haystack: there is no catastrophic
+  backtracking to time out against, so the budgets sit on the *pattern*, which
+  is the input a person can grow without bound — 1 KiB of source and a 1 MiB
+  compiled program, both refused before the allocation. A pattern that does not
+  compile reports why and matches nothing, because one is invalid on the way to
+  being valid while it is still being typed. `.` stops at a line break, an empty
+  match is dropped (it would be returned once per byte and never advance a
+  find-next), and the compiled program is cached on the query, so
+  find-as-you-type pays one compile per edit of the pattern rather than one per
+  scan.
 - One buffer per process. No splits, no Vim profile. The mouse places the
   caret, extends a selection and scrolls, but not more than that.
 - Long lines wrap under the daemon and scroll sideways standalone. Integrated,
@@ -203,9 +262,12 @@ HTML context menu).
   running off the edge; the caret, a click and the wheel all follow the wrapped
   rows. Standalone, where the terminal can be widened and code reads better
   unwrapped, the view scrolls horizontally to follow the caret instead. The
-  scroll anchor is a whole line, so a single logical line taller than the
-  viewport cannot be scrolled through within itself — fine for prose, where a
-  line wraps to a few rows, and the case a future sub-row anchor would cover.
+  scroll anchor is a *row*, not a line: a logical line taller than the viewport
+  is scrolled through within itself, and a wheel notch never overshoots a
+  screenful of wrapped text. A caret exactly on a wrap boundary — a line whose
+  width is an exact multiple of the text column, caret at its end — has no row
+  of its own and is not painted; it is the one position the cell grid cannot
+  name.
 - The save is optimistic, not exclusive: it compares the revision it loaded
   against the disk before writing and refuses once when they differ, which
   catches an agent that already wrote. It is not a compare-and-swap against a
@@ -221,6 +283,13 @@ either way, and the cell rules want no intermediate buffer to diff. `ratatui`
 stays a candidate if layout or widgets earn their cost in a measurement.
 crossterm adds a second `signal-hook` (0.3 against alacritty's 0.4) to the
 workspace; both are small and permissively licensed.
+
+`regex` was taken over `regex-automata` for find. It was already in the graph
+through other crates, so the direct edge adds no node, no license and no
+advisory surface, and it brings the replacement side (captures, `$1`) that the
+lower-level crate would have meant hand-rolling. Default features are on because
+`\w` and `\b` are what a find bar's patterns are made of and both need the
+Unicode tables.
 
 A rope is still a candidate for the core's storage. The current `Text` keeps
 one `String` plus a line index it shifts rather than rescans, which is enough
