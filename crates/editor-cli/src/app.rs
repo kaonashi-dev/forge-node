@@ -83,6 +83,9 @@ pub struct App {
     /// Type an opener and get its partner. On by default, off for the person
     /// who would rather type both, and off while a macro-ish paste runs.
     close_brackets: bool,
+    /// Draw a placeholder where a tab or a no-break space is. Off by default:
+    /// it is a debugging view, not a reading one.
+    special_chars: bool,
     /// Gutter marks by 1-based line, as the daemon last computed them. Empty
     /// standalone: this editor never runs git of its own.
     marks: BTreeMap<usize, WireMarkKind>,
@@ -127,6 +130,8 @@ pub struct App {
     decor_key: Option<DecorKey>,
     /// The overview ruler's column, one entry per screen row.
     ruler: Vec<Option<RulerMark>>,
+    /// The completion list, while one is open.
+    completion: Option<Completion>,
     prompt: Option<Prompt>,
     help: bool,
     status: Option<String>,
@@ -149,6 +154,15 @@ pub struct App {
     damage_all: bool,
     /// Shape the last frame was painted for; a change invalidates everything.
     painted: Option<Painted>,
+}
+
+/// A completion list and which candidate is highlighted.
+///
+/// Opened by a gesture and never on its own: a list that appeared while a
+/// person was typing would take the Enter they meant for a newline.
+pub struct Completion {
+    pub candidates: editor_core::complete::Completions,
+    pub selected: usize,
 }
 
 /// What one row of the overview ruler shows.
@@ -244,6 +258,7 @@ impl App {
             integrated: false,
             grammar: Grammar::None,
             close_brackets: true,
+            special_chars: false,
             marks: BTreeMap::new(),
             folded: BTreeSet::new(),
             regions: Vec::new(),
@@ -267,6 +282,7 @@ impl App {
             decorations: Vec::new(),
             decor_key: None,
             ruler: Vec::new(),
+            completion: None,
             prompt: None,
             help: false,
             status: None,
@@ -501,6 +517,68 @@ impl App {
         (self.width as usize)
             .saturating_sub(self.gutter_width())
             .saturating_sub(ruler)
+    }
+
+    /// The open completion list, if there is one.
+    #[must_use]
+    pub fn completion(&self) -> Option<&Completion> {
+        self.completion.as_ref()
+    }
+
+    /// Offer completions for the word at the caret.
+    fn open_completion(&mut self) {
+        let caret = self.document.caret();
+        match editor_core::complete::at(self.document.text(), caret) {
+            Some(candidates) => {
+                self.completion = Some(Completion {
+                    candidates,
+                    selected: 0,
+                });
+                self.damage_all = true;
+            }
+            None => self.status = Some("no completions".to_string()),
+        }
+    }
+
+    /// Put the highlighted candidate in, replacing the prefix.
+    ///
+    /// One transaction: the prefix and the rest of the word are one edit, so
+    /// undo takes the completion and leaves what was typed.
+    fn accept_completion(&mut self) {
+        let Some(open) = self.completion.take() else {
+            return;
+        };
+        self.damage_all = true;
+        let Some(word) = open.candidates.words.get(open.selected) else {
+            return;
+        };
+        let range = Range::new(open.candidates.from, open.candidates.to);
+        self.document
+            .set_selection(Selection::new(range.start, range.end));
+        self.run(Command::InsertText(word.clone()));
+    }
+
+    /// Move the highlight, wrapping at both ends.
+    fn step_completion(&mut self, down: bool) {
+        let Some(open) = self.completion.as_mut() else {
+            return;
+        };
+        let count = open.candidates.words.len();
+        if count == 0 {
+            return;
+        }
+        open.selected = if down {
+            (open.selected + 1) % count
+        } else {
+            (open.selected + count - 1) % count
+        };
+        self.damage_all = true;
+    }
+
+    /// Whether whitespace that is easy to mistake is drawn as a placeholder.
+    #[must_use]
+    pub fn special_chars(&self) -> bool {
+        self.special_chars
     }
 
     /// Whether the rightmost column is the overview ruler.
@@ -1234,6 +1312,9 @@ impl App {
             self.handle_prompt_key(key);
             return;
         }
+        if self.completion.is_some() && self.handle_completion_key(key) {
+            return;
+        }
         match self.binding(key) {
             Some(Action::Command(command)) => self.run(command),
             Some(Action::Editor(action)) => self.run_editor_action(action),
@@ -1634,6 +1715,25 @@ impl App {
                     self.run(Command::Paste(text));
                 }
             }
+            EditorAction::Complete => self.open_completion(),
+            EditorAction::ToggleSpecialChars => {
+                self.special_chars = !self.special_chars;
+                self.damage_all = true;
+                self.status = Some(format!("show whitespace: {}", on_off(self.special_chars)));
+            }
+            // Integrated wraps because the pane is a fixed width, but a code
+            // file often reads better unwrapped even in a narrow column, so it
+            // is a setting rather than a property of the mode.
+            EditorAction::ToggleWrap => {
+                self.wrap = !self.wrap;
+                self.top_sub = 0;
+                if !self.wrap {
+                    self.left = 0;
+                }
+                self.ensure_visible();
+                self.damage_all = true;
+                self.status = Some(format!("wrap: {}", on_off(self.wrap)));
+            }
             EditorAction::ToggleCloseBrackets => {
                 self.close_brackets = !self.close_brackets;
                 self.adopt_input_style();
@@ -1665,6 +1765,35 @@ impl App {
                     return;
                 }
                 self.document.break_undo_group();
+            }
+        }
+    }
+
+    /// Keys the open completion list claims. `false` hands the key on, which
+    /// is what closes the list: typing another character re-asks the question.
+    fn handle_completion_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Up => {
+                self.step_completion(false);
+                true
+            }
+            KeyCode::Down => {
+                self.step_completion(true);
+                true
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                self.accept_completion();
+                true
+            }
+            KeyCode::Esc => {
+                self.completion = None;
+                self.damage_all = true;
+                true
+            }
+            _ => {
+                self.completion = None;
+                self.damage_all = true;
+                false
             }
         }
     }
@@ -2118,6 +2247,9 @@ impl App {
             (KeyCode::Char('w'), true, _) => Action::Editor(EditorAction::ToggleWholeWord),
             (KeyCode::Char('e'), true, _) => Action::Editor(EditorAction::ToggleRegex),
             (KeyCode::Char('p'), true, _) => Action::Editor(EditorAction::ToggleCloseBrackets),
+            (KeyCode::Char(' '), true, _) => Action::Editor(EditorAction::Complete),
+            (KeyCode::Char('i'), _, true) => Action::Editor(EditorAction::ToggleSpecialChars),
+            (KeyCode::Char('w'), _, true) => Action::Editor(EditorAction::ToggleWrap),
             // Alt, not Ctrl: Ctrl-N and Ctrl-B are already the find bar's.
             (KeyCode::Char('n'), _, true) => Action::Editor(EditorAction::NextChange),
             (KeyCode::Char('p'), _, true) => Action::Editor(EditorAction::PreviousChange),
@@ -2198,6 +2330,9 @@ enum EditorAction {
     ToggleHelp,
     ToggleCase,
     ToggleCloseBrackets,
+    ToggleSpecialChars,
+    ToggleWrap,
+    Complete,
     ToggleWholeWord,
     ToggleRegex,
     PasteRegister,
@@ -3662,5 +3797,95 @@ mod tests {
             wide + 30 - 1,
             "the ruler costs exactly one cell"
         );
+    }
+
+    /// Wrap is a setting, not a property of the mode: a code file often reads
+    /// better unwrapped even in a pane nobody can widen.
+    #[test]
+    fn wrap_can_be_turned_off_in_integrated_mode() {
+        let mut app = app(&"x".repeat(60), false);
+        app.set_integrated();
+        app.resize(20, 10);
+        assert!(app.wrap());
+        assert!(app.line_rows(0) > 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT));
+        assert!(!app.wrap());
+        assert_eq!(app.line_rows(0), 1, "one row, scrolling sideways instead");
+        assert_eq!(app.status(), Some("wrap: off"));
+    }
+
+    #[test]
+    fn showing_whitespace_is_off_until_it_is_asked_for() {
+        let mut app = app("a\tb\n", false);
+        app.resize(40, 10);
+        assert!(!app.special_chars());
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::ALT));
+        assert!(app.special_chars());
+        assert_eq!(app.status(), Some("show whitespace: on"));
+    }
+
+    /// Ctrl-Space offers the buffer's own words; Enter puts one in as a single
+    /// undo step, and typing on closes the list.
+    #[test]
+    fn completion_offers_buffer_words_and_accepts_one() {
+        let mut app = app("let total = 0;\nlet to", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        app.handle_key(control(' '));
+
+        let open = app.completion().expect("a list");
+        assert_eq!(open.candidates.words, vec!["total"]);
+        assert_eq!(open.selected, 0);
+
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.document().as_str(), "let total = 0;\nlet total");
+        assert!(app.completion().is_none());
+
+        app.handle_key(control('z'));
+        assert_eq!(
+            app.document().as_str(),
+            "let total = 0;\nlet to",
+            "the completion is one step"
+        );
+    }
+
+    #[test]
+    fn the_completion_list_steps_and_wraps() {
+        let mut app = app("alpha alphabet\nal", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        app.handle_key(control(' '));
+        assert_eq!(app.completion().expect("a list").candidates.words.len(), 2);
+
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.completion().expect("a list").selected, 1);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.completion().expect("a list").selected, 0, "it wraps");
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.completion().expect("a list").selected, 1);
+    }
+
+    /// A key the list does not own closes it and still reaches the document:
+    /// typing another character is how a person narrows what they meant.
+    #[test]
+    fn typing_on_closes_the_list_and_still_lands() {
+        let mut app = app("alpha alphabet\nal", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        app.handle_key(control(' '));
+        app.handle_key(key(KeyCode::Char('p')));
+        assert!(app.completion().is_none());
+        assert_eq!(app.document().as_str(), "alpha alphabet\nalp");
+    }
+
+    #[test]
+    fn nothing_to_complete_says_so_instead_of_opening_an_empty_list() {
+        let mut app = app("zz", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        app.handle_key(control(' '));
+        assert!(app.completion().is_none());
+        assert_eq!(app.status(), Some("no completions"));
     }
 }

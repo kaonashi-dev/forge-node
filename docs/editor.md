@@ -153,6 +153,8 @@ living with no window pill of its own.
 | Ctrl-F, Ctrl-N, Ctrl-B | find, next match, previous match |
 | Ctrl-T / Ctrl-W / Ctrl-E | toggle match case / whole word / regular expression |
 | Ctrl-P | toggle closing brackets as you type |
+| Ctrl-Space | complete from the buffer's own words; Up/Down choose, Enter accepts |
+| Alt-I / Alt-W | show whitespace / wrap long lines |
 | Ctrl-R | replace (Tab switches field, **Enter** replaces this match, **Ctrl-R** replaces the rest) |
 | Ctrl-G | go to line |
 | Alt-N / Alt-P | next / previous changed block (Ctrl-N and Ctrl-B are the find bar's) |
@@ -305,6 +307,14 @@ HTML context menu).
   find-as-you-type pays one compile per edit of the pattern rather than one per
   scan.
 - One buffer per process. No splits, no Vim profile.
+- Whitespace that is easy to mistake — a tab, a no-break space, a zero-width
+  one — draws as a placeholder under `Alt-I`, off by default because it is a
+  debugging view rather than a reading one. The glyph takes the character's
+  first cell and the rest of a tab's width stays spaces, so nothing after it
+  shifts.
+- Wrapping is a setting (`Alt-W`), not a property of the mode: integrated
+  defaults to on because the pane is a fixed width, but a code file often reads
+  better unwrapped even in a narrow column.
 - Long lines wrap under the daemon and scroll sideways standalone. Integrated,
   the pane is a fixed width the person cannot widen, so a line too wide for the
   text column continues onto the next row (with a blank gutter) rather than
@@ -317,6 +327,20 @@ HTML context menu).
   width is an exact multiple of the text column, caret at its end — has no row
   of its own and is not painted; it is the one position the cell grid cannot
   name.
+- **Right-to-left text is stored correctly and laid out wrongly.** The buffer
+  holds the file's bytes and every edit is byte-exact, so an Arabic or Hebrew
+  file opens, saves and round-trips without damage. What it does *not* do is
+  reorder: the view is a cell grid walked left to right, so an RTL run is drawn
+  in logical order, and the caret's display column is a count of cells rather
+  than a visual position. A mixed-direction line is therefore readable as
+  content and misleading as layout. This is a real gap and not a rendering
+  detail — the Unicode bidi algorithm is a document-level pass with its own
+  state, and half of one (reversing a run without resolving embedding levels)
+  produces text that is wrong in a way a person cannot see. Closing it means
+  adopting a bidi implementation and giving the view a visual-order row, which
+  is a piece of work on the scale of the wrap anchor, not a patch. Until then:
+  do not claim CodeMirror parity here, because CodeMirror has the browser doing
+  it and this does not.
 - The save is optimistic, not exclusive: it compares the revision it loaded
   against the disk before writing and refuses once when they differ, which
   catches an agent that already wrote. It is not a compare-and-swap against a
@@ -324,6 +348,63 @@ HTML context menu).
 - Movement and deletion are grapheme-based, tabs and wide or combining
   characters occupy the right cells, and control bytes in the file are drawn as
   Unicode control pictures — an `ESC` inside a file is shown, never executed.
+
+## Language
+
+Seven grammars, chosen by extension. Extension only: sniffing content would have
+to be undone the moment a person types, and a shebang is a guess.
+
+| Grammar | Extensions | What it knows |
+| --- | --- | --- |
+| Rust | `rs` | line and block comments, attributes, strings and char literals (a lifetime is not a string), numbers, keywords, `Type` by leading capital, `name(` as a call |
+| C-like | `ts` `tsx` `js` `jsx` `mjs` `cjs` `go` `java` `kt` `c` `h` `cc` `cpp` `hpp` `cs` `swift` `scala` `php` `dart` | the same, without Rust's attributes and lifetimes |
+| Python | `py` `pyi` | `#` comments, triple-quoted strings, numbers, keywords, calls |
+| JSON | `json` | keys apart from values, numbers, `true`/`false`/`null` |
+| Keyed | `toml` `yaml` `yml` `ini` `cfg` `conf` `env` | `[section]`, `key =` / `key:`, quoted values, `#`/`;` comments |
+| Shell | `sh` `bash` `zsh` `fish` | `#` comments, quotes, `$VAR` and `${...}`, keywords |
+| Markdown | `md` `markdown` `mdx` | headings, quotes, fenced and inline code, links, list bullets |
+
+Everything else is plain, which is the honest answer rather than a wrong colour.
+Against CodeMirror's language packs the gaps are HTML/XML, CSS/SCSS, SQL, Ruby,
+Lua, Haskell and the rest of the long tail; each is a scanner arm here, not a
+dependency.
+
+Ten scopes reach the terminal as the ANSI 16, and that is not a limitation in
+the pane: the canvas resolves those slots through `--forge-ansi-*`, which *is*
+the active Forge theme, so a keyword already lands on the theme's own magenta
+without a truecolour side-channel. Standalone it lands on the person's terminal
+theme, which is the right answer there too.
+
+| Scope | Slot | Scope | Slot |
+| --- | --- | --- | --- |
+| comment | dark grey | type | cyan |
+| keyword | magenta | function | blue |
+| control keyword | red | property | dark cyan |
+| string | green | constant | dark yellow |
+| number | yellow | plain | default |
+
+**Completion is the buffer's own vocabulary.** `Ctrl-Space` offers the words
+already in the file that continue the identifier at the caret — no language
+server, no index, nothing that leaves the process. Two characters minimum, a
+512 KiB window around the caret, twelve candidates, shortest first. The word
+being typed is never a candidate for itself, and a prefix with no continuation
+says so rather than opening an empty list. Accepting one is a single
+transaction, so undo takes the completion and leaves what was typed. A key the
+list does not own closes it and still reaches the document, because typing on is
+how a person narrows what they meant.
+
+**tree-sitter: not now, and here is the test it has to pass.** It would buy the
+long tail of grammars and a real parse tree, and the scanner here is a
+hand-rolled approximation that will keep needing arms. Against that: the editor
+is a standalone binary that must build with no network and no C toolchain beyond
+the one SQLite already needs, each grammar is its own crate or a wasm blob to
+ship and version, and the incremental colouring here already re-lexes from the
+edit rather than the top — which is most of what an incremental parser was going
+to buy. The decision to revisit it is not "is tree-sitter good" but a
+measurement: a grammar set that covers what is missing, built for Rust 1.89,
+under a licence `deny.toml` accepts, costing less per keystroke on a 2 MiB
+buffer than the current scanner's resume-and-resync. Until someone runs that,
+adding it would be trading a known cost for an unknown one.
 
 ## Accessibility
 

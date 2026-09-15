@@ -52,6 +52,22 @@ pub struct RowDecor<'a> {
     pub scopes: &'a [Span],
     /// Ascending, non-overlapping byte ranges within this line.
     pub marks: &'a [Mark],
+    /// Draw a placeholder where a tab or a no-break space is.
+    pub special_chars: bool,
+}
+
+/// The stand-in for a whitespace character that is easy to mistake.
+///
+/// A tab reads as its arrow and then the spaces it bought, so the columns still
+/// line up; a no-break space and a zero-width one are shown because the whole
+/// problem with them is that they look like what they are not.
+fn special_glyph(grapheme: &str) -> Option<char> {
+    match grapheme {
+        "\t" => Some('\u{2192}'),
+        "\u{a0}" => Some('\u{b7}'),
+        "\u{200b}" | "\u{feff}" => Some('\u{2423}'),
+        _ => None,
+    }
 }
 
 /// The printable stand-in for a control character.
@@ -79,6 +95,7 @@ pub fn window_parts(line: &str, left: usize, width: usize, decor: RowDecor<'_>) 
         carets,
         scopes,
         marks,
+        special_chars,
     } = decor;
     let mut parts: Vec<Part> = Vec::new();
     let mut cell = 0;
@@ -141,6 +158,13 @@ pub fn window_parts(line: &str, left: usize, width: usize, decor: RowDecor<'_>) 
                 &mut parts,
             );
             produced = width;
+        } else if let Some(glyph) = special_chars.then(|| special_glyph(grapheme)).flatten() {
+            // The glyph takes the grapheme's first cell; the rest of a tab's
+            // width is still spaces, so nothing after it shifts.
+            let mut shown = glyph.to_string();
+            shown.push_str(&" ".repeat(w.saturating_sub(1)));
+            push(&shown, inside, scope, decoration, &mut parts);
+            produced += w.max(1);
         } else if grapheme == "\t" {
             push(&" ".repeat(w), inside, scope, decoration, &mut parts);
             produced += w;
@@ -209,6 +233,36 @@ mod tests {
         assert_eq!(cell_window(line, 2, 2), " b");
         assert_eq!(cell_window(line, 0, 2), "a ");
         assert_eq!(width_of(line), 4);
+    }
+
+    /// A tab keeps its width when it is shown: the arrow takes its first cell
+    /// and the spaces it bought take the rest, so nothing after it shifts.
+    #[test]
+    fn special_characters_are_drawn_without_moving_the_columns() {
+        let decor = RowDecor {
+            special_chars: true,
+            ..RowDecor::default()
+        };
+        let shown: String = window_parts("a\tb", 0, 5, decor)
+            .into_iter()
+            .map(|part| part.text)
+            .collect();
+        assert_eq!(shown, "a→  b");
+        assert_eq!(
+            shown.chars().count(),
+            cell_window("a\tb", 0, 5).chars().count()
+        );
+
+        let nbsp: String = window_parts("a\u{a0}b", 0, 3, decor)
+            .into_iter()
+            .map(|part| part.text)
+            .collect();
+        assert_eq!(nbsp, "a·b");
+        assert_eq!(
+            cell_window("a\u{a0}b", 0, 3),
+            "a\u{a0}b",
+            "off, it is the space"
+        );
     }
 
     #[test]

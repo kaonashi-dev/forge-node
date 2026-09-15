@@ -11,8 +11,9 @@ Day-to-day layout and behaviour details live next to the code:
 |------|--------|
 | Shell (title, sidebar and its Projects view, tabs) | `apps/tauri/src/shell/` |
 | Other sidebar views (files, git, history, PR, harness) | `apps/tauri/src/panels/` |
-| Workbench (editor, diff, feature, PR) | `apps/tauri/src/workbench/` |
-| Reusable explorer/editor package (no Solid or Tauri) | `apps/tauri/packages/file-workbench/` |
+| Workbench (diff, feature, PR, previews) | `apps/tauri/src/workbench/` |
+| Terminal editor pane | `apps/tauri/src/terminal/EditorTerminalPane.tsx` |
+| Reusable explorer package (no Solid or Tauri) | `apps/tauri/packages/file-workbench/` |
 | Terminal Canvas | `apps/tauri/src/terminal/` |
 | Control kit | `apps/tauri/src/ui/` |
 | Theme tokens | `apps/tauri/src/theme/` + [theming.md](./theming.md) |

@@ -31,6 +31,7 @@ pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     if app.needs_status_row() {
         draw_status(app, out, height)?;
     }
+    draw_completion(app, out, height)?;
     place_caret(app, out, height)?;
     // A copy leaves an OSC 52 for the terminal that owns the clipboard. Written
     // with the frame rather than at the keystroke, because this is the one
@@ -137,6 +138,7 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
             carets: &carets,
             scopes: app.syntax_line(line),
             marks: &marks,
+            special_chars: app.special_chars(),
         },
     );
     for part in parts {
@@ -179,6 +181,56 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         }
     }
     queue!(out, style::SetForegroundColor(style::Color::Reset))?;
+    Ok(())
+}
+
+/// The completion list, under the caret when there is room and over it when
+/// there is not.
+///
+/// Painted after the rows and before the caret, so it sits on top of the text
+/// and the caret still shows where the word is being typed. The whole viewport
+/// is damaged while a list is open, so it never leaves a strip behind.
+fn draw_completion(app: &App, out: &mut impl Write, height: usize) -> io::Result<()> {
+    let Some(open) = app.completion() else {
+        return Ok(());
+    };
+    let Some((caret_row, caret_cell)) = app.caret_screen() else {
+        return Ok(());
+    };
+    let words = &open.candidates.words;
+    let rows = words.len().min(height.saturating_sub(1));
+    if rows == 0 {
+        return Ok(());
+    }
+    let width = words
+        .iter()
+        .map(|word| word.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let left = caret_cell.min((app.width() as usize).saturating_sub(width));
+    // Below the caret, unless the list would run off the bottom.
+    let top = if caret_row + 1 + rows <= height {
+        caret_row + 1
+    } else {
+        caret_row.saturating_sub(rows)
+    };
+    for (index, word) in words.iter().take(rows).enumerate() {
+        queue!(
+            out,
+            cursor::MoveTo(left as u16, (top + index) as u16),
+            style::SetAttribute(style::Attribute::Reverse)
+        )?;
+        if index == open.selected {
+            queue!(out, style::SetAttribute(style::Attribute::Bold))?;
+        }
+        queue!(
+            out,
+            style::Print(view::cell_window(&format!(" {word} "), 0, width)),
+            style::SetAttribute(style::Attribute::NormalIntensity),
+            style::SetAttribute(style::Attribute::NoReverse)
+        )?;
+    }
     Ok(())
 }
 
@@ -230,9 +282,13 @@ fn mark_colour(kind: editor_control::WireMarkKind) -> style::Color {
 
 /// The terminal colour one scope paints in, or `None` for the default.
 ///
-/// The ANSI 16 rather than a palette of our own: the person's terminal theme
-/// is the theme, and a hard-coded RGB would fight it on every scheme but the
-/// one it was picked against.
+/// The ANSI 16 rather than a palette of our own, and that is not a limitation
+/// in the pane: the canvas resolves those sixteen slots through
+/// `--forge-ansi-*`, which is the active Forge theme, so a scope already lands
+/// on the theme's own colour without a truecolour side-channel. Standalone it
+/// lands on the person's terminal theme, which is the right answer there too —
+/// a hard-coded RGB would fight every scheme but the one it was picked against.
+/// The mapping is documented in `docs/editor.md`; keep the two in step.
 fn scope_colour(scope: editor_core::Scope) -> Option<style::Color> {
     use editor_core::Scope;
     Some(match scope {
