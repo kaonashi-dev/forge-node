@@ -904,7 +904,30 @@ impl App {
             top_line: u32::try_from(self.top + 1).unwrap_or(u32::MAX),
             visible_lines: u32::try_from(visible.max(1)).unwrap_or(u32::MAX),
             total_lines: u32::try_from(self.document.text().line_count()).unwrap_or(u32::MAX),
+            caret_line: self.caret_line_text(),
+            selection_length: u32::try_from(self.document.selection().range().len())
+                .unwrap_or(u32::MAX),
+            cursor_count: u32::try_from(self.document.selection().count()).unwrap_or(u32::MAX),
+            status: self.status.clone().unwrap_or_default(),
         }
+    }
+
+    /// The caret's line, clamped so a minified file does not travel on a state.
+    ///
+    /// Cut on a character boundary and marked, because half a multi-byte
+    /// character is not text and a reader saying nothing about the cut would
+    /// announce a line that is not the one on screen.
+    fn caret_line_text(&self) -> String {
+        let text = self.document.text();
+        let line = text.line(self.document.caret_line_col().line);
+        if line.len() <= editor_control::MAX_CARET_LINE_BYTES {
+            return line.to_string();
+        }
+        let mut cut = editor_control::MAX_CARET_LINE_BYTES;
+        while cut > 0 && !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…", &line[..cut])
     }
 
     /// Replace the buffer with what the daemon read from disk.

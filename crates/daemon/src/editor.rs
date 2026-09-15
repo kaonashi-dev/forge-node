@@ -710,6 +710,10 @@ fn flush(
             top_line: state.top_line,
             visible_lines: state.visible_lines,
             total_lines: state.total_lines,
+            caret_line: state.caret_line,
+            selection_length: state.selection_length,
+            cursor_count: state.cursor_count,
+            status: state.status,
             conflict,
         },
     );

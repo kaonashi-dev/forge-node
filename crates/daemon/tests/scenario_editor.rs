@@ -245,6 +245,13 @@ if mode == "save_twice":
         fh.write(" ".join(answers) + "\n")
 
 if mode == "copy":
+    # Written only once the test has attached: the escape is a single burst,
+    # and a client that subscribed after it would wait for a store that has
+    # already been broadcast.
+    for _ in range(600):
+        if os.path.exists(".forge-go"):
+            break
+        time.sleep(0.05)
     # What `Ctrl-C` leaves on the wire: the clipboard *store*, base64 of
     # "picked up". The daemon's VT engine is the only thing that reads it.
     sys.stdout.write("\x1b]52;c;cGlja2VkIHVw\x07")
@@ -793,6 +800,7 @@ fn a_copy_in_the_editor_reaches_the_host_as_a_clipboard_store() {
     let workspace = common::add_main_workspace(&client, repo.path());
     let (_session, terminal) = create_editor(&client, &events, workspace, "a.rs", None);
     common::attach(&client, terminal, 80, 24);
+    fs::write(repo.path().join(".forge-go"), "").unwrap();
 
     let event = common::wait_for(&events, common::DEADLINE, |event| {
         matches!(event, DaemonEvent::ClipboardStore { terminal_id, .. } if *terminal_id == terminal)

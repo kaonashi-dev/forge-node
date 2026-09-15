@@ -18,7 +18,7 @@ pub mod message;
 
 pub use message::{
     version_matches, DaemonMessage, EditorMessage, EditorStateWire, WireEdit, WireMark,
-    WireMarkKind,
+    WireMarkKind, MAX_CARET_LINE_BYTES,
 };
 
 /// Version of the control wire. The handshake refuses any other value, the way
@@ -281,6 +281,10 @@ mod tests {
                     top_line: 1,
                     visible_lines: 24,
                     total_lines: 200,
+                    caret_line: "fn main() {}".into(),
+                    selection_length: 0,
+                    cursor_count: 1,
+                    status: String::new(),
                 },
             },
             EditorMessage::State {

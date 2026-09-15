@@ -325,6 +325,39 @@ HTML context menu).
   characters occupy the right cells, and control bytes in the file are drawn as
   Unicode control pictures — an `ESC` inside a file is shown, never executed.
 
+## Accessibility
+
+The canvas is the only visual surface, and an accessibility tree cannot read
+one. The pane therefore carries a **hidden mirror** of the editor's own state
+next to it — never a second input path, and never anything read back off the
+cells.
+
+- The mirror is `role="application"` with `aria-roledescription="code editor"`,
+  `aria-label` = the path and `aria-readonly` from the buffer. Not
+  `role="textbox"`: the keys go to the `<textarea class="terminal-keys">` the
+  way they always have, and a reader that took the mirror for an input would
+  offer its own editing keys against a node that has none.
+- It says `Line 12 of 300, column 4.` plus the flags a person cannot see — read
+  only, unsaved changes, how many carets, how many bytes are selected — and then
+  the caret's line as text.
+- That line is the one piece of document text on the wire. `EditorState` carries
+  `caret_line`, clamped by the editor to 2 KiB and cut on a character boundary,
+  because the GUI has no copy of the buffer and the alternative is reading the
+  cells back out of the grid the editor just drew. An empty line is announced as
+  "blank line": silence is indistinguishable from a failure to announce.
+- A polite live region repeats the editor's transient message — `alpha: 3/41`,
+  `no match`, a save refusal — which is exactly the status row a person looking
+  away from the canvas cannot see. A conflict is announced over it, because the
+  daemon is what saw the revision mismatch and the editor was only told a reason.
+- `editorAria.ts` holds the rules and is tested on its own; `editorPane.test.ts`
+  asserts the pane is wired to them and that it never reads `viewport.rows`.
+
+What this does **not** claim: VoiceOver does not read every ANSI cell, and the
+mirror is not a document a reader can navigate by character or by word. What it
+does claim is the checklist worth running by hand — open a file and hear its
+path and position, move and hear the line, search and hear `n of m`, save and
+hear the result, and be told when the file changed under the buffer.
+
 ## Candidates measured
 
 `crossterm` 0.29 was chosen over a widget library: the viewport is arithmetic

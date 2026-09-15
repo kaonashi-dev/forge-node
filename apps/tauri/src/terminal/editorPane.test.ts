@@ -65,6 +65,26 @@ describe("the terminal editor pane", () => {
   });
 
   /*
+   * A canvas is unreadable to an accessibility tree, so the pane carries a
+   * hidden mirror of the editor's own state — path, position, flags and the
+   * caret's line — plus a polite live region for what the status row says.
+   * `application` and not `textbox`: the keys go to the textarea, and a reader
+   * that took the mirror for an input would offer editing keys against a node
+   * that has none.
+   */
+  it("the_editor_pane_mirrors_its_state_for_a_screen_reader", () => {
+    expect(pane()).toContain('role="application"');
+    expect(pane()).toContain('aria-roledescription="code editor"');
+    expect(pane()).toContain("aria-label={aria().label}");
+    expect(pane()).toContain("aria-readonly={aria().readOnly}");
+    expect(pane()).toContain('aria-live="polite"');
+    expect(pane()).toContain("editorAria");
+    expect(pane()).toContain("editorAnnouncement");
+    // Everything it says comes from the session, never from the cell grid.
+    expect(pane()).not.toContain("viewport.rows[");
+  });
+
+  /*
    * The platform's edit chords cannot reach the editor as keys: its save,
    * copy and cut are Ctrl-S/C/X, and a Mac keyboard sends the gestures as ⌘.
    * The pane translates them through `editorChords`; without that, `Cmd-S`

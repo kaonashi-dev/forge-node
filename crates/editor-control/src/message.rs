@@ -189,7 +189,36 @@ pub struct EditorStateWire {
     /// Lines in the buffer, so a thumb has a denominator.
     #[serde(default)]
     pub total_lines: u32,
+    /// The caret's line as text, clamped to [`MAX_CARET_LINE_BYTES`].
+    ///
+    /// The one piece of document text on this wire, and it is here for the
+    /// screen reader: the GUI paints a passive cell grid, so without this the
+    /// only way to say what line a person is on would be to read it back out of
+    /// the cells the editor just drew.
+    #[serde(default)]
+    pub caret_line: String,
+    /// Bytes the primary caret has selected. A length and not the text: a
+    /// selection can be the whole buffer.
+    #[serde(default)]
+    pub selection_length: u32,
+    /// How many carets there are. More than one is state a person can forget
+    /// they are in.
+    #[serde(default)]
+    pub cursor_count: u32,
+    /// The editor's transient message, when it has one.
+    ///
+    /// The same string its status row shows — `alpha: 3/41`, `no match`, a save
+    /// refusal. It is here because a person who cannot see the canvas cannot
+    /// see that row, and it is the answer to the gesture they just made.
+    #[serde(default)]
+    pub status: String,
 }
+
+/// Longest caret line that travels on the state.
+///
+/// A line can be as long as the document; a screen reader announcing one is
+/// reading a sentence, not a file. Clamped before the copy, never after.
+pub const MAX_CARET_LINE_BYTES: usize = 2 * 1024;
 
 /// What one line's gutter mark says happened to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

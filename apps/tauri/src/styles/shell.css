@@ -261,6 +261,16 @@
   top: var(--space-8);
   width: 4px;
 }
+/* Read by an accessibility tree, never by an eye. Not `display:none` or
+   zero-size: both take the node out of the tree this exists to populate. */
+.editor-terminal-aria {
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
 .editor-terminal-thumb {
   background: var(--fg-muted);
   border-radius: 2px;

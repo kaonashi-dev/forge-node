@@ -33,6 +33,10 @@ const editorState = (path: string): EditorState => ({
   top_line: 1,
   visible_lines: 1,
   total_lines: 1,
+  caret_line: "",
+  selection_length: 0,
+  cursor_count: 1,
+  status: "",
   conflict: false,
 });
 

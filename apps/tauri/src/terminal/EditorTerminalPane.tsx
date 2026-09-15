@@ -1,5 +1,6 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { editorChrome } from "./editorChrome";
+import { editorAnnouncement, editorAria } from "./editorAria";
 import {
   repaintEditor,
   resizeEditor,
@@ -86,6 +87,11 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
 
   const session = createMemo(() => forgeStore.sessions.find((item) => item.id === props.session));
   const chrome = createMemo(() => editorChrome(session()?.editor, props.path));
+  /* The canvas is unreadable to an accessibility tree, so the editor's own
+     state is mirrored into a hidden node beside it. Never the input path: the
+     textarea still takes every key. */
+  const aria = createMemo(() => editorAria(session()?.editor, props.path));
+  const announcement = createMemo(() => editorAnnouncement(session()?.editor));
   /** The daemon's word that a save was refused, not something read off ANSI. */
   const conflict = createMemo(() => session()?.editor?.conflict === true);
   const [comparing, setComparing] = createSignal(false);
@@ -443,6 +449,26 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
         }}
       >
         <canvas ref={canvas} />
+        {/* The screen-reader mirror. `application` rather than `textbox`: the
+            keys go to the textarea below, and a reader that took this for an
+            input would offer its own editing keys against a node that has
+            none. Everything in it comes from `Session.editor`, never from the
+            cells. */}
+        <div
+          class="editor-terminal-aria"
+          role="application"
+          aria-roledescription="code editor"
+          aria-label={aria().label}
+          aria-readonly={aria().readOnly}
+        >
+          <p>{aria().status}</p>
+          <p>{aria().line}</p>
+        </div>
+        {/* Polite, not assertive: a find tally should wait for the word being
+            read rather than cut it off. */}
+        <div class="editor-terminal-aria" role="status" aria-live="polite" aria-atomic="true">
+          {announcement()}
+        </div>
         {/* The editor owns its viewport; this only reports where it is. The
             wheel still goes to the TUI, so the thumb is not a handle. */}
         <Show when={chrome().scroll}>

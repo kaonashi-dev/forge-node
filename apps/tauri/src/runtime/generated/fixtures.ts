@@ -1694,6 +1694,10 @@ export const session_editor = {
     "top_line": 1,
     "visible_lines": 30,
     "total_lines": 120,
+    "caret_line": "fn main() {}",
+    "selection_length": 0,
+    "cursor_count": 1,
+    "status": "saved",
     "conflict": false
   },
   "agent_provider_id": null,
