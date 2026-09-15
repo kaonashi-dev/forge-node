@@ -124,6 +124,17 @@ pub enum DaemonMessage {
         /// Either side was longer than the daemon's budget.
         truncated: bool,
     },
+    /// What a checker said about the open file.
+    ///
+    /// The answer to [`EditorMessage::RunDiagnostics`], and also how they are
+    /// cleared: an empty list is "it found nothing", which is a result. A
+    /// `command: false` means no checker is configured, which is not.
+    Diagnostics {
+        request_id: u64,
+        /// Whether `[editor] diagnostics_command` named one at all.
+        command: bool,
+        items: Vec<WireDiagnostic>,
+    },
     /// Replace byte ranges, refused when the document moved under the caller.
     ///
     /// Reserved for a preview surface; H1's daemon does not send it yet, so an
@@ -207,6 +218,12 @@ pub enum EditorMessage {
     /// The editor does not open the checkout and never runs git, so the diff
     /// that produced its gutter marks is the daemon's to read again.
     ChangeDetails { request_id: u64, line: u32 },
+    /// Run the configured checker and say what it found here.
+    ///
+    /// On demand: a checker that ran by itself would be a subprocess per
+    /// keystroke. The editor never spawns anything — the daemon owns the
+    /// checkout and every process in it.
+    RunDiagnostics { request_id: u64 },
     /// The editor is exiting (quit command, fatal error). The daemon treats the
     /// socket EOF the same way, so this is a courtesy reason, not the signal.
     Closed { reason: String },
@@ -268,6 +285,23 @@ pub struct EditorStateWire {
 /// A line can be as long as the document; a screen reader announcing one is
 /// reading a sentence, not a file. Clamped before the copy, never after.
 pub const MAX_CARET_LINE_BYTES: usize = 2 * 1024;
+
+/// How much one diagnostic matters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireSeverity {
+    Error,
+    Warning,
+    Info,
+}
+
+/// One line a checker had something to say about.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireDiagnostic {
+    /// 1-based, as every checker counts.
+    pub line: u32,
+    pub severity: WireSeverity,
+    pub message: String,
+}
 
 /// One place a symbol is declared, or a diagnostic points at.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

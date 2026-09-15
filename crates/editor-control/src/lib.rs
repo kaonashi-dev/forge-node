@@ -17,8 +17,8 @@ use std::io::{self, Read, Write};
 pub mod message;
 
 pub use message::{
-    version_matches, DaemonMessage, EditorMessage, EditorStateWire, WireEdit, WireMark,
-    WireMarkKind, WirePlace, MAX_CARET_LINE_BYTES, MAX_PLACES,
+    version_matches, DaemonMessage, EditorMessage, EditorStateWire, WireDiagnostic, WireEdit,
+    WireMark, WireMarkKind, WirePlace, WireSeverity, MAX_CARET_LINE_BYTES, MAX_PLACES,
 };
 
 /// Version of the control wire. The handshake refuses any other value, the way

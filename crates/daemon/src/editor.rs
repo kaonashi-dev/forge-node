@@ -529,6 +529,17 @@ fn serve(
                     return;
                 }
             }
+            Ok(EditorMessage::RunDiagnostics { request_id }) => {
+                let found = daemon.editor_diagnostics(session_id, &path);
+                let answer = DaemonMessage::Diagnostics {
+                    request_id,
+                    command: found.is_some(),
+                    items: found.unwrap_or_default(),
+                };
+                if send(&writer, &answer).is_err() {
+                    return;
+                }
+            }
             Ok(EditorMessage::ChangeDetails { request_id, line }) => {
                 let found = daemon.editor_change_details(session_id, &path, line);
                 let answer = match found {

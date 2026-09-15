@@ -157,6 +157,7 @@ living with no window pill of its own.
 | Alt-I / Alt-W | show whitespace / wrap long lines |
 | Alt-D | go to the definition of the word at the caret |
 | Alt-Enter | what the change on this line replaced |
+| Alt-C | run the configured checker and mark what it found |
 | Ctrl-R | replace (Tab switches field, **Enter** replaces this match, **Ctrl-R** replaces the rest) |
 | Ctrl-G | go to line |
 | Alt-N / Alt-P | next / previous changed block (Ctrl-N and Ctrl-B are the find bar's) |
@@ -385,6 +386,27 @@ theme, which is the right answer there too.
 | string | green | constant | dark yellow |
 | number | yellow | plain | default |
 
+**Diagnostics are a command somebody configured, run when somebody asks.**
+`[editor] diagnostics_command` names one — `["cargo", "check",
+"--message-format=short"]`, `["oxlint"]`, anything that prints
+`path:line:col: level: message` — and `Alt-C` runs it once in the checkout. Off
+by default, and that is the honest default: the daemon would be spawning a build
+in somebody's working tree, and what that costs is a question only they can
+answer. Not a language server, and deliberately not: a checker that ran by
+itself is a subprocess per keystroke.
+
+Findings become gutter marks (`✗`, `!`, `i`) that outrank the git mark on the
+one cell, and the caret's own line says what its mark is about. Replacing the
+whole set is the clear, so a second run that finds nothing empties the gutter —
+the marks mean the *last* answer, not every answer ever given. "No checker
+configured" is reported as itself and never as a clean file. The output parse is
+a heuristic over ordinary compiler output, so a line that does not parse is not
+a diagnostic: a wrong mark is worse than a missing one. Capped at 500 findings
+and 4 MiB of output, clamped before the parse. The subprocess runs on the
+editor's control thread with `process_group(0)` and the whole group killed on a
+timeout — cargo forks rustc, and killing the direct child alone leaves a
+grandchild holding the pipes.
+
 **The gutter's marks have details.** `Alt-Enter` on a changed line asks the
 daemon what that block replaced and opens a panel with the removed lines and
 then the added ones, the way a hunk reads — a modification is what it was before
@@ -509,9 +531,9 @@ refuse bytes for is worse than opening it as text; text is the default, which is
 every file the grid can show. An SVG is drawn through an `<img>` and never as
 `innerHTML`: it is a file from a checkout an agent may have written, and an
 `<img>` refuses to run the script it may carry. What *is* a gap: find-references, which is the
-same channel as go-to-definition asking a different question; the diagnostics gutter, which needs a producer
-(`cargo check`, `oxlint`) before it needs a channel.
-The pane does draw a scrollbar thumb: `EditorState`
+same channel as go-to-definition asking a different question.
+
+The pane draws a scrollbar thumb: `EditorState`
 carries `top_line` / `visible_lines` / `total_lines`, so the GUI reports where
 the editor's viewport is without keeping a second copy of the text. It is a
 read-out and not a handle — the wheel still goes to the TUI, which owns the

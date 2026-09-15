@@ -115,6 +115,16 @@ executable = ""                 # empty searches the login-shell PATH, then the
                                 # missing fails the spawn; there is no fallback
                                 # to a shell.
 
+# A checker the editor runs on demand (Alt-C), as a command and its arguments.
+# Empty and off: the daemon would be spawning a build in your working tree, and
+# what that costs is a question only you can answer. Anything that prints
+# `path:line:col: level: message` is a producer — a line that does not parse is
+# not a diagnostic, because a wrong mark is worse than a missing one. Findings
+# become gutter marks and are replaced whole by the next run, so a clean run
+# clears them. 120 s, then the whole process group is killed.
+diagnostics_command = []        # e.g. ["cargo", "check", "--message-format=short"]
+                                # or ["oxlint"]
+
 [juva]
 # Where Juva gets its prose. Off by default, and it stays useful off: every
 # draft falls back to the deterministic local one, so a missing key or a hung

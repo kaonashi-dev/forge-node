@@ -82,14 +82,24 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         // The mark column, the fold column, then the space the text starts
         // after. All three are always printed: a gutter that widened the first
         // time git answered would shift every line of the file sideways.
-        match app.mark_at(line + 1) {
-            Some(kind) => queue!(
+        // A problem outranks a change on the one cell: a person who just ran a
+        // checker is looking for what it found.
+        match (app.diagnostic_at(line + 1), app.mark_at(line + 1)) {
+            (Some(item), _) => queue!(
+                out,
+                style::SetForegroundColor(severity_colour(item.severity)),
+                style::Print(severity_glyph(item.severity)),
+            )?,
+            (None, Some(kind)) => queue!(
                 out,
                 style::SetForegroundColor(mark_colour(kind)),
                 style::Print(mark_glyph(kind)),
             )?,
-            None => queue!(out, style::Print(" "))?,
+            (None, None) => queue!(out, style::Print(" "))?,
         }
+        // The checker's mark shares the fold column's neighbour rather than
+        // taking one of its own: a gutter that grows the first time somebody
+        // runs a linter would shift every line of the file sideways.
         match app.fold_state(line) {
             Some(folded) => queue!(
                 out,
@@ -319,6 +329,26 @@ fn mark_glyph(kind: editor_control::WireMarkKind) -> char {
     }
 }
 
+/// What a problem looks like in the gutter. One cell, and the three shapes a
+/// compiler's own output uses, so the column reads without a legend.
+fn severity_glyph(severity: editor_control::WireSeverity) -> char {
+    use editor_control::WireSeverity;
+    match severity {
+        WireSeverity::Error => '\u{2717}',
+        WireSeverity::Warning => '!',
+        WireSeverity::Info => 'i',
+    }
+}
+
+fn severity_colour(severity: editor_control::WireSeverity) -> style::Color {
+    use editor_control::WireSeverity;
+    match severity {
+        WireSeverity::Error => style::Color::Red,
+        WireSeverity::Warning => style::Color::Yellow,
+        WireSeverity::Info => style::Color::Blue,
+    }
+}
+
 fn mark_colour(kind: editor_control::WireMarkKind) -> style::Color {
     use editor_control::WireMarkKind;
     match kind {
@@ -427,6 +457,11 @@ fn status_text(app: &App) -> String {
     }
     if let Some(message) = app.status() {
         return message.to_string();
+    }
+    // What the checker said about this line, when the row is otherwise idle:
+    // a mark in the gutter that never says what it is about is a puzzle.
+    if let Some(item) = app.caret_diagnostic() {
+        return format!("{} {}", severity_glyph(item.severity), item.message);
     }
     let document = app.document();
     let dirty = if document.is_dirty() {

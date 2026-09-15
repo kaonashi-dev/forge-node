@@ -5549,6 +5549,29 @@ impl Daemon {
         }
     }
 
+    /// Run the configured checker and keep what it said about this buffer.
+    ///
+    /// `None` means no checker is configured, which is different from finding
+    /// nothing — the editor says so rather than showing a clean gutter it has
+    /// no grounds for. Spawns on the editor's own control thread, off the core
+    /// lock, with the whole process group killed on a timeout.
+    pub(crate) fn editor_diagnostics(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        relative: &str,
+    ) -> Option<Vec<editor_control::WireDiagnostic>> {
+        let command = &self.config.editor.diagnostics_command;
+        if command.is_empty() {
+            return None;
+        }
+        let workspace_id = {
+            let inner = self.lock();
+            inner.sessions.get(&session_id)?.workspace_id
+        };
+        let root = self.workspace_path(workspace_id).ok()?;
+        crate::diagnostics::run(&root, command, relative)
+    }
+
     /// What the changed block at `line` replaced, for the editor's gutter.
     ///
     /// A `git diff` on the editor's own control thread, off the core lock —

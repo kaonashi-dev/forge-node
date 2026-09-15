@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use editor_control::{EditorStateWire, WireEdit, WireMark, WireMarkKind, WirePlace};
+use editor_control::{
+    EditorStateWire, WireDiagnostic, WireEdit, WireMark, WireMarkKind, WirePlace,
+};
 use editor_core::{
     execute, metrics, Command, Document, Edit, Grammar, Origin, Query, Range, Refusal, Selection,
     Snapshot, Syntax, Transaction,
@@ -113,6 +115,13 @@ pub struct App {
     /// Gutter marks by 1-based line, as the daemon last computed them. Empty
     /// standalone: this editor never runs git of its own.
     marks: BTreeMap<usize, WireMarkKind>,
+    /// What a checker last said about this file, by 1-based line.
+    ///
+    /// Empty is a result — the checker found nothing — which is why `checked`
+    /// is separate: a gutter with no marks because nobody ran anything must not
+    /// read as a clean file.
+    diagnostics: BTreeMap<usize, WireDiagnostic>,
+    checked: bool,
     /// Header lines of the folded blocks, 0-based.
     folded: BTreeSet<usize>,
     /// Foldable regions, recomputed when the text changes and never per row.
@@ -143,6 +152,8 @@ pub struct App {
     open_request: Option<(u64, String, u32)>,
     /// A change-details request the control loop has not sent yet.
     details_request: Option<(u64, u32)>,
+    /// A diagnostics run the control loop has not asked for yet.
+    diagnostics_request: Option<u64>,
     next_request_id: u64,
     register: String,
     query: Query,
@@ -290,6 +301,8 @@ impl App {
             close_brackets: true,
             special_chars: false,
             marks: BTreeMap::new(),
+            diagnostics: BTreeMap::new(),
+            checked: false,
             folded: BTreeSet::new(),
             regions: Vec::new(),
             drag_origin: None,
@@ -304,6 +317,7 @@ impl App {
             lookup: None,
             open_request: None,
             details_request: None,
+            diagnostics_request: None,
             // The daemon mints ids from 1 for its own requests; the editor's
             // start past them so a log line names one side unambiguously.
             next_request_id: 1_000,
@@ -342,6 +356,16 @@ impl App {
 
     pub fn status(&self) -> Option<&str> {
         self.status.as_deref()
+    }
+
+    /// The checker's message for the caret's line, when there is one and
+    /// nothing more urgent is being said.
+    #[must_use]
+    pub fn caret_diagnostic(&self) -> Option<&WireDiagnostic> {
+        self.status
+            .is_none()
+            .then(|| self.diagnostic_at(self.caret_position().0))
+            .flatten()
     }
 
     pub fn prompt(&self) -> Option<&Prompt> {
@@ -507,6 +531,56 @@ impl App {
             .map(|mark| (mark.line as usize, mark.kind))
             .collect();
         self.damage_all = true;
+    }
+
+    /// What the checker said about a 1-based line, if anything.
+    #[must_use]
+    pub fn diagnostic_at(&self, line: usize) -> Option<&WireDiagnostic> {
+        self.diagnostics.get(&line)
+    }
+
+    /// Ask the daemon to run the configured checker.
+    fn run_diagnostics(&mut self) {
+        if !self.integrated {
+            self.status = Some("diagnostics need the daemon".to_string());
+            return;
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.diagnostics_request = Some(request_id);
+        self.status = Some("checking…".to_string());
+    }
+
+    /// Take the diagnostics request the control loop has to send.
+    pub fn take_diagnostics_request(&mut self) -> Option<u64> {
+        self.diagnostics_request.take()
+    }
+
+    /// The daemon answered a diagnostics run.
+    ///
+    /// Replacing the whole set is the *clear*: a second run that finds nothing
+    /// empties the gutter, which is what makes the marks mean the last answer
+    /// rather than every answer ever given.
+    pub fn diagnostics_arrived(&mut self, command: bool, items: Vec<WireDiagnostic>) {
+        self.damage_all = true;
+        if !command {
+            self.diagnostics.clear();
+            self.checked = false;
+            self.status =
+                Some("no checker configured — set [editor] diagnostics_command".to_string());
+            return;
+        }
+        let count = items.len();
+        self.diagnostics = items
+            .into_iter()
+            .map(|item| (item.line as usize, item))
+            .collect();
+        self.checked = true;
+        self.status = Some(match count {
+            0 => "no problems found".to_string(),
+            1 => "1 problem".to_string(),
+            many => format!("{many} problems"),
+        });
     }
 
     /// The mark on a 1-based line, if it has one.
@@ -1846,6 +1920,7 @@ impl App {
             EditorAction::Complete => self.open_completion(),
             EditorAction::FindDefinition => self.find_definition(),
             EditorAction::ChangeDetails => self.ask_change_details(),
+            EditorAction::RunDiagnostics => self.run_diagnostics(),
             EditorAction::ToggleSpecialChars => {
                 self.special_chars = !self.special_chars;
                 self.damage_all = true;
@@ -2442,6 +2517,7 @@ impl App {
             (KeyCode::Char(' '), true, _) => Action::Editor(EditorAction::Complete),
             (KeyCode::Char('d'), _, true) => Action::Editor(EditorAction::FindDefinition),
             (KeyCode::Enter, _, true) => Action::Editor(EditorAction::ChangeDetails),
+            (KeyCode::Char('c'), _, true) => Action::Editor(EditorAction::RunDiagnostics),
             (KeyCode::Char('i'), _, true) => Action::Editor(EditorAction::ToggleSpecialChars),
             (KeyCode::Char('w'), _, true) => Action::Editor(EditorAction::ToggleWrap),
             // Alt, not Ctrl: Ctrl-N and Ctrl-B are already the find bar's.
@@ -2529,6 +2605,7 @@ enum EditorAction {
     Complete,
     FindDefinition,
     ChangeDetails,
+    RunDiagnostics,
     ToggleWholeWord,
     ToggleRegex,
     PasteRegister,
@@ -4220,5 +4297,81 @@ mod tests {
         app.details_arrived(0, Vec::new(), Vec::new(), false);
         assert!(app.prompt().is_none());
         assert_eq!(app.status(), Some("no change here any more"));
+    }
+
+    use editor_control::WireSeverity;
+
+    fn problem(line: u32, severity: WireSeverity, message: &str) -> WireDiagnostic {
+        WireDiagnostic {
+            line,
+            severity,
+            message: message.to_string(),
+        }
+    }
+
+    /// A checker runs on demand and its findings become gutter marks; the
+    /// caret's own line says what the mark is about.
+    #[test]
+    fn diagnostics_mark_the_gutter_and_say_what_they_are() {
+        let mut app = app("let x = 1;\nlet y = 2;\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT));
+        assert_eq!(app.take_diagnostics_request(), Some(1000));
+
+        app.diagnostics_arrived(
+            true,
+            vec![problem(2, WireSeverity::Error, "cannot find value `y`")],
+        );
+        assert_eq!(app.status(), Some("1 problem"));
+        assert!(app.diagnostic_at(2).is_some());
+        assert!(app.diagnostic_at(1).is_none());
+
+        // The status message wins while it is showing; once it clears, the
+        // caret's own problem is what the row says.
+        app.goto_line(2);
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(
+            app.caret_diagnostic().map(|item| item.message.as_str()),
+            Some("cannot find value `y`")
+        );
+    }
+
+    /// A second run that finds nothing empties the gutter: the marks mean the
+    /// last answer, not every answer ever given.
+    #[test]
+    fn a_clean_run_clears_the_marks() {
+        let mut app = app("a\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.diagnostics_arrived(true, vec![problem(1, WireSeverity::Warning, "unused")]);
+        assert!(app.diagnostic_at(1).is_some());
+
+        app.diagnostics_arrived(true, Vec::new());
+        assert!(app.diagnostic_at(1).is_none());
+        assert_eq!(app.status(), Some("no problems found"));
+    }
+
+    /// No checker configured is not the same as a clean file, and a gutter
+    /// that read as clean on those grounds would be lying.
+    #[test]
+    fn no_checker_says_so_rather_than_showing_a_clean_file() {
+        let mut app = app("a\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.diagnostics_arrived(false, Vec::new());
+        assert!(app.diagnostic_at(1).is_none());
+        assert!(app
+            .status()
+            .is_some_and(|text| text.contains("diagnostics_command")));
+    }
+
+    #[test]
+    fn diagnostics_need_the_daemon() {
+        let mut app = app("a\n", false);
+        app.resize(60, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT));
+        assert_eq!(app.status(), Some("diagnostics need the daemon"));
+        assert!(app.take_diagnostics_request().is_none());
     }
 }
