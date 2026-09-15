@@ -244,6 +244,12 @@ if mode == "save_twice":
     with open(".forge-editor-save", "w") as fh:
         fh.write(" ".join(answers) + "\n")
 
+if mode == "copy":
+    # What `Ctrl-C` leaves on the wire: the clipboard *store*, base64 of
+    # "picked up". The daemon's VT engine is the only thing that reads it.
+    sys.stdout.write("\x1b]52;c;cGlja2VkIHVw\x07")
+    sys.stdout.flush()
+
 if mode == "save":
     body = os.environ.get("FORGE_TEST_SAVE_TEXT", "saved by the editor\n")
     sock.sendall(save_request(1000, body, 2))
@@ -766,6 +772,36 @@ fn install_editor_mode(harness: &common::Harness, mode: &str, text: Option<&str>
     let mut perms = fs::metadata(&path).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&path, perms).unwrap();
+}
+
+/// A copy in the editor reaches the host, not just the editor's own register.
+///
+/// The whole chain in one test, because every hop already exists on its own:
+/// the editor writes an OSC 52 into its PTY, the daemon's engine is the only
+/// VT that parses it, and the store arrives as a broadcast keyed on the
+/// *editor's* terminal — which is what lets the Tauri host refuse one from a
+/// background agent and forward this one.
+#[test]
+fn a_copy_in_the_editor_reaches_the_host_as_a_clipboard_store() {
+    let harness = common::Harness::new();
+    install_editor_mode(&harness, "copy", None);
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("a.rs"), "picked up\n").unwrap();
+    let running = harness.boot();
+    let client = running.connect("editor-copy");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (_session, terminal) = create_editor(&client, &events, workspace, "a.rs", None);
+    common::attach(&client, terminal, 80, 24);
+
+    let event = common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::ClipboardStore { terminal_id, .. } if *terminal_id == terminal)
+    })
+    .expect("the editor's OSC 52 never became a clipboard store");
+    let DaemonEvent::ClipboardStore { text, .. } = event else {
+        unreachable!()
+    };
+    assert_eq!(text, "picked up");
 }
 
 #[test]

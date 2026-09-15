@@ -80,6 +80,9 @@ pub struct App {
     integrated: bool,
     /// The grammar this buffer is coloured with, from its path.
     grammar: Grammar,
+    /// Type an opener and get its partner. On by default, off for the person
+    /// who would rather type both, and off while a macro-ish paste runs.
+    close_brackets: bool,
     /// Gutter marks by 1-based line, as the daemon last computed them. Empty
     /// standalone: this editor never runs git of its own.
     marks: BTreeMap<usize, WireMarkKind>,
@@ -190,8 +193,22 @@ impl App {
         let grammar = Grammar::for_path(&path.to_string_lossy());
         let mut app = Self::blank(document, path, revision);
         app.grammar = grammar;
+        app.adopt_input_style();
         app.rescan();
         app
+    }
+
+    /// Tell the document how this file indents, and what its blocks are made of.
+    ///
+    /// Read off the buffer and the path here rather than in the core: the core
+    /// owns no path, and the answer changes only when the text is replaced.
+    fn adopt_input_style(&mut self) {
+        let indent = editor_core::indent::detect(self.document.text());
+        self.document.set_input_style(editor_core::InputStyle {
+            indent,
+            close_brackets: self.close_brackets,
+            grammar: self.grammar,
+        });
     }
 
     fn blank(document: Document, path: PathBuf, revision: Option<String>) -> Self {
@@ -201,6 +218,7 @@ impl App {
             revision,
             integrated: false,
             grammar: Grammar::None,
+            close_brackets: true,
             marks: BTreeMap::new(),
             clipboard_escape: None,
             autosave: false,
@@ -740,6 +758,7 @@ impl App {
         self.close_after_save = false;
         self.autosave_suspended = false;
         self.autosave_at = None;
+        self.adopt_input_style();
         self.rescan();
         self.goto_line(line);
         self.damage_all = true;
@@ -1202,6 +1221,11 @@ impl App {
                 if !text.is_empty() {
                     self.run(Command::Paste(text));
                 }
+            }
+            EditorAction::ToggleCloseBrackets => {
+                self.close_brackets = !self.close_brackets;
+                self.adopt_input_style();
+                self.status = Some(format!("close brackets: {}", on_off(self.close_brackets)));
             }
             EditorAction::ToggleCase => {
                 self.query.case_sensitive = !self.query.case_sensitive;
@@ -1666,6 +1690,7 @@ impl App {
             (KeyCode::Char('t'), true, _) => Action::Editor(EditorAction::ToggleCase),
             (KeyCode::Char('w'), true, _) => Action::Editor(EditorAction::ToggleWholeWord),
             (KeyCode::Char('e'), true, _) => Action::Editor(EditorAction::ToggleRegex),
+            (KeyCode::Char('p'), true, _) => Action::Editor(EditorAction::ToggleCloseBrackets),
             // Alt, not Ctrl: Ctrl-N and Ctrl-B are already the find bar's.
             (KeyCode::Char('n'), _, true) => Action::Editor(EditorAction::NextChange),
             (KeyCode::Char('p'), _, true) => Action::Editor(EditorAction::PreviousChange),
@@ -1740,6 +1765,7 @@ enum EditorAction {
     FindPrevious,
     ToggleHelp,
     ToggleCase,
+    ToggleCloseBrackets,
     ToggleWholeWord,
     ToggleRegex,
     PasteRegister,
@@ -1827,6 +1853,7 @@ pub const HELP: &[(&str, &str)] = &[
         "replace; Tab switches field, Enter one, Ctrl-R all",
     ),
     ("Ctrl-G", "go to line"),
+    ("Ctrl-P", "toggle closing brackets as you type"),
     ("Ctrl-Q", "close; unsaved changes ask first"),
     ("F1", "this help"),
 ];

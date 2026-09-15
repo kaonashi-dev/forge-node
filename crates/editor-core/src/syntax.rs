@@ -36,7 +36,7 @@ pub struct Span {
 }
 
 /// Which grammar a buffer is read with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Grammar {
     Rust,
     CLike,
@@ -46,6 +46,7 @@ pub enum Grammar {
     Shell,
     Markdown,
     /// No colouring: an extension this build does not know.
+    #[default]
     None,
 }
 

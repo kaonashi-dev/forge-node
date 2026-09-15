@@ -9,6 +9,7 @@ pub mod brackets;
 mod command;
 mod document;
 mod history;
+pub mod indent;
 pub mod limits;
 pub mod metrics;
 pub mod movement;
@@ -20,6 +21,7 @@ mod transaction;
 pub use command::{execute, Command, Outcome, Refusal};
 pub use document::{Applied, Document, DocumentVersion, LoadError, Snapshot};
 pub use history::HistoryStats;
+pub use indent::{IndentUnit, InputStyle};
 pub use search::{
     count_matches, count_matches_before, find_all, find_in, find_next, find_previous, Match,
     Matches, Query, QueryError, ReplaceOutcome,

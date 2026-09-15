@@ -6,7 +6,8 @@
 //! as a peek at the view.
 
 use crate::document::{Applied, Document};
-use crate::metrics::{display_column, TAB_WIDTH};
+use crate::indent::{self, IndentUnit};
+use crate::metrics::display_column;
 use crate::movement;
 use crate::search::{self, Query, ReplaceOutcome};
 use crate::selection::{Range, Selection};
@@ -214,14 +215,11 @@ pub fn execute(document: &mut Document, command: Command) -> Outcome {
             document.set_selection(Selection::new(start, end));
             Outcome::default()
         }
-        Command::InsertText(text) => Outcome::from_edit(document.insert(&text, Origin::Input)),
-        Command::InsertNewline => {
-            let terminator = newline_for(document);
-            Outcome::from_edit(document.insert(&terminator, Origin::Input))
-        }
+        Command::InsertText(text) => insert_text(document, &text),
+        Command::InsertNewline => insert_newline(document),
         Command::InsertTab => {
-            let spaces = tab_spaces(document);
-            Outcome::from_edit(document.insert(&spaces, Origin::Input))
+            let unit = indent_text(document);
+            Outcome::from_edit(document.insert(&unit, Origin::Input))
         }
         Command::DeleteBackward => {
             Outcome::from_optional_edit(document.delete(movement::left, Origin::Input))
@@ -325,11 +323,85 @@ fn newline_for(document: &Document) -> String {
     }
 }
 
-fn tab_spaces(document: &Document) -> String {
+/// What Tab inserts: the buffer's own indent unit, aligned to its next stop.
+///
+/// A tabbed file gets a tab; a spaced one gets enough spaces to reach the next
+/// multiple of its own width, which is not always four — a two-space file
+/// indented to four columns would drift on every Tab.
+fn indent_text(document: &Document) -> String {
+    let unit = document.input_style().indent;
+    if unit == IndentUnit::Tab {
+        return "\t".to_string();
+    }
     let text = document.text();
     let position = text.line_col(document.caret());
     let column = display_column(text.line(position.line), position.column);
-    " ".repeat(TAB_WIDTH - column % TAB_WIDTH)
+    let width = unit.width().max(1);
+    " ".repeat(width - column % width)
+}
+
+/// Typing one character, with the bracket and quote rules on top.
+///
+/// A closer already under the caret is stepped over rather than doubled, and an
+/// opener brings its partner only where one would not be in the way. Both are
+/// off when the buffer says so, and a selection replaces as it always did.
+fn insert_text(document: &mut Document, typed: &str) -> Outcome {
+    let style = document.input_style();
+    let caret = document.caret();
+    let mut characters = typed.chars();
+    let (Some(character), None) = (characters.next(), characters.next()) else {
+        return Outcome::from_edit(document.insert(typed, Origin::Input));
+    };
+    if !style.close_brackets || !document.selection().is_empty() {
+        return Outcome::from_edit(document.insert(typed, Origin::Input));
+    }
+    if matches!(character, ')' | ']' | '}' | '"' | '\'' | '`')
+        && indent::skips_closer(document.text(), caret, character)
+    {
+        document.set_selection(Selection::caret(caret + character.len_utf8()));
+        return Outcome::default();
+    }
+    match indent::closer_for(character) {
+        Some(closer) if indent::wants_closer(document.text(), caret, character) => {
+            Outcome::from_edit(document.insert_around(
+                typed,
+                closer.encode_utf8(&mut [0_u8; 4]),
+                Origin::Input,
+            ))
+        }
+        _ => Outcome::from_edit(document.insert(typed, Origin::Input)),
+    }
+}
+
+/// Enter, carrying the indentation the line already had.
+///
+/// One level deeper when the line opens a block, and a closer waiting on the
+/// other side of the caret is pushed onto a line of its own at the original
+/// depth — the shape `{` then Enter is supposed to produce.
+fn insert_newline(document: &mut Document) -> Outcome {
+    let terminator = newline_for(document);
+    let style = document.input_style();
+    let caret = document.caret();
+    let text = document.text();
+    let here = indent::leading(text, text.line_start(text.line_of_offset(caret)));
+    let deeper = indent::opens_block(text, caret, style.grammar);
+    let unit = style.indent.text();
+    let opened = format!(
+        "{terminator}{here}{}",
+        if deeper { unit.as_str() } else { "" }
+    );
+    // `{|}`: the closer belongs on its own line at the opening depth, so the
+    // body has somewhere to be.
+    let closing = deeper
+        && text.as_str()[caret..]
+            .chars()
+            .next()
+            .is_some_and(|next| matches!(next, '}' | ']' | ')'));
+    if closing {
+        let after = format!("{terminator}{here}");
+        return Outcome::from_edit(document.insert_around(&opened, &after, Origin::Input));
+    }
+    Outcome::from_edit(document.insert(&opened, Origin::Input))
 }
 
 fn delete_line(document: &mut Document) -> Outcome {
@@ -556,5 +628,146 @@ mod tests {
             .name(),
             "move.page"
         );
+    }
+
+    use crate::indent::InputStyle;
+
+    fn styled(body: &str, style: InputStyle) -> Document {
+        let mut doc = document(body);
+        doc.set_input_style(style);
+        doc
+    }
+
+    fn rust_style() -> InputStyle {
+        InputStyle {
+            indent: IndentUnit::Spaces(4),
+            close_brackets: true,
+            grammar: crate::syntax::Grammar::Rust,
+        }
+    }
+
+    #[test]
+    fn typing_an_opener_brings_its_closer_and_leaves_the_caret_between() {
+        let mut doc = styled("", rust_style());
+        run(&mut doc, Command::InsertText("(".to_string()));
+        assert_eq!(doc.as_str(), "()");
+        assert_eq!(doc.caret(), 1);
+        run(&mut doc, Command::InsertText("a".to_string()));
+        assert_eq!(doc.as_str(), "(a)");
+    }
+
+    /// One keystroke, one undo step: the closer came with the opener and goes
+    /// back with it.
+    #[test]
+    fn an_auto_closed_pair_undoes_as_one_step() {
+        let mut doc = styled("", rust_style());
+        run(&mut doc, Command::InsertText("[".to_string()));
+        run(&mut doc, Command::Undo);
+        assert_eq!(doc.as_str(), "");
+    }
+
+    #[test]
+    fn typing_a_closer_over_one_that_is_there_steps_past_it() {
+        let mut doc = styled("", rust_style());
+        run(&mut doc, Command::InsertText("(".to_string()));
+        run(&mut doc, Command::InsertText(")".to_string()));
+        assert_eq!(doc.as_str(), "()", "the closer was not doubled");
+        assert_eq!(doc.caret(), 2);
+    }
+
+    /// Wrapping a word is what `(` before one means; a closer there would have
+    /// to be deleted.
+    #[test]
+    fn an_opener_before_a_word_is_typed_alone() {
+        let mut doc = styled("word", rust_style());
+        run(&mut doc, Command::InsertText("(".to_string()));
+        assert_eq!(doc.as_str(), "(word");
+    }
+
+    #[test]
+    fn closing_brackets_can_be_turned_off() {
+        let mut doc = styled(
+            "",
+            InputStyle {
+                close_brackets: false,
+                ..rust_style()
+            },
+        );
+        run(&mut doc, Command::InsertText("(".to_string()));
+        assert_eq!(doc.as_str(), "(");
+    }
+
+    #[test]
+    fn enter_carries_the_indentation_the_line_had() {
+        let mut doc = styled("    let x = 1;", rust_style());
+        run(&mut doc, Command::MoveLineEnd { extend: false });
+        run(&mut doc, Command::InsertNewline);
+        run(&mut doc, Command::InsertText("y".to_string()));
+        assert_eq!(doc.as_str(), "    let x = 1;\n    y");
+    }
+
+    #[test]
+    fn enter_after_an_opener_goes_one_level_deeper() {
+        let mut doc = styled("fn f() {", rust_style());
+        run(&mut doc, Command::MoveLineEnd { extend: false });
+        run(&mut doc, Command::InsertNewline);
+        run(&mut doc, Command::InsertText("g".to_string()));
+        assert_eq!(doc.as_str(), "fn f() {\n    g");
+    }
+
+    /// Enter between a pair puts the closer on its own line at the opening
+    /// depth, which is the shape `{` then Enter is supposed to produce.
+    #[test]
+    fn enter_between_a_pair_opens_a_block() {
+        let mut doc = styled("  fn f() {}", rust_style());
+        run(&mut doc, Command::MoveLineEnd { extend: false });
+        run(&mut doc, Command::MoveLeft { extend: false });
+        run(&mut doc, Command::InsertNewline);
+        assert_eq!(doc.as_str(), "  fn f() {\n      \n  }");
+        run(&mut doc, Command::InsertText("g".to_string()));
+        assert_eq!(doc.as_str(), "  fn f() {\n      g\n  }");
+    }
+
+    /// Python blocks are made of colons, and only Python's are.
+    #[test]
+    fn a_colon_opens_a_block_only_in_python() {
+        let mut doc = styled(
+            "if x:",
+            InputStyle {
+                indent: IndentUnit::Spaces(2),
+                grammar: crate::syntax::Grammar::Python,
+                ..rust_style()
+            },
+        );
+        run(&mut doc, Command::MoveLineEnd { extend: false });
+        run(&mut doc, Command::InsertNewline);
+        run(&mut doc, Command::InsertText("y".to_string()));
+        assert_eq!(doc.as_str(), "if x:\n  y");
+    }
+
+    /// Tab is the buffer's unit, not a fixed four columns: a tabbed file must
+    /// not gain spaces, and a two-space file must not drift to four.
+    #[test]
+    fn tab_uses_the_unit_the_buffer_already_has() {
+        let mut doc = styled(
+            "",
+            InputStyle {
+                indent: IndentUnit::Tab,
+                ..rust_style()
+            },
+        );
+        run(&mut doc, Command::InsertTab);
+        assert_eq!(doc.as_str(), "\t");
+
+        let mut doc = styled(
+            "",
+            InputStyle {
+                indent: IndentUnit::Spaces(2),
+                ..rust_style()
+            },
+        );
+        run(&mut doc, Command::InsertTab);
+        run(&mut doc, Command::InsertTab);
+        assert_eq!(doc.as_str(), "    ");
     }
 }

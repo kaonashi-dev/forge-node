@@ -141,7 +141,7 @@ living with no window pill of its own.
 | --- | --- |
 | arrows, Home/End, PageUp/PageDown | move; hold Shift to select |
 | Ctrl or Alt + arrows | move by word |
-| printable characters, Enter, Tab | insert; Tab advances to the next 4-column stop |
+| printable characters, Enter, Tab | insert; Tab advances to the next stop of the buffer's own indent unit |
 | Backspace, Delete | grapheme-aware deletion; Alt-Backspace deletes a word |
 | Ctrl-S | save (exclusive temp file in the same directory, then rename) |
 | Ctrl-Z / Ctrl-Y | undo / redo |
@@ -149,6 +149,7 @@ living with no window pill of its own.
 | Ctrl-A / Ctrl-L / Ctrl-K | select all / select line / delete line |
 | Ctrl-F, Ctrl-N, Ctrl-B | find, next match, previous match |
 | Ctrl-T / Ctrl-W / Ctrl-E | toggle match case / whole word / regular expression |
+| Ctrl-P | toggle closing brackets as you type |
 | Ctrl-R | replace (Tab switches field, **Enter** replaces this match, **Ctrl-R** replaces the rest) |
 | Ctrl-G | go to line |
 | Alt-N / Alt-P | next / previous changed block (Ctrl-N and Ctrl-B are the find bar's) |
@@ -197,6 +198,18 @@ HTML context menu).
   transactions with a selection on both sides. Undo restores text *and*
   selection; a run of typing coalesces into one entry, a paste or a
   replace-all never does.
+- **Indentation is the file's, not a setting's.** The unit is read off the
+  buffer when it opens — tabs win a tie, and a spaced file reports the step it
+  actually uses, which is not always four. Tab inserts that unit, Enter carries
+  the line's leading whitespace, a line that opens a block adds one level, and a
+  closer waiting on the other side of the caret is pushed onto a line of its own
+  at the opening depth. A colon opens a block in Python and nowhere else.
+- **A closing bracket comes with its opener, and undoes with it.** One
+  transaction, so the pair was one keystroke and reads as one. The closer is
+  only added where it would not be in the way — before whitespace, a closer or
+  the end of a line, never before a word — and typing a closer over one that is
+  already there steps past it rather than doubling it. A quote after a word is
+  an apostrophe. `Ctrl-P` turns the whole thing off.
 - **Budgets before allocation.** 2 MiB of valid UTF-8 per document, checked
   against `metadata` *and* against a capped reader, because the file can grow
   in between. A transaction that would cross the limit is refused whole. Undo
@@ -306,15 +319,17 @@ window is showing — the focused one or an open editor pane — because OSC 52 
 whatever runs in a PTY set the clipboard, and a background agent replacing it
 would be a real hazard. OSC 52's *read* is never answered, by the engine or by
 anyone: it would hand the person's clipboard to the child process.
+`a_copy_in_the_editor_reaches_the_host_as_a_clipboard_store` drives the whole
+chain: the editor writes the escape into its PTY, the daemon's engine is the
+only VT that parses it, and the store arrives keyed on the *editor's* terminal
+— which is what lets the host forward this one and refuse one from a background
+agent.
 
 What is left. A rendered Markdown document,
 an SVG and a raster image still open on the DOM side — a terminal cannot draw
 them, so that split is the design rather than a gap. What *is* a gap: go-to-definition and
 find-references, which need a channel from the editor to `SearchFiles` and are
-the one item here that changes shape rather than filling in; the system
-clipboard, where `Ctrl-C` still fills an internal register, so a copy does not
-leave the editor (the pane's own menu pastes from the system clipboard, and a
-mouse selection copies through the terminal's existing path); the change
+the one item here that changes shape rather than filling in; the change
 *details* panel, where the gutter has the marks but not the before/after rows;
 and the overview ruler. The pane does draw a scrollbar thumb: `EditorState`
 carries `top_line` / `visible_lines` / `total_lines`, so the GUI reports where

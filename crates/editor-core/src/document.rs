@@ -83,6 +83,10 @@ pub struct Document {
     /// Revision of the bytes this document was loaded from, for a save that
     /// refuses to overwrite someone else's write.
     disk_revision: Option<String>,
+    /// How typing behaves here: the indent unit the file already uses and the
+    /// grammar its blocks are made of. The adapter sets it from the path; the
+    /// core never looks at one.
+    style: crate::indent::InputStyle,
 }
 
 impl Document {
@@ -112,7 +116,18 @@ impl Document {
             next_state: 1,
             saved_state: Some(0),
             disk_revision: None,
+            style: crate::indent::InputStyle::default(),
         }
+    }
+
+    /// Set how typing behaves in this buffer.
+    pub fn set_input_style(&mut self, style: crate::indent::InputStyle) {
+        self.style = style;
+    }
+
+    #[must_use]
+    pub fn input_style(&self) -> crate::indent::InputStyle {
+        self.style
     }
 
     #[must_use]
@@ -341,11 +356,28 @@ impl Document {
 
     /// Replace the selection (or insert at the caret) with `text`.
     pub fn insert(&mut self, text: &str, origin: Origin) -> Result<Applied, EditError> {
+        self.insert_around(text, "", origin)
+    }
+
+    /// Insert `before` and `after` around the caret, leaving it between them.
+    ///
+    /// One transaction, so an auto-closed bracket and the character that asked
+    /// for it undo together — the pair was one keystroke and reads as one.
+    pub fn insert_around(
+        &mut self,
+        before: &str,
+        after: &str,
+        origin: Origin,
+    ) -> Result<Applied, EditError> {
         let range = self.selection.range();
-        let after = Selection::caret(range.start + text.len());
-        let transaction =
-            Transaction::new(vec![Edit::replace(range, text)], origin, self.selection)?
-                .with_selection_after(after);
+        let inserted = format!("{before}{after}");
+        let caret = Selection::caret(range.start + before.len());
+        let transaction = Transaction::new(
+            vec![Edit::replace(range, &inserted)],
+            origin,
+            self.selection,
+        )?
+        .with_selection_after(caret);
         self.apply(transaction)
     }
 
