@@ -7,9 +7,9 @@ function byCreatedAt(sessions: Session[]): Session[] {
   );
 }
 
-/** Same discriminator the tab labels use: a shell has no agent provider. */
+/** Same discriminator the tab labels use: a shell has no agent provider, and an editor is never one. */
 function isShell(session: Session): boolean {
-  return session.agent_provider_id == null;
+  return session.agent_provider_id == null && session.kind !== "Editor";
 }
 
 /**

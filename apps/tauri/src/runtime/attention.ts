@@ -33,6 +33,11 @@ export function shellTabLabel(session: Session, sessions: Session[]): string {
 }
 
 export function sessionTabLabel(session: Session, sessions: Session[]): string {
+  // The strip no longer receives editors; if one reaches here it is named for
+  // its file, never numbered as a terminal.
+  if (session.kind === "Editor") {
+    return sessionTitle(session);
+  }
   if (session.agent_provider_id != null) {
     return sessionTitle(session);
   }

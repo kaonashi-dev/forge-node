@@ -107,11 +107,13 @@ enterprise_hosts = []           # GHES hostnames, e.g. ["github.example.com"].
 # is what the GUI's Code tab opens a text file in. `ui.editor.terminal` is the
 # escape hatch back to the DOM surface, not an opt-in. A save goes through the
 # daemon and `fs-service`, conditioned on the revision it last wrote.
-executable = ""                 # empty searches the login-shell PATH: the app
-                                # bundle ships forge-editor beside forge-daemon,
-                                # and a dev checkout shares target/debug with it.
-                                # A named binary that is missing fails the spawn;
-                                # there is no fallback to a shell.
+executable = ""                 # empty searches the login-shell PATH, then the
+                                # forge-editor sitting next to forge-daemon (the
+                                # app bundle and a cargo target/ share that
+                                # layout). A Finder launch's login PATH does not
+                                # include Contents/MacOS. A named binary that is
+                                # missing fails the spawn; there is no fallback
+                                # to a shell.
 
 [juva]
 # Where Juva gets its prose. Off by default, and it stays useful off: every

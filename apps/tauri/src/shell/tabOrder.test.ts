@@ -24,6 +24,13 @@ const agent = (id: string, created_at?: string): Session =>
     ...(created_at ? { created_at } : {}),
   });
 
+const editor = (id: string, created_at?: string): Session =>
+  sessionFixture({
+    id,
+    kind: "Editor",
+    ...(created_at ? { created_at } : {}),
+  });
+
 describe("tabOrder", () => {
   it("moves a tab to every gap, including after the last tab", () => {
     const order = ["a", "b", "c"];
@@ -105,6 +112,18 @@ describe("tabOrder", () => {
       "a2",
       "a3",
     ]);
+  });
+
+  it("does not count an editor as a shell", () => {
+    // An editor should never reach the strip, but if one is handed in it must
+    // not be numbered or ordered as a terminal: it sorts with the non-shells,
+    // so it cannot sit between two terminals.
+    const sessions = [
+      session("t1", "2026-01-01T00:00:00Z"),
+      editor("e1", "2026-01-02T00:00:00Z"),
+      session("t2", "2026-01-03T00:00:00Z"),
+    ];
+    expect(openSessions(sessions, []).map((item) => item.id)).toEqual(["t1", "t2", "e1"]);
   });
 
   it("places a new agent at the end", () => {

@@ -51,4 +51,16 @@ describe("the terminal editor pane", () => {
       expect(pane(), `the pane must not mention ${absent}`).not.toContain(absent);
     }
   });
+
+  /*
+   * The renderer paints the caret only while `focused` is set, and only the
+   * textarea's focus can set it: without this wiring the editor's caret is
+   * never drawn even though the engine reports it on every frame.
+   */
+  it("the_editor_pane_wires_focus_to_the_caret", () => {
+    expect(pane()).toContain("renderer.focused = focused");
+    expect(pane()).toContain("onFocus");
+    expect(pane()).toContain("onBlur");
+    expect(pane()).toContain("new CursorBlink(");
+  });
 });

@@ -56,6 +56,16 @@ describe("sessionScope", () => {
     expect(sessionsInWorkspace(closed, "dev-main").map((s) => s.id)).toEqual(["s1", "s2"]);
   });
 
+  it("keeps an editor out of the strip even when it holds a terminal", () => {
+    // An open file is a daemon session with a terminal, but it belongs to the
+    // Code strip; it must never appear beside the checkout's terminal tabs.
+    const withEditor = [
+      ...sessions,
+      sessionFixture({ id: "e1", workspace_id: "dev-main", kind: "Editor" }),
+    ];
+    expect(sessionsInWorkspace(withEditor, "dev-main").map((s) => s.id)).toEqual(["s1", "s2"]);
+  });
+
   it("shows nothing rather than everything when there is no checkout", () => {
     expect(sessionsInWorkspace(sessions, null)).toEqual([]);
   });

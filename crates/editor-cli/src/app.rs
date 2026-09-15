@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use editor_control::{EditorStateWire, WireEdit, WireMark, WireMarkKind};
 use editor_core::{
     execute, metrics, Command, Document, Edit, Grammar, Origin, Query, Range, Refusal, Selection,
@@ -20,8 +20,15 @@ use crate::disk;
 
 /// Rows a frame has to repaint.
 pub struct Frame {
+    /// Every row of the viewport when it moved or the document changed under
+    /// it; only the damaged rows otherwise.
     pub rows: Vec<usize>,
-    pub full: bool,
+    /// Whether the grid changed shape since the last frame.
+    ///
+    /// Only a resize needs the clear: a scrolled viewport repaints every row
+    /// anyway, and blanking first is what makes a client reading the delta
+    /// between two writes paint an empty screen.
+    pub clear: bool,
 }
 
 /// The one-line surface at the bottom, when it is not the status line.
@@ -191,7 +198,22 @@ impl App {
     }
 
     pub fn content_height(&self) -> usize {
-        (self.height as usize).saturating_sub(1)
+        if self.integrated && !self.needs_status_row() {
+            self.height as usize
+        } else {
+            (self.height as usize).saturating_sub(1)
+        }
+    }
+
+    /// Whether the last row belongs to the status/prompt bar this frame.
+    ///
+    /// Standalone always keeps it: the idle bar is the only place the path,
+    /// position and `F1 help` live. Integrated leaves that chrome to the GUI
+    /// pane, so the row is claimed only for a prompt or a transient message —
+    /// the two things the HTML around us cannot show — and reclaimed as a
+    /// content row the rest of the time.
+    pub fn needs_status_row(&self) -> bool {
+        !self.integrated || self.prompt.is_some() || self.status.is_some()
     }
 
     pub fn number_width(&self) -> usize {
@@ -501,11 +523,14 @@ impl App {
         self.damage_all = true;
     }
 
-    /// Rows to repaint, and whether the whole viewport moved.
+    /// Rows to repaint, and whether the grid changed shape.
     pub fn take_frame(&mut self) -> Frame {
         let height = self.content_height();
         let viewport = (self.top, self.left, height, self.width);
         let full = self.damage_all || self.painted != Some(viewport);
+        let clear = self
+            .painted
+            .is_none_or(|(_, _, rows, cols)| rows != height || cols != self.width);
         let rows = if full {
             (0..height).collect()
         } else {
@@ -518,7 +543,7 @@ impl App {
         self.damaged.clear();
         self.damage_all = false;
         self.painted = Some(viewport);
-        Frame { rows, full }
+        Frame { rows, clear }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -560,6 +585,24 @@ impl App {
             Some(Prompt::ConfirmClose) | None => self.run(Command::Paste(text.to_string())),
         }
         self.damage_all = true;
+    }
+
+    /// Turn a mouse report into a caret move, a selection change, or a scroll.
+    ///
+    /// Left button lands the caret; Shift or a drag extends the selection to
+    /// the same point; the wheel moves the viewport. Everything else — the
+    /// middle button, motion with no button — is not a gesture this editor has.
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let extend = event.modifiers.contains(KeyModifiers::SHIFT);
+                self.click(event.column, event.row, extend);
+            }
+            MouseEventKind::Drag(MouseButton::Left) => self.click(event.column, event.row, true),
+            MouseEventKind::ScrollUp => self.scroll(-1),
+            MouseEventKind::ScrollDown => self.scroll(1),
+            _ => {}
+        }
     }
 
     fn run(&mut self, command: Command) {
@@ -878,6 +921,74 @@ impl App {
         self.quit = true;
     }
 
+    /// Point the caret at the cell `(col, row)` names, or extend to it.
+    ///
+    /// The inverse of `place_caret`: a screen cell is the gutter plus the
+    /// display column past `left`, and `top` names the line under `row`. The
+    /// display column rounds down to a grapheme the way a vertical move does,
+    /// so a click never lands inside a wide character.
+    fn click(&mut self, col: u16, row: u16, extend: bool) {
+        let row = row as usize;
+        // The status/prompt row is chrome, not text; `content_height` already
+        // excludes it, so a click at or past it moves nothing.
+        if row >= self.content_height() {
+            return;
+        }
+        let text = self.document.text();
+        let line = (self.top + row).min(text.line_count().saturating_sub(1));
+        let display = (col as usize).saturating_sub(self.gutter_width()) + self.left;
+        let line_text = text.line(line);
+        let column = display.min(metrics::display_column(line_text, line_text.len()));
+        let offset = text.line_start(line) + metrics::byte_column_for_display(line_text, column);
+        self.move_caret_to(offset, extend);
+    }
+
+    /// The click twin of a movement command: `with_head` drops the anchor for a
+    /// plain click and keeps it for a Shift-click or a drag, and the old and new
+    /// caret rows are the only damage.
+    fn move_caret_to(&mut self, offset: usize, extend: bool) {
+        let before = self.document.selection();
+        self.document
+            .set_selection(before.with_head(offset, extend));
+        let after = self.document.selection();
+        if before != after {
+            self.damage_span(before.range());
+            self.damage_span(after.range());
+        }
+        self.ensure_visible();
+    }
+
+    /// Move the viewport `delta` lines for a wheel notch.
+    ///
+    /// The wheel scrolls the view, not the caret — the opposite of
+    /// [`Self::ensure_visible`]. The caret only moves when the scroll pushed it
+    /// off screen, and then just to the nearest visible line, keeping its
+    /// column so typing resumes where it reads that it will.
+    fn scroll(&mut self, delta: isize) {
+        let max_top = self.document.text().line_count().saturating_sub(1) as isize;
+        let new_top = (self.top as isize + delta).clamp(0, max_top) as usize;
+        if new_top == self.top {
+            return;
+        }
+        self.top = new_top;
+        self.damage_all = true;
+
+        let height = self.content_height().max(1);
+        let last_row = self.top + height - 1;
+        let caret_line = self.document.caret_line_col().line;
+        let target_line = caret_line.clamp(self.top, last_row);
+        if target_line == caret_line {
+            return;
+        }
+        let text = self.document.text();
+        let display = self.caret_position().1;
+        let line_text = text.line(target_line);
+        let column = display.min(metrics::display_column(line_text, line_text.len()));
+        let offset =
+            text.line_start(target_line) + metrics::byte_column_for_display(line_text, column);
+        self.document.set_selection(Selection::caret(offset));
+    }
+
     /// Scroll just enough to keep the caret visible, never a cell more.
     fn ensure_visible(&mut self) {
         let height = self.content_height().max(1);
@@ -1087,6 +1198,15 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::SHIFT)
     }
 
+    fn mouse(kind: MouseEventKind, col: u16, row: u16, modifiers: KeyModifiers) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers,
+        }
+    }
+
     #[test]
     fn typing_inserts_and_marks_dirty() {
         let mut app = app("hello", false);
@@ -1106,11 +1226,14 @@ mod tests {
         let mut app = app(&text, false);
         app.resize(40, 12);
         let first = app.take_frame();
-        assert!(first.full, "the first frame paints everything");
+        assert_eq!(
+            first.rows,
+            (0..app.content_height()).collect::<Vec<_>>(),
+            "the first frame paints everything"
+        );
 
         app.handle_key(key(KeyCode::Char('X')));
         let frame = app.take_frame();
-        assert!(!frame.full);
         assert_eq!(frame.rows, vec![0]);
     }
 
@@ -1124,7 +1247,10 @@ mod tests {
         app.resize(40, 12);
         app.take_frame();
         app.handle_key(key(KeyCode::Enter));
-        assert!(app.take_frame().full);
+        assert_eq!(
+            app.take_frame().rows,
+            (0..app.content_height()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1594,5 +1720,205 @@ mod tests {
             editor_control::MAX_DOCUMENT_BYTES,
             editor_core::limits::MAX_DOCUMENT_BYTES
         );
+    }
+
+    /// Integrated mode with nothing to say hands the last row back to content:
+    /// the GUI pane already paints the path and position as HTML chrome.
+    #[test]
+    fn integrated_idle_reclaims_the_status_row() {
+        let mut app = app("hello\nworld\n", false);
+        app.set_integrated();
+        app.resize(80, 24);
+        assert!(!app.needs_status_row());
+        assert_eq!(app.content_height(), 24);
+    }
+
+    /// A prompt still owns the last row in integrated mode: the HTML around us
+    /// cannot show the find bar.
+    #[test]
+    fn a_prompt_keeps_the_status_row_in_integrated_mode() {
+        let mut app = app("hello\nworld\n", false);
+        app.set_integrated();
+        app.resize(80, 24);
+        app.handle_key(control('f'));
+        assert!(matches!(app.prompt(), Some(Prompt::Find { .. })));
+        assert!(app.needs_status_row());
+        assert_eq!(app.content_height(), 23);
+    }
+
+    /// A transient message keeps the row too, for the one frame it shows.
+    #[test]
+    fn a_message_keeps_the_status_row_in_integrated_mode() {
+        let mut app = app("hello\nworld\n", true);
+        app.set_integrated();
+        app.resize(80, 24);
+        // A read-only buffer refuses the edit and reports why.
+        app.handle_key(key(KeyCode::Char('X')));
+        assert!(app.status().is_some());
+        assert!(app.needs_status_row());
+        assert_eq!(app.content_height(), 23);
+    }
+
+    /// Standalone always keeps the idle bar, so its geometry never changes.
+    #[test]
+    fn standalone_always_keeps_the_status_row() {
+        let mut app = app("hello\nworld\n", false);
+        app.resize(80, 24);
+        assert!(app.needs_status_row());
+        assert_eq!(app.content_height(), 23);
+    }
+
+    /// A click maps a screen cell back to a byte offset, past the gutter.
+    #[test]
+    fn a_click_lands_the_caret_past_the_gutter() {
+        let mut app = app("hello\nworld\n", false);
+        app.resize(80, 24);
+        let gutter = app.gutter_width();
+        assert_eq!(gutter, 3, "one number column, a mark cell, and a space");
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            (gutter + 2) as u16,
+            1,
+            KeyModifiers::NONE,
+        ));
+        // Row 1 is line 2 ("world"); two cells past the gutter is byte 2 of it,
+        // which is offset 8 across the whole buffer.
+        assert_eq!(app.caret_position(), (2, 2));
+        assert_eq!(app.document().caret(), 8);
+    }
+
+    /// The status/prompt row is chrome: a click on it is not a caret move.
+    #[test]
+    fn a_click_on_the_status_row_moves_nothing() {
+        let mut app = app("hello\nworld\n", false);
+        app.resize(20, 5);
+        let before = app.document().caret();
+        // content_height is 4, so row 4 is the status row.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            5,
+            4,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.document().caret(), before);
+    }
+
+    /// Shift-click keeps the anchor and moves the head, like a shifted arrow.
+    #[test]
+    fn a_shift_click_extends_the_selection() {
+        let mut app = app("hello world\n", false);
+        app.resize(80, 24);
+        let gutter = app.gutter_width() as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter,
+            0,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.document().caret(), 0);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter + 5,
+            0,
+            KeyModifiers::SHIFT,
+        ));
+        assert_eq!(app.document().selection().range(), Range::new(0, 5));
+    }
+
+    /// A drag extends the selection the same way a shifted click does.
+    #[test]
+    fn a_drag_extends_the_selection() {
+        let mut app = app("hello world\n", false);
+        app.resize(80, 24);
+        let gutter = app.gutter_width() as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter,
+            0,
+            KeyModifiers::NONE,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            gutter + 5,
+            0,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.document().selection().range(), Range::new(0, 5));
+    }
+
+    /// The wheel moves the viewport; a caret still on screen does not budge.
+    #[test]
+    fn the_wheel_scrolls_and_leaves_a_visible_caret_alone() {
+        let text = (0..100)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = app(&text, false);
+        app.resize(40, 10);
+        app.goto_line(5);
+        let caret = app.document().caret();
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 0, 0, KeyModifiers::NONE));
+        assert_eq!(app.top(), 1);
+        assert_eq!(app.document().caret(), caret);
+    }
+
+    /// A scrolled viewport repaints every row, but must not blank the screen
+    /// first: a client reading the delta between the clear and the rows paints
+    /// the gap as a flicker.
+    #[test]
+    fn scrolling_repaints_without_clearing_the_screen() {
+        let text = (0..100)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = app(&text, false);
+        app.resize(40, 10);
+        assert!(
+            app.take_frame().clear,
+            "the first frame owns the alt screen"
+        );
+
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 0, 0, KeyModifiers::NONE));
+        let frame = app.take_frame();
+        assert_eq!(
+            frame.rows.len(),
+            app.content_height(),
+            "the viewport moved, so nothing is reusable"
+        );
+        assert!(!frame.clear, "a move is not a resize");
+
+        app.resize(40, 20);
+        assert!(
+            app.take_frame().clear,
+            "only a shape change needs the clear"
+        );
+    }
+
+    /// When the scroll pushes the caret off screen it follows to the edge.
+    #[test]
+    fn the_wheel_pulls_a_caret_that_would_leave_the_viewport() {
+        let text = (0..100)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = app(&text, false);
+        app.resize(40, 10);
+        // The caret starts on line 1; scrolling down moves it off the top.
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 0, 0, KeyModifiers::NONE));
+        assert_eq!(app.top(), 1);
+        assert_eq!(
+            app.caret_position().0,
+            2,
+            "pulled to the first visible line"
+        );
+    }
+
+    /// Scrolling up at the top is a no-op, not a move into negative space.
+    #[test]
+    fn scrolling_up_stops_at_the_top() {
+        let mut app = app("a\nb\nc\n", false);
+        app.resize(40, 10);
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 0, 0, KeyModifiers::NONE));
+        assert_eq!(app.top(), 0);
     }
 }

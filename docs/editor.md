@@ -44,7 +44,8 @@ What happens then:
   through `fs-service` — off the core lock, and refused for a directory, a
   binary file or one past the 2 MiB budget — then spawns `forge-editor` under
   the daemon's PTY as a `SessionKind::Editor` session. `[editor] executable`
-  names the binary; otherwise it is `forge-editor` on the resolved `PATH`. A
+  names the binary; otherwise it is `forge-editor` on the resolved `PATH`,
+  then the binary next to this `forge-daemon` (the package layout). A
   missing binary fails the spawn and never falls back to a shell.
 - The buffer travels over a private Unix socket named by `FORGE_EDITOR_CONTROL`,
   not through argv and not through the PTY: `crates/editor-control` owns the
@@ -62,6 +63,13 @@ What happens then:
 - `Session.editor` is runtime state like `terminal_id`: no column, no migration,
   gone on restart. An editor session is never idle-stopped, whatever the
   thresholds say.
+
+**The idle status row is the pane's, not the TUI's.** Standalone, `forge-editor`
+paints an inverted status row — path, `[modified]`, `line:column`, `F1 help` —
+along the bottom. Integrated, that row is a second copy of what the pane's HTML
+chrome already shows, so the TUI drops it and gives the whole height to the
+buffer. A prompt (find, go-to-line, confirm) and a transient message still take
+the last row in both modes; only the idle bar is silenced.
 
 **Colour is the grammar's, and it is scanned whole.** `editor_core::Syntax`
 scans the document into per-line spans on every mutation and never per row: a
@@ -119,6 +127,14 @@ there. A rival editor would be a second process, a second PTY and a second
 draft of one file. Closing the Code view detaches it: the process survives and
 the session stays in the rail until it is killed.
 
+**An editor is a file, not a window tab.** One `SessionKind::Editor` session per
+open file lives in the daemon, but the GUI never lists it in the window's
+session strip beside the shells and agents — it belongs to the Code surface,
+shown as a sub-tab under the `Code` pill with the file's basename. Focusing one
+from the rail or history opens Code and reveals the file rather than swapping the
+main terminal. Closing the Code view detaches the pane; the process can go on
+living with no window pill of its own.
+
 ## Keys
 
 | Key | Action |
@@ -143,6 +159,15 @@ the session stays in the rail until it is killed.
 `Ctrl-C` copies rather than quitting, and `Esc` closes a prompt without
 touching the document. `--read-only` refuses every edit at the transaction
 entry and says so instead of silently dropping keys.
+
+**The mouse moves the caret.** A left click places the caret; a Shift-click
+extends the selection to the click; a left drag selects; the wheel scrolls the
+viewport without moving the caret. The editor turns on mouse capture on entry
+(`EnableMouseCapture`), so a real terminal reports the events and the Code pane
+forwards them as the same SGR reports the main terminal sends — the editor reads
+the mouse itself either way. Out of scope for now: go-to-definition on click,
+middle-click paste, and a native right-click menu (the Code pane keeps its own
+HTML context menu).
 
 ## What the core guarantees
 
@@ -170,8 +195,8 @@ entry and says so instead of silently dropping keys.
 
 - Regular-expression search is not implemented: it needs a dependency this
   workspace has not approved. Find is literal, with match-case and whole-word.
-- One buffer per process. No syntax highlighting, no mouse, no splits, no
-  wrapping, no Vim profile.
+- One buffer per process. No splits, no wrapping, no Vim profile. The mouse
+  places the caret, extends a selection and scrolls, but not more than that.
 - The save is optimistic, not exclusive: it compares the revision it loaded
   against the disk before writing and refuses once when they differ, which
   catches an agent that already wrote. It is not a compare-and-swap against a

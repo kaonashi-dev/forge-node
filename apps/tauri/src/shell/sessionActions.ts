@@ -14,7 +14,7 @@ import {
   runtimeStore,
 } from "../store/runtimeStore";
 import { setSplitOpen, splitOpen } from "../store/sessionChangesStore";
-import { openReview, showSession } from "../store/viewsStore";
+import { openEditorTerminal, openReview, showSession } from "../store/viewsStore";
 import { focusWorkspace, workbenchStore } from "../store/workbenchStore";
 import { newAgent, newShell, selectSession } from "../runtime/api";
 import {
@@ -25,6 +25,7 @@ import {
 } from "../workbench/api";
 import { sessionTabLabel } from "../runtime/attention";
 import { focusTerminal } from "../terminal/focus";
+import { sessionTitle } from "../runtime/types";
 import type { ExternalAgentSession, Session, Workspace } from "../runtime/types";
 import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "./layout";
 import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
@@ -78,12 +79,19 @@ export function currentCheckout(): Workspace | null {
  * The caret goes too: asking for a terminal is asking to type in it.
  */
 export function focusSession(session: string): void {
+  const row = forgeStore.sessions.find((item) => item.id === session);
+  // An editor is not a terminal tab: it lives in the Code strip, so focusing it
+  // opens the file there rather than raising the main terminal (§16.7).
+  if (row?.kind === "Editor") {
+    if (row.workspace_id) focusWorkspace(row.workspace_id);
+    openEditorTerminal(row.id, row.editor?.path ?? sessionTitle(row));
+    return;
+  }
   showSession();
   // The focus ring Ctrl+Tab walks. Every user-driven focus goes through here,
   // which is what makes "the tab you just left" mean anything.
   recordTabFocus(session);
-  const workspace = forgeStore.sessions.find((item) => item.id === session)?.workspace_id;
-  if (workspace) focusWorkspace(workspace);
+  if (row?.workspace_id) focusWorkspace(row.workspace_id);
   void selectSession(session).catch(() => undefined);
   focusTerminal();
 }

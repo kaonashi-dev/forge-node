@@ -4748,27 +4748,22 @@ impl Daemon {
     // --- Terminals ---
 
     /// Resolve `forge-editor` for an integrated session: `[editor] executable`
-    /// when set, else the name on the login-shell `PATH` — which already
-    /// carries the daemon's own directory, so a dev checkout finds
-    /// `target/debug/forge-editor` without configuration.
+    /// when set, else the name on the login-shell `PATH`, else the binary
+    /// sitting next to this `forge-daemon`. A Finder/Dock launch's login-shell
+    /// `PATH` does not include `Contents/MacOS` (or `target/debug`), which is
+    /// where the package and a cargo build both lay the editor.
     fn editor_program(&self, env: &ResolvedEnvironment) -> Result<PathBuf, ProtocolError> {
         let configured = self.config.editor.executable.trim();
-        let requested = if configured.is_empty() {
-            Path::new("forge-editor")
-        } else {
-            Path::new(configured)
-        };
-        agents::resolve_executable(requested, env)
-            .filter(|path| is_executable_file(path))
-            .ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::SpawnError,
-                    format!(
-                        "forge-editor is not runnable (configured: {configured:?}); build it with \
-                         `cargo build -p editor-cli` or point `[editor] executable` at it"
-                    ),
-                )
-            })
+        let daemon_exe = std::env::current_exe().ok();
+        editor_program_from(configured, env, daemon_exe.as_deref()).ok_or_else(|| {
+            ProtocolError::new(
+                ErrorCode::SpawnError,
+                format!(
+                    "forge-editor is not runnable (configured: {configured:?}); build it with \
+                     `cargo build -p editor-cli` or point `[editor] executable` at it"
+                ),
+            )
+        })
     }
 
     fn build_spawn_spec(
@@ -6647,6 +6642,30 @@ fn prepend_daemon_bin_to_path(vars: &mut Vec<(String, String)>) {
         }
         None => vars.push(("PATH".to_owned(), dir.into_owned())),
     }
+}
+
+/// `[editor] executable` / login-shell `PATH`, then `forge-editor` beside the
+/// daemon. A configured miss must not fall through to the sibling — the user
+/// named a specific binary.
+fn editor_program_from(
+    configured: &str,
+    env: &ResolvedEnvironment,
+    daemon_exe: Option<&Path>,
+) -> Option<PathBuf> {
+    let requested = if configured.is_empty() {
+        Path::new("forge-editor")
+    } else {
+        Path::new(configured)
+    };
+    if let Some(path) = agents::resolve_executable(requested, env).filter(|p| is_executable_file(p))
+    {
+        return Some(path);
+    }
+    if !configured.is_empty() {
+        return None;
+    }
+    let sibling = daemon_exe.and_then(|exe| exe.parent().map(|dir| dir.join("forge-editor")))?;
+    is_executable_file(&sibling).then_some(sibling)
 }
 
 /// Install Forge attention assets beside the worktrees root.
@@ -9706,6 +9725,42 @@ mod tests {
         }
         std::fs::write(root.join(rel), bytes).unwrap();
         seeded_workspace(daemon, &root)
+    }
+
+    fn env_with_path(dirs: &[&Path]) -> ResolvedEnvironment {
+        let path = std::env::join_paths(dirs.iter().copied()).expect("PATH");
+        ResolvedEnvironment {
+            shell: PathBuf::from("/bin/sh"),
+            vars: vec![("PATH".to_owned(), path.to_string_lossy().into_owned())],
+            path_entries: dirs.iter().map(|d| (*d).to_path_buf()).collect(),
+            resolved_at: Timestamp::now(),
+            source: EnvSource::LoginShell,
+        }
+    }
+
+    #[test]
+    fn editor_program_falls_back_to_daemon_sibling() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bin = tmp.path().join("MacOS");
+        std::fs::create_dir_all(&bin).unwrap();
+        let editor = write_executable(&bin, "forge-editor");
+        let daemon_exe = bin.join("forge-daemon");
+        std::fs::write(&daemon_exe, b"daemon").unwrap();
+
+        // Empty PATH: a Finder-launched login shell never sees Contents/MacOS.
+        let empty = env_with_path(&[]);
+        let resolved = editor_program_from("", &empty, Some(&daemon_exe)).expect("sibling");
+        assert_eq!(resolved, editor);
+
+        let elsewhere = write_executable(tmp.path(), "other-editor");
+        let hit = editor_program_from(elsewhere.to_str().expect("utf8"), &empty, Some(&daemon_exe))
+            .expect("configured");
+        assert_eq!(hit, elsewhere);
+
+        assert!(
+            editor_program_from("/no/such/editor", &empty, Some(&daemon_exe)).is_none(),
+            "a configured miss must not fall through to the sibling"
+        );
     }
 
     #[test]

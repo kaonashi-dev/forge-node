@@ -66,8 +66,13 @@ export function sessionsInWorkspace(
   workspace: string | null,
 ): Session[] {
   if (!workspace) return [];
+  // Editors live in the Code strip, not the session strip: an open file is a
+  // daemon session with a terminal, but it is not one of the terminal tabs.
   return sessions.filter(
-    (session) => session.terminal_id !== null && session.workspace_id === workspace,
+    (session) =>
+      session.terminal_id !== null &&
+      session.workspace_id === workspace &&
+      session.kind !== "Editor",
   );
 }
 

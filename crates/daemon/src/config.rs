@@ -194,8 +194,9 @@ pub struct GithubConfig {
 #[serde(default)]
 pub struct EditorConfig {
     /// `forge-editor` executable or path. Empty searches the login-shell
-    /// `PATH` (§12); a dev checkout shares `target/debug` with `forge-daemon`,
-    /// so the default finds it without configuration.
+    /// `PATH`, then the binary next to this `forge-daemon` (package layout
+    /// and `target/debug` share that). A Finder launch's login PATH does not
+    /// include the app bundle directory.
     pub executable: String,
 }
 

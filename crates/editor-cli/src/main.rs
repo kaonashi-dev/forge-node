@@ -127,6 +127,7 @@ fn run(options: cli::Options) -> anyhow::Result<()> {
             }
             Input::Terminal(Some(Event::Resize(width, height))) => app.resize(width, height),
             Input::Terminal(Some(Event::Paste(text))) => app.paste(&text),
+            Input::Terminal(Some(Event::Mouse(mouse))) => app.handle_mouse(mouse),
             Input::Terminal(Some(_)) => {}
             Input::Terminal(None) => break Ok(()),
             Input::Control(Incoming::Message(message)) => {

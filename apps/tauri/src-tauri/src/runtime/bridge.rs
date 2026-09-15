@@ -1562,8 +1562,52 @@ fn run_command(
             let bytes = input::encode_paste(&text, &modes);
             input_editor_bytes(client, editors, pending_echo, session_id, bytes, id)
         }
+        // The editor sibling of `Mouse`: the pane only sends these while the
+        // editor asked to read the mouse, and the encoder refuses whatever the
+        // active mode does not report, so an event that encodes to nothing is
+        // simply one this mode does not want.
+        RuntimeCommand::MouseEditor {
+            session_id,
+            button,
+            kind,
+            col,
+            row,
+            ctrl,
+            alt,
+            shift,
+        } => {
+            let Some(open) = editors.get(&session_id) else {
+                return Ok(Effect::nothing());
+            };
+            let modes = store
+                .terminal(&open.terminal)
+                .map(|grid| grid.modes)
+                .unwrap_or_default();
+            let mods = client::Modifiers { ctrl, alt, shift };
+            let Some(bytes) = input::encode_mouse_event(&button, &kind, col, row, mods, &modes)
+            else {
+                return Ok(Effect::nothing());
+            };
+            client
+                .write_terminal_input(open.terminal, bytes)
+                .map_err(CommandError::from_client)?;
+            // No echo id: a mouse report is not typing, so there is no latency
+            // sample to close.
+            Ok(Effect::nothing())
+        }
         RuntimeCommand::ResizeEditor { session_id, size } => {
             resize_editor(client, store, editors, session_id, size)
+        }
+        // Repaint from the store's grid, no daemon round trip: the editor's
+        // attachment is live, so the viewport is already here to re-send.
+        RuntimeCommand::RepaintEditor { session_id } => {
+            let Some(open) = editors.get(&session_id) else {
+                return Ok(Effect::nothing());
+            };
+            Ok(Effect {
+                editor_damage: Some((open.terminal, Damage::Full)),
+                ..Effect::nothing()
+            })
         }
         RuntimeCommand::CloseEditor { session_id } => {
             Ok(detach_editor(client, editors, at.terminal, session_id))
@@ -1913,10 +1957,11 @@ fn resize_editor(
     let Some(terminal) = editor_resize_target(editors, session_id, requested) else {
         return Ok(Effect::nothing());
     };
-    let snapshot = client
-        .attach_terminal(terminal, requested)
-        .map_err(CommandError::from_client)?;
-    store.attach_terminal(terminal, &snapshot);
+    // A re-attach would not resize: the daemon adopts an attach size only for
+    // the first subscriber, and this connection is already one. Resize first,
+    // like the main terminal does (`resize_and_reattach`), or the editor keeps
+    // the geometry it was born with.
+    resize_and_reattach(client, store, terminal, requested)?;
     Ok(Effect {
         editor_damage: Some((terminal, Damage::Full)),
         ..Effect::nothing()

@@ -17,7 +17,7 @@ pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     }
     let frame = app.take_frame();
     let height = app.content_height();
-    if frame.full {
+    if frame.clear {
         // A resize leaves half of a wide grapheme behind on rows the new
         // geometry no longer covers; clearing once is cheaper than tracking it.
         queue!(out, terminal::Clear(terminal::ClearType::All))?;
@@ -25,7 +25,11 @@ pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     for row in frame.rows {
         draw_row(app, out, row)?;
     }
-    draw_status(app, out, height)?;
+    // Integrated mode leaves the idle status bar to the GUI pane and only
+    // claims the row for a prompt or a message; standalone always paints it.
+    if app.needs_status_row() {
+        draw_status(app, out, height)?;
+    }
     place_caret(app, out, height)?;
     // A copy leaves an OSC 52 for the terminal that owns the clipboard. Written
     // with the frame rather than at the keystroke, because this is the one

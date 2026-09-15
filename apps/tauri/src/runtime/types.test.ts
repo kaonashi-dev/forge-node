@@ -7,10 +7,14 @@ const session = (partial: Partial<Session>): Session => sessionFixture(partial);
 
 describe("an Editor session", () => {
   /*
-   * R31: an editor is its own kind everywhere the rail, the window strip and
-   * the glyphs read a session. Falling through to the shell branch would put
-   * a terminal glyph and the word "Shell" on a file, and give it the green
-   * dot a shell earns by sitting at a prompt — which an editor never does.
+   * R31: an editor is its own kind wherever the rail, the glyphs and the titles
+   * read a session. Falling through to the shell branch would put a terminal
+   * glyph and the word "Shell" on a file, and give it the green dot a shell
+   * earns by sitting at a prompt — which an editor never does.
+   *
+   * The one surface it does *not* reach is the window's session strip: an open
+   * file belongs to the Code strip, so `sessionsInWorkspace` keeps it out of
+   * the terminal tabs (see sessionScope.test.ts) — Code is its surface.
    */
   it("an_editor_session_is_not_rendered_as_a_shell", () => {
     const editor = session({ kind: "Editor", title: { user: null, terminal: null } });

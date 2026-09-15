@@ -1,6 +1,13 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { editorChrome } from "./editorChrome";
-import { resizeEditor, sendEditorKey, sendEditorPaste, sendEditorText } from "../runtime/api";
+import {
+  repaintEditor,
+  resizeEditor,
+  sendEditorKey,
+  sendEditorMouse,
+  sendEditorPaste,
+  sendEditorText,
+} from "../runtime/api";
 import { loadEditorConflict, overwriteEditorBuffer, reloadEditorBuffer } from "../workbench/api";
 import {
   clearEditorConflict,
@@ -20,6 +27,7 @@ import { readPalette } from "./palette";
 import { TerminalRenderer } from "./renderer";
 import { Viewport } from "./viewport";
 import { clipboardPaste } from "./clipboard";
+import { CursorBlink, prefersReducedMotion } from "./cursorBlink";
 import type { CellsPayload } from "./types";
 import { LatencyProbe } from "./latency";
 
@@ -52,7 +60,20 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
   let frame = 0;
   let resizeTimer: number | undefined;
   let lastSize = { cols: 0, rows: 0 };
-  let terminal: string | null = null;
+  /** Whether a left drag reported to the editor is in progress. */
+  let reporting = false;
+  /** The last cell a motion was reported for, to skip sub-cell moves. */
+  let lastReported = { col: -1, row: -1 };
+  /** Wheel lines accumulated below one whole notch. */
+  let wheelRemainder = 0;
+  /** Whether the hidden textarea holds the keyboard; the caret shows there. */
+  let focused = false;
+  const blink = new CursorBlink((visible) => {
+    if (!renderer) return;
+    renderer.cursorVisible = visible;
+    dirty.add(viewport.cursor.line);
+    schedule();
+  });
 
   const session = createMemo(() => forgeStore.sessions.find((item) => item.id === props.session));
   const chrome = createMemo(() => editorChrome(session()?.editor, props.path));
@@ -131,6 +152,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     frame = requestAnimationFrame(() => {
       frame = 0;
       if (!renderer) return;
+      renderer.focused = focused;
       if (repaintAll) {
         renderer.paintAll(viewport);
         repaintAll = false;
@@ -144,13 +166,31 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
   }
 
   function onFrame(payload: CellsPayload): void {
-    if (terminal && payload.terminal !== terminal) return;
-    terminal = payload.terminal;
+    // Every open editor publishes on this one channel, so a frame is this
+    // pane's only when it carries the shown session's terminal. Keyed off the
+    // session's own `terminal_id` rather than the first frame seen: sharing one
+    // pane across files means the session under it changes, and a sticky first
+    // terminal would pin the canvas to whatever opened first.
+    if (payload.terminal !== session()?.terminal_id) return;
     const rows = viewport.apply(payload);
     if (payload.full) repaintAll = true;
     else for (const row of rows) dirty.add(row);
     schedule();
   }
+
+  /*
+   * Follow the sub-tab. Switching files keeps this one pane mounted and only
+   * swaps `props.session`, so the frame stream has to be re-asked for: the new
+   * session reaches no terminal on a client-side tab switch, and an idle editor
+   * sends nothing on its own. Runs on mount too, which is harmless — the open
+   * already sent a full frame, and a second is idempotent.
+   */
+  createEffect(() => {
+    const id = props.session;
+    repaintAll = true;
+    dirty.clear();
+    void repaintEditor(id).catch(() => undefined);
+  });
 
   function measurePane(): void {
     if (!renderer || !host) return;
@@ -181,9 +221,15 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     const unsubscribe = editorCellsChannel.subscribe(onFrame);
     const observer = new ResizeObserver(() => measurePane());
     observer.observe(host);
+    // A drag that leaves the pane still belongs to it.
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
     onCleanup(() => {
       unsubscribe();
       observer.disconnect();
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      blink.dispose();
       if (frame !== 0) cancelAnimationFrame(frame);
       window.clearTimeout(resizeTimer);
     });
@@ -191,6 +237,9 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
 
   function onKeyDown(event: KeyboardEvent): void {
     if (event.isComposing || event.keyCode === 229) return;
+    // Typing restarts the phase *shown*, so a burst of keys never spends half
+    // its frames with the caret hidden under the character about to be placed.
+    blink.wake();
     if (event.metaKey) return;
     event.preventDefault();
     void sendEditorKey(
@@ -217,6 +266,88 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     const text = event.data;
     keys.value = "";
     if (text) void sendEditorText(props.session, text, probe.send()).catch(() => undefined);
+  }
+
+  // --- mouse ----------------------------------------------------------------
+  //
+  // The editor reads the mouse itself (caret, selection, scroll): the pane
+  // only forwards the events as reports, the way `TerminalPane` does for a TUI.
+  // Unlike the terminal there is no local selection to hold back, so `shift`
+  // goes through — the editor reads shift-click as an extend.
+
+  /** Whether the editor's grid is in a mouse-reporting mode. */
+  function reportsMouse(): boolean {
+    return viewport.modes.mouse_mode !== "Off";
+  }
+
+  /** Cell coordinates for the editor PTY: 0-based, clamped to the grid. */
+  function reportPoint(event: MouseEvent | WheelEvent): { col: number; row: number } {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      col: Math.max(
+        0,
+        Math.min(viewport.cols - 1, Math.floor((event.clientX - rect.left) / cell.width)),
+      ),
+      row: Math.max(
+        0,
+        Math.min(viewport.rows.length - 1, Math.floor((event.clientY - rect.top) / cell.height)),
+      ),
+    };
+  }
+
+  function report(event: MouseEvent | WheelEvent, button: string, kind: string): void {
+    const { col, row } = reportPoint(event);
+    void sendEditorMouse(props.session, {
+      button,
+      kind,
+      col,
+      row,
+      ctrl: event.ctrlKey,
+      alt: event.altKey,
+      shift: event.shiftKey,
+    }).catch(() => undefined);
+  }
+
+  function onMouseDown(event: MouseEvent): void {
+    // Left button only: right-click keeps the pane's own HTML menu, and the
+    // rest are out of scope for the editor.
+    if (event.button !== 0 || !reportsMouse()) return;
+    event.preventDefault();
+    keys.focus({ preventScroll: true });
+    reporting = true;
+    lastReported = { col: -1, row: -1 };
+    report(event, "left", "press");
+  }
+
+  function onMouseMove(event: MouseEvent): void {
+    if (!reporting) return;
+    // On a cell boundary only: a pointer crossing one cell fires dozens of
+    // moves, and each is a write to the PTY.
+    const point = reportPoint(event);
+    if (point.col === lastReported.col && point.row === lastReported.row) return;
+    lastReported = point;
+    report(event, "left", "motion");
+  }
+
+  function onMouseUp(event: MouseEvent): void {
+    if (!reporting) return;
+    reporting = false;
+    report(event, "left", "release");
+  }
+
+  function onWheel(event: WheelEvent): void {
+    if (!reportsMouse()) return;
+    event.preventDefault();
+    const perLine = event.deltaMode === 1 ? 1 : cell.height;
+    wheelRemainder += -event.deltaY / perLine;
+    const lines = Math.trunc(wheelRemainder);
+    if (lines === 0) return;
+    wheelRemainder -= lines;
+    // One report per line, the way a real wheel sends them.
+    const button = lines > 0 ? "wheel_up" : "wheel_down";
+    for (let index = 0; index < Math.abs(lines); index += 1) {
+      report(event, button, "press");
+    }
   }
 
   return (
@@ -267,6 +398,8 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
       <div
         ref={host}
         class="editor-terminal-body"
+        onMouseDown={onMouseDown}
+        onWheel={onWheel}
         onContextMenu={(event) => {
           event.preventDefault();
           setMenuAt({ x: event.clientX, y: event.clientY });
@@ -294,6 +427,20 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
           onCompositionEnd={onCompositionEnd}
           onInput={() => {
             keys.value = "";
+          }}
+          onFocus={() => {
+            focused = true;
+            blink.run(!prefersReducedMotion());
+            // The cursor is painted over the row, so the row it sits on is
+            // dirty even though no cell changed.
+            dirty.add(viewport.cursor.line);
+            schedule();
+          }}
+          onBlur={() => {
+            focused = false;
+            blink.run(false);
+            dirty.add(viewport.cursor.line);
+            schedule();
           }}
         />
       </div>
