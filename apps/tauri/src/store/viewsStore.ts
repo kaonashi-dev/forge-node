@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { workbenchStore } from "./workbenchStore";
 import { noteFileOpened } from "../workbench/recentFiles";
+import { opensInEditor } from "../workbench/previewRoute";
 import { openTerminalEditor } from "../runtime/api";
 import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
 import {
@@ -134,6 +135,12 @@ export function openEditor(path: string, line?: number): void {
   // alone rather than opening an empty one. The autosave preference travels
   // with the open: the daemon holds no opinion about it and the editor process
   // is what acts on it.
+  // A rendered kind never reaches the daemon's editor: it is a read the DOM
+  // draws, so the tab is opened here rather than waiting for `EditorOpened`.
+  if (!opensInEditor(path)) {
+    open({ kind: "preview", path });
+    return;
+  }
   void openTerminalEditor(workspace, path, line, readFlag(AUTOSAVE_KEY, false)).catch(
     () => undefined,
   );

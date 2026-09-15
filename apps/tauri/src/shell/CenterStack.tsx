@@ -62,6 +62,11 @@ import {
  * remounted per render, which would throw away the editor's undo history
  * every time the strip re-drew.
  */
+const PreviewView = lazy(() =>
+  import("../workbench/PreviewView").then((module) => ({
+    default: module.PreviewView,
+  })),
+);
 const EditorTerminalPane = lazy(() =>
   import("../terminal/EditorTerminalPane").then((module) => ({
     default: module.EditorTerminalPane,
@@ -345,6 +350,14 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
         <div class="center-view">
           <EditorTerminalPane
             session={(active() as { session: string }).session}
+            path={(active() as { path: string }).path}
+          />
+        </div>
+      </Show>
+      <Show when={onCode() && active().kind === "preview"}>
+        <div class="center-view">
+          <PreviewView
+            workspace={workbenchStore.workspace ?? ""}
             path={(active() as { path: string }).path}
           />
         </div>

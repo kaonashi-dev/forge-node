@@ -489,9 +489,14 @@ only VT that parses it, and the store arrives keyed on the *editor's* terminal
 — which is what lets the host forward this one and refuse one from a background
 agent.
 
-What is left. A rendered Markdown document,
-an SVG and a raster image still open on the DOM side — a terminal cannot draw
-them, so that split is the design rather than a gap. What *is* a gap: find-references, which is the
+What is left. A rendered Markdown document, an SVG and a raster image open on
+the DOM side — a terminal cannot draw them, so that split is the design rather
+than a gap. `previewKindFor` decides by extension, with the same rule the
+daemon's `ReadImage` uses, because routing a file to a preview the daemon will
+refuse bytes for is worse than opening it as text; text is the default, which is
+every file the grid can show. An SVG is drawn through an `<img>` and never as
+`innerHTML`: it is a file from a checkout an agent may have written, and an
+`<img>` refuses to run the script it may carry. What *is* a gap: find-references, which is the
 same channel as go-to-definition asking a different question; the change
 *details* panel, where the gutter has the marks but not the before/after rows.
 The pane does draw a scrollbar thumb: `EditorState`

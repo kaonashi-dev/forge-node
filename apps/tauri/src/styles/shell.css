@@ -279,6 +279,43 @@
   width: 100%;
 }
 
+/* A file the terminal editor cannot draw. Scrolls as a document, unlike every
+   grid surface next to it. */
+.preview-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.preview-chrome {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+}
+.preview-path {
+  color: var(--fg-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-12);
+}
+/* Contained rather than stretched: a screenshot at its own size next to a
+   16-pixel icon is the comparison a preview is for. */
+.preview-image {
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+}
+
 .terminal-pane {
   background: var(--forge-term-bg);
   cursor: text;
