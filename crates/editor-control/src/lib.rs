@@ -16,11 +16,14 @@ use std::io::{self, Read, Write};
 
 pub mod message;
 
-pub use message::{version_matches, DaemonMessage, EditorMessage, EditorStateWire, WireEdit};
+pub use message::{
+    version_matches, DaemonMessage, EditorMessage, EditorStateWire, WireEdit, WireMark,
+    WireMarkKind,
+};
 
 /// Version of the control wire. The handshake refuses any other value, the way
 /// `protocol::PROTOCOL_VERSION` does for the client wire.
-pub const CONTROL_VERSION: u16 = 1;
+pub const CONTROL_VERSION: u16 = 2;
 
 /// Hard cap for one decoded control frame.
 ///
@@ -90,6 +93,7 @@ pub fn read_frame<M: DeserializeOwned>(reader: &mut impl Read) -> Result<M, Cont
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::{WireMark, WireMarkKind};
     use std::io::Cursor;
 
     /// A reader whose header can declare a length its body never backs; any
@@ -125,6 +129,11 @@ mod tests {
                 revision: Some("abc".into()),
                 line: Some(3),
                 read_only: true,
+                autosave: false,
+            },
+            DaemonMessage::SetAutosave {
+                request_id: 8,
+                autosave: true,
             },
             DaemonMessage::Reveal {
                 request_id: 2,
@@ -132,6 +141,21 @@ mod tests {
                 column: Some(4),
             },
             DaemonMessage::GetState { request_id: 3 },
+            DaemonMessage::GitMarks {
+                request_id: 7,
+                marks: vec![WireMark {
+                    line: 12,
+                    kind: WireMarkKind::Modified,
+                }],
+            },
+            DaemonMessage::Saved {
+                request_id: 5,
+                revision: "9f8e7d6c".into(),
+            },
+            DaemonMessage::SaveRefused {
+                request_id: 6,
+                reason: "the file changed on disk".into(),
+            },
             DaemonMessage::ApplyPreviewEdit {
                 request_id: 4,
                 expected_document_version: 5,
@@ -167,6 +191,11 @@ mod tests {
             EditorMessage::Refused {
                 request_id: 4,
                 reason: "read-only".into(),
+            },
+            EditorMessage::SaveRequest {
+                request_id: 5,
+                text: "fn main() {}\n".into(),
+                document_version: 3,
             },
             EditorMessage::State {
                 request_id: None,

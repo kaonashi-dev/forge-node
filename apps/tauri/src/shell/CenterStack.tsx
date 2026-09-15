@@ -62,9 +62,6 @@ import {
  * remounted per render, which would throw away the editor's undo history
  * every time the strip re-drew.
  */
-const EditorView = lazy(() =>
-  import("../workbench/EditorView").then((module) => ({ default: module.EditorView })),
-);
 const EditorTerminalPane = lazy(() =>
   import("../terminal/EditorTerminalPane").then((module) => ({
     default: module.EditorTerminalPane,
@@ -344,11 +341,6 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
           <ReviewView workspace={(active() as { workspace: string }).workspace} />
         </div>
       </Show>
-      <Show when={onCode() && active().kind === "editor"}>
-        <div class="center-view">
-          <EditorView path={(active() as { path: string }).path} />
-        </div>
-      </Show>
       <Show when={onCode() && active().kind === "editor-terminal"}>
         <div class="center-view">
           <EditorTerminalPane
@@ -416,7 +408,7 @@ function ViewGlyph(props: { view: WorkbenchView }) {
 
   return (
     <Show
-      when={props.view.kind === "editor"}
+      when={props.view.kind === "editor-terminal"}
       fallback={<Icon name={glyph().icon} class={glyph().tone} size={13} />}
     >
       <LangIcon path={viewLabel(props.view)} size={13} />

@@ -54,9 +54,11 @@ def pack_map(items):
 def frame(payload):
     return struct.pack(">I", len(payload)) + payload
 
+CONTROL_VERSION = __CONTROL_VERSION__
+
 def hello(session_id, pid):
     inner = pack_map([
-        ("version", pack_int(1)),
+        ("version", pack_int(CONTROL_VERSION)),
         ("session_id", pack_str(session_id)),
         ("pid", pack_int(pid)),
     ])
@@ -80,6 +82,14 @@ def state(path, line=1):
     ])
     inner = pack_map([("request_id", pack_nil()), ("state", st)])
     return frame(pack_map([("State", inner)]))
+
+def save_request(request_id, text, document_version):
+    inner = pack_map([
+        ("request_id", pack_int(request_id)),
+        ("text", pack_str(text)),
+        ("document_version", pack_int(document_version)),
+    ])
+    return frame(pack_map([("SaveRequest", inner)]))
 
 def read_frame(sock):
     header = b""
@@ -112,6 +122,23 @@ def unpack(buf, i=0):
             k, i = unpack(buf, i)
             v, i = unpack(buf, i)
             out[k] = v
+        return out, i
+    if 0x90 <= b <= 0x9F:
+        n = b & 0x0F
+        i += 1
+        out = []
+        for _ in range(n):
+            v, i = unpack(buf, i)
+            out.append(v)
+        return out, i
+    if b in (0xDC, 0xDD):
+        width = 2 if b == 0xDC else 4
+        n = int.from_bytes(buf[i+1:i+1+width], "big")
+        i += 1 + width
+        out = []
+        for _ in range(n):
+            v, i = unpack(buf, i)
+            out.append(v)
         return out, i
     if b == 0xC0:
         return None, i + 1
@@ -172,13 +199,78 @@ if mode == "crash":
     time.sleep(0.2)
     sys.exit(1)
 
+def await_message(sock, *names):
+    # The daemon sends GitMarks unprompted; a fake that reads blindly would
+    # take it for the answer it asked for. Dispatch by name, like the real one.
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        msg = unpack(read_frame(sock))[0]
+        for name in names:
+            if name in msg:
+                return name, msg[name]
+    raise SystemExit("no %s arrived" % (names,))
+
+if mode == "marks":
+    _, body = await_message(sock, "GitMarks")
+    with open(".forge-editor-marks", "w") as fh:
+        for mark in body["marks"]:
+            fh.write("%s %s\n" % (mark["line"], mark["kind"]))
+        fh.write("end\n")
+
+if mode == "save_stale":
+    # One save, after the test has made the file stale: the conflict stands
+    # so it can be read back.
+    for _ in range(600):
+        if os.path.exists(".forge-go"):
+            break
+        time.sleep(0.05)
+    sock.sendall(save_request(1001, "from the editor\n", 2))
+    name, _ = await_message(sock, "Saved", "SaveRefused")
+    with open(".forge-editor-save", "w") as fh:
+        fh.write(name + "\n")
+
+if mode == "save_twice":
+    # The test makes the file stale on disk, then drops the sentinel: the
+    # first save must be refused and the second must go through.
+    for _ in range(600):
+        if os.path.exists(".forge-go"):
+            break
+        time.sleep(0.05)
+    answers = []
+    for attempt in (1, 2):
+        sock.sendall(save_request(1000 + attempt, "from the editor\n", 2))
+        name, _ = await_message(sock, "Saved", "SaveRefused")
+        answers.append(name)
+    with open(".forge-editor-save", "w") as fh:
+        fh.write(" ".join(answers) + "\n")
+
+if mode == "save":
+    body = os.environ.get("FORGE_TEST_SAVE_TEXT", "saved by the editor\n")
+    sock.sendall(save_request(1000, body, 2))
+    name, payload = await_message(sock, "Saved", "SaveRefused")
+    with open(".forge-editor-save", "w") as fh:
+        detail = payload.get("revision") or payload.get("reason") or ""
+        fh.write("%s %s\n" % (name, detail))
+
 while True:
     time.sleep(0.25)
 "#;
 
+/// The fake's source, speaking whatever control version this build speaks.
+///
+/// Baked in rather than hardcoded: a bumped `CONTROL_VERSION` would otherwise
+/// fail every test here with "a session should reach Running" and say nothing
+/// about the handshake being the reason.
+fn fake_editor_source() -> String {
+    FAKE_EDITOR.replace(
+        "__CONTROL_VERSION__",
+        &editor_control::CONTROL_VERSION.to_string(),
+    )
+}
+
 fn install_fake_editor(harness: &common::Harness) {
     let path = harness.bin().join("forge-editor");
-    fs::write(&path, FAKE_EDITOR).expect("write fake editor");
+    fs::write(&path, fake_editor_source()).expect("write fake editor");
     let mut perms = fs::metadata(&path).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&path, perms).unwrap();
@@ -196,6 +288,7 @@ fn create_editor(
             workspace_id,
             path: path.into(),
             line,
+            autosave: false,
             read_only: true,
         })
         .expect("CreateEditorSession");
@@ -345,7 +438,7 @@ fn editor_crash_marks_the_session_and_releases_state() {
     });
     // Rewrite the fake to crash after handshake.
     let path = harness.bin().join("forge-editor");
-    let script = FAKE_EDITOR.replace(
+    let script = fake_editor_source().replace(
         "mode = os.environ.get(\"FORGE_TEST_EDITOR_MODE\", \"serve\")",
         "mode = \"crash\"",
     );
@@ -362,6 +455,7 @@ fn editor_crash_marks_the_session_and_releases_state() {
             workspace_id: workspace,
             path: "a.rs".into(),
             line: None,
+            autosave: false,
             read_only: true,
         })
         .expect("create");
@@ -384,6 +478,296 @@ fn editor_crash_marks_the_session_and_releases_state() {
     );
 }
 
+/// The whole integrated save, end to end: the editor asks, `fs-service`
+/// writes, and the answer carries the revision the next save must present.
+///
+/// The editor never opens the checkout — this is the only path a keystroke in
+/// an integrated buffer can reach disk by.
+#[test]
+fn an_integrated_save_writes_through_fs_service() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("a.rs"), "before\n").unwrap();
+    install_saving_editor(&harness, "after the save\n");
+    let running = harness.boot();
+    let client = running.connect("editor-save");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+
+    let response = client
+        .request(Request::CreateEditorSession {
+            workspace_id: workspace,
+            path: "a.rs".into(),
+            line: None,
+            autosave: false,
+            read_only: false,
+        })
+        .expect("create");
+    let Response::SessionCreated { session_id, .. } = response else {
+        panic!("expected SessionCreated");
+    };
+    assert!(
+        common::wait_for(&events, common::DEADLINE, |event| {
+            matches!(event, DaemonEvent::SessionUpdated(session)
+                if session.id == session_id && session.state == SessionState::Running)
+        })
+        .is_some(),
+        "the buffer must open"
+    );
+
+    let target = repo.path().join("a.rs");
+    assert!(
+        common::poll_until(Duration::from_secs(5), || {
+            fs::read_to_string(&target).unwrap_or_default() == "after the save\n"
+        }),
+        "the daemon must write the editor's text: {:?}",
+        fs::read_to_string(&target)
+    );
+
+    let answer = await_receipt(&repo.path().join(".forge-editor-save"));
+    assert!(
+        answer.starts_with("Saved "),
+        "the answer must carry the new revision, got {answer:?}"
+    );
+}
+
+/// A read-only session refuses the save rather than writing it.
+#[test]
+fn a_read_only_editor_session_refuses_the_save() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("a.rs"), "before\n").unwrap();
+    install_saving_editor(&harness, "should never land\n");
+    let running = harness.boot();
+    let client = running.connect("editor-save-ro");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+
+    let (session_id, _) = create_editor(&client, &events, workspace, "a.rs", None);
+    let answer = await_receipt(&repo.path().join(".forge-editor-save"));
+    assert!(
+        answer.starts_with("SaveRefused"),
+        "a read-only buffer must not reach the disk, got {answer:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("a.rs")).unwrap(),
+        "before\n",
+        "the file is untouched"
+    );
+    let _ = session_id;
+}
+
+/// The fake's written answer, once it is actually on disk.
+///
+/// Waits for a complete line rather than for the path to exist: the file is
+/// created when the fake opens it and the bytes land on close, so `exists()`
+/// alone races an empty read under a loaded suite.
+fn await_receipt(path: &Path) -> String {
+    assert!(
+        common::poll_until(Duration::from_secs(10), || {
+            fs::read_to_string(path).is_ok_and(|body| body.contains('\n'))
+        }),
+        "the editor must get an answer at {}",
+        path.display()
+    );
+    fs::read_to_string(path).expect("receipt")
+}
+
+/// A refusal must not be a dead end.
+///
+/// The daemon conditions the write on the revision it last saw. When an agent
+/// writes the same path, that revision is stale *forever* unless the refusal
+/// teaches the daemon the new one — and a buffer nobody can ever save is worse
+/// than a save that asks twice. The second `Ctrl-S` overwrites, which is what
+/// the standalone editor has always done.
+#[test]
+fn a_refused_save_arms_the_next_one_instead_of_trapping_the_buffer() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("a.rs"), "before\n").unwrap();
+    install_editor_mode(&harness, "save_twice", None);
+    let running = harness.boot();
+    let client = running.connect("editor-save-twice");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+
+    let response = client
+        .request(Request::CreateEditorSession {
+            workspace_id: workspace,
+            path: "a.rs".into(),
+            line: None,
+            autosave: false,
+            read_only: false,
+        })
+        .expect("create");
+    let Response::SessionCreated { session_id, .. } = response else {
+        panic!("expected SessionCreated");
+    };
+    assert!(
+        common::wait_for(&events, common::DEADLINE, |event| {
+            matches!(event, DaemonEvent::SessionUpdated(session)
+                if session.id == session_id && session.state == SessionState::Running)
+        })
+        .is_some(),
+        "the buffer must open"
+    );
+
+    // Somebody else writes the same path, then the editor is let go.
+    fs::write(repo.path().join("a.rs"), "an agent wrote this\n").unwrap();
+    fs::write(repo.path().join(".forge-go"), b"").unwrap();
+
+    let answers = await_receipt(&repo.path().join(".forge-editor-save"));
+    assert_eq!(
+        answers.trim(),
+        "SaveRefused Saved",
+        "the first save is refused and the second overwrites"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("a.rs")).unwrap(),
+        "from the editor\n"
+    );
+}
+
+/// The conflict is readable, and both answers resolve it.
+///
+/// `GetEditorConflict` is the only place the two sides travel: the flag rides
+/// `SessionUpdated`, the documents never do.
+#[test]
+fn a_refused_save_offers_both_sides_and_take_disk_resolves_it() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("a.rs"), "before\n").unwrap();
+    install_editor_mode(&harness, "save_stale", None);
+    let running = harness.boot();
+    let client = running.connect("editor-conflict");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+
+    let response = client
+        .request(Request::CreateEditorSession {
+            workspace_id: workspace,
+            path: "a.rs".into(),
+            line: None,
+            autosave: false,
+            read_only: false,
+        })
+        .expect("create");
+    let Response::SessionCreated { session_id, .. } = response else {
+        panic!("expected SessionCreated");
+    };
+    assert!(
+        common::wait_for(&events, common::DEADLINE, |event| {
+            matches!(event, DaemonEvent::SessionUpdated(session)
+                if session.id == session_id && session.state == SessionState::Running)
+        })
+        .is_some(),
+        "the buffer must open"
+    );
+
+    // Nothing to compare before a save is refused.
+    match client
+        .request(Request::GetEditorConflict { session_id })
+        .expect_err("no conflict yet")
+    {
+        client::ClientError::Protocol(p) => assert_eq!(p.code, ErrorCode::NotFound),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+
+    fs::write(repo.path().join("a.rs"), "an agent wrote this\n").unwrap();
+    fs::write(repo.path().join(".forge-go"), b"").unwrap();
+    await_receipt(&repo.path().join(".forge-editor-save"));
+
+    // The flag is on the session; the texts are only in the answer.
+    assert!(
+        common::poll_until(Duration::from_secs(5), || {
+            matches!(
+                client.request(Request::GetEditorConflict { session_id }),
+                Ok(Response::EditorConflict { .. })
+            )
+        }),
+        "the refusal must leave something to compare"
+    );
+    let Response::EditorConflict { path, disk, mine } = client
+        .request(Request::GetEditorConflict { session_id })
+        .expect("conflict")
+    else {
+        panic!("expected EditorConflict");
+    };
+    assert_eq!(path, "a.rs");
+    assert_eq!(disk, "an agent wrote this\n", "what was there instead");
+    assert_eq!(mine, "from the editor\n", "the draft that was refused");
+}
+
+/// The gutter's marks are the daemon's `git diff`, not the editor's.
+///
+/// The editor never opens the checkout, so a mark it draws had to arrive over
+/// the control channel — this is the whole of that path, against a real repo.
+#[test]
+fn the_daemon_sends_git_marks_for_the_open_buffer() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    // Committed, then changed: line 2 modified, a line appended.
+    fs::write(repo.path().join("a.rs"), "one\ntwo\nthree\n").unwrap();
+    commit_all(repo.path(), "base");
+    fs::write(repo.path().join("a.rs"), "one\nTWO\nthree\nfour\n").unwrap();
+
+    install_editor_mode(&harness, "marks", None);
+    let running = harness.boot();
+    let client = running.connect("editor-marks");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (session_id, _) = create_editor(&client, &events, workspace, "a.rs", None);
+    let _ = session_id;
+
+    let recorded = await_receipt(&repo.path().join(".forge-editor-marks"));
+    let lines: Vec<&str> = recorded.lines().filter(|line| *line != "end").collect();
+    assert_eq!(
+        lines,
+        ["2 Modified", "4 Added"],
+        "the changed line and the new one, and nothing else"
+    );
+}
+
+/// Commit everything in `repo`, so a diff has a base to speak against.
+fn commit_all(repo: &Path, message: &str) {
+    for args in [vec!["add", "-A"], vec!["commit", "-m", message]] {
+        let status = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+}
+
+/// Install the fake in its save mode, with the text it should ask to write.
+fn install_saving_editor(harness: &common::Harness, text: &str) {
+    install_editor_mode(harness, "save", Some(text));
+}
+
+/// Install the fake pinned to one mode, optionally with the text it saves.
+fn install_editor_mode(harness: &common::Harness, mode: &str, text: Option<&str>) {
+    let path = harness.bin().join("forge-editor");
+    let mut script = fake_editor_source().replace(
+        "mode = os.environ.get(\"FORGE_TEST_EDITOR_MODE\", \"serve\")",
+        &format!("mode = {mode:?}"),
+    );
+    if let Some(text) = text {
+        script = script.replace(
+            "os.environ.get(\"FORGE_TEST_SAVE_TEXT\", \"saved by the editor\\n\")",
+            &format!("{text:?}"),
+        );
+    }
+    fs::write(&path, script).unwrap();
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).unwrap();
+}
+
 #[test]
 fn editor_session_missing_binary_fails_the_spawn() {
     let harness = common::Harness::new();
@@ -398,6 +782,7 @@ fn editor_session_missing_binary_fails_the_spawn() {
             workspace_id: workspace,
             path: "a.rs".into(),
             line: None,
+            autosave: false,
             read_only: true,
         })
         .expect_err("missing binary");
@@ -425,6 +810,7 @@ fn editor_session_refuses_binary_and_missing() {
                 workspace_id: workspace,
                 path: path.into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect_err(path);

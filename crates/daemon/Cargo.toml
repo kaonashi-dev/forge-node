@@ -45,3 +45,6 @@ time.workspace = true
 [dev-dependencies]
 test-support.workspace = true
 tempfile.workspace = true
+# The editor scenario's stand-in speaks the control wire, so its fixture reads
+# CONTROL_VERSION rather than hardcoding a number that silently goes stale.
+editor-control.workspace = true

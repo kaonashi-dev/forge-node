@@ -97,7 +97,7 @@ describe("langIconFor", () => {
     expect(langIconFor("deny.json")).toBe("json");
     expect(langIconFor("schema.prisma")).toBe("prisma");
     expect(langIconFor("0001_init.sql")).toBe("sql");
-    expect(langIconFor("EditorView.tsx")).toBe("tsx");
+    expect(langIconFor("AppShell.tsx")).toBe("tsx");
   });
 
   it("names one file per mark and base, for the component and the tree alike", () => {

@@ -9,6 +9,7 @@ const state = (partial: Partial<EditorState> = {}): EditorState => ({
   dirty: false,
   read_only: true,
   document_version: 1,
+  conflict: false,
   ...partial,
 });
 

@@ -39,6 +39,7 @@ describe("generated fixtures", () => {
       dirty: false,
       read_only: true,
       document_version: 1,
+      conflict: false,
     });
 
     const request = request_create_editor_session.CreateEditorSession;

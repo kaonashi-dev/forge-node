@@ -44,6 +44,7 @@ import {
 import type { HarnessArtifactKind, HarnessEvent, HarnessFeature } from "../harness/types";
 import { cellsChannel, clipboardChannel, editorCellsChannel, previewCellsChannel } from "./bus";
 import { openEditorTerminal } from "../store/viewsStore";
+import { applyEditorConflict, failEditorConflict } from "../store/editorConflictStore";
 import type {
   ConnectedPayload,
   DisconnectedPayload,
@@ -152,6 +153,16 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
     sessionAnswer<SessionChanges>("workbench:session_changes", applySessionChanges),
     listen<SessionFailure>("workbench:session_changes_failed", ({ payload }) =>
       failSessionChanges(payload.session, payload.error),
+    ),
+    /* Four-tuple rather than the usual pair: the answer names the path it is
+       about, because a reload can land between the ask and the answer. */
+    listen<[string, string, string, string]>(
+      "workbench:editor_conflict",
+      ({ payload: [session, path, disk, mine] }) =>
+        applyEditorConflict(session, { path, disk, mine }),
+    ),
+    listen<SessionFailure>("workbench:editor_conflict_failed", ({ payload }) =>
+      failEditorConflict(payload.session, payload.error),
     ),
     sessionAnswer<SessionTranscript>("workbench:session_transcript", applyTranscript),
     listen<SessionFailure>("workbench:session_transcript_failed", ({ payload }) =>

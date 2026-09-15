@@ -61,6 +61,8 @@ enum Input {
     /// `None`: the terminal event source is gone (the reader thread failed).
     Terminal(Option<Event>),
     Control(Incoming),
+    /// The autosave pause elapsed with nothing else to do.
+    Tick,
 }
 
 fn run(options: cli::Options) -> anyhow::Result<()> {
@@ -94,14 +96,26 @@ fn run(options: cli::Options) -> anyhow::Result<()> {
         }
         let incoming = control.as_ref().map(|channel| channel.incoming().clone());
         let input = match &incoming {
-            Some(incoming) => flume::Selector::new()
-                .recv(&events_rx, |result| Input::Terminal(result.ok()))
-                .recv(incoming, |result| {
-                    Input::Control(result.unwrap_or(Incoming::Closed {
-                        reason: "disconnected".to_string(),
-                    }))
-                })
-                .wait(),
+            Some(incoming) => {
+                let selector = flume::Selector::new()
+                    .recv(&events_rx, |result| Input::Terminal(result.ok()))
+                    .recv(incoming, |result| {
+                        Input::Control(result.unwrap_or(Incoming::Closed {
+                            reason: "disconnected".to_string(),
+                        }))
+                    });
+                // Waiting *on* the deadline rather than polling for it: the
+                // loop still blocks until something happens, and the pause is
+                // what wakes it. A bare sleep-and-check here would be the
+                // defect `docs/performance.md` names.
+                match app.autosave_deadline() {
+                    Some(at) => match selector.wait_deadline(at) {
+                        Ok(input) => input,
+                        Err(_) => Input::Tick,
+                    },
+                    None => selector.wait(),
+                }
+            }
             None => match events_rx.recv() {
                 Ok(event) => Input::Terminal(Some(event)),
                 Err(_) => break Ok(()),
@@ -120,6 +134,7 @@ fn run(options: cli::Options) -> anyhow::Result<()> {
                     handle_control(&mut app, channel, message)?;
                 }
             }
+            Input::Tick => app.autosave_if_due(),
             Input::Control(Incoming::Closed { reason }) => {
                 break Err(anyhow::anyhow!("daemon control channel closed: {reason}"));
             }
@@ -133,6 +148,9 @@ fn run(options: cli::Options) -> anyhow::Result<()> {
             break Ok(());
         }
         if let Some(channel) = control.as_mut() {
+            // The save goes out before the state, so the daemon's write and the
+            // `dirty` the GUI paints cannot arrive in the wrong order.
+            flush_save(&mut app, channel)?;
             publish_state(&app, channel, &mut last_state)?;
         }
     };
@@ -155,9 +173,10 @@ fn open(options: cli::Options) -> anyhow::Result<(App, Option<ControlChannel>)> 
             opened.path.clone().into(),
             opened.revision.clone(),
         );
-        // Until integrated save with revision exists, the daemon owns the
-        // checkout; this editor must not write it.
-        app.set_integrated("integrated save is not available yet");
+        // The daemon owns the checkout: this editor never writes it, and a
+        // save travels as a request the daemon answers with a revision.
+        app.set_integrated();
+        app.set_autosave(opened.autosave);
         let line = opened.line.map(|value| value as usize).or(options.line);
         if let Some(line) = line {
             app.reveal(line, None);
@@ -202,6 +221,32 @@ fn handle_control(
                 state: app.wire_state(),
             })?;
         }
+        DaemonMessage::Saved {
+            request_id,
+            revision,
+        } => app.save_confirmed(request_id, revision),
+        DaemonMessage::Reload {
+            request_id,
+            text,
+            revision,
+        } => match app.reload(&text, revision) {
+            Ok(document_version) => control.send(&EditorMessage::Applied {
+                request_id,
+                document_version,
+            })?,
+            Err(reason) => control.send(&EditorMessage::Refused { request_id, reason })?,
+        },
+        DaemonMessage::GitMarks { marks, .. } => app.set_marks(&marks),
+        DaemonMessage::SetAutosave { autosave, .. } => app.set_autosave(autosave),
+        DaemonMessage::Save { request_id } => {
+            // The answer is the `SaveRequest` the main loop flushes next, and
+            // then the daemon's `Saved`/`SaveRefused` for it.
+            let _ = request_id;
+            app.request_save();
+        }
+        DaemonMessage::SaveRefused { request_id, reason } => {
+            app.save_refused(request_id, &reason);
+        }
         DaemonMessage::ApplyPreviewEdit {
             request_id,
             expected_document_version,
@@ -229,6 +274,19 @@ fn handle_control(
         // this build does not know; ignoring it is the conservative answer.
         _ => {}
     }
+    Ok(())
+}
+
+/// Send the save the last key press asked for, if it asked for one.
+fn flush_save(app: &mut App, control: &mut ControlChannel) -> anyhow::Result<()> {
+    let Some((request_id, text, document_version)) = app.take_save_request() else {
+        return Ok(());
+    };
+    control.send(&EditorMessage::SaveRequest {
+        request_id,
+        text,
+        document_version,
+    })?;
     Ok(())
 }
 

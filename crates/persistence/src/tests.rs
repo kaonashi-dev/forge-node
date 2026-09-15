@@ -973,6 +973,7 @@ fn a_session_row_never_stores_editor_state() {
         dirty: true,
         read_only: false,
         document_version: 9,
+        conflict: false,
     });
     db.sessions().upsert(&session).unwrap();
 

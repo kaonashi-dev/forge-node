@@ -53,6 +53,21 @@ export async function loadDiff(
   await send({ type: "load_diff", workspace, context_lines: contextLines });
 }
 
+/** The two sides of a refused editor save, for the conflict banner. */
+export async function loadEditorConflict(session: string): Promise<void> {
+  await send({ type: "load_editor_conflict", session });
+}
+
+/** Take disk: replace the editor's buffer with what is on disk now. */
+export async function reloadEditorBuffer(session: string): Promise<void> {
+  await send({ type: "reload_editor_buffer", session });
+}
+
+/** Keep mine: write the editor's draft over what is on disk now. */
+export async function overwriteEditorBuffer(session: string): Promise<void> {
+  await send({ type: "overwrite_editor_buffer", session });
+}
+
 /** The changes split's read: one session, no patches (§16.7). */
 export async function loadSessionChanges(session: string): Promise<void> {
   await send({ type: "load_session_changes", session });

@@ -26,7 +26,7 @@ const checkout: FileTree = {
 const listing = (query = "", collapsed: string[] = []) =>
   treeRows(filterTree(checkout, query), new Set(collapsed));
 
-const editor = (path: string): WorkbenchView => ({ kind: "editor", path });
+const editor = (path: string): WorkbenchView => ({ kind: "editor-terminal", session: "s-1", path });
 
 describe("activeEditorPath", () => {
   it("names the file an editor view has open", () => {

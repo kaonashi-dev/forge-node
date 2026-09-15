@@ -3,8 +3,8 @@ import type { Manifest } from "vite";
 type Edge = "imports" | "dynamicImports";
 
 /** Rollup's chunk names for the editor route's own modules. */
-const EDITOR_CHUNKS = new Set(["EditorView", "createEditor"]);
-const EDITOR_SOURCE = /(?:^|\/)src\/workbench\/(?:EditorView|editor\/createEditor)\.tsx?$/;
+const EDITOR_CHUNKS = new Set(["EditorTerminalPane"]);
+const EDITOR_SOURCE = /(?:^|\/)src\/terminal\/EditorTerminalPane\.tsx?$/;
 
 export function bundleGroups(manifest: Manifest): {
   initial: Set<string>;

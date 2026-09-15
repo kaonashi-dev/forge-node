@@ -120,6 +120,7 @@ mod tests {
                 path: "src/main.rs".to_string(),
                 line: Some(12),
                 read_only: true,
+                autosave: false,
             },
         };
         assert_eq!(msg, frame_round_trip(&msg));

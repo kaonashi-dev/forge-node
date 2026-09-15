@@ -37,6 +37,8 @@ pub struct Opened {
     pub revision: Option<String>,
     pub line: Option<u32>,
     pub read_only: bool,
+    /// Save on a pause, as the opener asked.
+    pub autosave: bool,
 }
 
 /// What the reader thread delivers: a request from the daemon, or the socket
@@ -98,6 +100,7 @@ impl ControlChannel {
                 revision,
                 line,
                 read_only,
+                autosave,
             } => Opened {
                 request_id,
                 path,
@@ -105,6 +108,7 @@ impl ControlChannel {
                 revision,
                 line,
                 read_only,
+                autosave,
             },
             other => bail!("expected Open, got {other:?}"),
         };

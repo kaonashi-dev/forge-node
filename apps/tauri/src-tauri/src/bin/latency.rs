@@ -92,7 +92,7 @@ impl Mode {
             // Read-only because H1 is (design D6); the route being timed is the
             // same one either way.
             Mode::Editor(path) => client
-                .create_editor_session(workspace, path, None, true)
+                .create_editor_session(workspace, path, None, true, false)
                 .map_err(|error| error.to_string()),
         }
     }

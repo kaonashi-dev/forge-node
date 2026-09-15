@@ -8,6 +8,8 @@ export type EditorState = {
   dirty: boolean;
   read_only: boolean;
   document_version: number;
+  /** A save was refused because the file moved under the buffer. */
+  conflict: boolean;
 };
 
 export type SessionState =

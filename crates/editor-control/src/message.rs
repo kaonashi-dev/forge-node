@@ -45,7 +45,13 @@ pub enum DaemonMessage {
         /// 1-based line to reveal, if the opener asked for one.
         line: Option<u32>,
         read_only: bool,
+        /// Save on a pause, without being asked. The opener's preference,
+        /// carried here so the editor does not have to know about GUI flags.
+        #[serde(default)]
+        autosave: bool,
     },
+    /// Turn saving-on-a-pause on or off for a live buffer.
+    SetAutosave { request_id: u64, autosave: bool },
     /// Move the caret to a line (and optionally a display column).
     Reveal {
         request_id: u64,
@@ -54,6 +60,44 @@ pub enum DaemonMessage {
     },
     /// Answer [`EditorMessage::State`] with an uncaptured snapshot.
     GetState { request_id: u64 },
+    /// [`EditorMessage::SaveRequest`] reached the disk.
+    ///
+    /// `revision` is what `fs-service` wrote, and it is what the editor must
+    /// present on its next save: the daemon owns the checkout, so the editor
+    /// learns the new revision here rather than by stat'ing the file.
+    Saved { request_id: u64, revision: String },
+    /// [`EditorMessage::SaveRequest`] did not reach the disk.
+    ///
+    /// The common case is a revision mismatch — an agent wrote the same path —
+    /// which is a refusal and not an error: the buffer is intact and the
+    /// editor says so rather than overwriting the other writer.
+    SaveRefused { request_id: u64, reason: String },
+    /// Replace the buffer with `text`, discarding the draft.
+    ///
+    /// The *take disk* half of a conflict: the daemon re-read the file and the
+    /// person chose those bytes. The editor drops its draft and its undo
+    /// history is a new document, because there is no edit that gets back to
+    /// what was displaced.
+    Reload {
+        request_id: u64,
+        text: String,
+        revision: Option<String>,
+    },
+    /// Which lines the working tree changed, for the gutter.
+    ///
+    /// Computed by the daemon from `git diff --unified=0`, because the editor
+    /// does not open the checkout and must not run git of its own. Sent whole
+    /// rather than as a delta: a gutter is small, and a patch that arrives out
+    /// of order would point at rows that moved.
+    GitMarks {
+        request_id: u64,
+        marks: Vec<WireMark>,
+    },
+    /// Ask the editor to send its buffer as a [`EditorMessage::SaveRequest`].
+    ///
+    /// The *keep mine* half. The daemon cannot write the draft on its own — it
+    /// does not have it — so the save stays a request the editor makes.
+    Save { request_id: u64 },
     /// Replace byte ranges, refused when the document moved under the caller.
     ///
     /// Reserved for a preview surface; H1's daemon does not send it yet, so an
@@ -91,6 +135,21 @@ pub enum EditorMessage {
     },
     /// A request was understood and refused; `reason` is display text.
     Refused { request_id: u64, reason: String },
+    /// Write the buffer to the checkout.
+    ///
+    /// The editor never opens the file itself in integrated mode, so a save is
+    /// a request: the whole text travels and the daemon writes it through
+    /// `fs-service` at the path *it* opened. `text` is the second message that
+    /// can approach the frame cap, which is why the cap is four times the
+    /// document budget. The answer is [`DaemonMessage::Saved`] or
+    /// [`DaemonMessage::SaveRefused`].
+    SaveRequest {
+        request_id: u64,
+        text: String,
+        /// The version `text` was captured at, echoed back so the editor can
+        /// tell a confirmed save from one that raced newer keystrokes.
+        document_version: u64,
+    },
     /// State after a change, or in answer to [`DaemonMessage::GetState`].
     ///
     /// A notification carries no `request_id` and coalesces; the answer to
@@ -120,6 +179,22 @@ pub struct EditorStateWire {
     pub read_only: bool,
     /// Monotonic document version from `editor-core`.
     pub document_version: u64,
+}
+
+/// What one line's gutter mark says happened to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireMarkKind {
+    Added,
+    Modified,
+    /// Something was removed *at* this line; the line itself still exists.
+    Deleted,
+}
+
+/// One line and its mark, 1-based like git counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireMark {
+    pub line: u32,
+    pub kind: WireMarkKind,
 }
 
 /// One byte-range replacement on the wire.

@@ -8,10 +8,10 @@ function fixture(): Manifest {
       file: "entry.js",
       isEntry: true,
       imports: ["shared"],
-      dynamicImports: ["src/workbench/EditorView.tsx", "settings"],
+      dynamicImports: ["src/terminal/EditorTerminalPane.tsx", "settings"],
     },
     shared: { file: "shared.js", imports: ["index.html"] },
-    "src/workbench/EditorView.tsx": { file: "editor.js", imports: ["shared", "grammar"] },
+    "src/terminal/EditorTerminalPane.tsx": { file: "editor.js", imports: ["shared", "grammar"] },
     grammar: { file: "grammar.js" },
     settings: { file: "settings.js" },
   };
@@ -20,18 +20,21 @@ function fixture(): Manifest {
 test("cycles terminate and shared chunks are charged only to the initial bundle", () => {
   const groups = bundleGroups(fixture());
   expect([...groups.initial]).toEqual(["index.html", "shared"]);
-  expect([...groups.editor]).toEqual(["src/workbench/EditorView.tsx", "grammar"]);
+  expect([...groups.editor]).toEqual(["src/terminal/EditorTerminalPane.tsx", "grammar"]);
 });
 
 test("a hashed chunk key is still found by its Rollup name", () => {
   const manifest = fixture();
-  manifest["_EditorView-CHdbsWxN.js"] = {
-    ...manifest["src/workbench/EditorView.tsx"],
-    name: "EditorView",
+  manifest["_EditorTerminalPane-CHdbsWxN.js"] = {
+    ...manifest["src/terminal/EditorTerminalPane.tsx"],
+    name: "EditorTerminalPane",
   };
-  delete manifest["src/workbench/EditorView.tsx"];
-  manifest["index.html"].dynamicImports = ["_EditorView-CHdbsWxN.js", "settings"];
-  expect([...bundleGroups(manifest).editor]).toEqual(["_EditorView-CHdbsWxN.js", "grammar"]);
+  delete manifest["src/terminal/EditorTerminalPane.tsx"];
+  manifest["index.html"].dynamicImports = ["_EditorTerminalPane-CHdbsWxN.js", "settings"];
+  expect([...bundleGroups(manifest).editor]).toEqual([
+    "_EditorTerminalPane-CHdbsWxN.js",
+    "grammar",
+  ]);
 });
 
 test("missing manifest edges fail instead of undercounting", () => {
@@ -43,19 +46,19 @@ test("missing manifest edges fail instead of undercounting", () => {
 test("a missing editor entry cannot report a zero-byte editor", () => {
   const manifest = fixture();
   manifest["index.html"].dynamicImports = ["settings"];
-  delete manifest["src/workbench/EditorView.tsx"];
+  delete manifest["src/terminal/EditorTerminalPane.tsx"];
   expect(() => bundleGroups(manifest)).toThrow("No editor route");
 });
 
 test("an eagerly imported editor fails even when another route remains lazy", () => {
   const manifest = fixture();
-  manifest["index.html"].imports?.push("src/workbench/EditorView.tsx");
+  manifest["index.html"].imports?.push("src/terminal/EditorTerminalPane.tsx");
   expect(() => bundleGroups(manifest)).toThrow("no longer deferred");
 });
 
 test("a fully synchronous bundle fails the splitting contract", () => {
   const manifest = fixture();
-  manifest["index.html"].imports?.push("src/workbench/EditorView.tsx", "settings");
+  manifest["index.html"].imports?.push("src/terminal/EditorTerminalPane.tsx", "settings");
   expect(() => bundleGroups(manifest)).toThrow("route splits are gone");
 });
 

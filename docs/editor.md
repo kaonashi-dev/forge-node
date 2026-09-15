@@ -9,10 +9,16 @@ Two crates build the terminal editor:
 - `crates/editor-cli` builds `forge-editor`, the standalone binary: argument
   parsing, a bounded read, raw mode, key bindings and the viewport.
 
-The GUI's own editor still lives in `apps/tauri/packages/file-workbench` and is
-the default surface. The integrated route — the same binary under the daemon's
-PTY, with its own control channel — is built and opt-in; see *The integrated
-route* below.
+The integrated route — the same binary under the daemon's PTY, with its own
+control channel — is **the** editor, and the only one. The DOM editor that used
+to live in `apps/tauri/packages/file-workbench` is gone: that package is a file
+explorer now. Opening any file in the Code tab opens a `forge-editor` session.
+
+What that cost, stated plainly: a rendered Markdown document, an SVG and a
+raster image no longer have a surface of their own — they open as text, and a
+binary one is refused by `CreateEditorSession` like any other. `Markdown.tsx`
+survives because the pull-request view renders with it, and `CompareView`
+survives because the conflict banner does.
 
 ## Run it
 
@@ -28,9 +34,9 @@ dash).
 
 ## The integrated route
 
-The Code tab can run `forge-editor` as a daemon session instead of the DOM
-editor. Turn on `ui.editor.terminal` in Settings → Editor (off by default) and
-the open file grows an **Open in terminal editor** action.
+Opening a file in the Code tab runs `forge-editor` as a daemon session. There is
+no flag: with nothing to fall back to, `ui.editor.terminal` would have been a
+switch that turns the editor off.
 
 What happens then:
 
@@ -57,12 +63,61 @@ What happens then:
   gone on restart. An editor session is never idle-stopped, whatever the
   thresholds say.
 
-**H1 is read-only.** Integrated save with a disk revision does not exist yet, so
-the buffer refuses edits at the transaction entry rather than letting a draft
-exist that nothing could persist; `Ctrl-S` says *integrated save is not
-available* and touches no file. The DOM editor's Save and autosave are not
-offered for the terminal pane, and closing the Code view detaches it — the
-process survives and the session stays in the rail until it is killed.
+**Colour is the grammar's, and it is scanned whole.** `editor_core::Syntax`
+scans the document into per-line spans on every mutation and never per row: a
+block comment opened above decides the colour of everything below it, so the
+scan cannot be limited to what is on screen. The grammar comes from the
+extension (`Grammar::for_path`) and an unknown one stays plain — a wrong colour
+is worse than none. Past 512 KiB the buffer is shown plain, which is what bounds
+the cost rather than merely spreading it. The scopes paint in the ANSI 16, so
+the reader's terminal theme is the theme.
+
+**The gutter's marks are the daemon's git, not the editor's.** The editor never
+opens the checkout, so `git_service::file_marks` runs on the supervisor thread
+(`git diff --unified=0` — the hunk headers alone, so the cost is flat in the
+size of the file rather than its diff) and the marks travel as `GitMarks`. Sent
+on open and after every save that lands. A git failure is no marks, never a
+failed buffer: a gutter is decoration. The mark column is always drawn, marks or
+not — one that appeared when git answered would shift every line sideways.
+<kbd>Alt</kbd>+<kbd>N</kbd>/<kbd>P</kbd> step *blocks*, because a run of marked
+lines is one change to a reader.
+
+**Autosave is the opener's preference, carried across.** It rides `Open` and
+`SetEditorAutosave` toggles it live; the daemon holds no opinion about it. The
+editor arms a one-second pause on a mutation and the main loop *waits on* that
+deadline (`Selector::wait_deadline`) rather than polling for it — a
+sleep-and-check loop here is the defect `docs/performance.md` names. The
+deadline is re-checked when it fires, so a keystroke in between pushes the pause
+out, which is the whole point of waiting for stillness. A read-only buffer never
+arms one.
+
+**A save is a request, never a write from the editor.** `Ctrl-S` sends
+`SaveRequest` with the buffer text; the daemon writes it through
+`fs-service::write_file` at the path *it* opened, conditioned on the revision
+*it* last wrote, and answers `Saved { revision }` or `SaveRefused { reason }`.
+The editor confirms the snapshot it sent, so a keystroke that lands mid-write
+leaves the buffer dirty — which is the truth. A revision mismatch is a refusal,
+not an error: an agent wrote the same path and the buffer is intact.
+
+`read_only` is enforced **in the daemon**, not only in the editor: it travels in
+`Open` as a courtesy, but a read-only session refuses a `SaveRequest` before it
+reaches `fs-service`, because a buggy or replaced editor must not be able to
+write through a buffer that was opened read-only.
+
+When a save is refused, the daemon keeps the two sides — the draft it would not
+write and the bytes that were there instead — behind its own `Mutex`, like
+`pull_requests` and for the same reason. `Session.editor.conflict` is the flag
+that rides `SessionUpdated`; the documents themselves only travel in the answer
+to `GetEditorConflict`, because two buffers on the broadcast channel are exactly
+the payload its bound exists to keep off. The pane then offers the same three
+answers the DOM editor does — *keep mine* (`OverwriteEditorBuffer`), *take disk*
+(`ReloadEditorBuffer`) and *compare*, which reuses `CompareView`.
+
+A second open of a file that already has a live editor session becomes a
+`RevealInEditorSession` on that session — the caret moves in the tab that is
+there. A rival editor would be a second process, a second PTY and a second
+draft of one file. Closing the Code view detaches it: the process survives and
+the session stays in the rail until it is killed.
 
 ## Keys
 
@@ -80,6 +135,7 @@ process survives and the session stays in the rail until it is killed.
 | Ctrl-T | toggle match case |
 | Ctrl-R | replace all (Tab switches field, Enter applies) |
 | Ctrl-G | go to line |
+| Alt-N / Alt-P | next / previous changed block (Ctrl-N and Ctrl-B are the find bar's) |
 | Ctrl-Q | close; unsaved changes ask save / discard / cancel |
 | F1 | key help |
 | bracketed paste | inserts the pasted text as one undo step |
@@ -139,20 +195,42 @@ version compatible with Rust 1.89.
 
 ## What the next milestone still has to prove
 
-Integrated save with a revision, full parity with the DOM editor, and retiring
-it are later milestones; so is packaging `forge-editor` with the app, which for
-now is found on the `PATH` a dev build shares with `forge-daemon`.
+**A copy leaves through OSC 52.** `Ctrl-C` fills the editor's own register *and*
+emits `ESC ] 52 ; c ; <base64> BEL`; `terminal-core` captures the store,
+clamping it to `MAX_CLIPBOARD_BYTES` before it is kept, and the daemon
+broadcasts `ClipboardStore`. The Tauri host forwards it only for a terminal the
+window is showing — the focused one or an open editor pane — because OSC 52 lets
+whatever runs in a PTY set the clipboard, and a background agent replacing it
+would be a real hazard. OSC 52's *read* is never answered, by the engine or by
+anyone: it would hand the person's clipboard to the child process.
+
+What is left. A rendered Markdown document,
+an SVG and a raster image still open on the DOM side — a terminal cannot draw
+them, so that split is the design rather than a gap. What *is* a gap: go-to-definition and
+find-references, which need a channel from the editor to `SearchFiles` and are
+the one item here that changes shape rather than filling in; the system
+clipboard, where `Ctrl-C` still fills an internal register, so a copy does not
+leave the editor (the pane's own menu pastes from the system clipboard, and a
+mouse selection copies through the terminal's existing path); the change
+*details* panel, where the gutter has the marks but not the before/after rows;
+and the overview ruler. `forge-editor` now ships in the bundle
+(`scripts/package-macos`, `scripts/package-linux`), so `[editor] executable`
+falling back to a `PATH` lookup resolves in a packaged install and not only in
+a dev checkout.
 
 End to end, `crates/editor-cli/tests/pty.rs` drives a real PTY in both modes: a
 typed character on screen, bracketed paste as one undo step, a resize mid-paste,
 CRLF preserved through a save, a control byte drawn rather than executed, a
 read-only refusal, a dirty close that asks first, and — integrated — a buffer
-that came from the socket, a reveal that moves the caret, a save that is refused
-without touching the file, and a display path that is never opened.
-`crates/daemon/tests/scenario_editor.rs` covers the daemon's half: the control
-socket in the child's environment, the text `fs-service` read on the child's
-screen, state surviving a client reconnect, detach leaving the process alive,
-and a crash marking the session and releasing the supervisor.
+that came from the socket, a reveal that moves the caret, a `Ctrl-S` that
+becomes a request and never a write, a refusal that is reported, and a display
+path that is never opened. `crates/daemon/tests/scenario_editor.rs` covers the
+daemon's half: the control socket in the child's environment, the text
+`fs-service` read on the child's screen, state surviving a client reconnect,
+detach leaving the process alive, a crash marking the session and releasing the
+supervisor, a save that reaches the disk through `fs-service`, and a read-only
+session that refuses one. Its stand-in reads `CONTROL_VERSION` rather than
+hardcoding it, so a bumped wire fails loudly instead of as a mute handshake.
 
 Bracketed paste still has an unbounded peak: crossterm 0.29 accumulates the
 whole paste into a `String` before it delivers `Event::Paste`, so the document

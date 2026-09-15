@@ -27,6 +27,12 @@ pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     }
     draw_status(app, out, height)?;
     place_caret(app, out, height)?;
+    // A copy leaves an OSC 52 for the terminal that owns the clipboard. Written
+    // with the frame rather than at the keystroke, because this is the one
+    // place that owns the output stream.
+    if let Some(escape) = app.take_clipboard_escape() {
+        out.write_all(escape.as_bytes())?;
+    }
     out.flush()
 }
 
@@ -43,19 +49,44 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
     }
     queue!(
         out,
+        style::SetForegroundColor(style::Color::DarkGrey),
         style::Print(format!(
-            "{number:>width$} ",
+            "{number:>width$}",
             number = line + 1,
             width = app.number_width()
         ))
+    )?;
+    // The mark column, then the space the text starts after. Both are always
+    // printed: a gutter that widened the first time git answered would shift
+    // every line of the file sideways.
+    match app.mark_at(line + 1) {
+        Some(kind) => queue!(
+            out,
+            style::SetForegroundColor(mark_colour(kind)),
+            style::Print(mark_glyph(kind)),
+        )?,
+        None => queue!(out, style::Print(" "))?,
+    }
+    queue!(
+        out,
+        style::SetForegroundColor(style::Color::Reset),
+        style::Print(" ")
     )?;
     let parts = view::window_parts(
         text.line(line),
         app.left(),
         app.content_width(),
         app.selection_in_line(line),
+        app.syntax_line(line),
     );
     for part in parts {
+        // Colour first, then reverse: a selected run keeps its scope colour as
+        // the foreground the terminal swaps, so selecting a keyword does not
+        // flatten it to the default.
+        match scope_colour(part.scope) {
+            Some(colour) => queue!(out, style::SetForegroundColor(colour))?,
+            None => queue!(out, style::SetForegroundColor(style::Color::Reset))?,
+        }
         if part.selected {
             queue!(
                 out,
@@ -67,7 +98,49 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
             queue!(out, style::Print(part.text))?;
         }
     }
+    queue!(out, style::SetForegroundColor(style::Color::Reset))?;
     Ok(())
+}
+
+/// What a gutter mark looks like. One cell, and the same three shapes a diff
+/// uses, so the column reads without a legend.
+fn mark_glyph(kind: editor_control::WireMarkKind) -> char {
+    use editor_control::WireMarkKind;
+    match kind {
+        WireMarkKind::Added => '+',
+        WireMarkKind::Modified => '~',
+        WireMarkKind::Deleted => '_',
+    }
+}
+
+fn mark_colour(kind: editor_control::WireMarkKind) -> style::Color {
+    use editor_control::WireMarkKind;
+    match kind {
+        WireMarkKind::Added => style::Color::Green,
+        WireMarkKind::Modified => style::Color::Yellow,
+        WireMarkKind::Deleted => style::Color::Red,
+    }
+}
+
+/// The terminal colour one scope paints in, or `None` for the default.
+///
+/// The ANSI 16 rather than a palette of our own: the person's terminal theme
+/// is the theme, and a hard-coded RGB would fight it on every scheme but the
+/// one it was picked against.
+fn scope_colour(scope: editor_core::Scope) -> Option<style::Color> {
+    use editor_core::Scope;
+    Some(match scope {
+        Scope::Comment => style::Color::DarkGrey,
+        Scope::Keyword => style::Color::Magenta,
+        Scope::ControlKeyword => style::Color::Red,
+        Scope::String => style::Color::Green,
+        Scope::Number => style::Color::Yellow,
+        Scope::Type => style::Color::Cyan,
+        Scope::Function => style::Color::Blue,
+        Scope::Property => style::Color::DarkCyan,
+        Scope::Constant => style::Color::DarkYellow,
+        Scope::Plain => return None,
+    })
 }
 
 fn draw_status(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {

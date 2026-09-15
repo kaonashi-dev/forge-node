@@ -386,7 +386,7 @@ mod integrated {
     }
 
     /// Bind the socket and start serving.
-    fn fake_daemon(text: &str, path: &str) -> FakeDaemon {
+    fn fake_daemon(text: &str, path: &str, read_only: bool) -> FakeDaemon {
         let directory = tempfile::tempdir().expect("temp dir");
         let socket = directory.path().join("editor.sock");
         let listener = UnixListener::bind(&socket).expect("bind control socket");
@@ -431,7 +431,8 @@ mod integrated {
                     text: text.clone(),
                     revision: Some("rev-1".to_string()),
                     line: Some(2),
-                    read_only: true,
+                    read_only,
+                    autosave: false,
                 },
             )
             .expect("Open");
@@ -477,8 +478,18 @@ mod integrated {
     }
 
     impl IntegratedEditor {
+        /// A read-only integrated buffer, which is what most of these assert.
         fn start(text: &str, display_path: &str) -> Self {
-            let daemon = fake_daemon(text, display_path);
+            Self::start_with(text, display_path, true)
+        }
+
+        /// A writable integrated buffer: `Ctrl-S` becomes a `SaveRequest`.
+        fn start_writable(text: &str, display_path: &str) -> Self {
+            Self::start_with(text, display_path, false)
+        }
+
+        fn start_with(text: &str, display_path: &str, read_only: bool) -> Self {
+            let daemon = fake_daemon(text, display_path, read_only);
             let socket = daemon.socket.clone();
             let pair = native_pty_system()
                 .openpty(PtySize {
@@ -574,19 +585,99 @@ mod integrated {
         }
     }
 
+    /// Colour reaches the terminal, and it is the grammar's — not a constant.
+    ///
+    /// The display path decides the grammar, so a `.rs` buffer emits a
+    /// foreground change around `fn` and a `.txt` one emits none.
     #[test]
-    fn integrated_save_is_refused_without_touching_disk() {
+    fn a_known_grammar_colours_the_screen_and_an_unknown_one_does_not() {
+        let mut rust = IntegratedEditor::start("fn main() {}\n", "display/only.rs");
+        rust.expect("main");
+        assert!(
+            wait_for(&rust.receiver, &mut rust.seen, "\u{1b}[38;5;", WAIT)
+                || String::from_utf8_lossy(&rust.seen).contains("\u{1b}[35m"),
+            "a Rust buffer must paint a scope colour; screen was:\n{}",
+            String::from_utf8_lossy(&rust.seen)
+        );
+
+        let mut plain = IntegratedEditor::start("fn main() {}\n", "display/only.txt");
+        plain.expect("main");
+        let painted = String::from_utf8_lossy(&plain.seen);
+        assert!(
+            !painted.contains("\u{1b}[35m") && !painted.contains("\u{1b}[32m"),
+            "an unknown grammar must stay plain; screen was:\n{painted}"
+        );
+    }
+
+    #[test]
+    fn a_read_only_integrated_buffer_refuses_the_save() {
         // The display path does not exist: if the editor touched the disk for
         // save or revision, it would fail loudly or write here.
         let mut editor = IntegratedEditor::start("alpha\nworld\n", "display/only.txt");
         editor.expect("world");
         editor.send(&[0x13]); // Ctrl-S
-        editor.expect("integrated save is not available yet");
+        editor.expect("read-only");
         editor.send(&[0x11]); // Ctrl-Q quits (read-only buffers are never dirty)
         assert!(
             wait_for_exit(&mut *editor.child.0, WAIT),
             "the editor hung after quit"
         );
+    }
+
+    /// The whole integrated save from the editor's side: the keystroke becomes
+    /// a request, never a write, and the daemon's answer is what clears dirty.
+    #[test]
+    fn an_integrated_save_asks_the_daemon_and_never_touches_disk() {
+        // Again a path that does not exist: a save that reached the filesystem
+        // would have to create it.
+        let mut editor = IntegratedEditor::start_writable("alpha\nworld\n", "display/only.txt");
+        editor.expect("world");
+        editor.send(b"X");
+        editor.send(&[0x13]); // Ctrl-S
+
+        let request = loop {
+            match editor.daemon.next(WAIT).expect("a message from the editor") {
+                EditorMessage::SaveRequest {
+                    request_id,
+                    text,
+                    document_version,
+                } => break (request_id, text, document_version),
+                _ => continue,
+            }
+        };
+        assert!(
+            request.1.contains('X'),
+            "the request carries the buffer: {:?}",
+            request.1
+        );
+        assert!(!std::path::Path::new("display/only.txt").exists());
+
+        editor.daemon.send(DaemonMessage::Saved {
+            request_id: request.0,
+            revision: "rev-2".to_string(),
+        });
+        editor.expect("saved");
+    }
+
+    /// A refusal is shown and the buffer stays dirty, so the quit still warns.
+    #[test]
+    fn a_refused_integrated_save_is_reported() {
+        let mut editor = IntegratedEditor::start_writable("alpha\nworld\n", "display/only.txt");
+        editor.expect("world");
+        editor.send(b"X");
+        editor.send(&[0x13]);
+
+        let request_id = loop {
+            match editor.daemon.next(WAIT).expect("a message from the editor") {
+                EditorMessage::SaveRequest { request_id, .. } => break request_id,
+                _ => continue,
+            }
+        };
+        editor.daemon.send(DaemonMessage::SaveRefused {
+            request_id,
+            reason: "the file changed on disk".to_string(),
+        });
+        editor.expect("changed on disk");
     }
 
     /// A state snapshot can be requested at any time; it does not wait for a

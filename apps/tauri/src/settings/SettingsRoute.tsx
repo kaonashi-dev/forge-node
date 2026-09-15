@@ -57,7 +57,6 @@ import { ThemeSettings } from "./ThemeSettings";
 import { DENSITIES, applyDensity, type Density } from "../theme/density";
 import {
   AUTOSAVE_KEY,
-  TERMINAL_EDITOR_KEY,
   DENSITY_KEY,
   EDITOR_FONT_SIZE_KEY,
   EDITOR_FONT_SIZE_RANGE,
@@ -509,20 +508,8 @@ function Personalization() {
 
       <Group
         title="Editor"
-        description="How the in-app editor behaves. Both are off the beaten path by default: the platform's own chords, and no writing without being asked."
+        description="How the editor behaves. Autosave is off the beaten path by default: no writing without being asked."
       >
-        <Row
-          label="Terminal editor"
-          description="Open files in the daemon-supervised forge-editor instead of the in-app editor. Off by default; the in-app editor stays the Code tab until this is on."
-          control={
-            <Switch
-              label="Terminal editor"
-              hideLabel
-              checked={readFlag(TERMINAL_EDITOR_KEY, false)}
-              onChange={(on) => writeFlag(TERMINAL_EDITOR_KEY, on)}
-            />
-          }
-        />
         <Row
           label="Autosave"
           description="Write the open file when the editor loses focus, and after a second of stillness. Off by default because agents write these same files, and a save on a pause races whatever one is doing in the same checkout."

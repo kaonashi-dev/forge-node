@@ -661,6 +661,7 @@ fn main() {
             path: "src/main.rs".to_string(),
             line: Some(12),
             read_only: true,
+            autosave: false,
         },
     );
     write(&out, "session_editor", &{
@@ -674,6 +675,7 @@ fn main() {
             dirty: false,
             read_only: true,
             document_version: 1,
+            conflict: false,
         });
         session
     });

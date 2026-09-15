@@ -5,6 +5,7 @@
 //! Everything here is pure — a window one cell off is invisible until it is not.
 
 use editor_core::metrics::{grapheme_width, single_control};
+use editor_core::{Scope, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// A run of cells that share one highlight state.
@@ -12,6 +13,9 @@ use unicode_segmentation::UnicodeSegmentation;
 pub struct Part {
     pub text: String,
     pub selected: bool,
+    /// The syntax scope these cells carry. `Plain` when the grammar is unknown
+    /// or has nothing to say about them.
+    pub scope: Scope,
 }
 
 /// The printable stand-in for a control character.
@@ -37,16 +41,23 @@ pub fn window_parts(
     left: usize,
     width: usize,
     selected: Option<(usize, usize)>,
+    scopes: &[Span],
 ) -> Vec<Part> {
     let mut parts: Vec<Part> = Vec::new();
     let mut cell = 0;
     let mut produced = 0;
 
-    let push = |text: &str, selected: bool, parts: &mut Vec<Part>| match parts.last_mut() {
-        Some(last) if last.selected == selected => last.text.push_str(text),
+    // Runs merge on selection *and* scope: a colour change starts a new part
+    // the same way the selection edge does, so the painter never has to split
+    // a string it was handed.
+    let push = |text: &str, selected: bool, scope: Scope, parts: &mut Vec<Part>| match parts
+        .last_mut()
+    {
+        Some(last) if last.selected == selected && last.scope == scope => last.text.push_str(text),
         _ => parts.push(Part {
             text: text.to_string(),
             selected,
+            scope,
         }),
     };
 
@@ -61,22 +72,23 @@ pub fn window_parts(
             continue;
         }
         let inside = selected.is_some_and(|(from, to)| offset >= from && offset < to);
+        let scope = scope_of(scopes, offset);
 
         if start < left {
             let pad = (cell - left).min(width - produced);
-            push(&" ".repeat(pad), inside, &mut parts);
+            push(&" ".repeat(pad), inside, scope, &mut parts);
             produced += pad;
         } else if produced + w > width {
-            push(&" ".repeat(width - produced), inside, &mut parts);
+            push(&" ".repeat(width - produced), inside, scope, &mut parts);
             produced = width;
         } else if grapheme == "\t" {
-            push(&" ".repeat(w), inside, &mut parts);
+            push(&" ".repeat(w), inside, scope, &mut parts);
             produced += w;
         } else if let Some(ch) = single_control(grapheme) {
-            push(&control_glyph(ch).to_string(), inside, &mut parts);
+            push(&control_glyph(ch).to_string(), inside, scope, &mut parts);
             produced += 1;
         } else {
-            push(grapheme, inside, &mut parts);
+            push(grapheme, inside, scope, &mut parts);
             produced += w;
         }
     }
@@ -84,16 +96,24 @@ pub fn window_parts(
     // the trailing cell is padded when the range reaches past the last grapheme.
     if let Some((from, to)) = selected {
         if to > line.len() && from <= line.len() && produced < width {
-            push(" ", true, &mut parts);
+            push(" ", true, Scope::Plain, &mut parts);
         }
     }
     parts
 }
 
+/// The scope covering a byte offset, `Plain` when none does.
+fn scope_of(scopes: &[Span], offset: usize) -> Scope {
+    scopes
+        .iter()
+        .find(|span| offset >= span.start && offset < span.end)
+        .map_or(Scope::Plain, |span| span.scope)
+}
+
 /// The cells `[left, left + width)` of `line`, with no highlighting.
 #[must_use]
 pub fn cell_window(line: &str, left: usize, width: usize) -> String {
-    window_parts(line, left, width, None)
+    window_parts(line, left, width, None, &[])
         .into_iter()
         .map(|part| part.text)
         .collect()
@@ -143,29 +163,63 @@ mod tests {
 
     #[test]
     fn a_selection_splits_the_row_into_runs() {
-        let parts = window_parts("abcdef", 0, 6, Some((2, 4)));
+        let parts = window_parts("abcdef", 0, 6, Some((2, 4)), &[]);
         assert_eq!(
             parts,
             vec![
                 Part {
                     text: "ab".to_string(),
-                    selected: false
+                    selected: false,
+                    scope: Scope::Plain,
                 },
                 Part {
                     text: "cd".to_string(),
-                    selected: true
+                    selected: true,
+                    scope: Scope::Plain,
                 },
                 Part {
                     text: "ef".to_string(),
-                    selected: false
+                    selected: false,
+                    scope: Scope::Plain,
                 },
+            ]
+        );
+    }
+
+    /// A colour change starts a run, and a selection edge inside one splits it
+    /// again: the painter is handed strings it never has to cut.
+    #[test]
+    fn a_scope_splits_the_row_and_composes_with_the_selection() {
+        let scopes = [Span {
+            start: 0,
+            end: 2,
+            scope: Scope::Keyword,
+        }];
+        let plain = window_parts("fn main", 0, 7, None, &scopes);
+        assert_eq!(plain.len(), 2);
+        assert_eq!(plain[0].text, "fn");
+        assert_eq!(plain[0].scope, Scope::Keyword);
+        assert_eq!(plain[1].scope, Scope::Plain);
+
+        let split = window_parts("fn main", 0, 7, Some((1, 4)), &scopes);
+        let runs: Vec<_> = split
+            .iter()
+            .map(|part| (part.text.as_str(), part.selected, part.scope))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("f", false, Scope::Keyword),
+                ("n", true, Scope::Keyword),
+                (" m", true, Scope::Plain),
+                ("ain", false, Scope::Plain),
             ]
         );
     }
 
     #[test]
     fn a_selection_that_swallows_the_line_break_shows_one_trailing_cell() {
-        let parts = window_parts("ab", 0, 8, Some((0, 3)));
+        let parts = window_parts("ab", 0, 8, Some((0, 3)), &[]);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].text, "ab ");
         assert!(parts[0].selected);

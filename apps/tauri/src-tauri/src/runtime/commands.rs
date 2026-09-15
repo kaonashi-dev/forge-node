@@ -242,6 +242,9 @@ pub enum RuntimeCommand {
         path: String,
         #[serde(default)]
         line: Option<u32>,
+        /// The caller's autosave preference, carried to the editor process.
+        #[serde(default)]
+        autosave: bool,
     },
     InputEditor {
         session_id: SessionId,

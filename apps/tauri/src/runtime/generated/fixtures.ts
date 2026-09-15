@@ -787,7 +787,8 @@ export const request_create_editor_session = {
     "workspace_id": "00000000-0000-7000-8000-000000000003",
     "path": "src/main.rs",
     "line": 12,
-    "read_only": true
+    "read_only": true,
+    "autosave": false
   }
 } as const;
 
@@ -1689,7 +1690,8 @@ export const session_editor = {
     "column": 4,
     "dirty": false,
     "read_only": true,
-    "document_version": 1
+    "document_version": 1,
+    "conflict": false
   },
   "agent_provider_id": null,
   "agent_profile_id": null,

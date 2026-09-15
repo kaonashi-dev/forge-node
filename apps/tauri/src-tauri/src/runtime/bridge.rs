@@ -541,6 +541,7 @@ fn runtime_loop(
                 let mut batch = Batch::default();
                 batch.absorb(&event, &store, &at, preview.as_ref());
                 emit_job_event(&app, &event);
+                emit_clipboard_event(&app, &event, &at, &editors);
                 batch.apply(
                     &event,
                     &mut store,
@@ -559,6 +560,7 @@ fn runtime_loop(
                     };
                     batch.absorb(&more, &store, &at, preview.as_ref());
                     emit_job_event(&app, &more);
+                    emit_clipboard_event(&app, &more, &at, &editors);
                     batch.apply(
                         &more,
                         &mut store,
@@ -728,6 +730,39 @@ struct WorktreeCreateFailedPayload {
 struct AgentProfileSavePayload {
     profile: AgentProfileId,
     error: Option<String>,
+}
+
+/// Forward an OSC 52 clipboard store, but only from a terminal on screen.
+///
+/// The guard is the point: OSC 52 lets whatever runs in a PTY set the person's
+/// clipboard, and a background agent quietly replacing it would be a real
+/// hazard. A terminal this window is attached to — the focused one, or an open
+/// editor pane — is one the person is looking at; everything else is refused.
+fn emit_clipboard_event(
+    app: &AppHandle,
+    event: &DaemonEvent,
+    at: &Attached,
+    editors: &HashMap<SessionId, EditorAttachment>,
+) {
+    let DaemonEvent::ClipboardStore { terminal_id, text } = event else {
+        return;
+    };
+    if !clipboard_is_allowed(*terminal_id, at, editors) {
+        return;
+    }
+    let _ = app.emit("runtime:clipboard", ClipboardPayload { text: text.clone() });
+}
+
+/// Whether a terminal may set the clipboard: only one this window shows.
+///
+/// Its own function so the rule can be tested without an `AppHandle` — it is
+/// the security property here, not the emit.
+fn clipboard_is_allowed(
+    terminal_id: TerminalId,
+    at: &Attached,
+    editors: &HashMap<SessionId, EditorAttachment>,
+) -> bool {
+    terminal_id == at.terminal || editors.values().any(|open| open.terminal == terminal_id)
 }
 
 fn emit_job_event(app: &AppHandle, event: &DaemonEvent) {
@@ -1482,7 +1517,19 @@ fn run_command(
             workspace,
             path,
             line,
-        } => open_editor(client, store, at, editors, workspace, path, line),
+            autosave,
+        } => open_editor(
+            client,
+            store,
+            at,
+            editors,
+            EditorOpen {
+                workspace,
+                path,
+                line,
+                autosave,
+            },
+        ),
         RuntimeCommand::InputEditor {
             session_id,
             key,
@@ -1677,12 +1724,39 @@ fn open_editor(
     store: &mut Store,
     at: &Attached,
     editors: &mut HashMap<SessionId, EditorAttachment>,
-    workspace: WorkspaceId,
-    path: String,
-    line: Option<u32>,
+    open: EditorOpen,
 ) -> Result<Effect, CommandError> {
+    let EditorOpen {
+        workspace,
+        path,
+        line,
+        autosave,
+    } = open;
+    // A second open of the same file moves the caret in the session that
+    // already has it: a rival editor would be a second process, a second PTY
+    // and a second draft of one file. The same rule `editorReveal` follows for
+    // the DOM editor, one layer down.
+    if let Some(open) = live_editor_for(store, editors, workspace, &path) {
+        if let Some(line) = line {
+            client
+                .reveal_in_editor_session(open.0, line, None)
+                .map_err(CommandError::from_client)?;
+        }
+        return Ok(Effect {
+            editor_opened: Some(EditorOpened {
+                session_id: open.0,
+                terminal_id: open.1,
+                workspace,
+                path,
+            }),
+            editor_damage: Some((open.1, Damage::Full)),
+            shell: true,
+            ..Effect::nothing()
+        });
+    }
+
     let (session_id, terminal_id) = client
-        .create_editor_session(workspace, &path, line, true)
+        .create_editor_session(workspace, &path, line, false, autosave)
         .map_err(CommandError::from_client)?;
     if terminal_id == at.terminal {
         return Err(CommandError::refused(
@@ -1712,6 +1786,46 @@ fn open_editor(
         shell: true,
         ..Effect::nothing()
     })
+}
+
+/// What one `OpenEditor` names. Grouped so the call is not eight positionals.
+struct EditorOpen {
+    workspace: WorkspaceId,
+    path: String,
+    line: Option<u32>,
+    autosave: bool,
+}
+
+/// The editor session already holding `path` in `workspace`, if one is live.
+///
+/// Matched on the daemon's own `EditorState.path` — what the editor reported
+/// through its control channel — and only for a session this window is still
+/// attached to, because a detached one has no terminal to paint.
+fn live_editor_for(
+    store: &Store,
+    editors: &HashMap<SessionId, EditorAttachment>,
+    workspace: WorkspaceId,
+    path: &str,
+) -> Option<(SessionId, TerminalId)> {
+    store
+        .sessions
+        .iter()
+        .filter(|session| {
+            session.kind == domain::SessionKind::Editor
+                && session.workspace_id == workspace
+                && !session.state.is_terminal()
+        })
+        .find(|session| {
+            session
+                .editor
+                .as_ref()
+                .is_some_and(|state| state.path == path)
+        })
+        .and_then(|session| {
+            editors
+                .get(&session.id)
+                .map(|open| (session.id, open.terminal))
+        })
 }
 
 /// Which terminal an editor keystroke is written to, and the bytes for it.
@@ -2597,6 +2711,35 @@ mod tests {
         let mut second = Batch::default();
         second.absorb(&event, &store, &at, None);
         assert!(!second.shell, "the badge was already on");
+    }
+
+    /// OSC 52 lets whatever runs in a PTY set the clipboard, so only a
+    /// terminal the person is looking at may.
+    #[test]
+    fn only_a_terminal_on_screen_may_set_the_clipboard() {
+        let focused = TerminalId::new();
+        let editor = TerminalId::new();
+        let background = TerminalId::new();
+        let at = attached(focused, SessionId::new(), 0);
+        let mut editors = HashMap::new();
+        editors.insert(
+            SessionId::new(),
+            EditorAttachment {
+                terminal: editor,
+                size: DEFAULT_SIZE,
+            },
+        );
+
+        assert!(clipboard_is_allowed(focused, &at, &editors));
+        assert!(clipboard_is_allowed(editor, &at, &editors));
+        assert!(
+            !clipboard_is_allowed(background, &at, &editors),
+            "a background agent must not be able to replace the clipboard"
+        );
+        assert!(
+            !clipboard_is_allowed(editor, &at, &HashMap::new()),
+            "a detached editor is not on screen either"
+        );
     }
 
     #[test]

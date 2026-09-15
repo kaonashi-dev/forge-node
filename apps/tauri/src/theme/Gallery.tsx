@@ -617,7 +617,6 @@ function Primitives() {
             crumbs={[
               { label: "src", value: "src" },
               { label: "workbench", value: "src/workbench" },
-              { label: "EditorView.tsx", value: "src/workbench/EditorView.tsx" },
             ]}
             onChoose={() => undefined}
           />

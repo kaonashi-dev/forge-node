@@ -1,7 +1,7 @@
 {
   "name": "@forge-node/file-workbench",
   "version": "0.1.0",
-  "description": "Non-modal, terminal-styled file explorer and editor with a framework-independent DOM API.",
+  "description": "Non-modal, terminal-styled file explorer with a framework-independent DOM API.",
   "license": "MIT OR Apache-2.0",
   "files": [
     "dist",
@@ -14,19 +14,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./editor": {
-      "types": "./dist/editor.d.ts",
-      "import": "./dist/editor.js"
-    },
     "./tree": {
       "types": "./dist/tree.d.ts",
       "import": "./dist/tree.js"
     },
-    "./style.css": "./src/style.css",
-    "./symbol": {
-      "types": "./dist/symbol.d.ts",
-      "import": "./dist/symbol.js"
-    }
+    "./style.css": "./src/style.css"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

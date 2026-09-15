@@ -12,7 +12,8 @@
     "column": 4,
     "dirty": false,
     "read_only": true,
-    "document_version": 1
+    "document_version": 1,
+    "conflict": false
   },
   "agent_provider_id": null,
   "agent_profile_id": null,

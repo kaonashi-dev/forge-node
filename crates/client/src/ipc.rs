@@ -1117,13 +1117,64 @@ impl Client {
         path: &str,
         line: Option<u32>,
         read_only: bool,
+        autosave: bool,
     ) -> Result<(SessionId, TerminalId), ClientError> {
         self.expect_session_created(Request::CreateEditorSession {
             workspace_id,
             path: path.to_owned(),
             line,
             read_only,
+            autosave,
         })
+    }
+
+    /// Turn saving-on-a-pause on or off for a live editor session.
+    pub fn set_editor_autosave(
+        &self,
+        session_id: SessionId,
+        autosave: bool,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::SetEditorAutosave {
+            session_id,
+            autosave,
+        })
+    }
+
+    /// Move the caret in a live editor session, instead of opening a rival one.
+    pub fn reveal_in_editor_session(
+        &self,
+        session_id: SessionId,
+        line: u32,
+        column: Option<u32>,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::RevealInEditorSession {
+            session_id,
+            line,
+            column,
+        })
+    }
+
+    /// The two sides of a refused editor save.
+    pub fn editor_conflict(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(String, String, String), ClientError> {
+        match self.request(Request::GetEditorConflict { session_id })? {
+            Response::EditorConflict { path, disk, mine } => Ok((path, disk, mine)),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "EditorConflict",
+            }),
+        }
+    }
+
+    /// Take disk: replace the editor's buffer with what is on disk now.
+    pub fn reload_editor_buffer(&self, session_id: SessionId) -> Result<(), ClientError> {
+        self.expect_ack(Request::ReloadEditorBuffer { session_id })
+    }
+
+    /// Keep mine: write the editor's draft over what is on disk now.
+    pub fn overwrite_editor_buffer(&self, session_id: SessionId) -> Result<(), ClientError> {
+        self.expect_ack(Request::OverwriteEditorBuffer { session_id })
     }
 
     /// Spawn a child agent/shell under a parent session (harness workflow).
@@ -2281,7 +2332,7 @@ mod tests {
         let workspace_id = domain::WorkspaceId::new();
         let client = Client::connect(&sock.path, "0.1.0").unwrap();
         let ids = client
-            .create_editor_session(workspace_id, "src/main.rs", Some(7), true)
+            .create_editor_session(workspace_id, "src/main.rs", Some(7), true, false)
             .unwrap();
         assert_eq!(ids, (session_id, terminal_id));
         drop(client);
@@ -2294,6 +2345,7 @@ mod tests {
                 path: "src/main.rs".to_owned(),
                 line: Some(7),
                 read_only: true,
+                autosave: false,
             }]
         );
     }

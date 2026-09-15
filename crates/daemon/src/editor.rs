@@ -16,7 +16,7 @@ use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use domain::{EditorState, SessionId};
@@ -25,7 +25,7 @@ use editor_control::{
     EditorStateWire, CONTROL_VERSION,
 };
 
-use crate::core::Daemon;
+use crate::core::{Daemon, SaveOutcome};
 
 /// How long the daemon waits for the editor to connect, handshake and take the
 /// buffer. A spawn that never reaches the handshake is a failed session, not a
@@ -46,6 +46,26 @@ pub enum Outgoing {
     GetState {
         request_id: u64,
     },
+    /// Take disk: replace the buffer with what the daemon just read.
+    Reload {
+        request_id: u64,
+        text: String,
+        revision: Option<String>,
+    },
+    /// Keep mine: ask for the draft again, now that the revision is the disk's.
+    Save {
+        request_id: u64,
+    },
+    /// Which lines the working tree changed, for the gutter.
+    GitMarks {
+        request_id: u64,
+        marks: Vec<editor_control::WireMark>,
+    },
+    /// Turn saving-on-a-pause on or off.
+    SetAutosave {
+        request_id: u64,
+        autosave: bool,
+    },
 }
 
 impl Outgoing {
@@ -61,6 +81,24 @@ impl Outgoing {
                 column,
             },
             Self::GetState { request_id } => DaemonMessage::GetState { request_id },
+            Self::Reload {
+                request_id,
+                text,
+                revision,
+            } => DaemonMessage::Reload {
+                request_id,
+                text,
+                revision,
+            },
+            Self::Save { request_id } => DaemonMessage::Save { request_id },
+            Self::GitMarks { request_id, marks } => DaemonMessage::GitMarks { request_id, marks },
+            Self::SetAutosave {
+                request_id,
+                autosave,
+            } => DaemonMessage::SetAutosave {
+                request_id,
+                autosave,
+            },
         }
     }
 }
@@ -134,6 +172,19 @@ fn bind_socket(socket_path: &Path) -> io::Result<UnixListener> {
     Ok(listener)
 }
 
+/// What one buffer is opened with.
+///
+/// Grouped rather than passed one by one: they travel together from the
+/// request to the handshake, and four positional `bool`s in a row is how a
+/// caller ends up swapping `read_only` for `autosave`.
+pub struct OpenSpec {
+    pub buffer: fs_service::FileContents,
+    /// 1-based line to reveal at startup.
+    pub line: Option<u32>,
+    pub read_only: bool,
+    pub autosave: bool,
+}
+
 /// The supervisor of one editor session.
 ///
 /// Created (socket bound) before the spawn; [`Supervisor::supervise`] moves it
@@ -172,8 +223,7 @@ impl Supervisor {
     pub fn supervise(
         mut self,
         daemon: Arc<Daemon>,
-        buffer: fs_service::FileContents,
-        line: Option<u32>,
+        spec: OpenSpec,
         commands: flume::Receiver<Outgoing>,
     ) {
         let Some(listener) = self.listener.take() else {
@@ -187,7 +237,7 @@ impl Supervisor {
                 // `self` (and with it the socket file) dies with this closure,
                 // on every path.
                 let _supervisor = self;
-                serve(daemon, session_id, listener, buffer, line, commands);
+                serve(daemon, session_id, listener, spec, commands);
             })
             .expect("spawn the editor supervisor thread");
     }
@@ -204,10 +254,15 @@ fn serve(
     daemon: Arc<Daemon>,
     session_id: SessionId,
     listener: UnixListener,
-    buffer: fs_service::FileContents,
-    line: Option<u32>,
+    spec: OpenSpec,
     commands: flume::Receiver<Outgoing>,
 ) {
+    let OpenSpec {
+        buffer,
+        line,
+        read_only,
+        autosave,
+    } = spec;
     struct PortGuard {
         daemon: Arc<Daemon>,
         session_id: SessionId,
@@ -229,7 +284,13 @@ fn serve(
             return;
         }
     };
-    if let Err(error) = handshake(&mut stream, session_id, &buffer, line) {
+    let opening = Opening {
+        buffer: &buffer,
+        line,
+        read_only,
+        autosave,
+    };
+    if let Err(error) = handshake(&mut stream, session_id, opening) {
         fail(
             &daemon,
             session_id,
@@ -239,21 +300,60 @@ fn serve(
     }
     // The buffer is open; the editor is usable.
     daemon.set_editor_running(session_id);
+    // Marks are decoration: a git failure must not take the buffer with it.
+    let push_marks = |daemon: &Arc<Daemon>, path: &str, text: &str| {
+        if let Some(marks) = daemon.editor_git_marks(session_id, path, text) {
+            let _ = daemon.send_editor_command(
+                session_id,
+                Outgoing::GitMarks {
+                    request_id: 0,
+                    marks,
+                },
+            );
+        }
+    };
+    push_marks(&daemon, &buffer.path, &buffer.text);
 
-    // Outgoing requests share the socket via a cloned fd; the read loop below
-    // owns the original. A full `commands` channel is refused at enqueue.
-    if let Ok(mut writer) = stream.try_clone() {
+    // Two producers write this socket — the command thread below, and the read
+    // loop answering a save — so the write half is shared behind one `Mutex`.
+    // Without it two `write_frame`s can interleave and the editor decodes a
+    // frame built from halves of both. The read loop keeps its own handle for
+    // reading, which never contends.
+    let writer = match stream.try_clone() {
+        Ok(half) => Arc::new(Mutex::new(half)),
+        Err(error) => {
+            fail(
+                &daemon,
+                session_id,
+                format!("could not split the control stream: {error}"),
+            );
+            return;
+        }
+    };
+    {
+        let writer = Arc::clone(&writer);
         std::thread::Builder::new()
             .name("forge-editor-cmd".to_owned())
             .spawn(move || {
                 while let Ok(command) = commands.recv() {
-                    if write_frame(&mut writer, &command.into_message()).is_err() {
+                    if send(&writer, &command.into_message()).is_err() {
                         break;
                     }
                 }
             })
+            // The queue is bounded and the thread only writes: a spawn failure
+            // here is the process being out of threads, which no editor
+            // session can recover from.
             .expect("spawn the editor command writer");
     }
+
+    // The path and revision the *daemon* opened, never what the editor names:
+    // a save writes where the request said, so the editor cannot redirect it.
+    let path = buffer.path.clone();
+    let mut revision = buffer.revision.clone();
+    // Whether the last save was refused because the file moved. Held here
+    // rather than on the session, because this thread is what learns it.
+    let mut conflict = false;
 
     let mut last_broadcast: Option<Instant> = None;
     let mut pending: Option<EditorStateWire> = None;
@@ -269,8 +369,74 @@ fn serve(
             Ok(EditorMessage::State { state, .. }) => {
                 pending = Some(state);
                 if due(last_broadcast) {
-                    flush(&daemon, session_id, pending.take());
+                    flush(&daemon, session_id, pending.take(), conflict);
                     last_broadcast = Some(Instant::now());
+                }
+            }
+            Ok(EditorMessage::SaveRequest {
+                request_id,
+                text,
+                document_version,
+            }) => {
+                // Blocking disk IO, on this thread and never under the core
+                // lock: `save_editor_buffer` clones the root and writes off it.
+                // Enforced here, not only in the editor: `read_only` travels in
+                // `Open` as a courtesy, but the daemon owns the checkout and a
+                // buggy or replaced editor must not be able to write through
+                // a buffer that was opened read-only.
+                if read_only {
+                    let refusal = DaemonMessage::SaveRefused {
+                        request_id,
+                        reason: "this buffer is open read-only".to_owned(),
+                    };
+                    if send(&writer, &refusal).is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                let answer = match daemon.save_editor_buffer(session_id, &path, &text, &revision) {
+                    SaveOutcome::Written { revision: written } => {
+                        tracing::debug!(%session_id, %document_version, "editor buffer saved");
+                        revision = written.clone();
+                        conflict = false;
+                        daemon.clear_editor_conflict(session_id);
+                        // The working tree moved, so the gutter did too.
+                        push_marks(&daemon, &path, &text);
+                        DaemonMessage::Saved {
+                            request_id,
+                            revision: written,
+                        }
+                    }
+                    // Remember what is on disk even though nothing was
+                    // written: the next save is then a decision the person
+                    // makes, not one the stale revision forbids forever.
+                    SaveOutcome::Stale {
+                        revision: current,
+                        disk,
+                        reason,
+                    } => {
+                        tracing::debug!(%session_id, "editor save refused: the file moved");
+                        revision = current;
+                        conflict = true;
+                        // Kept so the person can see both sides. This is the
+                        // only moment the daemon holds the draft, so it is the
+                        // only moment it can offer the comparison at all.
+                        daemon.record_editor_conflict(
+                            session_id,
+                            crate::core::EditorConflict {
+                                path: path.clone(),
+                                disk,
+                                mine: text.clone(),
+                            },
+                        );
+                        DaemonMessage::SaveRefused { request_id, reason }
+                    }
+                    SaveOutcome::Failed(reason) => {
+                        DaemonMessage::SaveRefused { request_id, reason }
+                    }
+                };
+                if send(&writer, &answer).is_err() {
+                    return;
                 }
             }
             Ok(other) => {
@@ -285,7 +451,7 @@ fn serve(
                 // The deadline fired with a state still queued: that flush is
                 // the coalescing, not a sleep-and-check loop.
                 if let Some(state) = pending.take() {
-                    flush(&daemon, session_id, Some(state));
+                    flush(&daemon, session_id, Some(state), conflict);
                     last_broadcast = Some(Instant::now());
                 }
             }
@@ -295,6 +461,19 @@ fn serve(
             }
         }
     }
+}
+
+/// Write one frame through the shared write half.
+///
+/// Every producer goes through here: the lock is what keeps two frames from
+/// interleaving on one socket. A poisoned lock means a writer panicked
+/// mid-frame, so the stream is no longer trustworthy and the caller ends the
+/// session rather than appending to a half-written frame.
+fn send(writer: &Arc<Mutex<UnixStream>>, message: &DaemonMessage) -> Result<(), ControlError> {
+    let mut half = writer
+        .lock()
+        .map_err(|_| ControlError::Io(io::Error::other("the control writer panicked mid-frame")))?;
+    write_frame(&mut *half, message)
 }
 
 /// Wait for the editor to connect, with a deadline, on `poll(2)` — the shape
@@ -337,18 +516,39 @@ fn accept_with_deadline(listener: UnixListener, timeout: Duration) -> Result<Uni
     }
 }
 
+/// The borrowed half of an [`OpenSpec`], for the handshake.
+struct Opening<'a> {
+    buffer: &'a fs_service::FileContents,
+    line: Option<u32>,
+    read_only: bool,
+    autosave: bool,
+}
+
 /// Read the editor's `Hello`, answer `Welcome`, and hand over the buffer.
 ///
 /// The handshake is the one place a request id is minted by the daemon; the
-/// editor's `Opened` echoes it. H1 opens every buffer read-only (design D6).
+/// editor's `Opened` echoes it. `read_only` is the opener's, not a constant:
+/// an integrated buffer saves through [`EditorMessage::SaveRequest`].
 fn handshake(
     stream: &mut UnixStream,
     session_id: SessionId,
-    buffer: &fs_service::FileContents,
-    line: Option<u32>,
+    opening: Opening<'_>,
 ) -> Result<(), String> {
+    let Opening {
+        buffer,
+        line,
+        read_only,
+        autosave,
+    } = opening;
     stream
         .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
+        .map_err(|e| e.to_string())?;
+    // `Open` carries the whole file, which is larger than any socket buffer:
+    // an editor that connects and never reads would otherwise block this
+    // thread in `write_all` forever, with the read deadline never reached and
+    // the session stuck in `Starting`.
+    stream
+        .set_write_timeout(Some(HANDSHAKE_TIMEOUT))
         .map_err(|e| e.to_string())?;
     let who = match read_frame::<EditorMessage>(stream).map_err(|e| e.to_string())? {
         EditorMessage::Hello {
@@ -391,7 +591,8 @@ fn handshake(
             text: buffer.text.clone(),
             revision: Some(buffer.revision.clone()),
             line,
-            read_only: true,
+            read_only,
+            autosave,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -411,7 +612,16 @@ fn fail(daemon: &Arc<Daemon>, session_id: SessionId, reason: String) {
 }
 
 /// Convert and store one state, then broadcast it.
-fn flush(daemon: &Arc<Daemon>, session_id: SessionId, state: Option<EditorStateWire>) {
+///
+/// `conflict` is the supervisor's, not the editor's: the editor is only told a
+/// reason string, while this thread is the one that saw the revision mismatch.
+/// It is merged in here so a later state notification cannot quietly clear it.
+fn flush(
+    daemon: &Arc<Daemon>,
+    session_id: SessionId,
+    state: Option<EditorStateWire>,
+    conflict: bool,
+) {
     let Some(state) = state else { return };
     let session = daemon.record_editor_state(
         session_id,
@@ -422,6 +632,7 @@ fn flush(daemon: &Arc<Daemon>, session_id: SessionId, state: Option<EditorStateW
             dirty: state.dirty,
             read_only: state.read_only,
             document_version: state.document_version,
+            conflict,
         },
     );
     if let Some(session) = session {
@@ -486,7 +697,17 @@ mod tests {
                 },
             );
         });
-        let error = handshake(&mut daemon_side, id, &buffer(), None).expect_err("mismatch");
+        let error = handshake(
+            &mut daemon_side,
+            id,
+            Opening {
+                buffer: &buffer(),
+                line: None,
+                read_only: true,
+                autosave: false,
+            },
+        )
+        .expect_err("mismatch");
         assert!(
             error.contains("version"),
             "a foreign control version must be named: {error}"

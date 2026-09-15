@@ -156,6 +156,15 @@ pub struct EditorState {
     /// `editor_core::DocumentVersion` as a number: monotonic per mutation.
     /// Kept opaque here so `domain` does not depend on the editor crate.
     pub document_version: u64,
+    /// A save was refused because the file moved under the buffer.
+    ///
+    /// The daemon's word, not the editor's: the editor only learns a reason
+    /// string, while the daemon is the one that saw the revision mismatch. A
+    /// flag and never the texts — the draft lives in the editor process, and
+    /// the two sides of the comparison are fetched with `GetEditorConflict`
+    /// when somebody asks to see them, not carried on every `SessionUpdated`.
+    #[serde(default)]
+    pub conflict: bool,
 }
 
 /// A persistent unit of work in the domain; a node of the session graph.
@@ -356,10 +365,12 @@ mod tests {
             dirty: true,
             read_only: false,
             document_version: 7,
+            conflict: true,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert_eq!(serde_json::from_str::<EditorState>(&json).unwrap(), state);
         assert_eq!(EditorState::default().document_version, 0);
+        assert!(!EditorState::default().conflict, "a fresh buffer is clean");
     }
 
     #[test]
@@ -382,6 +393,7 @@ mod tests {
                 dirty: false,
                 read_only: true,
                 document_version: 1,
+                conflict: false,
             }),
             agent_provider_id: None,
             agent_profile_id: None,

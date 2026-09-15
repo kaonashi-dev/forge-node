@@ -68,6 +68,20 @@ pub struct DaemonStats {
 pub enum Response {
     /// Generic success for a request that returns no data.
     Ack,
+    /// The two sides of a refused editor save, for `GetEditorConflict`.
+    ///
+    /// Carried only in the answer to an explicit ask, never on `SessionUpdated`:
+    /// two documents on the broadcast channel would be exactly the payload the
+    /// event queue is bounded to keep off it. `Session.editor.conflict` is the
+    /// flag that says this is worth asking for.
+    EditorConflict {
+        /// Workspace-relative path, as the daemon opened it.
+        path: String,
+        /// What is on disk now.
+        disk: String,
+        /// The draft the editor asked to write.
+        mine: String,
+    },
     /// One headless run, after `StartJob` or a state change.
     Job(Box<Job>),
     /// Every headless run this daemon knows of, oldest first.

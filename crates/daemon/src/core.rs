@@ -138,11 +138,24 @@ pub struct Daemon {
     pull_requests: Mutex<crate::pull_requests::Cache>,
     /// Own lock: a month of JSONL must not sit in front of a keystroke.
     usage_stats: Mutex<crate::usage_stats::Cache>,
+    /// The two sides of a refused editor save, per session.
+    ///
+    /// Own lock, like `pull_requests` and for the same reason: `GetEditorConflict`
+    /// reads the disk, and a filesystem read must not serialize PTY work. The
+    /// draft lives in the editor process everywhere else — this is the one
+    /// place the daemon keeps a copy, because the write it refused is the only
+    /// moment it has one, and a person cannot compare what nobody kept.
+    /// Bounded: one entry per editor session, each at most the document budget,
+    /// dropped when the save succeeds or the session ends.
+    editor_conflicts: Mutex<HashMap<SessionId, EditorConflict>>,
     pub instance_id: String,
     pub version: String,
     pub started_at: Timestamp,
     shutdown: AtomicBool,
     pub(crate) resetting: AtomicBool,
+    /// Ids for the control requests the daemon mints, off the core lock: a
+    /// reveal must not take the lock just to number itself.
+    editor_requests: std::sync::atomic::AtomicU64,
     /// Absolute paths of the Forge attention assets, or `None` when install
     /// failed. Injected at launch by [`agents::inject_attention`].
     attention_assets: Option<agents::AttentionAssets>,
@@ -358,6 +371,9 @@ impl Daemon {
             started_at: Timestamp::now(),
             shutdown: AtomicBool::new(false),
             resetting: AtomicBool::new(false),
+            // Past the handshake's 1 and the editor's own 1_000 block.
+            editor_requests: std::sync::atomic::AtomicU64::new(2_000),
+            editor_conflicts: Mutex::new(HashMap::new()),
             attention_assets,
         }))
     }
@@ -913,7 +929,32 @@ impl Daemon {
                 path,
                 line,
                 read_only,
-            } => self.create_editor_session(workspace_id, &path, line, read_only),
+                autosave,
+            } => self.create_editor_session(workspace_id, &path, line, read_only, autosave),
+            Request::SetEditorAutosave {
+                session_id,
+                autosave,
+            } => {
+                let request_id = self.next_editor_request_id();
+                self.send_editor_command(
+                    session_id,
+                    crate::editor::Outgoing::SetAutosave {
+                        request_id,
+                        autosave,
+                    },
+                )?;
+                Ok(Response::Ack)
+            }
+            Request::RevealInEditorSession {
+                session_id,
+                line,
+                column,
+            } => self.reveal_in_editor_session(session_id, line, column),
+            Request::GetEditorConflict { session_id } => self.editor_conflict(session_id),
+            Request::ReloadEditorBuffer { session_id } => self.reload_editor_buffer(session_id),
+            Request::OverwriteEditorBuffer { session_id } => {
+                self.overwrite_editor_buffer(session_id)
+            }
             Request::CreateChildSession {
                 parent_session_id,
                 kind,
@@ -3771,18 +3812,9 @@ impl Daemon {
         relative: &str,
         line: Option<u32>,
         read_only: bool,
+        autosave: bool,
     ) -> Result<Response, ProtocolError> {
         let _span = tracing::info_span!("editor.create", %workspace_id, path = %relative).entered();
-
-        // H1 is read-only (design D6): until integrated save with revision
-        // exists, an editable integrated buffer would be a draft nothing could
-        // persist. Refused, never silently upgraded.
-        if !read_only {
-            return Err(ProtocolError::new(
-                ErrorCode::InvalidRequest,
-                "the integrated editor is read-only until integrated save exists",
-            ));
-        }
 
         // Refusals must not leave a row or a socket, so the read comes first.
         let root = self.workspace_path(workspace_id)?;
@@ -3879,7 +3911,16 @@ impl Daemon {
             false,
         ) {
             Ok(terminal_id) => {
-                supervisor.supervise(self.clone(), opened, line, commands_rx);
+                supervisor.supervise(
+                    self.clone(),
+                    crate::editor::OpenSpec {
+                        buffer: opened,
+                        line,
+                        read_only,
+                        autosave,
+                    },
+                    commands_rx,
+                );
                 Ok(Response::SessionCreated {
                     session_id: session.id,
                     terminal_id,
@@ -3891,6 +3932,94 @@ impl Daemon {
                 Err(ProtocolError::new(ErrorCode::SpawnError, reason))
             }
         }
+    }
+
+    /// Move the caret in a live editor session (R13).
+    ///
+    /// The command travels the control channel the supervisor already owns, so
+    /// nothing here blocks: a saturated queue is `PreconditionFailed` and the
+    /// caller retries rather than the request id being dropped.
+    fn reveal_in_editor_session(
+        &self,
+        session_id: SessionId,
+        line: u32,
+        column: Option<u32>,
+    ) -> Result<Response, ProtocolError> {
+        let request_id = self.next_editor_request_id();
+        self.send_editor_command(
+            session_id,
+            crate::editor::Outgoing::Reveal {
+                request_id,
+                line,
+                column,
+            },
+        )?;
+        Ok(Response::Ack)
+    }
+
+    /// Take disk: re-read the file and hand it to the editor as the buffer.
+    ///
+    /// Read here rather than reusing the conflict's copy, because the point of
+    /// the gesture is *what is on disk*, and a third writer may have landed
+    /// since the refusal.
+    fn reload_editor_buffer(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
+        let (workspace_id, relative) = self.editor_target(session_id)?;
+        let root = self.workspace_path(workspace_id)?;
+        let opened = fs_service::read_file(&root, &relative).map_err(fs_err)?;
+        if opened.binary || opened.too_large {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                "the file on disk is no longer text this editor can hold",
+            ));
+        }
+        let request_id = self.next_editor_request_id();
+        self.send_editor_command(
+            session_id,
+            crate::editor::Outgoing::Reload {
+                request_id,
+                text: opened.text,
+                revision: Some(opened.revision),
+            },
+        )?;
+        Ok(Response::Ack)
+    }
+
+    /// Keep mine: ask the editor for its draft again.
+    ///
+    /// The daemon does not hold the draft as state it may write — the copy it
+    /// kept is for comparing — so the write stays a request the editor makes,
+    /// against the disk revision the refusal already taught it.
+    fn overwrite_editor_buffer(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
+        let request_id = self.next_editor_request_id();
+        self.send_editor_command(session_id, crate::editor::Outgoing::Save { request_id })?;
+        Ok(Response::Ack)
+    }
+
+    /// The workspace and path one editor session is holding.
+    fn editor_target(&self, session_id: SessionId) -> Result<(WorkspaceId, String), ProtocolError> {
+        let inner = self.lock();
+        let session = inner
+            .sessions
+            .get(&session_id)
+            .ok_or_else(|| ProtocolError::not_found("session"))?;
+        if session.kind != SessionKind::Editor {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                "not an editor session",
+            ));
+        }
+        let path = session
+            .editor
+            .as_ref()
+            .map(|state| state.path.clone())
+            .ok_or_else(|| ProtocolError::precondition_failed("the buffer has not opened yet"))?;
+        Ok((session.workspace_id, path))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5121,6 +5250,7 @@ impl Daemon {
         let mut reply = None;
         let mut bell = false;
         let mut session_update = None;
+        let clipboard;
 
         {
             let mut inner = self.lock();
@@ -5139,6 +5269,8 @@ impl Daemon {
             if !replies.is_empty() {
                 reply = Some((Arc::clone(&rt.writer), replies));
             }
+            // Independent of the emit clock: a copy is a gesture, not damage.
+            clipboard = rt.take_clipboard();
 
             let now = Instant::now();
             let emit_at = rt
@@ -5211,6 +5343,10 @@ impl Daemon {
         if bell {
             self.registry
                 .broadcast_domain(DaemonEvent::TerminalBell { terminal_id });
+        }
+        if let Some(text) = clipboard {
+            self.registry
+                .broadcast_domain(DaemonEvent::ClipboardStore { terminal_id, text });
         }
         if let Some(session) = session_update {
             self.registry
@@ -5325,18 +5461,139 @@ impl Daemon {
         Some(session.clone())
     }
 
+    /// The next id for a request the daemon mints on a control channel.
+    ///
+    /// The handshake uses 1 and the editor's own requests start at 1_000, so
+    /// this counter starts above both: an id in a log names one side.
+    fn next_editor_request_id(&self) -> u64 {
+        use std::sync::atomic::Ordering;
+        self.editor_requests.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Gutter marks for an editor's buffer, or `None` when git cannot say.
+    ///
+    /// `git diff` is a subprocess, so it runs on the supervisor thread and off
+    /// the core lock — the lock is taken only to clone the workspace root. A
+    /// failure is `None` rather than an error: a gutter is decoration, and
+    /// losing the buffer over it would be the wrong trade.
+    pub(crate) fn editor_git_marks(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        relative: &str,
+        text: &str,
+    ) -> Option<Vec<editor_control::WireMark>> {
+        let workspace_id = {
+            let inner = self.lock();
+            inner.sessions.get(&session_id)?.workspace_id
+        };
+        let root = self.workspace_path(workspace_id).ok()?;
+        let lines = u32::try_from(text.lines().count()).unwrap_or(u32::MAX);
+        let marks = git_service::file_marks(&root, relative, lines).ok()?;
+        Some(
+            marks
+                .into_iter()
+                .map(|mark| editor_control::WireMark {
+                    line: mark.line,
+                    kind: match mark.kind {
+                        git_service::MarkKind::Added => editor_control::WireMarkKind::Added,
+                        git_service::MarkKind::Modified => editor_control::WireMarkKind::Modified,
+                        git_service::MarkKind::Deleted => editor_control::WireMarkKind::Deleted,
+                    },
+                })
+                .collect(),
+        )
+    }
+
     pub(crate) fn drop_editor_port(&self, session_id: SessionId) {
         self.lock().editors.remove(&session_id);
+        self.clear_editor_conflict(session_id);
+    }
+
+    /// Remember the two sides of a refused save, so they can be compared.
+    pub(crate) fn record_editor_conflict(&self, session_id: SessionId, conflict: EditorConflict) {
+        self.editor_conflicts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id, conflict);
+    }
+
+    /// Forget it: the save went through, or the session is gone.
+    pub(crate) fn clear_editor_conflict(&self, session_id: SessionId) {
+        self.editor_conflicts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
+    }
+
+    /// Answer `GetEditorConflict` with the two sides, if a save is refused.
+    fn editor_conflict(&self, session_id: SessionId) -> Result<Response, ProtocolError> {
+        let conflict = self
+            .editor_conflicts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| ProtocolError::not_found("editor conflict"))?;
+        Ok(Response::EditorConflict {
+            path: conflict.path,
+            disk: conflict.disk,
+            mine: conflict.mine,
+        })
+    }
+
+    /// Write an editor buffer to the checkout, answering the editor's request.
+    ///
+    /// `relative` and `expected_revision` are the supervisor's — the path the
+    /// daemon opened and the revision it last wrote — never what the editor
+    /// named, so a compromised or buggy editor cannot redirect the write out of
+    /// its own buffer. The `fs-service` call runs off the core lock like every
+    /// other workspace read (ADR-012); the lock is taken only to clone the root.
+    ///
+    /// A revision mismatch is a refusal, not an error: an agent wrote the same
+    /// path, and the editor says so rather than overwriting it. The refusal
+    /// carries the revision that *is* on disk, so the next save is a decision
+    /// the person makes rather than one the daemon can no longer allow — see
+    /// [`SaveOutcome::Stale`].
+    pub(crate) fn save_editor_buffer(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        relative: &str,
+        text: &str,
+        expected_revision: &str,
+    ) -> SaveOutcome {
+        let workspace_id = {
+            let inner = self.lock();
+            let Some(session) = inner.sessions.get(&session_id) else {
+                return SaveOutcome::Failed("the editor session is gone".to_owned());
+            };
+            if session.kind != SessionKind::Editor {
+                return SaveOutcome::Failed("not an editor session".to_owned());
+            }
+            session.workspace_id
+        };
+        let root = match self.workspace_path(workspace_id) {
+            Ok(root) => root,
+            Err(error) => return SaveOutcome::Failed(error.message),
+        };
+        match fs_service::write_file(&root, relative, text, expected_revision) {
+            Ok(()) => SaveOutcome::Written {
+                revision: fs_service::revision_of(text.as_bytes()),
+            },
+            Err(fs_service::FsError::RevisionMismatch { current }) => SaveOutcome::Stale {
+                revision: current.revision,
+                disk: current.text,
+                reason: "the file changed on disk — save again to overwrite it".to_owned(),
+            },
+            Err(error) => SaveOutcome::Failed(error.to_string()),
+        }
     }
 
     /// Enqueue a control request for a live editor. A full queue is busy, never
     /// a silent drop: the request_id would otherwise go unanswered.
     ///
-    /// H1 opens the buffer from the handshake and recovers state off the
-    /// session snapshot, so no request path drives this yet; it is the seam
-    /// `Reveal`/`GetState` arrive on (R13), and the saturation behaviour it
-    /// owns is what `a_full_control_queue_answers_busy_on_the_daemon` asserts.
-    #[allow(dead_code)]
+    /// `RevealInEditorSession` is what drives this today; `GetState` arrives on
+    /// the same seam. The saturation behaviour it owns is what
+    /// `a_full_control_queue_answers_busy_on_the_daemon` asserts.
     pub(crate) fn send_editor_command(
         &self,
         session_id: SessionId,
@@ -6467,6 +6724,38 @@ impl AgentLaunch {
             read_only,
         })
     }
+}
+
+/// The two sides of a save the daemon refused.
+///
+/// `mine` is the text the editor asked to write; `disk` is what was there
+/// instead. Both are held only while the conflict stands.
+#[derive(Clone, Debug)]
+pub struct EditorConflict {
+    pub path: String,
+    pub disk: String,
+    pub mine: String,
+}
+
+/// What came of one editor save.
+///
+/// `Stale` is separate from `Failed` because it is the only one that hands
+/// back a revision: the write did not happen, but the daemon now knows what is
+/// on disk, and remembering it is what keeps a refusal from being permanent.
+/// Conditioning the next save on a revision that can never match again would
+/// leave a draft nobody can ever write — worse than asking twice.
+pub(crate) enum SaveOutcome {
+    Written {
+        revision: String,
+    },
+    Stale {
+        revision: String,
+        /// What is on disk instead, so the refusal can be compared against the
+        /// draft without a second read that might see a third version.
+        disk: String,
+        reason: String,
+    },
+    Failed(String),
 }
 
 /// What one editor spawn needs that the session row cannot carry.
@@ -9430,6 +9719,7 @@ mod tests {
                 workspace_id: ws,
                 path: "src/main.rs".into(),
                 line: Some(3),
+                autosave: false,
                 read_only: true,
             })
             .expect("create");
@@ -9463,6 +9753,7 @@ mod tests {
                 workspace_id: ws,
                 path: "src/main.rs".into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect_err("no forge-editor on PATH");
@@ -9490,6 +9781,7 @@ mod tests {
                 workspace_id: ws,
                 path: "src/lib.rs".into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect("create")
@@ -9516,6 +9808,7 @@ mod tests {
                 workspace_id: ws,
                 path: "nope.rs".into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect_err("missing");
@@ -9526,6 +9819,7 @@ mod tests {
                 workspace_id: ws,
                 path: "lib".into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect_err("directory");
@@ -9536,6 +9830,7 @@ mod tests {
                 workspace_id: ws,
                 path: "blob.bin".into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect_err("binary");
@@ -9554,6 +9849,7 @@ mod tests {
                 workspace_id: ws,
                 path: "a.rs".into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect("create")
@@ -9607,6 +9903,7 @@ mod tests {
                 workspace_id: ws,
                 path: "a.rs".into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect("create");
@@ -9642,6 +9939,7 @@ mod tests {
                 workspace_id: ws,
                 path: "a.rs".into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect("create")
@@ -9755,6 +10053,7 @@ mod tests {
                 workspace_id: ws,
                 path: "a.rs".into(),
                 line: None,
+                autosave: false,
                 read_only: true,
             })
             .expect("create")

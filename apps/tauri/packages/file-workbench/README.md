@@ -14,7 +14,6 @@ TypeScript declarations and the stylesheet. Install the tarball in the consumer.
 
 ```ts
 import { createFileExplorer } from "@forge-node/file-workbench";
-import { createFileEditor } from "@forge-node/file-workbench/editor";
 import "@forge-node/file-workbench/style.css";
 
 const editor = createFileEditor(editorElement, {
@@ -61,17 +60,6 @@ helpers. `/symbol` exposes identifier extraction without importing an editor.
   call `editor.text()` when saving or otherwise needing the complete text.
 - `setDoc()` is silent: it never calls `onChange`. It does report cursor changes.
   The host must resolve conflicts before applying external content.
-- `setGitMarks` updates the gutter in place. `onOpenDefinition` and `onRevealDiff`
-  bridge navigation to the host. Theme comes from CSS variables on the host.
-- `setGitChanges` supplies contiguous change blocks with saved line ranges and
-  before/after rows. Their gutter marks open a contextual detail panel with
-  previous/next navigation, intraline emphasis, Escape and outside-click dismissal.
-  `onRevealDiff` becomes the panel's full-diff action. A preview renders at most
-  200 rows and reports omitted lines. Editing or replacing the document clears
-  marks and details; the host must supply fresh saved changes after a read/save.
-- `readOnly` disables editing. It is fixed for that editor instance. Chrome is
-  vim/Zed-minimal: `/` find, `→` replace, `:` go-to-line (`Mod-g`), tabular
-  gutters, no form borders or pills. There are no Vim modes or exit gestures.
 - A `FileTree` contains relative paths. `Directory` entries can represent empty
   folders; ignored directory entries are opaque until the host peels them
   (`onExpandOpaque` → one-level listing merged in). Directories implied by file

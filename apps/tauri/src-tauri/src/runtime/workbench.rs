@@ -56,6 +56,18 @@ pub enum WorkbenchCommand {
         max_turns: Option<u32>,
         max_bytes: Option<u32>,
     },
+    /// The two sides of a refused editor save, for the conflict banner.
+    LoadEditorConflict {
+        session: SessionId,
+    },
+    /// Take disk: replace the editor's buffer with what is on disk now.
+    ReloadEditorBuffer {
+        session: SessionId,
+    },
+    /// Keep mine: write the editor's draft over what is on disk now.
+    OverwriteEditorBuffer {
+        session: SessionId,
+    },
     /// Remove a discovered run's transcript from disk.
     DeleteExternalSession {
         session: String,
@@ -339,6 +351,24 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             Ok(diff) => emit(app, "workbench:diff", &(workspace, diff)),
             Err(error) => fail(app, "workbench:diff_failed", Some(workspace), &error),
         },
+        WorkbenchCommand::LoadEditorConflict { session } => match client.editor_conflict(session) {
+            Ok((path, disk, mine)) => emit(
+                app,
+                "workbench:editor_conflict",
+                &(session, path, disk, mine),
+            ),
+            Err(error) => fail_session(app, "workbench:editor_conflict_failed", session, &error),
+        },
+        WorkbenchCommand::ReloadEditorBuffer { session } => {
+            if let Err(error) = client.reload_editor_buffer(session) {
+                fail_session(app, "workbench:editor_conflict_failed", session, &error);
+            }
+        }
+        WorkbenchCommand::OverwriteEditorBuffer { session } => {
+            if let Err(error) = client.overwrite_editor_buffer(session) {
+                fail_session(app, "workbench:editor_conflict_failed", session, &error);
+            }
+        }
         WorkbenchCommand::LoadSessionChanges { session } => {
             match client.session_changes(session) {
                 Ok(changes) => emit(app, "workbench:session_changes", &(session, changes)),

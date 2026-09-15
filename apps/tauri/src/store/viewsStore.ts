@@ -2,6 +2,8 @@ import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { workbenchStore } from "./workbenchStore";
 import { noteFileOpened } from "../workbench/recentFiles";
+import { openTerminalEditor } from "../runtime/api";
+import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
 import {
   closeOthers,
   closeToRight,
@@ -94,13 +96,33 @@ export function openEditorTerminal(session: string, path: string): void {
   open({ kind: "editor-terminal", session, path });
 }
 
-export function openEditor(path: string): void {
+/**
+ * Open a file on whichever surface owns it.
+ *
+ * Text goes to the terminal editor: the daemon creates (or re-uses) the
+ * session and the `EditorOpened` event opens the tab, so there is no view to
+ * add here. What stays on the DOM side is the rendered kinds a TUI cannot
+ * draw — Markdown, SVG, a raster image — which `editorRouteFor` decides.
+ *
+ * `line` rides along so the daemon can reveal it at creation; a jump into a
+ * file that is already open becomes a `Reveal` on the live session rather than
+ * a second editor process.
+ */
+export function openEditor(path: string, line?: number): void {
   // Opening is the whole of what "recent" means here — the tree carries no
   // mtime, so this is where the palette's opening list comes from. Hooked at
   // the one choke point rather than at each caller, so the file tree, a
   // definition jump and a diff all count the same as the palette itself.
   noteFileOpened(workbenchStore.workspace, path);
-  open({ kind: "editor", path });
+  const workspace = workbenchStore.workspace;
+  if (!workspace) return;
+  // The tab arrives with `EditorOpened`; a failure leaves the current view
+  // alone rather than opening an empty one. The autosave preference travels
+  // with the open: the daemon holds no opinion about it and the editor process
+  // is what acts on it.
+  void openTerminalEditor(workspace, path, line, readFlag(AUTOSAVE_KEY, false)).catch(
+    () => undefined,
+  );
 }
 
 /**
@@ -116,8 +138,7 @@ export function openEditor(path: string): void {
  * working in — an explicit reveal would drop it for a jump that did not ask.
  */
 export function openEditorAt(path: string, line: number): void {
-  openEditor(path);
-  setPendingLine({ path, line });
+  openEditor(path, line);
 }
 
 export function openPrDetail(key: string): void {
