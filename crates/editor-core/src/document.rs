@@ -142,17 +142,18 @@ impl Document {
 
     #[must_use]
     pub fn selection(&self) -> Selection {
-        self.selection
+        self.selection.clone()
     }
 
+    /// The primary caret. Every other one is in [`Selection::cursors`].
     #[must_use]
     pub fn caret(&self) -> usize {
-        self.selection.head
+        self.selection.head()
     }
 
     #[must_use]
     pub fn caret_line_col(&self) -> LineCol {
-        self.text.line_col(self.selection.head)
+        self.text.line_col(self.selection.head())
     }
 
     #[must_use]
@@ -191,18 +192,18 @@ impl Document {
     }
 
     pub fn set_selection(&mut self, selection: Selection) {
-        let anchor = self.text.clamp_offset(selection.anchor);
-        let head = self.text.clamp_offset(selection.head);
+        let clamped = selection.mapped(|cursor| crate::Cursor {
+            anchor: self.text.clamp_offset(cursor.anchor),
+            head: self.text.clamp_offset(cursor.head),
+            goal_column: cursor.goal_column,
+        });
         // A caret that jumped is a new undo unit; without this a word typed
-        // here and a word typed there undo as one.
-        if head != self.selection.head {
+        // here and a word typed there undo as one. A caret *added* is one too:
+        // the next keystroke is a different edit from the last.
+        if clamped.head() != self.selection.head() || clamped.count() != self.selection.count() {
             self.history.seal();
         }
-        self.selection = Selection {
-            anchor,
-            head,
-            goal_column: selection.goal_column,
-        };
+        self.selection = clamped;
     }
 
     pub fn set_read_only(&mut self, read_only: bool) {
@@ -258,19 +259,19 @@ impl Document {
             transaction
                 .edits()
                 .first()
-                .map_or(self.selection.head, |edit| edit.range.start),
+                .map_or(self.selection.head(), |edit| edit.range.start),
         );
         let last_line = self.text.line_of_offset(
             transaction
                 .edits()
                 .last()
-                .map_or(self.selection.head, |edit| edit.range.end),
+                .map_or(self.selection.head(), |edit| edit.range.end),
         );
 
         let inverse = record.then(|| self.inverse_of(&transaction));
         let mut line_delta = 0_isize;
         let mut shift = 0_isize;
-        let mut resume_at = self.selection.head;
+        let mut resume_at = self.selection.head();
         for edit in transaction.edits() {
             let start = (edit.range.start as isize + shift) as usize;
             let end = (edit.range.end as isize + shift) as usize;
@@ -288,12 +289,14 @@ impl Document {
 
         let selection = transaction
             .selection_after
+            .clone()
             .unwrap_or_else(|| Selection::caret(resume_at));
-        self.selection = Selection {
-            anchor: self.text.clamp_offset(selection.anchor),
-            head: self.text.clamp_offset(selection.head),
-            goal_column: None,
-        };
+        self.selection = selection.mapped(|cursor| {
+            crate::Cursor::new(
+                self.text.clamp_offset(cursor.anchor),
+                self.text.clamp_offset(cursor.head),
+            )
+        });
 
         if let Some(inverse) = inverse {
             self.history
@@ -346,12 +349,12 @@ impl Document {
             shift += edit.insert.len() as isize - edit.range.len() as isize;
         }
         // Built from a validated transaction, so it is disjoint and ordered.
-        Transaction::new(edits, Origin::History, self.selection)
+        Transaction::new(edits, Origin::History, self.selection.clone())
             .unwrap_or_else(|_| {
-                Transaction::new(Vec::new(), Origin::History, self.selection)
+                Transaction::new(Vec::new(), Origin::History, self.selection.clone())
                     .expect("empty is valid")
             })
-            .with_selection_after(transaction.selection_before)
+            .with_selection_after(transaction.selection_before.clone())
     }
 
     /// Replace the selection (or insert at the caret) with `text`.
@@ -369,15 +372,24 @@ impl Document {
         after: &str,
         origin: Origin,
     ) -> Result<Applied, EditError> {
-        let range = self.selection.range();
         let inserted = format!("{before}{after}");
-        let caret = Selection::caret(range.start + before.len());
-        let transaction = Transaction::new(
-            vec![Edit::replace(range, &inserted)],
-            origin,
-            self.selection,
-        )?
-        .with_selection_after(caret);
+        let mut edits = Vec::with_capacity(self.selection.count());
+        let mut carets = Vec::with_capacity(self.selection.count());
+        // Every caret gets the same text, and each one's landing place is the
+        // start of its own range shifted by what the carets above it changed:
+        // the edits apply together, so a caret computed against the old text
+        // would be off by the ones over it.
+        let mut shift = 0_isize;
+        for cursor in self.selection.cursors() {
+            let range = cursor.range();
+            edits.push(Edit::replace(range, &inserted));
+            let at = (range.start as isize + shift) as usize + before.len();
+            carets.push(crate::Cursor::caret(at));
+            shift += inserted.len() as isize - range.len() as isize;
+        }
+        let after = Selection::many(carets, self.selection.primary_index());
+        let transaction =
+            Transaction::new(edits, origin, self.selection.clone())?.with_selection_after(after);
         self.apply(transaction)
     }
 
@@ -388,23 +400,34 @@ impl Document {
     /// Read-only is still a refusal, checked before the range is even computed.
     pub fn delete(
         &mut self,
-        into: impl FnOnce(&Text, usize) -> usize,
+        into: impl Fn(&Text, usize) -> usize,
         origin: Origin,
     ) -> Result<Option<Applied>, EditError> {
         if self.read_only {
             return Err(EditError::ReadOnly);
         }
-        let range = if self.selection.is_empty() {
-            let other = into(&self.text, self.selection.head);
-            Range::new(self.selection.head, other)
-        } else {
-            self.selection.range()
-        };
-        if range.is_empty() {
+        let mut edits = Vec::with_capacity(self.selection.count());
+        let mut carets = Vec::with_capacity(self.selection.count());
+        let mut shift = 0_isize;
+        for cursor in self.selection.cursors() {
+            let range = if cursor.is_empty() {
+                Range::new(cursor.head, into(&self.text, cursor.head))
+            } else {
+                cursor.range()
+            };
+            let at = (range.start as isize + shift) as usize;
+            carets.push(crate::Cursor::caret(at));
+            if !range.is_empty() {
+                shift -= range.len() as isize;
+                edits.push(Edit::delete(range));
+            }
+        }
+        if edits.is_empty() {
             return Ok(None);
         }
-        let transaction = Transaction::new(vec![Edit::delete(range)], origin, self.selection)?
-            .with_selection_after(Selection::caret(range.start));
+        let after = Selection::many(carets, self.selection.primary_index());
+        let transaction =
+            Transaction::new(edits, origin, self.selection.clone())?.with_selection_after(after);
         self.apply(transaction).map(Some)
     }
 
@@ -464,7 +487,7 @@ impl Document {
             .into_iter()
             .map(|range| Edit::replace(range, replacement))
             .collect();
-        let transaction = Transaction::new(edits, Origin::ReplaceAll, self.selection)?;
+        let transaction = Transaction::new(edits, Origin::ReplaceAll, self.selection.clone())?;
         self.history.seal();
         self.apply(transaction)?;
         self.history.seal();
@@ -491,11 +514,11 @@ impl Document {
         let was_read_only = self.read_only;
         self.read_only = false;
         let range = Range::new(0, self.text.len());
-        let caret = self.selection.head.min(body.len());
+        let caret = self.selection.head().min(body.len());
         let transaction = Transaction::new(
             vec![Edit::replace(range, body)],
             Origin::Reload,
-            self.selection,
+            self.selection.clone(),
         )?
         .with_selection_after(Selection::caret(caret));
         self.history.seal();

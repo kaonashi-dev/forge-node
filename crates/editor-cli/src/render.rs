@@ -105,12 +105,16 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         app.left()
     };
     let marks = app.marks_in_line(line);
+    let selections = app.selections_in_line(line);
+    let carets = app.carets_in_line(line);
     let parts = view::window_parts(
         text.line(line),
         base,
         app.content_width(),
         view::RowDecor {
-            selected: app.selection_in_line(line),
+            selected: selections.first().copied(),
+            also_selected: selections.get(1..).unwrap_or_default(),
+            carets: &carets,
             scopes: app.syntax_line(line),
             marks: &marks,
         },
@@ -127,7 +131,7 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         // video, and the current match *is* the selection, so a search hit has
         // to read as something else or the two stop being distinguishable.
         let underline = match part.decoration {
-            view::Decoration::None => false,
+            view::Decoration::None | view::Decoration::Caret => false,
             view::Decoration::Match | view::Decoration::Bracket => true,
         };
         if part.decoration == view::Decoration::Bracket {
@@ -136,11 +140,15 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
         if underline {
             queue!(out, style::SetAttribute(style::Attribute::Underlined))?;
         }
-        if part.selected {
+        // An extra caret is reverse video on its one cell: the terminal has a
+        // single hardware cursor and the primary owns it, so the others have to
+        // be drawn as text.
+        let reversed = part.selected || part.decoration == view::Decoration::Caret;
+        if reversed {
             queue!(out, style::SetAttribute(style::Attribute::Reverse))?;
         }
         queue!(out, style::Print(part.text))?;
-        if part.selected {
+        if reversed {
             queue!(out, style::SetAttribute(style::Attribute::NoReverse))?;
         }
         if underline {
@@ -256,8 +264,15 @@ fn status_text(app: &App) -> String {
         ""
     };
     let (line, column) = app.caret_position();
+    // The caret count only shows when there is more than one: it is the state a
+    // person can forget they are in, and the one that makes the next keystroke
+    // land in twenty places.
+    let carets = match document.selection().count() {
+        0 | 1 => String::new(),
+        count => format!("  {count} carets"),
+    };
     let right = format!(
-        "{dirty}{read_only}{trimmed}  {line}:{}/{}  F1 help",
+        "{dirty}{read_only}{trimmed}{carets}  {line}:{}/{}  F1 help",
         column + 1,
         document.text().line_count()
     );

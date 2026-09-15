@@ -147,6 +147,9 @@ living with no window pill of its own.
 | Ctrl-Z / Ctrl-Y | undo / redo |
 | Ctrl-C / Ctrl-X / Ctrl-V | copy / cut / paste through an internal register |
 | Ctrl-A / Ctrl-L / Ctrl-K | select all / select line / delete line |
+| Ctrl-D | select the next occurrence, keeping the carets already placed |
+| Alt-Up / Alt-Down | add a caret on the line above / below |
+| Alt-click / Alt-drag | add a caret / a column of them |
 | Ctrl-F, Ctrl-N, Ctrl-B | find, next match, previous match |
 | Ctrl-T / Ctrl-W / Ctrl-E | toggle match case / whole word / regular expression |
 | Ctrl-P | toggle closing brackets as you type |
@@ -181,8 +184,9 @@ next match — so go-to-line is ⌥⌘L. ⌘V is deliberately unclaimed: the Web
 entry and says so instead of silently dropping keys.
 
 **The mouse moves the caret.** A left click places the caret; a Shift-click
-extends the selection to the click; a left drag selects; the wheel scrolls the
-viewport without moving the caret. The editor turns on mouse capture on entry
+extends the selection to the click; a left drag selects; an Alt-click adds a
+caret and an Alt-drag makes a column of them; the wheel scrolls the viewport
+without moving the caret. The editor turns on mouse capture on entry
 (`EnableMouseCapture`), so a real terminal reports the events and the Code pane
 forwards them as the same SGR reports the main terminal sends — the editor reads
 the mouse itself either way. Out of scope for now: go-to-definition on click,
@@ -194,6 +198,20 @@ HTML context menu).
 - **Byte-exact round trip.** The buffer holds the file's bytes, terminators
   included, so a mixed LF/CRLF file, a BOM and a missing final newline all
   survive. A new line takes the terminator the current line already uses.
+- **Carets are a set, and a set with rules.** A selection is one or more
+  cursors, sorted, never overlapping, one of them primary — the one the status
+  line reports and the viewport follows. Two that touch are merged the moment
+  one is added, because two carets in the same place have no defined result for
+  an edit and the transaction carrying them would be rejected as overlapping.
+  There is a hard cap of 64: `Ctrl-D` through ten thousand matches is a gesture
+  with a reasonable intent and an unreasonable result, and the ones nearest the
+  primary are the ones being worked on. A plain arrow key collapses back to one,
+  the way CodeMirror does, because keeping them would need a rule per direction
+  for what the others do; Escape collapses before it does anything else.
+- **A multi-caret edit is one transaction.** Every caret gets the same text in
+  the same transaction, and each one lands past *its own* insertion rather than
+  past the ones above it. So one gesture is one history entry, and Ctrl-Z puts
+  back all of it — with the carets it was made with.
 - **One mutation entry.** Typing, paste, replace-all and a reload are all
   transactions with a selection on both sides. Undo restores text *and*
   selection; a run of typing coalesces into one entry, a paste or a
@@ -267,8 +285,7 @@ HTML context menu).
   find-next), and the compiled program is cached on the query, so
   find-as-you-type pays one compile per edit of the pattern rather than one per
   scan.
-- One buffer per process. No splits, no Vim profile. The mouse places the
-  caret, extends a selection and scrolls, but not more than that.
+- One buffer per process. No splits, no Vim profile.
 - Long lines wrap under the daemon and scroll sideways standalone. Integrated,
   the pane is a fixed width the person cannot widen, so a line too wide for the
   text column continues onto the next row (with a blank gutter) rather than

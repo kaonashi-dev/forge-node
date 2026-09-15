@@ -39,3 +39,10 @@ pub const MAX_PATTERN_BYTES: usize = 1024;
 /// `(a{1000}){1000}` is a short pattern that names a very large program;
 /// `regex` refuses past this instead of allocating it.
 pub const MAX_REGEX_SIZE: usize = 1024 * 1024;
+
+/// Most carets one buffer may have at once.
+///
+/// A cap and not a refusal: `Ctrl-D` through ten thousand matches is a gesture
+/// with a reasonable intent and an unreasonable result, and every caret costs a
+/// row of damage and an edit in one transaction.
+pub const MAX_CURSORS: usize = 64;

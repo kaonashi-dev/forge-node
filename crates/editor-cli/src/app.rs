@@ -86,6 +86,8 @@ pub struct App {
     /// Gutter marks by 1-based line, as the daemon last computed them. Empty
     /// standalone: this editor never runs git of its own.
     marks: BTreeMap<usize, WireMarkKind>,
+    /// Where the pointer went down, for a rectangular drag.
+    drag_origin: Option<(u16, u16)>,
     /// An OSC 52 the renderer has not written yet, if a copy just happened.
     clipboard_escape: Option<String>,
     /// Save on a pause. The opener's preference; off standalone.
@@ -220,6 +222,7 @@ impl App {
             grammar: Grammar::None,
             close_brackets: true,
             marks: BTreeMap::new(),
+            drag_origin: None,
             clipboard_escape: None,
             autosave: false,
             autosave_suspended: false,
@@ -600,29 +603,55 @@ impl App {
         (position.line + 1, column)
     }
 
-    /// The selected byte range inside `line`, as offsets within that line.
+    /// Every caret's selected range inside `line`, as offsets within it.
     ///
-    /// The end may sit one past the line's length: a selection that swallowed
-    /// the line break has to look like it did.
-    pub fn selection_in_line(&self, line: usize) -> Option<(usize, usize)> {
-        let selection = self.document.selection();
-        if selection.is_empty() {
-            return None;
-        }
-        let range = selection.range();
+    /// One entry per caret that reaches this line, ascending. The end may sit
+    /// one past the line's length: a selection that swallowed the line break
+    /// has to look like it did.
+    #[must_use]
+    pub fn selections_in_line(&self, line: usize) -> Vec<(usize, usize)> {
         let text = self.document.text();
         let start = text.line_start(line);
         let end = text.line_end(line);
-        if range.end <= start || range.start > end {
-            return None;
-        }
-        let from = range.start.saturating_sub(start).min(end - start);
-        let to = if range.end > end {
-            end - start + 1
-        } else {
-            range.end - start
-        };
-        Some((from, to))
+        self.document
+            .selection()
+            .cursors()
+            .iter()
+            .filter(|cursor| !cursor.is_empty())
+            .filter_map(|cursor| {
+                let range = cursor.range();
+                if range.end <= start || range.start > end {
+                    return None;
+                }
+                let from = range.start.saturating_sub(start).min(end - start);
+                let to = if range.end > end {
+                    end - start + 1
+                } else {
+                    range.end - start
+                };
+                Some((from, to))
+            })
+            .collect()
+    }
+
+    /// Where each caret sits on `line`, as byte columns within it.
+    ///
+    /// The renderer paints the extra carets itself: a terminal has one hardware
+    /// cursor, and the primary is the only one that can have it.
+    #[must_use]
+    pub fn carets_in_line(&self, line: usize) -> Vec<usize> {
+        let text = self.document.text();
+        let start = text.line_start(line);
+        let end = text.line_end(line);
+        let selection = self.document.selection();
+        let primary = selection.head();
+        selection
+            .cursors()
+            .iter()
+            .map(|cursor| cursor.head)
+            .filter(|head| *head != primary && *head >= start && *head <= end)
+            .map(|head| head - start)
+            .collect()
     }
 
     /// Open on a 1-based line, for `forge-editor +42 file.rs`.
@@ -1076,16 +1105,116 @@ impl App {
     /// the same point; the wheel moves the viewport. Everything else — the
     /// middle button, motion with no button — is not a gesture this editor has.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        let alt = event.modifiers.contains(KeyModifiers::ALT);
         match event.kind {
+            MouseEventKind::Down(MouseButton::Left) if alt => {
+                self.drag_origin = Some((event.column, event.row));
+                self.add_caret_at(event.column, event.row);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
+                self.drag_origin = Some((event.column, event.row));
                 let extend = event.modifiers.contains(KeyModifiers::SHIFT);
                 self.click(event.column, event.row, extend);
             }
+            // Alt-drag is a column, not a run: every line between the two rows
+            // gets its own caret at the dragged columns.
+            MouseEventKind::Drag(MouseButton::Left) if alt => {
+                self.rectangular(event.column, event.row);
+            }
             MouseEventKind::Drag(MouseButton::Left) => self.click(event.column, event.row, true),
+            MouseEventKind::Up(MouseButton::Left) => self.drag_origin = None,
             MouseEventKind::ScrollUp => self.scroll(-1),
             MouseEventKind::ScrollDown => self.scroll(1),
             _ => {}
         }
+    }
+
+    /// The document offset a screen cell names, clamped into the buffer.
+    fn offset_at(&self, col: u16, row: u16) -> usize {
+        let text = self.document.text();
+        let (line, base) = match self.row_line_sub(row as usize) {
+            Some((line, sub)) => (line, sub * self.content_width().max(1)),
+            None => (text.line_count().saturating_sub(1), 0),
+        };
+        let display = (col as usize).saturating_sub(self.gutter_width()) + base + self.left;
+        let line_text = text.line(line);
+        let column = display.min(metrics::display_column(line_text, line_text.len()));
+        text.line_start(line) + metrics::byte_column_for_display(line_text, column)
+    }
+
+    /// Alt-click: another caret where the pointer is.
+    fn add_caret_at(&mut self, col: u16, row: u16) {
+        if row as usize >= self.content_height() {
+            return;
+        }
+        let before = self.document.selection();
+        let grown = before.with_added(editor_core::Cursor::caret(self.offset_at(col, row)));
+        self.document.set_selection(grown);
+        self.damage_all = true;
+        self.report_carets();
+    }
+
+    /// Alt-drag: one caret per line, between the two display columns.
+    ///
+    /// Rebuilt from the drag's origin on every motion rather than accumulated,
+    /// so dragging back up removes the carets the way it added them.
+    fn rectangular(&mut self, col: u16, row: u16) {
+        let Some((from_col, from_row)) = self.drag_origin else {
+            return;
+        };
+        if row as usize >= self.content_height() {
+            return;
+        }
+        let text = self.document.text();
+        let (top, bottom) = if from_row <= row {
+            (from_row, row)
+        } else {
+            (row, from_row)
+        };
+        let (left, right) = if from_col <= col {
+            (from_col, col)
+        } else {
+            (col, from_col)
+        };
+        let gutter = self.gutter_width();
+        let start_column = (left as usize).saturating_sub(gutter) + self.left;
+        let end_column = (right as usize).saturating_sub(gutter) + self.left;
+        let mut cursors = Vec::new();
+        for screen_row in top..=bottom {
+            let Some((line, _)) = self.row_line_sub(screen_row as usize) else {
+                continue;
+            };
+            let line_text = text.line(line);
+            let width = metrics::display_column(line_text, line_text.len());
+            // A line too short for the column contributes a caret at its end,
+            // which is what makes a column of them usable for appending.
+            let from = text.line_start(line)
+                + metrics::byte_column_for_display(line_text, start_column.min(width));
+            let to = text.line_start(line)
+                + metrics::byte_column_for_display(line_text, end_column.min(width));
+            cursors.push(editor_core::Cursor::new(from, to));
+        }
+        if cursors.is_empty() {
+            return;
+        }
+        let primary = cursors.len() - 1;
+        self.document
+            .set_selection(editor_core::Selection::many(cursors, primary));
+        self.damage_all = true;
+        self.report_carets();
+    }
+
+    /// Say how many carets there are, and that the cap bit when it did.
+    fn report_carets(&mut self) {
+        let count = self.document.selection().count();
+        if count <= 1 {
+            return;
+        }
+        self.status = Some(if count == editor_core::limits::MAX_CURSORS {
+            format!("{count} carets — the most this buffer will hold")
+        } else {
+            format!("{count} carets")
+        });
     }
 
     fn run(&mut self, command: Command) {
@@ -1165,8 +1294,20 @@ impl App {
         }
         let after = self.document.selection();
         if before != after {
-            self.damage_span(before.range());
-            self.damage_span(after.range());
+            self.damage_selection(&before);
+            self.damage_selection(&after);
+        }
+    }
+
+    /// Damage every row any of a selection's carets touches.
+    fn damage_selection(&mut self, selection: &Selection) {
+        for range in selection
+            .cursors()
+            .iter()
+            .map(editor_core::Cursor::range)
+            .collect::<Vec<_>>()
+        {
+            self.damage_span(range);
         }
     }
 
@@ -1245,6 +1386,13 @@ impl App {
                 });
             }
             EditorAction::Cancel => {
+                // Escape's first job is to get back to one caret: a person who
+                // added twenty and then reached for Escape wants out of that,
+                // not a new undo unit.
+                if self.document.selection().is_multiple() {
+                    self.run(Command::CollapseCarets);
+                    return;
+                }
                 self.document.break_undo_group();
             }
         }
@@ -1546,8 +1694,8 @@ impl App {
             .set_selection(before.with_head(offset, extend));
         let after = self.document.selection();
         if before != after {
-            self.damage_span(before.range());
-            self.damage_span(after.range());
+            self.damage_selection(&before);
+            self.damage_selection(&after);
         }
         self.ensure_visible();
     }
@@ -1700,6 +1848,9 @@ impl App {
             (KeyCode::Char('a'), true, _) => Action::Command(Command::SelectAll),
             (KeyCode::Char('k'), true, _) => Action::Command(Command::DeleteLine),
             (KeyCode::Char('l'), true, _) => Action::Command(Command::SelectLine),
+            (KeyCode::Char('d'), true, _) => Action::Command(Command::AddNextOccurrence),
+            (KeyCode::Up, _, true) => Action::Command(Command::AddCaretVertically { down: false }),
+            (KeyCode::Down, _, true) => Action::Command(Command::AddCaretVertically { down: true }),
             (KeyCode::Char('z'), true, _) => Action::Command(Command::Undo),
             (KeyCode::Char('y'), true, _) => Action::Command(Command::Redo),
             (KeyCode::Char('n'), true, _) => Action::Editor(EditorAction::FindNext),
@@ -1939,7 +2090,7 @@ mod tests {
         let mut app = app("hello", false);
         app.handle_key(shifted(KeyCode::Right));
         app.handle_key(shifted(KeyCode::Right));
-        assert_eq!(app.selection_in_line(0), Some((0, 2)));
+        assert_eq!(app.selections_in_line(0), vec![(0, 2)]);
         app.handle_key(key(KeyCode::Char('Z')));
         assert_eq!(app.document().as_str(), "Zllo");
     }
@@ -2343,8 +2494,8 @@ mod tests {
     fn a_selection_that_crosses_a_line_break_shows_on_both_rows() {
         let mut app = app("ab\ncd", false);
         app.handle_key(control('a'));
-        assert_eq!(app.selection_in_line(0), Some((0, 3)));
-        assert_eq!(app.selection_in_line(1), Some((0, 2)));
+        assert_eq!(app.selections_in_line(0), vec![(0, 3)]);
+        assert_eq!(app.selections_in_line(1), vec![(0, 2)]);
     }
 
     #[test]
@@ -2968,5 +3119,110 @@ mod tests {
         app.handle_key(control('w'));
         app.handle_key(control('e'));
         assert_eq!(app.query_flags(), "  [word regex]");
+    }
+
+    /// Alt-click drops another caret where the pointer is; the next keystroke
+    /// lands in both places.
+    #[test]
+    fn alt_click_adds_a_caret() {
+        let mut app = app("one\ntwo\n", false);
+        app.resize(40, 10);
+        let gutter = app.gutter_width() as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter,
+            1,
+            KeyModifiers::ALT,
+        ));
+        assert_eq!(app.document().selection().count(), 2);
+        app.handle_key(key(KeyCode::Char('-')));
+        assert_eq!(app.document().as_str(), "-one\n-two\n");
+    }
+
+    /// Alt-drag is a column: one caret per row between the two, at the dragged
+    /// display columns, and a short line contributes one at its end.
+    #[test]
+    fn alt_drag_makes_a_column_of_carets() {
+        let mut app = app("aaaa\nbb\ncccc\n", false);
+        app.resize(40, 10);
+        let gutter = app.gutter_width() as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter + 1,
+            0,
+            KeyModifiers::ALT,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            gutter + 1,
+            2,
+            KeyModifiers::ALT,
+        ));
+        assert_eq!(app.document().selection().count(), 3);
+        app.handle_key(key(KeyCode::Char('.')));
+        assert_eq!(app.document().as_str(), "a.aaa\nb.b\nc.ccc\n");
+    }
+
+    /// Dragging back up removes the carets the way it added them, because the
+    /// column is rebuilt from the origin rather than accumulated.
+    #[test]
+    fn an_alt_drag_that_comes_back_up_shrinks_the_column() {
+        let mut app = app("a\nb\nc\nd\n", false);
+        app.resize(40, 10);
+        let gutter = app.gutter_width() as u16;
+        let at = |row| {
+            mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                gutter,
+                row,
+                KeyModifiers::ALT,
+            )
+        };
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter,
+            0,
+            KeyModifiers::ALT,
+        ));
+        app.handle_mouse(at(3));
+        assert_eq!(app.document().selection().count(), 4);
+        app.handle_mouse(at(1));
+        assert_eq!(app.document().selection().count(), 2);
+    }
+
+    /// Escape's first job is getting back to one caret.
+    #[test]
+    fn escape_collapses_the_carets_before_it_does_anything_else() {
+        let mut app = app("a\nb\n", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(app.document().selection().count(), 2);
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.document().selection().count(), 1);
+    }
+
+    /// Every caret's row is painted: the terminal owns one hardware cursor, so
+    /// the others are cells the renderer draws.
+    #[test]
+    fn the_extra_carets_are_reported_for_painting() {
+        let mut app = app("one\ntwo\n", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        // The caret just added is the primary and owns the hardware cursor, so
+        // the one left behind is the cell the renderer has to draw.
+        assert_eq!(app.carets_in_line(0), vec![0]);
+        assert_eq!(app.carets_in_line(1), Vec::<usize>::new());
+    }
+
+    /// Ctrl-D grows the selection one occurrence at a time, and every range
+    /// reads as selected.
+    #[test]
+    fn control_d_selects_the_next_occurrence_and_marks_both() {
+        let mut app = app("sum = sum\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('d'));
+        app.handle_key(control('d'));
+        assert_eq!(app.document().selection().count(), 2);
+        assert_eq!(app.selections_in_line(0), vec![(0, 3), (6, 9)]);
     }
 }

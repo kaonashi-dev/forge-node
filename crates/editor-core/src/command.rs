@@ -78,6 +78,16 @@ pub enum Command {
         query: Query,
         replacement: String,
     },
+    /// Add a caret on the line above or below the primary, at its column.
+    AddCaretVertically {
+        down: bool,
+    },
+    /// Select the next occurrence of what is selected, keeping the carets
+    /// already placed. With nothing selected it takes the word under the caret
+    /// first, the way `Ctrl-D` does everywhere else.
+    AddNextOccurrence,
+    /// Drop back to one caret.
+    CollapseCarets,
 }
 
 impl Command {
@@ -115,6 +125,9 @@ impl Command {
             Command::FindPrevious(_) => "find.previous",
             Command::ReplaceMatch { .. } => "find.replace",
             Command::ReplaceAll { .. } => "find.replaceAll",
+            Command::AddCaretVertically { .. } => "select.addCaret",
+            Command::AddNextOccurrence => "select.addNextOccurrence",
+            Command::CollapseCarets => "select.collapseCarets",
         }
     }
 }
@@ -262,6 +275,13 @@ pub fn execute(document: &mut Document, command: Command) -> Outcome {
         }
         Command::FindNext(query) => find(document, &query, true),
         Command::FindPrevious(query) => find(document, &query, false),
+        Command::AddCaretVertically { down } => add_caret_vertically(document, down),
+        Command::AddNextOccurrence => add_next_occurrence(document),
+        Command::CollapseCarets => {
+            let single = document.selection().single();
+            document.set_selection(single);
+            Outcome::default()
+        }
         Command::ReplaceMatch { query, replacement } => {
             replace_match(document, &query, &replacement)
         }
@@ -296,14 +316,87 @@ fn vertical(document: &mut Document, delta: isize, extend: bool) -> Outcome {
     let selection = document.selection();
     let (head, goal) = movement::vertical(
         document.text(),
-        selection.head,
+        selection.head(),
         delta,
-        selection.goal_column,
+        selection.goal_column(),
     );
-    let mut moved = selection.with_head(head, extend);
-    moved.goal_column = Some(goal);
-    document.set_selection(moved);
+    let mut cursor = selection.primary().with_head(head, extend);
+    cursor.goal_column = Some(goal);
+    document.set_selection(Selection::one(cursor));
     Outcome::default()
+}
+
+/// Put another caret one line up or down from the primary, in its column.
+///
+/// The column is a *display* column, so a caret walking past a tab lands under
+/// what it looks like it is under rather than under the same byte count.
+fn add_caret_vertically(document: &mut Document, down: bool) -> Outcome {
+    let selection = document.selection();
+    let text = document.text();
+    let primary = selection.primary();
+    let here = text.line_col(primary.head);
+    let step = if down { 1_isize } else { -1 };
+    let Some(line) = here.line.checked_add_signed(step) else {
+        return Outcome::default();
+    };
+    if line >= text.line_count() {
+        return Outcome::default();
+    }
+    let goal = primary
+        .goal_column
+        .unwrap_or_else(|| display_column(text.line(here.line), here.column));
+    let target = text.line(line);
+    let column = goal.min(display_column(target, target.len()));
+    let at = text.line_start(line) + crate::metrics::byte_column_for_display(target, column);
+    let mut added = crate::Cursor::caret(at);
+    added.goal_column = Some(goal);
+    let grown = selection.with_added(added);
+    // A caret that merged into one already there is not a new caret; saying so
+    // beats a gesture that silently does nothing.
+    let gained = grown.count() > selection.count();
+    document.set_selection(grown);
+    if gained {
+        Outcome::default()
+    } else {
+        Outcome::refused(Refusal::NoMatch)
+    }
+}
+
+/// `Ctrl-D`: select the next occurrence, keeping the carets already placed.
+fn add_next_occurrence(document: &mut Document) -> Outcome {
+    let selection = document.selection();
+    let text = document.text();
+    let primary = selection.primary();
+    // Nothing selected takes the word under the caret first, which is the
+    // gesture's first press everywhere it exists.
+    if primary.is_empty() {
+        let (start, end) = movement::word_span(text, primary.head);
+        if start == end {
+            return Outcome::refused(Refusal::NoMatch);
+        }
+        document.set_selection(Selection::one(crate::Cursor::new(start, end)));
+        return Outcome::default();
+    }
+    let needle = text.slice(primary.range()).to_string();
+    // Literal and case-sensitive: this is "the same text again", not a search.
+    let query = Query::literal(needle);
+    let from = selection
+        .cursors()
+        .iter()
+        .map(|cursor| cursor.range().end)
+        .max()
+        .unwrap_or(primary.range().end);
+    let Some(found) = search::find_next(text, &query, from) else {
+        return Outcome::refused(Refusal::NoMatch);
+    };
+    let grown = selection.with_added(crate::Cursor::new(found.start, found.end));
+    let gained = grown.count() > selection.count();
+    document.set_selection(grown);
+    if gained {
+        Outcome::default()
+    } else {
+        Outcome::refused(Refusal::NoMatch)
+    }
 }
 
 /// The terminator a new line should carry: the one the current line already
@@ -427,7 +520,7 @@ fn delete_line(document: &mut Document) -> Outcome {
 fn copy(document: &mut Document, cut: bool) -> Outcome {
     let selection = document.selection();
     let range = if selection.is_empty() {
-        let (start, end) = movement::line_span(document.text(), selection);
+        let (start, end) = movement::line_span(document.text(), selection.clone());
         Range::new(start, end)
     } else {
         selection.range()
@@ -440,10 +533,11 @@ fn copy(document: &mut Document, cut: bool) -> Outcome {
         };
     }
     document.break_undo_group();
-    let transaction = match Transaction::new(vec![Edit::delete(range)], Origin::Input, selection) {
-        Ok(transaction) => transaction.with_selection_after(Selection::caret(range.start)),
-        Err(error) => return Outcome::refused(refusal_for(error)),
-    };
+    let transaction =
+        match Transaction::new(vec![Edit::delete(range)], Origin::Input, selection.clone()) {
+            Ok(transaction) => transaction.with_selection_after(Selection::caret(range.start)),
+            Err(error) => return Outcome::refused(refusal_for(error)),
+        };
     let mut outcome = Outcome::from_edit(document.apply(transaction));
     document.break_undo_group();
     outcome.clipboard = Some(text);
@@ -459,7 +553,7 @@ fn find(document: &mut Document, query: &Query, forward: bool) -> Outcome {
         search::find_next(
             document.text(),
             query,
-            selection.range().end.max(selection.head),
+            selection.range().end.max(selection.head()),
         )
     } else {
         search::find_previous(document.text(), query, selection.range().start)
@@ -769,5 +863,140 @@ mod tests {
         run(&mut doc, Command::InsertTab);
         run(&mut doc, Command::InsertTab);
         assert_eq!(doc.as_str(), "    ");
+    }
+
+    /// Every caret gets the keystroke, and each lands past its own insertion —
+    /// not past the ones above it.
+    #[test]
+    fn typing_with_three_carets_edits_all_three() {
+        let mut doc = document("a\nb\nc\n");
+        doc.set_selection(
+            Selection::caret(0)
+                .with_added(crate::Cursor::caret(2))
+                .with_added(crate::Cursor::caret(4)),
+        );
+        run(&mut doc, Command::InsertText("X".to_string()));
+        assert_eq!(doc.as_str(), "Xa\nXb\nXc\n");
+        assert_eq!(
+            doc.selection()
+                .cursors()
+                .iter()
+                .map(|c| c.head)
+                .collect::<Vec<_>>(),
+            vec![1, 4, 7]
+        );
+    }
+
+    #[test]
+    fn backspace_with_three_carets_deletes_at_all_three() {
+        let mut doc = document("aX\nbX\ncX\n");
+        doc.set_selection(
+            Selection::caret(2)
+                .with_added(crate::Cursor::caret(5))
+                .with_added(crate::Cursor::caret(8)),
+        );
+        run(&mut doc, Command::DeleteBackward);
+        assert_eq!(doc.as_str(), "a\nb\nc\n");
+    }
+
+    /// One gesture is one history entry, so Ctrl-Z puts back all of it.
+    #[test]
+    fn a_multi_caret_edit_undoes_as_one_entry() {
+        let mut doc = document("a\nb\nc\n");
+        doc.set_selection(
+            Selection::caret(0)
+                .with_added(crate::Cursor::caret(2))
+                .with_added(crate::Cursor::caret(4)),
+        );
+        run(&mut doc, Command::InsertText("X".to_string()));
+        run(&mut doc, Command::Undo);
+        assert_eq!(doc.as_str(), "a\nb\nc\n");
+        assert_eq!(
+            doc.selection().count(),
+            3,
+            "undo restores the carets the edit was made with"
+        );
+    }
+
+    /// Deleting across carets shifts the ones below by what the ones above
+    /// removed; a caret computed against the old text would be off.
+    #[test]
+    fn carets_below_an_edit_land_where_the_text_moved_them() {
+        let mut doc = document("aaa\nbbb\n");
+        doc.set_selection(Selection::new(0, 2).with_added(crate::Cursor::new(4, 6)));
+        run(&mut doc, Command::InsertText("Z".to_string()));
+        assert_eq!(doc.as_str(), "Za\nZb\n");
+        assert_eq!(
+            doc.selection()
+                .cursors()
+                .iter()
+                .map(|c| c.head)
+                .collect::<Vec<_>>(),
+            vec![1, 4]
+        );
+    }
+
+    #[test]
+    fn control_d_takes_the_word_then_its_next_occurrence() {
+        let mut doc = document("total = total + total\n");
+        run(&mut doc, Command::AddNextOccurrence);
+        assert_eq!(doc.selection().count(), 1);
+        assert_eq!(doc.text().slice(doc.selection().range()), "total");
+
+        run(&mut doc, Command::AddNextOccurrence);
+        assert_eq!(doc.selection().count(), 2);
+        run(&mut doc, Command::AddNextOccurrence);
+        assert_eq!(doc.selection().count(), 3);
+
+        run(&mut doc, Command::InsertText("n".to_string()));
+        assert_eq!(doc.as_str(), "n = n + n\n");
+    }
+
+    #[test]
+    fn control_d_on_nothing_refuses_instead_of_selecting_space() {
+        let mut doc = document("   \n");
+        run(&mut doc, Command::MoveRight { extend: false });
+        let outcome = run(&mut doc, Command::AddNextOccurrence);
+        assert_eq!(outcome.refusal, Some(Refusal::NoMatch));
+    }
+
+    #[test]
+    fn a_caret_can_be_added_on_the_line_below() {
+        let mut doc = document("one\ntwo\nthree\n");
+        run(&mut doc, Command::AddCaretVertically { down: true });
+        assert_eq!(doc.selection().count(), 2);
+        run(&mut doc, Command::AddCaretVertically { down: true });
+        assert_eq!(doc.selection().count(), 3);
+        run(&mut doc, Command::InsertText("-".to_string()));
+        assert_eq!(doc.as_str(), "-one\n-two\n-three\n");
+    }
+
+    /// Past the last line there is nowhere to put one, and saying so beats a
+    /// caret stacked on the one already there.
+    #[test]
+    fn adding_a_caret_past_the_end_does_nothing() {
+        let mut doc = document("one\n");
+        run(&mut doc, Command::AddCaretVertically { down: false });
+        assert_eq!(doc.selection().count(), 1);
+    }
+
+    #[test]
+    fn collapsing_goes_back_to_the_primary_caret() {
+        let mut doc = document("a\nb\nc\n");
+        run(&mut doc, Command::AddCaretVertically { down: true });
+        run(&mut doc, Command::AddCaretVertically { down: true });
+        assert_eq!(doc.selection().count(), 3);
+        run(&mut doc, Command::CollapseCarets);
+        assert_eq!(doc.selection().count(), 1);
+    }
+
+    /// A plain arrow key is a movement, not a multi-caret operation: keeping
+    /// them would need a rule per direction for what the others do.
+    #[test]
+    fn a_plain_move_drops_the_extra_carets() {
+        let mut doc = document("a\nb\n");
+        run(&mut doc, Command::AddCaretVertically { down: true });
+        run(&mut doc, Command::MoveRight { extend: false });
+        assert_eq!(doc.selection().count(), 1);
     }
 }

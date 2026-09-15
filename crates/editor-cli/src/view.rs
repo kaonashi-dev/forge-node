@@ -32,6 +32,8 @@ pub enum Decoration {
     Match,
     /// One half of the pair the caret is next to.
     Bracket,
+    /// A caret that is not the primary one, drawn as a cell.
+    Caret,
 }
 
 /// A byte range inside one line and what it carries.
@@ -42,6 +44,11 @@ pub type Mark = (usize, usize, Decoration);
 pub struct RowDecor<'a> {
     /// Byte range of the selection within this line, if it has one.
     pub selected: Option<(usize, usize)>,
+    /// Ranges of every *other* caret's selection on this line.
+    pub also_selected: &'a [(usize, usize)],
+    /// Byte columns the non-primary carets sit at. A terminal has one hardware
+    /// cursor, so the rest are painted as cells.
+    pub carets: &'a [usize],
     pub scopes: &'a [Span],
     /// Ascending, non-overlapping byte ranges within this line.
     pub marks: &'a [Mark],
@@ -68,6 +75,8 @@ fn control_glyph(ch: char) -> char {
 pub fn window_parts(line: &str, left: usize, width: usize, decor: RowDecor<'_>) -> Vec<Part> {
     let RowDecor {
         selected,
+        also_selected,
+        carets,
         scopes,
         marks,
     } = decor;
@@ -108,9 +117,16 @@ pub fn window_parts(line: &str, left: usize, width: usize, decor: RowDecor<'_>) 
         if cell <= left {
             continue;
         }
-        let inside = selected.is_some_and(|(from, to)| offset >= from && offset < to);
+        let inside = selected.is_some_and(|(from, to)| offset >= from && offset < to)
+            || also_selected
+                .iter()
+                .any(|(from, to)| offset >= *from && offset < *to);
         let scope = scope_of(scopes, offset);
-        let decoration = mark_of(marks, offset);
+        let decoration = if carets.contains(&offset) {
+            Decoration::Caret
+        } else {
+            mark_of(marks, offset)
+        };
 
         if start < left {
             let pad = (cell - left).min(width - produced);

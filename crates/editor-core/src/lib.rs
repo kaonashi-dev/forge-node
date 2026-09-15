@@ -26,7 +26,7 @@ pub use search::{
     count_matches, count_matches_before, find_all, find_in, find_next, find_previous, Match,
     Matches, Query, QueryError, ReplaceOutcome,
 };
-pub use selection::{LineCol, Range, Selection};
+pub use selection::{Cursor, LineCol, Range, Selection};
 pub use syntax::{Grammar, Scope, Span, Syntax};
 pub use transaction::{Edit, EditError, Origin, Transaction};
 
