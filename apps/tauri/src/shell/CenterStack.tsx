@@ -2,6 +2,7 @@ import { For, Show, createEffect, createSignal, lazy, onCleanup } from "solid-js
 import type { Section } from "../settings/SettingsRoute";
 import {
   centerMode,
+  codeOpen,
   close,
   closeCode,
   closeOtherViews,
@@ -21,7 +22,7 @@ import { activeWorkspaceId, sessionsInWorkspace } from "./sessionScope";
 import { PrDetailView } from "../workbench/PrDetailView";
 import { PrComposeView } from "../workbench/PrComposeView";
 import { Icon, LangIcon } from "../theme/icons";
-import { Button, ContextMenu, IconButton, Tooltip, type MenuItem } from "../ui";
+import { Button, ContextMenu, EmptyState, IconButton, Tooltip, type MenuItem } from "../ui";
 import {
   sameView,
   strip,
@@ -105,8 +106,7 @@ const PrReviewView = lazy(() =>
  */
 export function CenterStack(props: { settings: boolean; settingsSection?: Section }) {
   const views = () => currentViews();
-  /** Code is up only when it is selected *and* has something in it. */
-  const onCode = () => !props.settings && centerMode() === "code" && strip(views()).length > 0;
+  const onCode = () => !props.settings && centerMode() === "code" && codeOpen();
   /* The daemon's word, taken at the handshake: before a connection there is no
      editor session either, so the fallback never renders against a live one. */
   const domSurface = () =>
@@ -233,7 +233,7 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
       <Show when={!props.settings}>
         <AttentionBar />
       </Show>
-      <Show when={onCode()}>
+      <Show when={onCode() && strip(views()).length > 0}>
         <div class="workbench-strip" role="tablist" aria-label="Open files">
           <For each={strip(views())}>
             {(view) => (
@@ -354,6 +354,15 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
       <Show when={!props.settings && !onCode() && noSessions()}>
         <div class="center-view">
           <EmptyCenter />
+        </div>
+      </Show>
+
+      <Show when={onCode() && strip(views()).length === 0}>
+        <div class="center-view">
+          <EmptyState
+            message="No files open. Open a file to start working in Code."
+            actions={[{ action: "open_file_palette", label: "Open file", icon: "folder-open" }]}
+          />
         </div>
       </Show>
 

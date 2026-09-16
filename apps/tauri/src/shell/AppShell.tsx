@@ -35,6 +35,7 @@ import { terminalStore } from "../store/terminalStore";
 import { focusWorkspace, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import {
   centerMode,
+  codeOpen,
   close as closeView,
   closeCode,
   closeOtherViews,
@@ -266,7 +267,7 @@ export function AppShell() {
   }
 
   function windowTabs() {
-    return stripItems(openSessions(), openViewCount() > 0);
+    return stripItems(openSessions(), codeOpen());
   }
 
   function activateTab(item: StripItem): void {
@@ -294,6 +295,7 @@ export function AppShell() {
    */
   function closeActive(): void {
     const target = closeTarget(centerMode(), currentViews());
+    if (target.kind === "none") return;
     if (target.kind === "view") {
       closeView(target.view);
       return;
@@ -586,8 +588,8 @@ export function AppShell() {
         sessions={openSessions()}
         tabOrder={currentTabOrder()}
         onReorderTabs={persistTabOrder}
-        codeOpen={openViewCount() > 0}
-        codeActive={centerMode() === "code" && openViewCount() > 0}
+        codeOpen={codeOpen()}
+        codeActive={centerMode() === "code" && codeOpen()}
         codeCount={openViewCount()}
         onSelectCode={showCode}
         onCloseCode={closeCode}

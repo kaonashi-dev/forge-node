@@ -20,7 +20,7 @@ type SessionTabsProps = {
   activeId: string | null;
   tabOrder: string[];
   onReorderTabs: (order: string[]) => void;
-  /** Whether the Code tab exists — it does once something is open in it. */
+  /** Code is available whenever a workspace is selected. */
   codeOpen: boolean;
   /** Whether Code, rather than a session, is what the window is showing. */
   codeActive: boolean;
@@ -219,19 +219,21 @@ export function SessionTabs(props: SessionTabsProps) {
                     size={14}
                   />
                   <span class="session-tab-label">Code</span>
-                  <span class="code-tab-count">{props.codeCount}</span>
-                  <IconButton
-                    label="Close every open file"
-                    hideTooltip
-                    size="xs"
-                    class="session-tab-close"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      props.onCloseCode();
-                    }}
-                  >
-                    <Icon name="close" class="forge-icon-faint" size={14} />
-                  </IconButton>
+                  <Show when={props.codeCount > 0}>
+                    <span class="code-tab-count">{props.codeCount}</span>
+                    <IconButton
+                      label="Close every open file"
+                      hideTooltip
+                      size="xs"
+                      class="session-tab-close"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        props.onCloseCode();
+                      }}
+                    >
+                      <Icon name="close" class="forge-icon-faint" size={14} />
+                    </IconButton>
+                  </Show>
                 </div>
               </div>
             </Show>

@@ -11,7 +11,6 @@ import {
   closeView,
   emptyViews,
   focusView,
-  hasCode,
   openView,
   sameView,
   stepView,
@@ -50,7 +49,6 @@ export type CenterMode = "session" | "code";
 /** What the centre column is showing. */
 export const centerMode = mode;
 
-/** Show the Code tab — only meaningful once something is open in it. */
 export function showCode(): void {
   setMode("code");
 }
@@ -60,9 +58,8 @@ export function showSession(): void {
   setMode("session");
 }
 
-/** Does the Code tab exist right now? */
 export function codeOpen(): boolean {
-  return hasCode(currentViews());
+  return workbenchStore.workspace !== null;
 }
 
 /** The views of the checkout the workbench is pointed at. */
@@ -197,12 +194,6 @@ export function focus(view: WorkbenchView): void {
   setMode("code");
 }
 
-/**
- * Close one view, and fall back to the session when it was the last.
- *
- * An empty Code tab is not a place to be: the tab itself disappears with the
- * last view in it, so the window has to have somewhere to put the person.
- */
 export function close(view: WorkbenchView): void {
   closeViews([view]);
 }
@@ -220,7 +211,6 @@ function closeViews(targets: WorkbenchView[]): void {
       }
     }
     setStore("byWorkspace", workspace, (views) => targets.reduce(closeView, views));
-    if (workbenchStore.workspace === workspace && !hasCode(currentViews())) setMode("session");
   };
   const unsaved = targets.some(
     (view) =>

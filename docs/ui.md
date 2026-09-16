@@ -38,6 +38,10 @@ view live in `ui.sidebar.open` / `ui.sidebar.width` / `ui.sidebar.view`; theme m
 (`TITLE_H`, the sidebar default, control ladder) come from `theme/tokens.ts`,
 never hardcoded hex in views.
 
+Each workspace has one Code entry in Projects and one Code tab in the title bar,
+available even before a file is opened. Individual editor sessions appear as file
+tabs inside Code. Closing the last file leaves Code open with its empty state.
+
 ## Terminal
 
 Damaged rows arrive on `runtime:cells` separately from `runtime:state`, so a

@@ -1,8 +1,11 @@
 import type { CenterMode } from "../store/viewsStore";
-import { hasCode, type ParkedViews, type WorkbenchView } from "../workbench/views";
+import type { ParkedViews, WorkbenchView } from "../workbench/views";
 
 /** What `MOD-W` acts on. */
-export type CloseTarget = { kind: "view"; view: WorkbenchView } | { kind: "session" };
+export type CloseTarget =
+  | { kind: "view"; view: WorkbenchView }
+  | { kind: "session" }
+  | { kind: "none" };
 
 /**
  * What "close" means right now.
@@ -14,9 +17,9 @@ export type CloseTarget = { kind: "view"; view: WorkbenchView } | { kind: "sessi
  * recoverable, so the terminal case is the fallback rather than the default.
  */
 export function closeTarget(mode: CenterMode, views: ParkedViews): CloseTarget {
-  if (mode !== "code" || !hasCode(views)) return { kind: "session" };
+  if (mode !== "code") return { kind: "session" };
   // The terminal can be `active` while views are parked; it is not a tab in
   // the strip, so there is nothing there to close.
-  if (views.active.kind === "terminal") return { kind: "session" };
+  if (views.active.kind === "terminal") return { kind: "none" };
   return { kind: "view", view: views.active };
 }
