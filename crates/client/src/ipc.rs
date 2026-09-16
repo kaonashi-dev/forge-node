@@ -103,6 +103,8 @@ pub struct DaemonInfo {
     pub instance_id: String,
     /// When this daemon instance started.
     pub started_at: domain::Timestamp,
+    /// Which surface an integrated editor session presents.
+    pub editor_surface: protocol::EditorSurface,
 }
 
 /// A project's branches and the context the picker needs around them.
@@ -202,6 +204,7 @@ impl Client {
                     protocol_version: ack.protocol_version,
                     daemon_version: ack.daemon_version,
                     instance_id: ack.instance_id,
+                    editor_surface: ack.editor_surface,
                     started_at: ack.started_at,
                 }
             }
@@ -1140,6 +1143,33 @@ impl Client {
         })
     }
 
+    /// Forward a burst of input to a DOM editor surface's session.
+    ///
+    /// Batched by the caller: one call per input burst, never one per key. The
+    /// daemon clamps the batch and each committed text before it forwards, so
+    /// an over-budget call is truncated rather than refused.
+    pub fn send_editor_input(
+        &self,
+        session_id: SessionId,
+        events: Vec<domain::EditorInputEvent>,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::SendEditorInput { session_id, events })
+    }
+
+    /// Say which lines a DOM editor surface has mounted.
+    pub fn set_editor_view(
+        &self,
+        session_id: SessionId,
+        first_line: u32,
+        line_count: u32,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::SetEditorView {
+            session_id,
+            first_line,
+            line_count,
+        })
+    }
+
     /// Move the caret in a live editor session, instead of opening a rival one.
     pub fn reveal_in_editor_session(
         &self,
@@ -1982,6 +2012,7 @@ mod tests {
             daemon_version: "test-daemon".to_string(),
             instance_id: "instance-1".to_string(),
             started_at: Timestamp::now(),
+            editor_surface: protocol::EditorSurface::Cells,
         }
     }
 

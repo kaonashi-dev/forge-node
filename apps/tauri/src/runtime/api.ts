@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { EditorInputEvent } from "../terminal/editorKeys";
 import type {
   ConfigPaths,
   ConnectedPayload,
@@ -165,6 +166,35 @@ export async function resizeEditor(
  * state that reaches no terminal. The freshly-shown pane asks for the frame it
  * would otherwise wait on output for — and an idle editor produces none.
  */
+/**
+ * A burst of input for a DOM editor surface.
+ *
+ * Batched by the caller: one call per burst, never one per key. The daemon
+ * clamps the batch, so a surface that stopped draining is truncated at the
+ * boundary rather than deciding how long the host's loop runs.
+ */
+export async function sendEditorSurfaceInput(
+  session: string,
+  events: EditorInputEvent[],
+): Promise<void> {
+  if (events.length === 0) return;
+  await send({ type: "editor_surface_input", session_id: session, events });
+}
+
+/** Which lines a DOM editor surface has mounted, overscan included. */
+export async function setEditorSurfaceView(
+  session: string,
+  firstLine: number,
+  lineCount: number,
+): Promise<void> {
+  await send({
+    type: "editor_surface_view",
+    session_id: session,
+    first_line: firstLine,
+    line_count: lineCount,
+  });
+}
+
 export async function repaintEditor(session: string): Promise<void> {
   await send({ type: "repaint_editor", session_id: session });
 }

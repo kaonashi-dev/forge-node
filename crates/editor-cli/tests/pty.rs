@@ -707,7 +707,25 @@ mod integrated {
             request_id: request.0,
             revision: "rev-2".to_string(),
         });
-        editor.expect("saved");
+        editor
+            .daemon
+            .send(DaemonMessage::GetState { request_id: 88 });
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match editor.daemon.next(remaining) {
+                Some(EditorMessage::State {
+                    request_id: Some(88),
+                    state,
+                }) => {
+                    assert!(!state.dirty);
+                    assert!(state.status.is_empty(), "a successful save is silent");
+                    break;
+                }
+                Some(_) => continue,
+                None => panic!("no state after confirming the save"),
+            }
+        }
     }
 
     /// A refusal is shown and the buffer stays dirty, so the quit still warns.

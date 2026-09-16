@@ -111,12 +111,10 @@ export class TerminalRenderer {
     return true;
   }
 
-  /** Repaint the whole canvas, backdrop included. */
+  /** Repaint the whole canvas. Rows clear themselves; no blank frame first. */
   paintAll(viewport: Viewport): void {
     const context = this.prepare();
     if (!context) return;
-    context.fillStyle = this.palette.bg;
-    context.fillRect(0, 0, this.width, this.height);
     for (let row = 0; row < viewport.rows.length; row += 1) {
       this.paintRow(context, viewport, row);
     }
@@ -133,6 +131,23 @@ export class TerminalRenderer {
     }
   }
 
+  /**
+   * Flip only the caret cell. A blink must not clear the whole row: that wash
+   * is what still read as flicker after scroll frames were coalesced.
+   */
+  paintCaret(viewport: Viewport): void {
+    const context = this.prepare();
+    if (!context) return;
+    const row = viewport.cursor.line;
+    if (row < 0 || row >= viewport.rows.length) return;
+    const col = viewport.cursor.col;
+    const cell = viewport.cellAt(row, col);
+    const wide = cell !== null && (cell.flags & FLAG_WIDE_CHAR) !== 0;
+    const cols = wide ? 2 : 1;
+    this.paintCells(context, viewport, row, col, cols);
+    this.paintCursor(context, viewport, row);
+  }
+
   private prepare(): CanvasRenderingContext2D | null {
     const context = this.context;
     if (!context) return null;
@@ -142,21 +157,50 @@ export class TerminalRenderer {
   }
 
   private paintRow(context: CanvasRenderingContext2D, viewport: Viewport, row: number): void {
+    const { height: cellHeight } = this.metrics;
+    // Clear the full canvas width, not just the grid: a resize can leave a
+    // strip past the last column that paintCells would not touch.
+    context.fillStyle = this.palette.bg;
+    context.fillRect(0, row * cellHeight, this.width, cellHeight);
+    this.paintCells(context, viewport, row, 0, viewport.cols);
+    this.paintLink(context, row);
+    this.paintCursor(context, viewport, row);
+  }
+
+  /** Text, selection and glyphs for `cols` cells starting at `col` on `row`. */
+  private paintCells(
+    context: CanvasRenderingContext2D,
+    viewport: Viewport,
+    row: number,
+    col: number,
+    cols: number,
+  ): void {
     const { width: cellWidth, height: cellHeight } = this.metrics;
     const top = row * cellHeight;
+    const left = col * cellWidth;
+    const width = cols * cellWidth;
+    const end = col + cols;
 
     context.fillStyle = this.palette.bg;
-    context.fillRect(0, top, this.width, cellHeight);
+    context.fillRect(left, top, width, cellHeight);
 
     const line = viewport.rows[row];
-    if (line) {
+    if (line && col === 0 && cols >= viewport.cols) {
       let x = 0;
-      for (const [, cols, , bg] of line.r) {
+      for (const [, runCols, , bg] of line.r) {
         if (!isDefaultBackground(bg)) {
           context.fillStyle = this.colors.resolve(bg);
-          context.fillRect(x, top, cols * cellWidth, cellHeight);
+          context.fillRect(x * cellWidth, top, runCols * cellWidth, cellHeight);
         }
-        x += cols * cellWidth;
+        x += runCols;
+      }
+    } else {
+      for (let index = col; index < end; index += 1) {
+        const cell = viewport.cellAt(row, index);
+        if (cell && !isDefaultBackground(cell.bg)) {
+          context.fillStyle = this.colors.resolve(cell.bg);
+          context.fillRect(index * cellWidth, top, cellWidth, cellHeight);
+        }
       }
     }
 
@@ -167,25 +211,27 @@ export class TerminalRenderer {
       ? columnsOn(this.selection, row - viewport.scrollOffset, viewport.cols)
       : null;
     if (selected) {
-      context.fillStyle = this.palette.selection;
-      context.fillRect(
-        selected[0] * cellWidth,
-        top,
-        (selected[1] - selected[0] + 1) * cellWidth,
-        cellHeight,
-      );
-    }
-
-    if (line) {
-      let x = 0;
-      for (const [text, cols, fg, , flags] of line.r) {
-        this.paintRun(context, text, x, top, cols * cellWidth, fg, flags);
-        x += cols * cellWidth;
+      const from = Math.max(selected[0], col);
+      const to = Math.min(selected[1] + 1, end);
+      if (from < to) {
+        context.fillStyle = this.palette.selection;
+        context.fillRect(from * cellWidth, top, (to - from) * cellWidth, cellHeight);
       }
     }
 
-    this.paintLink(context, row);
-    this.paintCursor(context, viewport, row);
+    if (line && col === 0 && cols >= viewport.cols) {
+      let x = 0;
+      for (const [text, runCols, fg, , flags] of line.r) {
+        this.paintRun(context, text, x * cellWidth, top, runCols * cellWidth, fg, flags);
+        x += runCols;
+      }
+    } else {
+      for (let index = col; index < end; index += 1) {
+        const cell = viewport.cellAt(row, index);
+        if (!cell || cell.text.trim() === "") continue;
+        this.paintRun(context, cell.text, index * cellWidth, top, cellWidth, cell.fg, cell.flags);
+      }
+    }
   }
 
   /** The rule under a hovered path, in the project's accent so it reads as live. */

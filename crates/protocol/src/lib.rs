@@ -22,7 +22,7 @@ pub use framing::{
     decode_frame, decode_payload, encode_frame, to_json_string, FrameDecoder, ProtocolCodecError,
     MAX_FRAME_SIZE,
 };
-pub use hello::{ClientKind, Hello, HelloAck, HelloReject};
+pub use hello::{ClientKind, EditorSurface, Hello, HelloAck, HelloReject};
 pub use request::{RemoveProjectPolicy, Request, SendContextSpawn, Signal};
 pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 
@@ -33,7 +33,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// every new request with an undecodable frame and no `Response` — the caller
 /// waits on a reply that never comes. Equality at connect turns that stall
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

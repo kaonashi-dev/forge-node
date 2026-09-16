@@ -288,6 +288,7 @@ fn sample_hello_ack() -> HelloAck {
         daemon_version: "0.1.0".to_string(),
         instance_id: "forge-daemon-0001".to_string(),
         started_at: ts(),
+        editor_surface: protocol::EditorSurface::Cells,
     }
 }
 

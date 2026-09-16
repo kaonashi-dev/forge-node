@@ -135,6 +135,10 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
         daemon_version: daemon.version.clone(),
         instance_id: daemon.instance_id.clone(),
         started_at: daemon.started_at,
+        editor_surface: match daemon.editor_surface() {
+            crate::config::EditorSurface::Cells => protocol::EditorSurface::Cells,
+            crate::config::EditorSurface::Dom => protocol::EditorSurface::Dom,
+        },
     });
     // Deliver the ack through the per-client channel so a single writer owns the
     // socket write half.

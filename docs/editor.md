@@ -69,7 +69,9 @@ paints an inverted status row — path, `[modified]`, `line:column`, `F1 help` �
 along the bottom. Integrated, that row is a second copy of what the pane's HTML
 chrome already shows, so the TUI drops it and gives the whole height to the
 buffer. A prompt (find, go-to-line, confirm) and a transient message still take
-the last row in both modes; only the idle bar is silenced.
+the last row in both modes; only the idle bar and successful save messages are silenced. The file tab marks
+unsaved changes with a dot until the daemon confirms the save. Closing one or
+several unsaved tabs asks for confirmation before detaching their buffers.
 
 **Colour is the grammar's, and it is scanned whole.** `editor_core::Syntax`
 scans the document into per-line spans on every mutation and never per row: a
@@ -135,6 +137,78 @@ from the rail or history opens Code and reveals the file rather than swapping th
 main terminal. Closing the Code view detaches the pane; the process can go on
 living with no window pill of its own.
 
+
+## Two surfaces, one editor
+
+`[editor] surface` decides what an integrated session presents. It is a flag
+because the two are at different stages of feature parity, not because the
+choice is a preference; it goes away when the DOM one has everything the TUI
+has (`plan/plan-editor-dom-surface.md`).
+
+- `cells` (the default) is everything above: the TUI under the daemon's PTY,
+  painted by the GUI as a passive cell grid.
+- `dom` spawns the same binary with `--headless`. It never enters raw mode and
+  never writes a byte of ANSI; the PTY it is still born under carries nothing,
+  and stays only because that is how every session is spawned and reaped.
+
+What changes is the *sink*, not the editor. The same `App`, the same key table,
+the same `editor-core` document and the same save-as-a-request. `render::draw`
+is simply never called, and after each input burst the host publishes a window
+of lines instead:
+
+- `EditorMessage::ViewFrame` carries `[first_line, first_line + rows.len())` —
+  text split into scoped spans, the caret, every selected range, the extra
+  carets, folds and the decorations inside that window. Never the file: a
+  ten-thousand-line buffer costs one window, which measures about 19 KB of Rust
+  with its colouring. A row's gutter (git mark, diagnostic level, fold arrow)
+  travels *on the row*, because a mark list arriving on its own would point at
+  lines that had already moved.
+- `DaemonMessage::SetView` is the surface saying which lines it has mounted,
+  overscan included. It owns its scroll container, so scrolling away from the
+  caret is something a person is allowed to do; the caret pulls the window back
+  only when a key moves it.
+- `DaemonMessage::Input` is a named key, committed text, a pointer in document
+  coordinates or a wheel — batched, because there is no PTY to encode an escape
+  sequence for and a key repeat is one message rather than one per repeat.
+
+Every column on this wire is a UTF-16 code unit, in both directions, including
+the one a click reports. The host converts to display cells in the single place
+that knows a tab is four of them; a pointer that reported cells instead would be
+a second convention living beside the first, which is how a caret ends up one
+cell left of where it was clicked next to a wide character.
+
+The decoration cache is an input to a window, and the TUI happens to fill it
+inside `take_frame`. `App::prepare_view` is what the headless host calls for the
+same reason, and without it a DOM surface shows no find hits and no bracket
+match at all. An open prompt travels on `EditorState::status` rather than on a
+status row nobody paints, built by the one `App::prompt_line` the TUI also uses.
+
+Costs are clamped while the frame is built, never after it is encoded. The
+per-row caps bound one pathological line; `VIEW_ROW_BUDGET` is what bounds a
+frame, and a window that hits it arrives shorter with `clipped` set rather than
+arriving as a refusal.
+
+The daemon converts at the socket (`daemon::editor_wire`) and broadcasts
+`DaemonEvent::EditorFrame`. A frame is runtime state like a `TerminalDelta`: no
+column, no migration, and nothing on the session. Its rows ship behind an `Arc`,
+so a second client costs a refcount and not a copy of the window.
+
+The GUI mounts `EditorView` instead of `EditorTerminalPane`, chosen from
+`HelloAck::editor_surface` — the daemon's word, taken at the handshake, because
+the Code region has to know which pane to build before an editor session exists.
+Rows are positioned by their line number inside a container as tall as the whole
+file, so the browser composites the scroll and the mounted window can change
+underneath without moving anything. The caret is one element moved by a
+transform, measured with a `Range` over the row's own text: a column is a UTF-16
+offset, and only the browser knows what that is in pixels once a font has had
+its say.
+
+Accessibility stops being a mirror. The surface *is* the tree — a real
+`role="textbox"` with `aria-multiline` — rather than a canvas with a hidden
+paragraph beside it. The hidden `<textarea>` still takes the keys, because a
+`contenteditable` would give the browser an editing model that disagrees with
+the host's.
+
 ## Keys
 
 | Key | Action |
@@ -143,6 +217,7 @@ living with no window pill of its own.
 | Ctrl or Alt + arrows | move by word |
 | printable characters, Enter, Tab | insert; Tab advances to the next stop of the buffer's own indent unit |
 | Backspace, Delete | grapheme-aware deletion; Alt-Backspace deletes a word |
+| Ctrl-/ (Ctrl-_ in a legacy terminal), ⌘/ or ⇧⌘/ | toggle line comments for the selection or current line (Rust/C-like use `//`; Python/shell/keyed files use `#`) |
 | Ctrl-S | save (exclusive temp file in the same directory, then rename) |
 | Ctrl-Z / Ctrl-Y | undo / redo |
 | Ctrl-C / Ctrl-X / Ctrl-V | copy / cut / paste through an internal register |
@@ -268,24 +343,23 @@ HTML context menu).
   still takes the same rows repaints only its own, and the first line whose
   height changed reflows the row↔line map, so everything under it repaints and
   nothing over it does.
-- **A row is one write, and a clear is a shape change.** No row ever blanks
-  itself before its content: the daemon reads this PTY in batches, so a read
-  boundary landing between a clear and what it was making room for is a blank on
-  somebody's screen — `CSI 2J` for the whole grid, `CSI 2K` for one row, the
-  same defect at two scales. Instead every row is padded to the grid's width, so
-  any prefix of the write is a correct partial row, and the overview ruler rides
-  in the same write rather than arriving as a second one after it. It costs the
-  trailing spaces — about 40% more bytes on a full-viewport frame, which only
-  happens on a scroll or a resize — and buys a paint that cannot be split into a
-  state that reads as empty.
+- **A repaint is a synchronized update.** Every frame, including help, wraps
+  its rows, overlays and caret in DEC 2026 begin/end sequences. PTY reads can
+  split any write; the daemon's terminal engine holds the body until the end
+  sequence arrives, so a scroll cannot publish half of a repaint. This adds two
+  escape sequences per frame without a second output buffer in the editor.
+  Rows overwrite their full width with padding instead of clearing first.
   `neither_a_scroll_nor_a_keystroke_blanks_the_screen` reads the raw PTY stream
-  for both sequences and fails on either. The two clears left are the alternate
-  screen's first frame and a width change, where the grid is being reshaped
-  anyway.
-- **One paint per frame under a burst.** The loop paints when the input has
-  caught up or 8 ms have passed, whichever comes first — the same
-  `daemon::terminal::FRAME` floor an attached terminal has. A key repeat that
-  lands ten events in a millisecond is one frame on the wire.
+  and rejects screen/line clears during those actions;
+  `scroll_resize_and_help_publish_complete_frames` checks the synchronization
+  boundary with short writes in standalone and integrated modes. Full clears
+  remain for the first frame, width changes and help.
+- **One paint per burst under the floor.** The loop waits for input, drains
+  every terminal event already queued, then paints once when the queue is empty
+  or 8 ms have passed — the same `daemon::terminal::FRAME` floor an attached
+  terminal has. Painting *before* the wait left a race where each wheel notch
+  saw an empty queue for a moment and published its own full-viewport frame;
+  a key repeat or scroll burst is one frame on the wire again.
 - **Colour is re-scanned from the edit, not from the top.** A mutation restarts
   the scan on the nearest line above it that the previous scan passed at top
   level, and stops on the first line boundary below it that both scans agree is

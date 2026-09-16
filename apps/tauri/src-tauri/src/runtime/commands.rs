@@ -296,6 +296,26 @@ pub enum RuntimeCommand {
         session_id: SessionId,
         size: PtySize,
     },
+    /// What the person did in the DOM editor surface.
+    ///
+    /// The DOM sibling of [`RuntimeCommand::InputEditor`]: that one encodes a
+    /// key as terminal bytes for a PTY, this one names it, because the
+    /// headless host has no terminal to encode for. Batched by the surface so
+    /// a key repeat is one command.
+    EditorSurfaceInput {
+        session_id: SessionId,
+        events: Vec<domain::EditorInputEvent>,
+    },
+    /// Which lines the DOM editor surface has mounted.
+    ///
+    /// The DOM sibling of [`RuntimeCommand::ResizeEditor`]: the surface owns
+    /// its scroll container and line height, so it reports lines rather than a
+    /// `PtySize` nothing would read.
+    EditorSurfaceView {
+        session_id: SessionId,
+        first_line: u32,
+        line_count: u32,
+    },
     /// Re-send an editor's whole viewport.
     ///
     /// The editor sibling of [`RuntimeCommand::Repaint`]: several files share

@@ -5,7 +5,7 @@
 // Routing it through `createStore` would put the proxy machinery on the delta
 // rung for no subscriber that wanted it.
 
-import type { CellsPayload } from "../terminal/types";
+import type { CellsPayload, EditorFramePayload } from "../terminal/types";
 
 type Listener<T> = (payload: T) => void;
 
@@ -42,6 +42,14 @@ export const previewCellsChannel = channel<CellsPayload>();
  * on the delta rung (feature 19).
  */
 export const editorCellsChannel = channel<CellsPayload>();
+/**
+ * Windows for a headless editor's DOM surface.
+ *
+ * Apart from `editorCellsChannel` because the two are different surfaces, not
+ * two encodings of one: a frame here is lines and scopes, and a subscriber to
+ * one has nothing to do with the other.
+ */
+export const editorFrameChannel = channel<EditorFramePayload>();
 export const clipboardChannel = channel<string>();
 
 export const fileChangesChannel = channel<[workspace: string, path: string]>();

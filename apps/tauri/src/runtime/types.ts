@@ -252,11 +252,15 @@ export type ProviderUsage = {
   collected_at: string;
 };
 
+/** Which pane the Code region mounts for an editor session (`[editor] surface`). */
+export type EditorSurface = "cells" | "dom";
+
 export type DaemonInfo = {
   protocol_version: number;
   daemon_version: string;
   instance_id: string;
   started_at: string;
+  editor_surface: EditorSurface;
 };
 
 export type Launchable = {

@@ -1,4 +1,4 @@
 {
-  "daemon_protocol_version": 23,
+  "daemon_protocol_version": 24,
   "reason": "protocol version mismatch"
 }

@@ -1,10 +1,17 @@
 import { createStore } from "solid-js/store";
+import type { EditorSurface } from "../runtime/types";
 import type { SessionTranscript } from "../workbench/types";
 
 export type ConnectionState =
   | { kind: "idle" }
   | { kind: "connecting" }
-  | { kind: "connected"; instanceId: string; version: string }
+  | {
+      kind: "connected";
+      instanceId: string;
+      version: string;
+      /** Which pane the Code region mounts for an editor (`[editor] surface`). */
+      editorSurface: EditorSurface;
+    }
   | { kind: "disconnected"; reason: string };
 
 export type WorktreeRemoval = {

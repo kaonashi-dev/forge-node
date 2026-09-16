@@ -62,6 +62,7 @@ describe("the terminal editor pane", () => {
     expect(pane()).toContain("onFocus");
     expect(pane()).toContain("onBlur");
     expect(pane()).toContain("new CursorBlink(");
+    expect(pane()).toContain("paintCaret");
   });
 
   /*

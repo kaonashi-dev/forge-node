@@ -1,17 +1,19 @@
-//! Paints the rows a frame says changed, and nothing else.
-//!
-//! A keystroke damages one line, so a frame writes one row plus the status
-//! line. Rewriting the viewport per event is what this replaced: it costs the
-//! whole screen for an edit that moved one character.
+//! Writes damaged editor rows, overlays and the caret as one synchronized update.
+//! Viewport damage belongs to `app`; terminal interpretation belongs to the daemon.
 
 use std::io::{self, Write};
 
-use crossterm::{cursor, queue, style, terminal};
+use crossterm::{cursor, queue, style, terminal, SynchronizedUpdate};
 
 use crate::app::{App, Prompt, HELP};
 use crate::view;
 
 pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
+    // PTY reads can split any write; DEC 2026 keeps partial repaints off-screen.
+    out.sync_update(|out| draw_frame(app, out))?
+}
+
+fn draw_frame(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     if app.help_visible() {
         return draw_help(app, out);
     }
@@ -39,17 +41,10 @@ pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
     if let Some(escape) = app.take_clipboard_escape() {
         out.write_all(escape.as_bytes())?;
     }
-    out.flush()
+    Ok(())
 }
 
-/// Paint one row as a single write of exactly `width` cells.
-///
-/// No `Clear(CurrentLine)` anywhere: a clear followed by the content is two
-/// states, and the daemon reads the PTY in batches — a read boundary landing
-/// between them is a blanked row on somebody's screen. That is the flicker the
-/// whole-screen clear used to cause, at row granularity and twenty-four times a
-/// frame. Padding to the width costs the trailing spaces and cannot be split
-/// into a state that reads as empty.
+/// Overwrite exactly `width` cells, including padding to erase the previous row.
 fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
     queue!(out, cursor::MoveTo(0, row as u16))?;
     let text = app.document().text();
@@ -202,12 +197,7 @@ fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
     finish_row(app, out, row, cells)
 }
 
-/// Pad a row out to the grid's width and put the ruler in its last cell.
-///
-/// The other half of "a row is one write": the text column is only as wide as
-/// the line happens to be, so the cells past it are *written* blank rather than
-/// left to a clear, and the ruler rides in the same write instead of arriving
-/// as a second one after it.
+/// Reserve the last cell for the ruler when it is visible.
 fn finish_row(app: &App, out: &mut impl Write, row: usize, cells: usize) -> io::Result<()> {
     let width = app.width() as usize;
     let ruler = usize::from(app.ruler_visible());
@@ -428,27 +418,18 @@ fn draw_status(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
 fn status_text(app: &App) -> String {
     let width = app.width() as usize;
     if let Some(prompt) = app.prompt() {
+        // Enter and Ctrl-R are different answers, and the one-line prompts say
+        // which is which in `App::prompt_line` — the one formatter, shared with
+        // the headless host, which has no row to paint but the same words to
+        // say. Only the overlays are built here.
+        if let Some(line) = app.prompt_line() {
+            return view::cell_window(&line, 0, width);
+        }
         return match prompt {
-            Prompt::Find { input } => format!("find: {input}_{}", app.query_flags()),
-            Prompt::Replace {
-                find,
-                with,
-                editing_replacement,
-            } => {
-                // Enter and Ctrl-R are different answers, so the row says which
-                // is which: "Enter replaces all" was the copy that made a
-                // one-match intention rewrite the file.
-                let flags = app.query_flags();
-                if *editing_replacement {
-                    format!("replace: {find}  with: {with}_{flags}   (Tab switches, Enter: this one, Ctrl-R: all)")
-                } else {
-                    format!("replace: {find}_  with: {with}{flags}   (Tab switches, Enter: this one, Ctrl-R: all)")
-                }
-            }
-            Prompt::GotoLine { input } => format!("go to line: {input}_"),
-            Prompt::ConfirmClose => {
-                "unsaved changes — (s)ave, (d)iscard, any other key cancels".to_string()
-            }
+            Prompt::Find { .. }
+            | Prompt::Replace { .. }
+            | Prompt::GotoLine { .. }
+            | Prompt::ConfirmClose => unreachable!("prompt_line answered these"),
             Prompt::ChangeDetails {
                 line,
                 before,
@@ -591,5 +572,78 @@ fn draw_help(app: &mut App, out: &mut impl Write) -> io::Result<()> {
         style::Print(view::cell_window("press any key to return", 0, width)),
         style::SetAttribute(style::Attribute::NoReverse)
     )?;
-    out.flush()
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+    use editor_core::Document;
+
+    #[derive(Default)]
+    struct Output {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            // Short writes ensure framing does not rely on one atomic output write.
+            let count = bytes.len().min(3);
+            self.bytes.extend_from_slice(&bytes[..count]);
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            assert!(self.bytes.starts_with(b"\x1b[?2026h"));
+            assert!(self.bytes.ends_with(b"\x1b[?2026l"));
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    fn assert_frame(app: &mut App) {
+        let mut output = Output::default();
+        draw(app, &mut output).expect("draw frame");
+        assert_eq!(output.flushes, 1);
+        let text = String::from_utf8(output.bytes).expect("ANSI frame");
+        assert_eq!(text.matches("\x1b[?2026h").count(), 1);
+        assert_eq!(text.matches("\x1b[?2026l").count(), 1);
+        assert!(text.len() > 16, "the frame must contain paint commands");
+    }
+
+    #[test]
+    fn scroll_resize_and_help_publish_complete_frames() {
+        for integrated in [false, true] {
+            let text = (0..100)
+                .map(|line| format!("let value_{line} = {line};\n"))
+                .collect::<String>();
+            let document = Document::from_bytes(text.as_bytes(), false).expect("document");
+            let mut app = App::new(document, "fixture.rs".into(), None);
+            if integrated {
+                app.set_integrated();
+            }
+            app.resize(80, 24);
+            assert_frame(&mut app);
+
+            for kind in [MouseEventKind::ScrollDown, MouseEventKind::ScrollUp] {
+                app.handle_mouse(MouseEvent {
+                    kind,
+                    column: 10,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                });
+                assert_frame(&mut app);
+            }
+            app.resize(60, 20);
+            assert_frame(&mut app);
+            app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+            assert!(app.help_visible());
+            assert_frame(&mut app);
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert!(!app.help_visible());
+            assert_frame(&mut app);
+        }
+    }
 }

@@ -10,6 +10,7 @@ mod context_xfer;
 pub mod core;
 mod diagnostics;
 pub mod editor;
+pub mod editor_wire;
 pub mod environment;
 pub mod external_agents;
 mod file_watch;

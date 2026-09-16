@@ -13,8 +13,8 @@ pub use store::{CellGrid, DeltaOutcome, EventOutcome, Store};
 // `Client::events` yields, without taking a direct dependency on `protocol`
 // (§17: the client is the GUI's gateway to the wire types).
 pub use protocol::{
-    DaemonEvent, DaemonStats, ErrorCode, ProtocolError, ProviderInfo, RemoveProjectPolicy,
-    SendContextSpawn, PROTOCOL_VERSION,
+    DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ProtocolError, ProviderInfo,
+    RemoveProjectPolicy, SendContextSpawn, PROTOCOL_VERSION,
 };
 pub use terminal_input::{
     encode_key, encode_mouse, paste, Key, Modifiers, MouseButton, MouseEventKind,

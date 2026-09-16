@@ -43,6 +43,11 @@ def pack_bool(v):
 def pack_nil():
     return b"\xc0"
 
+def pack_array(items):
+    n = len(items)
+    header = bytes([0x90 | n]) if n < 16 else bytes([0xDC]) + n.to_bytes(2, "big")
+    return header + b"".join(items)
+
 def pack_map(items):
     n = len(items)
     header = bytes([0x80 | n]) if n < 16 else bytes([0xDE]) + n.to_bytes(2, "big")
@@ -82,6 +87,32 @@ def state(path, line=1):
     ])
     inner = pack_map([("request_id", pack_nil()), ("state", st)])
     return frame(pack_map([("State", inner)]))
+
+def view_frame(rows, first_line=0, total_lines=1, doc_version=1, caret=(0, 0)):
+    packed = []
+    for line, spans in rows:
+        packed.append(pack_map([
+            ("line", pack_int(line)),
+            ("truncated", pack_bool(False)),
+            ("spans", pack_array([
+                pack_map([("text", pack_str(t)), ("scope", pack_str(sc))])
+                for t, sc in spans
+            ])),
+        ]))
+    frame_body = pack_map([
+        ("buffer_id", pack_int(1)),
+        ("doc_version", pack_int(doc_version)),
+        ("first_line", pack_int(first_line)),
+        ("total_lines", pack_int(total_lines)),
+        ("rows", pack_array(packed)),
+        ("clipped", pack_bool(False)),
+        ("folded", pack_array([])),
+        ("caret", pack_map([("line", pack_int(caret[0])), ("column", pack_int(caret[1]))])),
+        ("selection", pack_array([])),
+        ("extra_carets", pack_array([])),
+        ("decorations", pack_array([])),
+    ])
+    return frame(pack_map([("ViewFrame", pack_map([("frame", frame_body)]))]))
 
 def find_definition(request_id, symbol):
     inner = pack_map([
@@ -271,6 +302,38 @@ if mode == "copy":
     # "picked up". The daemon's VT engine is the only thing that reads it.
     sys.stdout.write("\x1b]52;c;cGlja2VkIHVw\x07")
     sys.stdout.flush()
+
+if mode == "headless":
+    # The DOM surface: no raw mode, no ANSI, and the window is what the
+    # daemon is expected to broadcast. `--headless` must have reached argv,
+    # or the surface flag never made it to the spawn.
+    with open(".forge-editor-argv", "w") as fh:
+        fh.write(" ".join(sys.argv[1:]) + "\n")
+    sock.sendall(view_frame([(0, [("fn", "Keyword"), (" main", "Function")])],
+                            total_lines=2, doc_version=1))
+    seen = []
+    while len(seen) < 2:
+        msg = unpack(read_frame(sock))[0]
+        if "Input" in msg:
+            events = msg["Input"]["events"]
+            keys = []
+            for event in events:
+                if isinstance(event, dict) and "Key" in event:
+                    key = event["Key"]["key"]
+                    name = key["Char"] if isinstance(key, dict) else key
+                    keys.append("%s+%d" % (name, event["Key"]["modifiers"]))
+                elif isinstance(event, dict) and "Text" in event:
+                    keys.append("text:%s" % event["Text"])
+            seen.append("input " + ",".join(keys))
+        elif "SetView" in msg:
+            view = msg["SetView"]["view"]
+            seen.append("view %d %d" % (view["first_line"], view["line_count"]))
+    with open(".forge-editor-surface", "w") as fh:
+        fh.write("\n".join(seen) + "\nend\n")
+    # A second window, so the test can tell a frame that answered the input
+    # from the one that was already on screen.
+    sock.sendall(view_frame([(0, [("Xfn main", "Plain")])],
+                            total_lines=2, doc_version=2, caret=(0, 1)))
 
 if mode == "save":
     body = os.environ.get("FORGE_TEST_SAVE_TEXT", "saved by the editor\n")
@@ -919,5 +982,112 @@ fn _size() -> PtySize {
         rows: 24,
         pixel_width: 0,
         pixel_height: 0,
+    }
+}
+
+/// Install the fake pinned to one mode, for a test that cannot set the
+/// environment the spawn will carry.
+fn install_fake_editor_in_mode(harness: &common::Harness, mode: &str) {
+    let path = harness.bin().join("forge-editor");
+    let script = fake_editor_source().replace(
+        "mode = os.environ.get(\"FORGE_TEST_EDITOR_MODE\", \"serve\")",
+        &format!("mode = {mode:?}"),
+    );
+    fs::write(&path, script).expect("write fake editor");
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).unwrap();
+}
+
+/// The DOM surface, end to end through the daemon.
+///
+/// The half `crates/editor-cli/tests/headless.rs` cannot reach: that one proves
+/// the host publishes windows, this one proves the daemon spawns it headless,
+/// forwards a client's input to its socket, and turns the window it gets back
+/// into a `DaemonEvent` a surface can mount.
+#[test]
+fn the_dom_surface_carries_input_down_and_windows_back_up() {
+    let harness = common::Harness::new();
+    install_fake_editor_in_mode(&harness, "headless");
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("main.rs"), "fn main\n").unwrap();
+    let running = harness.boot_with(|cfg| {
+        cfg.editor.surface = daemon::config::EditorSurface::Dom;
+    });
+    let client = running.connect("editor-dom");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (session_id, _terminal) = create_editor(&client, &events, workspace, "main.rs", None);
+
+    // The window the host published, as a domain event and not a cell grid.
+    let first = wait_for_frame(&events, session_id, 1);
+    assert_eq!(first.total_lines, 2);
+    assert_eq!(first.rows[0].text(), "fn main");
+    assert_eq!(
+        first.rows[0].spans[0].scope,
+        domain::EditorScope::Keyword,
+        "the colouring travels with the window"
+    );
+
+    client
+        .request(Request::SetEditorView {
+            session_id,
+            first_line: 0,
+            line_count: 88,
+        })
+        .expect("SetEditorView");
+    client
+        .request(Request::SendEditorInput {
+            session_id,
+            events: vec![
+                domain::EditorInputEvent::Key {
+                    key: domain::EditorKey::Char('X'),
+                    modifiers: domain::editor_modifiers::CONTROL,
+                },
+                domain::EditorInputEvent::Text("hi".into()),
+            ],
+        })
+        .expect("SendEditorInput");
+
+    assert!(
+        common::poll_until(common::DEADLINE, || repo
+            .path()
+            .join(".forge-editor-surface")
+            .exists()),
+        "the headless editor never received the surface traffic"
+    );
+    let seen = fs::read_to_string(repo.path().join(".forge-editor-surface")).unwrap();
+    assert!(
+        seen.contains("view 0 88"),
+        "the window the surface mounted must reach the host:\n{seen}"
+    );
+    assert!(
+        seen.contains("input X+2,text:hi"),
+        "a named key with its modifiers, and committed text, in one batch:\n{seen}"
+    );
+
+    // The spawn itself: the surface flag is what put `--headless` in argv.
+    let argv = fs::read_to_string(repo.path().join(".forge-editor-argv")).unwrap();
+    assert!(argv.contains("--headless"), "argv was {argv:?}");
+
+    let answer = wait_for_frame(&events, session_id, 2);
+    assert_eq!(answer.rows[0].text(), "Xfn main");
+    assert_eq!(answer.caret.column, 1);
+}
+
+/// The first `EditorFrame` for `session` at or past `version`.
+fn wait_for_frame(
+    events: &flume::Receiver<DaemonEvent>,
+    session: domain::SessionId,
+    version: u64,
+) -> domain::EditorFrame {
+    let event = common::wait_for(events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::EditorFrame { session_id, frame }
+            if *session_id == session && frame.doc_version >= version)
+    })
+    .expect("an EditorFrame should arrive");
+    match event {
+        DaemonEvent::EditorFrame { frame, .. } => frame,
+        _ => unreachable!(),
     }
 }

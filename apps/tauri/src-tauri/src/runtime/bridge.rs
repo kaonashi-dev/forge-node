@@ -283,6 +283,25 @@ impl Emitter<'_> {
             cells::frame(terminal, grid, 0, damage, false, 0),
         );
     }
+
+    /// Publish one DOM editor window.
+    ///
+    /// Not held back by the cell floor: the editor already coalesced this
+    /// against its own emit floor and against the last window it published, so
+    /// what arrives here is a frame the surface has not seen.
+    fn editor_frame(&self, session_id: SessionId, frame: domain::EditorFrame) {
+        let _ = self.app.emit(
+            "runtime:editor_frame",
+            EditorFramePayload { session_id, frame },
+        );
+    }
+}
+
+/// One window, addressed to the surface showing that session.
+#[derive(Clone, Debug, Serialize)]
+struct EditorFramePayload {
+    session_id: SessionId,
+    frame: domain::EditorFrame,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -618,6 +637,9 @@ fn runtime_loop(
                 }
                 for (terminal, damage) in batch.editor_damage {
                     emitter.editor_cells(&mut store, terminal, &damage);
+                }
+                for (session_id, frame) in batch.editor_frames {
+                    emitter.editor_frame(session_id, frame);
                 }
                 if let Some(damage) = batch.damage {
                     // A cells-only burst inside the floor is held and merged;
@@ -1629,6 +1651,25 @@ fn run_command(
         RuntimeCommand::ResizeEditor { session_id, size } => {
             resize_editor(client, store, editors, session_id, size)
         }
+        RuntimeCommand::EditorSurfaceInput { session_id, events } => {
+            client
+                .send_editor_input(session_id, events)
+                .map_err(CommandError::from_client)?;
+            Ok(Effect::nothing())
+        }
+        // A refused view is not worth reporting: the surface's next scroll
+        // frame replaces it, and a saturated queue means one is already on its
+        // way.
+        RuntimeCommand::EditorSurfaceView {
+            session_id,
+            first_line,
+            line_count,
+        } => {
+            client
+                .set_editor_view(session_id, first_line, line_count)
+                .map_err(CommandError::from_client)?;
+            Ok(Effect::nothing())
+        }
         RuntimeCommand::RepaintEditor { session_id } => {
             let terminal = attach_editor(client, store, editors, session_id)?;
             Ok(Effect {
@@ -2141,6 +2182,11 @@ struct Batch {
     /// Side editor terminals that have to repaint, keyed so two editors
     /// in the Code strip do not merge their damage.
     editor_damage: HashMap<TerminalId, Damage>,
+    /// The newest window each DOM editor surface published in this batch.
+    ///
+    /// Last wins rather than merged: a frame *is* the whole window, so an
+    /// older one has nothing the newer one is missing.
+    editor_frames: HashMap<SessionId, domain::EditorFrame>,
     editor_sessions_removed: Vec<SessionId>,
 }
 
@@ -2195,6 +2241,11 @@ impl Batch {
                 self.editor_sessions_removed.push(*session_id);
             }
         }
+        if let DaemonEvent::EditorFrame { session_id, frame } = event {
+            // A clone here is a refcount bump: the rows are the only part that
+            // scales with the window and they ship behind an `Arc`.
+            self.editor_frames.insert(*session_id, frame.clone());
+        }
         if let Some(open) = preview {
             let preview_damage = match event {
                 DaemonEvent::TerminalDelta { terminal_id, delta }
@@ -2226,7 +2277,7 @@ impl Batch {
             DaemonEvent::TerminalDelta { terminal_id, delta }
                 if preview.is_none_or(|open| open.terminal != *terminal_id) =>
             {
-                let d = delta_damage(delta);
+                let d = editor_delta_damage(delta);
                 let merged = match self.editor_damage.remove(terminal_id) {
                     Some(existing) => existing.merge(d),
                     None => d,
@@ -2331,7 +2382,7 @@ fn changes_shell(event: &DaemonEvent, store: &Store) -> bool {
     }
 }
 
-/// What one delta damages.
+/// What one delta damages for a shell or preview attachment.
 ///
 /// A scroll moves every row, and the rows the delta names are only the ones
 /// that *also* changed content — so a scrolled delta is a full repaint however
@@ -2342,6 +2393,13 @@ fn delta_damage(delta: &domain::TerminalDelta) -> Damage {
     } else {
         Damage::Rows(delta.changed_rows().map(|(index, _)| index).collect())
     }
+}
+
+/// Editor attachments do not walk terminal scrollback: the TUI rewrites the
+/// live grid in place. `scrolled_lines` from the VT engine must not force a
+/// blanking `paintAll` on the canvas.
+fn editor_delta_damage(delta: &domain::TerminalDelta) -> Damage {
+    Damage::Rows(delta.changed_rows().map(|(index, _)| index).collect())
 }
 
 fn bootstrap(
@@ -2723,6 +2781,22 @@ mod tests {
             Some(Damage::Rows(vec![1]))
         );
         assert!(!batch.shell);
+    }
+
+    /// The editor TUI rewrites rows in place; a VT `scrolled_lines` hint must
+    /// not widen its damage to `Full` or the canvas blanks before painting.
+    #[test]
+    fn an_editor_delta_with_scrolled_lines_stays_row_damage() {
+        let at = attached(TerminalId::new(), SessionId::new(), 0);
+        let editor = TerminalId::new();
+        let store = Store::new();
+        let mut batch = Batch::default();
+        batch.absorb(&delta(editor, vec![0, 2, 4], 3), &store, &at, None);
+        assert_eq!(
+            batch.editor_damage.get(&editor).cloned(),
+            Some(Damage::Rows(vec![0, 2, 4]))
+        );
+        assert_eq!(batch.damage, None);
     }
 
     /// R27/R29: the pane types and resizes through its own side attachment.

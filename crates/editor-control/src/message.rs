@@ -5,6 +5,7 @@
 //! handshake is the first exchange in each direction (`Hello` then `Welcome`);
 //! every request after it carries a `request_id` that its answer echoes.
 
+use crate::view::{EditorInput, ViewFrame, ViewRequest};
 use crate::CONTROL_VERSION;
 use serde::{Deserialize, Serialize};
 
@@ -135,6 +136,22 @@ pub enum DaemonMessage {
         command: bool,
         items: Vec<WireDiagnostic>,
     },
+    /// What the person did in the GUI's surface.
+    ///
+    /// The DOM surface has no PTY, so a keystroke is a named key and not an
+    /// escape sequence. Batched: one message per input burst, never one per
+    /// key. `request_id` is optional because typing is not a request — it is
+    /// there for the caller that wants to know an ordered edit landed.
+    Input {
+        request_id: Option<u64>,
+        events: Vec<EditorInput>,
+    },
+    /// Which lines the GUI is showing.
+    ///
+    /// The GUI owns the line height and the scroll container, so it is the
+    /// only side that can say what fits; the host answers with a
+    /// [`EditorMessage::ViewFrame`] for that window plus its overscan.
+    SetView { request_id: u64, view: ViewRequest },
     /// Replace byte ranges, refused when the document moved under the caller.
     ///
     /// Reserved for a preview surface; H1's daemon does not send it yet, so an
@@ -224,6 +241,12 @@ pub enum EditorMessage {
     /// keystroke. The editor never spawns anything — the daemon owns the
     /// checkout and every process in it.
     RunDiagnostics { request_id: u64 },
+    /// The window the host chose, and everything painted in it.
+    ///
+    /// The DOM surface's frame: lines and scopes, never cells. Sent after a
+    /// mutation, a caret move or a [`DaemonMessage::SetView`], coalesced by
+    /// the host's own emit floor the way the PTY path coalesces damage.
+    ViewFrame { frame: ViewFrame },
     /// The editor is exiting (quit command, fatal error). The daemon treats the
     /// socket EOF the same way, so this is a courtesy reason, not the signal.
     Closed { reason: String },

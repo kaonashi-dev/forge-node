@@ -88,3 +88,95 @@ export const COLOR_FG = -1;
 export const COLOR_BG = -2;
 /** Set on a color that carries a literal RGB triple in its low 24 bits. */
 export const COLOR_RGB = 1 << 24;
+
+// The DOM editor surface's wire, as `domain::editor_frame` serializes it.
+//
+// A window of *lines*, never cells: the surface mounts one node per visible
+// line and the browser composites the scroll, so nothing here has a grid in
+// it. Columns are UTF-16 code units, which is what a JavaScript string indexes.
+
+export type EditorScope =
+  | "Plain"
+  | "Comment"
+  | "Keyword"
+  | "ControlKeyword"
+  | "String"
+  | "Number"
+  | "Type"
+  | "Function"
+  | "Property"
+  | "Constant";
+
+export type EditorSpan = {
+  text: string;
+  scope: EditorScope;
+};
+
+/** What the working tree did to a line. */
+export type EditorMark = "Added" | "Modified" | "Deleted";
+
+/** How much a row's diagnostic matters. */
+export type EditorSeverity = "Error" | "Warning" | "Info";
+
+export type EditorRow = {
+  /** 0-based line in the document. */
+  line: number;
+  /** Longer than the host's per-row cap, and cut. */
+  truncated: boolean;
+  /** Concatenating the spans reproduces the row's text. */
+  spans: EditorSpan[];
+  mark: EditorMark | null;
+  diagnostic: EditorSeverity | null;
+  /**
+   * A foldable block starts here and is hiding this many lines: `0` is open,
+   * `null` is a line that starts no block at all.
+   */
+  fold: number | null;
+};
+
+export type EditorPlace = {
+  /** 0-based line. */
+  line: number;
+  /** 0-based, in UTF-16 code units of the line's text. */
+  column: number;
+};
+
+export type EditorRange = {
+  from: EditorPlace;
+  to: EditorPlace;
+};
+
+export type EditorDecorationKind = "Match" | "ActiveMatch" | "Bracket";
+
+export type EditorDecoration = {
+  kind: EditorDecorationKind;
+  range: EditorRange;
+};
+
+export type EditorFold = {
+  /** 0-based header line, which stays visible. */
+  header: number;
+  /** Lines below it the window does not carry. */
+  hidden: number;
+};
+
+export type EditorFrame = {
+  buffer_id: number;
+  /** Monotonic; an older frame than the one on screen is dropped. */
+  doc_version: number;
+  first_line: number;
+  total_lines: number;
+  rows: EditorRow[];
+  /** The window stopped short of what was asked for. Fewer rows, not none. */
+  clipped: boolean;
+  folded: EditorFold[];
+  caret: EditorPlace;
+  selection: EditorRange[];
+  extra_carets: EditorPlace[];
+  decorations: EditorDecoration[];
+};
+
+export type EditorFramePayload = {
+  session_id: string;
+  frame: EditorFrame;
+};

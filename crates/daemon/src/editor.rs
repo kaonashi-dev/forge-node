@@ -69,6 +69,16 @@ pub enum Outgoing {
         request_id: u64,
         autosave: bool,
     },
+    /// What the person did in a DOM surface, already clamped.
+    Input {
+        events: Vec<editor_control::EditorInput>,
+    },
+    /// Which lines that surface is showing.
+    SetView {
+        request_id: u64,
+        first_line: u32,
+        line_count: u32,
+    },
 }
 
 impl Outgoing {
@@ -101,6 +111,21 @@ impl Outgoing {
             } => DaemonMessage::SetAutosave {
                 request_id,
                 autosave,
+            },
+            Self::Input { events } => DaemonMessage::Input {
+                request_id: None,
+                events,
+            },
+            Self::SetView {
+                request_id,
+                first_line,
+                line_count,
+            } => DaemonMessage::SetView {
+                request_id,
+                view: editor_control::ViewRequest {
+                    first_line,
+                    line_count,
+                },
             },
         }
     }
@@ -500,6 +525,19 @@ fn serve(
                 if send(&writer, &answer).is_err() {
                     return;
                 }
+            }
+            // Straight through: the editor already coalesced this against its
+            // own emit floor and against the last window it published, so a
+            // frame arriving here is one the surface has not seen. Broadcast
+            // and never stored — a window is runtime state like a
+            // `TerminalDelta`, not something a session carries.
+            Ok(EditorMessage::ViewFrame { frame }) => {
+                daemon
+                    .registry
+                    .broadcast_domain(protocol::DaemonEvent::EditorFrame {
+                        session_id,
+                        frame: crate::editor_wire::frame_to_domain(frame),
+                    });
             }
             Ok(EditorMessage::Applied { request_id, .. }) => {
                 if let Some(loaded) = daemon.finish_editor_reload(session_id, request_id) {

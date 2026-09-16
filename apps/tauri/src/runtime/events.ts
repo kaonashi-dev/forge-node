@@ -2,7 +2,7 @@ import { fileWatchReady, reconnectFileWatches, failFileWatch } from "../workbenc
 import { fileChangesChannel } from "./bus";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "../ui";
-import type { CellsPayload } from "../terminal/types";
+import type { CellsPayload, EditorFramePayload } from "../terminal/types";
 import { applyShellSnapshot, forgeStore } from "../store/forgeStore";
 import { adoptPendingCompose } from "../store/prComposeStore";
 import { adoptPendingReviews } from "../store/prReviewStore";
@@ -18,7 +18,7 @@ import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
 import { previewImageReader, setEditorAutosave } from "../workbench/api";
 import { dataUrl } from "../workbench/previewImages";
 import { sameListing } from "../workbench/fileInvalidation";
-import { mergeDirectory } from "../workbench/mergeDirectory";
+import { mergeDirectory, retainExpandedDirectories } from "../workbench/mergeDirectory";
 import type {
   Branches,
   FileContents,
@@ -44,7 +44,13 @@ import {
   setHarnessStore,
 } from "../store/harnessStore";
 import type { HarnessArtifactKind, HarnessEvent, HarnessFeature } from "../harness/types";
-import { cellsChannel, clipboardChannel, editorCellsChannel, previewCellsChannel } from "./bus";
+import {
+  cellsChannel,
+  clipboardChannel,
+  editorCellsChannel,
+  editorFrameChannel,
+  previewCellsChannel,
+} from "./bus";
 import { openEditorTerminal } from "../store/viewsStore";
 import { applyEditorConflict, failEditorConflict } from "../store/editorConflictStore";
 import type {
@@ -83,6 +89,7 @@ export function applyConnected(payload: ConnectedPayload): void {
       kind: "connected",
       instanceId: payload.daemon.instance_id,
       version: payload.daemon.daemon_version,
+      editorSurface: payload.daemon.editor_surface,
     },
     activeSession: payload.active_session,
     activeTerminal: payload.active_terminal,
@@ -185,11 +192,12 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
     /* A re-listing that says nothing new is dropped rather than stored: every
        surface downstream keys off the object, and a save that changed no name
        would otherwise repaint the tree. */
-    answer<FileTree>("workbench:file_tree", "tree", (tree) =>
+    answer<FileTree>("workbench:file_tree", "tree", (listing) => {
+      const tree = retainExpandedDirectories(workbenchStore.tree, listing);
       setWorkbenchStore(
         sameListing(workbenchStore.tree, tree) ? { treeError: null } : { tree, treeError: null },
-      ),
-    ),
+      );
+    }),
     failure("workbench:file_tree_failed", "tree", "treeError"),
     listen<[string, string, FileTree]>("workbench:file_directory", ({ payload }) => {
       const [workspace, path, listing] = payload;
@@ -458,6 +466,9 @@ export async function bindRuntimeEvents(): Promise<UnlistenFn> {
     }),
     listen<CellsPayload>("runtime:editor_cells", (event) => {
       editorCellsChannel.publish(event.payload);
+    }),
+    listen<EditorFramePayload>("runtime:editor_frame", (event) => {
+      editorFrameChannel.publish(event.payload);
     }),
     listen<{
       session_id: string;

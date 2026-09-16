@@ -81,8 +81,9 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
   const blink = new CursorBlink((visible) => {
     if (!renderer) return;
     renderer.cursorVisible = visible;
-    dirty.add(viewport.cursor.line);
-    schedule();
+    // Only the caret cell: clearing the whole row on every phase is the wash
+    // that still read as flicker once scroll frames were coalesced.
+    renderer.paintCaret(viewport);
   });
 
   const session = createMemo(() => forgeStore.sessions.find((item) => item.id === props.session));
@@ -386,9 +387,11 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     const lines = Math.trunc(wheelRemainder);
     if (lines === 0) return;
     wheelRemainder -= lines;
-    // One report per line, the way a real wheel sends them.
+    // One report per line, flushed together on the next frame so the editor's
+    // drain-then-paint loop sees the burst as one queue rather than N paints.
     const button = lines > 0 ? "wheel_up" : "wheel_down";
-    for (let index = 0; index < Math.abs(lines); index += 1) {
+    const count = Math.abs(lines);
+    for (let index = 0; index < count; index += 1) {
       report(event, button, "press");
     }
   }

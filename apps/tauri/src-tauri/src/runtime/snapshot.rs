@@ -87,6 +87,8 @@ pub struct DaemonInfoDto {
     pub daemon_version: String,
     pub instance_id: String,
     pub started_at: domain::Timestamp,
+    /// `"cells"` or `"dom"`: which pane the Code region mounts for an editor.
+    pub editor_surface: client::EditorSurface,
 }
 
 impl From<&DaemonInfo> for DaemonInfoDto {
@@ -96,6 +98,7 @@ impl From<&DaemonInfo> for DaemonInfoDto {
             daemon_version: info.daemon_version.clone(),
             instance_id: info.instance_id.clone(),
             started_at: info.started_at,
+            editor_surface: info.editor_surface,
         }
     }
 }

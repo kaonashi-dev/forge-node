@@ -9,9 +9,9 @@
 //! a single update path (§10.3).
 
 use domain::{
-    AgentProfile, DetectionResult, Job, JobId, JuvaDraft, Project, ProjectGroup, ProjectGroupId,
-    ProjectId, ProviderUsage, PullRequestState, Session, SessionId, ShareAction, ShareRule,
-    ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot, Workspace, WorkspaceId,
+    AgentProfile, DetectionResult, EditorFrame, Job, JobId, JuvaDraft, Project, ProjectGroup,
+    ProjectGroupId, ProjectId, ProviderUsage, PullRequestState, Session, SessionId, ShareAction,
+    ShareRule, ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot, Workspace, WorkspaceId,
     WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
@@ -91,6 +91,20 @@ pub enum DaemonEvent {
     ClipboardStore {
         terminal_id: TerminalId,
         text: String,
+    },
+    /// The window a DOM editor surface should mount.
+    ///
+    /// The editor's frame, on the rung `TerminalDelta` occupies for a
+    /// terminal: a window of lines rather than a grid of cells, coalesced by
+    /// the editor's own emit floor and dropped rather than queued when a
+    /// client's queue is full — the next frame is a whole window, so a lagging
+    /// surface recovers by catching the one after it and never by replaying.
+    /// Broadcast like a domain event: an editor session has one surface, and
+    /// the frame is already the size of a viewport.
+    EditorFrame {
+        /// The editor session the window belongs to.
+        session_id: SessionId,
+        frame: EditorFrame,
     },
     /// Changed rows for an attached terminal (§10.5). Sent only to subscribers.
     TerminalDelta {

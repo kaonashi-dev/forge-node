@@ -104,6 +104,9 @@ pub struct App {
     /// local disk adapter is off and a save travels as a request. False is the
     /// standalone editor, which saves through `disk`.
     integrated: bool,
+    /// True when this buffer is published as a window of lines rather than
+    /// painted: no status row, no wrap, and `render::draw` is never called.
+    headless: bool,
     /// The grammar this buffer is coloured with, from its path.
     grammar: Grammar,
     /// Type an opener and get its partner. On by default, off for the person
@@ -297,6 +300,7 @@ impl App {
             path,
             revision,
             integrated: false,
+            headless: false,
             grammar: Grammar::None,
             close_brackets: true,
             special_chars: false,
@@ -406,9 +410,10 @@ impl App {
         self.quit
     }
 
-    /// The first visible line. Only the tests read it now that the renderer
-    /// walks rows through `row_line_sub`.
-    #[cfg(test)]
+    /// The first visible line, 0-based.
+    ///
+    /// The TUI renderer walks rows through `row_line_sub` instead; this is
+    /// what the headless host publishes as a window's `first_line`.
     pub fn top(&self) -> usize {
         self.top
     }
@@ -431,7 +436,7 @@ impl App {
     }
 
     pub fn content_height(&self) -> usize {
-        if self.integrated && !self.needs_status_row() {
+        if self.headless || (self.integrated && !self.needs_status_row()) {
             self.height as usize
         } else {
             (self.height as usize).saturating_sub(1)
@@ -446,7 +451,7 @@ impl App {
     /// the two things the HTML around us cannot show — and reclaimed as a
     /// content row the rest of the time.
     pub fn needs_status_row(&self) -> bool {
-        !self.integrated || self.prompt.is_some() || self.status.is_some()
+        !self.headless && (!self.integrated || self.prompt.is_some() || self.status.is_some())
     }
 
     pub fn number_width(&self) -> usize {
@@ -998,6 +1003,32 @@ impl App {
         self.wrap = true;
     }
 
+    /// This buffer is published as a window of lines, not painted as cells.
+    ///
+    /// Wrapping is off because the DOM surface scrolls sideways natively, and
+    /// a host-side visual-row map is H3's problem, not a thing to fake here.
+    pub fn set_headless(&mut self) {
+        self.integrated = true;
+        self.headless = true;
+        self.wrap = false;
+        self.left = 0;
+    }
+
+    /// Mount the window the GUI asked for.
+    ///
+    /// Deliberately *not* `ensure_visible`: the GUI owns its scroll container,
+    /// so scrolling away from the caret is a thing a person is allowed to do.
+    /// The caret pulls the window back the moment a key moves it — every
+    /// command already ends in `ensure_visible` — and not a frame before.
+    pub fn set_view(&mut self, first_line: usize, line_count: usize) {
+        let count = self.document.text().line_count();
+        self.top = first_line.min(count.saturating_sub(1));
+        self.top_sub = 0;
+        self.height = u16::try_from(line_count.max(1)).unwrap_or(u16::MAX);
+        self.clamp_anchor();
+        self.damage_all = true;
+    }
+
     /// Ask the daemon where the word at the caret is declared.
     ///
     /// The editor never opens the checkout, so this is a request. An empty
@@ -1119,11 +1150,10 @@ impl App {
             self.quit = true;
         }
         self.arm_autosave();
-        self.status = Some(if self.document.is_dirty() {
-            "saved — newer keystrokes are still unsaved".to_string()
-        } else {
-            "saved".to_string()
-        });
+        self.status = self
+            .document
+            .is_dirty()
+            .then(|| "saved — newer keystrokes are still unsaved".to_string());
     }
 
     /// The daemon refused the write; the buffer is untouched and stays dirty.
@@ -1186,7 +1216,16 @@ impl App {
             selection_length: u32::try_from(self.document.selection().range().len())
                 .unwrap_or(u32::MAX),
             cursor_count: u32::try_from(self.document.selection().count()).unwrap_or(u32::MAX),
-            status: self.status.clone().unwrap_or_default(),
+            // A headless host has no status row, so the open prompt travels
+            // here instead: without it a person typing into find sees the
+            // highlights move and never what they typed. It outranks a
+            // transient message because it is the thing being interacted with.
+            status: self
+                .headless
+                .then(|| self.prompt_line())
+                .flatten()
+                .or_else(|| self.status.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -1306,6 +1345,46 @@ impl App {
     #[must_use]
     pub fn is_active_line(&self, line: usize) -> bool {
         self.document.caret_line_col().line == line
+    }
+
+    /// The one-line prompt, as a surface with no status row can show it.
+    ///
+    /// The same string `render::status_text` paints, built here so there is
+    /// one formatter and not two: a headless host has no row to paint it on,
+    /// and a person typing into find has to see what they typed. `None` for
+    /// the prompts that are overlays rather than a line — those are a panel
+    /// the DOM surface owes, not a sentence.
+    #[must_use]
+    pub fn prompt_line(&self) -> Option<String> {
+        let flags = self.query_flags();
+        match self.prompt.as_ref()? {
+            Prompt::Find { input } => Some(format!("find: {input}_{flags}")),
+            Prompt::Replace {
+                find,
+                with,
+                editing_replacement,
+            } => Some(if *editing_replacement {
+                format!("replace: {find}  with: {with}_{flags}   (Tab switches, Enter: this one, Ctrl-R: all)")
+            } else {
+                format!("replace: {find}_  with: {with}{flags}   (Tab switches, Enter: this one, Ctrl-R: all)")
+            }),
+            Prompt::GotoLine { input } => Some(format!("go to line: {input}_")),
+            Prompt::ConfirmClose => {
+                Some("unsaved changes — (s)ave, (d)iscard, any other key cancels".to_string())
+            }
+            Prompt::ChangeDetails { .. } | Prompt::Definitions { .. } => None,
+        }
+    }
+
+    /// Bring the cached decorations up to date before a window is read off.
+    ///
+    /// The TUI gets this inside `take_frame`; the headless host never calls
+    /// that, so without it a DOM surface would show no find hits and no
+    /// bracket match — the cache would simply never be filled. Idempotent:
+    /// `DecorKey` makes a second call in the same state free.
+    pub fn prepare_view(&mut self) {
+        let height = self.content_height();
+        self.refresh_decorations(height);
     }
 
     /// Recompute the visible decorations when one of their inputs moved, and
@@ -2284,7 +2363,7 @@ impl App {
                 snapshot.version().0,
             ));
             self.in_flight_save = Some((request_id, snapshot));
-            self.status = Some("saving…".to_string());
+            self.status = None;
             return;
         }
         // Optimistic, not exclusive: another program can still write between
@@ -2484,6 +2563,14 @@ impl App {
             self.top = position.line + 1 - height;
         }
 
+        // The DOM surface scrolls sideways itself and is sent whole lines, so
+        // a host-side horizontal offset would only be a second opinion that
+        // the pointer mapping would then have to agree with.
+        if self.headless {
+            self.left = 0;
+            return;
+        }
+
         let width = self.content_width().max(1);
         let column =
             metrics::display_column(self.document.text().line(position.line), position.column);
@@ -2505,6 +2592,9 @@ impl App {
         let page = self.content_height().max(1);
 
         let action = match (key.code, control, alt) {
+            (KeyCode::Char('/' | '?' | '_'), true, false) => {
+                Action::Command(Command::ToggleLineComment)
+            }
             (KeyCode::Char('s'), true, _) => Action::Editor(EditorAction::Save),
             (KeyCode::Char('q'), true, _) => Action::Editor(EditorAction::Close),
             (KeyCode::Char('f'), true, _) => Action::Editor(EditorAction::OpenFind),
@@ -2690,6 +2780,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("arrows, Home/End, PgUp/PgDn", "move; hold Shift to select"),
     ("Ctrl/Alt + arrows", "move by word"),
     ("Ctrl-S", "save"),
+    ("Ctrl-_", "toggle line comments"),
     ("Ctrl-Z / Ctrl-Y", "undo / redo"),
     ("Ctrl-C / Ctrl-X / Ctrl-V", "copy / cut / paste"),
     (
@@ -3308,6 +3399,19 @@ mod tests {
     }
 
     #[test]
+    fn comment_keys_toggle_the_current_line() {
+        for chord in ['/', '?', '_'] {
+            let document = Document::from_string("let x = 1;".into(), false);
+            let mut app = App::new(document, PathBuf::from("fixture.ts"), None);
+            app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+            app.handle_key(KeyEvent::new(KeyCode::Char(chord), KeyModifiers::CONTROL));
+            assert_eq!(app.document().as_str(), "// let x = 1;");
+            app.handle_key(KeyEvent::new(KeyCode::Char(chord), KeyModifiers::CONTROL));
+            assert_eq!(app.document().as_str(), "let x = 1;");
+        }
+    }
+
+    #[test]
     fn an_integrated_save_asks_the_daemon_instead_of_writing() {
         let mut app = app("hello", false);
         app.set_integrated();
@@ -3318,7 +3422,7 @@ mod tests {
         let (request_id, text, version) = app.take_save_request().expect("a save request");
         assert_eq!(text, "!hello");
         assert_eq!(version, app.document().version().0);
-        assert_eq!(app.status(), Some("saving…"));
+        assert_eq!(app.status(), None);
         assert!(
             app.take_save_request().is_none(),
             "the request is taken once"
@@ -3329,7 +3433,7 @@ mod tests {
             !app.document().is_dirty(),
             "the confirmed snapshot is saved"
         );
-        assert_eq!(app.status(), Some("saved"));
+        assert_eq!(app.status(), None);
         assert_eq!(app.document().disk_revision(), Some("rev-2"));
     }
 

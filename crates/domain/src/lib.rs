@@ -9,6 +9,7 @@ pub mod branch;
 pub mod change;
 pub mod context;
 pub mod diff;
+pub mod editor_frame;
 pub mod external;
 pub mod file;
 pub mod harness;
@@ -40,6 +41,11 @@ pub use context::{ContextArtifactKind, ContextArtifactRef, ContextEnvelope, GitC
 pub use diff::{
     BaseOrigin, ChangeSummary, ChangeSummaryFile, CommitLine, DiffFile, DiffStatus, ReviewSession,
     SessionChanges, WorkspaceDiff, WorkspaceReview,
+};
+pub use editor_frame::{
+    editor_modifiers, EditorDecoration, EditorDecorationKind, EditorFold, EditorFrame,
+    EditorInputEvent, EditorKey, EditorMark, EditorPlace, EditorPointer, EditorRange, EditorRow,
+    EditorScope, EditorSeverity, EditorSpan, MAX_EDITOR_INPUT_EVENTS, MAX_EDITOR_TEXT_BYTES,
 };
 pub use external::{ExternalAgentSession, ExternalTranscript, TranscriptStore};
 pub use file::{

@@ -32,6 +32,9 @@ const CONTROL_QUEUE: usize = 64;
 pub struct Opened {
     /// The `Open` request's id, echoed by the editor's `Opened` answer.
     pub request_id: u64,
+    /// The daemon's name for this buffer, echoed on every `ViewFrame` so a
+    /// frame from a replaced session cannot be painted into the live one.
+    pub buffer_id: u64,
     pub path: String,
     pub text: String,
     pub revision: Option<String>,
@@ -93,8 +96,7 @@ impl ControlChannel {
         let opened = match read_frame::<DaemonMessage>(&mut stream)? {
             DaemonMessage::Open {
                 request_id,
-                // The buffer id is the daemon's bookkeeping; H1 is one buffer.
-                buffer_id: _,
+                buffer_id,
                 path,
                 text,
                 revision,
@@ -103,6 +105,7 @@ impl ControlChannel {
                 autosave,
             } => Opened {
                 request_id,
+                buffer_id,
                 path,
                 text,
                 revision,

@@ -12,11 +12,14 @@ forge-editor — terminal editor (standalone spike)
 
 Usage:
   forge-editor [--read-only] [+LINE | --line LINE] [--] <file>
-  forge-editor --control <socket> [--read-only] [+LINE | --line LINE] <display-path>
+  forge-editor --control <socket> [--headless] [--read-only] [+LINE | --line LINE] <display-path>
 
 Options:
   --control SOCK   Integrated mode: open the buffer the daemon sends over the
                    Unix socket instead of reading <display-path> from disk.
+  --headless       Publish the buffer as a window of lines on the control
+                   channel instead of painting it. No raw mode, no ANSI, no
+                   terminal: the surface is the GUI's. Needs --control.
   --read-only      Open the file without allowing edits.
   --line LINE      Put the caret on LINE (1-based); +LINE does the same.
   -h, --help       Print this help and exit.
@@ -41,6 +44,9 @@ pub struct Options {
     /// `--control <socket>`: the daemon owns the document and the local disk
     /// adapter is off.
     pub control: Option<PathBuf>,
+    /// `--headless`: no raw mode and no paint; the buffer travels as
+    /// `ViewFrame`s. Only valid with `control`.
+    pub headless: bool,
 }
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
@@ -49,6 +55,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut path: Option<PathBuf> = None;
     let mut line: Option<usize> = None;
     let mut control: Option<PathBuf> = None;
+    let mut headless = false;
     let mut expecting_line = false;
     let mut expecting_control = false;
 
@@ -79,6 +86,10 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     expecting_control = true;
                     continue;
                 }
+                "--headless" => {
+                    headless = true;
+                    continue;
+                }
                 "--" => {
                     positional_only = true;
                     continue;
@@ -106,12 +117,18 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     if expecting_control {
         return Err("--control needs a socket path".to_string());
     }
+    // A headless standalone editor would take the buffer and publish it to
+    // nobody: the window only has a consumer on the control channel.
+    if headless && control.is_none() {
+        return Err("--headless needs --control".to_string());
+    }
     match path {
         Some(path) => Ok(Command::Edit(Options {
             path,
             read_only,
             line,
             control,
+            headless,
         })),
         None => Err("missing file".to_string()),
     }
@@ -141,6 +158,7 @@ mod tests {
                 read_only: true,
                 line: None,
                 control: None,
+                headless: false,
             }))
         );
     }
@@ -154,6 +172,7 @@ mod tests {
                 read_only: false,
                 line: None,
                 control: None,
+                headless: false,
             }))
         );
     }
@@ -176,6 +195,7 @@ mod tests {
                     read_only: false,
                     line: Some(12),
                     control: None,
+                    headless: false,
                 })
             );
         }
@@ -200,6 +220,7 @@ mod tests {
                 read_only: true,
                 line: Some(9),
                 control: Some(PathBuf::from("/tmp/forge-editor.sock")),
+                headless: false,
             }))
         );
         assert!(parse(&args(&["--control"])).is_err());
@@ -212,8 +233,24 @@ mod tests {
                 read_only: false,
                 line: None,
                 control: Some(PathBuf::from("s.sock")),
+                headless: false,
             }))
         );
+    }
+
+    #[test]
+    fn headless_is_an_integrated_mode_only() {
+        assert_eq!(
+            parse(&args(&["--control", "s.sock", "--headless", "a.rs"])),
+            Ok(Command::Edit(Options {
+                path: PathBuf::from("a.rs"),
+                read_only: false,
+                line: None,
+                control: Some(PathBuf::from("s.sock")),
+                headless: true,
+            }))
+        );
+        assert!(parse(&args(&["--headless", "a.rs"])).is_err());
     }
 
     #[test]
