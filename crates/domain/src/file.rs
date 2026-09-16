@@ -109,6 +109,12 @@ pub struct SearchMatch {
     pub column: u32,
     /// The matching line (content) or the path (name).
     pub text: String,
+    /// Lines directly above a content hit, in file order; empty otherwise.
+    #[serde(default)]
+    pub before: Vec<String>,
+    /// Lines directly below a content hit.
+    #[serde(default)]
+    pub after: Vec<String>,
 }
 
 /// Bounded search results.
