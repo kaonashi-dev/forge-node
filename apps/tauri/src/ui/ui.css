@@ -349,14 +349,17 @@
 .forge-select-icon[data-expanded] {
   transform: rotate(180deg);
 }
-.forge-select-content {
+.context-menu.forge-select-content {
   /* Above the dialog it may be opened from.
      The ladder, low to high: context 40 → scrim 50 → dialog 51 → popup 55 →
      tooltip 60. A select carried no z-index at all, so the dialog's own 51 won
      and its list opened *behind* the card — two of three options invisible. */
   z-index: var(--z-popup);
-  max-height: 280px;
-  min-width: var(--kb-select-trigger-width, 160px);
+  max-height: min(280px, var(--kb-popper-content-available-height, 100dvh));
+  min-width: min(
+    var(--kb-select-trigger-width, 160px),
+    var(--kb-popper-content-available-width, 100dvw)
+  );
   overflow-y: auto;
 }
 .forge-select-check {
@@ -367,9 +370,6 @@
 
 /* --------------------------------------------------------------- menus --- */
 
-/* The menu is an elevated surface, so a shadow carries it and the border is a
-   hairline for definition rather than the frame. Moved here from the shell sheet
-   to sit with the `[data-highlighted]` states below. */
 .context-menu {
   background: var(--bg-overlay);
   border: 1px solid var(--border-subtle);
@@ -377,11 +377,19 @@
   box-shadow: var(--shadow-md);
   display: flex;
   flex-direction: column;
-  min-width: 190px;
+  max-height: var(--kb-popper-content-available-height, 100dvh);
+  max-width: var(--kb-popper-content-available-width, 100dvw);
+  min-width: min(190px, var(--kb-popper-content-available-width, 100dvw));
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: var(--space-4);
   /* Placement is the popper's; `z-index` is read off this element and copied
      onto the positioner. Popup sits above a dialog opened from within it. */
   z-index: var(--z-popup);
+}
+.context-menu > * {
+  /* A capped flex column must scroll its rows instead of compressing them. */
+  flex-shrink: 0;
 }
 .context-item {
   align-items: center;
@@ -393,9 +401,10 @@
   font-family: inherit;
   font-size: var(--text-sm);
   gap: var(--space-12);
-  height: var(--control-sm);
+  min-height: var(--control-sm);
   justify-content: space-between;
   padding: 0 var(--space-8);
+  overflow-wrap: anywhere;
   text-align: left;
   width: 100%;
 }
