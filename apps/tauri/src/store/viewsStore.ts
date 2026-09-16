@@ -323,18 +323,7 @@ export function clearEditorReveal(): void {
   setPendingLine(null);
 }
 
-/**
- * Open the Files sidebar in content-search mode, optionally pre-filled.
- *
- * Same shape as `treeReveal`: the Files panel may not be mounted yet (another
- * sidebar view, or the bar collapsed). The request stands until the panel
- * picks it up.
- *
- * `query` is what separates the two callers. `Mod-shift-f` asks for the field
- * and nothing else, so it sends `null` and the panel leaves whatever was typed
- * there alone. "Find All References" arrives with a symbol, and the panel runs
- * it — a references search is a content grep with the query already decided.
- */
+// The lazy Search tab consumes the focus request after its input mounts.
 const [pendingFindInFiles, setPendingFindInFiles] = createSignal<{ query: string | null } | null>(
   null,
 );
@@ -342,7 +331,9 @@ const [pendingFindInFiles, setPendingFindInFiles] = createSignal<{ query: string
 export const findInFilesPending = pendingFindInFiles;
 
 export function requestFindInFiles(query: string | null = null): void {
+  if (!workbenchStore.workspace) return;
   setPendingFindInFiles({ query });
+  openProjectSearch();
 }
 
 export function clearFindInFiles(): void {

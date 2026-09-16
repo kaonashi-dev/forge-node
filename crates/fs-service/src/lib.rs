@@ -37,7 +37,7 @@ pub const MAX_DIRECTORY_ENTRIES: usize = 2_000;
 pub const MAX_SEARCH_RESULTS: usize = 200;
 
 /// Lines of context kept either side of a content hit.
-pub const SEARCH_CONTEXT_LINES: usize = 2;
+pub const SEARCH_CONTEXT_LINES: usize = 3;
 
 /// A context line is orientation, not content: one minified line must not ride
 /// along once per neighbouring hit.
@@ -961,7 +961,7 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
 }
 
 /// `-C` for [`SEARCH_CONTEXT_LINES`]; a literal because `run_git` takes `&str`s.
-const CONTEXT_ARG: &str = "2";
+const CONTEXT_ARG: &str = "3";
 
 fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchResults, FsError> {
     let tree = list_via_walk(root)?;
@@ -1696,12 +1696,12 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
                     "a.ts",
                     3,
                     vec!["one".into(), "two".into()],
-                    vec!["four".into(), "hit five".into()]
+                    vec!["four".into(), "hit five".into(), "six".into()]
                 ),
                 (
                     "a.ts",
                     5,
-                    vec!["hit three".into(), "four".into()],
+                    vec!["two".into(), "hit three".into(), "four".into()],
                     vec!["six".into(), "seven".into()]
                 ),
                 ("a.ts", 20, vec!["nineteen".into()], vec![]),
@@ -2177,6 +2177,25 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         let r = search_files(tmp.path(), "appshell", SearchKind::Name, 50).unwrap();
         assert_eq!(r.matches.len(), 1);
         assert!(r.matches[0].path.ends_with("app_shell.rs"));
+    }
+
+    #[test]
+    fn content_search_keeps_three_context_lines_in_git_and_plain_directories() {
+        for tmp in [git_repo(), tempfile::tempdir().unwrap()] {
+            fs::write(
+                tmp.path().join("context.txt"),
+                "outside before\none\ntwo\nthree\nneedle\nfive\nsix\nseven\noutside after\n",
+            )
+            .unwrap();
+            let results = search_files(tmp.path(), "needle", SearchKind::Content, 50).unwrap();
+            assert!(!results.truncated);
+            assert_eq!(results.matches.len(), 1);
+            let found = &results.matches[0];
+            assert_eq!(found.path, "context.txt");
+            assert_eq!(found.line, 5);
+            assert_eq!(found.before, ["one", "two", "three"]);
+            assert_eq!(found.after, ["five", "six", "seven"]);
+        }
     }
 
     #[test]

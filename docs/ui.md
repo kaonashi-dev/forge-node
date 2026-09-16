@@ -61,3 +61,12 @@ palette modules on purpose.
 Chords resolve through `actions/` → dispatch. Settings → Keyboard and the
 command palette surface the same bindings. Terminal input mapping for the PTY
 stays in `terminal-input` / the host bridge, not in Solid.
+
+`Cmd+Shift+F` (`Ctrl+Shift+F` on Linux) opens or focuses the Search tab in Code.
+Results are grouped by file with line numbers, highlighted matches and three
+lines of context on each side; overlapping excerpts merge. Click a line to
+open its file at that location. Repeating the shortcut selects the search text
+without clearing it or changing the sidebar view.
+Excerpts use the file's language and the editor theme for syntax colours;
+search marks remain visible over them. Unknown languages and oversized excerpts
+stay plain, with their text and search marks intact.

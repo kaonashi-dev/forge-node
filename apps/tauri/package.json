@@ -31,6 +31,8 @@
     "@forge-node/file-workbench": "workspace:*",
     "@kobalte/core": "^0.13.13",
     "@tauri-apps/api": "^2.0.0",
+    "highlight.js": "11.11.1",
+    "lowlight": "3.3.0",
     "lucide-solid": "^1.37.0",
     "mermaid": "12.0.0",
     "solid-js": "^1.9.0"

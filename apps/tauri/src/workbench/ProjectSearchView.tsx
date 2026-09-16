@@ -1,10 +1,13 @@
-import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
-import { buildExcerpts, hitSegments, shouldSearchContent } from "../panels/fileContentSearch";
-import { openEditorAt } from "../store/viewsStore";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { buildExcerpts, shouldSearchContent } from "../panels/fileContentSearch";
+import { clearFindInFiles, findInFilesPending, openEditorAt } from "../store/viewsStore";
 import { workbenchStore } from "../store/workbenchStore";
 import { Icon, LangIcon } from "../theme/icons";
 import { EmptyState, IconButton, SearchField, Skeleton } from "../ui";
-import { HitText } from "./HitText";
+import { editorPalette } from "../theme/editorTheme";
+import { themeBase } from "../theme/ThemeProvider";
+import { SyntaxHitText } from "./SyntaxHitText";
+import { highlightExcerpt, syntaxHits } from "./searchSyntax";
 import {
   askedNeedle,
   contentQuery,
@@ -18,10 +21,29 @@ export function ProjectSearchView() {
   let field: HTMLInputElement | undefined;
   const [folded, setFolded] = createSignal<ReadonlySet<string>>(new Set());
   const files = createMemo(() => buildExcerpts(contentResults()?.matches ?? []));
+  const syntaxColors = createMemo(() =>
+    Object.fromEntries(
+      Object.entries(editorPalette(themeBase()).scopes).map(([scope, color]) => [
+        `--search-${scope}`,
+        color,
+      ]),
+    ),
+  );
   const allFolded = () => files().length > 0 && files().every((file) => folded().has(file.path));
 
   createEffect(() => scheduleContentSearch(workbenchStore.workspace, contentQuery()));
-  onMount(() => requestAnimationFrame(() => field?.focus({ preventScroll: true })));
+  createEffect(() => {
+    const request = findInFilesPending();
+    if (request) {
+      clearFindInFiles();
+      if (request.query !== null) setContentQuery(request.query);
+    }
+    const frame = requestAnimationFrame(() => {
+      field?.focus({ preventScroll: true });
+      field?.select();
+    });
+    onCleanup(() => cancelAnimationFrame(frame));
+  });
 
   function toggle(path: string): void {
     const next = new Set(folded());
@@ -46,7 +68,7 @@ export function ProjectSearchView() {
   };
 
   return (
-    <div class="project-search">
+    <div class="project-search" style={syntaxColors()}>
       <header class="project-search-bar">
         <SearchField
           class="project-search-field"
@@ -130,29 +152,42 @@ export function ProjectSearchView() {
                         </button>
                         <Show when={!folded().has(file.path)}>
                           <For each={file.excerpts}>
-                            {(excerpt) => (
-                              <div class="project-search-excerpt">
-                                <div class="project-search-lines">
-                                  <For each={excerpt}>
-                                    {(line) => (
-                                      <button
-                                        type="button"
-                                        class="project-search-line"
-                                        classList={{ hit: line.hit }}
-                                        onClick={() => openEditorAt(file.path, line.line)}
-                                      >
-                                        <span class="project-search-number">{line.line}</span>
-                                        <span class="project-search-code">
-                                          <HitText
-                                            segments={hitSegments(line.text, askedNeedle() ?? "")}
-                                          />
-                                        </span>
-                                      </button>
-                                    )}
-                                  </For>
+                            {(excerpt) => {
+                              const tokens = highlightExcerpt(
+                                file.path,
+                                excerpt.map((line) => line.text),
+                              );
+                              const lines = createMemo(() =>
+                                excerpt.map((line, index) => ({
+                                  ...line,
+                                  segments: syntaxHits(
+                                    tokens[index] ?? [{ text: line.text, scope: null }],
+                                    askedNeedle() ?? "",
+                                  ),
+                                })),
+                              );
+                              return (
+                                <div class="project-search-excerpt">
+                                  <div class="project-search-lines">
+                                    <For each={lines()}>
+                                      {(line) => (
+                                        <button
+                                          type="button"
+                                          class="project-search-line"
+                                          classList={{ hit: line.hit }}
+                                          onClick={() => openEditorAt(file.path, line.line)}
+                                        >
+                                          <span class="project-search-number">{line.line}</span>
+                                          <span class="project-search-code">
+                                            <SyntaxHitText segments={line.segments} />
+                                          </span>
+                                        </button>
+                                      )}
+                                    </For>
+                                  </div>
                                 </div>
-                              </div>
-                            )}
+                              );
+                            }}
                           </For>
                         </Show>
                       </section>

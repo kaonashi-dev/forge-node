@@ -585,8 +585,6 @@ export function defaultBindings(): Binding[] {
     bind(`${MOD}-2`, "toggle_files", APP),
     bind(`${MOD}-3`, "cycle_sidebar_views", APP),
     bind(`${MOD}-shift-r`, "toggle_pull_requests", APP),
-    // Files stays on `MOD-2`; this chord opens the same tab in content-search
-    // mode (literal text across the checkout), not a second sidebar view.
     bind(`${MOD}-shift-f`, "find_in_project", APP),
     // `shift-h` for the harness: `${MOD}-h` alone is macOS's hide-application,
     // and on Linux `ctrl-h` is a terminal's backspace.
