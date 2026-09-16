@@ -9,15 +9,10 @@ const interests = new Map<symbol, Interest>();
 const [error, setError] = createSignal<string | null>(null);
 export const fileWatchError = error;
 let timer: ReturnType<typeof setTimeout> | undefined;
-let previous: { workspace: string; key: string; watching: boolean } | undefined;
-/* A watch is live on this connection and no events have been missed since it
-   was armed. An interest change replaces the daemon-side watch without a gap,
-   so only an arm — first watch, a new checkout, a reconnect, a retry after a
-   failure, the first interest after the last one went away — leaves a window
-   the views have to reconcile for. Held per workspace, because two arms can be
-   in flight and each ack has to answer for its own. */
+let previous: { workspace: string; key: string; directories: readonly string[] } | undefined;
+// Newly watched folders may have changed while closed, even on a live connection.
 let armed = false;
-const resync = new Set<string>();
+const resync = new Map<string, Set<string>>();
 /* What the note says once the watch is in place: the budget warning, or
    nothing. Kept apart from a failure message so an ack clears the failure
    without also clearing the truncation it has no answer for. */
@@ -41,8 +36,19 @@ function update(): void {
     const directories = all.slice(0, 128);
     const key = JSON.stringify(directories);
     if (previous?.workspace === workspace && previous.key === key) return;
-    if (!armed || previous?.workspace !== workspace) resync.add(workspace);
-    previous = { workspace, key, watching: directories.length > 0 };
+    const missed = resync.get(workspace) ?? new Set<string>();
+    if (!armed || previous?.workspace !== workspace) missed.add("");
+    else {
+      for (const path of directories) {
+        if (!previous.directories.includes(path)) missed.add(path);
+      }
+    }
+    if (missed.has("") || missed.size > 128) {
+      missed.clear();
+      missed.add("");
+    }
+    if (missed.size > 0) resync.set(workspace, missed);
+    previous = { workspace, key, directories };
     standing =
       all.length > 128
         ? "Live updates cover the first 128 open folders. Reload to refresh the full listing."
@@ -76,22 +82,18 @@ export function watchFiles(
   };
 }
 
-/**
- * The daemon took the watch.
- *
- * The ack is not itself news about the checkout: the directory set is replaced
- * in place on every fold and every file opened outside the tree, and treating
- * each one as "everything changed" made an ordinary click re-list the checkout
- * and re-read the open file — the flicker. Only an arm, which had a window
- * where events could be lost, asks the views to reconcile.
- */
+/** Reconcile unwatched intervals only after the daemon has armed the directories. */
 export function fileWatchReady(workspace: string): void {
   // An empty directory list is a release, acked like any other replacement: it
   // leaves nothing watching, so the next interest is an arm and not a swap.
-  armed = previous?.watching ?? false;
+  armed = (previous?.directories.length ?? 0) > 0;
   setError(standing);
-  if (!armed || !resync.delete(workspace)) return;
-  fileChangesChannel.publish([workspace, ""]);
+  const paths = resync.get(workspace);
+  resync.delete(workspace);
+  if (!armed || !paths) return;
+  for (const path of paths.has("") ? [""] : paths) {
+    fileChangesChannel.publish([workspace, path]);
+  }
 }
 
 export function reconnectFileWatches(): void {

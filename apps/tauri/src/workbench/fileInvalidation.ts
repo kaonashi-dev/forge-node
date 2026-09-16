@@ -16,7 +16,11 @@ export function fileAffected(path: string, changed: string): boolean {
  */
 export function sameListing(current: FileTree | null, next: FileTree): boolean {
   if (!current) return false;
+  const before = current.loadedDirectories ?? [];
+  const after = next.loadedDirectories ?? [];
   if (
+    before.length !== after.length ||
+    before.some((path, index) => path !== after[index]) ||
     current.workspace_id !== next.workspace_id ||
     current.truncated !== next.truncated ||
     current.entries.length !== next.entries.length
