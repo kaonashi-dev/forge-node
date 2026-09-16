@@ -1,4 +1,6 @@
 import { createSignal } from "solid-js";
+import { forgeStore } from "./forgeStore";
+import { requestConfirm } from "./runtimeStore";
 import { createStore } from "solid-js/store";
 import { workbenchStore } from "./workbenchStore";
 import { noteFileOpened } from "../workbench/recentFiles";
@@ -6,8 +8,6 @@ import { opensInEditor } from "../workbench/previewRoute";
 import { openTerminalEditor } from "../runtime/api";
 import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
 import {
-  closeOthers,
-  closeToRight,
   closeView,
   emptyViews,
   focusView,
@@ -162,6 +162,10 @@ export function openEditorAt(path: string, line: number): void {
   openEditor(path, line);
 }
 
+export function openProjectSearch(): void {
+  open({ kind: "search" });
+}
+
 export function openPrDetail(key: string): void {
   open({ kind: "pr_detail", key });
 }
@@ -200,21 +204,43 @@ export function focus(view: WorkbenchView): void {
  * last view in it, so the window has to have somewhere to put the person.
  */
 export function close(view: WorkbenchView): void {
-  remember(view);
-  if (view.kind === "editor-terminal") {
-    void import("../runtime/api").then(({ closeEditor }) =>
-      closeEditor(view.session).catch(() => undefined),
-    );
-  }
-  update((views) => closeView(views, view));
-  if (!hasCode(currentViews())) setMode("session");
+  closeViews([view]);
 }
 
-/** Close every view in the Code tab and go back to the session. */
+function closeViews(targets: WorkbenchView[]): void {
+  const workspace = workbenchStore.workspace;
+  if (!workspace) return;
+  const finish = () => {
+    for (const view of targets) {
+      if (workbenchStore.workspace === workspace) remember(view);
+      if (view.kind === "editor-terminal") {
+        void import("../runtime/api").then(({ closeEditor }) =>
+          closeEditor(view.session).catch(() => undefined),
+        );
+      }
+    }
+    setStore("byWorkspace", workspace, (views) => targets.reduce(closeView, views));
+    if (workbenchStore.workspace === workspace && !hasCode(currentViews())) setMode("session");
+  };
+  const unsaved = targets.some(
+    (view) =>
+      view.kind === "editor-terminal" &&
+      forgeStore.sessions.find((session) => session.id === view.session)?.editor?.dirty !== false,
+  );
+  if (unsaved) {
+    requestConfirm({
+      title: "Close files with unsaved changes?",
+      description: "These files have unsaved changes. Cancel to save them before closing.",
+      confirmLabel: "Close without saving",
+      onConfirm: finish,
+    });
+  } else {
+    finish();
+  }
+}
+
 export function closeCode(): void {
-  for (const view of currentViews().open) remember(view);
-  update(() => emptyViews());
-  setMode("session");
+  closeViews(currentViews().open);
 }
 
 export function showTerminal(): void {
@@ -256,17 +282,14 @@ export function reopenClosed(): void {
 /** Close every view but the active one. */
 export function closeOtherViews(): void {
   const views = currentViews();
-  for (const view of views.open) if (!sameView(view, views.active)) remember(view);
-  update((current) => closeOthers(current, current.active));
-  if (!hasCode(currentViews())) setMode("session");
+  closeViews(views.open.filter((view) => !sameView(view, views.active)));
 }
 
 /** Close everything after the active view in the strip. */
 export function closeViewsToRight(): void {
   const views = currentViews();
   const index = views.open.findIndex((item) => sameView(item, views.active));
-  if (index >= 0) for (const view of views.open.slice(index + 1)) remember(view);
-  update((current) => closeToRight(current, current.active));
+  if (index >= 0) closeViews(views.open.slice(index + 1));
 }
 
 /** Move one step along the Code strip, wrapping. */

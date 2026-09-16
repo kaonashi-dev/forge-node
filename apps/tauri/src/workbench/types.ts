@@ -105,6 +105,8 @@ export type FileEntry = {
 export type FileTree = {
   workspace_id: string;
   entries: FileEntry[];
+  /** Local expansion reads; the daemon's root listing intentionally has none. */
+  loadedDirectories?: string[];
   /** The scan hit its budget: shown as such, never as a complete listing. */
   truncated: boolean;
 };
@@ -133,6 +135,9 @@ export type SearchMatch = {
   line: number;
   column: number;
   text: string;
+  /** Lines directly above a content hit, in file order; empty for other kinds. */
+  before: string[];
+  after: string[];
 };
 
 /**

@@ -27,6 +27,7 @@ import {
   findInFilesPending,
   openEditor,
   openEditorAt,
+  openProjectSearch,
   treeReveal,
 } from "../store/viewsStore";
 import { forgeStore } from "../store/forgeStore";
@@ -40,7 +41,6 @@ import {
   loadFileTree,
   openFile,
   renamePath,
-  searchFiles,
   warmFileTree,
 } from "../workbench/api";
 import { watchFiles, fileWatchError } from "../workbench/fileWatch";
@@ -60,11 +60,15 @@ import {
   Tooltip,
   type MenuItem,
 } from "../ui";
+import { groupContentHits, rowHitSegments, shouldSearchContent } from "./fileContentSearch";
 import {
-  CONTENT_SEARCH_DEBOUNCE_MS,
-  groupContentHits,
-  shouldSearchContent,
-} from "./fileContentSearch";
+  askedNeedle,
+  contentQuery,
+  contentResults,
+  scheduleContentSearch,
+  setContentQuery,
+} from "../workbench/projectSearch";
+import { HitText } from "../workbench/HitText";
 
 type FilesMode = "filter" | "content";
 
@@ -89,9 +93,6 @@ export function FileTreePanel() {
   const [mounted, setMounted] = createSignal(false);
   const [mode, setMode] = createSignal<FilesMode>("filter");
   const [filterQuery, setFilterQuery] = createSignal("");
-  const [contentQuery, setContentQuery] = createSignal("");
-  /** Needle we last asked the daemon for in content mode; correlates the answer. */
-  const [contentAsked, setContentAsked] = createSignal<string | null>(null);
   const [derived, setDerived] = createSignal<ExplorerDerived>({
     rows: 0,
     files: 0,
@@ -108,12 +109,6 @@ export function FileTreePanel() {
     path: string;
     isFile: boolean;
   } | null>(null);
-  const contentResults = createMemo(() => {
-    const asked = contentAsked();
-    const results = workbenchStore.search;
-    if (asked === null || !results || results.query !== asked) return null;
-    return results;
-  });
   const contentGroups = createMemo(() => {
     const results = contentResults();
     return results ? groupContentHits(results.matches) : [];
@@ -226,8 +221,6 @@ export function FileTreePanel() {
       previousWorkspace = workspace;
       explorer?.reset();
       setFilterQuery("");
-      setContentQuery("");
-      setContentAsked(null);
       setMode("filter");
       setMenu(null);
     }
@@ -284,25 +277,7 @@ export function FileTreePanel() {
   });
   createEffect(() => {
     if (mode() !== "content") return;
-    const workspace = workbenchStore.workspace;
-    const needle = contentQuery().trim();
-    if (!workspace || !shouldSearchContent(needle)) {
-      setContentAsked(null);
-      return;
-    }
-    // Depend only on mode / workspace / query — not on the shared search slot
-    // or `contentAsked`. Clearing that slot before a request must not schedule
-    // another grep.
-    const timer = setTimeout(() => {
-      setWorkbenchStore({ search: null, searchError: null });
-      setContentAsked(needle);
-      setLoading("search", true);
-      void searchFiles(workspace, needle, "content").catch((error: unknown) => {
-        setLoading("search", false);
-        setWorkbenchStore("searchError", error instanceof Error ? error.message : String(error));
-      });
-    }, CONTENT_SEARCH_DEBOUNCE_MS);
-    onCleanup(() => clearTimeout(timer));
+    scheduleContentSearch(workbenchStore.workspace, contentQuery());
   });
   function dirname(path: string): string {
     const cut = path.lastIndexOf("/");
@@ -478,12 +453,20 @@ export function FileTreePanel() {
             onChange: (value: FilesMode) => {
               setMode(value);
               if (value === "filter") explorer?.setFilter(filterQuery());
-              else setContentAsked(null);
             },
           },
         ]}
         ref={(element) => (filterInput = element)}
       >
+        <Show when={mode() === "content"}>
+          <IconButton
+            label="Open the results in a tab"
+            disabled={workbenchStore.workspace === null}
+            onClick={openProjectSearch}
+          >
+            <Icon name="maximize" class="forge-icon-muted" size={13} />
+          </IconButton>
+        </Show>
         <Tooltip label="Re-read the checkout" contents>
           <IconButton
             label="Re-read the checkout"
@@ -542,7 +525,11 @@ export function FileTreePanel() {
                                       onClick={() => openEditorAt(match.path, match.line)}
                                     >
                                       <span class="file-search-line">{match.line}</span>
-                                      <span class="file-search-text">{match.text.trim()}</span>
+                                      <span class="file-search-text">
+                                        <HitText
+                                          segments={rowHitSegments(match.text, askedNeedle() ?? "")}
+                                        />
+                                      </span>
                                     </button>
                                   </li>
                                 )}

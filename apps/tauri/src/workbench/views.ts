@@ -60,7 +60,15 @@ export type WorkbenchView =
    * which is parked per checkout, so two projects can each have a `#3` open
    * without either finding the other's.
    */
-  | { kind: "feature"; id: number };
+  | { kind: "feature"; id: number }
+  /**
+   * The Files sidebar's content search, with room to read it: every hit in its
+   * surrounding lines, file by file.
+   *
+   * One per checkout, because the query is shared with the sidebar — a second
+   * tab could only ever show the same answer.
+   */
+  | { kind: "search" };
 
 export const PR_COMPOSE_VIEW: WorkbenchView = { kind: "pr_compose" };
 export const FEATURE_COMPOSE_VIEW: WorkbenchView = { kind: "feature_compose" };
@@ -117,6 +125,8 @@ export function viewLabel(view: WorkbenchView): string {
       return "New Feature";
     case "feature":
       return `Feature #${view.id}`;
+    case "search":
+      return "Search";
   }
 }
 

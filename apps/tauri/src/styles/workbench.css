@@ -220,8 +220,29 @@
   padding: 0 var(--space-4) 0 var(--space-8);
 }
 .workbench-tab.active {
-  background: var(--forge-term-bg);
+  background: var(--bg-selected);
+  box-shadow: inset 0 -2px var(--accent-solid);
   color: var(--fg-default);
+}
+.workbench-tab-dirty {
+  display: none;
+  width: var(--space-6);
+  height: var(--space-6);
+  margin: calc(var(--space-6) / 2);
+  border-radius: 50%;
+  background: var(--fg-default);
+}
+.workbench-tab.dirty .workbench-tab-dirty {
+  display: block;
+}
+.workbench-tab.dirty .workbench-tab-close-icon {
+  display: none;
+}
+.workbench-tab.dirty .workbench-tab-close:hover .workbench-tab-dirty {
+  display: none;
+}
+.workbench-tab.dirty .workbench-tab-close:hover .workbench-tab-close-icon {
+  display: block;
 }
 /* The label is a `.forge-row`, the close an `IconButton`; both already carry
    the reset, so what is left is the tint they take from the tab. */
@@ -1526,4 +1547,122 @@ button.forge-md-box {
 }
 .forge-md-doc .forge-md-edit[data-kind="heading"][data-level="3"] {
   font-size: var(--text-lg);
+}
+
+/* ------------------------------------------------------- project search --- */
+.project-search {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.project-search-bar {
+  align-items: center;
+  background: var(--forge-editor);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.project-search-field {
+  flex: 1;
+  max-width: 48rem;
+  min-width: 0;
+}
+.project-search-summary {
+  color: var(--fg-subtle);
+  flex: none;
+  font-size: var(--text-xs);
+  margin-left: auto;
+}
+.project-search-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-10) var(--space-12) var(--space-24);
+}
+.project-search-file {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.project-search-file-head {
+  align-items: center;
+  background: var(--bg-raised);
+  border: 0;
+  color: var(--fg-default);
+  cursor: pointer;
+  display: flex;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-10);
+  text-align: left;
+  width: 100%;
+}
+.project-search-file-head:hover {
+  background: var(--bg-hover);
+}
+.project-search-file-name {
+  flex: none;
+}
+.project-search-file-dir {
+  color: var(--fg-subtle);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-search-file-hits {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  margin-left: auto;
+}
+.project-search-excerpt {
+  border-top: 1px solid var(--border-subtle);
+  overflow-x: auto;
+  padding: var(--space-4) 0;
+}
+.project-search-lines {
+  min-width: 100%;
+  width: max-content;
+}
+.project-search-line {
+  align-items: baseline;
+  background: transparent;
+  border: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+  display: flex;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+.project-search-line.hit {
+  color: var(--fg-default);
+}
+.project-search-line:hover,
+.project-search-line:hover .project-search-number {
+  background: var(--bg-hover);
+}
+/* Pinned left: scrolling a long line sideways keeps the number beside it. */
+.project-search-number {
+  background: var(--forge-editor);
+  color: var(--fg-subtle);
+  flex: none;
+  left: 0;
+  padding: 0 var(--space-10) 0 var(--space-8);
+  position: sticky;
+  text-align: right;
+  user-select: none;
+  width: 6ch;
+}
+.project-search-code {
+  tab-size: 4;
+  white-space: pre;
 }

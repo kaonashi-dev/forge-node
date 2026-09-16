@@ -391,3 +391,11 @@
 .pr-decision {
   color: var(--warning-solid);
 }
+/* The editor's find colours — amber underline, amber wash — so a hit reads the
+   same in the sidebar, the Search tab and the buffer it opens. */
+.search-hit {
+  background: color-mix(in srgb, var(--forge-amber) 28%, transparent);
+  border-radius: var(--radius-2xs);
+  box-shadow: inset 0 -1px 0 var(--forge-amber);
+  color: inherit;
+}
