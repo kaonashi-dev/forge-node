@@ -49,6 +49,13 @@ describe("the editor's platform chords", () => {
     });
   });
 
+  it("maps slash and shifted slash to a PTY-safe comment chord", () => {
+    for (const event of [meta("/"), meta("/", { shiftKey: true }), meta("?", { shiftKey: true })]) {
+      expect(editorKeyForMeta(event)).toEqual({ key: "_", ctrl: true, alt: false, shift: false });
+    }
+    expect(editorKeyForMeta(meta("/", { altKey: true }))).toBeNull();
+  });
+
   it("delivers select-all, undo and redo", () => {
     expect(editorKeyForMeta(meta("a"))).toEqual({ key: "a", ctrl: true, alt: false, shift: false });
     expect(editorKeyForMeta(meta("z"))).toEqual({ key: "z", ctrl: true, alt: false, shift: false });

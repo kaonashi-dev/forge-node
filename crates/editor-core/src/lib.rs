@@ -7,6 +7,7 @@
 
 pub mod brackets;
 mod command;
+mod comment;
 pub mod complete;
 mod document;
 pub mod fold;

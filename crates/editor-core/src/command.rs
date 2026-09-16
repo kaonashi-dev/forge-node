@@ -56,6 +56,7 @@ pub enum Command {
     InsertText(String),
     InsertNewline,
     InsertTab,
+    ToggleLineComment,
     DeleteBackward,
     DeleteForward,
     DeleteWordBackward,
@@ -111,6 +112,7 @@ impl Command {
             Command::InsertText(_) => "edit.insert",
             Command::InsertNewline => "edit.newline",
             Command::InsertTab => "edit.tab",
+            Command::ToggleLineComment => "edit.toggleLineComment",
             Command::DeleteBackward => "edit.deleteBackward",
             Command::DeleteForward => "edit.deleteForward",
             Command::DeleteWordBackward => "edit.deleteWordBackward",
@@ -247,6 +249,7 @@ pub fn execute(document: &mut Document, command: Command) -> Outcome {
         Command::DeleteLine => delete_line(document),
         Command::Copy => copy(document, false),
         Command::Cut => copy(document, true),
+        Command::ToggleLineComment => Outcome::from_optional_edit(crate::comment::toggle(document)),
         Command::Paste(text) => {
             document.break_undo_group();
             let outcome = Outcome::from_edit(document.insert(&text, Origin::Paste));

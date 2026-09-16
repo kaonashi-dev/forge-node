@@ -54,6 +54,10 @@ export function editorKeyForMeta(event: {
 }): KeyPress | null {
   if (!event.metaKey || event.ctrlKey) return null;
   const key = event.key.toLowerCase();
+  // Ctrl-_ survives legacy PTY encoding; Ctrl-/ has no portable control byte.
+  if (!event.altKey && (key === "/" || (event.shiftKey && key === "?"))) {
+    return { key: "_", ctrl: true, alt: false, shift: false };
+  }
   const table = event.altKey ? ALTED : event.shiftKey ? SHIFTED : PLAIN;
   if (event.altKey && event.shiftKey) return null;
   const mapped = table[key];
