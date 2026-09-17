@@ -3,13 +3,18 @@ name: feature-go
 description: Approves a feature's spec and runs the implementer → reviewer cycle until APPROVED or blocked. Does not commit.
 argument-hint: "<feature id>"
 disable-model-invocation: true
-allowed-tools: Agent, Read, Grep, Glob, Write, Edit, Bash(${CLAUDE_PROJECT_DIR}/init.sh*), Bash(${CLAUDE_PROJECT_DIR}/scripts/harness*), Bash(bun harness/src/validate.ts), Bash(git status*), Bash(git diff*), Bash(git rev-parse*)
+allowed-tools: Agent, Task, Read, Grep, Glob, Write, Edit, Bash(${CLAUDE_PROJECT_DIR}/init.sh*), Bash(${CLAUDE_PROJECT_DIR}/scripts/harness*), Bash(bun harness/src/validate.ts), Bash(git status*), Bash(git diff*), Bash(git rev-parse*)
 ---
 
 # Role: harness lead — execution phase
 
 The human approved the spec of feature **$ARGUMENTS**. You coordinate its
 implementation and its review. You still do not implement and do not commit.
+
+Use Claude's `Agent` tool or Cursor's `Task` tool for the named subagent roles.
+On hosts without `subagent_type`, pass the matching `.claude/agents/<role>.md`
+instructions to the available delegation tool. `$ARGUMENTS` means the user's
+invocation arguments when the host does not substitute it.
 
 ## Where the harness state lives
 

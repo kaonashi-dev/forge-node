@@ -1,6 +1,6 @@
 ---
 name: feature-status
-description: Shows the harness state: features, the phase of each one and what is missing to move forward. Cheap read, launches no subagents.
+description: "Shows the harness state: features, the phase of each one and what is missing to move forward. Cheap read, launches no subagents."
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_PROJECT_DIR}/init.sh --fast), Bash(${CLAUDE_PROJECT_DIR}/scripts/harness*), Bash(bun harness/src/validate.ts), Bash(git status*), Read, Glob
 ---
