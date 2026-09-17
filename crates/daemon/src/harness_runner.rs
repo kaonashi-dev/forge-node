@@ -811,7 +811,7 @@ fn missing_gate_documents(root: &Path, feature_id: u32) -> Result<Vec<String>, S
 /// What each step is told to do.
 ///
 /// The prompts name the repository's own skills rather than restating the
-/// protocol: the harness rules live in `.claude/skills/` and `AGENTS.md`, and
+/// protocol: the harness rules live in `.agents/skills/` and `AGENTS.md`, and
 /// a prompt that repeated them would be a second copy to keep in sync.
 ///
 /// Every harness path is spelled **absolutely**, from the checkout that owns

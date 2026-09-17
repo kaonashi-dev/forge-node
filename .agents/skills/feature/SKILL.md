@@ -3,7 +3,7 @@ name: feature
 description: Registers a specification as a harness feature and triggers research + spec writing. Stops at the human gate, without touching code.
 argument-hint: "\"<task specification>\""
 disable-model-invocation: true
-allowed-tools: Agent, Read, Grep, Glob, Write, Edit, Bash(${CLAUDE_PROJECT_DIR}/init.sh*), Bash(${CLAUDE_PROJECT_DIR}/scripts/harness*), Bash(bun harness/src/validate.ts), Bash(git status*), Bash(git diff*), Bash(git rev-parse*)
+allowed-tools: Agent, Task, Read, Grep, Glob, Write, Edit, Bash(${CLAUDE_PROJECT_DIR}/init.sh*), Bash(${CLAUDE_PROJECT_DIR}/scripts/harness*), Bash(bun harness/src/validate.ts), Bash(git status*), Bash(git diff*), Bash(git rev-parse*)
 ---
 
 # Role: harness lead
@@ -23,6 +23,11 @@ $ARGUMENTS
 - ❌ Do not mark any feature as `done`.
 - ❌ Do not `git commit` or `git push`.
 - ✅ You do edit `harness/**` (it is your state) and you do launch subagents.
+
+Use Claude's `Agent` tool or Cursor's `Task` tool for the named subagent roles.
+On hosts without `subagent_type`, pass the matching `.claude/agents/<role>.md`
+instructions to the available delegation tool. `$ARGUMENTS` means the user's
+invocation arguments when the host does not substitute it.
 
 ## Where the harness state lives
 

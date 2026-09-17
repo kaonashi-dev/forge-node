@@ -21,7 +21,7 @@ envelope, managed worktree.
 | Cost rungs (per cell / delta / frame / request) | [`docs/performance.md`](docs/performance.md) |
 | Commands and "where to change X" | [`docs/development.md`](docs/development.md) |
 | GUI layout, tokens, keymap | [`docs/ui.md`](docs/ui.md) |
-| Repeatable architecture/quality review | `/forge-clean-code` (`.grok/skills/forge-clean-code`) |
+| Repeatable architecture/quality review | `/forge-clean-code` (`.agents/skills/forge-clean-code`) |
 | Wire protocol | [`docs/protocol.md`](docs/protocol.md) |
 | Providers | [`docs/agents.md`](docs/agents.md) |
 | Doc index | [`docs/README.md`](docs/README.md) |

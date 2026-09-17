@@ -23,7 +23,11 @@ and strengthened with patterns from
 | `crates/daemon/src/jobs.rs` | Headless provider runs, streamed to job logs and UI events |
 | `apps/tauri/src/harness` and feature views | Product UI for registration, gates, timelines and artefacts |
 | `.claude/agents/` | `spec-author`, `implementer`, `reviewer`, `committer` |
-| Skills | `/feature`, `/feature-go`, `/feature-status`, `/feature-commit`, `invariant-c4/c5/c7` |
+| `.agents/skills/` | `/feature`, `/feature-go`, `/feature-status`, `/feature-commit`, `invariant-c4/c5/c7` |
+
+Skill sources live in `.agents/skills/<name>/SKILL.md`. `.claude/skills` and
+`.cursor/skills` are relative symlinks to that directory; edit the shared source.
+Claude-specific subagent definitions, hooks and settings stay in `.claude/`.
 
 ## Per-feature artefacts
 
