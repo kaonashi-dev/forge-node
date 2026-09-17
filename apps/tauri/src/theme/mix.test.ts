@@ -106,7 +106,7 @@ describe("derived tokens", () => {
   // be wrong on every other.
   it("keeps the focus ring translucent accent", () => {
     expect(tokens["--forge-focus-ring"]).toBe(rgba(args.accent, 0.35));
-    expect(tokens["--forge-focus-ring"]).toBe("rgb(108 172 189 / 0.35)");
+    expect(tokens["--forge-focus-ring"]).toBe("rgb(69 133 136 / 0.35)");
   });
 
   it("derives a full set for every base", () => {

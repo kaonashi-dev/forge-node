@@ -22,7 +22,7 @@ import {
 } from "../ui";
 import { Icon, WorkMarker } from "./icons";
 import { applyThemeBase, themeBase } from "./ThemeProvider";
-import { palettes, type ThemeBaseId } from "./tokens";
+import { palettes, THEME_LABELS, type ThemeBaseId } from "./tokens";
 import { DENSITIES, applyDensity, type Density } from "./density";
 
 /**
@@ -170,7 +170,7 @@ export function Gallery() {
                 selected={themeBase() === id}
                 onClick={() => applyThemeBase(id)}
               >
-                {id}
+                {THEME_LABELS[id]}
               </Button>
             )}
           </For>

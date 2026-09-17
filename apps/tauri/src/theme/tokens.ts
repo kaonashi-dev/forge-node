@@ -1,6 +1,6 @@
 // Theme tokens for the Tauri shell.
 
-import { derivedTokens, hex, mix, on, parseHex, pct } from "./mix";
+import { contrast, derivedTokens, hex, mix, on, parseHex, pct } from "./mix";
 
 export type ThemeBaseId =
   | "gruvbox-hard"
@@ -58,34 +58,34 @@ const palette = (values: Omit<Palette, "ansi">, ansi: string[]): Palette => ({ .
 export const palettes = {
   "gruvbox-hard": palette(
     {
-      bg: "#1f1f1f",
-      rail: "#171717",
-      sidebar: "#1a1a1a",
-      surface: "#262626",
-      surfaceHi: "#303030",
-      editor: "#1f1f1f",
-      step: "#404040",
-      text: "#c7c7c7",
-      muted: "#969696",
-      faint: "#7d7d7d",
-      accent: "#6cacbd",
+      bg: "#282828",
+      rail: "#282828",
+      sidebar: "#32302f",
+      surface: "#32302f",
+      surfaceHi: "#3c3836",
+      editor: "#282828",
+      step: "#504945",
+      text: "#ebdbb2",
+      muted: "#bdae93",
+      faint: "#928374",
+      accent: "#458588",
       needsYou: "#fe8019",
       needsYouDeep: "#d65d0e",
-      green: "#98971a",
+      green: "#b8bb26",
       red: "#fb4934",
-      amber: "#d79921",
+      amber: "#fabd2f",
       blue: "#83a598",
-      termBg: "#1f1f1f",
-      termFg: "#c7c7c7",
-      gitAdded: "#46bb26",
+      termBg: "#282828",
+      termFg: "#ebdbb2",
+      gitAdded: "#98971a",
       gitModified: "#d79921",
-      gitDeleted: "#fb4934",
-      gitUntracked: "#689d6a",
-      gitConflict: "#fb4934",
+      gitDeleted: "#cc241d",
+      gitUntracked: "#504945",
+      gitConflict: "#b16286",
       gitIgnored: "#928374",
     },
     [
-      "#1f1f1f",
+      "#282828",
       "#cc241d",
       "#98971a",
       "#d79921",
@@ -100,7 +100,7 @@ export const palettes = {
       "#83a598",
       "#d3869b",
       "#8ec07c",
-      "#c7c7c7",
+      "#ebdbb2",
     ],
   ),
   gruvbox: palette(
@@ -308,6 +308,17 @@ export const palettes = {
   ),
 } as Record<ThemeBaseId, Palette>;
 
+export const THEME_LABELS: Record<ThemeBaseId, string> = {
+  "gruvbox-hard": "Gruvbox",
+  gruvbox: "Gruvbox Dark",
+  neutral: "Neutral Dark",
+  "gruvbox-light": "Gruvbox Light",
+  "neutral-light": "Neutral Light",
+  ocean: "Ocean",
+  forest: "Forest",
+  custom: "Custom",
+};
+
 palettes.ocean = {
   ...palettes.neutral,
   bg: "#111b27",
@@ -329,6 +340,20 @@ palettes.forest = {
   surface: "#223027",
   surfaceHi: "#2b3a30",
   accent: "#8ec07c",
+  step: "#404040",
+  text: "#c7c7c7",
+  muted: "#969696",
+  faint: "#7d7d7d",
+  needsYouDeep: "#d65d0e",
+  green: "#98971a",
+  amber: "#d79921",
+  termFg: "#c7c7c7",
+  gitAdded: "#46bb26",
+  gitModified: "#d79921",
+  gitUntracked: "#689d6a",
+  gitDeleted: "#fb4934",
+  gitConflict: "#fb4934",
+  ansi: ["#1f1f1f", ...palettes.gruvbox.ansi.slice(1, 15), "#c7c7c7"],
 };
 
 export function registerCustomPalette(value: Palette, light: boolean): void {
@@ -523,10 +548,11 @@ function semanticColors(active: Palette): Record<string, string> {
   const bg = parseHex(active.bg);
   const text = parseHex(active.text);
   const accent = parseHex(active.accent);
+  const accentFg = on(accent, bg, text);
   const fg = (fill: string) => hex(on(parseHex(fill), bg, text));
   const soft = (fill: string) => hex(mix(bg, parseHex(fill), pct(14)));
   return {
-    "--accent-fg": fg(active.accent),
+    "--accent-fg": hex(contrast(accentFg, accent) >= 4.5 ? accentFg : on(accent, 0, 0xffffff)),
     "--accent-soft": hex(mix(bg, accent, pct(14))),
     "--accent-solid-hover": hex(mix(accent, text, pct(12))),
     "--danger-fg": fg(active.red),

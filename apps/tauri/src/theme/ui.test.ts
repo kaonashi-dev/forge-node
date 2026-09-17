@@ -88,7 +88,8 @@ describe("AA contrast", () => {
 
   it("keeps the derived accent foreground at AA against its fill", () => {
     for (const base of bases) {
-      expect(onFill(palettes[base].accent, palettes[base]), base).toBeGreaterThanOrEqual(AA);
+      const p = palettes[base];
+      expect(c(toCssVariables(p)["--accent-fg"], p.accent), base).toBeGreaterThanOrEqual(AA);
     }
   });
 
