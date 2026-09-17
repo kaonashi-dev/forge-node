@@ -5,9 +5,17 @@
 #   scripts/dev daemon      # build + run the daemon in the foreground (verbose logs)
 #                           # isolated socket/db/config per run; the daily daemon is untouched
 #   scripts/dev check       # fmt-check + clippy + test the whole workspace
-#   scripts/dev dump        # stream the daemon protocol as JSON (forge-daemon dump --json)
+#   scripts/dev dump        # unwired placeholder (forge-daemon dump --json)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+if [ "$(uname -s)" = Darwin ]; then
+  SDKROOT="$(scripts/macos-sdk)" || {
+    echo "scripts/dev: no macOS SDK the installed linker can parse" >&2
+    exit 1
+  }
+  export SDKROOT
+fi
 
 cmd="${1:-check}"
 case "$cmd" in
