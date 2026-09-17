@@ -23,7 +23,7 @@ const [preference, setPreference] = createSignal<ThemePreference>(DEFAULT_BASE);
 // JS-rendered surfaces must refresh even when one custom palette replaces another.
 export const themeBase = base;
 
-/** What was *chosen*, which may be `system`. The Settings radio reads this. */
+/** The chosen preference, including `system` or an embedded custom palette. */
 export const themePreference = preference;
 
 function prefersLight(): boolean {

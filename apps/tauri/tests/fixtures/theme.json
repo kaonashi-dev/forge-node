@@ -10,35 +10,35 @@
   ],
   "palettes": {
     "gruvbox-hard": {
-      "label": "Gruvbox Dark Hard",
+      "label": "Gruvbox",
       "palette": {
-        "bg": "#1f1f1f",
-        "rail": "#171717",
-        "sidebar": "#1a1a1a",
-        "surface": "#262626",
-        "surfaceHi": "#303030",
-        "editor": "#1f1f1f",
-        "step": "#404040",
-        "text": "#c7c7c7",
-        "muted": "#969696",
-        "faint": "#7d7d7d",
-        "accent": "#6cacbd",
+        "bg": "#282828",
+        "rail": "#282828",
+        "sidebar": "#32302f",
+        "surface": "#32302f",
+        "surfaceHi": "#3c3836",
+        "editor": "#282828",
+        "step": "#504945",
+        "text": "#ebdbb2",
+        "muted": "#bdae93",
+        "faint": "#928374",
+        "accent": "#458588",
         "needsYou": "#fe8019",
         "needsYouDeep": "#d65d0e",
-        "green": "#98971a",
+        "green": "#b8bb26",
         "red": "#fb4934",
-        "amber": "#d79921",
+        "amber": "#fabd2f",
         "blue": "#83a598",
-        "termBg": "#1f1f1f",
-        "termFg": "#c7c7c7",
-        "gitAdded": "#46bb26",
+        "termBg": "#282828",
+        "termFg": "#ebdbb2",
+        "gitAdded": "#98971a",
         "gitModified": "#d79921",
-        "gitDeleted": "#fb4934",
-        "gitUntracked": "#689d6a",
-        "gitConflict": "#fb4934",
+        "gitDeleted": "#cc241d",
+        "gitUntracked": "#504945",
+        "gitConflict": "#b16286",
         "gitIgnored": "#928374",
         "ansi": [
-          "#1f1f1f",
+          "#282828",
           "#cc241d",
           "#98971a",
           "#d79921",
@@ -53,7 +53,7 @@
           "#83a598",
           "#d3869b",
           "#8ec07c",
-          "#c7c7c7"
+          "#ebdbb2"
         ]
       }
     },
@@ -250,7 +250,7 @@
       }
     },
     "ocean": {
-      "label": "ocean",
+      "label": "Ocean",
       "palette": {
         "bg": "#111b27",
         "rail": "#0c141e",
@@ -298,7 +298,7 @@
       }
     },
     "forest": {
-      "label": "forest",
+      "label": "Forest",
       "palette": {
         "bg": "#17211c",
         "rail": "#111913",

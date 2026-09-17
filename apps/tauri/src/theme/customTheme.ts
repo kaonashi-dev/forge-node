@@ -1,7 +1,12 @@
 import { palettes, type Palette } from "./tokens";
 
 export const MAX_THEME_BYTES = 16 * 1024;
-export type CustomTheme = { name: string; mode: "light" | "dark"; palette: Palette };
+export type CustomTheme = {
+  name: string;
+  mode: "light" | "dark";
+  palette: Palette;
+  adjustments?: { palette: Palette; contrast: number };
+};
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -30,11 +35,36 @@ export function parseCustomTheme(source: string): CustomTheme {
   }
   if (value.mode !== "light" && value.mode !== "dark")
     throw new Error('Mode must be "light" or "dark".');
-  if (!record(value.palette))
-    throw new Error("A palette object is required. Download the template for all fields.");
+  const result: CustomTheme = {
+    name: value.name.trim(),
+    mode: value.mode,
+    palette: parsePalette(value.palette),
+  };
+  if (value.adjustments !== undefined) {
+    const adjustments = value.adjustments;
+    if (
+      !record(adjustments) ||
+      typeof adjustments.contrast !== "number" ||
+      !Number.isInteger(adjustments.contrast) ||
+      adjustments.contrast < 0 ||
+      adjustments.contrast > 100
+    ) {
+      throw new Error("Theme contrast must be an integer between 0 and 100.");
+    }
+    result.adjustments = {
+      palette: parsePalette(adjustments.palette),
+      contrast: adjustments.contrast,
+    };
+  }
+  return result;
+}
+
+function parsePalette(value: unknown): Palette {
+  if (!record(value))
+    throw new Error("A palette object is required. Download a theme for all fields.");
   const result = { ...palettes["gruvbox-hard"] };
   for (const key of Object.keys(result) as (keyof Palette)[]) {
-    const color = value.palette[key];
+    const color = value[key];
     if (key === "ansi") {
       if (!Array.isArray(color) || color.length !== 16 || !color.every(isColor))
         throw new Error("palette.ansi must contain exactly 16 #RRGGBB colors.");
@@ -44,7 +74,7 @@ export function parseCustomTheme(source: string): CustomTheme {
       result[key] = color;
     }
   }
-  return { name: value.name.trim(), mode: value.mode, palette: result };
+  return result;
 }
 
 function isColor(value: unknown): value is string {

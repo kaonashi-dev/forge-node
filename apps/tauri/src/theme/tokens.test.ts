@@ -67,11 +67,13 @@ describe("Tauri theme tokens", () => {
 
   it("emits CSS variables for palette and geometry tokens", () => {
     const variables = toCssVariables(palettes["gruvbox-hard"]);
-    expect(variables["--forge-bg"]).toBe("#1f1f1f");
-    expect(variables["--forge-term-bg"]).toBe("#1f1f1f");
-    expect(variables["--forge-ansi-15"]).toBe("#c7c7c7");
+    expect(variables["--forge-bg"]).toBe("#282828");
+    expect(variables["--forge-term-bg"]).toBe("#282828");
+    expect(variables["--forge-text"]).toBe("#ebdbb2");
+    expect(variables["--forge-accent"]).toBe("#458588");
+    expect(variables["--forge-ansi-15"]).toBe("#ebdbb2");
     expect(variables["--forge-control-md"]).toMatch(/^\d+px$/);
-    expect(variables["--forge-hover"]).toBe("#292929");
-    expect(variables["--forge-selected"]).toBe("#373737");
+    expect(variables["--forge-hover"]).toBe("#333330");
+    expect(variables["--forge-selected"]).toBe("#44413b");
   });
 });

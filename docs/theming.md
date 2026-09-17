@@ -12,7 +12,7 @@ Default preference: **`gruvbox-hard`**. A `system` preference follows
 
 | Id | Role |
 |----|------|
-| `gruvbox-hard` | Default dark: flat `#1f1f1f` canvas, Gruvbox semantic row |
+| `gruvbox-hard` | Default Gruvbox: `#282828` canvas, `#ebdbb2` text, `#458588` accent |
 | `gruvbox` | Warm original Gruvbox medium-contrast surfaces |
 | `neutral` | Neutral dark scale with Tokyo Night ANSI |
 | `gruvbox-light` | Gruvbox light surfaces |
@@ -35,9 +35,19 @@ Do not regenerate as part of the build — an auto-updated fixture asserts nothi
 ## Runtime switch
 
 `ThemeProvider` applies `data-theme` / `color-scheme` and CSS variables from
-`toCssVariables` / `applyTheme`. The in-app picker (Settings → Appearance, and
+`toCssVariables` / `applyTheme`. The in-app selector (Settings → Personalization, and
 the `?gallery` surface) changes the running preference; persistence goes through
 app state like any other UI preference.
+
+Choose **Gruvbox** in Settings → Personalization → Color theme. The default
+uses warm gray `#32302f` panels and `#3c3836` raised controls over the `#282828`
+canvas, with cream text and a teal accent. The saved id remains `gruvbox-hard`
+so existing preferences continue to select it. Git colors follow the default
+`groups` mapping in
+[motaz-shokry/gruvbox.nvim](https://gitlab.com/motaz-shokry/gruvbox.nvim/-/blob/main/lua/gruvbox/config.lua)
+(`gitConflict` uses `git_merge`). Forge derives its own interaction and syntax
+styles. Accent button labels fall back to black or white when the palette's
+background and text cannot reach 4.5:1 contrast against the accent fill.
 
 ## Fonts
 
@@ -68,19 +78,31 @@ disagree about which artwork a name gets.
 ## How to extend
 
 1. Add a palette to `palettes` in `tokens.ts`.
-2. Update `ThemeBaseId` and any light-base sets.
+2. Update `ThemeBaseId`, `THEME_LABELS`, and any light-base sets.
 3. Regenerate `tests/fixtures/theme.json`.
 4. Cover derived tokens in `mix.test.ts` / `tokens.test.ts` if formulas change.
 
 ## Custom JSON themes
 
-Settings → Personalization → Custom theme accepts a JSON file or pasted JSON.
-Use **Download template** to export the active palette, edit it, then choose
-**Import and apply**. The document has `name` (1–60 characters), `mode`
-(`light` or `dark`), and `palette` with all fields from the downloaded template.
+Settings → Personalization includes a live code diff and terminal preview, a
+theme selector, editable accent/background/foreground colors, and a 0–100
+contrast slider. Colors accept a native picker or a six-digit hex value.
+Contrast defaults to 60, preserves those three colors, and adjusts panel
+separation and secondary text. A drag previews locally and saves on release.
+Choose a built-in theme again to restore its original palette.
+
+**Import** accepts a JSON file; **Copy theme** copies the active theme as JSON.
+The **Theme JSON** disclosure provides **Download theme** and a field for
+pasting JSON followed by **Import and apply**. The document has `name`
+(1–60 characters), `mode` (`light` or `dark`), and `palette` with all fields
+from the downloaded theme.
 Every color must use `#RRGGBB`; `ansi` must contain exactly sixteen colors.
 Files are limited to 16 KiB and checked before reading. Imported colors are
 validated structurally; readability depends on the colors you choose.
+
+Edited variants also include `adjustments`, containing the unadjusted `palette`
+and integer `contrast`. Both survive import, export, and restart so returning
+the slider to 60 restores exact colors without accumulating rounding errors.
 
 One custom palette is retained in `ui.custom_theme`, even when a built-in is
 selected. Importing another replaces that slot. The active custom document is
