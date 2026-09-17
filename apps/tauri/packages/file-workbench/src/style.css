@@ -138,6 +138,7 @@
   border-inline-start: 2px solid transparent;
   cursor: pointer;
   white-space: nowrap;
+  width: 100%;
 }
 .fw-tree-row:hover {
   background: var(--fw-hover, ButtonFace);
@@ -149,6 +150,8 @@
   border-inline-start-color: var(--fw-accent, HighlightText);
 }
 .fw-tree-label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }

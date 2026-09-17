@@ -17,11 +17,30 @@
   /* Soft active-line wash; same idea as editorTheme.activeLine. */
   --fw-active-line: color-mix(in srgb, var(--fg-default) 5%, var(--forge-editor));
 }
-/* The Files panel runs the explorer in `chrome: "list"`, so it is an ordinary
-   `.panel-body` in the sidebar — whose ground is the subtle one, which both
-   the explorer's surface and the opaque inline name field have to match. */
+/* The Files panel runs the explorer in `chrome: "list"`. Ground matches the
+   sidebar so the inline name field does not flash a different paint; padding
+   is zero so a hover or selection wash reaches the sidebar edge. */
 .fw-host {
   --fw-background: var(--bg-subtle);
+  gap: 0;
+  overflow: hidden;
+  padding: 0;
+}
+.fw-host > .panel-error {
+  margin-inline: var(--space-8);
+}
+.fw-host > .panel-note,
+.fw-host > .empty-copy,
+.fw-host > .empty-state,
+.fw-host > .forge-skeleton {
+  padding-inline: var(--space-8);
+}
+.fw-host .fw-tree-row {
+  border-inline-start: none;
+}
+.fw-host .fw-tree-row[aria-selected="true"] {
+  outline: 1px solid var(--accent-solid);
+  outline-offset: -1px;
 }
 /* The folder glyph is masked with `currentColor`; Forge picks the muted tone
    the lucide `Icon` carried, so structure never outranks the name beside it. */
@@ -43,4 +62,9 @@
 }
 .fw-document-foot {
   padding-inline: var(--space-12);
+}
+
+.fw-host .fw-mount {
+  flex: 1;
+  min-height: 0;
 }

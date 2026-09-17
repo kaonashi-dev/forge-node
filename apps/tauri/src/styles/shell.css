@@ -1024,8 +1024,9 @@
   overflow: hidden;
   padding: var(--space-8) var(--space-12);
 }
-/* The tree scrolls itself, edge to edge, like the rail did. */
-.sidebar-body.projects-body {
+/* Trees scroll themselves, edge to edge, like the rail did. */
+.sidebar-body.projects-body,
+.sidebar-body.files-body {
   padding: 0;
 }
 .projects-view {
