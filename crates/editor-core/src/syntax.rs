@@ -36,7 +36,7 @@ pub struct Span {
 }
 
 /// Which grammar a buffer is read with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Grammar {
     Rust,
     CLike,
@@ -46,6 +46,7 @@ pub enum Grammar {
     Shell,
     Markdown,
     /// No colouring: an extension this build does not know.
+    #[default]
     None,
 }
 
@@ -78,6 +79,15 @@ impl Grammar {
 #[derive(Debug, Default)]
 pub struct Syntax {
     lines: Vec<Vec<Span>>,
+    /// Whether the scanner was at top level at each line's first byte.
+    ///
+    /// The restart points an incremental rescan may use: anywhere else the
+    /// colour depends on a construct opened above, and resuming there would
+    /// read a block comment's body as code.
+    safe: Vec<bool>,
+    /// Lines the last scan actually walked. Telemetry, and what a test asserts
+    /// against to prove an edit did not re-colour the whole buffer.
+    scanned: std::ops::Range<usize>,
 }
 
 impl Syntax {
@@ -87,20 +97,80 @@ impl Syntax {
         if grammar == Grammar::None {
             return Self::default();
         }
-        let mut out = Scanner::new(text);
-        match grammar {
-            Grammar::Rust => out.c_like(&rust_keywords(), true),
-            Grammar::CLike => out.c_like(&c_keywords(), false),
-            Grammar::Python => out.python(),
-            Grammar::Json => out.json(),
-            Grammar::Keyed => out.keyed(),
-            Grammar::Shell => out.shell(),
-            Grammar::Markdown => out.markdown(),
-            Grammar::None => {}
+        let mut out = Scanner::new(text, 0);
+        out.run(grammar);
+        let lines = out.lines;
+        let scanned = 0..lines.len();
+        Self {
+            lines,
+            safe: out.safe,
+            scanned,
+        }
+    }
+
+    /// Re-colour only what an edit can have changed.
+    ///
+    /// `first_line` and `last_line` are the touched lines in the *new* text and
+    /// `line_delta` how many lines it gained or lost. The scan restarts on the
+    /// nearest line above the edit that the previous one passed at top level,
+    /// and stops on the first line boundary below it that both scans agree is
+    /// top level: a span is a column pair inside its own line, so everything
+    /// past that point is reusable exactly as it stands.
+    #[must_use]
+    pub fn edited(
+        &self,
+        text: &str,
+        grammar: Grammar,
+        first_line: usize,
+        last_line: usize,
+        line_delta: isize,
+    ) -> Self {
+        if grammar == Grammar::None {
+            return Self::default();
+        }
+        // Nothing to resume from: the previous scan is not this document's.
+        if self.safe.is_empty() {
+            return Self::parse(text, grammar);
+        }
+        let from = (0..=first_line.min(self.safe.len().saturating_sub(1)))
+            .rev()
+            .find(|line| self.safe[*line])
+            .unwrap_or(0);
+        // A byte walk for the restart offset, not a lex: finding a newline is
+        // memory bandwidth, and re-lexing the head is the thing being avoided.
+        let mut out = Scanner::new(&text[line_offset(text, from)..], from);
+        out.resume = Some(Resume {
+            after_line: last_line,
+            old_safe: &self.safe,
+            line_delta,
+        });
+        out.run(grammar);
+
+        let mut lines = self.lines[..from.min(self.lines.len())].to_vec();
+        let mut safe = self.safe[..from.min(self.safe.len())].to_vec();
+        let scanned = from..out.stopped.unwrap_or(from + out.lines.len());
+        lines.extend(out.lines);
+        safe.extend(out.safe);
+        if let Some(stop) = out.stopped {
+            // The scanner emitted the stopping line itself; the tail below it
+            // is the previous scan's, shifted by the lines the edit moved.
+            let old = usize::try_from(stop as isize - line_delta).unwrap_or(0);
+            lines.truncate(stop);
+            safe.truncate(stop);
+            lines.extend_from_slice(self.lines.get(old..).unwrap_or_default());
+            safe.extend_from_slice(self.safe.get(old..).unwrap_or_default());
         }
         Self {
-            lines: out.finish(),
+            lines,
+            safe,
+            scanned,
         }
+    }
+
+    /// Lines the last scan walked, for a cost assertion.
+    #[must_use]
+    pub fn scanned_lines(&self) -> std::ops::Range<usize> {
+        self.scanned.clone()
     }
 
     /// The spans on one 0-based line; empty when it has none.
@@ -124,31 +194,111 @@ impl Syntax {
     }
 }
 
+/// Byte offset of a 0-based line.
+///
+/// A byte walk and not a lex: a newline search is memory bandwidth, while
+/// re-colouring the head of the file is the cost this exists to avoid.
+fn line_offset(text: &str, line: usize) -> usize {
+    if line == 0 {
+        return 0;
+    }
+    let mut seen = 0;
+    for (index, byte) in text.as_bytes().iter().enumerate() {
+        if *byte == b'\n' {
+            seen += 1;
+            if seen == line {
+                return index + 1;
+            }
+        }
+    }
+    text.len()
+}
+
+/// Where an incremental scan may hand back to the spans it already has.
+struct Resume<'a> {
+    /// The lowest line the edit touched. A resync at or above it would reuse
+    /// spans the edit invalidated.
+    after_line: usize,
+    /// `safe` from the scan being reused, in *its* line numbering.
+    old_safe: &'a [bool],
+    /// New line index minus old line index.
+    line_delta: isize,
+}
+
 /// Walks the document once, emitting spans split at every newline.
 struct Scanner<'a> {
     text: &'a str,
     bytes: &'a [u8],
     at: usize,
-    /// Start of the line `at` is in, and that line's index.
+    /// Start of the line `at` is in, and that line's index within this scan.
     line_start: usize,
     line: usize,
+    /// Document line this scan's line 0 is, for a scan that starts part-way in.
+    line_base: usize,
     lines: Vec<Vec<Span>>,
+    safe: Vec<bool>,
+    resume: Option<Resume<'a>>,
+    /// Document line the scan stopped on, when it resynced.
+    stopped: Option<usize>,
 }
 
 impl<'a> Scanner<'a> {
-    fn new(text: &'a str) -> Self {
+    fn new(text: &'a str, line_base: usize) -> Self {
+        let rows = text.lines().count().max(1) + 1;
         Self {
             text,
             bytes: text.as_bytes(),
             at: 0,
             line_start: 0,
             line: 0,
-            lines: vec![Vec::new(); text.lines().count().max(1) + 1],
+            line_base,
+            lines: vec![Vec::new(); rows],
+            safe: vec![false; rows],
+            resume: None,
+            stopped: None,
         }
     }
 
-    fn finish(self) -> Vec<Vec<Span>> {
-        self.lines
+    fn run(&mut self, grammar: Grammar) {
+        match grammar {
+            Grammar::Rust => self.c_like(&rust_keywords(), true),
+            Grammar::CLike => self.c_like(&c_keywords(), false),
+            Grammar::Python => self.python(),
+            Grammar::Json => self.json(),
+            Grammar::Keyed => self.keyed(),
+            Grammar::Shell => self.shell(),
+            Grammar::Markdown => self.markdown(),
+            Grammar::None => {}
+        }
+    }
+
+    /// Record a top-level line boundary, and say whether the scan may stop.
+    ///
+    /// Called at every grammar loop's head: `at == line_start` there means no
+    /// construct is open, which is the only state a later scan can resume from.
+    fn checkpoint(&mut self) -> bool {
+        if self.at != self.line_start {
+            return false;
+        }
+        if self.line >= self.safe.len() {
+            self.safe.resize(self.line + 1, false);
+        }
+        self.safe[self.line] = true;
+        let here = self.line_base + self.line;
+        let Some(resume) = &self.resume else {
+            return false;
+        };
+        if here <= resume.after_line {
+            return false;
+        }
+        let Ok(old) = usize::try_from(here as isize - resume.line_delta) else {
+            return false;
+        };
+        if resume.old_safe.get(old) != Some(&true) {
+            return false;
+        }
+        self.stopped = Some(here);
+        true
     }
 
     fn byte(&self, at: usize) -> u8 {
@@ -343,6 +493,9 @@ impl Scanner<'_> {
     fn c_like(&mut self, keywords: &HashSet<&'static str>, rust: bool) {
         let control = control();
         while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
             let byte = self.byte(self.at);
             let mark = self.mark();
             match byte {
@@ -437,6 +590,9 @@ impl Scanner<'_> {
         .collect();
         let control = control();
         while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
             let byte = self.byte(self.at);
             let mark = self.mark();
             match byte {
@@ -494,6 +650,9 @@ impl Scanner<'_> {
 
     fn json(&mut self) {
         while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
             let byte = self.byte(self.at);
             let mark = self.mark();
             match byte {
@@ -530,6 +689,9 @@ impl Scanner<'_> {
     /// TOML, YAML, ini, dotenv: a key before a separator, then a value.
     fn keyed(&mut self) {
         while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
             let mark = self.mark();
             match self.byte(self.at) {
                 b'#' | b';' => {
@@ -582,6 +744,9 @@ impl Scanner<'_> {
         .collect();
         let control = control();
         while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
             let mark = self.mark();
             match self.byte(self.at) {
                 b'#' => {
@@ -626,6 +791,9 @@ impl Scanner<'_> {
     /// Markdown: the marks that carry structure, not a full renderer.
     fn markdown(&mut self) {
         while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
             let mark = self.mark();
             let at_line_start = self.only_space_before();
             match self.byte(self.at) {
@@ -680,6 +848,9 @@ impl Scanner<'_> {
     fn take_quoted(&mut self, quote: u8) {
         self.bump();
         while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
             let byte = self.byte(self.at);
             if byte == b'\\' {
                 self.bump();
@@ -700,6 +871,9 @@ impl Scanner<'_> {
     fn take_bracketed(&mut self, open: u8, close: u8) {
         let mut depth = 0;
         while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
             let byte = self.byte(self.at);
             if byte == open {
                 depth += 1;
@@ -940,6 +1114,117 @@ mod tests {
             ] {
                 let syntax = Syntax::parse(text, grammar);
                 let _ = syntax.scope_at(0, 0);
+            }
+        }
+    }
+
+    /// Every line's spans, so an incremental scan can be compared against the
+    /// full one it has to agree with.
+    fn all_spans(syntax: &Syntax, lines: usize) -> Vec<Vec<Span>> {
+        (0..lines).map(|line| syntax.line(line).to_vec()).collect()
+    }
+
+    /// The point of the incremental scan: an edit near the bottom of a file
+    /// must not re-lex what is above it.
+    #[test]
+    fn an_edit_low_in_the_file_rescans_only_from_near_it() {
+        let mut text: String = (0..400).map(|n| format!("let x{n} = {n};\n")).collect();
+        let full = Syntax::parse(&text, Grammar::Rust);
+        assert_eq!(full.scanned_lines().start, 0);
+
+        // Line 300 gains a keyword; nothing above or below it changes shape.
+        let at = line_offset(&text, 300);
+        text.insert_str(at, "const Y: u8 = 1;\n");
+        let next = full.edited(&text, Grammar::Rust, 300, 300, 1);
+        assert!(
+            next.scanned_lines().start >= 299,
+            "restarted at {:?}, not just above the edit",
+            next.scanned_lines()
+        );
+        assert!(
+            next.scanned_lines().end <= 303,
+            "kept scanning to {:?} instead of resyncing",
+            next.scanned_lines()
+        );
+        assert_eq!(
+            all_spans(&next, 402),
+            all_spans(&Syntax::parse(&text, Grammar::Rust), 402),
+            "the incremental scan disagreed with the full one"
+        );
+    }
+
+    /// A block comment opened above decides the colour below it, so an edit
+    /// inside one may not resume at the line under the caret.
+    #[test]
+    fn an_edit_inside_a_block_comment_restarts_above_it() {
+        let text = "fn a() {}\n/* one\ntwo\nthree */\nfn b() {}\n";
+        let full = Syntax::parse(text, Grammar::Rust);
+        let edited = "fn a() {}\n/* one\ntwoX\nthree */\nfn b() {}\n";
+        let next = full.edited(edited, Grammar::Rust, 2, 2, 0);
+        assert!(
+            next.scanned_lines().start <= 1,
+            "resumed inside the comment: {:?}",
+            next.scanned_lines()
+        );
+        assert_eq!(
+            all_spans(&next, 5),
+            all_spans(&Syntax::parse(edited, Grammar::Rust), 5)
+        );
+    }
+
+    /// Opening a block comment recolours everything under it, and the
+    /// incremental scan has to keep going until the grammar agrees again.
+    #[test]
+    fn opening_a_block_comment_recolours_what_is_under_it() {
+        let text = "fn a() {}\nfn b() {}\nfn c() {}\n";
+        let full = Syntax::parse(text, Grammar::Rust);
+        let edited = "/* a() {}\nfn b() {}\nfn c() {}\n";
+        let next = full.edited(edited, Grammar::Rust, 0, 0, 0);
+        assert_eq!(
+            all_spans(&next, 3),
+            all_spans(&Syntax::parse(edited, Grammar::Rust), 3)
+        );
+        assert_eq!(next.scope_at(2, 0), Scope::Comment);
+    }
+
+    /// Removing lines shifts the reused tail up; the spans must land on the
+    /// lines they describe, not on the ones they used to.
+    #[test]
+    fn deleting_lines_shifts_the_reused_tail() {
+        let text: String = (0..40).map(|n| format!("let x{n} = \"s{n}\";\n")).collect();
+        let full = Syntax::parse(&text, Grammar::Rust);
+        let mut edited = text.clone();
+        let from = line_offset(&edited, 10);
+        let to = line_offset(&edited, 13);
+        edited.replace_range(from..to, "");
+        let next = full.edited(&edited, Grammar::Rust, 10, 10, -3);
+        assert_eq!(
+            all_spans(&next, 37),
+            all_spans(&Syntax::parse(&edited, Grammar::Rust), 37)
+        );
+    }
+
+    /// Every grammar's incremental scan agrees with its full one.
+    #[test]
+    fn an_incremental_scan_agrees_with_a_full_one_for_every_grammar() {
+        let cases = [
+            (Grammar::Rust, "fn a() {}\n// c\nlet s = \"x\";\n"),
+            (Grammar::CLike, "function a() {}\n// c\nconst s = `x`;\n"),
+            (Grammar::Python, "def a():\n    # c\n    s = \"x\"\n"),
+            (Grammar::Json, "{\n  \"a\": 1,\n  \"b\": true\n}\n"),
+            (Grammar::Keyed, "[s]\na = 1\nb = \"x\"\n"),
+            (Grammar::Shell, "if true; then\n  echo $HOME\nfi\n"),
+            (Grammar::Markdown, "# h\n\n- one\n`code`\n"),
+        ];
+        for (grammar, text) in cases {
+            let full = Syntax::parse(text, grammar);
+            for line in 0..text.lines().count() {
+                let next = full.edited(text, grammar, line, line, 0);
+                assert_eq!(
+                    all_spans(&next, 8),
+                    all_spans(&full, 8),
+                    "{grammar:?} disagreed when resuming around line {line}"
+                );
             }
         }
     }

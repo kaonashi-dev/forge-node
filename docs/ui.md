@@ -11,8 +11,9 @@ Day-to-day layout and behaviour details live next to the code:
 |------|--------|
 | Shell (title, sidebar and its Projects view, tabs) | `apps/tauri/src/shell/` |
 | Other sidebar views (files, git, history, PR, harness) | `apps/tauri/src/panels/` |
-| Workbench (editor, diff, feature, PR) | `apps/tauri/src/workbench/` |
-| Reusable explorer/editor package (no Solid or Tauri) | `apps/tauri/packages/file-workbench/` |
+| Workbench (diff, feature, PR, previews) | `apps/tauri/src/workbench/` |
+| Terminal editor pane | `apps/tauri/src/terminal/EditorTerminalPane.tsx` |
+| Reusable explorer package (no Solid or Tauri) | `apps/tauri/packages/file-workbench/` |
 | Terminal Canvas | `apps/tauri/src/terminal/` |
 | Control kit | `apps/tauri/src/ui/` |
 | Theme tokens | `apps/tauri/src/theme/` + [theming.md](./theming.md) |
@@ -37,6 +38,10 @@ view live in `ui.sidebar.open` / `ui.sidebar.width` / `ui.sidebar.view`; theme m
 (`TITLE_H`, the sidebar default, control ladder) come from `theme/tokens.ts`,
 never hardcoded hex in views.
 
+Each workspace has one Code entry in Projects and one Code tab in the title bar,
+available even before a file is opened. Individual editor sessions appear as file
+tabs inside Code. Closing the last file leaves Code open with its empty state.
+
 ## Terminal
 
 Damaged rows arrive on `runtime:cells` separately from `runtime:state`, so a
@@ -56,3 +61,12 @@ palette modules on purpose.
 Chords resolve through `actions/` → dispatch. Settings → Keyboard and the
 command palette surface the same bindings. Terminal input mapping for the PTY
 stays in `terminal-input` / the host bridge, not in Solid.
+
+`Cmd+Shift+F` (`Ctrl+Shift+F` on Linux) opens or focuses the Search tab in Code.
+Results are grouped by file with line numbers, highlighted matches and three
+lines of context on each side; overlapping excerpts merge. Click a line to
+open its file at that location. Repeating the shortcut selects the search text
+without clearing it or changing the sidebar view.
+Excerpts use the file's language and the editor theme for syntax colours;
+search marks remain visible over them. Unknown languages and oversized excerpts
+stay plain, with their text and search marks intact.

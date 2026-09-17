@@ -1,8 +1,9 @@
 {
   "HelloAck": {
-    "protocol_version": 23,
+    "protocol_version": 24,
     "daemon_version": "0.1.0",
     "instance_id": "forge-daemon-0001",
-    "started_at": "2026-08-30T12:00:00Z"
+    "started_at": "2026-08-30T12:00:00Z",
+    "editor_surface": "cells"
   }
 }

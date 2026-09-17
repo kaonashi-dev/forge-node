@@ -1,16 +1,16 @@
 import { createSignal } from "solid-js";
+import { forgeStore } from "./forgeStore";
+import { requestConfirm } from "./runtimeStore";
 import { createStore } from "solid-js/store";
 import { workbenchStore } from "./workbenchStore";
 import { noteFileOpened } from "../workbench/recentFiles";
+import { opensInEditor } from "../workbench/previewRoute";
 import { openTerminalEditor } from "../runtime/api";
 import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
 import {
-  closeOthers,
-  closeToRight,
   closeView,
   emptyViews,
   focusView,
-  hasCode,
   openView,
   sameView,
   stepView,
@@ -49,7 +49,6 @@ export type CenterMode = "session" | "code";
 /** What the centre column is showing. */
 export const centerMode = mode;
 
-/** Show the Code tab — only meaningful once something is open in it. */
 export function showCode(): void {
   setMode("code");
 }
@@ -59,9 +58,8 @@ export function showSession(): void {
   setMode("session");
 }
 
-/** Does the Code tab exist right now? */
 export function codeOpen(): boolean {
-  return hasCode(currentViews());
+  return workbenchStore.workspace !== null;
 }
 
 /** The views of the checkout the workbench is pointed at. */
@@ -134,6 +132,12 @@ export function openEditor(path: string, line?: number): void {
   // alone rather than opening an empty one. The autosave preference travels
   // with the open: the daemon holds no opinion about it and the editor process
   // is what acts on it.
+  // A rendered kind never reaches the daemon's editor: it is a read the DOM
+  // draws, so the tab is opened here rather than waiting for `EditorOpened`.
+  if (!opensInEditor(path)) {
+    open({ kind: "preview", path });
+    return;
+  }
   void openTerminalEditor(workspace, path, line, readFlag(AUTOSAVE_KEY, false)).catch(
     () => undefined,
   );
@@ -153,6 +157,10 @@ export function openEditor(path: string, line?: number): void {
  */
 export function openEditorAt(path: string, line: number): void {
   openEditor(path, line);
+}
+
+export function openProjectSearch(): void {
+  open({ kind: "search" });
 }
 
 export function openPrDetail(key: string): void {
@@ -186,28 +194,43 @@ export function focus(view: WorkbenchView): void {
   setMode("code");
 }
 
-/**
- * Close one view, and fall back to the session when it was the last.
- *
- * An empty Code tab is not a place to be: the tab itself disappears with the
- * last view in it, so the window has to have somewhere to put the person.
- */
 export function close(view: WorkbenchView): void {
-  remember(view);
-  if (view.kind === "editor-terminal") {
-    void import("../runtime/api").then(({ closeEditor }) =>
-      closeEditor(view.session).catch(() => undefined),
-    );
-  }
-  update((views) => closeView(views, view));
-  if (!hasCode(currentViews())) setMode("session");
+  closeViews([view]);
 }
 
-/** Close every view in the Code tab and go back to the session. */
+function closeViews(targets: WorkbenchView[]): void {
+  const workspace = workbenchStore.workspace;
+  if (!workspace) return;
+  const finish = () => {
+    for (const view of targets) {
+      if (workbenchStore.workspace === workspace) remember(view);
+      if (view.kind === "editor-terminal") {
+        void import("../runtime/api").then(({ closeEditor }) =>
+          closeEditor(view.session).catch(() => undefined),
+        );
+      }
+    }
+    setStore("byWorkspace", workspace, (views) => targets.reduce(closeView, views));
+  };
+  const unsaved = targets.some(
+    (view) =>
+      view.kind === "editor-terminal" &&
+      forgeStore.sessions.find((session) => session.id === view.session)?.editor?.dirty !== false,
+  );
+  if (unsaved) {
+    requestConfirm({
+      title: "Close files with unsaved changes?",
+      description: "These files have unsaved changes. Cancel to save them before closing.",
+      confirmLabel: "Close without saving",
+      onConfirm: finish,
+    });
+  } else {
+    finish();
+  }
+}
+
 export function closeCode(): void {
-  for (const view of currentViews().open) remember(view);
-  update(() => emptyViews());
-  setMode("session");
+  closeViews(currentViews().open);
 }
 
 export function showTerminal(): void {
@@ -249,17 +272,14 @@ export function reopenClosed(): void {
 /** Close every view but the active one. */
 export function closeOtherViews(): void {
   const views = currentViews();
-  for (const view of views.open) if (!sameView(view, views.active)) remember(view);
-  update((current) => closeOthers(current, current.active));
-  if (!hasCode(currentViews())) setMode("session");
+  closeViews(views.open.filter((view) => !sameView(view, views.active)));
 }
 
 /** Close everything after the active view in the strip. */
 export function closeViewsToRight(): void {
   const views = currentViews();
   const index = views.open.findIndex((item) => sameView(item, views.active));
-  if (index >= 0) for (const view of views.open.slice(index + 1)) remember(view);
-  update((current) => closeToRight(current, current.active));
+  if (index >= 0) closeViews(views.open.slice(index + 1));
 }
 
 /** Move one step along the Code strip, wrapping. */
@@ -303,18 +323,7 @@ export function clearEditorReveal(): void {
   setPendingLine(null);
 }
 
-/**
- * Open the Files sidebar in content-search mode, optionally pre-filled.
- *
- * Same shape as `treeReveal`: the Files panel may not be mounted yet (another
- * sidebar view, or the bar collapsed). The request stands until the panel
- * picks it up.
- *
- * `query` is what separates the two callers. `Mod-shift-f` asks for the field
- * and nothing else, so it sends `null` and the panel leaves whatever was typed
- * there alone. "Find All References" arrives with a symbol, and the panel runs
- * it — a references search is a content grep with the query already decided.
- */
+// The lazy Search tab consumes the focus request after its input mounts.
 const [pendingFindInFiles, setPendingFindInFiles] = createSignal<{ query: string | null } | null>(
   null,
 );
@@ -322,7 +331,9 @@ const [pendingFindInFiles, setPendingFindInFiles] = createSignal<{ query: string
 export const findInFilesPending = pendingFindInFiles;
 
 export function requestFindInFiles(query: string | null = null): void {
+  if (!workbenchStore.workspace) return;
   setPendingFindInFiles({ query });
+  openProjectSearch();
 }
 
 export function clearFindInFiles(): void {

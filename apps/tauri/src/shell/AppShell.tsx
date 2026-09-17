@@ -35,6 +35,7 @@ import { terminalStore } from "../store/terminalStore";
 import { focusWorkspace, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import {
   centerMode,
+  codeOpen,
   close as closeView,
   closeCode,
   closeOtherViews,
@@ -266,7 +267,7 @@ export function AppShell() {
   }
 
   function windowTabs() {
-    return stripItems(openSessions(), openViewCount() > 0);
+    return stripItems(openSessions(), codeOpen());
   }
 
   function activateTab(item: StripItem): void {
@@ -294,6 +295,7 @@ export function AppShell() {
    */
   function closeActive(): void {
     const target = closeTarget(centerMode(), currentViews());
+    if (target.kind === "none") return;
     if (target.kind === "view") {
       closeView(target.view);
       return;
@@ -450,10 +452,7 @@ export function AppShell() {
       // bar it lives in rather than going quiet.
       registerAction("toggle_projects", () => toggleView("Projects")),
       registerAction("toggle_files", () => toggleView("Files")),
-      registerAction("find_in_project", () => {
-        requestFindInFiles();
-        showView("Files");
-      }),
+      registerAction("find_in_project", () => requestFindInFiles()),
       registerAction("toggle_pull_requests", () => toggleView("PR")),
       registerAction("toggle_features", () => toggleView("Features")),
       registerAction("toggle_git", () => toggleView("Git")),
@@ -586,8 +585,8 @@ export function AppShell() {
         sessions={openSessions()}
         tabOrder={currentTabOrder()}
         onReorderTabs={persistTabOrder}
-        codeOpen={openViewCount() > 0}
-        codeActive={centerMode() === "code" && openViewCount() > 0}
+        codeOpen={codeOpen()}
+        codeActive={centerMode() === "code" && codeOpen()}
         codeCount={openViewCount()}
         onSelectCode={showCode}
         onCloseCode={closeCode}

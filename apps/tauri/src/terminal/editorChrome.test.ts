@@ -9,6 +9,13 @@ const state = (partial: Partial<EditorState> = {}): EditorState => ({
   dirty: false,
   read_only: true,
   document_version: 1,
+  top_line: 1,
+  visible_lines: 30,
+  total_lines: 120,
+  caret_line: "fn main() {}",
+  selection_length: 0,
+  cursor_count: 1,
+  status: "",
   conflict: false,
   ...partial,
 });
@@ -39,5 +46,22 @@ describe("the terminal editor chrome", () => {
       expect(chrome.position).toBeNull();
       expect(chrome.mark).toBe(UNKNOWN_MARK);
     }
+  });
+  /*
+   * The thumb is the editor's own viewport, not a measurement of the canvas:
+   * the pane has no copy of the text, so `total_lines` is the only honest
+   * denominator, and a file that fits gets no thumb at all.
+   */
+  it("reports the scroll position the editor published", () => {
+    expect(
+      editorChrome(state({ top_line: 31, visible_lines: 30, total_lines: 120 }), "x").scroll,
+    ).toEqual({ top: 0.25, size: 0.25 });
+    expect(
+      editorChrome(state({ top_line: 1, visible_lines: 30, total_lines: 30 }), "x").scroll,
+    ).toBeNull();
+    expect(
+      editorChrome(state({ top_line: 1, visible_lines: 0, total_lines: 0 }), "x").scroll,
+    ).toBeNull();
+    expect(editorChrome(null, "x").scroll).toBeNull();
   });
 });

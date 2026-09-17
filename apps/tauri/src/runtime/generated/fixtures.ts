@@ -22,7 +22,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   "Hello": {
-    "protocol_version": 23,
+    "protocol_version": 24,
     "client_version": "0.1.0",
     "client_kind": "Gui"
   }
@@ -91,16 +91,17 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   "HelloAck": {
-    "protocol_version": 23,
+    "protocol_version": 24,
     "daemon_version": "0.1.0",
     "instance_id": "forge-daemon-0001",
-    "started_at": "2026-08-30T12:00:00Z"
+    "started_at": "2026-08-30T12:00:00Z",
+    "editor_surface": "cells"
   }
 } as const;
 
 export const daemon_message_hello_reject = {
   "HelloReject": {
-    "daemon_protocol_version": 23,
+    "daemon_protocol_version": 24,
     "reason": "protocol version mismatch"
   }
 } as const;
@@ -714,20 +715,21 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  "protocol_version": 23,
+  "protocol_version": 24,
   "client_version": "0.1.0",
   "client_kind": "Gui"
 } as const;
 
 export const hello_ack = {
-  "protocol_version": 23,
+  "protocol_version": 24,
   "daemon_version": "0.1.0",
   "instance_id": "forge-daemon-0001",
-  "started_at": "2026-08-30T12:00:00Z"
+  "started_at": "2026-08-30T12:00:00Z",
+  "editor_surface": "cells"
 } as const;
 
 export const hello_reject = {
-  "daemon_protocol_version": 23,
+  "daemon_protocol_version": 24,
   "reason": "protocol version mismatch"
 } as const;
 
@@ -1691,6 +1693,13 @@ export const session_editor = {
     "dirty": false,
     "read_only": true,
     "document_version": 1,
+    "top_line": 1,
+    "visible_lines": 30,
+    "total_lines": 120,
+    "caret_line": "fn main() {}",
+    "selection_length": 0,
+    "cursor_count": 1,
+    "status": "saved",
     "conflict": false
   },
   "agent_provider_id": null,

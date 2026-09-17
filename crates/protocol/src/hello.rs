@@ -57,6 +57,25 @@ pub struct HelloAck {
     pub instance_id: String,
     /// When this daemon instance started.
     pub started_at: Timestamp,
+    /// Which surface an integrated editor session presents.
+    ///
+    /// Daemon-wide, so it belongs in the handshake and not on a session: the
+    /// GUI has to know which pane to mount before an editor exists. `#[serde(default)]`
+    /// so an older daemon means the surface it could only have had.
+    #[serde(default)]
+    pub editor_surface: EditorSurface,
+}
+
+/// What an integrated editor session draws with (`[editor] surface`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum EditorSurface {
+    /// A TUI under a PTY, painted by the GUI as a cell grid.
+    #[default]
+    Cells,
+    /// A headless host publishing windows into a DOM surface.
+    Dom,
 }
 
 /// Sent by the daemon when the handshake fails on version mismatch (§9.2).

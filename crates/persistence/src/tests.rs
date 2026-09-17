@@ -974,6 +974,7 @@ fn a_session_row_never_stores_editor_state() {
         read_only: false,
         document_version: 9,
         conflict: false,
+        ..Default::default()
     });
     db.sessions().upsert(&session).unwrap();
 

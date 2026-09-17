@@ -69,6 +69,16 @@ pub enum Outgoing {
         request_id: u64,
         autosave: bool,
     },
+    /// What the person did in a DOM surface, already clamped.
+    Input {
+        events: Vec<editor_control::EditorInput>,
+    },
+    /// Which lines that surface is showing.
+    SetView {
+        request_id: u64,
+        first_line: u32,
+        line_count: u32,
+    },
 }
 
 impl Outgoing {
@@ -101,6 +111,21 @@ impl Outgoing {
             } => DaemonMessage::SetAutosave {
                 request_id,
                 autosave,
+            },
+            Self::Input { events } => DaemonMessage::Input {
+                request_id: None,
+                events,
+            },
+            Self::SetView {
+                request_id,
+                first_line,
+                line_count,
+            } => DaemonMessage::SetView {
+                request_id,
+                view: editor_control::ViewRequest {
+                    first_line,
+                    line_count,
+                },
             },
         }
     }
@@ -501,6 +526,19 @@ fn serve(
                     return;
                 }
             }
+            // Straight through: the editor already coalesced this against its
+            // own emit floor and against the last window it published, so a
+            // frame arriving here is one the surface has not seen. Broadcast
+            // and never stored — a window is runtime state like a
+            // `TerminalDelta`, not something a session carries.
+            Ok(EditorMessage::ViewFrame { frame }) => {
+                daemon
+                    .registry
+                    .broadcast_domain(protocol::DaemonEvent::EditorFrame {
+                        session_id,
+                        frame: crate::editor_wire::frame_to_domain(frame),
+                    });
+            }
             Ok(EditorMessage::Applied { request_id, .. }) => {
                 if let Some(loaded) = daemon.finish_editor_reload(session_id, request_id) {
                     if let Some(loaded) = loaded {
@@ -513,6 +551,71 @@ fn serve(
             }
             Ok(EditorMessage::Refused { request_id, .. }) => {
                 daemon.finish_editor_reload(session_id, request_id);
+            }
+            // Disk work, on this thread and off the core lock — the rule
+            // go-to-definition exists under (AGENTS.md). The symbol is
+            // validated as an identifier by `fs-service` before it reaches
+            // `git grep`, so a caret in a buffer cannot become a regex.
+            Ok(EditorMessage::FindDefinition { request_id, symbol }) => {
+                let places = daemon.editor_definitions(session_id, &symbol);
+                let answer = DaemonMessage::Definitions {
+                    request_id,
+                    symbol,
+                    places,
+                };
+                if send(&writer, &answer).is_err() {
+                    return;
+                }
+            }
+            Ok(EditorMessage::RunDiagnostics { request_id }) => {
+                let found = daemon.editor_diagnostics(session_id, &path);
+                let answer = DaemonMessage::Diagnostics {
+                    request_id,
+                    command: found.is_some(),
+                    items: found.unwrap_or_default(),
+                };
+                if send(&writer, &answer).is_err() {
+                    return;
+                }
+            }
+            Ok(EditorMessage::ChangeDetails { request_id, line }) => {
+                let found = daemon.editor_change_details(session_id, &path, line);
+                let answer = match found {
+                    Some(hunk) => DaemonMessage::ChangeDetails {
+                        request_id,
+                        line: hunk.line,
+                        before: hunk.before,
+                        after: hunk.after,
+                        truncated: hunk.truncated,
+                    },
+                    None => DaemonMessage::ChangeDetails {
+                        request_id,
+                        line: 0,
+                        before: Vec::new(),
+                        after: Vec::new(),
+                        truncated: false,
+                    },
+                };
+                if send(&writer, &answer).is_err() {
+                    return;
+                }
+            }
+            Ok(EditorMessage::OpenPath {
+                request_id,
+                path: wanted,
+                line,
+            }) => {
+                // A refusal is worth saying: the candidate came from a grep of
+                // a tree that may have moved since.
+                if let Err(error) = daemon.editor_open_path(session_id, &wanted, line) {
+                    let answer = DaemonMessage::SaveRefused {
+                        request_id,
+                        reason: format!("could not open {wanted}: {}", error.message),
+                    };
+                    if send(&writer, &answer).is_err() {
+                        return;
+                    }
+                }
             }
             Ok(other) => {
                 tracing::debug!(%session_id, message = ?other, "editor message");
@@ -707,6 +810,13 @@ fn flush(
             dirty: state.dirty,
             read_only: state.read_only,
             document_version: state.document_version,
+            top_line: state.top_line,
+            visible_lines: state.visible_lines,
+            total_lines: state.total_lines,
+            caret_line: state.caret_line,
+            selection_length: state.selection_length,
+            cursor_count: state.cursor_count,
+            status: state.status,
             conflict,
         },
     );

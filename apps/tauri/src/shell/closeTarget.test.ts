@@ -42,7 +42,7 @@ describe("closeTarget", () => {
     expect(closeTarget("session", views)).toEqual({ kind: "session" });
   });
 
-  it("closes the session when Code is up but empty", () => {
-    expect(closeTarget("code", empty)).toEqual({ kind: "session" });
+  it("leaves background sessions alone when Code is empty", () => {
+    expect(closeTarget("code", empty)).toEqual({ kind: "none" });
   });
 });

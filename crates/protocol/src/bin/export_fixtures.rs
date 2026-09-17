@@ -288,6 +288,7 @@ fn sample_hello_ack() -> HelloAck {
         daemon_version: "0.1.0".to_string(),
         instance_id: "forge-daemon-0001".to_string(),
         started_at: ts(),
+        editor_surface: protocol::EditorSurface::Cells,
     }
 }
 
@@ -675,6 +676,13 @@ fn main() {
             dirty: false,
             read_only: true,
             document_version: 1,
+            top_line: 1,
+            visible_lines: 30,
+            total_lines: 120,
+            caret_line: "fn main() {}".to_string(),
+            selection_length: 0,
+            cursor_count: 1,
+            status: "saved".to_string(),
             conflict: false,
         });
         session

@@ -170,8 +170,8 @@ fn coalesce(
     let merged_redo = rebuild(
         vec![Edit::replace(previous_redo.range, insert.clone())],
         last.redo.origin,
-        last.redo.selection_before,
-        redo.selection_after,
+        last.redo.selection_before.clone(),
+        redo.selection_after.clone(),
     );
     // The inverse of the merged edit: remove everything inserted so far and put
     // back the text the first edit displaced.
@@ -182,8 +182,8 @@ fn coalesce(
             previous_undo.insert.clone(),
         )],
         Origin::History,
-        undo.selection_before,
-        last.undo.selection_after,
+        undo.selection_before.clone(),
+        last.undo.selection_after.clone(),
     );
     Some((merged_undo, merged_redo))
 }
@@ -203,7 +203,7 @@ fn rebuild(
 ) -> Transaction {
     // A single edit can neither overlap nor need sorting, so the only error
     // `Transaction::new` defines is unreachable here.
-    let mut transaction = Transaction::new(edits, origin, before)
+    let mut transaction = Transaction::new(edits, origin, before.clone())
         .unwrap_or_else(|_| Transaction::new(Vec::new(), origin, before).expect("empty is valid"));
     transaction.selection_after = after;
     transaction

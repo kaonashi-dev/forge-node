@@ -8,6 +8,7 @@ authors.workspace = true
 description = "Document model, transactions, history and search for forge-editor"
 
 [dependencies]
+regex.workspace = true
 thiserror.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true

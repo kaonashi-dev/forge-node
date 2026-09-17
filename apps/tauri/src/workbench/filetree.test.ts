@@ -6,6 +6,7 @@ import {
   filterTree,
   foldUnseen,
   treeRows,
+  watchDirectories,
 } from "./filetree";
 import type { FileTree } from "./types";
 
@@ -22,6 +23,35 @@ const tree: FileTree = {
 };
 
 const paths = (collapsed: string[]) => treeRows(tree, new Set(collapsed)).map((row) => row.path);
+
+describe("watch directories", () => {
+  const compact: FileTree = {
+    workspace_id: "w1",
+    truncated: false,
+    entries: [{ path: "src/components/forms/input.ts", kind: "File", ignored: false }],
+  };
+
+  it("watches intermediate folders hidden by a compact row", () => {
+    expect(watchDirectories(treeRows(compact, new Set()))).toEqual([
+      "",
+      "src",
+      "src/components",
+      "src/components/forms",
+    ]);
+  });
+
+  it("keeps compact ancestors watched when the last folder is collapsed", () => {
+    expect(watchDirectories(treeRows(compact, new Set(["src/components/forms"])))).toEqual([
+      "",
+      "src",
+      "src/components",
+    ]);
+  });
+
+  it("does not watch descendants hidden by an ordinary collapsed folder", () => {
+    expect(watchDirectories(treeRows(tree, new Set(["crates"])))).toEqual([""]);
+  });
+});
 
 describe("ignored rows", () => {
   const mixed: FileTree = {

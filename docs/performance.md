@@ -219,9 +219,23 @@ a decoration arriving does not drop the row under the pointer.
 The watch ack is held to the same rule. The daemon's `WatchFiles` replaces the
 directory set in place, which happens on every fold and every file opened
 outside the tree; treating each ack as "everything changed" made an ordinary
-click re-list the checkout and re-read the open document. Only an *arm* — the
-first watch, a new checkout, a reconnect, a retry after a failure — had a
-window where events could be lost, and only an arm asks the views to reconcile.
+click re-list the checkout and re-read the open document. An *arm* — the first
+watch, a new checkout, a reconnect, a retry after a failure — reconciles the
+whole surface. Adding a directory reconciles that path after the ack because
+it may have changed while unwatched; removing one or keeping the same set
+does not invalidate anything. Compact tree rows also watch their intermediate
+directories so a new sibling can split the compact row.
+
+A root listing collapses ignored directories into placeholders. Expanded rows
+stay visible until their one-level reads arrive, keeping watch interests stable
+during reconciliation. The GUI records completed directory reads, including
+empty ones, so an empty folder does not trigger a read loop.
+
+Git decorations retain one pending refresh when a filesystem event arrives
+during a diff read or its 10-second cooldown. The pending deadline does not
+move with each write, and completion wakes it without polling. Explicit
+refreshes bypass the cooldown but still wait for an active read; changing
+checkouts discards the old pending refresh.
 
 **Rule.** Before a read's answer is stored, ask whether it differs from what is
 already shown. A repaint the user can see is a promise that something changed.
@@ -399,7 +413,8 @@ measured against.
 
 | Surface | Budget | How it is held |
 |---|---|---|
-| Editor | keystroke → paint p95 ≤ 16 ms on a 20 000-line file; open ≤ 100 ms after `ReadFile` returns | Portable textarea editor in `file-workbench` / `workbench/editor/`. Syntax highlighting is deferred to a future local editor; large-file paint cost is the browser's. |
+| Editor (`surface = cells`) | keystroke → paint p95 ≤ 16 ms on a 20 000-line file; open ≤ 100 ms after `ReadFile` returns | `forge-editor` under a PTY, painted by the same canvas renderer as a terminal (`docs/editor.md`). The cost is a frame of cells: the editor damages the rows an edit reached and the loop paints at most once per 8 ms. |
+| Editor (`surface = dom`) | one window per input burst, ≤125/s; a window is what is on screen plus 2×24 overscan, never the file | The rung is **visible DOM rows**, not VT cells. A headless host publishes `ViewFrame`s and the browser composites the scroll, so scrolling costs the rows that entered the window and nothing repaints. Frames are clamped while they are built (`VIEW_ROW_BUDGET`), because the per-row caps do not compose into a frame budget. A window of 88 syntax-coloured Rust rows measures ~19 KB; the whole window is resent on every frame, so a sustained scroll tops out near 2.4 MB/s over a local Unix socket — the per-row `stale` delta in the plan is the fix if that ever shows up in a profile. Rows ship behind an `Arc`, so broadcasting to a second client is a refcount. |
 | Diff | expand a 2 000-line patch ≤ 50 ms | Patch rows are DOM (`workbench/diff/PatchView.tsx`), mounted only while a file section is open. |
 | Job stream | 1 000 lines/s with main-thread idle ≥ 70 % | `store/jobOutput.ts` appends at absolute store paths and copies the tail only when it overshoots budget by `OUTPUT_SLACK`; `JobStreamView` uses `Index`, and reads layout on scroll rather than per batch. |
 | File tree | 50 000 paths at 60 fps; filter keystroke ≤ 8 ms | Windowed rows with an overscan; the filter narrows the daemon's listing rather than re-scoring it. |

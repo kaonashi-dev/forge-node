@@ -116,6 +116,35 @@ pub fn encode_paste(text: &str, modes: &TermModes) -> Vec<u8> {
     paste(text, modes)
 }
 
+/// Most bytes one paste into the *editor* may carry.
+///
+/// Mirrors `editor_core::limits::MAX_DOCUMENT_BYTES`. Not shared as a constant
+/// because this host does not depend on the editor's crate, and a mismatch is
+/// safe in both directions: the editor refuses an over-budget transaction
+/// anyway, and this only bounds what it has to hold while deciding.
+pub const MAX_EDITOR_PASTE_BYTES: usize = 2 * 1024 * 1024;
+
+/// A paste for the editor, clamped before it is encoded.
+///
+/// crossterm 0.29 accumulates a whole bracketed paste into a `String` before it
+/// delivers `Event::Paste`, so the editor's document budget refuses an oversize
+/// paste only once the bytes are already resident. Clamping the *source* is the
+/// half of that debt this side owns: a paste that arrives over this route
+/// cannot make the peak larger than the budget. A terminal paste is deliberately
+/// not clamped — that text is going to a shell, and truncating what somebody
+/// pasted into one is a worse failure than the allocation.
+#[must_use]
+pub fn encode_editor_paste(text: &str, modes: &TermModes) -> (Vec<u8>, bool) {
+    if text.len() <= MAX_EDITOR_PASTE_BYTES {
+        return (paste(text, modes), false);
+    }
+    let mut cut = MAX_EDITOR_PASTE_BYTES;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    (paste(&text[..cut], modes), true)
+}
+
 /// Text committed by an input method, which is typed rather than pasted: it
 /// goes to the PTY verbatim, never wrapped in paste markers.
 #[must_use]
@@ -135,6 +164,38 @@ fn is_function_key(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The editor's document budget refuses an oversize paste only once the
+    /// bytes are resident; clamping the source is the half this side owns.
+    #[test]
+    fn an_oversize_editor_paste_is_cut_before_it_is_encoded() {
+        let modes = TermModes::default();
+        let small = "x".repeat(16);
+        let (bytes, cut) = encode_editor_paste(&small, &modes);
+        assert!(!cut);
+        assert_eq!(bytes, encode_paste(&small, &modes));
+
+        let huge = "x".repeat(MAX_EDITOR_PASTE_BYTES + 1024);
+        let (bytes, cut) = encode_editor_paste(&huge, &modes);
+        assert!(cut);
+        assert!(
+            bytes.len() <= MAX_EDITOR_PASTE_BYTES + 16,
+            "plus the markers"
+        );
+    }
+
+    /// Half a multi-byte character is not text, so the cut walks back to a
+    /// boundary rather than splitting one.
+    #[test]
+    fn the_cut_lands_on_a_character_boundary() {
+        let modes = TermModes::default();
+        // One byte over the budget, ending inside a three-byte character.
+        let mut text = "a".repeat(MAX_EDITOR_PASTE_BYTES - 1);
+        text.push('\u{4e2d}');
+        let (bytes, cut) = encode_editor_paste(&text, &modes);
+        assert!(cut);
+        assert!(std::str::from_utf8(&bytes).is_ok());
+    }
 
     fn press(key: &str) -> KeyPress {
         KeyPress {

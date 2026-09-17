@@ -115,7 +115,11 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  scrollbar-width: none;
   outline: none;
+}
+.fw-tree::-webkit-scrollbar {
+  display: none;
 }
 .fw-tree-space {
   position: relative;

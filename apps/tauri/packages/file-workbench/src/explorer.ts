@@ -5,6 +5,8 @@ import {
   filterTree,
   foldUnseen,
   treeRows,
+  unloadedDirectories,
+  watchDirectories,
   type FileTree,
   type TreeRow,
 } from "./tree.js";
@@ -293,8 +295,9 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   let drafts = 0;
   let collapsed = new Set<string>();
   let seen = new Set<string>();
-  /** Ignored directories the host has peeled; keeps them non-opaque after merge. */
+  // Expansion intent survives a root listing, which contains only ignored placeholders.
   let openedIgnored = new Set<string>();
+  const pendingDirectories = new Set<string>();
   let selectedPath: string | null = null;
   let index = 0;
   let rowHeight = 24;
@@ -554,16 +557,18 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       );
       files = 0;
       for (const row of rows) if (row.isFile) files += 1;
-      const paths = [
-        "",
-        ...rows.filter((row) => !row.isFile && !row.folded).map((row) => row.path),
-      ];
+      // A filter reveals matches, not additional directory interests.
+      const watchedRows = filtered ? treeRows(state.tree, collapsed, openedIgnored) : rows;
+      const paths = watchDirectories(watchedRows);
       const key = JSON.stringify(paths);
-      // A filtered view flattens everything, so it is not what the watcher is
-      // told to follow: the folds underneath it are still what is open.
-      if (!filtered && key !== directories) {
+      if (key !== directories) {
         directories = key;
         options.onDirectoriesChange?.(paths);
+      }
+      for (const path of unloadedDirectories(state.tree, watchedRows, openedIgnored)) {
+        if (pendingDirectories.has(path)) continue;
+        pendingDirectories.add(path);
+        options.onExpandOpaque?.(path);
       }
       // After the counts and the watch interest: a name nobody has typed yet
       // is not a file, and an unwritten row is nothing to watch.
@@ -642,7 +647,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   function activate(): void {
     const row = rows[index];
     if (!row || row.path === DRAFT) return;
-    if (row.opaque) {
+    if (row.opaque || (!row.isFile && row.ignored && row.folded)) {
       peelOpaque(row.path);
       return;
     }
@@ -657,6 +662,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   /** Ask the host for one level under an opaque ignored directory. */
   function peelOpaque(path: string): void {
     openedIgnored.add(path);
+    pendingDirectories.add(path);
     seen.add(path);
     collapsed.delete(path);
     folds += 1;
@@ -680,7 +686,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     else if (command === "open") activate();
     else {
       const row = rows[index];
-      if (command === "expand" && row?.opaque) {
+      if (command === "expand" && row && (row.opaque || (row.ignored && row.folded))) {
         peelOpaque(row.path);
         return;
       }
@@ -801,6 +807,8 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       const changed = next.tree !== state.tree;
       state = next;
       if (changed) {
+        if (!state.tree?.loadedDirectories) pendingDirectories.clear();
+        for (const path of state.tree?.loadedDirectories ?? []) pendingDirectories.delete(path);
         revision += 1;
         const folded = foldUnseen(collapsed, seen, directoryPaths(state.tree));
         if (folded.collapsed !== collapsed) folds += 1;
@@ -823,6 +831,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       collapsed.clear();
       seen.clear();
       openedIgnored.clear();
+      pendingDirectories.clear();
       folds += 1;
       selectedPath = null;
       query = "";

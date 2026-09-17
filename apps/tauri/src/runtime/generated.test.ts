@@ -39,6 +39,13 @@ describe("generated fixtures", () => {
       dirty: false,
       read_only: true,
       document_version: 1,
+      top_line: 1,
+      visible_lines: 30,
+      total_lines: 120,
+      caret_line: "fn main() {}",
+      selection_length: 0,
+      cursor_count: 1,
+      status: "saved",
       conflict: false,
     });
 

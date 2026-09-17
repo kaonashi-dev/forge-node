@@ -8,6 +8,22 @@ export type EditorState = {
   dirty: boolean;
   read_only: boolean;
   document_version: number;
+  /** 1-based first line on screen, as the editor's own viewport reports it. */
+  top_line: number;
+  /** Logical lines the viewport shows. */
+  visible_lines: number;
+  /** Lines in the buffer. */
+  total_lines: number;
+  /** The caret's line as text, clamped by the editor. The only document text
+   *  on a session, and it is here so a screen reader can say what line it is
+   *  on without reading the cells back off the canvas. */
+  caret_line: string;
+  /** Bytes the primary caret has selected. */
+  selection_length: number;
+  /** How many carets there are. */
+  cursor_count: number;
+  /** The editor's transient message, as its own status row shows it. */
+  status: string;
   /** A save was refused because the file moved under the buffer. */
   conflict: boolean;
 };
@@ -236,11 +252,15 @@ export type ProviderUsage = {
   collected_at: string;
 };
 
+/** Which pane the Code region mounts for an editor session (`[editor] surface`). */
+export type EditorSurface = "cells" | "dom";
+
 export type DaemonInfo = {
   protocol_version: number;
   daemon_version: string;
   instance_id: string;
   started_at: string;
+  editor_surface: EditorSurface;
 };
 
 export type Launchable = {

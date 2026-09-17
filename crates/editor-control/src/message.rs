@@ -5,6 +5,7 @@
 //! handshake is the first exchange in each direction (`Hello` then `Welcome`);
 //! every request after it carries a `request_id` that its answer echoes.
 
+use crate::view::{EditorInput, ViewFrame, ViewRequest};
 use crate::CONTROL_VERSION;
 use serde::{Deserialize, Serialize};
 
@@ -98,6 +99,59 @@ pub enum DaemonMessage {
     /// The *keep mine* half. The daemon cannot write the draft on its own — it
     /// does not have it — so the save stays a request the editor makes.
     Save { request_id: u64 },
+    /// Candidate declarations for a symbol the editor asked about.
+    ///
+    /// The answer to [`EditorMessage::FindDefinition`]. *Candidates*, not a
+    /// resolution: `fs-service` ranks them with a heuristic, so the editor
+    /// offers the list rather than jumping somewhere it cannot justify. Capped
+    /// by the daemon before it is sent.
+    Definitions {
+        request_id: u64,
+        /// Echoed, because the editor may have moved on.
+        symbol: String,
+        places: Vec<WirePlace>,
+    },
+    /// What the changed block at a line replaced.
+    ///
+    /// The answer to [`EditorMessage::ChangeDetails`]. The gutter says *which*
+    /// lines changed; this is the question a person asks about one of them, so
+    /// it is answered on demand rather than carried with every mark.
+    ChangeDetails {
+        request_id: u64,
+        /// 1-based line the block starts at, or 0 when there is no block.
+        line: u32,
+        before: Vec<String>,
+        after: Vec<String>,
+        /// Either side was longer than the daemon's budget.
+        truncated: bool,
+    },
+    /// What a checker said about the open file.
+    ///
+    /// The answer to [`EditorMessage::RunDiagnostics`], and also how they are
+    /// cleared: an empty list is "it found nothing", which is a result. A
+    /// `command: false` means no checker is configured, which is not.
+    Diagnostics {
+        request_id: u64,
+        /// Whether `[editor] diagnostics_command` named one at all.
+        command: bool,
+        items: Vec<WireDiagnostic>,
+    },
+    /// What the person did in the GUI's surface.
+    ///
+    /// The DOM surface has no PTY, so a keystroke is a named key and not an
+    /// escape sequence. Batched: one message per input burst, never one per
+    /// key. `request_id` is optional because typing is not a request — it is
+    /// there for the caller that wants to know an ordered edit landed.
+    Input {
+        request_id: Option<u64>,
+        events: Vec<EditorInput>,
+    },
+    /// Which lines the GUI is showing.
+    ///
+    /// The GUI owns the line height and the scroll container, so it is the
+    /// only side that can say what fits; the host answers with a
+    /// [`EditorMessage::ViewFrame`] for that window plus its overscan.
+    SetView { request_id: u64, view: ViewRequest },
     /// Replace byte ranges, refused when the document moved under the caller.
     ///
     /// Reserved for a preview surface; H1's daemon does not send it yet, so an
@@ -158,6 +212,41 @@ pub enum EditorMessage {
         request_id: Option<u64>,
         state: EditorStateWire,
     },
+    /// Where is this symbol declared?
+    ///
+    /// The daemon owns the checkout, so the editor cannot grep it. `symbol` is
+    /// validated as an identifier on both sides before it reaches `git grep`:
+    /// a name that arrives from a click must never be able to become a regex
+    /// (`SearchKind::Definition`, AGENTS.md).
+    FindDefinition { request_id: u64, symbol: String },
+    /// Open another file in the workbench, at a line.
+    ///
+    /// The editor holds one buffer per process and cannot open a second, so
+    /// following a definition is a request: the daemon opens the file the way
+    /// the GUI would have.
+    OpenPath {
+        request_id: u64,
+        /// Workspace-relative, as [`DaemonMessage::Definitions`] gave it.
+        path: String,
+        line: u32,
+    },
+    /// What did the changed block at this line replace?
+    ///
+    /// The editor does not open the checkout and never runs git, so the diff
+    /// that produced its gutter marks is the daemon's to read again.
+    ChangeDetails { request_id: u64, line: u32 },
+    /// Run the configured checker and say what it found here.
+    ///
+    /// On demand: a checker that ran by itself would be a subprocess per
+    /// keystroke. The editor never spawns anything — the daemon owns the
+    /// checkout and every process in it.
+    RunDiagnostics { request_id: u64 },
+    /// The window the host chose, and everything painted in it.
+    ///
+    /// The DOM surface's frame: lines and scopes, never cells. Sent after a
+    /// mutation, a caret move or a [`DaemonMessage::SetView`], coalesced by
+    /// the host's own emit floor the way the PTY path coalesces damage.
+    ViewFrame { frame: ViewFrame },
     /// The editor is exiting (quit command, fatal error). The daemon treats the
     /// socket EOF the same way, so this is a courtesy reason, not the signal.
     Closed { reason: String },
@@ -179,7 +268,81 @@ pub struct EditorStateWire {
     pub read_only: bool,
     /// Monotonic document version from `editor-core`.
     pub document_version: u64,
+    /// 1-based first line on screen. The TUI owns the viewport; this is what
+    /// lets the GUI draw a scrollbar thumb without a second copy of the text.
+    #[serde(default)]
+    pub top_line: u32,
+    /// Logical lines the viewport currently shows, at least 1.
+    #[serde(default)]
+    pub visible_lines: u32,
+    /// Lines in the buffer, so a thumb has a denominator.
+    #[serde(default)]
+    pub total_lines: u32,
+    /// The caret's line as text, clamped to [`MAX_CARET_LINE_BYTES`].
+    ///
+    /// The one piece of document text on this wire, and it is here for the
+    /// screen reader: the GUI paints a passive cell grid, so without this the
+    /// only way to say what line a person is on would be to read it back out of
+    /// the cells the editor just drew.
+    #[serde(default)]
+    pub caret_line: String,
+    /// Bytes the primary caret has selected. A length and not the text: a
+    /// selection can be the whole buffer.
+    #[serde(default)]
+    pub selection_length: u32,
+    /// How many carets there are. More than one is state a person can forget
+    /// they are in.
+    #[serde(default)]
+    pub cursor_count: u32,
+    /// The editor's transient message, when it has one.
+    ///
+    /// The same string its status row shows — `alpha: 3/41`, `no match`, a save
+    /// refusal. It is here because a person who cannot see the canvas cannot
+    /// see that row, and it is the answer to the gesture they just made.
+    #[serde(default)]
+    pub status: String,
 }
+
+/// Longest caret line that travels on the state.
+///
+/// A line can be as long as the document; a screen reader announcing one is
+/// reading a sentence, not a file. Clamped before the copy, never after.
+pub const MAX_CARET_LINE_BYTES: usize = 2 * 1024;
+
+/// How much one diagnostic matters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireSeverity {
+    Error,
+    Warning,
+    Info,
+}
+
+/// One line a checker had something to say about.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireDiagnostic {
+    /// 1-based, as every checker counts.
+    pub line: u32,
+    pub severity: WireSeverity,
+    pub message: String,
+}
+
+/// One place a symbol is declared, or a diagnostic points at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WirePlace {
+    /// Workspace-relative.
+    pub path: String,
+    /// 1-based.
+    pub line: u32,
+    /// The line's text, so a list reads without a second read per row.
+    pub text: String,
+}
+
+/// Most places one answer carries.
+///
+/// A list is chosen from, not scrolled: past this the symbol was too common to
+/// be a question, and the daemon says so by truncating rather than by sending
+/// a thousand rows through a socket sized for a buffer.
+pub const MAX_PLACES: usize = 64;
 
 /// What one line's gutter mark says happened to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -950,6 +950,14 @@ impl Daemon {
                 line,
                 column,
             } => self.reveal_in_editor_session(session_id, line, column),
+            Request::SendEditorInput { session_id, events } => {
+                self.send_editor_input(session_id, events)
+            }
+            Request::SetEditorView {
+                session_id,
+                first_line,
+                line_count,
+            } => self.set_editor_view(session_id, first_line, line_count),
             Request::GetEditorConflict { session_id } => self.editor_conflict(session_id),
             Request::ReloadEditorBuffer { session_id } => self.reload_editor_buffer(session_id),
             Request::OverwriteEditorBuffer { session_id } => {
@@ -2630,6 +2638,8 @@ impl Daemon {
                     line: m.line,
                     column: m.column,
                     text: m.text,
+                    before: m.before,
+                    after: m.after,
                 })
                 .collect(),
             truncated: results.truncated,
@@ -3987,6 +3997,44 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
+    /// Forward what the person did in a DOM surface.
+    ///
+    /// Clamped at this boundary, not only in the editor: a client is what can
+    /// reach this, and an oversized burst or paste is truncated before it is
+    /// forwarded rather than after it is allocated. An empty batch is not sent
+    /// at all — it would still cost a frame on the other side.
+    fn send_editor_input(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        events: Vec<domain::EditorInputEvent>,
+    ) -> Result<Response, ProtocolError> {
+        let events = crate::editor_wire::input_to_wire(events);
+        if events.is_empty() {
+            return Ok(Response::Ack);
+        }
+        self.send_editor_command(session_id, crate::editor::Outgoing::Input { events })?;
+        Ok(Response::Ack)
+    }
+
+    /// Tell the editor which lines its surface is showing.
+    fn set_editor_view(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        first_line: u32,
+        line_count: u32,
+    ) -> Result<Response, ProtocolError> {
+        let request_id = self.next_editor_request_id();
+        self.send_editor_command(
+            session_id,
+            crate::editor::Outgoing::SetView {
+                request_id,
+                first_line,
+                line_count,
+            },
+        )?;
+        Ok(Response::Ack)
+    }
+
     /// Keep mine: ask the editor for its draft again.
     ///
     /// The daemon does not hold the draft as state it may write — the copy it
@@ -4931,6 +4979,12 @@ impl Daemon {
                     "--control".to_owned(),
                     control_socket.to_string_lossy().into_owned(),
                 ];
+                // The DOM surface's editor never paints: no raw mode, no ANSI,
+                // and the PTY it still runs under carries nothing. The PTY
+                // stays because it is how every session is spawned and reaped.
+                if self.config.editor.surface == crate::config::EditorSurface::Dom {
+                    args.push("--headless".to_owned());
+                }
                 if read_only {
                     args.push("--read-only".to_owned());
                 }
@@ -5456,6 +5510,15 @@ impl Daemon {
         Some(session.clone())
     }
 
+    /// Which surface an integrated editor session presents.
+    ///
+    /// Read for the handshake: the GUI has to know which pane to mount before
+    /// an editor session exists, and the config is not otherwise public.
+    #[must_use]
+    pub fn editor_surface(&self) -> crate::config::EditorSurface {
+        self.config.editor.surface
+    }
+
     /// The next id for a request the daemon mints on a control channel.
     ///
     /// The handshake uses 1 and the editor's own requests start at 1_000, so
@@ -5501,6 +5564,117 @@ impl Daemon {
                 })
                 .collect(),
         )
+    }
+
+    /// Where a symbol is declared, for the editor's go-to-definition.
+    ///
+    /// `git grep -w -F` through `fs-service`, which validates the symbol as an
+    /// identifier first: a name that arrives from a caret in a buffer must
+    /// never be able to become a regex (`SearchKind::Definition`). Candidates
+    /// and not a resolution — the ranking is a heuristic, so the editor offers
+    /// the list. Runs on the editor's own control thread, off the core lock,
+    /// which is only taken to read the workspace id.
+    pub(crate) fn editor_definitions(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        symbol: &str,
+    ) -> Vec<editor_control::WirePlace> {
+        let Some(workspace_id) = ({
+            let inner = self.lock();
+            inner.sessions.get(&session_id).map(|s| s.workspace_id)
+        }) else {
+            return Vec::new();
+        };
+        let Ok(root) = self.workspace_path(workspace_id) else {
+            return Vec::new();
+        };
+        let found = fs_service::search_files(
+            &root,
+            symbol,
+            fs_service::SearchKind::Definition,
+            editor_control::MAX_PLACES,
+        );
+        match found {
+            Ok(results) => results
+                .matches
+                .into_iter()
+                .take(editor_control::MAX_PLACES)
+                .map(|hit| editor_control::WirePlace {
+                    path: hit.path,
+                    line: hit.line,
+                    text: hit.text,
+                })
+                .collect(),
+            Err(error) => {
+                tracing::debug!(%session_id, %error, "definition search failed");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Run the configured checker and keep what it said about this buffer.
+    ///
+    /// `None` means no checker is configured, which is different from finding
+    /// nothing — the editor says so rather than showing a clean gutter it has
+    /// no grounds for. Spawns on the editor's own control thread, off the core
+    /// lock, with the whole process group killed on a timeout.
+    pub(crate) fn editor_diagnostics(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        relative: &str,
+    ) -> Option<Vec<editor_control::WireDiagnostic>> {
+        let command = &self.config.editor.diagnostics_command;
+        if command.is_empty() {
+            return None;
+        }
+        let workspace_id = {
+            let inner = self.lock();
+            inner.sessions.get(&session_id)?.workspace_id
+        };
+        let root = self.workspace_path(workspace_id).ok()?;
+        crate::diagnostics::run(&root, command, relative)
+    }
+
+    /// What the changed block at `line` replaced, for the editor's gutter.
+    ///
+    /// A `git diff` on the editor's own control thread, off the core lock —
+    /// the same rule the definition search runs under, for the same reason.
+    pub(crate) fn editor_change_details(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        relative: &str,
+        line: u32,
+    ) -> Option<git_service::Hunk> {
+        let workspace_id = {
+            let inner = self.lock();
+            inner.sessions.get(&session_id)?.workspace_id
+        };
+        let root = self.workspace_path(workspace_id).ok()?;
+        git_service::file_hunk(&root, relative, line).ok().flatten()
+    }
+
+    /// Open a second file for an editor that cannot open one itself.
+    ///
+    /// One buffer per process, so following a definition is a request. The
+    /// answer is an ordinary editor session in the same workspace, which the
+    /// GUI already opens on `EditorOpened` — this is the same path a click in
+    /// the file tree takes, not a second kind of editor.
+    pub(crate) fn editor_open_path(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        path: &str,
+        line: u32,
+    ) -> Result<(), ProtocolError> {
+        let workspace_id = {
+            let inner = self.lock();
+            inner
+                .sessions
+                .get(&session_id)
+                .map(|s| s.workspace_id)
+                .ok_or_else(|| ProtocolError::invalid_request("no such editor session"))?
+        };
+        self.create_editor_session(workspace_id, path, Some(line), false, false)
+            .map(|_| ())
     }
 
     pub(crate) fn drop_editor_port(&self, session_id: SessionId) {
@@ -9835,6 +10009,56 @@ mod tests {
         assert!(spec.env.iter().any(|(k, _)| k == "FORGE_WORKSPACE"));
     }
 
+    /// The DOM surface's editor takes the same buffer over the same socket and
+    /// only stops painting: one editor, two sinks.
+    #[test]
+    fn the_dom_surface_spawns_a_headless_editor() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let editor = write_executable(tmp.path(), "forge-editor");
+        let mut config = Config::default();
+        config.sessions.term = terminfo::FALLBACK_TERM.to_owned();
+        config.editor.executable = editor.to_string_lossy().into_owned();
+        config.editor.surface = crate::config::EditorSurface::Dom;
+        let (daemon, _worktrees, backend) =
+            test_daemon_with_config(FakePtyBackend::empty(), config);
+        let ws = checkout_with_file(&daemon, tmp.path(), "src/main.rs", b"fn main() {}\n");
+        daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "src/main.rs".into(),
+                line: None,
+                autosave: false,
+                read_only: false,
+            })
+            .expect("create");
+        let spec = backend.last_spawn().expect("spawned");
+        assert_eq!(spec.args.first().map(String::as_str), Some("--control"));
+        assert!(spec.args.iter().any(|arg| arg == "--headless"));
+        assert_eq!(daemon.editor_surface(), crate::config::EditorSurface::Dom);
+    }
+
+    /// The default is still the cell grid: the DOM surface is opt-in until it
+    /// has everything the TUI has.
+    #[test]
+    fn the_cell_surface_is_the_default_and_spawns_no_headless_flag() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let backend = FakePtyBackend::empty();
+        let (daemon, _worktrees, backend) = editor_daemon(tmp.path(), backend);
+        let ws = checkout_with_file(&daemon, tmp.path(), "src/main.rs", b"fn main() {}\n");
+        daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "src/main.rs".into(),
+                line: None,
+                autosave: false,
+                read_only: false,
+            })
+            .expect("create");
+        let spec = backend.last_spawn().expect("spawned");
+        assert!(!spec.args.iter().any(|arg| arg == "--headless"));
+        assert_eq!(daemon.editor_surface(), crate::config::EditorSurface::Cells);
+    }
+
     #[test]
     fn editor_session_missing_binary_fails_the_spawn() {
         let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
@@ -10082,6 +10306,7 @@ mod tests {
             dirty: true,
             read_only: false,
             document_version: 1,
+            ..Default::default()
         };
         fn next_reply(stream: &mut std::os::unix::net::UnixStream) -> ControlOut {
             loop {
@@ -10256,6 +10481,7 @@ mod tests {
             dirty: false,
             read_only: true,
             document_version: 1,
+            ..Default::default()
         };
         for line in 1..=20 {
             let mut state = wire.clone();

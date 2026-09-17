@@ -27,7 +27,8 @@ import { sessionAttention } from "../runtime/attention";
 import { setAppState } from "../runtime/api";
 import { draftWithJuva } from "../workbench/api";
 import { openComposeForWorkspace } from "../workbench/PrComposeView";
-import { focusWorkspace } from "../store/workbenchStore";
+import { focusWorkspace, workbenchStore } from "../store/workbenchStore";
+import { centerMode, openFeatureCompose, showCode } from "../store/viewsStore";
 import { focusSession, launchAgent, launchShell } from "./sessionActions";
 import { Button, ContextMenu, Dialog, IconButton, Tooltip, type MenuItem } from "../ui";
 import {
@@ -74,6 +75,11 @@ const COLLAPSED_KEY = "ui.sidebar.collapsed";
 const WORKSPACE_ORDER_KEY = "ui.sidebar.workspace_order";
 const CHECKOUT_DRAG_PX = 4;
 const CHECKOUT_SCROLL_EDGE_PX = 40;
+
+function focusCode(workspace: string): void {
+  focusWorkspace(workspace);
+  showCode();
+}
 
 /** The palette a review decision paints the card's pull-request mark. */
 const PR_ICON_CLASS: Record<PrTone, string> = {
@@ -130,25 +136,42 @@ export function ProjectsView() {
     setMenu({ x: event.clientX, y: event.clientY, items });
   }
 
-  /** What a launcher row offers, mirroring the `+` menu's own list. */
   function launchItems(workspace: string): MenuItem[] {
-    return forgeStore.launchables.map((launchable) => ({
-      kind: "item",
-      label: launchable.kind === "shell" ? "New Terminal" : `New ${launchable.label}`,
-      ...(launchable.kind === "shell"
-        ? { icon: "square-terminal" as const }
-        : { glyph: <SessionGlyph providerId={launchable.provider ?? null} size={14} /> }),
-      // Not installed stays listed and disabled, so the menu also answers
-      // "what could run here?".
-      detail: launchable.detail ?? undefined,
-      disabled: !launchable.enabled,
-      run: () =>
-        launchable.kind === "shell"
-          ? void launchShell(workspace).catch(() => undefined)
-          : void launchAgent(launchable.provider ?? "", launchable.profile, workspace).catch(
-              () => undefined,
-            ),
-    }));
+    const shells: MenuItem[] = [];
+    const agents: MenuItem[] = [];
+    for (const launchable of forgeStore.launchables) {
+      const items = launchable.kind === "shell" ? shells : agents;
+      items.push({
+        kind: "item",
+        label: launchable.kind === "shell" ? "New Terminal" : launchable.label,
+        ...(launchable.kind === "shell"
+          ? { icon: "square-terminal" as const }
+          : { glyph: <SessionGlyph providerId={launchable.provider ?? null} size={14} /> }),
+        // Not installed stays listed and disabled, so the menu also answers
+        // "what could run here?".
+        detail: launchable.detail ?? undefined,
+        disabled: !launchable.enabled,
+        run: () =>
+          launchable.kind === "shell"
+            ? void launchShell(workspace).catch(() => undefined)
+            : void launchAgent(launchable.provider ?? "", launchable.profile, workspace).catch(
+                () => undefined,
+              ),
+      });
+    }
+    return [
+      ...shells,
+      {
+        kind: "item",
+        label: "New Feature…",
+        glyph: <Icon name="agent" class="forge-icon-accent" size={14} />,
+        run: () => {
+          focusWorkspace(workspace);
+          openFeatureCompose();
+        },
+      },
+      ...(agents.length ? [{ kind: "rule" } as const, ...agents] : []),
+    ];
   }
 
   /**
@@ -305,11 +328,9 @@ export function ProjectsView() {
     );
     const projectPath = project?.root_path ?? node.path;
     const launches = launchItems(node.id);
-    const startItems: MenuItem[] = launches.length
-      ? [{ kind: "heading", label: "Start" }, ...launches, { kind: "rule" }]
-      : [];
     return [
-      ...startItems,
+      ...launches,
+      { kind: "rule" },
       { kind: "heading", label: "Juva & Git" },
       {
         kind: "item",
@@ -505,10 +526,13 @@ export function ProjectsView() {
     selectRow(list[next].id);
   }
 
-  /** `Enter` on a row: a session is selected, everything else folds or opens. */
   function activate(): void {
     const row = rows()[cursor()];
     if (!row) return;
+    if (row.kind === "code") {
+      focusCode(row.target);
+      return;
+    }
     if (row.kind === "session") {
       // A session row is a request for that terminal, like its tab above.
       focusSession(row.target);
@@ -955,6 +979,7 @@ function WorkspaceList(props: {
             level={props.level}
             open={props.isOpen(workspace.id)}
             cursor={props.selected === `workspace:${workspace.id}`}
+            cursorCode={props.selected === `code:${workspace.id}`}
             cursorSession={
               props.selected?.startsWith("session:")
                 ? props.selected.slice("session:".length)
@@ -995,6 +1020,7 @@ function WorkspaceCard(props: {
   open: boolean;
   /** The rail's keyboard cursor is on this card (§4.1 U4). */
   cursor: boolean;
+  cursorCode: boolean;
   /** Which session id the cursor is on, if it is on one inside this card. */
   cursorSession: string | null;
   dragging: boolean;
@@ -1018,8 +1044,13 @@ function WorkspaceCard(props: {
       ),
     ),
   );
-  const active = createMemo(() =>
-    props.workspace.sessions.some((node) => node.session.id === runtimeStore.activeSession),
+  const codeActive = () =>
+    centerMode() === "code" && workbenchStore.workspace === props.workspace.id;
+  const active = createMemo(
+    () =>
+      codeActive() ||
+      (centerMode() === "session" &&
+        props.workspace.sessions.some((node) => node.session.id === runtimeStore.activeSession)),
   );
   const sync = createMemo(() => syncLabel(props.workspace.ahead, props.workspace.behind));
 
@@ -1109,16 +1140,14 @@ function WorkspaceCard(props: {
           >
             +
           </IconButton>
-          <Show when={props.workspace.sessions.length > 0}>
-            <button
-              type="button"
-              class="forge-row ws-expand"
-              aria-label={props.open ? "Collapse this checkout" : "Expand this checkout"}
-              onClick={props.onToggle}
-            >
-              <Twisty open={props.open} />
-            </button>
-          </Show>
+          <button
+            type="button"
+            class="forge-row ws-expand"
+            aria-label={props.open ? "Collapse this checkout" : "Expand this checkout"}
+            onClick={props.onToggle}
+          >
+            <Twisty open={props.open} />
+          </button>
         </span>
       </div>
 
@@ -1148,8 +1177,26 @@ function WorkspaceCard(props: {
         </div>
       </Show>
 
-      <Show when={props.open && props.workspace.sessions.length > 0}>
+      <Show when={props.open}>
         <div class="ws-sessions">
+          <button
+            type="button"
+            id={railRowId(`code:${props.workspace.id}`)}
+            class="forge-row tree-row session"
+            role="treeitem"
+            aria-level={props.level + 1}
+            aria-selected={props.cursorCode || codeActive()}
+            classList={{ active: codeActive(), cursor: props.cursorCode }}
+            onClick={() => focusCode(props.workspace.id)}
+            onContextMenu={(event) => event.stopPropagation()}
+          >
+            <span class="tree-twisty" aria-hidden="true" />
+            <Icon
+              name="folder-open"
+              class={codeActive() ? "forge-icon-accent" : "forge-icon-muted"}
+            />
+            <span class="tree-label">Code</span>
+          </button>
           <For each={props.workspace.sessions}>
             {(node) => (
               <SessionRow
@@ -1178,7 +1225,8 @@ function WorkspaceCard(props: {
  * happening here, and the chips are what a click has to distinguish between.
  */
 function SessionChip(props: { node: SessionNode; onMenu: (event: MouseEvent) => void }) {
-  const active = () => props.node.session.id === runtimeStore.activeSession;
+  const active = () =>
+    centerMode() === "session" && props.node.session.id === runtimeStore.activeSession;
   return (
     <Tooltip label={props.node.label} contents>
       <button
@@ -1222,7 +1270,8 @@ function SessionRow(props: {
   showDuration?: boolean;
   onMenu?: (event: MouseEvent) => void;
 }) {
-  const active = () => props.session.id === runtimeStore.activeSession;
+  const active = () =>
+    centerMode() === "session" && props.session.id === runtimeStore.activeSession;
   return (
     <button
       type="button"

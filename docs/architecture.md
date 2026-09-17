@@ -94,9 +94,11 @@ file tree, a search, the harness's own files — are seconds of subprocess, so
 running them there would freeze typing.
 
 The file surface splits presentation from IO the same way. The windowed explorer
-and the plain-text editor live in `apps/tauri/packages/file-workbench`, which
-has no Solid, Tauri or filesystem dependency; `apps/tauri` adapts that package
-to the daemon's reads and Forge's theme. External edits arrive through
+lives in `apps/tauri/packages/file-workbench`, which has no Solid, Tauri or
+filesystem dependency; `apps/tauri` adapts that package to the daemon's reads
+and Forge's theme. Editing is not in that package and is not in the GUI at all:
+it is `forge-editor` under a daemon PTY, painted by the terminal renderer
+(`docs/editor.md`). External edits arrive through
 connection-scoped directory watches (`WatchFiles`): `daemon::file_watch`
 coalesces native events into `FileChanged`, the GUI re-reads only what it shows,
 and every read and write still goes through `fs-service` (ADR-012).

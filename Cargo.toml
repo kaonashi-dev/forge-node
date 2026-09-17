@@ -93,6 +93,10 @@ compact_str = { version = "0.10", features = ["serde"] }
 crossterm = "0.29"
 unicode-width = "0.2"
 unicode-segmentation = "1"
+# Regular-expression find. Already in the graph through other crates, so this
+# adds a direct edge and no new node. Default features: `\w` and `\b` are what
+# a find bar's patterns are made of, and both need the Unicode tables.
+regex = "1"
 
 # System
 nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user", "poll"] }

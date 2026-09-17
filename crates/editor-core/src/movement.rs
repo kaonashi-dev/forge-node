@@ -118,6 +118,35 @@ pub fn word_right(text: &Text, offset: usize) -> usize {
     at
 }
 
+/// The word `offset` is inside or touching, as a byte range.
+///
+/// Empty when there is no word there: `Ctrl-D` on a run of spaces has nothing
+/// to select, and returning the spaces would make the next press search for
+/// them.
+#[must_use]
+pub fn word_span(text: &Text, offset: usize) -> (usize, usize) {
+    let body = text.as_str();
+    let at = offset.min(body.len());
+    let inside = char_at(body, at).is_some_and(is_word_char);
+    let touching = !inside && char_before(body, at).is_some_and(is_word_char);
+    if !inside && !touching {
+        return (at, at);
+    }
+    let mut start = at;
+    while start > 0 && char_before(body, start).is_some_and(is_word_char) {
+        start = previous_char(body, start);
+    }
+    let mut end = at;
+    while end < body.len() && char_at(body, end).is_some_and(is_word_char) {
+        end = next_char(body, end);
+    }
+    (start, end)
+}
+
+fn is_word_char(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
 /// Whole lines covering the selection, terminator included when there is one.
 #[must_use]
 pub fn line_span(text: &Text, selection: Selection) -> (usize, usize) {

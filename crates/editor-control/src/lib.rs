@@ -15,15 +15,26 @@ use serde::Serialize;
 use std::io::{self, Read, Write};
 
 pub mod message;
+pub mod view;
 
 pub use message::{
-    version_matches, DaemonMessage, EditorMessage, EditorStateWire, WireEdit, WireMark,
-    WireMarkKind,
+    version_matches, DaemonMessage, EditorMessage, EditorStateWire, WireDiagnostic, WireEdit,
+    WireMark, WireMarkKind, WirePlace, WireSeverity, MAX_CARET_LINE_BYTES, MAX_PLACES,
+};
+pub use view::{
+    modifiers, EditorInput, ViewFrame, ViewRequest, ViewRow, WireCaret, WireDecoration,
+    WireDecorationKind, WireFold, WireKey, WireMouseKind, WireRange, WireScope, WireSeverityLevel,
+    WireSpan, MAX_CARETS, MAX_DECORATIONS, MAX_INPUT_EVENTS, MAX_ROW_BYTES, MAX_ROW_SPANS,
+    MAX_VIEW_FRAME_BYTES, MAX_VIEW_ROWS, SPAN_OVERHEAD_BYTES, VIEW_OVERSCAN, VIEW_ROW_BUDGET,
 };
 
 /// Version of the control wire. The handshake refuses any other value, the way
 /// `protocol::PROTOCOL_VERSION` does for the client wire.
-pub const CONTROL_VERSION: u16 = 2;
+///
+/// 3 added the windowed DOM surface (`ViewFrame` / `Input` / `SetView`), which
+/// a version-2 editor cannot serve: it would take the buffer and paint ANSI
+/// nobody reads.
+pub const CONTROL_VERSION: u16 = 3;
 
 /// Hard cap for one decoded control frame.
 ///
@@ -278,6 +289,13 @@ mod tests {
                     dirty: false,
                     read_only: true,
                     document_version: 1,
+                    top_line: 1,
+                    visible_lines: 24,
+                    total_lines: 200,
+                    caret_line: "fn main() {}".into(),
+                    selection_length: 0,
+                    cursor_count: 1,
+                    status: String::new(),
                 },
             },
             EditorMessage::State {

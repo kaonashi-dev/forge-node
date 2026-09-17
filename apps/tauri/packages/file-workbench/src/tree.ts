@@ -1,7 +1,12 @@
 // Flat listings become directory rows; filtering preserves the source listing budget.
 
 export type FileEntry = { path: string; kind: string; ignored: boolean };
-export type FileTree = { entries: readonly FileEntry[]; truncated: boolean };
+export type FileTree = {
+  entries: readonly FileEntry[];
+  truncated: boolean;
+  /** Host-local reads, including empty directories; absent on a fresh root listing. */
+  loadedDirectories?: readonly string[];
+};
 
 type Node = {
   dirs: Map<string, Node>;
@@ -24,6 +29,44 @@ export type TreeRow = {
 
   opaque: boolean;
 };
+
+export function watchDirectories(rows: readonly TreeRow[]): string[] {
+  const paths = new Set([""]);
+  for (const row of rows) {
+    if (row.isFile) continue;
+    // A compact row such as a/b/c still needs watches for new siblings inside a and b.
+    let cut = row.path.indexOf("/");
+    while (cut >= 0) {
+      paths.add(row.path.slice(0, cut));
+      cut = row.path.indexOf("/", cut + 1);
+    }
+    if (!row.folded) paths.add(row.path);
+  }
+  return [...paths];
+}
+
+export function unloadedDirectories(
+  tree: FileTree | null,
+  rows: readonly TreeRow[],
+  opened: ReadonlySet<string>,
+): string[] {
+  const placeholders = new Set(
+    tree?.entries
+      .filter((entry) => entry.kind === "Directory" && entry.ignored)
+      .map((entry) => entry.path),
+  );
+  const loaded = new Set(tree?.loadedDirectories);
+  return rows
+    .filter(
+      (row) =>
+        !row.isFile &&
+        !row.folded &&
+        opened.has(row.path) &&
+        placeholders.has(row.path) &&
+        !loaded.has(row.path),
+    )
+    .map((row) => row.path);
+}
 
 function emptyNode(): Node {
   return { dirs: new Map(), files: [], opaque: false };

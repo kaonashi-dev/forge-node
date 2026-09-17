@@ -1,5 +1,6 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { editorChrome } from "./editorChrome";
+import { editorAnnouncement, editorAria } from "./editorAria";
 import {
   repaintEditor,
   resizeEditor,
@@ -80,12 +81,18 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
   const blink = new CursorBlink((visible) => {
     if (!renderer) return;
     renderer.cursorVisible = visible;
-    dirty.add(viewport.cursor.line);
-    schedule();
+    // Only the caret cell: clearing the whole row on every phase is the wash
+    // that still read as flicker once scroll frames were coalesced.
+    renderer.paintCaret(viewport);
   });
 
   const session = createMemo(() => forgeStore.sessions.find((item) => item.id === props.session));
   const chrome = createMemo(() => editorChrome(session()?.editor, props.path));
+  /* The canvas is unreadable to an accessibility tree, so the editor's own
+     state is mirrored into a hidden node beside it. Never the input path: the
+     textarea still takes every key. */
+  const aria = createMemo(() => editorAria(session()?.editor, props.path));
+  const announcement = createMemo(() => editorAnnouncement(session()?.editor));
   /** The daemon's word that a save was refused, not something read off ANSI. */
   const conflict = createMemo(() => session()?.editor?.conflict === true);
   const [comparing, setComparing] = createSignal(false);
@@ -242,6 +249,10 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
 
   onMount(() => {
     renderer = new TerminalRenderer(canvas, cell, readPalette());
+    // The wheel is reported to the TUI, which moves its own viewport: the grid
+    // always shows the live screen, so the caret must not be hidden for a
+    // scrollback offset that never changes here.
+    renderer.followsScrollback = false;
     measurePane();
     const unsubscribe = editorCellsChannel.subscribe(onFrame);
     const observer = new ResizeObserver(() => measurePane());
@@ -376,9 +387,11 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     const lines = Math.trunc(wheelRemainder);
     if (lines === 0) return;
     wheelRemainder -= lines;
-    // One report per line, the way a real wheel sends them.
+    // One report per line, flushed together on the next frame so the editor's
+    // drain-then-paint loop sees the burst as one queue rather than N paints.
     const button = lines > 0 ? "wheel_up" : "wheel_down";
-    for (let index = 0; index < Math.abs(lines); index += 1) {
+    const count = Math.abs(lines);
+    for (let index = 0; index < count; index += 1) {
       report(event, button, "press");
     }
   }
@@ -439,6 +452,41 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
         }}
       >
         <canvas ref={canvas} />
+        {/* The screen-reader mirror. `application` rather than `textbox`: the
+            keys go to the textarea below, and a reader that took this for an
+            input would offer its own editing keys against a node that has
+            none. Everything in it comes from `Session.editor`, never from the
+            cells. */}
+        <div
+          class="editor-terminal-aria"
+          role="application"
+          aria-roledescription="code editor"
+          aria-label={aria().label}
+          aria-readonly={aria().readOnly}
+        >
+          <p>{aria().status}</p>
+          <p>{aria().line}</p>
+        </div>
+        {/* Polite, not assertive: a find tally should wait for the word being
+            read rather than cut it off. */}
+        <div class="editor-terminal-aria" role="status" aria-live="polite" aria-atomic="true">
+          {announcement()}
+        </div>
+        {/* The editor owns its viewport; this only reports where it is. The
+            wheel still goes to the TUI, so the thumb is not a handle. */}
+        <Show when={chrome().scroll}>
+          {(scroll) => (
+            <div class="editor-terminal-scrollbar" aria-hidden="true">
+              <div
+                class="editor-terminal-thumb"
+                style={{
+                  top: `${scroll().top * 100}%`,
+                  height: `${Math.max(scroll().size * 100, 4)}%`,
+                }}
+              />
+            </div>
+          )}
+        </Show>
         <Show when={menuAt()}>
           {(at) => (
             <ContextMenu

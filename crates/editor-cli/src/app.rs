@@ -10,13 +10,16 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use editor_control::{EditorStateWire, WireEdit, WireMark, WireMarkKind};
+use editor_control::{
+    EditorStateWire, WireDiagnostic, WireEdit, WireMark, WireMarkKind, WirePlace,
+};
 use editor_core::{
     execute, metrics, Command, Document, Edit, Grammar, Origin, Query, Range, Refusal, Selection,
     Snapshot, Syntax, Transaction,
 };
 
 use crate::disk;
+use crate::view;
 
 /// Rows a frame has to repaint.
 pub struct Frame {
@@ -48,6 +51,30 @@ pub enum Prompt {
     },
     /// A close with unsaved changes: save, discard or cancel.
     ConfirmClose,
+    /// What the changed block at the caret replaced.
+    ///
+    /// The gutter says which lines changed; this is the question about one of
+    /// them. Scrolled with Up/Down when the block is taller than the row, and
+    /// stepped between blocks with Alt-N / Alt-P as the gutter always was.
+    ChangeDetails {
+        line: u32,
+        before: Vec<String>,
+        after: Vec<String>,
+        truncated: bool,
+        /// First shown row of the pair of lists.
+        offset: usize,
+    },
+    /// Candidate declarations for a symbol, to choose between.
+    ///
+    /// Candidates and not a jump: the daemon ranks them with a heuristic, so
+    /// the editor offers the list rather than moving somewhere it cannot
+    /// justify. One candidate is still a list — a wrong single answer taken
+    /// silently is the worst of the three outcomes.
+    Definitions {
+        symbol: String,
+        places: Vec<WirePlace>,
+        selected: usize,
+    },
 }
 
 /// Largest copy that travels as an OSC 52.
@@ -77,11 +104,33 @@ pub struct App {
     /// local disk adapter is off and a save travels as a request. False is the
     /// standalone editor, which saves through `disk`.
     integrated: bool,
+    /// True when this buffer is published as a window of lines rather than
+    /// painted: no status row, no wrap, and `render::draw` is never called.
+    headless: bool,
     /// The grammar this buffer is coloured with, from its path.
     grammar: Grammar,
+    /// Type an opener and get its partner. On by default, off for the person
+    /// who would rather type both, and off while a macro-ish paste runs.
+    close_brackets: bool,
+    /// Draw a placeholder where a tab or a no-break space is. Off by default:
+    /// it is a debugging view, not a reading one.
+    special_chars: bool,
     /// Gutter marks by 1-based line, as the daemon last computed them. Empty
     /// standalone: this editor never runs git of its own.
     marks: BTreeMap<usize, WireMarkKind>,
+    /// What a checker last said about this file, by 1-based line.
+    ///
+    /// Empty is a result — the checker found nothing — which is why `checked`
+    /// is separate: a gutter with no marks because nobody ran anything must not
+    /// read as a clean file.
+    diagnostics: BTreeMap<usize, WireDiagnostic>,
+    checked: bool,
+    /// Header lines of the folded blocks, 0-based.
+    folded: BTreeSet<usize>,
+    /// Foldable regions, recomputed when the text changes and never per row.
+    regions: Vec<editor_core::fold::Region>,
+    /// Where the pointer went down, for a rectangular drag.
+    drag_origin: Option<(u16, u16)>,
     /// An OSC 52 the renderer has not written yet, if a copy just happened.
     clipboard_escape: Option<String>,
     /// Save on a pause. The opener's preference; off standalone.
@@ -100,13 +149,41 @@ pub struct App {
     in_flight_save: Option<(u64, Snapshot)>,
     /// The save request the control loop has not sent yet.
     outbox: Option<(u64, String, u64)>,
+    /// A definition lookup the control loop has not sent yet.
+    lookup: Option<(u64, String)>,
+    /// A file the control loop has to ask the daemon to open.
+    open_request: Option<(u64, String, u32)>,
+    /// A change-details request the control loop has not sent yet.
+    details_request: Option<(u64, u32)>,
+    /// A diagnostics run the control loop has not asked for yet.
+    diagnostics_request: Option<u64>,
     next_request_id: u64,
     register: String,
     query: Query,
+    /// Whether the live query paints marks. Escape clears this and keeps the
+    /// pattern, so `Ctrl-N` still works and no marks are left behind.
+    highlight: bool,
+    /// Why the live pattern cannot be searched with, when it cannot. Only a
+    /// regular expression can be invalid.
+    query_error: Option<String>,
+    /// Where find-as-you-type searches from. Fixed when the prompt opens, so
+    /// adding a character narrows the same match instead of walking forward.
+    find_origin: usize,
+    /// Decorations for the visible rows, and what they were computed against.
+    decorations: Vec<(usize, view::Mark)>,
+    decor_key: Option<DecorKey>,
+    /// The overview ruler's column, one entry per screen row.
+    ruler: Vec<Option<RulerMark>>,
+    /// The completion list, while one is open.
+    completion: Option<Completion>,
     prompt: Option<Prompt>,
     help: bool,
     status: Option<String>,
     top: usize,
+    /// Wrap segment of `top` the first row shows. Always 0 without wrap, and
+    /// non-zero only for a logical line taller than the viewport — without it
+    /// the tail of such a line is unreachable.
+    top_sub: usize,
     left: usize,
     /// Wrap long lines onto continuation rows instead of scrolling sideways.
     /// On under the daemon, where the pane is a fixed width and the files are
@@ -119,8 +196,79 @@ pub struct App {
     quit: bool,
     damaged: BTreeSet<usize>,
     damage_all: bool,
-    /// Viewport the last frame was painted for; a change invalidates everything.
-    painted: Option<(usize, usize, usize, u16)>,
+    /// Shape the last frame was painted for; a change invalidates everything.
+    painted: Option<Painted>,
+}
+
+/// A completion list and which candidate is highlighted.
+///
+/// Opened by a gesture and never on its own: a list that appeared while a
+/// person was typing would take the Enter they meant for a newline.
+pub struct Completion {
+    pub candidates: editor_core::complete::Completions,
+    pub selected: usize,
+}
+
+/// What one row of the overview ruler shows.
+///
+/// Ordered by which wins the cell: a row can hold a change, a match and a caret
+/// at once, and the caret is the one a person is looking for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RulerMark {
+    Change,
+    Match,
+    Caret,
+}
+
+/// What the visible decorations were computed against.
+///
+/// Every input is here, so a mismatch is the whole recompute trigger: nothing
+/// derives them per frame, which is the rule `docs/performance.md` states.
+#[derive(PartialEq, Eq)]
+struct DecorKey {
+    version: u64,
+    selection: Range,
+    caret: usize,
+    top: usize,
+    top_sub: usize,
+    height: usize,
+    width: u16,
+    /// `None` when Escape cleared the marks; the pattern itself stays.
+    query: Option<Query>,
+}
+
+/// Largest slice of the buffer decorations are looked for in.
+///
+/// The viewport bounds the rows, not the bytes: one logical line can be taller
+/// than the screen, and its `line_end` is as far away as the document allows.
+const MAX_DECORATION_WINDOW: usize = 64 * 1024;
+
+/// Narrowest grid that still gets an overview ruler.
+///
+/// One cell of the text column buys the whole document's shape, but not at the
+/// width where the text column is already the problem.
+const MIN_RULER_WIDTH: u16 = 40;
+
+/// Longest selection that marks its own other occurrences.
+///
+/// A word, not a paragraph: `highlightSelectionMatches` is for seeing where a
+/// symbol else appears, and a multi-line selection has no siblings to find.
+const MAX_SELECTION_MATCH_BYTES: usize = 128;
+
+/// What the last frame was painted against.
+///
+/// The row heights are the half that a wrapped buffer needs: an edit that
+/// changes how many rows a line takes reflows every row under it, and comparing
+/// against what is already on screen is the only way to tell that from an edit
+/// that just changed some characters.
+struct Painted {
+    top: usize,
+    top_sub: usize,
+    left: usize,
+    height: usize,
+    width: u16,
+    /// Screen rows each visible line occupied, from `top`. Empty without wrap.
+    rows_per_line: Vec<usize>,
 }
 
 impl App {
@@ -128,8 +276,22 @@ impl App {
         let grammar = Grammar::for_path(&path.to_string_lossy());
         let mut app = Self::blank(document, path, revision);
         app.grammar = grammar;
+        app.adopt_input_style();
         app.rescan();
         app
+    }
+
+    /// Tell the document how this file indents, and what its blocks are made of.
+    ///
+    /// Read off the buffer and the path here rather than in the core: the core
+    /// owns no path, and the answer changes only when the text is replaced.
+    fn adopt_input_style(&mut self) {
+        let indent = editor_core::indent::detect(self.document.text());
+        self.document.set_input_style(editor_core::InputStyle {
+            indent,
+            close_brackets: self.close_brackets,
+            grammar: self.grammar,
+        });
     }
 
     fn blank(document: Document, path: PathBuf, revision: Option<String>) -> Self {
@@ -138,8 +300,16 @@ impl App {
             path,
             revision,
             integrated: false,
+            headless: false,
             grammar: Grammar::None,
+            close_brackets: true,
+            special_chars: false,
             marks: BTreeMap::new(),
+            diagnostics: BTreeMap::new(),
+            checked: false,
+            folded: BTreeSet::new(),
+            regions: Vec::new(),
+            drag_origin: None,
             clipboard_escape: None,
             autosave: false,
             autosave_suspended: false,
@@ -148,15 +318,27 @@ impl App {
             syntax: Syntax::default(),
             in_flight_save: None,
             outbox: None,
+            lookup: None,
+            open_request: None,
+            details_request: None,
+            diagnostics_request: None,
             // The daemon mints ids from 1 for its own requests; the editor's
             // start past them so a log line names one side unambiguously.
             next_request_id: 1_000,
             register: String::new(),
             query: Query::literal(""),
+            highlight: false,
+            query_error: None,
+            find_origin: 0,
+            decorations: Vec::new(),
+            decor_key: None,
+            ruler: Vec::new(),
+            completion: None,
             prompt: None,
             help: false,
             status: None,
             top: 0,
+            top_sub: 0,
             left: 0,
             wrap: false,
             width: 80,
@@ -180,8 +362,44 @@ impl App {
         self.status.as_deref()
     }
 
+    /// The checker's message for the caret's line, when there is one and
+    /// nothing more urgent is being said.
+    #[must_use]
+    pub fn caret_diagnostic(&self) -> Option<&WireDiagnostic> {
+        self.status
+            .is_none()
+            .then(|| self.diagnostic_at(self.caret_position().0))
+            .flatten()
+    }
+
     pub fn prompt(&self) -> Option<&Prompt> {
         self.prompt.as_ref()
+    }
+
+    /// The find bar's live modifiers, as the prompt row shows them.
+    ///
+    /// Only what is *on* is named: a row that always said "case:off word:off
+    /// regex:off" would be three words of chrome for the default state.
+    #[must_use]
+    pub fn query_flags(&self) -> String {
+        if let Some(error) = &self.query_error {
+            return format!("  [{error}]");
+        }
+        let mut on = Vec::new();
+        if self.query.case_sensitive {
+            on.push("case");
+        }
+        if self.query.whole_word {
+            on.push("word");
+        }
+        if self.query.regex {
+            on.push("regex");
+        }
+        if on.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", on.join(" "))
+        }
     }
 
     pub fn help_visible(&self) -> bool {
@@ -192,11 +410,17 @@ impl App {
         self.quit
     }
 
-    /// The first visible line. Only the tests read it now that the renderer
-    /// walks rows through `row_line_sub`.
-    #[cfg(test)]
+    /// The first visible line, 0-based.
+    ///
+    /// The TUI renderer walks rows through `row_line_sub` instead; this is
+    /// what the headless host publishes as a window's `first_line`.
     pub fn top(&self) -> usize {
         self.top
+    }
+
+    #[cfg(test)]
+    pub fn top_sub(&self) -> usize {
+        self.top_sub
     }
 
     pub fn left(&self) -> usize {
@@ -212,7 +436,7 @@ impl App {
     }
 
     pub fn content_height(&self) -> usize {
-        if self.integrated && !self.needs_status_row() {
+        if self.headless || (self.integrated && !self.needs_status_row()) {
             self.height as usize
         } else {
             (self.height as usize).saturating_sub(1)
@@ -227,19 +451,34 @@ impl App {
     /// the two things the HTML around us cannot show — and reclaimed as a
     /// content row the rest of the time.
     pub fn needs_status_row(&self) -> bool {
-        !self.integrated || self.prompt.is_some() || self.status.is_some()
+        !self.headless && (!self.integrated || self.prompt.is_some() || self.status.is_some())
     }
 
     pub fn number_width(&self) -> usize {
         self.document.text().line_count().max(1).to_string().len()
     }
 
-    /// Line-number column, the mark column, and the space after them.
+    /// Line-number column, the mark column, the fold column, and the space
+    /// after them.
     ///
-    /// The mark column is always there, marks or not: a gutter that widens the
+    /// Every column is always there, marks or not: a gutter that widens the
     /// first time git answers would shift every line of the file sideways.
     pub fn gutter_width(&self) -> usize {
-        self.number_width() + 2
+        self.number_width() + 3
+    }
+
+    /// How many lines the fold on `line` is hiding.
+    #[must_use]
+    pub fn folded_line_count(&self, line: usize) -> usize {
+        self.regions
+            .iter()
+            .find(|region| region.header == line)
+            .map_or(0, |region| region.last - region.header)
+    }
+
+    /// Whether a screen column falls in the fold marker's cell.
+    fn is_fold_column(&self, col: u16) -> bool {
+        col as usize == self.number_width() + 1
     }
 
     /// The OSC 52 a copy left for the renderer to write. Take-and-clear.
@@ -299,6 +538,56 @@ impl App {
         self.damage_all = true;
     }
 
+    /// What the checker said about a 1-based line, if anything.
+    #[must_use]
+    pub fn diagnostic_at(&self, line: usize) -> Option<&WireDiagnostic> {
+        self.diagnostics.get(&line)
+    }
+
+    /// Ask the daemon to run the configured checker.
+    fn run_diagnostics(&mut self) {
+        if !self.integrated {
+            self.status = Some("diagnostics need the daemon".to_string());
+            return;
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.diagnostics_request = Some(request_id);
+        self.status = Some("checking…".to_string());
+    }
+
+    /// Take the diagnostics request the control loop has to send.
+    pub fn take_diagnostics_request(&mut self) -> Option<u64> {
+        self.diagnostics_request.take()
+    }
+
+    /// The daemon answered a diagnostics run.
+    ///
+    /// Replacing the whole set is the *clear*: a second run that finds nothing
+    /// empties the gutter, which is what makes the marks mean the last answer
+    /// rather than every answer ever given.
+    pub fn diagnostics_arrived(&mut self, command: bool, items: Vec<WireDiagnostic>) {
+        self.damage_all = true;
+        if !command {
+            self.diagnostics.clear();
+            self.checked = false;
+            self.status =
+                Some("no checker configured — set [editor] diagnostics_command".to_string());
+            return;
+        }
+        let count = items.len();
+        self.diagnostics = items
+            .into_iter()
+            .map(|item| (item.line as usize, item))
+            .collect();
+        self.checked = true;
+        self.status = Some(match count {
+            0 => "no problems found".to_string(),
+            1 => "1 problem".to_string(),
+            many => format!("{many} problems"),
+        });
+    }
+
     /// The mark on a 1-based line, if it has one.
     #[must_use]
     pub fn mark_at(&self, line: usize) -> Option<WireMarkKind> {
@@ -336,7 +625,144 @@ impl App {
     }
 
     pub fn content_width(&self) -> usize {
-        (self.width as usize).saturating_sub(self.gutter_width())
+        let ruler = usize::from(self.ruler_visible());
+        (self.width as usize)
+            .saturating_sub(self.gutter_width())
+            .saturating_sub(ruler)
+    }
+
+    /// The open completion list, if there is one.
+    #[must_use]
+    pub fn completion(&self) -> Option<&Completion> {
+        self.completion.as_ref()
+    }
+
+    /// Offer completions for the word at the caret.
+    fn open_completion(&mut self) {
+        let caret = self.document.caret();
+        match editor_core::complete::at(self.document.text(), caret) {
+            Some(candidates) => {
+                self.completion = Some(Completion {
+                    candidates,
+                    selected: 0,
+                });
+                self.damage_all = true;
+            }
+            None => self.status = Some("no completions".to_string()),
+        }
+    }
+
+    /// Put the highlighted candidate in, replacing the prefix.
+    ///
+    /// One transaction: the prefix and the rest of the word are one edit, so
+    /// undo takes the completion and leaves what was typed.
+    fn accept_completion(&mut self) {
+        let Some(open) = self.completion.take() else {
+            return;
+        };
+        self.damage_all = true;
+        let Some(word) = open.candidates.words.get(open.selected) else {
+            return;
+        };
+        let range = Range::new(open.candidates.from, open.candidates.to);
+        self.document
+            .set_selection(Selection::new(range.start, range.end));
+        self.run(Command::InsertText(word.clone()));
+    }
+
+    /// Move the highlight, wrapping at both ends.
+    fn step_completion(&mut self, down: bool) {
+        let Some(open) = self.completion.as_mut() else {
+            return;
+        };
+        let count = open.candidates.words.len();
+        if count == 0 {
+            return;
+        }
+        open.selected = if down {
+            (open.selected + 1) % count
+        } else {
+            (open.selected + count - 1) % count
+        };
+        self.damage_all = true;
+    }
+
+    /// Whether whitespace that is easy to mistake is drawn as a placeholder.
+    #[must_use]
+    pub fn special_chars(&self) -> bool {
+        self.special_chars
+    }
+
+    /// Whether the rightmost column is the overview ruler.
+    ///
+    /// A column and not an HTML strip: the editor already holds the marks, the
+    /// matches and the caret, while the GUI holds none of them — a DOM ruler
+    /// would mean a new broadcast carrying every changed line of the file on a
+    /// channel that exists for a caret position.
+    #[must_use]
+    pub fn ruler_visible(&self) -> bool {
+        self.width >= MIN_RULER_WIDTH && self.document.text().line_count() > 1
+    }
+
+    /// The ruler's screen column.
+    #[must_use]
+    pub fn ruler_column(&self) -> usize {
+        (self.width as usize).saturating_sub(1)
+    }
+
+    /// What the ruler shows on `row`, strongest signal first.
+    #[must_use]
+    pub fn ruler_at(&self, row: usize) -> Option<RulerMark> {
+        self.ruler.get(row).copied().flatten()
+    }
+
+    /// The 1-based line a click on the ruler's `row` means.
+    #[must_use]
+    pub fn ruler_line(&self, row: usize) -> usize {
+        let total = self.document.text().line_count().max(1);
+        let height = self.content_height().max(1);
+        (row * total / height).min(total - 1) + 1
+    }
+
+    /// Recompute the ruler's column of marks.
+    ///
+    /// One pass over the document's *signals*, not its rows: the marks are a
+    /// map the daemon already sent, and the matches are a capped scan that only
+    /// runs while the find bar is open.
+    fn refresh_ruler(&mut self, height: usize) {
+        if !self.ruler_visible() || height == 0 {
+            self.ruler.clear();
+            return;
+        }
+        let total = self.document.text().line_count().max(1);
+        let bucket = |line: usize| (line * height / total).min(height - 1);
+        let mut column = vec![None; height];
+        let mut put = |at: usize, what: RulerMark| {
+            let slot = &mut column[at];
+            if slot.is_none_or(|current| what > current) {
+                *slot = Some(what);
+            }
+        };
+        for line in self.marks.keys() {
+            put(bucket(line.saturating_sub(1)), RulerMark::Change);
+        }
+        if self.highlight && !self.query.is_empty() && self.query_error.is_none() {
+            let found = editor_core::find_all(self.document.text(), &self.query);
+            let text = self.document.text();
+            for hit in found.found {
+                put(
+                    bucket(text.line_of_offset(hit.range.start)),
+                    RulerMark::Match,
+                );
+            }
+        }
+        for cursor in self.document.selection().cursors() {
+            put(
+                bucket(self.document.text().line_of_offset(cursor.head)),
+                RulerMark::Caret,
+            );
+        }
+        self.ruler = column;
     }
 
     /// Whether long lines wrap onto continuation rows.
@@ -350,6 +776,9 @@ impl App {
     /// which case it is split into as many rows as it takes. Always at least
     /// one, so an empty line is still a row.
     pub fn line_rows(&self, line: usize) -> usize {
+        if self.is_hidden(line) {
+            return 0;
+        }
         if !self.wrap {
             return 1;
         }
@@ -370,18 +799,35 @@ impl App {
     pub fn row_line_sub(&self, row: usize) -> Option<(usize, usize)> {
         let count = self.document.text().line_count();
         if !self.wrap {
-            let line = self.top + row;
-            return (line < count).then_some((line, 0));
+            if self.folded.is_empty() {
+                let line = self.top + row;
+                return (line < count).then_some((line, 0));
+            }
+            let mut remaining = row;
+            for line in self.top..count {
+                if self.is_hidden(line) {
+                    continue;
+                }
+                if remaining == 0 {
+                    return Some((line, 0));
+                }
+                remaining -= 1;
+            }
+            return None;
         }
         let mut remaining = row;
         let mut line = self.top;
+        // The anchor line may start part-way down: `top_sub` is the segment the
+        // first row shows, so that line contributes only the rows below it.
+        let mut skip = self.top_sub;
         while line < count {
-            let rows = self.line_rows(line);
-            if remaining < rows {
-                return Some((line, remaining));
+            let rows = self.line_rows(line).saturating_sub(skip);
+            if rows > 0 && remaining < rows {
+                return Some((line, skip + remaining));
             }
             remaining -= rows;
             line += 1;
+            skip = 0;
         }
         None
     }
@@ -394,17 +840,31 @@ impl App {
         }
         let height = self.content_height();
         if !self.wrap {
-            let row = target - self.top;
+            if self.is_hidden(target) {
+                return None;
+            }
+            if self.folded.is_empty() {
+                let row = target - self.top;
+                return (row < height).then_some(row);
+            }
+            let row = (self.top..target)
+                .filter(|line| !self.is_hidden(*line))
+                .count();
             return (row < height).then_some(row);
         }
+        if target == self.top && sub < self.top_sub {
+            return None;
+        }
         let mut row = 0;
+        let mut skip = self.top_sub;
         for line in self.top..target {
-            row += self.line_rows(line);
+            row += self.line_rows(line).saturating_sub(skip);
+            skip = 0;
             if row >= height {
                 return None;
             }
         }
-        let row = row + sub;
+        let row = row + sub - skip;
         (row < height).then_some(row)
     }
 
@@ -418,14 +878,36 @@ impl App {
         let height = self.content_height().max(1);
         let mut rows = 0;
         let mut line = self.top;
+        let mut skip = self.top_sub;
         while line < count {
-            rows += self.line_rows(line);
+            rows += self.line_rows(line).saturating_sub(skip);
+            skip = 0;
             if rows >= height {
                 break;
             }
             line += 1;
         }
         line.min(count)
+    }
+
+    /// Screen rows each visible line occupies, from `top`, clipped to `height`.
+    ///
+    /// The first entry is the anchor line's rows *below* `top_sub`, so the
+    /// vector reads as what is on screen rather than what the lines are worth.
+    fn visible_line_rows(&self, height: usize) -> Vec<usize> {
+        let count = self.document.text().line_count();
+        let mut out = Vec::new();
+        let mut rows = 0;
+        let mut line = self.top;
+        let mut skip = self.top_sub;
+        while line < count && rows < height {
+            let taken = self.line_rows(line).saturating_sub(skip);
+            out.push(taken);
+            rows += taken;
+            line += 1;
+            skip = 0;
+        }
+        out
     }
 
     /// The caret's cell on screen — `(row, column)` — or `None` when it is
@@ -452,29 +934,55 @@ impl App {
         (position.line + 1, column)
     }
 
-    /// The selected byte range inside `line`, as offsets within that line.
+    /// Every caret's selected range inside `line`, as offsets within it.
     ///
-    /// The end may sit one past the line's length: a selection that swallowed
-    /// the line break has to look like it did.
-    pub fn selection_in_line(&self, line: usize) -> Option<(usize, usize)> {
-        let selection = self.document.selection();
-        if selection.is_empty() {
-            return None;
-        }
-        let range = selection.range();
+    /// One entry per caret that reaches this line, ascending. The end may sit
+    /// one past the line's length: a selection that swallowed the line break
+    /// has to look like it did.
+    #[must_use]
+    pub fn selections_in_line(&self, line: usize) -> Vec<(usize, usize)> {
         let text = self.document.text();
         let start = text.line_start(line);
         let end = text.line_end(line);
-        if range.end <= start || range.start > end {
-            return None;
-        }
-        let from = range.start.saturating_sub(start).min(end - start);
-        let to = if range.end > end {
-            end - start + 1
-        } else {
-            range.end - start
-        };
-        Some((from, to))
+        self.document
+            .selection()
+            .cursors()
+            .iter()
+            .filter(|cursor| !cursor.is_empty())
+            .filter_map(|cursor| {
+                let range = cursor.range();
+                if range.end <= start || range.start > end {
+                    return None;
+                }
+                let from = range.start.saturating_sub(start).min(end - start);
+                let to = if range.end > end {
+                    end - start + 1
+                } else {
+                    range.end - start
+                };
+                Some((from, to))
+            })
+            .collect()
+    }
+
+    /// Where each caret sits on `line`, as byte columns within it.
+    ///
+    /// The renderer paints the extra carets itself: a terminal has one hardware
+    /// cursor, and the primary is the only one that can have it.
+    #[must_use]
+    pub fn carets_in_line(&self, line: usize) -> Vec<usize> {
+        let text = self.document.text();
+        let start = text.line_start(line);
+        let end = text.line_end(line);
+        let selection = self.document.selection();
+        let primary = selection.head();
+        selection
+            .cursors()
+            .iter()
+            .map(|cursor| cursor.head)
+            .filter(|head| *head != primary && *head >= start && *head <= end)
+            .map(|head| head - start)
+            .collect()
     }
 
     /// Open on a 1-based line, for `forge-editor +42 file.rs`.
@@ -493,6 +1001,125 @@ impl App {
         // to wrap or it is unreachable without a horizontal scroll the GUI does
         // not offer.
         self.wrap = true;
+    }
+
+    /// This buffer is published as a window of lines, not painted as cells.
+    ///
+    /// Wrapping is off because the DOM surface scrolls sideways natively, and
+    /// a host-side visual-row map is H3's problem, not a thing to fake here.
+    pub fn set_headless(&mut self) {
+        self.integrated = true;
+        self.headless = true;
+        self.wrap = false;
+        self.left = 0;
+    }
+
+    /// Mount the window the GUI asked for.
+    ///
+    /// Deliberately *not* `ensure_visible`: the GUI owns its scroll container,
+    /// so scrolling away from the caret is a thing a person is allowed to do.
+    /// The caret pulls the window back the moment a key moves it — every
+    /// command already ends in `ensure_visible` — and not a frame before.
+    pub fn set_view(&mut self, first_line: usize, line_count: usize) {
+        let count = self.document.text().line_count();
+        self.top = first_line.min(count.saturating_sub(1));
+        self.top_sub = 0;
+        self.height = u16::try_from(line_count.max(1)).unwrap_or(u16::MAX);
+        self.clamp_anchor();
+        self.damage_all = true;
+    }
+
+    /// Ask the daemon where the word at the caret is declared.
+    ///
+    /// The editor never opens the checkout, so this is a request. An empty
+    /// word or one that is not an identifier is refused here as well as on the
+    /// far side: a symbol that reaches `git grep` must be a name.
+    fn find_definition(&mut self) {
+        if !self.integrated {
+            self.status = Some("go to definition needs the daemon".to_string());
+            return;
+        }
+        let (start, end) =
+            editor_core::movement::word_span(self.document.text(), self.document.caret());
+        let symbol = self.document.text().as_str()[start..end].to_string();
+        if symbol.is_empty() || !is_identifier(&symbol) {
+            self.status = Some("no symbol under the caret".to_string());
+            return;
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.lookup = Some((request_id, symbol));
+        self.status = Some("looking…".to_string());
+    }
+
+    /// Ask the daemon what the change at the caret replaced.
+    fn ask_change_details(&mut self) {
+        if !self.integrated {
+            self.status = Some("change details need the daemon".to_string());
+            return;
+        }
+        let line = self.caret_position().0;
+        if self.mark_at(line).is_none() {
+            self.status = Some("this line did not change".to_string());
+            return;
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.details_request = Some((request_id, u32::try_from(line).unwrap_or(u32::MAX)));
+        self.status = Some("reading…".to_string());
+    }
+
+    /// Take the change-details request the control loop has to send.
+    pub fn take_details_request(&mut self) -> Option<(u64, u32)> {
+        self.details_request.take()
+    }
+
+    /// The daemon answered a change-details request.
+    pub fn details_arrived(
+        &mut self,
+        line: u32,
+        before: Vec<String>,
+        after: Vec<String>,
+        truncated: bool,
+    ) {
+        self.damage_all = true;
+        if line == 0 {
+            self.status = Some("no change here any more".to_string());
+            return;
+        }
+        self.status = None;
+        self.prompt = Some(Prompt::ChangeDetails {
+            line,
+            before,
+            after,
+            truncated,
+            offset: 0,
+        });
+    }
+
+    /// Take the definition request the control loop has to send.
+    pub fn take_definition_request(&mut self) -> Option<(u64, String)> {
+        self.lookup.take()
+    }
+
+    /// Take the open request the control loop has to send.
+    pub fn take_open_request(&mut self) -> Option<(u64, String, u32)> {
+        self.open_request.take()
+    }
+
+    /// The daemon answered a definition lookup.
+    pub fn definitions_arrived(&mut self, symbol: String, places: Vec<WirePlace>) {
+        self.damage_all = true;
+        if places.is_empty() {
+            self.status = Some(format!("{symbol}: not declared anywhere I can see"));
+            return;
+        }
+        self.status = None;
+        self.prompt = Some(Prompt::Definitions {
+            symbol,
+            places,
+            selected: 0,
+        });
     }
 
     /// Take the save request the control loop has to send, if there is one.
@@ -523,11 +1150,10 @@ impl App {
             self.quit = true;
         }
         self.arm_autosave();
-        self.status = Some(if self.document.is_dirty() {
-            "saved — newer keystrokes are still unsaved".to_string()
-        } else {
-            "saved".to_string()
-        });
+        self.status = self
+            .document
+            .is_dirty()
+            .then(|| "saved — newer keystrokes are still unsaved".to_string());
     }
 
     /// The daemon refused the write; the buffer is untouched and stays dirty.
@@ -575,6 +1201,7 @@ impl App {
     /// the next state reports back.
     pub fn wire_state(&self) -> EditorStateWire {
         let (line, column) = self.caret_position();
+        let visible = self.last_visible_line() + 1 - self.top;
         EditorStateWire {
             path: self.path.to_string_lossy().into_owned(),
             line: u32::try_from(line).unwrap_or(u32::MAX),
@@ -582,7 +1209,42 @@ impl App {
             dirty: self.document.is_dirty(),
             read_only: self.document.is_read_only(),
             document_version: self.document.version().0,
+            top_line: u32::try_from(self.top + 1).unwrap_or(u32::MAX),
+            visible_lines: u32::try_from(visible.max(1)).unwrap_or(u32::MAX),
+            total_lines: u32::try_from(self.document.text().line_count()).unwrap_or(u32::MAX),
+            caret_line: self.caret_line_text(),
+            selection_length: u32::try_from(self.document.selection().range().len())
+                .unwrap_or(u32::MAX),
+            cursor_count: u32::try_from(self.document.selection().count()).unwrap_or(u32::MAX),
+            // A headless host has no status row, so the open prompt travels
+            // here instead: without it a person typing into find sees the
+            // highlights move and never what they typed. It outranks a
+            // transient message because it is the thing being interacted with.
+            status: self
+                .headless
+                .then(|| self.prompt_line())
+                .flatten()
+                .or_else(|| self.status.clone())
+                .unwrap_or_default(),
         }
+    }
+
+    /// The caret's line, clamped so a minified file does not travel on a state.
+    ///
+    /// Cut on a character boundary and marked, because half a multi-byte
+    /// character is not text and a reader saying nothing about the cut would
+    /// announce a line that is not the one on screen.
+    fn caret_line_text(&self) -> String {
+        let text = self.document.text();
+        let line = text.line(self.document.caret_line_col().line);
+        if line.len() <= editor_control::MAX_CARET_LINE_BYTES {
+            return line.to_string();
+        }
+        let mut cut = editor_control::MAX_CARET_LINE_BYTES;
+        while cut > 0 && !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…", &line[..cut])
     }
 
     /// Replace the buffer with what the daemon read from disk.
@@ -606,6 +1268,7 @@ impl App {
         self.close_after_save = false;
         self.autosave_suspended = false;
         self.autosave_at = None;
+        self.adopt_input_style();
         self.rescan();
         self.goto_line(line);
         self.damage_all = true;
@@ -651,6 +1314,7 @@ impl App {
             .document
             .apply(transaction)
             .map_err(|error| error.to_string())?;
+        self.rescan_edited(applied);
         self.damage_all = true;
         self.ensure_visible();
         Ok(applied.version.0)
@@ -659,26 +1323,215 @@ impl App {
     pub fn resize(&mut self, width: u16, height: u16) {
         self.width = width.max(1);
         self.height = height.max(1);
+        // A narrower column gives the anchor line more rows, a wider one fewer;
+        // a `top_sub` past the end would anchor the viewport on nothing.
+        self.top_sub = self.top_sub.min(self.line_rows(self.top).saturating_sub(1));
         self.ensure_visible();
         self.damage_all = true;
     }
 
     /// Rows to repaint, and whether the grid changed shape.
+    /// The decorations on one 0-based line, for the renderer.
+    #[must_use]
+    pub fn marks_in_line(&self, line: usize) -> Vec<view::Mark> {
+        self.decorations
+            .iter()
+            .filter(|(at, _)| *at == line)
+            .map(|(_, mark)| *mark)
+            .collect()
+    }
+
+    /// Whether `line` holds the caret. The gutter reads brighter there.
+    #[must_use]
+    pub fn is_active_line(&self, line: usize) -> bool {
+        self.document.caret_line_col().line == line
+    }
+
+    /// The one-line prompt, as a surface with no status row can show it.
+    ///
+    /// The same string `render::status_text` paints, built here so there is
+    /// one formatter and not two: a headless host has no row to paint it on,
+    /// and a person typing into find has to see what they typed. `None` for
+    /// the prompts that are overlays rather than a line — those are a panel
+    /// the DOM surface owes, not a sentence.
+    #[must_use]
+    pub fn prompt_line(&self) -> Option<String> {
+        let flags = self.query_flags();
+        match self.prompt.as_ref()? {
+            Prompt::Find { input } => Some(format!("find: {input}_{flags}")),
+            Prompt::Replace {
+                find,
+                with,
+                editing_replacement,
+            } => Some(if *editing_replacement {
+                format!("replace: {find}  with: {with}_{flags}   (Tab switches, Enter: this one, Ctrl-R: all)")
+            } else {
+                format!("replace: {find}_  with: {with}{flags}   (Tab switches, Enter: this one, Ctrl-R: all)")
+            }),
+            Prompt::GotoLine { input } => Some(format!("go to line: {input}_")),
+            Prompt::ConfirmClose => {
+                Some("unsaved changes — (s)ave, (d)iscard, any other key cancels".to_string())
+            }
+            Prompt::ChangeDetails { .. } | Prompt::Definitions { .. } => None,
+        }
+    }
+
+    /// Bring the cached decorations up to date before a window is read off.
+    ///
+    /// The TUI gets this inside `take_frame`; the headless host never calls
+    /// that, so without it a DOM surface would show no find hits and no
+    /// bracket match — the cache would simply never be filled. Idempotent:
+    /// `DecorKey` makes a second call in the same state free.
+    pub fn prepare_view(&mut self) {
+        let height = self.content_height();
+        self.refresh_decorations(height);
+    }
+
+    /// Recompute the visible decorations when one of their inputs moved, and
+    /// damage every row that gained or lost one.
+    fn refresh_decorations(&mut self, height: usize) {
+        let key = DecorKey {
+            version: self.document.version().0,
+            selection: self.document.selection().range(),
+            caret: self.document.caret(),
+            top: self.top,
+            top_sub: self.top_sub,
+            height,
+            width: self.width,
+            query: (self.highlight && !self.query.is_empty() && self.query_error.is_none())
+                .then(|| self.query.clone()),
+        };
+        if self.decor_key.as_ref() == Some(&key) {
+            return;
+        }
+        let next = self.compute_decorations(&key);
+        if next != self.decorations {
+            let touched: BTreeSet<usize> = self
+                .decorations
+                .iter()
+                .chain(next.iter())
+                .map(|(line, _)| *line)
+                .collect();
+            self.damaged.extend(touched);
+            self.decorations = next;
+        }
+        self.decor_key = Some(key);
+    }
+
+    fn compute_decorations(&self, key: &DecorKey) -> Vec<(usize, view::Mark)> {
+        let text = self.document.text();
+        let start = text.line_start(self.top);
+        let end = text
+            .line_end(self.last_visible_line())
+            .min(start + MAX_DECORATION_WINDOW)
+            .min(text.len());
+        let window = Range::new(start, end.max(start));
+
+        let mut ranges: Vec<(Range, view::Decoration)> = Vec::new();
+        // The live query wins the row: while find is open, an unrelated word
+        // under the caret marking its siblings would read as a second result.
+        let occurrences = match &key.query {
+            Some(query) => editor_core::find_in(text, query, window),
+            None => self.selection_matches(window),
+        };
+        ranges.extend(
+            occurrences
+                .into_iter()
+                .map(|range| (range, view::Decoration::Match)),
+        );
+        if let Some((open, close)) =
+            editor_core::brackets::matching(text, &self.syntax, self.document.caret())
+        {
+            for at in [open, close] {
+                if at >= window.start && at < window.end {
+                    ranges.push((Range::new(at, at + 1), view::Decoration::Bracket));
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for (range, what) in ranges {
+            let first = text.line_of_offset(range.start);
+            let last = text.line_of_offset(range.end.saturating_sub(1).max(range.start));
+            for line in first..=last {
+                let line_start = text.line_start(line);
+                let line_end = text.line_end(line);
+                let from = range.start.max(line_start) - line_start;
+                let to = range.end.min(line_end) - line_start;
+                if to > from {
+                    out.push((line, (from, to, what)));
+                }
+            }
+        }
+        out.sort_unstable_by_key(|(line, (from, _, _))| (*line, *from));
+        out
+    }
+
+    /// Other literal occurrences of a short, single-line selection.
+    ///
+    /// CodeMirror's `highlightSelectionMatches`: select a symbol and see where
+    /// else it is. The selection's own range is left out — it already reads as
+    /// selected, and marking it too would say something the reverse video does
+    /// not.
+    fn selection_matches(&self, window: Range) -> Vec<Range> {
+        let selection = self.document.selection();
+        if selection.is_empty() {
+            return Vec::new();
+        }
+        let range = selection.range();
+        let text = self.document.text();
+        if range.end - range.start > MAX_SELECTION_MATCH_BYTES
+            || text.line_of_offset(range.start) != text.line_of_offset(range.end)
+        {
+            return Vec::new();
+        }
+        let needle = &text.as_str()[range.start..range.end];
+        if needle.trim().is_empty() {
+            return Vec::new();
+        }
+        // Literal, whatever the find bar is set to: this is "where else does
+        // this text appear", and reading a selected `a.c` as a pattern would
+        // mark things the person never asked about.
+        let query = Query {
+            pattern: needle.to_string(),
+            case_sensitive: self.query.case_sensitive,
+            whole_word: false,
+            regex: false,
+        };
+        editor_core::find_in(text, &query, window)
+            .into_iter()
+            .filter(|found| *found != range)
+            .collect()
+    }
+
     pub fn take_frame(&mut self) -> Frame {
         let height = self.content_height();
-        let viewport = (self.top, self.left, height, self.width);
-        // Wrapping breaks the row-per-line map a partial frame relies on: an
-        // edit that changes one line's width reflows every row beneath it, so
-        // any damage repaints the whole viewport. Standalone keeps the cheap
-        // per-row path.
-        let full = self.damage_all
-            || self.painted != Some(viewport)
-            || (self.wrap && !self.damaged.is_empty());
+        self.refresh_decorations(height);
+        self.refresh_ruler(height);
+        let rows_per_line = if self.wrap {
+            self.visible_line_rows(height)
+        } else {
+            Vec::new()
+        };
+        let moved = self.painted.as_ref().is_none_or(|painted| {
+            painted.top != self.top
+                || painted.top_sub != self.top_sub
+                || painted.left != self.left
+                || painted.height != height
+                || painted.width != self.width
+        });
+        // Only a narrower or wider grid needs the blank: every row a frame
+        // paints clears itself first, so a viewport that only grew taller just
+        // paints the rows it gained. Blanking is what makes a client reading the
+        // delta between two writes paint an empty screen.
         let clear = self
             .painted
-            .is_none_or(|(_, _, rows, cols)| rows != height || cols != self.width);
-        let rows = if full {
+            .as_ref()
+            .is_none_or(|painted| painted.width != self.width);
+        let rows = if self.damage_all || moved {
             (0..height).collect()
+        } else if self.wrap {
+            self.reflowed_rows(&rows_per_line, height)
         } else {
             self.damaged
                 .iter()
@@ -688,8 +1541,43 @@ impl App {
         };
         self.damaged.clear();
         self.damage_all = false;
-        self.painted = Some(viewport);
+        self.painted = Some(Painted {
+            top: self.top,
+            top_sub: self.top_sub,
+            left: self.left,
+            height,
+            width: self.width,
+            rows_per_line,
+        });
         Frame { rows, clear }
+    }
+
+    /// Rows a wrapped viewport must repaint for the damaged lines.
+    ///
+    /// A line that still takes the same number of rows repaints only its own;
+    /// the first line whose height changed reflows the row↔line map under it,
+    /// and from there down every row is somebody else's text now.
+    fn reflowed_rows(&self, current: &[usize], height: usize) -> Vec<usize> {
+        let previous = self
+            .painted
+            .as_ref()
+            .map_or(&[][..], |painted| painted.rows_per_line.as_slice());
+        let mut rows = Vec::new();
+        let mut row = 0;
+        for (index, taken) in current.iter().copied().enumerate() {
+            if row >= height {
+                break;
+            }
+            if previous.get(index).copied() != Some(taken) {
+                rows.extend(row..height);
+                break;
+            }
+            if self.damaged.contains(&(self.top + index)) {
+                rows.extend(row..(row + taken).min(height));
+            }
+            row += taken;
+        }
+        rows
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -701,6 +1589,9 @@ impl App {
         }
         if self.prompt.is_some() {
             self.handle_prompt_key(key);
+            return;
+        }
+        if self.completion.is_some() && self.handle_completion_key(key) {
             return;
         }
         match self.binding(key) {
@@ -728,6 +1619,8 @@ impl App {
             Some(Prompt::GotoLine { input }) => {
                 input.extend(text.chars().filter(char::is_ascii_digit));
             }
+            // A paste into a list or a details panel is not a gesture it has.
+            Some(Prompt::Definitions { .. }) | Some(Prompt::ChangeDetails { .. }) => {}
             Some(Prompt::ConfirmClose) | None => self.run(Command::Paste(text.to_string())),
         }
         self.damage_all = true;
@@ -739,16 +1632,142 @@ impl App {
     /// the same point; the wheel moves the viewport. Everything else — the
     /// middle button, motion with no button — is not a gesture this editor has.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        let alt = event.modifiers.contains(KeyModifiers::ALT);
         match event.kind {
+            MouseEventKind::Down(MouseButton::Left) if alt => {
+                self.drag_origin = Some((event.column, event.row));
+                self.add_caret_at(event.column, event.row);
+            }
+            MouseEventKind::Down(MouseButton::Left)
+                if self.ruler_visible() && event.column as usize >= self.ruler_column() =>
+            {
+                let line = self.ruler_line(event.row as usize);
+                self.goto_line(line);
+                self.damage_all = true;
+            }
+            MouseEventKind::Down(MouseButton::Left) if self.is_fold_column(event.column) => {
+                self.click_fold(event.row);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
+                self.drag_origin = Some((event.column, event.row));
                 let extend = event.modifiers.contains(KeyModifiers::SHIFT);
                 self.click(event.column, event.row, extend);
             }
+            // Alt-drag is a column, not a run: every line between the two rows
+            // gets its own caret at the dragged columns.
+            MouseEventKind::Drag(MouseButton::Left) if alt => {
+                self.rectangular(event.column, event.row);
+            }
             MouseEventKind::Drag(MouseButton::Left) => self.click(event.column, event.row, true),
+            MouseEventKind::Up(MouseButton::Left) => self.drag_origin = None,
             MouseEventKind::ScrollUp => self.scroll(-1),
             MouseEventKind::ScrollDown => self.scroll(1),
             _ => {}
         }
+    }
+
+    /// Toggle the fold whose marker sits on `row`.
+    fn click_fold(&mut self, row: u16) {
+        let Some((line, sub)) = self.row_line_sub(row as usize) else {
+            return;
+        };
+        if sub != 0 || self.fold_state(line).is_none() {
+            return;
+        }
+        if !self.folded.remove(&line) {
+            self.folded.insert(line);
+        }
+        self.clamp_anchor();
+        self.ensure_visible();
+        self.damage_all = true;
+    }
+
+    /// The document offset a screen cell names, clamped into the buffer.
+    fn offset_at(&self, col: u16, row: u16) -> usize {
+        let text = self.document.text();
+        let (line, base) = match self.row_line_sub(row as usize) {
+            Some((line, sub)) => (line, sub * self.content_width().max(1)),
+            None => (text.line_count().saturating_sub(1), 0),
+        };
+        let display = (col as usize).saturating_sub(self.gutter_width()) + base + self.left;
+        let line_text = text.line(line);
+        let column = display.min(metrics::display_column(line_text, line_text.len()));
+        text.line_start(line) + metrics::byte_column_for_display(line_text, column)
+    }
+
+    /// Alt-click: another caret where the pointer is.
+    fn add_caret_at(&mut self, col: u16, row: u16) {
+        if row as usize >= self.content_height() {
+            return;
+        }
+        let before = self.document.selection();
+        let grown = before.with_added(editor_core::Cursor::caret(self.offset_at(col, row)));
+        self.document.set_selection(grown);
+        self.damage_all = true;
+        self.report_carets();
+    }
+
+    /// Alt-drag: one caret per line, between the two display columns.
+    ///
+    /// Rebuilt from the drag's origin on every motion rather than accumulated,
+    /// so dragging back up removes the carets the way it added them.
+    fn rectangular(&mut self, col: u16, row: u16) {
+        let Some((from_col, from_row)) = self.drag_origin else {
+            return;
+        };
+        if row as usize >= self.content_height() {
+            return;
+        }
+        let text = self.document.text();
+        let (top, bottom) = if from_row <= row {
+            (from_row, row)
+        } else {
+            (row, from_row)
+        };
+        let (left, right) = if from_col <= col {
+            (from_col, col)
+        } else {
+            (col, from_col)
+        };
+        let gutter = self.gutter_width();
+        let start_column = (left as usize).saturating_sub(gutter) + self.left;
+        let end_column = (right as usize).saturating_sub(gutter) + self.left;
+        let mut cursors = Vec::new();
+        for screen_row in top..=bottom {
+            let Some((line, _)) = self.row_line_sub(screen_row as usize) else {
+                continue;
+            };
+            let line_text = text.line(line);
+            let width = metrics::display_column(line_text, line_text.len());
+            // A line too short for the column contributes a caret at its end,
+            // which is what makes a column of them usable for appending.
+            let from = text.line_start(line)
+                + metrics::byte_column_for_display(line_text, start_column.min(width));
+            let to = text.line_start(line)
+                + metrics::byte_column_for_display(line_text, end_column.min(width));
+            cursors.push(editor_core::Cursor::new(from, to));
+        }
+        if cursors.is_empty() {
+            return;
+        }
+        let primary = cursors.len() - 1;
+        self.document
+            .set_selection(editor_core::Selection::many(cursors, primary));
+        self.damage_all = true;
+        self.report_carets();
+    }
+
+    /// Say how many carets there are, and that the cap bit when it did.
+    fn report_carets(&mut self) {
+        let count = self.document.selection().count();
+        if count <= 1 {
+            return;
+        }
+        self.status = Some(if count == editor_core::limits::MAX_CURSORS {
+            format!("{count} carets — the most this buffer will hold")
+        } else {
+            format!("{count} carets")
+        });
     }
 
     fn run(&mut self, command: Command) {
@@ -777,12 +1796,109 @@ impl App {
     /// the buffer is shown plain: a scan on every keystroke is not worth a
     /// frame once a file is large enough, and the renderer treats an empty
     /// `Syntax` as plain text without a branch of its own.
+    /// Re-read which blocks can be folded, and drop folds that no longer name
+    /// one. A header that stopped being a header must not keep hiding lines.
+    fn refold(&mut self) {
+        self.regions = editor_core::fold::regions(self.document.text());
+        let headers: BTreeSet<usize> = self.regions.iter().map(|region| region.header).collect();
+        self.folded.retain(|line| headers.contains(line));
+    }
+
+    /// Whether `line` is inside a folded block, and so takes no rows.
+    #[must_use]
+    pub fn is_hidden(&self, line: usize) -> bool {
+        self.folded.iter().any(|header| {
+            self.regions
+                .iter()
+                .find(|region| region.header == *header)
+                .is_some_and(|region| region.hidden().contains(&line))
+        })
+    }
+
+    /// The fold marker a line's gutter carries, if it has one.
+    ///
+    /// `Some(true)` is folded, `Some(false)` is foldable and open.
+    #[must_use]
+    pub fn fold_state(&self, line: usize) -> Option<bool> {
+        self.regions
+            .iter()
+            .any(|region| region.header == line)
+            .then(|| self.folded.contains(&line))
+    }
+
+    /// Fold or unfold the block the caret is in.
+    pub fn toggle_fold(&mut self) {
+        let line = self.document.caret_line_col().line;
+        let Some(region) = editor_core::fold::enclosing(&self.regions, line) else {
+            self.status = Some("nothing to fold here".to_string());
+            return;
+        };
+        if !self.folded.remove(&region.header) {
+            self.folded.insert(region.header);
+            // A caret inside what just folded has nowhere to be; the header is
+            // the line the block is now shown as.
+            if region.hidden().contains(&line) {
+                self.goto_line(region.header + 1);
+            }
+        }
+        self.clamp_anchor();
+        self.ensure_visible();
+        self.damage_all = true;
+    }
+
+    /// Open every fold, for the person who cannot find what folded away.
+    pub fn unfold_all(&mut self) {
+        if self.folded.is_empty() {
+            return;
+        }
+        self.folded.clear();
+        self.ensure_visible();
+        self.damage_all = true;
+    }
+
+    /// Pull the viewport anchor onto a visible line.
+    ///
+    /// A `top` inside a fold names a line that takes no rows, and the row walk
+    /// would then start on nothing.
+    fn clamp_anchor(&mut self) {
+        let count = self.document.text().line_count();
+        while self.top < count && self.is_hidden(self.top) {
+            self.top += 1;
+            self.top_sub = 0;
+        }
+        while self.top > 0 && self.is_hidden(self.top) {
+            self.top -= 1;
+            self.top_sub = 0;
+        }
+    }
+
     fn rescan(&mut self) {
+        self.refold();
         self.syntax = if self.document.text().len() > MAX_HIGHLIGHT_BYTES {
             Syntax::default()
         } else {
             Syntax::parse(self.document.as_str(), self.grammar)
         };
+    }
+
+    /// Re-colour what one edit can have reached.
+    ///
+    /// The scan restarts above the edit and stops as soon as the grammar is
+    /// back in the state the previous one was in, so typing on line 4000 does
+    /// not re-lex the 3999 lines over it.
+    fn rescan_edited(&mut self, applied: editor_core::Applied) {
+        self.refold();
+        if self.document.text().len() > MAX_HIGHLIGHT_BYTES {
+            self.syntax = Syntax::default();
+            return;
+        }
+        self.syntax = self.syntax.edited(
+            self.document.as_str(),
+            self.grammar,
+            applied.first_line,
+            applied.last_line,
+            applied.line_delta,
+        );
     }
 
     /// The colouring of one 0-based line, for the renderer.
@@ -793,8 +1909,8 @@ impl App {
 
     /// Damage the rows an outcome can have changed.
     fn mark(&mut self, before: Selection, outcome: &editor_core::Outcome) {
-        if outcome.applied.is_some() {
-            self.rescan();
+        if let Some(applied) = outcome.applied {
+            self.rescan_edited(applied);
             self.arm_autosave();
         }
         if let Some(applied) = outcome.applied {
@@ -809,8 +1925,20 @@ impl App {
         }
         let after = self.document.selection();
         if before != after {
-            self.damage_span(before.range());
-            self.damage_span(after.range());
+            self.damage_selection(&before);
+            self.damage_selection(&after);
+        }
+    }
+
+    /// Damage every row any of a selection's carets touches.
+    fn damage_selection(&mut self, selection: &Selection) {
+        for range in selection
+            .cursors()
+            .iter()
+            .map(editor_core::Cursor::range)
+            .collect::<Vec<_>>()
+        {
+            self.damage_span(range);
         }
     }
 
@@ -832,11 +1960,15 @@ impl App {
             EditorAction::Save => self.save(),
             EditorAction::Close => self.request_close(),
             EditorAction::OpenFind => {
+                self.find_origin = self.document.selection().range().start;
+                self.highlight = true;
                 self.prompt = Some(Prompt::Find {
                     input: self.query.pattern.clone(),
                 });
             }
             EditorAction::OpenReplace => {
+                self.find_origin = self.document.selection().range().start;
+                self.highlight = true;
                 self.prompt = Some(Prompt::Replace {
                     find: self.query.pattern.clone(),
                     with: String::new(),
@@ -848,6 +1980,8 @@ impl App {
                     input: String::new(),
                 });
             }
+            EditorAction::ToggleFold => self.toggle_fold(),
+            EditorAction::UnfoldAll => self.unfold_all(),
             EditorAction::NextChange => self.goto_change(1),
             EditorAction::PreviousChange => self.goto_change(-1),
             EditorAction::FindNext => self.find(true),
@@ -862,19 +1996,88 @@ impl App {
                     self.run(Command::Paste(text));
                 }
             }
+            EditorAction::Complete => self.open_completion(),
+            EditorAction::FindDefinition => self.find_definition(),
+            EditorAction::ChangeDetails => self.ask_change_details(),
+            EditorAction::RunDiagnostics => self.run_diagnostics(),
+            EditorAction::ToggleSpecialChars => {
+                self.special_chars = !self.special_chars;
+                self.damage_all = true;
+                self.status = Some(format!("show whitespace: {}", on_off(self.special_chars)));
+            }
+            // Integrated wraps because the pane is a fixed width, but a code
+            // file often reads better unwrapped even in a narrow column, so it
+            // is a setting rather than a property of the mode.
+            EditorAction::ToggleWrap => {
+                self.wrap = !self.wrap;
+                self.top_sub = 0;
+                if !self.wrap {
+                    self.left = 0;
+                }
+                self.ensure_visible();
+                self.damage_all = true;
+                self.status = Some(format!("wrap: {}", on_off(self.wrap)));
+            }
+            EditorAction::ToggleCloseBrackets => {
+                self.close_brackets = !self.close_brackets;
+                self.adopt_input_style();
+                self.status = Some(format!("close brackets: {}", on_off(self.close_brackets)));
+            }
             EditorAction::ToggleCase => {
                 self.query.case_sensitive = !self.query.case_sensitive;
-                self.status = Some(format!(
-                    "match case: {}",
-                    if self.query.case_sensitive {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                ));
+                self.status = Some(format!("match case: {}", on_off(self.query.case_sensitive)));
+            }
+            EditorAction::ToggleWholeWord => {
+                self.query.whole_word = !self.query.whole_word;
+                self.set_query(&self.query.pattern.clone());
+                self.status = Some(format!("whole word: {}", on_off(self.query.whole_word)));
+            }
+            EditorAction::ToggleRegex => {
+                self.query.regex = !self.query.regex;
+                self.set_query(&self.query.pattern.clone());
+                self.status = Some(match &self.query_error {
+                    Some(error) => format!("regex: on — {error}"),
+                    None => format!("regex: {}", on_off(self.query.regex)),
+                });
             }
             EditorAction::Cancel => {
+                // Escape's first job is to get back to one caret: a person who
+                // added twenty and then reached for Escape wants out of that,
+                // not a new undo unit.
+                if self.document.selection().is_multiple() {
+                    self.run(Command::CollapseCarets);
+                    return;
+                }
                 self.document.break_undo_group();
+            }
+        }
+    }
+
+    /// Keys the open completion list claims. `false` hands the key on, which
+    /// is what closes the list: typing another character re-asks the question.
+    fn handle_completion_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Up => {
+                self.step_completion(false);
+                true
+            }
+            KeyCode::Down => {
+                self.step_completion(true);
+                true
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                self.accept_completion();
+                true
+            }
+            KeyCode::Esc => {
+                self.completion = None;
+                self.damage_all = true;
+                true
+            }
+            _ => {
+                self.completion = None;
+                self.damage_all = true;
+                false
             }
         }
     }
@@ -885,6 +2088,68 @@ impl App {
         };
         self.damage_all = true;
         match prompt {
+            Prompt::ChangeDetails {
+                line,
+                before,
+                after,
+                truncated,
+                mut offset,
+            } => {
+                let rows = before.len() + after.len();
+                match key.code {
+                    KeyCode::Down => offset = (offset + 1).min(rows.saturating_sub(1)),
+                    KeyCode::Up => offset = offset.saturating_sub(1),
+                    KeyCode::Esc | KeyCode::Enter => return,
+                    // Stepping to the next block closes this panel; the caret
+                    // moves and the next Alt-Enter asks about where it landed.
+                    _ => {}
+                }
+                self.prompt = Some(Prompt::ChangeDetails {
+                    line,
+                    before,
+                    after,
+                    truncated,
+                    offset,
+                });
+            }
+            Prompt::Definitions {
+                symbol,
+                places,
+                mut selected,
+            } => match key.code {
+                KeyCode::Up => {
+                    selected = (selected + places.len() - 1) % places.len();
+                    self.prompt = Some(Prompt::Definitions {
+                        symbol,
+                        places,
+                        selected,
+                    });
+                }
+                KeyCode::Down => {
+                    selected = (selected + 1) % places.len();
+                    self.prompt = Some(Prompt::Definitions {
+                        symbol,
+                        places,
+                        selected,
+                    });
+                }
+                KeyCode::Enter => {
+                    if let Some(place) = places.get(selected) {
+                        let request_id = self.next_request_id;
+                        self.next_request_id += 1;
+                        self.open_request = Some((request_id, place.path.clone(), place.line));
+                        self.status = Some(format!("opening {}", place.path));
+                    }
+                }
+                KeyCode::Esc => {}
+                _ => {
+                    self.prompt = Some(Prompt::Definitions {
+                        symbol,
+                        places,
+                        selected,
+                    });
+                }
+            },
             Prompt::ConfirmClose => match key.code {
                 KeyCode::Char('s') | KeyCode::Char('S') => {
                     self.save();
@@ -917,15 +2182,19 @@ impl App {
                     self.set_query(&input);
                     self.find(true);
                 }
-                KeyCode::Esc => {}
+                // Closing leaves no marks behind; the pattern stays, so
+                // `Ctrl-N` still steps through what was being looked for.
+                KeyCode::Esc => self.highlight = false,
                 KeyCode::Backspace => {
                     input.pop();
                     self.set_query(&input);
+                    self.find_as_you_type();
                     self.prompt = Some(Prompt::Find { input });
                 }
                 KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     input.push(character);
                     self.set_query(&input);
+                    self.find_as_you_type();
                     self.prompt = Some(Prompt::Find { input });
                 }
                 _ => self.prompt = Some(Prompt::Find { input }),
@@ -937,7 +2206,20 @@ impl App {
             } => {
                 let mut keep = true;
                 match key.code {
+                    // Enter replaces *this* match and moves to the next, so a
+                    // person can walk a file deciding one at a time; Ctrl-R
+                    // rewrites the rest in one go and closes the prompt.
                     KeyCode::Enter => {
+                        self.set_query(&find);
+                        self.run(Command::ReplaceMatch {
+                            query: self.query.clone(),
+                            replacement: with.clone(),
+                        });
+                        if self.status.is_none() {
+                            self.find(true);
+                        }
+                    }
+                    KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.set_query(&find);
                         self.run(Command::ReplaceAll {
                             query: self.query.clone(),
@@ -945,13 +2227,18 @@ impl App {
                         });
                         keep = false;
                     }
-                    KeyCode::Esc => keep = false,
+                    KeyCode::Esc => {
+                        self.highlight = false;
+                        keep = false;
+                    }
                     KeyCode::Tab => editing_replacement = !editing_replacement,
                     KeyCode::Backspace => {
                         if editing_replacement {
                             with.pop();
                         } else {
                             find.pop();
+                            self.set_query(&find);
+                            self.find_as_you_type();
                         }
                     }
                     KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -959,6 +2246,8 @@ impl App {
                             with.push(character);
                         } else {
                             find.push(character);
+                            self.set_query(&find);
+                            self.find_as_you_type();
                         }
                     }
                     _ => {}
@@ -975,13 +2264,14 @@ impl App {
     }
 
     fn set_query(&mut self, pattern: &str) {
-        let case_sensitive = self.query.case_sensitive;
-        let whole_word = self.query.whole_word;
         self.query = Query {
             pattern: pattern.to_string(),
-            case_sensitive,
-            whole_word,
+            ..self.query.clone()
         };
+        // Reported as the pattern changes, not at Enter: a half-typed `(` is
+        // invalid on the way to being valid, and saying so beats a find bar
+        // that silently finds nothing.
+        self.query_error = self.query.validate().err().map(|error| error.to_string());
     }
 
     fn find(&mut self, forward: bool) {
@@ -989,6 +2279,11 @@ impl App {
             self.status = Some("nothing to find".to_string());
             return;
         }
+        if let Some(error) = &self.query_error {
+            self.status = Some(error.clone());
+            return;
+        }
+        self.highlight = true;
         let command = if forward {
             Command::FindNext(self.query.clone())
         } else {
@@ -996,18 +2291,55 @@ impl App {
         };
         self.run(command);
         if self.status.is_none() {
-            let total = editor_core::count_matches(
-                self.document.text(),
-                &self.query,
-                editor_core::limits::MAX_SEARCH_RESULTS + 1,
-            );
-            let shown = total.min(editor_core::limits::MAX_SEARCH_RESULTS);
-            self.status = Some(if total > shown {
-                format!("{}: more than {shown} matches", self.query.pattern)
-            } else {
-                format!("{}: {shown} matches", self.query.pattern)
-            });
+            self.status = Some(self.match_tally());
         }
+    }
+
+    /// `pattern: 3/41`, or what it can say when there are more than it counted.
+    ///
+    /// Counted here and not on every caret move: this is a discrete gesture,
+    /// and a tally on each arrow key would be a document scan on the movement
+    /// rung.
+    fn match_tally(&self) -> String {
+        let cap = editor_core::limits::MAX_SEARCH_RESULTS;
+        let text = self.document.text();
+        let total = editor_core::count_matches(text, &self.query, cap + 1);
+        let here = self.document.selection().range().start;
+        let before = editor_core::count_matches_before(text, &self.query, here, cap + 1);
+        let index = (before + 1).min(total.max(1));
+        if total > cap {
+            format!("{}: {index} of more than {cap}", self.query.pattern)
+        } else {
+            format!("{}: {index}/{total}", self.query.pattern)
+        }
+    }
+
+    /// Move to the first match at or after where the prompt opened.
+    ///
+    /// The origin is fixed so that narrowing a query re-searches the same
+    /// place rather than walking forward one match per keystroke — CodeMirror's
+    /// `openSearchPanel` behaviour. A query with no match leaves the caret
+    /// where it is: the person is still typing it.
+    fn find_as_you_type(&mut self) {
+        self.highlight = true;
+        if self.query.is_empty() {
+            self.status = None;
+            return;
+        }
+        if let Some(error) = &self.query_error {
+            self.status = Some(error.clone());
+            return;
+        }
+        let Some(found) =
+            editor_core::find_next(self.document.text(), &self.query, self.find_origin)
+        else {
+            self.status = Some(format!("{}: no matches", self.query.pattern));
+            return;
+        };
+        self.document
+            .set_selection(Selection::new(found.start, found.end));
+        self.ensure_visible();
+        self.status = None;
     }
 
     fn save(&mut self) {
@@ -1031,7 +2363,7 @@ impl App {
                 snapshot.version().0,
             ));
             self.in_flight_save = Some((request_id, snapshot));
-            self.status = Some("saving…".to_string());
+            self.status = None;
             return;
         }
         // Optimistic, not exclusive: another program can still write between
@@ -1108,8 +2440,8 @@ impl App {
             .set_selection(before.with_head(offset, extend));
         let after = self.document.selection();
         if before != after {
-            self.damage_span(before.range());
-            self.damage_span(after.range());
+            self.damage_selection(&before);
+            self.damage_selection(&after);
         }
         self.ensure_visible();
     }
@@ -1121,12 +2453,17 @@ impl App {
     /// off screen, and then just to the nearest visible line, keeping its
     /// column so typing resumes where it reads that it will.
     fn scroll(&mut self, delta: isize) {
-        let max_top = self.document.text().line_count().saturating_sub(1) as isize;
-        let new_top = (self.top as isize + delta).clamp(0, max_top) as usize;
-        if new_top == self.top {
+        let before = (self.top, self.top_sub);
+        for _ in 0..delta.unsigned_abs() {
+            if delta > 0 {
+                self.advance_anchor();
+            } else {
+                self.retreat_anchor();
+            }
+        }
+        if (self.top, self.top_sub) == before {
             return;
         }
-        self.top = new_top;
         self.damage_all = true;
 
         let caret_line = self.document.caret_line_col().line;
@@ -1143,26 +2480,77 @@ impl App {
         self.document.set_selection(Selection::caret(offset));
     }
 
+    /// Move the viewport anchor down one screen row.
+    ///
+    /// A row and not a line: with wrap on, a logical line taller than the
+    /// viewport would otherwise scroll past in one notch, and its middle would
+    /// be unreachable.
+    fn advance_anchor(&mut self) {
+        let last = self.document.text().line_count().saturating_sub(1);
+        if self.wrap && self.top_sub + 1 < self.line_rows(self.top) {
+            self.top_sub += 1;
+            return;
+        }
+        // A folded block is one row on screen, so the anchor steps over every
+        // line it hides in one go.
+        while self.top < last {
+            self.top += 1;
+            self.top_sub = 0;
+            if !self.is_hidden(self.top) {
+                return;
+            }
+        }
+    }
+
+    /// Move the viewport anchor up one screen row.
+    fn retreat_anchor(&mut self) {
+        if self.top_sub > 0 {
+            self.top_sub -= 1;
+            return;
+        }
+        while self.top > 0 {
+            self.top -= 1;
+            if !self.is_hidden(self.top) {
+                break;
+            }
+        }
+        self.top_sub = if self.wrap {
+            self.line_rows(self.top).saturating_sub(1)
+        } else {
+            0
+        };
+    }
+
     /// Scroll just enough to keep the caret visible, never a cell more.
     fn ensure_visible(&mut self) {
         let height = self.content_height().max(1);
         let position = self.document.caret_line_col();
+        self.clamp_anchor();
 
         if self.wrap {
             // No sideways scroll to keep in step; the line wraps instead.
             self.left = 0;
             if position.line < self.top {
                 self.top = position.line;
+                self.top_sub = 0;
             }
             let width = self.content_width().max(1);
             let column =
                 metrics::display_column(self.document.text().line(position.line), position.column);
             let sub = column / width;
-            // Advance the top line until the caret's wrapped row fits. Bounded:
-            // each step drops the caret at least one row nearer, and it stops
-            // once `top` reaches the caret's own line.
-            while self.line_sub_to_row(position.line, sub).is_none() && self.top < position.line {
-                self.top += 1;
+            if position.line == self.top && sub < self.top_sub {
+                self.top_sub = sub;
+            }
+            // Advance the anchor one *row* at a time until the caret's row fits.
+            // The guard is the bound, not a line count: a caret that sits
+            // exactly on a wrap boundary has no row of its own, and the anchor
+            // at the end of the buffer would otherwise spin on it.
+            while self.line_sub_to_row(position.line, sub).is_none() {
+                let before = (self.top, self.top_sub);
+                self.advance_anchor();
+                if (self.top, self.top_sub) == before {
+                    break;
+                }
             }
             return;
         }
@@ -1173,6 +2561,14 @@ impl App {
         let last_row = self.top + height - 1;
         if position.line > last_row {
             self.top = position.line + 1 - height;
+        }
+
+        // The DOM surface scrolls sideways itself and is sent whole lines, so
+        // a host-side horizontal offset would only be a second opinion that
+        // the pointer mapping would then have to agree with.
+        if self.headless {
+            self.left = 0;
+            return;
         }
 
         let width = self.content_width().max(1);
@@ -1196,21 +2592,38 @@ impl App {
         let page = self.content_height().max(1);
 
         let action = match (key.code, control, alt) {
+            (KeyCode::Char('/' | '?' | '_'), true, false) => {
+                Action::Command(Command::ToggleLineComment)
+            }
             (KeyCode::Char('s'), true, _) => Action::Editor(EditorAction::Save),
             (KeyCode::Char('q'), true, _) => Action::Editor(EditorAction::Close),
             (KeyCode::Char('f'), true, _) => Action::Editor(EditorAction::OpenFind),
             (KeyCode::Char('r'), true, _) => Action::Editor(EditorAction::OpenReplace),
             (KeyCode::Char('g'), true, _) => Action::Editor(EditorAction::OpenGotoLine),
             (KeyCode::Char('t'), true, _) => Action::Editor(EditorAction::ToggleCase),
+            (KeyCode::Char('w'), true, _) => Action::Editor(EditorAction::ToggleWholeWord),
+            (KeyCode::Char('e'), true, _) => Action::Editor(EditorAction::ToggleRegex),
+            (KeyCode::Char('p'), true, _) => Action::Editor(EditorAction::ToggleCloseBrackets),
+            (KeyCode::Char(' '), true, _) => Action::Editor(EditorAction::Complete),
+            (KeyCode::Char('d'), _, true) => Action::Editor(EditorAction::FindDefinition),
+            (KeyCode::Enter, _, true) => Action::Editor(EditorAction::ChangeDetails),
+            (KeyCode::Char('c'), _, true) => Action::Editor(EditorAction::RunDiagnostics),
+            (KeyCode::Char('i'), _, true) => Action::Editor(EditorAction::ToggleSpecialChars),
+            (KeyCode::Char('w'), _, true) => Action::Editor(EditorAction::ToggleWrap),
             // Alt, not Ctrl: Ctrl-N and Ctrl-B are already the find bar's.
             (KeyCode::Char('n'), _, true) => Action::Editor(EditorAction::NextChange),
             (KeyCode::Char('p'), _, true) => Action::Editor(EditorAction::PreviousChange),
+            (KeyCode::Char('f'), _, true) if shift => Action::Editor(EditorAction::UnfoldAll),
+            (KeyCode::Char('f'), _, true) => Action::Editor(EditorAction::ToggleFold),
             (KeyCode::Char('v'), true, _) => Action::Editor(EditorAction::PasteRegister),
             (KeyCode::Char('c'), true, _) => Action::Command(Command::Copy),
             (KeyCode::Char('x'), true, _) => Action::Command(Command::Cut),
             (KeyCode::Char('a'), true, _) => Action::Command(Command::SelectAll),
             (KeyCode::Char('k'), true, _) => Action::Command(Command::DeleteLine),
             (KeyCode::Char('l'), true, _) => Action::Command(Command::SelectLine),
+            (KeyCode::Char('d'), true, _) => Action::Command(Command::AddNextOccurrence),
+            (KeyCode::Up, _, true) => Action::Command(Command::AddCaretVertically { down: false }),
+            (KeyCode::Down, _, true) => Action::Command(Command::AddCaretVertically { down: true }),
             (KeyCode::Char('z'), true, _) => Action::Command(Command::Undo),
             (KeyCode::Char('y'), true, _) => Action::Command(Command::Redo),
             (KeyCode::Char('n'), true, _) => Action::Editor(EditorAction::FindNext),
@@ -1276,10 +2689,21 @@ enum EditorAction {
     FindPrevious,
     ToggleHelp,
     ToggleCase,
+    ToggleCloseBrackets,
+    ToggleSpecialChars,
+    ToggleWrap,
+    Complete,
+    FindDefinition,
+    ChangeDetails,
+    RunDiagnostics,
+    ToggleWholeWord,
+    ToggleRegex,
     PasteRegister,
     /// Jump to the next / previous changed block in the gutter.
     NextChange,
     PreviousChange,
+    ToggleFold,
+    UnfoldAll,
     Cancel,
 }
 
@@ -1330,11 +2754,33 @@ fn describe(refusal: Refusal) -> String {
     }
 }
 
+/// Whether a word may be searched for as a declaration.
+///
+/// The same shape `fs-service` validates on the far side, checked here too so
+/// a refusal costs no round trip: a symbol that reaches `git grep` is a name,
+/// never anything that could be read as a pattern.
+fn is_identifier(word: &str) -> bool {
+    !word.is_empty()
+        && !word.starts_with(|c: char| c.is_ascii_digit())
+        && word
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 /// Keys the help overlay lists, in the order it shows them.
 pub const HELP: &[(&str, &str)] = &[
     ("arrows, Home/End, PgUp/PgDn", "move; hold Shift to select"),
     ("Ctrl/Alt + arrows", "move by word"),
     ("Ctrl-S", "save"),
+    ("Ctrl-_", "toggle line comments"),
     ("Ctrl-Z / Ctrl-Y", "undo / redo"),
     ("Ctrl-C / Ctrl-X / Ctrl-V", "copy / cut / paste"),
     (
@@ -1344,9 +2790,20 @@ pub const HELP: &[(&str, &str)] = &[
     ("Ctrl-F", "find; Enter searches, Esc closes"),
     ("Ctrl-N / F3", "find next"),
     ("Ctrl-B / Shift-F3", "find previous"),
-    ("Ctrl-T", "toggle match case"),
-    ("Ctrl-R", "replace all; Tab switches field"),
+    (
+        "Ctrl-T / Ctrl-W / Ctrl-E",
+        "toggle match case / whole word / regex",
+    ),
+    (
+        "Ctrl-R",
+        "replace; Tab switches field, Enter one, Ctrl-R all",
+    ),
     ("Ctrl-G", "go to line"),
+    ("Ctrl-P", "toggle closing brackets as you type"),
+    (
+        "Alt-F / Alt-Shift-F",
+        "fold the block at the caret / unfold everything",
+    ),
     ("Ctrl-Q", "close; unsaved changes ask first"),
     ("F1", "this help"),
 ];
@@ -1432,7 +2889,7 @@ mod tests {
         let mut app = app("hello", false);
         app.handle_key(shifted(KeyCode::Right));
         app.handle_key(shifted(KeyCode::Right));
-        assert_eq!(app.selection_in_line(0), Some((0, 2)));
+        assert_eq!(app.selections_in_line(0), vec![(0, 2)]);
         app.handle_key(key(KeyCode::Char('Z')));
         assert_eq!(app.document().as_str(), "Zllo");
     }
@@ -1497,29 +2954,155 @@ mod tests {
         assert_eq!(app.status(), Some("read-only: editing is off"));
     }
 
+    /// Typing in the find bar moves to a match as it goes, and Enter steps to
+    /// the next one — the same two gestures CodeMirror's search panel has.
     #[test]
-    fn find_moves_the_caret_and_counts_the_matches() {
+    fn find_selects_as_you_type_and_enter_steps_on() {
         let mut app = app("alpha beta alpha", false);
+        app.resize(40, 10);
         app.handle_key(control('f'));
-        for character in "alpha".chars() {
+        for character in "alp".chars() {
             app.handle_key(key(KeyCode::Char(character)));
         }
+        assert_eq!(
+            app.document().selection().range(),
+            Range::new(0, 3),
+            "the first match, without pressing Enter"
+        );
+        app.handle_key(key(KeyCode::Char('h')));
+        app.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            app.document().selection().range(),
+            Range::new(0, 5),
+            "narrowing re-searches the same place instead of walking forward"
+        );
+
         app.handle_key(key(KeyCode::Enter));
-        assert_eq!(app.document().selection().range(), Range::new(0, 5));
-        assert_eq!(app.status(), Some("alpha: 2 matches"));
+        assert_eq!(app.document().selection().range(), Range::new(11, 16));
+        assert_eq!(app.status(), Some("alpha: 2/2"));
         assert!(app.prompt().is_none());
     }
 
+    /// The counter is `n of m`, so a person can tell the third hit of forty
+    /// from the thirtieth.
     #[test]
-    fn replace_all_runs_from_the_prompt() {
+    fn the_status_counts_which_match_the_caret_is_on() {
+        let mut app = app("x x x x", false);
+        app.resize(40, 10);
+        app.handle_key(control('f'));
+        app.handle_key(key(KeyCode::Char('x')));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.status(), Some("x: 2/4"));
+        app.handle_key(control('n'));
+        assert_eq!(app.status(), Some("x: 3/4"));
+    }
+
+    /// Enter replaces the match under the caret and moves on; Ctrl-R is the one
+    /// that rewrites the rest.
+    #[test]
+    fn replace_takes_one_match_on_enter_and_the_rest_on_control_r() {
         let mut app = app("a a a", false);
+        app.resize(40, 10);
         app.handle_key(control('r'));
         app.handle_key(key(KeyCode::Char('a')));
         app.handle_key(key(KeyCode::Tab));
         app.handle_key(key(KeyCode::Char('b')));
         app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.document().as_str(), "b a a");
+        assert!(app.prompt().is_some(), "the prompt stays for the next one");
+
+        app.handle_key(control('r'));
         assert_eq!(app.document().as_str(), "b b b");
-        assert_eq!(app.status(), Some("replaced 3"));
+        assert_eq!(app.status(), Some("replaced 2"));
+        assert!(app.prompt().is_none());
+    }
+
+    /// Every visible hit is marked, not just the one the caret is on.
+    #[test]
+    fn find_marks_every_visible_match() {
+        let mut app = app("cat dog cat\ncat\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('f'));
+        app.handle_key(key(KeyCode::Char('c')));
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('t')));
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![
+                (0, 3, view::Decoration::Match),
+                (8, 11, view::Decoration::Match)
+            ]
+        );
+        assert_eq!(app.marks_in_line(1), vec![(0, 3, view::Decoration::Match)]);
+    }
+
+    /// Escape closes the bar and takes the query's marks with it. What is left
+    /// is the found match *as a selection*, which marks its siblings the way
+    /// any selection does — and the pattern stays, so `Ctrl-N` steps on.
+    #[test]
+    fn escape_clears_the_query_marks_and_keeps_the_pattern() {
+        let mut app = app("cat cat\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('f'));
+        for character in "cat".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![
+                (0, 3, view::Decoration::Match),
+                (4, 7, view::Decoration::Match)
+            ],
+            "the live query marks every hit, the caret's included"
+        );
+
+        app.handle_key(key(KeyCode::Esc));
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![(4, 7, view::Decoration::Match)],
+            "no orphan mark under the caret; the sibling is the selection's"
+        );
+
+        app.handle_key(control('n'));
+        assert_eq!(app.status(), Some("cat: 2/2"));
+    }
+
+    /// A selected symbol marks where else it appears, and never itself.
+    #[test]
+    fn a_selection_marks_its_other_occurrences() {
+        let mut app = app("total = total + 1\n", false);
+        app.resize(40, 10);
+        for _ in 0..5 {
+            app.handle_key(shifted(KeyCode::Right));
+        }
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![(8, 13, view::Decoration::Match)],
+            "the other occurrence, not the selection itself"
+        );
+    }
+
+    /// The caret next to a bracket marks the one that closes it, and a brace in
+    /// a string is text rather than a pair.
+    #[test]
+    fn the_caret_marks_the_bracket_pair_it_is_next_to() {
+        let mut app = app("fn f(a: u8) {}\n", false);
+        app.resize(40, 10);
+        for _ in 0..4 {
+            app.handle_key(key(KeyCode::Right));
+        }
+        app.take_frame();
+        assert_eq!(
+            app.marks_in_line(0),
+            vec![
+                (4, 5, view::Decoration::Bracket),
+                (10, 11, view::Decoration::Bracket)
+            ]
+        );
     }
 
     fn marked(app: &mut App, lines: &[(u32, WireMarkKind)]) {
@@ -1710,8 +3293,8 @@ mod tests {
     fn a_selection_that_crosses_a_line_break_shows_on_both_rows() {
         let mut app = app("ab\ncd", false);
         app.handle_key(control('a'));
-        assert_eq!(app.selection_in_line(0), Some((0, 3)));
-        assert_eq!(app.selection_in_line(1), Some((0, 2)));
+        assert_eq!(app.selections_in_line(0), vec![(0, 3)]);
+        assert_eq!(app.selections_in_line(1), vec![(0, 2)]);
     }
 
     #[test]
@@ -1816,6 +3399,19 @@ mod tests {
     }
 
     #[test]
+    fn comment_keys_toggle_the_current_line() {
+        for chord in ['/', '?', '_'] {
+            let document = Document::from_string("let x = 1;".into(), false);
+            let mut app = App::new(document, PathBuf::from("fixture.ts"), None);
+            app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+            app.handle_key(KeyEvent::new(KeyCode::Char(chord), KeyModifiers::CONTROL));
+            assert_eq!(app.document().as_str(), "// let x = 1;");
+            app.handle_key(KeyEvent::new(KeyCode::Char(chord), KeyModifiers::CONTROL));
+            assert_eq!(app.document().as_str(), "let x = 1;");
+        }
+    }
+
+    #[test]
     fn an_integrated_save_asks_the_daemon_instead_of_writing() {
         let mut app = app("hello", false);
         app.set_integrated();
@@ -1826,7 +3422,7 @@ mod tests {
         let (request_id, text, version) = app.take_save_request().expect("a save request");
         assert_eq!(text, "!hello");
         assert_eq!(version, app.document().version().0);
-        assert_eq!(app.status(), Some("saving…"));
+        assert_eq!(app.status(), None);
         assert!(
             app.take_save_request().is_none(),
             "the request is taken once"
@@ -1837,7 +3433,7 @@ mod tests {
             !app.document().is_dirty(),
             "the confirmed snapshot is saved"
         );
-        assert_eq!(app.status(), Some("saved"));
+        assert_eq!(app.status(), None);
         assert_eq!(app.document().disk_revision(), Some("rev-2"));
     }
 
@@ -1991,7 +3587,10 @@ mod tests {
         let mut app = app("hello\nworld\n", false);
         app.resize(80, 24);
         let gutter = app.gutter_width();
-        assert_eq!(gutter, 3, "one number column, a mark cell, and a space");
+        assert_eq!(
+            gutter, 4,
+            "one number column, a mark cell, a fold cell and a space"
+        );
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             (gutter + 2) as u16,
@@ -2027,7 +3626,7 @@ mod tests {
         // First line is 25 cells wide; at content_width 10 that is three rows.
         let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
         app.set_integrated();
-        app.resize(13, 10);
+        app.resize(14, 10);
         assert!(app.wrap());
         assert_eq!(app.content_width(), 10);
         assert_eq!(app.line_rows(0), 3);
@@ -2044,12 +3643,12 @@ mod tests {
     fn the_caret_follows_a_wrapped_line_onto_its_continuation_row() {
         let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
         app.set_integrated();
-        app.resize(13, 10);
+        app.resize(14, 10);
         app.handle_key(key(KeyCode::End));
         assert_eq!(app.caret_position(), (1, 25));
         // Column 25 is the sixth cell of the third segment (25 / 10, 25 % 10),
-        // three cells of gutter in.
-        assert_eq!(app.caret_screen(), Some((2, 8)));
+        // four cells of gutter in.
+        assert_eq!(app.caret_screen(), Some((2, 9)));
     }
 
     /// A click on a continuation row measures its column from that segment's
@@ -2058,7 +3657,7 @@ mod tests {
     fn a_click_on_a_continuation_row_lands_past_the_wrap() {
         let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
         app.set_integrated();
-        app.resize(13, 10);
+        app.resize(14, 10);
         let gutter = app.gutter_width() as u16;
         // Third row (segment 2), three cells in: 2 * 10 + 3.
         app.handle_mouse(mouse(
@@ -2070,29 +3669,50 @@ mod tests {
         assert_eq!(app.document().caret(), 23);
     }
 
-    /// Moving onto a line below a screenful of wrapped rows scrolls the top down
-    /// by whole lines until the caret fits.
+    /// Moving onto a line below a screenful of wrapped rows scrolls the anchor
+    /// down one *row* at a time, not one line, so it never overshoots.
     #[test]
     fn wrapping_scrolls_to_keep_the_caret_visible() {
         let line = "0123456789abcdefghijklmno\n"; // 25 cells → three rows each
         let mut app = app(&line.repeat(4), false);
         app.set_integrated();
-        app.resize(13, 5);
+        app.resize(14, 5);
         assert_eq!(app.content_height(), 5);
         app.goto_line(4);
         assert_eq!(
-            app.top(),
-            2,
-            "the top line advanced to bring line 4 on screen"
+            (app.top(), app.top_sub()),
+            (1, 2),
+            "the anchor advanced the five rows it took, and no more"
         );
         assert!(matches!(app.caret_screen(), Some((row, _)) if row < 5));
+    }
+
+    /// A single logical line taller than the viewport is still reachable: the
+    /// anchor names one of its wrapped rows rather than the whole line.
+    #[test]
+    fn a_line_taller_than_the_viewport_scrolls_within_itself() {
+        let mut app = app(&"x".repeat(95), false);
+        app.set_integrated();
+        app.resize(14, 4);
+        // 95 cells over a 10-cell column is ten rows; the viewport holds four.
+        assert_eq!(app.line_rows(0), 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        assert_eq!(
+            (app.top(), app.top_sub()),
+            (0, 6),
+            "the anchor walked into the line instead of past it"
+        );
+        assert!(
+            app.caret_screen().is_some(),
+            "the caret at the end of the line is on screen"
+        );
     }
 
     /// Standalone never wraps: a long line is one row and scrolls sideways.
     #[test]
     fn standalone_does_not_wrap() {
         let mut app = app("0123456789abcdefghijklmno\nsecond\n", false);
-        app.resize(13, 10);
+        app.resize(14, 10);
         assert!(!app.wrap());
         assert_eq!(app.line_rows(0), 1);
         assert_eq!(app.row_line_sub(1), Some((1, 0)));
@@ -2183,10 +3803,57 @@ mod tests {
         assert!(!frame.clear, "a move is not a resize");
 
         app.resize(40, 20);
+        let taller = app.take_frame();
+        assert!(
+            !taller.clear,
+            "a taller viewport paints the rows it gained; it does not blank"
+        );
+        assert_eq!(taller.rows.len(), app.content_height());
+
+        app.resize(50, 20);
         assert!(
             app.take_frame().clear,
-            "only a shape change needs the clear"
+            "only a width change can leave half a grapheme behind"
         );
+    }
+
+    /// Typing inside a wrapped line repaints that line's rows and nothing above
+    /// them: the row↔line map only moves when a line's height changes.
+    #[test]
+    fn a_keystroke_in_a_wrapped_buffer_repaints_one_line() {
+        let line = "0123456789abcdefghijklmno\n"; // 25 cells → three rows each
+        let mut app = app(&line.repeat(6), false);
+        app.set_integrated();
+        app.resize(14, 9);
+        app.take_frame();
+        app.goto_line(2);
+        app.take_frame();
+
+        app.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(
+            app.take_frame().rows,
+            vec![3, 4, 5],
+            "only the edited line's own rows"
+        );
+    }
+
+    /// A line that gains a row reflows everything under it, and only under it.
+    #[test]
+    fn a_wrapped_line_that_grows_repaints_from_itself_down() {
+        let line = "0123456789abcdefghijk\n"; // 21 cells → three rows
+        let mut app = app(&line.repeat(6), false);
+        app.set_integrated();
+        app.resize(14, 9);
+        app.take_frame();
+        app.goto_line(2);
+        app.take_frame();
+
+        // Line 2 is 21 cells over a 10-cell column: ten more take it to four
+        // rows, and every row below it is somebody else's text now.
+        for _ in 0..10 {
+            app.handle_key(key(KeyCode::Char('X')));
+        }
+        assert_eq!(app.take_frame().rows, (3..9).collect::<Vec<_>>());
     }
 
     /// When the scroll pushes the caret off screen it follows to the edge.
@@ -2215,5 +3882,600 @@ mod tests {
         app.resize(40, 10);
         app.handle_mouse(mouse(MouseEventKind::ScrollUp, 0, 0, KeyModifiers::NONE));
         assert_eq!(app.top(), 0);
+    }
+
+    /// Ctrl-E reads the pattern as a regular expression; the marks and the
+    /// counter follow, and a half-typed group says so instead of finding
+    /// nothing in silence.
+    #[test]
+    fn a_regular_expression_find_marks_and_counts() {
+        let mut app = app("fn one() {}\nfn two() {}\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('e'));
+        app.handle_key(control('f'));
+        for character in "fn .".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        app.take_frame();
+        assert_eq!(app.marks_in_line(0), vec![(0, 4, view::Decoration::Match)]);
+        assert_eq!(app.marks_in_line(1), vec![(0, 4, view::Decoration::Match)]);
+
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.status(), Some("fn .: 2/2"));
+    }
+
+    #[test]
+    fn an_unfinished_pattern_reports_instead_of_searching() {
+        let mut app = app("abc\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('e'));
+        app.handle_key(control('f'));
+        app.handle_key(key(KeyCode::Char('(')));
+        assert!(
+            app.status().is_some_and(|text| text.contains("unclosed")),
+            "said nothing about the pattern: {:?}",
+            app.status()
+        );
+        app.take_frame();
+        assert!(
+            app.marks_in_line(0).is_empty(),
+            "no marks from a bad pattern"
+        );
+    }
+
+    /// The flags a find is running with are on the prompt row, and only the
+    /// ones that are on.
+    #[test]
+    fn the_prompt_names_the_flags_that_are_on() {
+        let mut app = app("abc\n", false);
+        assert_eq!(app.query_flags(), "  [case]");
+        app.handle_key(control('t'));
+        assert_eq!(app.query_flags(), "");
+        app.handle_key(control('w'));
+        app.handle_key(control('e'));
+        assert_eq!(app.query_flags(), "  [word regex]");
+    }
+
+    /// Alt-click drops another caret where the pointer is; the next keystroke
+    /// lands in both places.
+    #[test]
+    fn alt_click_adds_a_caret() {
+        let mut app = app("one\ntwo\n", false);
+        app.resize(40, 10);
+        let gutter = app.gutter_width() as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter,
+            1,
+            KeyModifiers::ALT,
+        ));
+        assert_eq!(app.document().selection().count(), 2);
+        app.handle_key(key(KeyCode::Char('-')));
+        assert_eq!(app.document().as_str(), "-one\n-two\n");
+    }
+
+    /// Alt-drag is a column: one caret per row between the two, at the dragged
+    /// display columns, and a short line contributes one at its end.
+    #[test]
+    fn alt_drag_makes_a_column_of_carets() {
+        let mut app = app("aaaa\nbb\ncccc\n", false);
+        app.resize(40, 10);
+        let gutter = app.gutter_width() as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter + 1,
+            0,
+            KeyModifiers::ALT,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            gutter + 1,
+            2,
+            KeyModifiers::ALT,
+        ));
+        assert_eq!(app.document().selection().count(), 3);
+        app.handle_key(key(KeyCode::Char('.')));
+        assert_eq!(app.document().as_str(), "a.aaa\nb.b\nc.ccc\n");
+    }
+
+    /// Dragging back up removes the carets the way it added them, because the
+    /// column is rebuilt from the origin rather than accumulated.
+    #[test]
+    fn an_alt_drag_that_comes_back_up_shrinks_the_column() {
+        let mut app = app("a\nb\nc\nd\n", false);
+        app.resize(40, 10);
+        let gutter = app.gutter_width() as u16;
+        let at = |row| {
+            mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                gutter,
+                row,
+                KeyModifiers::ALT,
+            )
+        };
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter,
+            0,
+            KeyModifiers::ALT,
+        ));
+        app.handle_mouse(at(3));
+        assert_eq!(app.document().selection().count(), 4);
+        app.handle_mouse(at(1));
+        assert_eq!(app.document().selection().count(), 2);
+    }
+
+    /// Escape's first job is getting back to one caret.
+    #[test]
+    fn escape_collapses_the_carets_before_it_does_anything_else() {
+        let mut app = app("a\nb\n", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(app.document().selection().count(), 2);
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.document().selection().count(), 1);
+    }
+
+    /// Every caret's row is painted: the terminal owns one hardware cursor, so
+    /// the others are cells the renderer draws.
+    #[test]
+    fn the_extra_carets_are_reported_for_painting() {
+        let mut app = app("one\ntwo\n", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        // The caret just added is the primary and owns the hardware cursor, so
+        // the one left behind is the cell the renderer has to draw.
+        assert_eq!(app.carets_in_line(0), vec![0]);
+        assert_eq!(app.carets_in_line(1), Vec::<usize>::new());
+    }
+
+    /// Ctrl-D grows the selection one occurrence at a time, and every range
+    /// reads as selected.
+    #[test]
+    fn control_d_selects_the_next_occurrence_and_marks_both() {
+        let mut app = app("sum = sum\n", false);
+        app.resize(40, 10);
+        app.handle_key(control('d'));
+        app.handle_key(control('d'));
+        assert_eq!(app.document().selection().count(), 2);
+        assert_eq!(app.selections_in_line(0), vec![(0, 3), (6, 9)]);
+    }
+
+    /// A folded block takes one row, and the rows under it are the lines that
+    /// come after the block rather than the ones inside it.
+    #[test]
+    fn folding_a_block_takes_its_rows_out_of_the_viewport() {
+        let mut app = app("fn f() {\n    one();\n    two();\n}\nfn g() {}\n", false);
+        app.resize(40, 10);
+        assert_eq!(app.fold_state(0), Some(false), "line 1 is foldable");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(app.fold_state(0), Some(true));
+        assert_eq!(app.row_line_sub(0), Some((0, 0)));
+        assert_eq!(
+            app.row_line_sub(1),
+            Some((3, 0)),
+            "the body is gone, so the closing brace is the next row"
+        );
+        assert_eq!(app.folded_line_count(0), 2);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(app.row_line_sub(1), Some((1, 0)));
+    }
+
+    /// A caret inside what just folded has nowhere to be, so it moves to the
+    /// header the block is now shown as.
+    #[test]
+    fn folding_pulls_a_caret_out_of_what_it_hid() {
+        let mut app = app("fn f() {\n    one();\n}\n", false);
+        app.resize(40, 10);
+        app.goto_line(2);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(app.caret_position().0, 1);
+        assert!(app.caret_screen().is_some());
+    }
+
+    /// Clicking the fold marker is the same gesture as the key.
+    #[test]
+    fn a_click_on_the_fold_marker_toggles_it() {
+        let mut app = app("fn f() {\n    one();\n}\n", false);
+        app.resize(40, 10);
+        let column = (app.number_width() + 1) as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            0,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.fold_state(0), Some(true));
+        assert_eq!(
+            app.caret_position().0,
+            1,
+            "the click folded, it did not move"
+        );
+    }
+
+    /// An edit that stops a line being a header must not leave it hiding rows.
+    #[test]
+    fn a_fold_whose_block_disappeared_is_dropped() {
+        let mut app = app("fn f() {\n    one();\n}\n", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(app.fold_state(0), Some(true));
+
+        app.handle_key(control('a'));
+        app.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(app.fold_state(0), None);
+        assert!(!app.is_hidden(0));
+    }
+
+    #[test]
+    fn unfold_all_opens_everything() {
+        let mut app = app("a:\n  b:\n    c: 1\n", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        app.goto_line(1);
+        assert!(app.is_hidden(1));
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ));
+        assert!(!app.is_hidden(1));
+    }
+
+    /// The ruler is the document's shape in one column: a change, a match and
+    /// the caret, strongest last.
+    #[test]
+    fn the_ruler_shows_changes_matches_and_the_caret() {
+        let text: String = (0..100).map(|n| format!("line {n}\n")).collect();
+        let mut app = app(&text, false);
+        app.resize(60, 11);
+        assert!(app.ruler_visible());
+        marked(&mut app, &[(90, WireMarkKind::Modified)]);
+
+        app.handle_key(control('f'));
+        for character in "line 5".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        app.take_frame();
+
+        let height = app.content_height();
+        assert_eq!(
+            app.ruler_at(0),
+            Some(RulerMark::Caret),
+            "the caret wins its row"
+        );
+        assert_eq!(
+            app.ruler_at(89 * height / 100),
+            Some(RulerMark::Change),
+            "the changed line's bucket"
+        );
+        assert!(
+            (0..height).any(|row| app.ruler_at(row) == Some(RulerMark::Match)),
+            "the matches are on the ruler too"
+        );
+    }
+
+    /// A click on the ruler jumps to the line that bucket stands for.
+    #[test]
+    fn a_click_on_the_ruler_jumps_to_that_line() {
+        let text: String = (0..100).map(|n| format!("line {n}\n")).collect();
+        let mut app = app(&text, false);
+        app.resize(60, 11);
+        let column = app.ruler_column() as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            5,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.caret_position().0, app.ruler_line(5));
+        assert_eq!(app.caret_position().0, 51);
+    }
+
+    /// A narrow grid keeps every cell for the text.
+    #[test]
+    fn a_narrow_grid_has_no_ruler() {
+        let mut app = app("a\nb\n", false);
+        app.resize(30, 10);
+        assert!(!app.ruler_visible());
+        let wide = app.content_width();
+        app.resize(60, 10);
+        assert!(app.ruler_visible());
+        assert_eq!(
+            app.content_width(),
+            wide + 30 - 1,
+            "the ruler costs exactly one cell"
+        );
+    }
+
+    /// Wrap is a setting, not a property of the mode: a code file often reads
+    /// better unwrapped even in a pane nobody can widen.
+    #[test]
+    fn wrap_can_be_turned_off_in_integrated_mode() {
+        let mut app = app(&"x".repeat(60), false);
+        app.set_integrated();
+        app.resize(20, 10);
+        assert!(app.wrap());
+        assert!(app.line_rows(0) > 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT));
+        assert!(!app.wrap());
+        assert_eq!(app.line_rows(0), 1, "one row, scrolling sideways instead");
+        assert_eq!(app.status(), Some("wrap: off"));
+    }
+
+    #[test]
+    fn showing_whitespace_is_off_until_it_is_asked_for() {
+        let mut app = app("a\tb\n", false);
+        app.resize(40, 10);
+        assert!(!app.special_chars());
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::ALT));
+        assert!(app.special_chars());
+        assert_eq!(app.status(), Some("show whitespace: on"));
+    }
+
+    /// Ctrl-Space offers the buffer's own words; Enter puts one in as a single
+    /// undo step, and typing on closes the list.
+    #[test]
+    fn completion_offers_buffer_words_and_accepts_one() {
+        let mut app = app("let total = 0;\nlet to", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        app.handle_key(control(' '));
+
+        let open = app.completion().expect("a list");
+        assert_eq!(open.candidates.words, vec!["total"]);
+        assert_eq!(open.selected, 0);
+
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.document().as_str(), "let total = 0;\nlet total");
+        assert!(app.completion().is_none());
+
+        app.handle_key(control('z'));
+        assert_eq!(
+            app.document().as_str(),
+            "let total = 0;\nlet to",
+            "the completion is one step"
+        );
+    }
+
+    #[test]
+    fn the_completion_list_steps_and_wraps() {
+        let mut app = app("alpha alphabet\nal", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        app.handle_key(control(' '));
+        assert_eq!(app.completion().expect("a list").candidates.words.len(), 2);
+
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.completion().expect("a list").selected, 1);
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.completion().expect("a list").selected, 0, "it wraps");
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.completion().expect("a list").selected, 1);
+    }
+
+    /// A key the list does not own closes it and still reaches the document:
+    /// typing another character is how a person narrows what they meant.
+    #[test]
+    fn typing_on_closes_the_list_and_still_lands() {
+        let mut app = app("alpha alphabet\nal", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        app.handle_key(control(' '));
+        app.handle_key(key(KeyCode::Char('p')));
+        assert!(app.completion().is_none());
+        assert_eq!(app.document().as_str(), "alpha alphabet\nalp");
+    }
+
+    #[test]
+    fn nothing_to_complete_says_so_instead_of_opening_an_empty_list() {
+        let mut app = app("zz", false);
+        app.resize(40, 10);
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        app.handle_key(control(' '));
+        assert!(app.completion().is_none());
+        assert_eq!(app.status(), Some("no completions"));
+    }
+
+    fn place(path: &str, line: u32, text: &str) -> WirePlace {
+        WirePlace {
+            path: path.to_string(),
+            line,
+            text: text.to_string(),
+        }
+    }
+
+    /// The editor never opens the checkout, so the symbol travels and the
+    /// answer comes back as candidates to choose between.
+    #[test]
+    fn go_to_definition_asks_the_daemon_and_offers_the_answers() {
+        let mut app = app("let x = answer();\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        // Onto `answer`.
+        for _ in 0..9 {
+            app.handle_key(key(KeyCode::Right));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        let (_, symbol) = app.take_definition_request().expect("a lookup");
+        assert_eq!(symbol, "answer");
+
+        app.definitions_arrived(
+            symbol,
+            vec![
+                place("lib.rs", 1, "pub fn answer() -> u8 {"),
+                place("other.rs", 9, "fn answer() {}"),
+            ],
+        );
+        assert!(matches!(app.prompt(), Some(Prompt::Definitions { .. })));
+
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Enter));
+        let (_, path, line) = app.take_open_request().expect("an open");
+        assert_eq!((path.as_str(), line), ("other.rs", 9));
+    }
+
+    /// A caret on whitespace has no symbol, and a standalone editor has no
+    /// daemon to ask. Both say so rather than sending a request that cannot be
+    /// answered.
+    #[test]
+    fn go_to_definition_refuses_what_it_cannot_ask() {
+        let mut blank = app("   \n", false);
+        blank.set_integrated();
+        blank.resize(60, 10);
+        blank.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        assert_eq!(blank.status(), Some("no symbol under the caret"));
+        assert!(blank.take_definition_request().is_none());
+
+        let mut standalone = app("answer\n", false);
+        standalone.resize(60, 10);
+        standalone.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        assert_eq!(
+            standalone.status(),
+            Some("go to definition needs the daemon")
+        );
+    }
+
+    #[test]
+    fn a_symbol_with_no_declaration_says_so() {
+        let mut app = app("answer\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.definitions_arrived("answer".to_string(), Vec::new());
+        assert!(app.prompt().is_none());
+        assert_eq!(
+            app.status(),
+            Some("answer: not declared anywhere I can see")
+        );
+    }
+
+    /// The gutter says which lines changed; Alt-Enter asks what one of them
+    /// replaced, and the answer is a panel rather than a status line.
+    #[test]
+    fn change_details_ask_the_daemon_and_open_a_panel() {
+        let mut app = app("let x = 2;\nlet y = 3;\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        marked(&mut app, &[(1, WireMarkKind::Modified)]);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        let (_, line) = app.take_details_request().expect("a request");
+        assert_eq!(line, 1);
+
+        app.details_arrived(
+            1,
+            vec!["let x = 1;".to_string()],
+            vec!["let x = 2;".to_string()],
+            false,
+        );
+        assert!(matches!(app.prompt(), Some(Prompt::ChangeDetails { .. })));
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.prompt().is_none());
+    }
+
+    /// An unchanged line has nothing to show, and a standalone editor has no
+    /// daemon to ask. Both say so rather than sending a request.
+    #[test]
+    fn change_details_refuse_what_they_cannot_ask() {
+        let mut integrated = app("a\nb\n", false);
+        integrated.set_integrated();
+        integrated.resize(60, 10);
+        integrated.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert_eq!(integrated.status(), Some("this line did not change"));
+        assert!(integrated.take_details_request().is_none());
+
+        let mut standalone = app("a\n", false);
+        standalone.resize(60, 10);
+        standalone.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert_eq!(standalone.status(), Some("change details need the daemon"));
+    }
+
+    /// The working tree may have moved since the gutter was drawn.
+    #[test]
+    fn a_change_that_is_gone_says_so() {
+        let mut app = app("a\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.details_arrived(0, Vec::new(), Vec::new(), false);
+        assert!(app.prompt().is_none());
+        assert_eq!(app.status(), Some("no change here any more"));
+    }
+
+    use editor_control::WireSeverity;
+
+    fn problem(line: u32, severity: WireSeverity, message: &str) -> WireDiagnostic {
+        WireDiagnostic {
+            line,
+            severity,
+            message: message.to_string(),
+        }
+    }
+
+    /// A checker runs on demand and its findings become gutter marks; the
+    /// caret's own line says what the mark is about.
+    #[test]
+    fn diagnostics_mark_the_gutter_and_say_what_they_are() {
+        let mut app = app("let x = 1;\nlet y = 2;\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT));
+        assert_eq!(app.take_diagnostics_request(), Some(1000));
+
+        app.diagnostics_arrived(
+            true,
+            vec![problem(2, WireSeverity::Error, "cannot find value `y`")],
+        );
+        assert_eq!(app.status(), Some("1 problem"));
+        assert!(app.diagnostic_at(2).is_some());
+        assert!(app.diagnostic_at(1).is_none());
+
+        // The status message wins while it is showing; once it clears, the
+        // caret's own problem is what the row says.
+        app.goto_line(2);
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(
+            app.caret_diagnostic().map(|item| item.message.as_str()),
+            Some("cannot find value `y`")
+        );
+    }
+
+    /// A second run that finds nothing empties the gutter: the marks mean the
+    /// last answer, not every answer ever given.
+    #[test]
+    fn a_clean_run_clears_the_marks() {
+        let mut app = app("a\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.diagnostics_arrived(true, vec![problem(1, WireSeverity::Warning, "unused")]);
+        assert!(app.diagnostic_at(1).is_some());
+
+        app.diagnostics_arrived(true, Vec::new());
+        assert!(app.diagnostic_at(1).is_none());
+        assert_eq!(app.status(), Some("no problems found"));
+    }
+
+    /// No checker configured is not the same as a clean file, and a gutter
+    /// that read as clean on those grounds would be lying.
+    #[test]
+    fn no_checker_says_so_rather_than_showing_a_clean_file() {
+        let mut app = app("a\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.diagnostics_arrived(false, Vec::new());
+        assert!(app.diagnostic_at(1).is_none());
+        assert!(app
+            .status()
+            .is_some_and(|text| text.contains("diagnostics_command")));
+    }
+
+    #[test]
+    fn diagnostics_need_the_daemon() {
+        let mut app = app("a\n", false);
+        app.resize(60, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT));
+        assert_eq!(app.status(), Some("diagnostics need the daemon"));
+        assert!(app.take_diagnostics_request().is_none());
     }
 }

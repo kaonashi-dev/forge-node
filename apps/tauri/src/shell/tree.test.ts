@@ -112,6 +112,32 @@ function snapshot(): ShellSnapshot {
 }
 
 describe("buildTree", () => {
+  it("keeps editor sessions inside Code instead of listing one row per file", () => {
+    const store = snapshot();
+    store.sessions.push(
+      session("editor-a", "w1", { kind: "Editor" }),
+      session("editor-b", "w1", { kind: "Editor" }),
+    );
+    const tree = buildTree(store);
+    expect(tree[0].projects[0].workspaces[0].sessions.map((node) => node.id)).toEqual(["a"]);
+    const rows = railRows(tree, new Set());
+    expect(rows.filter((row) => row.id === "code:w1")).toHaveLength(1);
+    expect(rows.some((row) => row.id.startsWith("session:editor-"))).toBe(false);
+  });
+
+  it("offers Code in workspaces that have no sessions", () => {
+    const store = snapshot();
+    store.sessions = [];
+    const rows = railRows(buildTree(store), new Set());
+    expect(rows.filter((row) => row.kind === "code").map((row) => row.target)).toEqual([
+      "w1",
+      "w2",
+    ]);
+    expect(
+      railRows(buildTree(store), new Set(["workspace:w1"])).some((row) => row.id === "code:w1"),
+    ).toBe(false);
+  });
+
   it("nests group → project → workspace → session", () => {
     const tree = buildTree(snapshot());
     expect(tree[0].name).toBe("Work");
@@ -273,6 +299,7 @@ describe("railRows", () => {
     expect(railRows(tree, new Set()).map((row) => row.id)).toEqual([
       "project:p",
       "workspace:w",
+      "code:w",
       "session:s",
     ]);
   });
@@ -316,7 +343,7 @@ describe("railCollapseTarget", () => {
   });
 
   it("moves a session — which cannot fold — to its workspace", () => {
-    expect(railCollapseTarget(rows[2])).toEqual({ select: "workspace:w" });
+    expect(railCollapseTarget(rows[3])).toEqual({ select: "workspace:w" });
   });
 
   it("has nowhere to go from a top-level folded row", () => {
@@ -337,7 +364,7 @@ describe("railExpandTarget", () => {
   });
 
   it("does nothing on a session, which has no children", () => {
-    expect(railExpandTarget(rows[2], rows, 2)).toBeNull();
+    expect(railExpandTarget(rows[3], rows, 3)).toBeNull();
   });
 });
 

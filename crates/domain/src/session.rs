@@ -156,6 +156,38 @@ pub struct EditorState {
     /// `editor_core::DocumentVersion` as a number: monotonic per mutation.
     /// Kept opaque here so `domain` does not depend on the editor crate.
     pub document_version: u64,
+    /// 1-based first line on screen, and how much of the buffer is on it.
+    ///
+    /// The editor owns its viewport — the GUI paints a passive cell grid and
+    /// has no second copy of the text — so a scrollbar can only be drawn from
+    /// what the editor reports here.
+    #[serde(default)]
+    pub top_line: u32,
+    /// Logical lines the viewport shows, at least 1 once a state has arrived.
+    #[serde(default)]
+    pub visible_lines: u32,
+    /// Lines in the buffer, the thumb's denominator.
+    #[serde(default)]
+    pub total_lines: u32,
+    /// The caret's line as text, clamped by the editor before it is sent.
+    ///
+    /// The one piece of document text on a session, and it is here for the
+    /// screen reader: the GUI paints a passive cell grid, so without it the
+    /// only way to say what line a person is on is to read it back out of the
+    /// cells the editor drew. Never the buffer, never a selection's text.
+    #[serde(default)]
+    pub caret_line: String,
+    /// Bytes the primary caret has selected.
+    #[serde(default)]
+    pub selection_length: u32,
+    /// How many carets there are; more than one is announced.
+    #[serde(default)]
+    pub cursor_count: u32,
+    /// The editor's transient message — a find tally, a refusal — as its own
+    /// status row shows it. The GUI announces it; a person who cannot see the
+    /// canvas cannot see that row.
+    #[serde(default)]
+    pub status: String,
     /// A save was refused because the file moved under the buffer.
     ///
     /// The daemon's word, not the editor's: the editor only learns a reason
@@ -365,6 +397,13 @@ mod tests {
             dirty: true,
             read_only: false,
             document_version: 7,
+            top_line: 1,
+            visible_lines: 24,
+            total_lines: 200,
+            caret_line: "fn main() {}".into(),
+            selection_length: 4,
+            cursor_count: 2,
+            status: "alpha: 3/41".into(),
             conflict: true,
         };
         let json = serde_json::to_string(&state).unwrap();
@@ -393,6 +432,13 @@ mod tests {
                 dirty: false,
                 read_only: true,
                 document_version: 1,
+                top_line: 1,
+                visible_lines: 24,
+                total_lines: 200,
+                caret_line: "fn main() {}".into(),
+                selection_length: 0,
+                cursor_count: 1,
+                status: String::new(),
                 conflict: false,
             }),
             agent_provider_id: None,

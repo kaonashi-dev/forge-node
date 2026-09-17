@@ -110,6 +110,113 @@ pub fn marks_from_hunks(patch: &str, line_count: u32) -> Vec<Mark> {
     marks
 }
 
+/// Most lines either side of one change that travel as its details.
+///
+/// A hunk is normally a few lines; a reformatted file is one hunk the length of
+/// the file, and a panel that has to be scrolled is not a detail. Truncated and
+/// said so, never cut silently.
+pub const MAX_DETAIL_LINES: usize = 200;
+
+/// What one changed block replaced, and what it replaced it with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Hunk {
+    /// 1-based line in the working tree where the block starts.
+    pub line: u32,
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+    /// Either side was longer than [`MAX_DETAIL_LINES`].
+    pub truncated: bool,
+}
+
+/// The changed block containing `line`, with the lines it replaced.
+///
+/// `--unified=0` again, but with the bodies this time: the gutter needed only
+/// which lines, and this is the question a person asks *about* one of them, so
+/// it is answered on demand rather than carried with every mark.
+pub fn file_hunk(repo: &Path, relative: &str, line: u32) -> Result<Option<Hunk>, GitError> {
+    let out = run_git(
+        Some(repo),
+        &[
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--unified=0",
+            "HEAD",
+            "--",
+            relative,
+        ],
+    )?;
+    Ok(hunk_at(&out.stdout, line))
+}
+
+/// The hunk covering `line`, parsed from a `--unified=0` patch.
+///
+/// Pure, so the shape of the answer is testable without a repository.
+#[must_use]
+pub fn hunk_at(patch: &str, line: u32) -> Option<Hunk> {
+    let mut current: Option<Hunk> = None;
+    let mut span = (0_u32, 0_u32);
+    let mut found: Option<Hunk> = None;
+    let close = |current: &mut Option<Hunk>, span: (u32, u32), found: &mut Option<Hunk>| {
+        let Some(hunk) = current.take() else { return };
+        // A pure deletion has no added lines, so it is anchored at the line
+        // standing where the removal was — the same rule the gutter uses.
+        let covers = if span.1 == 0 {
+            line == span.0.max(1)
+        } else {
+            line >= span.0 && line < span.0 + span.1
+        };
+        if covers && found.is_none() {
+            *found = Some(hunk);
+        }
+    };
+    for row in patch.lines() {
+        if let Some(header) = row.strip_prefix("@@ ") {
+            close(&mut current, span, &mut found);
+            if found.is_some() {
+                break;
+            }
+            let Some((removed, rest)) = header.split_once(' ') else {
+                continue;
+            };
+            let added = rest.split(' ').next().unwrap_or("");
+            let Some(added) = parse_range(added.strip_prefix('+')) else {
+                continue;
+            };
+            let _ = parse_range(removed.strip_prefix('-'));
+            span = added;
+            current = Some(Hunk {
+                line: added.0.max(1),
+                ..Hunk::default()
+            });
+            continue;
+        }
+        let Some(hunk) = current.as_mut() else {
+            continue;
+        };
+        // `---`/`+++` are the file header and never a body line; a hunk body
+        // line is exactly one `-` or `+` followed by the content.
+        if row.starts_with("--- ") || row.starts_with("+++ ") {
+            continue;
+        }
+        if let Some(text) = row.strip_prefix('-') {
+            if hunk.before.len() < MAX_DETAIL_LINES {
+                hunk.before.push(text.to_string());
+            } else {
+                hunk.truncated = true;
+            }
+        } else if let Some(text) = row.strip_prefix('+') {
+            if hunk.after.len() < MAX_DETAIL_LINES {
+                hunk.after.push(text.to_string());
+            } else {
+                hunk.truncated = true;
+            }
+        }
+    }
+    close(&mut current, span, &mut found);
+    found
+}
+
 fn push_run(marks: &mut Vec<Mark>, start: u32, count: u32, kind: MarkKind, line_count: u32) {
     for offset in 0..count {
         let line = start + offset;
@@ -240,5 +347,64 @@ mod tests {
         ] {
             assert!(marks_from_hunks(patch, 10).is_empty(), "{patch:?}");
         }
+    }
+
+    /// The question a person asks about a `~` in the gutter: what was there?
+    #[test]
+    fn a_hunk_carries_what_it_replaced() {
+        let patch = "\
+--- a/a.rs
++++ b/a.rs
+@@ -1 +1,2 @@
+-let x = 1;
++let x = 2;
++let y = 3;
+@@ -9,2 +10 @@
+-gone();
+-also_gone();
++kept();
+";
+        let first = hunk_at(patch, 1).expect("the first hunk");
+        assert_eq!(first.before, vec!["let x = 1;"]);
+        assert_eq!(first.after, vec!["let x = 2;", "let y = 3;"]);
+        assert_eq!(first.line, 1);
+        assert!(!first.truncated);
+
+        // Line 2 is the second added line of the same hunk.
+        assert_eq!(hunk_at(patch, 2).expect("still the first").line, 1);
+
+        let second = hunk_at(patch, 10).expect("the second hunk");
+        assert_eq!(second.before, vec!["gone();", "also_gone();"]);
+        assert_eq!(second.after, vec!["kept();"]);
+    }
+
+    /// A pure deletion is anchored at the line standing where it was — the
+    /// same rule the gutter's `Deleted` mark uses.
+    #[test]
+    fn a_deletion_is_found_at_the_line_it_is_anchored_to() {
+        let patch = "@@ -4,2 +3,0 @@\n-one();\n-two();\n";
+        let hunk = hunk_at(patch, 3).expect("the deletion");
+        assert_eq!(hunk.before, vec!["one();", "two();"]);
+        assert!(hunk.after.is_empty());
+    }
+
+    #[test]
+    fn a_line_outside_every_hunk_has_no_details() {
+        let patch = "@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(hunk_at(patch, 5), None);
+        assert_eq!(hunk_at("", 1), None);
+    }
+
+    /// A reformatted file is one hunk the length of the file; a panel that has
+    /// to be scrolled is not a detail, so it truncates and says so.
+    #[test]
+    fn an_enormous_hunk_is_truncated_rather_than_cut_silently() {
+        let mut patch = String::from("@@ -1,0 +1,400 @@\n");
+        for n in 0..400 {
+            patch.push_str(&format!("+line {n}\n"));
+        }
+        let hunk = hunk_at(&patch, 1).expect("the hunk");
+        assert_eq!(hunk.after.len(), MAX_DETAIL_LINES);
+        assert!(hunk.truncated);
     }
 }

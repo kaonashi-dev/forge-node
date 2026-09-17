@@ -11,7 +11,7 @@
 //! silence.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -35,6 +35,13 @@ pub const MAX_DIRECTORY_ENTRIES: usize = 2_000;
 
 /// Soft ceiling for search hits.
 pub const MAX_SEARCH_RESULTS: usize = 200;
+
+/// Lines of context kept either side of a content hit.
+pub const SEARCH_CONTEXT_LINES: usize = 3;
+
+/// A context line is orientation, not content: one minified line must not ride
+/// along once per neighbouring hit.
+const MAX_CONTEXT_LINE_BYTES: usize = 512;
 
 /// Package-manager / language dependency directories the file tree never names.
 ///
@@ -192,6 +199,11 @@ pub struct SearchMatch {
     pub column: u32,
     /// The matching line (content) or the path (name).
     pub text: String,
+    /// Up to [`SEARCH_CONTEXT_LINES`] lines directly above a content hit, in
+    /// file order; empty for name and definition hits.
+    pub before: Vec<String>,
+    /// Up to [`SEARCH_CONTEXT_LINES`] lines directly below a content hit.
+    pub after: Vec<String>,
 }
 
 /// Bounded search results.
@@ -879,6 +891,8 @@ fn search_by_name(root: &Path, query: &str, limit: usize) -> Result<SearchResult
                 path: entry.path,
                 line: 0,
                 column: 0,
+                before: Vec::new(),
+                after: Vec::new(),
             },
         ));
     }
@@ -911,6 +925,8 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
             "--untracked",
             "-z",
             "-F",
+            "-C",
+            CONTEXT_ARG,
             "-e",
             query,
             "--",
@@ -941,8 +957,11 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
         });
     }
 
-    parse_grep_z(out.stdout.as_bytes(), limit)
+    Ok(parse_grep_z(out.stdout.as_bytes(), Some(query), limit))
 }
+
+/// `-C` for [`SEARCH_CONTEXT_LINES`]; a literal because `run_git` takes `&str`s.
+const CONTEXT_ARG: &str = "3";
 
 fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchResults, FsError> {
     let tree = list_via_walk(root)?;
@@ -959,17 +978,25 @@ fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchR
         if contents.binary || contents.too_large {
             continue;
         }
-        for (idx, line) in contents.text.lines().enumerate() {
+        let lines: Vec<&str> = contents.text.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
             if let Some(col) = line.find(query) {
                 if matches.len() >= limit {
                     truncated = true;
                     break;
                 }
+                let above = idx.saturating_sub(SEARCH_CONTEXT_LINES);
+                let below = (idx + 1 + SEARCH_CONTEXT_LINES).min(lines.len());
                 matches.push(SearchMatch {
                     path: entry.path.clone(),
                     line: (idx + 1) as u32,
                     column: (col + 1) as u32,
-                    text: line.to_string(),
+                    text: (*line).to_string(),
+                    before: lines[above..idx].iter().map(|l| context_line(l)).collect(),
+                    after: lines[idx + 1..below]
+                        .iter()
+                        .map(|l| context_line(l))
+                        .collect(),
                 });
             }
         }
@@ -977,13 +1004,35 @@ fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchR
     Ok(SearchResults { matches, truncated })
 }
 
-fn parse_grep_z(stdout: &[u8], limit: usize) -> Result<SearchResults, FsError> {
-    // `git grep -z -n` emits path\0line\0text\n per hit.
-    let mut matches = Vec::new();
+fn context_line(line: &str) -> String {
+    if line.len() <= MAX_CONTEXT_LINE_BYTES {
+        return line.to_string();
+    }
+    let mut cut = MAX_CONTEXT_LINE_BYTES;
+    while !line.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    line[..cut].to_string()
+}
+
+/// Read `git grep -z -n` output into hits, `limit` of them at most.
+///
+/// With `-C`, git marks a context line exactly as it marks a hit once `-z` is
+/// on, so `query` is what tells them apart: the grep was `-F`, so a line is a
+/// hit exactly when it contains the needle. `None` takes every record as a hit.
+fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResults {
+    // Records are path\0line\0text\n; `--\n` separates non-adjacent groups.
+    let mut matches: Vec<SearchMatch> = Vec::new();
     let mut truncated = false;
     let text = String::from_utf8_lossy(stdout);
     let mut remaining = text.as_ref();
+    let mut recent: VecDeque<(u32, &str)> = VecDeque::new();
+    let mut recent_path = "";
     while !remaining.is_empty() {
+        if let Some(rest) = remaining.strip_prefix("--\n") {
+            remaining = rest;
+            continue;
+        }
         let Some((path, rest)) = remaining.split_once('\0') else {
             break;
         };
@@ -992,21 +1041,61 @@ fn parse_grep_z(stdout: &[u8], limit: usize) -> Result<SearchResults, FsError> {
         };
         let (line_text, rest) = rest.split_once('\n').unwrap_or((rest, ""));
         remaining = rest;
-        if matches.len() >= limit {
-            truncated = true;
-            break;
-        }
         let Ok(line) = line_s.parse::<u32>() else {
             continue;
         };
-        matches.push(SearchMatch {
-            path: path.replace('\\', "/"),
-            line,
-            column: 0,
-            text: line_text.to_string(),
-        });
+        if path != recent_path {
+            recent.clear();
+            recent_path = path;
+        }
+        let path_norm = path.replace('\\', "/");
+        let hit = query.is_none_or(|needle| line_text.contains(needle));
+        if let Some(last) = matches.last().filter(|_| matches.len() >= limit) {
+            // Past the cap, a record is either the tail of the last hit's
+            // context or proof that another hit follows.
+            let trailing = !hit
+                && last.path == path_norm
+                && line as usize <= last.line as usize + SEARCH_CONTEXT_LINES;
+            if !trailing {
+                truncated = true;
+                break;
+            }
+        }
+        for earlier in matches.iter_mut().rev() {
+            if earlier.path != path_norm || earlier.line >= line {
+                break;
+            }
+            let next = earlier.line as usize + earlier.after.len() + 1;
+            if next > earlier.line as usize + SEARCH_CONTEXT_LINES {
+                break;
+            }
+            if next == line as usize {
+                earlier.after.push(context_line(line_text));
+            }
+        }
+        if hit && matches.len() < limit {
+            let before = recent
+                .iter()
+                .filter(|(at, _)| {
+                    *at < line && (*at as usize) + SEARCH_CONTEXT_LINES >= line as usize
+                })
+                .map(|(_, text)| context_line(text))
+                .collect();
+            matches.push(SearchMatch {
+                path: path_norm,
+                line,
+                column: 0,
+                text: line_text.to_string(),
+                before,
+                after: Vec::new(),
+            });
+        }
+        recent.push_back((line, line_text));
+        if recent.len() > SEARCH_CONTEXT_LINES {
+            recent.pop_front();
+        }
     }
-    Ok(SearchResults { matches, truncated })
+    SearchResults { matches, truncated }
 }
 
 /* --------------------------------------------------------- definitions --- */
@@ -1147,7 +1236,11 @@ fn grep_word(root: &Path, symbol: &str) -> Result<SearchResults, FsError> {
             truncated: false,
         });
     }
-    parse_grep_z(out.stdout.as_bytes(), MAX_DEFINITION_SCAN)
+    Ok(parse_grep_z(
+        out.stdout.as_bytes(),
+        None,
+        MAX_DEFINITION_SCAN,
+    ))
 }
 
 /// Keep the hits that declare `symbol`, best kind of declaration first.
@@ -1166,6 +1259,8 @@ fn declarations(raw: SearchResults, symbol: &str, limit: usize) -> SearchResults
                 line: hit.line,
                 column,
                 text: hit.text,
+                before: Vec::new(),
+                after: Vec::new(),
             },
         ));
     }
@@ -1570,16 +1665,69 @@ mod tests {
     #[test]
     fn grep_records_preserve_paths_lines_and_limits() {
         let raw = b"first.ts\x002\0lookup();\nsecond\nfile.ts\x009\0lookup<T>(): T;\n";
-        let all = parse_grep_z(raw, 10).unwrap();
+        let all = parse_grep_z(raw, None, 10);
         assert_eq!(all.matches.len(), 2);
         assert_eq!(all.matches[0].text, "lookup();");
         assert_eq!(all.matches[1].path, "second\nfile.ts");
         assert_eq!(all.matches[1].line, 9);
         assert_eq!(all.matches[1].text, "lookup<T>(): T;");
         assert!(!all.truncated);
-        let limited = parse_grep_z(raw, 1).unwrap();
+        let limited = parse_grep_z(raw, None, 1);
         assert_eq!(limited.matches.len(), 1);
         assert!(limited.truncated);
+    }
+
+    #[test]
+    fn grep_context_lines_attach_to_the_hits_they_surround() {
+        // Hits on 3 and 5 share line 4; `--` opens a second group at 20.
+        let raw = b"a.ts\x001\0one\na.ts\x002\0two\na.ts\x003\0hit three\na.ts\x004\0four\n\
+a.ts\x005\0hit five\na.ts\x006\0six\na.ts\x007\0seven\n--\n\
+a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two\n";
+        let all = parse_grep_z(raw, Some("hit"), 10);
+        let shape: Vec<_> = all
+            .matches
+            .iter()
+            .map(|m| (m.path.as_str(), m.line, m.before.clone(), m.after.clone()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (
+                    "a.ts",
+                    3,
+                    vec!["one".into(), "two".into()],
+                    vec!["four".into(), "hit five".into(), "six".into()]
+                ),
+                (
+                    "a.ts",
+                    5,
+                    vec!["two".into(), "hit three".into(), "four".into()],
+                    vec!["six".into(), "seven".into()]
+                ),
+                ("a.ts", 20, vec!["nineteen".into()], vec![]),
+                ("b.ts", 1, vec![], vec!["b two".into()]),
+            ]
+        );
+        assert!(!all.truncated);
+
+        // The cap still reads the last kept hit's trailing context.
+        let capped = parse_grep_z(raw, Some("hit"), 2);
+        assert_eq!(capped.matches.len(), 2);
+        assert_eq!(capped.matches[1].after, ["six", "seven"]);
+        assert!(capped.truncated);
+    }
+
+    #[test]
+    fn context_arg_matches_the_context_constant() {
+        assert_eq!(CONTEXT_ARG.parse::<usize>().unwrap(), SEARCH_CONTEXT_LINES);
+    }
+
+    #[test]
+    fn context_lines_are_clipped_on_a_char_boundary() {
+        let long = "é".repeat(MAX_CONTEXT_LINE_BYTES);
+        let clipped = context_line(&long);
+        assert!(clipped.len() <= MAX_CONTEXT_LINE_BYTES);
+        assert!(clipped.chars().all(|c| c == 'é'));
     }
 
     #[test]
@@ -1639,6 +1787,8 @@ mod tests {
             line,
             column: 0,
             text: text.to_string(),
+            before: Vec::new(),
+            after: Vec::new(),
         }
     }
 
@@ -2030,6 +2180,25 @@ mod tests {
     }
 
     #[test]
+    fn content_search_keeps_three_context_lines_in_git_and_plain_directories() {
+        for tmp in [git_repo(), tempfile::tempdir().unwrap()] {
+            fs::write(
+                tmp.path().join("context.txt"),
+                "outside before\none\ntwo\nthree\nneedle\nfive\nsix\nseven\noutside after\n",
+            )
+            .unwrap();
+            let results = search_files(tmp.path(), "needle", SearchKind::Content, 50).unwrap();
+            assert!(!results.truncated);
+            assert_eq!(results.matches.len(), 1);
+            let found = &results.matches[0];
+            assert_eq!(found.path, "context.txt");
+            assert_eq!(found.line, 5);
+            assert_eq!(found.before, ["one", "two", "three"]);
+            assert_eq!(found.after, ["five", "six", "seven"]);
+        }
+    }
+
+    #[test]
     fn content_search_finds_line() {
         let tmp = git_repo();
         fs::write(tmp.path().join("a.rs"), "hello\nworld\n").unwrap();
@@ -2043,6 +2212,8 @@ mod tests {
         assert_eq!(r.matches.len(), 1);
         assert_eq!(r.matches[0].line, 2);
         assert!(r.matches[0].text.contains("world"));
+        assert_eq!(r.matches[0].before, ["hello"]);
+        assert!(r.matches[0].after.is_empty());
     }
 
     /// Metacharacters stay literal: Content is find-in-project text, not a regex.

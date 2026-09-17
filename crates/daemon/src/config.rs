@@ -198,6 +198,35 @@ pub struct EditorConfig {
     /// and `target/debug` share that). A Finder launch's login PATH does not
     /// include the app bundle directory.
     pub executable: String,
+    /// A checker the editor may run on demand, as a command and its arguments.
+    ///
+    /// Empty and off by default, which is the honest default: the daemon would
+    /// be spawning a build in the person's checkout, and what that costs and
+    /// whether it is safe is a question only they can answer. Something like
+    /// `["cargo", "check", "--message-format=short"]` or `["oxlint"]` — anything
+    /// that prints `path:line:col: level: message`.
+    #[serde(default)]
+    pub diagnostics_command: Vec<String>,
+    /// Which surface an integrated editor session presents.
+    ///
+    /// `cells` spawns the TUI under a PTY and the GUI paints its grid; `dom`
+    /// spawns `--headless` and the GUI mounts the window of lines it
+    /// publishes. A flag because the two surfaces are at different stages of
+    /// feature parity, not because the choice is a preference — it goes away
+    /// when the DOM one has everything the TUI has.
+    #[serde(default)]
+    pub surface: EditorSurface,
+}
+
+/// What an integrated editor session draws with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorSurface {
+    /// The TUI under a PTY, painted as a cell grid by the GUI.
+    #[default]
+    Cells,
+    /// A headless host publishing `ViewFrame`s into a DOM surface.
+    Dom,
 }
 
 /// Where Juva gets its prose, when it gets any.

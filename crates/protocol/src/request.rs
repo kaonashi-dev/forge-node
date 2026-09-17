@@ -11,9 +11,9 @@
 
 use domain::{
     AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy, ContextEnvelope,
-    HarnessAdvanceAction, HarnessArtifactKind, HarnessStep, JobId, JobRequest, JuvaKind,
-    ProjectGroupId, ProjectId, PtySize, SessionId, SessionKind, SessionRole, ShareCleanup,
-    ShareRule, ShareRuleId, TerminalId, WorkspaceId, WorktreeIgnore,
+    EditorInputEvent, HarnessAdvanceAction, HarnessArtifactKind, HarnessStep, JobId, JobRequest,
+    JuvaKind, ProjectGroupId, ProjectId, PtySize, SessionId, SessionKind, SessionRole,
+    ShareCleanup, ShareRule, ShareRuleId, TerminalId, WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -720,6 +720,31 @@ pub enum Request {
         line: u32,
         /// 1-based display column, or `None` to leave the column alone.
         column: Option<u32>,
+    },
+    /// What the person did in a DOM editor surface → `Ack`.
+    ///
+    /// The surface has no PTY, so a keystroke is a named key and not an
+    /// escape sequence on `RuntimeCommand::Input`. Batched: one request per
+    /// input burst, never one per key. `events` is clamped to
+    /// [`domain::MAX_EDITOR_INPUT_EVENTS`] and each `Text` to
+    /// [`domain::MAX_EDITOR_TEXT_BYTES`] **before** anything is allocated for
+    /// it. `PreconditionFailed` when the editor's command queue is saturated.
+    SendEditorInput {
+        session_id: SessionId,
+        events: Vec<EditorInputEvent>,
+    },
+    /// Which lines a DOM editor surface is showing → `Ack`.
+    ///
+    /// The surface owns its scroll container and its line height, so it is the
+    /// only side that can say what fits; the editor answers with an
+    /// `EditorFrame`. `PreconditionFailed` when the command queue is
+    /// saturated — the caller's next scroll frame replaces this one anyway.
+    SetEditorView {
+        session_id: SessionId,
+        /// 0-based first line to mount, overscan included.
+        first_line: u32,
+        /// How many lines to mount. Clamped by the editor.
+        line_count: u32,
     },
     /// The two sides of a refused editor save → `EditorConflict`.
     ///

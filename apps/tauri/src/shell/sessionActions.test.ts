@@ -30,6 +30,13 @@ const editorState = (path: string): EditorState => ({
   dirty: false,
   read_only: false,
   document_version: 0,
+  top_line: 1,
+  visible_lines: 1,
+  total_lines: 1,
+  caret_line: "",
+  selection_length: 0,
+  cursor_count: 1,
+  status: "",
   conflict: false,
 });
 

@@ -1,5 +1,7 @@
 export {
   treeRows,
+  watchDirectories,
+  unloadedDirectories,
   directoryPaths,
   foldUnseen,
   collapseTarget,

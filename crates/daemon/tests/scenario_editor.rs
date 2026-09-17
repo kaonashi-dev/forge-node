@@ -43,6 +43,11 @@ def pack_bool(v):
 def pack_nil():
     return b"\xc0"
 
+def pack_array(items):
+    n = len(items)
+    header = bytes([0x90 | n]) if n < 16 else bytes([0xDC]) + n.to_bytes(2, "big")
+    return header + b"".join(items)
+
 def pack_map(items):
     n = len(items)
     header = bytes([0x80 | n]) if n < 16 else bytes([0xDE]) + n.to_bytes(2, "big")
@@ -82,6 +87,39 @@ def state(path, line=1):
     ])
     inner = pack_map([("request_id", pack_nil()), ("state", st)])
     return frame(pack_map([("State", inner)]))
+
+def view_frame(rows, first_line=0, total_lines=1, doc_version=1, caret=(0, 0)):
+    packed = []
+    for line, spans in rows:
+        packed.append(pack_map([
+            ("line", pack_int(line)),
+            ("truncated", pack_bool(False)),
+            ("spans", pack_array([
+                pack_map([("text", pack_str(t)), ("scope", pack_str(sc))])
+                for t, sc in spans
+            ])),
+        ]))
+    frame_body = pack_map([
+        ("buffer_id", pack_int(1)),
+        ("doc_version", pack_int(doc_version)),
+        ("first_line", pack_int(first_line)),
+        ("total_lines", pack_int(total_lines)),
+        ("rows", pack_array(packed)),
+        ("clipped", pack_bool(False)),
+        ("folded", pack_array([])),
+        ("caret", pack_map([("line", pack_int(caret[0])), ("column", pack_int(caret[1]))])),
+        ("selection", pack_array([])),
+        ("extra_carets", pack_array([])),
+        ("decorations", pack_array([])),
+    ])
+    return frame(pack_map([("ViewFrame", pack_map([("frame", frame_body)]))]))
+
+def find_definition(request_id, symbol):
+    inner = pack_map([
+        ("request_id", pack_int(request_id)),
+        ("symbol", pack_str(symbol)),
+    ])
+    return frame(pack_map([("FindDefinition", inner)]))
 
 def save_request(request_id, text, document_version):
     inner = pack_map([
@@ -243,6 +281,59 @@ if mode == "save_twice":
         answers.append(name)
     with open(".forge-editor-save", "w") as fh:
         fh.write(" ".join(answers) + "\n")
+
+if mode == "definition":
+    sock.sendall(find_definition(1500, "answer"))
+    _, body = await_message(sock, "Definitions")
+    with open(".forge-editor-definitions", "w") as fh:
+        for place in body["places"]:
+            fh.write("%s:%s %s\n" % (place["path"], place["line"], place["text"].strip()))
+        fh.write("end\n")
+
+if mode == "copy":
+    # Written only once the test has attached: the escape is a single burst,
+    # and a client that subscribed after it would wait for a store that has
+    # already been broadcast.
+    for _ in range(600):
+        if os.path.exists(".forge-go"):
+            break
+        time.sleep(0.05)
+    # What `Ctrl-C` leaves on the wire: the clipboard *store*, base64 of
+    # "picked up". The daemon's VT engine is the only thing that reads it.
+    sys.stdout.write("\x1b]52;c;cGlja2VkIHVw\x07")
+    sys.stdout.flush()
+
+if mode == "headless":
+    # The DOM surface: no raw mode, no ANSI, and the window is what the
+    # daemon is expected to broadcast. `--headless` must have reached argv,
+    # or the surface flag never made it to the spawn.
+    with open(".forge-editor-argv", "w") as fh:
+        fh.write(" ".join(sys.argv[1:]) + "\n")
+    sock.sendall(view_frame([(0, [("fn", "Keyword"), (" main", "Function")])],
+                            total_lines=2, doc_version=1))
+    seen = []
+    while len(seen) < 2:
+        msg = unpack(read_frame(sock))[0]
+        if "Input" in msg:
+            events = msg["Input"]["events"]
+            keys = []
+            for event in events:
+                if isinstance(event, dict) and "Key" in event:
+                    key = event["Key"]["key"]
+                    name = key["Char"] if isinstance(key, dict) else key
+                    keys.append("%s+%d" % (name, event["Key"]["modifiers"]))
+                elif isinstance(event, dict) and "Text" in event:
+                    keys.append("text:%s" % event["Text"])
+            seen.append("input " + ",".join(keys))
+        elif "SetView" in msg:
+            view = msg["SetView"]["view"]
+            seen.append("view %d %d" % (view["first_line"], view["line_count"]))
+    with open(".forge-editor-surface", "w") as fh:
+        fh.write("\n".join(seen) + "\nend\n")
+    # A second window, so the test can tell a frame that answered the input
+    # from the one that was already on screen.
+    sock.sendall(view_frame([(0, [("Xfn main", "Plain")])],
+                            total_lines=2, doc_version=2, caret=(0, 1)))
 
 if mode == "save":
     body = os.environ.get("FORGE_TEST_SAVE_TEXT", "saved by the editor\n")
@@ -768,6 +859,68 @@ fn install_editor_mode(harness: &common::Harness, mode: &str, text: Option<&str>
     fs::set_permissions(&path, perms).unwrap();
 }
 
+/// Go-to-definition is a request, because the editor never opens the checkout.
+///
+/// The symbol travels, the daemon greps the tree through `fs-service` — which
+/// validates it as an identifier first, so a caret cannot become a regex — and
+/// the candidates come back ranked. Candidates and not a jump: the ranking is a
+/// heuristic, so the editor offers the list.
+#[test]
+fn the_editor_asks_the_daemon_where_a_symbol_is_declared() {
+    let harness = common::Harness::new();
+    install_editor_mode(&harness, "definition", None);
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("a.rs"), "let x = answer();\n").unwrap();
+    fs::write(
+        repo.path().join("lib.rs"),
+        "pub fn answer() -> u8 {\n    42\n}\n",
+    )
+    .unwrap();
+    commit_all(repo.path(), "seed");
+    let running = harness.boot();
+    let client = running.connect("editor-definition");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (_session, _terminal) = create_editor(&client, &events, workspace, "a.rs", None);
+
+    let found = await_receipt(&repo.path().join(".forge-editor-definitions"));
+    assert!(
+        found.contains("lib.rs:1") && found.contains("pub fn answer"),
+        "the declaration was not offered:\n{found}"
+    );
+}
+
+/// A copy in the editor reaches the host, not just the editor's own register.
+///
+/// The whole chain in one test, because every hop already exists on its own:
+/// the editor writes an OSC 52 into its PTY, the daemon's engine is the only
+/// VT that parses it, and the store arrives as a broadcast keyed on the
+/// *editor's* terminal — which is what lets the Tauri host refuse one from a
+/// background agent and forward this one.
+#[test]
+fn a_copy_in_the_editor_reaches_the_host_as_a_clipboard_store() {
+    let harness = common::Harness::new();
+    install_editor_mode(&harness, "copy", None);
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("a.rs"), "picked up\n").unwrap();
+    let running = harness.boot();
+    let client = running.connect("editor-copy");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (_session, terminal) = create_editor(&client, &events, workspace, "a.rs", None);
+    common::attach(&client, terminal, 80, 24);
+    fs::write(repo.path().join(".forge-go"), "").unwrap();
+
+    let event = common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::ClipboardStore { terminal_id, .. } if *terminal_id == terminal)
+    })
+    .expect("the editor's OSC 52 never became a clipboard store");
+    let DaemonEvent::ClipboardStore { text, .. } = event else {
+        unreachable!()
+    };
+    assert_eq!(text, "picked up");
+}
+
 #[test]
 fn editor_session_missing_binary_fails_the_spawn() {
     let harness = common::Harness::new();
@@ -829,5 +982,112 @@ fn _size() -> PtySize {
         rows: 24,
         pixel_width: 0,
         pixel_height: 0,
+    }
+}
+
+/// Install the fake pinned to one mode, for a test that cannot set the
+/// environment the spawn will carry.
+fn install_fake_editor_in_mode(harness: &common::Harness, mode: &str) {
+    let path = harness.bin().join("forge-editor");
+    let script = fake_editor_source().replace(
+        "mode = os.environ.get(\"FORGE_TEST_EDITOR_MODE\", \"serve\")",
+        &format!("mode = {mode:?}"),
+    );
+    fs::write(&path, script).expect("write fake editor");
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).unwrap();
+}
+
+/// The DOM surface, end to end through the daemon.
+///
+/// The half `crates/editor-cli/tests/headless.rs` cannot reach: that one proves
+/// the host publishes windows, this one proves the daemon spawns it headless,
+/// forwards a client's input to its socket, and turns the window it gets back
+/// into a `DaemonEvent` a surface can mount.
+#[test]
+fn the_dom_surface_carries_input_down_and_windows_back_up() {
+    let harness = common::Harness::new();
+    install_fake_editor_in_mode(&harness, "headless");
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("main.rs"), "fn main\n").unwrap();
+    let running = harness.boot_with(|cfg| {
+        cfg.editor.surface = daemon::config::EditorSurface::Dom;
+    });
+    let client = running.connect("editor-dom");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (session_id, _terminal) = create_editor(&client, &events, workspace, "main.rs", None);
+
+    // The window the host published, as a domain event and not a cell grid.
+    let first = wait_for_frame(&events, session_id, 1);
+    assert_eq!(first.total_lines, 2);
+    assert_eq!(first.rows[0].text(), "fn main");
+    assert_eq!(
+        first.rows[0].spans[0].scope,
+        domain::EditorScope::Keyword,
+        "the colouring travels with the window"
+    );
+
+    client
+        .request(Request::SetEditorView {
+            session_id,
+            first_line: 0,
+            line_count: 88,
+        })
+        .expect("SetEditorView");
+    client
+        .request(Request::SendEditorInput {
+            session_id,
+            events: vec![
+                domain::EditorInputEvent::Key {
+                    key: domain::EditorKey::Char('X'),
+                    modifiers: domain::editor_modifiers::CONTROL,
+                },
+                domain::EditorInputEvent::Text("hi".into()),
+            ],
+        })
+        .expect("SendEditorInput");
+
+    assert!(
+        common::poll_until(common::DEADLINE, || repo
+            .path()
+            .join(".forge-editor-surface")
+            .exists()),
+        "the headless editor never received the surface traffic"
+    );
+    let seen = fs::read_to_string(repo.path().join(".forge-editor-surface")).unwrap();
+    assert!(
+        seen.contains("view 0 88"),
+        "the window the surface mounted must reach the host:\n{seen}"
+    );
+    assert!(
+        seen.contains("input X+2,text:hi"),
+        "a named key with its modifiers, and committed text, in one batch:\n{seen}"
+    );
+
+    // The spawn itself: the surface flag is what put `--headless` in argv.
+    let argv = fs::read_to_string(repo.path().join(".forge-editor-argv")).unwrap();
+    assert!(argv.contains("--headless"), "argv was {argv:?}");
+
+    let answer = wait_for_frame(&events, session_id, 2);
+    assert_eq!(answer.rows[0].text(), "Xfn main");
+    assert_eq!(answer.caret.column, 1);
+}
+
+/// The first `EditorFrame` for `session` at or past `version`.
+fn wait_for_frame(
+    events: &flume::Receiver<DaemonEvent>,
+    session: domain::SessionId,
+    version: u64,
+) -> domain::EditorFrame {
+    let event = common::wait_for(events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::EditorFrame { session_id, frame }
+            if *session_id == session && frame.doc_version >= version)
+    })
+    .expect("an EditorFrame should arrive");
+    match event {
+        DaemonEvent::EditorFrame { frame, .. } => frame,
+        _ => unreachable!(),
     }
 }

@@ -2,6 +2,7 @@ import { For, Show, createEffect, createSignal, lazy, onCleanup } from "solid-js
 import type { Section } from "../settings/SettingsRoute";
 import {
   centerMode,
+  codeOpen,
   close,
   closeCode,
   closeOtherViews,
@@ -21,7 +22,7 @@ import { activeWorkspaceId, sessionsInWorkspace } from "./sessionScope";
 import { PrDetailView } from "../workbench/PrDetailView";
 import { PrComposeView } from "../workbench/PrComposeView";
 import { Icon, LangIcon } from "../theme/icons";
-import { Button, ContextMenu, IconButton, Tooltip, type MenuItem } from "../ui";
+import { Button, ContextMenu, EmptyState, IconButton, Tooltip, type MenuItem } from "../ui";
 import {
   sameView,
   strip,
@@ -62,6 +63,16 @@ import {
  * remounted per render, which would throw away the editor's undo history
  * every time the strip re-drew.
  */
+const PreviewView = lazy(() =>
+  import("../workbench/PreviewView").then((module) => ({
+    default: module.PreviewView,
+  })),
+);
+const EditorView = lazy(() =>
+  import("../terminal/EditorView").then((module) => ({
+    default: module.EditorView,
+  })),
+);
 const EditorTerminalPane = lazy(() =>
   import("../terminal/EditorTerminalPane").then((module) => ({
     default: module.EditorTerminalPane,
@@ -72,6 +83,11 @@ const DiffView = lazy(() =>
 );
 const SettingsRoute = lazy(() =>
   import("../settings/SettingsRoute").then((module) => ({ default: module.SettingsRoute })),
+);
+const ProjectSearchView = lazy(() =>
+  import("../workbench/ProjectSearchView").then((module) => ({
+    default: module.ProjectSearchView,
+  })),
 );
 const ReviewView = lazy(() =>
   import("../workbench/ReviewView").then((module) => ({ default: module.ReviewView })),
@@ -90,8 +106,11 @@ const PrReviewView = lazy(() =>
  */
 export function CenterStack(props: { settings: boolean; settingsSection?: Section }) {
   const views = () => currentViews();
-  /** Code is up only when it is selected *and* has something in it. */
-  const onCode = () => !props.settings && centerMode() === "code" && strip(views()).length > 0;
+  const onCode = () => !props.settings && centerMode() === "code" && codeOpen();
+  /* The daemon's word, taken at the handshake: before a connection there is no
+     editor session either, so the fallback never renders against a live one. */
+  const domSurface = () =>
+    runtimeStore.connection.kind === "connected" && runtimeStore.connection.editorSurface === "dom";
   const active = () => views().active;
   /*
    * The grid keeps painting the last frame it was sent, so the window whose
@@ -214,13 +233,19 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
       <Show when={!props.settings}>
         <AttentionBar />
       </Show>
-      <Show when={onCode()}>
+      <Show when={onCode() && strip(views()).length > 0}>
         <div class="workbench-strip" role="tablist" aria-label="Open files">
           <For each={strip(views())}>
             {(view) => (
               <div
                 class="workbench-tab"
-                classList={{ active: sameView(active(), view) }}
+                classList={{
+                  active: sameView(active(), view),
+                  dirty:
+                    view.kind === "editor-terminal" &&
+                    forgeStore.sessions.find((session) => session.id === view.session)?.editor
+                      ?.dirty === true,
+                }}
                 role="tab"
                 aria-selected={sameView(active(), view)}
                 onContextMenu={(event) => {
@@ -253,7 +278,8 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
                   class="workbench-tab-close"
                   onClick={() => close(view)}
                 >
-                  <Icon name="close" size={12} />
+                  <span class="workbench-tab-dirty" aria-label="Unsaved changes" />
+                  <Icon name="close" class="workbench-tab-close-icon" size={12} />
                 </IconButton>
               </div>
             )}
@@ -331,6 +357,15 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
         </div>
       </Show>
 
+      <Show when={onCode() && strip(views()).length === 0}>
+        <div class="center-view">
+          <EmptyState
+            message="No files open. Open a file to start working in Code."
+            actions={[{ action: "open_file_palette", label: "Open file", icon: "folder-open" }]}
+          />
+        </div>
+      </Show>
+
       <Show when={onCode() && active().kind === "diff"}>
         <div class="center-view">
           <DiffView />
@@ -341,10 +376,31 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
           <ReviewView workspace={(active() as { workspace: string }).workspace} />
         </div>
       </Show>
+      {/* Two surfaces for one editor session, chosen by the daemon and never
+          by the tab: `[editor] surface` decides whether the host paints ANSI
+          into a cell grid or publishes windows into the DOM. */}
       <Show when={onCode() && active().kind === "editor-terminal"}>
         <div class="center-view">
-          <EditorTerminalPane
-            session={(active() as { session: string }).session}
+          <Show
+            when={domSurface()}
+            fallback={
+              <EditorTerminalPane
+                session={(active() as { session: string }).session}
+                path={(active() as { path: string }).path}
+              />
+            }
+          >
+            <EditorView
+              session={(active() as { session: string }).session}
+              path={(active() as { path: string }).path}
+            />
+          </Show>
+        </div>
+      </Show>
+      <Show when={onCode() && active().kind === "preview"}>
+        <div class="center-view">
+          <PreviewView
+            workspace={workbenchStore.workspace ?? ""}
             path={(active() as { path: string }).path}
           />
         </div>
@@ -357,6 +413,11 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
       <Show when={onCode() && active().kind === "pr_review"}>
         <div class="center-view">
           <PrReviewView prKey={(active() as { key: string }).key} />
+        </div>
+      </Show>
+      <Show when={onCode() && active().kind === "search"}>
+        <div class="center-view">
+          <ProjectSearchView />
         </div>
       </Show>
       <Show when={onCode() && active().kind === "pr_compose"}>
@@ -401,6 +462,8 @@ function ViewGlyph(props: { view: WorkbenchView }) {
         return { icon: "agent", tone: "forge-icon-accent" } as const;
       case "editor-terminal":
         return { icon: "file-code", tone: "forge-icon-accent" } as const;
+      case "search":
+        return { icon: "search", tone: "forge-icon-amber" } as const;
       default:
         return { icon: "square-terminal", tone: "forge-icon-faint" } as const;
     }

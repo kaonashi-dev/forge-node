@@ -16,6 +16,15 @@ export type WorkbenchView =
    * and a second open of the same file is a second session.
    */
   | { kind: "editor-terminal"; session: string; path: string }
+  /**
+   * A file the terminal editor cannot draw, drawn: Markdown as a document, an
+   * SVG as a picture, a raster image as itself.
+   *
+   * Keyed on the path and not on a session, because there is no process behind
+   * it — it is a read the DOM renders, so a second open of the same file is the
+   * same tab.
+   */
+  | { kind: "preview"; path: string }
   | { kind: "pr_detail"; key: string }
   | { kind: "pr_compose" }
   /**
@@ -51,7 +60,15 @@ export type WorkbenchView =
    * which is parked per checkout, so two projects can each have a `#3` open
    * without either finding the other's.
    */
-  | { kind: "feature"; id: number };
+  | { kind: "feature"; id: number }
+  /**
+   * The Files sidebar's content search, with room to read it: every hit in its
+   * surrounding lines, file by file.
+   *
+   * One per checkout, because the query is shared with the sidebar — a second
+   * tab could only ever show the same answer.
+   */
+  | { kind: "search" };
 
 export const PR_COMPOSE_VIEW: WorkbenchView = { kind: "pr_compose" };
 export const FEATURE_COMPOSE_VIEW: WorkbenchView = { kind: "feature_compose" };
@@ -72,6 +89,7 @@ export function emptyViews(): ParkedViews {
 /** A stable identity for a view, for keys and comparisons. */
 export function viewKey(view: WorkbenchView): string {
   if (view.kind === "editor-terminal") return `editor-terminal:${view.session}`;
+  if (view.kind === "preview") return `preview:${view.path}`;
   if (view.kind === "pr_detail") return `pr:${view.key}`;
   if (view.kind === "pr_review") return `pr-review:${view.key}`;
   if (view.kind === "review") return `review:${view.workspace}`;
@@ -93,6 +111,8 @@ export function viewLabel(view: WorkbenchView): string {
       return "Diff";
     case "editor-terminal":
       return view.path.slice(view.path.lastIndexOf("/") + 1) || "Editor";
+    case "preview":
+      return view.path.slice(view.path.lastIndexOf("/") + 1) || "Preview";
     case "pr_detail":
       return "Pull Request";
     case "pr_review":
@@ -105,6 +125,8 @@ export function viewLabel(view: WorkbenchView): string {
       return "New Feature";
     case "feature":
       return `Feature #${view.id}`;
+    case "search":
+      return "Search";
   }
 }
 
@@ -116,7 +138,7 @@ export function viewLabel(view: WorkbenchView): string {
  * so the path has to stay reachable.
  */
 export function viewTitle(view: WorkbenchView): string {
-  if (view.kind === "editor-terminal") return view.path;
+  if (view.kind === "editor-terminal" || view.kind === "preview") return view.path;
   // Two review tabs are both called "PR Review"; the key is the only thing
   // that tells the reader which pull request each one is about.
   if (view.kind === "pr_review") return `Review ${view.key}`;
@@ -130,7 +152,8 @@ export function viewTitle(view: WorkbenchView): string {
  * follows: the tree is about the checkout, and those views may not be in it.
  */
 export function activeEditorPath(view: WorkbenchView): string | null {
-  return view.kind === "editor-terminal" ? view.path : null;
+  if (view.kind === "editor-terminal" || view.kind === "preview") return view.path;
+  return null;
 }
 
 /**

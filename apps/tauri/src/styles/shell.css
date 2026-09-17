@@ -251,6 +251,223 @@
   position: relative;
   user-select: none;
 }
+/* A read-out of the editor's own viewport, not a control: the wheel is
+   reported to the TUI, so the thumb must not swallow the pointer. */
+.editor-terminal-scrollbar {
+  bottom: var(--space-8);
+  pointer-events: none;
+  position: absolute;
+  right: 2px;
+  top: var(--space-8);
+  width: 4px;
+}
+/* Read by an accessibility tree, never by an eye. Not `display:none` or
+   zero-size: both take the node out of the tree this exists to populate. */
+.editor-terminal-aria {
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+.editor-terminal-thumb {
+  background: var(--fg-muted);
+  border-radius: 2px;
+  opacity: 0.4;
+  position: absolute;
+  width: 100%;
+}
+
+/* The DOM editor surface.
+   Rows are positioned by their line number inside a container as tall as the
+   whole file, so the browser composites the scroll and the mounted window can
+   change under it without moving anything. */
+.editor-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.editor-view-prompt {
+  background: var(--bg-surface);
+  color: var(--fg-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  padding: var(--space-4) var(--space-12);
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+.editor-view-scroll {
+  background: var(--forge-term-bg);
+  cursor: text;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  position: relative;
+}
+.editor-view-content {
+  position: relative;
+  /* As wide as its widest row, so a long line scrolls sideways instead of
+     wrapping: wrapping is a visual-row map the host does not build yet. */
+  min-width: 100%;
+  width: max-content;
+}
+.editor-view-rows {
+  position: absolute;
+  inset: 0;
+}
+/* Beneath the rows: a band over the text would grey what it highlights. */
+.editor-view-selection {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+.ed-selection {
+  background: var(--forge-accent);
+  left: 0;
+  opacity: 0.25;
+  position: absolute;
+  top: 0;
+}
+/* A find hit is not a second selection: the current match *is* the selection,
+   so the two have to read as different things or neither does. */
+.ed-decoration {
+  left: 0;
+  position: absolute;
+  top: 0;
+}
+.ed-decoration-match {
+  border-bottom: 1px solid var(--forge-amber);
+}
+.ed-decoration-activematch {
+  background: var(--forge-amber);
+  opacity: 0.3;
+}
+.ed-decoration-bracket {
+  border-bottom: 1px solid var(--fg-primary);
+}
+.ed-row {
+  align-items: center;
+  display: flex;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  height: var(--ed-line-height);
+  left: 0;
+  line-height: var(--ed-line-height);
+  position: absolute;
+  right: 0;
+  white-space: pre;
+}
+.ed-number {
+  color: var(--fg-faint);
+  flex: none;
+  padding-right: var(--space-8);
+  text-align: right;
+  user-select: none;
+  width: var(--ed-gutter);
+}
+.ed-row-active .ed-number {
+  color: var(--fg-primary);
+}
+.ed-mark,
+.ed-fold {
+  flex: none;
+  text-align: center;
+  user-select: none;
+  width: 1ch;
+}
+.ed-fold {
+  color: var(--fg-faint);
+}
+.ed-text {
+  color: var(--forge-term-fg);
+  padding-left: var(--space-4);
+}
+.ed-folded {
+  color: var(--fg-faint);
+}
+.ed-truncated {
+  color: var(--fg-faint);
+}
+/* One element, moved by a transform. Not a background on the row and not a
+   repaint: a caret that cleared its row every blink was the flicker the cell
+   surface never quite lost. */
+.ed-caret {
+  background: var(--fg-primary);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  width: 1px;
+  opacity: 0;
+}
+.ed-caret-on {
+  animation: ed-blink 1.06s steps(1) infinite;
+  opacity: 1;
+}
+/* An extra caret never blinks: a dozen of them out of phase is a strobe, and
+   the primary is the one whose position a person is tracking. */
+.ed-caret-extra {
+  animation: none;
+  background: var(--forge-accent);
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ed-caret-on {
+    animation: none;
+  }
+}
+@keyframes ed-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* A file the terminal editor cannot draw. Scrolls as a document, unlike every
+   grid surface next to it. */
+.preview-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.preview-chrome {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+}
+.preview-path {
+  color: var(--fg-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-12);
+}
+/* Contained rather than stretched: a screenshot at its own size next to a
+   16-pixel icon is the comparison a preview is for. */
+.preview-image {
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+}
 
 .terminal-pane {
   background: var(--forge-term-bg);

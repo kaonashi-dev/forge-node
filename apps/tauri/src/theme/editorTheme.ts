@@ -1,8 +1,13 @@
 // The editor's own colours, derived from the same palette as everything else.
 //
 // Scope assignment stays importable by a node test that has no DOM
-// (`AGENTS.md`, TypeScript section). The file editor paints these as
-// `--fw-scope-*` CSS variables on its host.
+// (`AGENTS.md`, TypeScript section).
+//
+// The terminal editor does not read these: it emits the ANSI 16, which the
+// canvas resolves through `--forge-ansi-*` from the same theme. These are the
+// DOM surfaces that still paint text — the diff, the review and the preview
+// panes — and the reason both tables exist is that a cell grid has sixteen
+// slots and a stylesheet does not.
 
 import { contrast, hex, mix, parseHex, pct } from "./mix";
 import { palettes, type Palette, type ThemeBaseId } from "./tokens";
@@ -34,7 +39,7 @@ export type EditorPalette = {
   matchingBracket: string;
   searchMatch: string;
   searchMatchSelected: string;
-  /** Syntax, by tag family. Reserved for a future highlighter. */
+  /** Syntax, by tag family, for the DOM surfaces that paint text. */
   scopes: EditorScopes;
   /** The three git gutter marks (A5). */
   gitAdded: string;

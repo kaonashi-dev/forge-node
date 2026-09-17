@@ -216,6 +216,14 @@ impl Harness {
         self.seen.clear();
     }
 
+    /// Whether the raw stream carried a byte sequence — escapes included, which
+    /// `expect` cannot see once it has gone through the lossy conversion.
+    fn saw_raw(&self, needle: &str) -> bool {
+        self.seen
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
     fn on_disk(&self) -> String {
         fs::read_to_string(&self.path).expect("read back")
     }
@@ -329,6 +337,48 @@ fn a_crlf_file_keeps_its_terminators_through_an_edit_and_a_save() {
 fn opening_with_a_line_number_starts_there() {
     let mut editor = Harness::start("one\ntwo\nthree\n", &["+3"]);
     editor.expect("3:1");
+}
+
+/// Blanking anything between two frames is the flicker.
+///
+/// `CSI 2J` is the whole screen and `CSI 2K` is one row, and both are the same
+/// defect: the daemon reads this PTY in batches, so a read boundary landing
+/// between the clear and the content it was making room for is a blank on
+/// somebody's screen. A row is one write, padded to the width, and only a grid
+/// that changed *shape* may clear at all.
+#[test]
+fn neither_a_scroll_nor_a_keystroke_blanks_the_screen() {
+    let text: String = (0..200)
+        .map(|n| format!("line {n}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let mut editor = Harness::start(&text, &[]);
+    editor.expect("line 0");
+    // The opening frame owns the alternate screen and is allowed its clear.
+    editor.forget();
+
+    // SGR wheel-down at the top-left cell, the way a terminal reports it.
+    editor.send(b"\x1b[<65;1;1M");
+    editor.expect("line 11");
+    editor.send(b"X");
+    editor.expect("Xline");
+
+    for blank in ["\x1b[2J", "\x1b[2K"] {
+        assert!(
+            !editor.saw_raw(blank),
+            "a scroll or a keystroke emitted {blank:?}; stream was:\n{:?}",
+            String::from_utf8_lossy(&editor.seen)
+        );
+    }
+
+    // The padding is what replaced the clear, so a short line must still reach
+    // the right-hand edge: a row that stopped early would leave the tail of
+    // whatever was under it.
+    let rows = String::from_utf8_lossy(&editor.seen);
+    assert!(
+        rows.contains("line 11") && rows.contains("            "),
+        "rows are no longer padded to the width:\n{rows}"
+    );
 }
 
 // ---- integrated mode (feature 19) ------------------------------------------
@@ -657,7 +707,25 @@ mod integrated {
             request_id: request.0,
             revision: "rev-2".to_string(),
         });
-        editor.expect("saved");
+        editor
+            .daemon
+            .send(DaemonMessage::GetState { request_id: 88 });
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match editor.daemon.next(remaining) {
+                Some(EditorMessage::State {
+                    request_id: Some(88),
+                    state,
+                }) => {
+                    assert!(!state.dirty);
+                    assert!(state.status.is_empty(), "a successful save is silent");
+                    break;
+                }
+                Some(_) => continue,
+                None => panic!("no state after confirming the save"),
+            }
+        }
     }
 
     /// A refusal is shown and the buffer stays dirty, so the quit still warns.

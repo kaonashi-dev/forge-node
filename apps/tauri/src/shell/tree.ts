@@ -91,7 +91,9 @@ export function buildTree(
         // the indent is the only thing that says a row is a step of the row
         // above it.
         const sessions = orderSessionsTree(
-          store.sessions.filter((session) => session.workspace_id === workspace.id),
+          store.sessions.filter(
+            (session) => session.workspace_id === workspace.id && session.kind !== "Editor",
+          ),
         ).map(({ session, depth }) => ({
           id: session.id,
           session,
@@ -196,7 +198,7 @@ function basename(path: string): string {
 /* ------------------------------------------------------- keyboard model --- */
 
 /** What a rail row is, for the keyboard (§4.1 U4). */
-export type RailRowKind = "group" | "project" | "workspace" | "session";
+export type RailRowKind = "group" | "project" | "workspace" | "code" | "session";
 
 export type RailRow = {
   /** Stable across renders, and unique across the four levels. */
@@ -272,6 +274,16 @@ export function railRows(groups: GroupNode[], collapsed: ReadonlySet<string>): R
           target: workspace.id,
         });
         if (!open(workspaceId)) continue;
+
+        rows.push({
+          id: `code:${workspace.id}`,
+          kind: "code",
+          depth: groupDepth + 2,
+          parent: workspaceId,
+          expandable: false,
+          expanded: false,
+          target: workspace.id,
+        });
 
         for (const session of workspace.sessions) {
           rows.push({
