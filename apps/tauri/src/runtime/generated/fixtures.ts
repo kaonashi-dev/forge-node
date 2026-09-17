@@ -22,7 +22,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   "Hello": {
-    "protocol_version": 24,
+    "protocol_version": 25,
     "client_version": "0.1.0",
     "client_kind": "Gui"
   }
@@ -91,7 +91,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   "HelloAck": {
-    "protocol_version": 24,
+    "protocol_version": 25,
     "daemon_version": "0.1.0",
     "instance_id": "forge-daemon-0001",
     "started_at": "2026-08-30T12:00:00Z",
@@ -101,7 +101,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   "HelloReject": {
-    "daemon_protocol_version": 24,
+    "daemon_protocol_version": 25,
     "reason": "protocol version mismatch"
   }
 } as const;
@@ -715,13 +715,13 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  "protocol_version": 24,
+  "protocol_version": 25,
   "client_version": "0.1.0",
   "client_kind": "Gui"
 } as const;
 
 export const hello_ack = {
-  "protocol_version": 24,
+  "protocol_version": 25,
   "daemon_version": "0.1.0",
   "instance_id": "forge-daemon-0001",
   "started_at": "2026-08-30T12:00:00Z",
@@ -729,7 +729,7 @@ export const hello_ack = {
 } as const;
 
 export const hello_reject = {
-  "daemon_protocol_version": 24,
+  "daemon_protocol_version": 25,
   "reason": "protocol version mismatch"
 } as const;
 
@@ -1032,6 +1032,21 @@ export const response_attach_ack = {
       },
       "title": "vim"
     }
+  }
+} as const;
+
+export const response_directory_listing = {
+  "DirectoryListing": {
+    "path": "",
+    "entries": [
+      {
+        "path": ".agents",
+        "kind": "Directory",
+        "ignored": true,
+        "symlink": "Directory"
+      }
+    ],
+    "truncated": true
   }
 } as const;
 
@@ -2333,4 +2348,4 @@ export const workspace_status = {
   "measured_at": "2026-08-30T12:00:00Z"
 } as const;
 
-export const FIXTURE_NAMES = ["cell.json","cell_flags.json","client_kind_gui.json","client_message_hello.json","client_message_request.json","color_default.json","color_indexed.json","color_rgb.json","cursor.json","cursor_shape_block.json","daemon_message_event.json","daemon_message_hello_ack.json","daemon_message_hello_reject.json","daemon_message_response_err.json","daemon_message_response_ok.json","error_code.json","event_agent_detection_changed.json","event_agent_profiles_changed.json","event_daemon_notice.json","event_daemon_shutting_down.json","event_factory_reset.json","event_file_changed.json","event_job_output.json","event_job_updated.json","event_project_added.json","event_project_group_created.json","event_project_group_removed.json","event_project_removed.json","event_project_shares_changed.json","event_provider_usage_changed.json","event_pull_request_opened.json","event_pull_requests_updated.json","event_remote_refs_updated.json","event_session_created.json","event_session_removed.json","event_session_updated.json","event_shares_applied.json","event_terminal_activity.json","event_terminal_bell.json","event_terminal_delta.json","event_terminal_resync.json","event_workspace_removed.json","event_workspace_updated.json","file_contents.json","file_tree.json","hello.json","hello_ack.json","hello_reject.json","mouse_mode_any_event.json","project.json","project_group.json","protocol_error.json","pty_size.json","request_apply_shares.json","request_attach_terminal.json","request_create_editor_session.json","request_create_shell_session.json","request_detach_terminal.json","request_factory_reset.json","request_fetch_scrollback.json","request_get_snapshot.json","request_get_workspace_diff.json","request_list_directory.json","request_list_files.json","request_list_workspaces.json","request_read_file.json","request_refresh_workspace_status.json","request_remove_share_rule.json","request_resize_terminal.json","request_set_project_shares.json","request_write_file.json","request_write_terminal_input.json","response_ack.json","response_attach_ack.json","response_file_contents.json","response_file_tree.json","response_scrollback_rows.json","response_session_created.json","response_share_candidates.json","response_share_plan.json","response_share_status.json","response_snapshot.json","response_snapshot_populated.json","response_workspace_diff.json","response_workspaces.json","row.json","scrollback_rows.json","session.json","session_editor.json","session_role_custom.json","session_state_exited.json","session_state_failed.json","session_state_orphaned.json","session_state_running.json","term_modes.json","terminal_delta.json","terminal_snapshot.json","theme.json","workspace.json","workspace_diff.json","workspace_status.json"] as const;
+export const FIXTURE_NAMES = ["cell.json","cell_flags.json","client_kind_gui.json","client_message_hello.json","client_message_request.json","color_default.json","color_indexed.json","color_rgb.json","cursor.json","cursor_shape_block.json","daemon_message_event.json","daemon_message_hello_ack.json","daemon_message_hello_reject.json","daemon_message_response_err.json","daemon_message_response_ok.json","error_code.json","event_agent_detection_changed.json","event_agent_profiles_changed.json","event_daemon_notice.json","event_daemon_shutting_down.json","event_factory_reset.json","event_file_changed.json","event_job_output.json","event_job_updated.json","event_project_added.json","event_project_group_created.json","event_project_group_removed.json","event_project_removed.json","event_project_shares_changed.json","event_provider_usage_changed.json","event_pull_request_opened.json","event_pull_requests_updated.json","event_remote_refs_updated.json","event_session_created.json","event_session_removed.json","event_session_updated.json","event_shares_applied.json","event_terminal_activity.json","event_terminal_bell.json","event_terminal_delta.json","event_terminal_resync.json","event_workspace_removed.json","event_workspace_updated.json","file_contents.json","file_tree.json","hello.json","hello_ack.json","hello_reject.json","mouse_mode_any_event.json","project.json","project_group.json","protocol_error.json","pty_size.json","request_apply_shares.json","request_attach_terminal.json","request_create_editor_session.json","request_create_shell_session.json","request_detach_terminal.json","request_factory_reset.json","request_fetch_scrollback.json","request_get_snapshot.json","request_get_workspace_diff.json","request_list_directory.json","request_list_files.json","request_list_workspaces.json","request_read_file.json","request_refresh_workspace_status.json","request_remove_share_rule.json","request_resize_terminal.json","request_set_project_shares.json","request_write_file.json","request_write_terminal_input.json","response_ack.json","response_attach_ack.json","response_directory_listing.json","response_file_contents.json","response_file_tree.json","response_scrollback_rows.json","response_session_created.json","response_share_candidates.json","response_share_plan.json","response_share_status.json","response_snapshot.json","response_snapshot_populated.json","response_workspace_diff.json","response_workspaces.json","row.json","scrollback_rows.json","session.json","session_editor.json","session_role_custom.json","session_state_exited.json","session_state_failed.json","session_state_orphaned.json","session_state_running.json","term_modes.json","terminal_delta.json","terminal_snapshot.json","theme.json","workspace.json","workspace_diff.json","workspace_status.json"] as const;

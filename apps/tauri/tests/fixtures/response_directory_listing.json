@@ -1,0 +1,14 @@
+{
+  "DirectoryListing": {
+    "path": "",
+    "entries": [
+      {
+        "path": ".agents",
+        "kind": "Directory",
+        "ignored": true,
+        "symlink": "Directory"
+      }
+    ],
+    "truncated": true
+  }
+}

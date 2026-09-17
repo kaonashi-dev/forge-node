@@ -1,7 +1,7 @@
 //! Connection-scoped directory watches. Native callbacks only enqueue bounded
 //! invalidations; a worker coalesces them without touching the core lock.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,6 +18,8 @@ const MAX_PATHS: usize = 32;
 const MAX_PATH_BYTES: usize = 4096;
 const COALESCE: Duration = Duration::from_millis(150);
 const RETRY: Duration = Duration::from_millis(250);
+
+type Directories = BTreeMap<PathBuf, BTreeSet<PathBuf>>;
 
 pub(crate) struct Subscription {
     _watcher: notify::RecommendedWatcher,
@@ -61,9 +63,9 @@ impl Subscription {
                 }
             })
             .map_err(watch_error)?;
-        for directory in directories {
+        for directory in directories.keys() {
             watcher
-                .watch(&directory, notify::RecursiveMode::NonRecursive)
+                .watch(directory, notify::RecursiveMode::NonRecursive)
                 .map_err(watch_error)?;
         }
         let daemon = Arc::downgrade(daemon);
@@ -83,11 +85,13 @@ impl Subscription {
                         Err(flume::RecvTimeoutError::Disconnected) => break,
                     };
                     let mut pending = BTreeSet::new();
-                    collect_paths(&root, first, &mut pending, &overflow);
+                    collect_paths(&root, &directories, first, &mut pending, &overflow);
                     let deadline = Instant::now() + COALESCE;
                     while let Some(wait) = deadline.checked_duration_since(Instant::now()) {
                         match rx.recv_timeout(wait) {
-                            Ok(paths) => collect_paths(&root, paths, &mut pending, &overflow),
+                            Ok(paths) => {
+                                collect_paths(&root, &directories, paths, &mut pending, &overflow)
+                            }
                             Err(_) => break,
                         }
                     }
@@ -136,14 +140,14 @@ fn watch_error(error: impl std::fmt::Display) -> ProtocolError {
 fn resolve_directories(
     root: &Path,
     paths: &[String],
-) -> Result<(PathBuf, BTreeSet<PathBuf>), ProtocolError> {
+) -> Result<(PathBuf, Directories), ProtocolError> {
     if paths.len() > MAX_DIRECTORIES || paths.iter().any(|path| path.len() > MAX_PATH_BYTES) {
         return Err(ProtocolError::invalid_request(
             "file watch exceeds directory budget",
         ));
     }
     let root = root.canonicalize().map_err(watch_error)?;
-    let mut directories = BTreeSet::new();
+    let mut directories = Directories::new();
     for relative in paths {
         if Path::new(relative).is_absolute()
             || Path::new(relative)
@@ -168,7 +172,10 @@ fn resolve_directories(
             ));
         }
         if path.is_dir() {
-            directories.insert(path);
+            directories
+                .entry(path)
+                .or_default()
+                .insert(root.join(relative));
         }
     }
     Ok((root, directories))
@@ -176,20 +183,46 @@ fn resolve_directories(
 
 fn collect_paths(
     root: &Path,
+    directories: &Directories,
     paths: Vec<PathBuf>,
     pending: &mut BTreeSet<String>,
     overflow: &AtomicBool,
 ) {
     for path in paths {
-        let Ok(relative) = path.strip_prefix(root) else {
-            continue;
-        };
-        if pending.len() >= MAX_PATHS {
-            overflow.store(true, Ordering::Release);
-            return;
+        // Native watches report canonical paths; lazy listings retain the opened alias.
+        for (physical, aliases) in directories {
+            if path != *physical && path.parent() != Some(physical.as_path()) {
+                continue;
+            }
+            for alias in aliases {
+                if alias == physical {
+                    continue;
+                }
+                let suffix = path.strip_prefix(physical).unwrap_or(Path::new(""));
+                if alias.as_os_str().len() + suffix.as_os_str().len() + 1 > MAX_PATH_BYTES {
+                    overflow.store(true, Ordering::Release);
+                    return;
+                }
+                if suffix.as_os_str().is_empty() {
+                    collect_path(root, alias, pending, overflow);
+                } else {
+                    collect_path(root, &alias.join(suffix), pending, overflow);
+                }
+            }
         }
-        pending.insert(relative.to_string_lossy().into_owned());
+        collect_path(root, &path, pending, overflow);
     }
+}
+
+fn collect_path(root: &Path, path: &Path, pending: &mut BTreeSet<String>, overflow: &AtomicBool) {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return;
+    };
+    if pending.len() >= MAX_PATHS {
+        overflow.store(true, Ordering::Release);
+        return;
+    }
+    pending.insert(relative.to_string_lossy().into_owned());
 }
 
 #[cfg(test)]
@@ -242,11 +275,36 @@ mod tests {
         let overflow = AtomicBool::new(false);
         collect_paths(
             root,
+            &Directories::new(),
             (0..100).map(|i| root.join(format!("{i}.rs"))).collect(),
             &mut pending,
             &overflow,
         );
         assert_eq!(pending.len(), MAX_PATHS);
         assert!(overflow.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn canonical_events_also_invalidate_each_opened_directory_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("real")).unwrap();
+        std::os::unix::fs::symlink("real", tmp.path().join("alias")).unwrap();
+        let (root, directories) =
+            resolve_directories(tmp.path(), &["real".into(), "alias".into()]).unwrap();
+        assert_eq!(directories.len(), 1);
+        let overflow = AtomicBool::new(false);
+        let mut pending = BTreeSet::new();
+        collect_paths(
+            &root,
+            &directories,
+            vec![root.join("real/new-file")],
+            &mut pending,
+            &overflow,
+        );
+        assert_eq!(
+            pending,
+            BTreeSet::from(["alias/new-file".into(), "real/new-file".into()])
+        );
+        assert!(!overflow.load(Ordering::Acquire));
     }
 }

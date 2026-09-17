@@ -241,21 +241,25 @@ fn sample_file_tree() -> FileTree {
                 path: "README.md".to_string(),
                 kind: FileKind::File,
                 ignored: false,
+                symlink: None,
             },
             FileEntry {
                 path: "src/main.rs".to_string(),
                 kind: FileKind::File,
                 ignored: false,
+                symlink: None,
             },
             FileEntry {
                 path: "src/util/mod.rs".to_string(),
                 kind: FileKind::File,
                 ignored: false,
+                symlink: None,
             },
             FileEntry {
                 path: "target/debug/app".to_string(),
                 kind: FileKind::File,
                 ignored: true,
+                symlink: None,
             },
         ],
         truncated: false,
@@ -785,6 +789,20 @@ fn main() {
         &out,
         "response_file_tree",
         &Response::FileTree(sample_file_tree()),
+    );
+    write(
+        &out,
+        "response_directory_listing",
+        &Response::DirectoryListing(domain::DirectoryListing {
+            path: String::new(),
+            entries: vec![FileEntry {
+                path: ".agents".into(),
+                kind: FileKind::Directory,
+                ignored: true,
+                symlink: Some(domain::SymlinkTarget::Directory),
+            }],
+            truncated: true,
+        }),
     );
     write(
         &out,

@@ -32,6 +32,48 @@ pub struct FileEntry {
     /// but it is still a file someone opens. Language dependency directories
     /// (`node_modules`, `vendor`, …) are omitted from the listing entirely.
     pub ignored: bool,
+    /// Absent for ordinary entries and older senders; only an internal directory
+    /// target is expandable and uses `kind: Directory`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink: Option<SymlinkTarget>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum SymlinkTarget {
+    File,
+    Directory,
+    External,
+    Broken,
+    #[serde(other)]
+    Unavailable,
+}
+
+/// Immediate children of `path`, sorted by workspace-relative path.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryListing {
+    /// Empty for the workspace root; preserves an internal symlink's alias.
+    pub path: String,
+    pub entries: Vec<FileEntry>,
+    pub truncated: bool,
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+
+    #[test]
+    fn older_file_entries_default_to_no_symlink_metadata() {
+        let entry: FileEntry =
+            serde_json::from_str(r#"{"path":"src","kind":"Directory","ignored":false}"#).unwrap();
+        assert_eq!(entry.symlink, None);
+        assert!(!serde_json::to_string(&entry).unwrap().contains("symlink"));
+        let future: FileEntry = serde_json::from_str(
+            r#"{"path":"link","kind":"File","ignored":false,"symlink":"FutureTarget"}"#,
+        )
+        .unwrap();
+        assert_eq!(future.symlink, Some(SymlinkTarget::Unavailable));
+    }
 }
 
 /// A bounded listing of paths under a workspace.

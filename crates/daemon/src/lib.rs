@@ -104,6 +104,13 @@ pub fn run() -> anyhow::Result<()> {
     tracing::info!(%instance_id, version, "forge-daemon starting");
 
     paths::ensure_private_dir(&paths::data_dir()?)?;
+    // Socket isolation does not grant a second daemon ownership of the same metadata.
+    let _data_lock = lockfile::acquire(
+        &paths::data_dir()?.join("app.db.lock"),
+        &instance_id,
+        &version,
+        started_at,
+    )?;
     let db =
         persistence::Db::open(&paths::db_path()?).map_err(|e| anyhow::anyhow!("open db: {e}"))?;
 

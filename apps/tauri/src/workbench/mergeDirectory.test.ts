@@ -1,113 +1,71 @@
 import { describe, expect, it } from "vitest";
 import { mergeDirectory, retainExpandedDirectories } from "./mergeDirectory";
-import { treeRows, unloadedDirectories, watchDirectories } from "./filetree";
-import { sameListing } from "./fileInvalidation";
-import type { FileTree } from "./types";
-
-const root = (entries: FileTree["entries"]): FileTree => ({
-  workspace_id: "w1",
-  truncated: false,
+import type { FileEntry, FileTree } from "./types";
+const file = (path: string): FileEntry => ({ path, kind: "File", ignored: false });
+const folder = (path: string): FileEntry => ({ path, kind: "Directory", ignored: false });
+const tree = (entries: FileEntry[], extra: Partial<FileTree> = {}): FileTree => ({
+  workspace_id: "w",
   entries,
+  truncated: false,
+  ...extra,
 });
 
-describe("mergeDirectory", () => {
-  it("replaces an opaque directory with its children", () => {
-    const tree = root([
-      { path: "app.js", kind: "File", ignored: false },
-      { path: "plan", kind: "Directory", ignored: true },
-    ]);
-    const next = mergeDirectory(
-      tree,
-      "plan",
-      root([
-        { path: "plan/nested", kind: "Directory", ignored: true },
-        { path: "plan/notes.md", kind: "File", ignored: true },
-      ]),
+describe("one-level directory merge", () => {
+  it("preserves a real empty parent and its metadata", () => {
+    const parent = { ...folder("empty"), ignored: false, symlink: "Directory" as const };
+    const next = mergeDirectory(tree([parent, file("other")]), "empty", tree([]));
+    expect(next.entries).toEqual([parent, file("other")]);
+    expect(next.loadedDirectories).toEqual(["empty"]);
+  });
+  it("refreshes root without dropping the children of surviving directories", () => {
+    const before = tree(
+      [folder("src"), file("src/a"), folder("gone"), file("gone/a"), file("old")],
+      { loadedDirectories: ["", "src", "gone"] },
     );
+    const next = mergeDirectory(before, "", tree([folder("src"), file("new")]));
+    expect(next.entries).toEqual([file("new"), folder("src"), file("src/a")]);
+    expect(next.loadedDirectories).toEqual(["", "src"]);
+  });
+  it("only replaces direct children and retains a loaded surviving subtree", () => {
+    const before = tree([
+      folder("src"),
+      folder("src/nested"),
+      file("src/nested/a"),
+      file("src/old"),
+      file("neighbor"),
+    ]);
+    const next = mergeDirectory(before, "src", tree([folder("src/nested"), file("src/new")]));
     expect(next.entries).toEqual([
-      { path: "app.js", kind: "File", ignored: false },
-      { path: "plan/nested", kind: "Directory", ignored: true },
-      { path: "plan/notes.md", kind: "File", ignored: true },
+      file("neighbor"),
+      folder("src"),
+      folder("src/nested"),
+      file("src/nested/a"),
+      file("src/new"),
     ]);
   });
-
-  it("keeps an empty peeled directory visible", () => {
-    const tree = root([{ path: "plan", kind: "Directory", ignored: true }]);
-    const next = mergeDirectory(tree, "plan", root([]));
-    expect(next.entries).toEqual([{ path: "plan", kind: "Directory", ignored: true }]);
-    expect(next.loadedDirectories).toEqual(["plan"]);
-    expect(sameListing(next, tree)).toBe(false);
-  });
-
-  it("or-s the truncated flag from the peel", () => {
-    const tree = root([{ path: "dist", kind: "Directory", ignored: true }]);
-    const next = mergeDirectory(tree, "dist", {
-      workspace_id: "w1",
-      truncated: true,
-      entries: [{ path: "dist/a.js", kind: "File", ignored: true }],
-    });
+  it("does not infer deletion from partial listings", () => {
+    const next = mergeDirectory(
+      tree([file("confirmed"), folder("dir"), file("dir/a")]),
+      "",
+      tree([file("other")], { truncated: true }),
+    );
+    expect(next.entries).toEqual([file("confirmed"), folder("dir"), file("dir/a"), file("other")]);
     expect(next.truncated).toBe(true);
   });
-
-  it("refreshes expanded ignored folders without dropping their watches between answers", () => {
-    const listing = root([{ path: "plan", kind: "Directory", ignored: true }]);
-    let tree = mergeDirectory(
-      listing,
-      "plan",
-      root([
-        { path: "plan/old.md", kind: "File", ignored: true },
-        { path: "plan/nested", kind: "Directory", ignored: true },
-      ]),
-    );
-    tree = mergeDirectory(
-      tree,
-      "plan/nested",
-      root([{ path: "plan/nested/old.md", kind: "File", ignored: true }]),
-    );
-    const opened = new Set(["plan", "plan/nested"]);
-    const rows = (next: FileTree) => treeRows(next, new Set(), opened);
-    const watches = watchDirectories(rows(tree));
-
-    tree = retainExpandedDirectories(tree, listing);
-    expect(watchDirectories(rows(tree))).toEqual(watches);
-    expect(unloadedDirectories(tree, rows(tree), opened)).toEqual(["plan"]);
-
-    tree = mergeDirectory(
-      tree,
-      "plan",
-      root([
-        { path: "plan/new.md", kind: "File", ignored: true },
-        { path: "plan/nested", kind: "Directory", ignored: true },
-      ]),
-    );
-    expect(watchDirectories(rows(tree))).toEqual(watches);
-    expect(tree.entries.some((entry) => entry.path === "plan/old.md")).toBe(false);
-    expect(unloadedDirectories(tree, rows(tree), opened)).toEqual(["plan/nested"]);
-
-    tree = mergeDirectory(tree, "plan/nested", root([]));
-    expect(watchDirectories(rows(tree))).toEqual(watches);
-    expect(tree.entries.some((entry) => entry.path === "plan/nested/old.md")).toBe(false);
-    expect(unloadedDirectories(tree, rows(tree), opened)).toEqual([]);
+  it("drops descendants when a directory becomes a file", () => {
+    expect(
+      mergeDirectory(tree([folder("src"), file("src/a")]), "", tree([file("src")])).entries,
+    ).toEqual([file("src")]);
   });
-
-  it("does not restore ignored directories that disappeared from the root listing", () => {
-    const tree = root([{ path: "plan/old.md", kind: "File", ignored: true }]);
-    expect(retainExpandedDirectories(tree, root([])).entries).toEqual([]);
+  it("refuses an answer from another workspace", () => {
+    const before = tree([file("private")]);
+    expect(mergeDirectory(before, "", tree([], { workspace_id: "other" }))).toBe(before);
   });
-
-  it("does not retain another workspace's ignored files", () => {
-    const previous = root([{ path: "plan/private.md", kind: "File", ignored: true }]);
-    const next = {
-      ...root([{ path: "plan", kind: "Directory", ignored: true }]),
-      workspace_id: "w2",
-    };
-    expect(retainExpandedDirectories(previous, next)).toBe(next);
-  });
-
-  it("leaves closed ignored directories unread until they are expanded", () => {
-    const tree = root([{ path: "plan", kind: "Directory", ignored: true }]);
-    const opened = new Set(["plan"]);
-    const rows = treeRows(tree, new Set(["plan"]), opened);
-    expect(unloadedDirectories(tree, rows, opened)).toEqual([]);
+  it("retains expanded children only under directories still present", () => {
+    const before = tree([folder("src"), file("src/a"), folder("gone"), file("gone/a")]);
+    expect(retainExpandedDirectories(before, tree([folder("src")])).entries).toEqual([
+      folder("src"),
+      file("src/a"),
+    ]);
   });
 });

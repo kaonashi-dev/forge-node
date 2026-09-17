@@ -70,10 +70,10 @@ Intel Macs and Linux are not published yet — build them from source with
 | Codex CLI | `codex` | `CODEX_HOME` | remaining allowance + token analytics |
 | OpenCode | `opencode` | `OPENCODE_CONFIG_DIR` | — |
 | Cursor CLI | `cursor-agent` | — | — |
-| Grok | `grok` | `GROK_HOME` | remaining allowance + token analytics |
+| Grok | `grok` | `GROK_HOME` | remaining allowance |
 
 A launch profile is the saved form of a shell wrapper — its own config
-directory, arguments and environment — so the same agent can run twice against
+binary, config directory and arguments — so the same agent can run twice against
 two accounts. Cursor documents no directory of its own, so a profile for it can
 change the binary and the arguments and nothing else.
 
@@ -122,6 +122,10 @@ crates/
   fs-service/     workspace list/read/write/search (ADR-012)
   harness-service/ repository harness files and status transitions
   persistence/    SQLite schema, migrations, repositories
+  editor-core/    document, transactions, search and syntax; no I/O
+  editor-control/ daemon–editor control wire
+  editor-cli/     standalone/integrated `forge-editor` binary
+  test-support/   fake PTYs, agents and temporary Git repositories
   client/         protocol client + cell-grid replica
   daemon/         the runtime: services, PTYs, sessions, IPC → `forge-daemon`
 apps/tauri/       Tauri 2 + Solid shell; the Rust host is under `src-tauri/`
@@ -135,8 +139,8 @@ SQLite · `alacritty_terminal`.
 
 ### Packaging
 
-Never run automatically — not by `scripts/dev`, not by CI. Run by hand on the
-matching platform:
+Packaging is outside `scripts/dev` and ordinary PR CI. The tag-triggered macOS
+release workflow runs it; local builds use the matching platform:
 
 ```sh
 scripts/package-macos --updater --zip   # dist/macos/Forge Node.app + release assets

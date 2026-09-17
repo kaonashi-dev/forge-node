@@ -1,3 +1,6 @@
+import { pathOperations } from "../workbench/operations";
+import { parentPath } from "../workbench/pathOperations";
+import { directories } from "../workbench/directoryState";
 import { createStore } from "solid-js/store";
 import { LAST_WORKSPACE_KEY, writeChoice } from "../shell/layout";
 import type {
@@ -34,9 +37,14 @@ export const [workbenchStore, setWorkbenchStore] = createStore({
   reviewAt: null as number | null,
   tree: null as FileTree | null,
   treeError: null as string | null,
+  treeStale: false,
+  treeVersion: 0,
+  treeRequest: null as { request_id: string; version: number } | null,
   file: null as FileContents | null,
   fileError: null as string | null,
   search: null as SearchResults | null,
+  searchStale: false,
+  searchReadVersion: 0,
   /* Its own field and not `fileError`: a failed `git grep` must not read as a
      failed `ReadFile`, which is what the editor's re-read is guarded by. */
   searchError: null as string | null,
@@ -69,6 +77,18 @@ export function setLoading(surface: string, value: boolean): void {
  */
 export function focusWorkspace(workspace: string | null): void {
   if (workbenchStore.workspace === workspace) return;
+  directories.focus(workspace);
+  pathOperations.reconcile(
+    (operation) => {
+      if (operation.workspace !== workspace) return;
+      for (const path of [operation.from, operation.to]) {
+        if (path !== undefined) directories.ensure(operation.workspace, parentPath(path), true);
+      }
+    },
+    () => {
+      if (workspace) directories.invalidate(workspace);
+    },
+  );
   if (workspace) writeChoice(LAST_WORKSPACE_KEY, workspace);
   setWorkbenchStore({
     workspace,
@@ -79,12 +99,26 @@ export function focusWorkspace(workspace: string | null): void {
     reviewAt: null,
     tree: null,
     treeError: null,
+    treeStale: false,
+    treeRequest: null,
     file: null,
     fileError: null,
     search: null,
+    searchStale: false,
     searchError: null,
     rebase: null,
     rebaseError: null,
     loading: {},
+  });
+}
+
+/** The next global-index consumer refreshes it; explorer updates stay directory-local. */
+export function invalidateFileIndex(workspace: string): void {
+  if (workspace !== workbenchStore.workspace) return;
+  setWorkbenchStore({
+    treeStale: true,
+    treeError: null,
+    searchStale: true,
+    treeVersion: workbenchStore.treeVersion + 1,
   });
 }

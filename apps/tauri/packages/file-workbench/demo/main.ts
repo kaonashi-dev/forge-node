@@ -8,10 +8,10 @@ function node(id: string): HTMLElement {
 }
 
 const files: FileEntry[] = [
-  { path: "README.md", kind: "file" },
-  { path: "src/main.ts", kind: "file" },
-  { path: "src/styles.css", kind: "file" },
-  { path: "docs/architecture.md", kind: "file" },
+  { path: "README.md", kind: "File", ignored: false },
+  { path: "src/main.ts", kind: "File", ignored: false },
+  { path: "src/styles.css", kind: "File", ignored: false },
+  { path: "docs/architecture.md", kind: "File", ignored: false },
 ];
 
 const explorer = createFileExplorer(node("explorer"), {
@@ -19,5 +19,5 @@ const explorer = createFileExplorer(node("explorer"), {
     node("status").textContent = path;
   },
 });
-explorer.setState({ tree: { root: "/demo", entries: files } });
+explorer.setState({ tree: { entries: files, truncated: false } });
 node("status").textContent = "Pick a file.";

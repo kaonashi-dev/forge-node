@@ -148,6 +148,8 @@ pub struct Daemon {
     /// Bounded: one entry per editor session, each at most the document budget,
     /// dropped when the save succeeds or the session ends.
     editor_conflicts: Mutex<HashMap<SessionId, EditorConflict>>,
+    // Acquire before inner, never from inside it; serializes editor disk work with moves.
+    editor_file_operations: Mutex<()>,
     pub instance_id: String,
     pub version: String,
     pub started_at: Timestamp,
@@ -374,6 +376,7 @@ impl Daemon {
             // Past the handshake's 1 and the editor's own 1_000 block.
             editor_requests: std::sync::atomic::AtomicU64::new(2_000),
             editor_conflicts: Mutex::new(HashMap::new()),
+            editor_file_operations: Mutex::new(()),
             attention_assets,
         }))
     }
@@ -2493,7 +2496,7 @@ impl Daemon {
         Ok(Response::FileTree(file_tree_response(workspace_id, tree)))
     }
 
-    /// Peel one directory under a workspace (ADR-012). Lock released before IO.
+    /// Immediate children on disk; the workspace lookup releases the lock before IO.
     fn list_directory(
         &self,
         workspace_id: WorkspaceId,
@@ -2501,7 +2504,11 @@ impl Daemon {
     ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
         let tree = fs_service::list_directory(&path, relative).map_err(fs_err)?;
-        Ok(Response::FileTree(file_tree_response(workspace_id, tree)))
+        Ok(Response::DirectoryListing(domain::DirectoryListing {
+            path: tree.path,
+            entries: tree.entries.into_iter().map(file_entry_response).collect(),
+            truncated: tree.truncated,
+        }))
     }
 
     /// Read one file (ADR-012). Lock released before IO.
@@ -2541,12 +2548,6 @@ impl Daemon {
     }
 
     /// Create an empty file or a directory (ADR-012).
-    ///
-    /// The three mutations below all answer `Ack` and broadcast nothing. The
-    /// file tree is a *read*, not a subscription — `ListFiles` is asked for and
-    /// answered, and `GetWorkspaceDiff` beside it works the same way — so the
-    /// client refreshes what it is showing rather than the daemon pushing at
-    /// every window that happens to have a tree open.
     fn create_path(
         &self,
         workspace_id: WorkspaceId,
@@ -2570,8 +2571,53 @@ impl Daemon {
         from: &str,
         to: &str,
     ) -> Result<Response, ProtocolError> {
+        let _operation = self.editor_file_operation();
         let root = self.workspace_path(workspace_id)?;
-        fs_service::rename_path(&root, from, to).map_err(fs_err)?;
+        let movement = fs_service::prepare_rename(&root, from, to).map_err(fs_err)?;
+        let editors: Vec<_> = self
+            .lock()
+            .sessions
+            .values()
+            .filter(|s| s.workspace_id == workspace_id && s.kind == SessionKind::Editor)
+            .filter_map(|s| s.editor.as_ref().map(|e| (s.id, e.path.clone())))
+            .collect();
+        let mut targets = Vec::new();
+        for (id, path) in editors {
+            if let Some(target) = movement.retarget(&path).map_err(fs_err)? {
+                targets.push((id, target));
+            }
+        }
+        movement.apply().map_err(fs_err)?;
+        {
+            let mut conflicts = self
+                .editor_conflicts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for (id, path) in &targets {
+                if let Some(conflict) = conflicts.get_mut(id) {
+                    conflict.path.clone_from(path);
+                }
+            }
+        }
+        let mut inner = self.lock();
+        for (id, path) in targets {
+            if let Some(port) = inner.editors.get(&id) {
+                port.retarget(path.clone());
+            }
+            if let Some(session) = inner.sessions.get_mut(&id) {
+                if let Some(editor) = session.editor.as_mut() {
+                    editor.path = path;
+                }
+                self.registry
+                    .broadcast_domain(DaemonEvent::SessionUpdated(session.clone()));
+            }
+        }
+        for path in [from, to] {
+            self.registry.broadcast_domain(DaemonEvent::FileChanged {
+                workspace_id,
+                path: path.to_owned(),
+            });
+        }
         Ok(Response::Ack)
     }
 
@@ -3721,17 +3767,13 @@ impl Daemon {
             _ => None,
         };
 
-        // The baseline is a subprocess too, so it is resolved between two lock
-        // sections rather than inside one. A workspace that disappears in the
-        // gap is caught by the `not_found` below; the worst case here is a
-        // baseline read against a checkout that is about to go away.
-        let base_commit = self
+        // End the guard's temporary lifetime before running the Git subprocess.
+        let baseline_path = self
             .lock()
             .workspaces
             .get(&workspace_id)
-            .map(|ws| ws.path.clone())
-            .as_deref()
-            .and_then(git_service::head_commit);
+            .map(|ws| ws.path.clone());
+        let base_commit = baseline_path.as_deref().and_then(git_service::head_commit);
 
         let (cwd, spawn_spec, session) = {
             let mut inner = self.lock();
@@ -3825,6 +3867,7 @@ impl Daemon {
         autosave: bool,
     ) -> Result<Response, ProtocolError> {
         let _span = tracing::info_span!("editor.create", %workspace_id, path = %relative).entered();
+        let _operation = self.editor_file_operation();
 
         // Refusals must not leave a row or a socket, so the read comes first.
         let root = self.workspace_path(workspace_id)?;
@@ -3880,7 +3923,11 @@ impl Daemon {
                 parent_session_id: None,
                 root_session_id: session_id,
                 terminal_id: None,
-                editor: None,
+                editor: Some(domain::EditorState {
+                    path: opened.path.clone(),
+                    read_only,
+                    ..Default::default()
+                }),
                 agent_provider_id: None,
                 agent_profile_id: None,
                 title: SessionTitle::default(),
@@ -3976,6 +4023,7 @@ impl Daemon {
         self: &Arc<Self>,
         session_id: SessionId,
     ) -> Result<Response, ProtocolError> {
+        let _operation = self.editor_file_operation();
         let (workspace_id, relative) = self.editor_target(session_id)?;
         let root = self.workspace_path(workspace_id)?;
         let opened = fs_service::read_file(&root, &relative).map_err(fs_err)?;
@@ -4050,7 +4098,10 @@ impl Daemon {
     }
 
     /// The workspace and path one editor session is holding.
-    fn editor_target(&self, session_id: SessionId) -> Result<(WorkspaceId, String), ProtocolError> {
+    pub(crate) fn editor_target(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(WorkspaceId, String), ProtocolError> {
         let inner = self.lock();
         let session = inner
             .sessions
@@ -5384,6 +5435,11 @@ impl Daemon {
                     session_update = Some(session);
                 }
             }
+            // Enqueue under inner so activity snapshots cannot overtake editor retargets.
+            if let Some(session) = session_update.take() {
+                self.registry
+                    .broadcast_domain(DaemonEvent::SessionUpdated(session));
+            }
         }
 
         if let Some((writer, replies)) = reply {
@@ -5396,10 +5452,6 @@ impl Daemon {
         if let Some(text) = clipboard {
             self.registry
                 .broadcast_domain(DaemonEvent::ClipboardStore { terminal_id, text });
-        }
-        if let Some(session) = session_update {
-            self.registry
-                .broadcast_domain(DaemonEvent::SessionUpdated(session));
         }
         if note && !subscribed {
             self.registry
@@ -5431,10 +5483,8 @@ impl Daemon {
 
     /// Client-driven activity (keystrokes, attach, resize). Without this a quiet reader ages.
     fn note_client_activity(&self, terminal_id: TerminalId) {
-        let update = {
-            let mut inner = self.lock();
-            Self::touch_activity(&mut inner, terminal_id, false)
-        };
+        let mut inner = self.lock();
+        let update = Self::touch_activity(&mut inner, terminal_id, false);
         if let Some(session) = update {
             self.registry
                 .broadcast_domain(DaemonEvent::SessionUpdated(session));
@@ -5487,27 +5537,31 @@ impl Daemon {
     /// The editor's control handshake completed: the buffer is open and the
     /// session may run. Keeps the terminal id `set_session_state` would clear.
     pub(crate) fn set_editor_running(self: &Arc<Self>, session_id: SessionId) -> Option<Session> {
-        let session = {
-            let mut inner = self.lock();
-            let terminal_id = inner.sessions.get(&session_id)?.terminal_id;
-            Self::set_session_state(&mut inner, session_id, SessionState::Running, terminal_id)?
-        };
+        let mut inner = self.lock();
+        let terminal_id = inner.sessions.get(&session_id)?.terminal_id;
+        let session =
+            Self::set_session_state(&mut inner, session_id, SessionState::Running, terminal_id)?;
         self.registry
             .broadcast_domain(DaemonEvent::SessionUpdated(session.clone()));
         Some(session)
     }
 
-    /// Store the editor's buffer metadata on the session (runtime-only), and
-    /// answer with the snapshot a caller may broadcast.
+    /// Publish metadata under the state lock so a queued old path cannot follow a move.
     pub(crate) fn record_editor_state(
         self: &Arc<Self>,
         session_id: SessionId,
-        state: domain::EditorState,
-    ) -> Option<Session> {
+        mut state: domain::EditorState,
+    ) {
         let mut inner = self.lock();
-        let session = inner.sessions.get_mut(&session_id)?;
+        let Some(session) = inner.sessions.get_mut(&session_id) else {
+            return;
+        };
+        if let Some(current) = &session.editor {
+            state.path.clone_from(&current.path);
+        }
         session.editor = Some(state);
-        Some(session.clone())
+        self.registry
+            .broadcast_domain(DaemonEvent::SessionUpdated(session.clone()));
     }
 
     /// Which surface an integrated editor session presents.
@@ -5682,6 +5736,16 @@ impl Daemon {
         self.clear_editor_conflict(session_id);
     }
 
+    pub(crate) fn editor_file_operation(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.editor_file_operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn take_editor_retarget(&self, session_id: SessionId) -> Option<String> {
+        self.lock().editors.get(&session_id)?.take_retarget()
+    }
+
     /// Remember the two sides of a refused save, so they can be compared.
     pub(crate) fn record_editor_conflict(&self, session_id: SessionId, conflict: EditorConflict) {
         self.editor_conflicts
@@ -5701,22 +5765,19 @@ impl Daemon {
     }
 
     fn publish_editor_conflict(&self, session_id: SessionId, conflict: bool) {
-        let session = {
-            let mut inner = self.lock();
-            let Some(session) = inner.sessions.get_mut(&session_id) else {
-                return;
-            };
-            let Some(state) = session.editor.as_mut() else {
-                return;
-            };
-            if state.conflict == conflict {
-                return;
-            }
-            state.conflict = conflict;
-            session.clone()
+        let mut inner = self.lock();
+        let Some(session) = inner.sessions.get_mut(&session_id) else {
+            return;
         };
+        let Some(state) = session.editor.as_mut() else {
+            return;
+        };
+        if state.conflict == conflict {
+            return;
+        }
+        state.conflict = conflict;
         self.registry
-            .broadcast_domain(DaemonEvent::SessionUpdated(session));
+            .broadcast_domain(DaemonEvent::SessionUpdated(session.clone()));
     }
 
     pub(crate) fn finish_editor_reload(
@@ -5812,6 +5873,29 @@ impl Daemon {
         port.try_send(command).map_err(|_| {
             ProtocolError::precondition_failed("the editor is busy; retry the request")
         })
+    }
+
+    pub(crate) fn publish_editor_git_marks(
+        &self,
+        session_id: SessionId,
+        path: &str,
+        marks: Vec<editor_control::WireMark>,
+    ) {
+        let inner = self.lock();
+        if inner
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.editor.as_ref())
+            .is_none_or(|editor| editor.path != path)
+        {
+            return;
+        }
+        if let Some(port) = inner.editors.get(&session_id) {
+            let _ = port.try_send(crate::editor::Outgoing::GitMarks {
+                request_id: 0,
+                marks,
+            });
+        }
     }
 
     pub(crate) fn mark_session_failed(self: &Arc<Self>, session_id: SessionId, reason: String) {
@@ -7229,19 +7313,26 @@ fn fs_err(e: fs_service::FsError) -> ProtocolError {
 fn file_tree_response(workspace_id: WorkspaceId, tree: fs_service::FileTree) -> domain::FileTree {
     domain::FileTree {
         workspace_id,
-        entries: tree
-            .entries
-            .into_iter()
-            .map(|e| domain::FileEntry {
-                path: e.path,
-                kind: match e.kind {
-                    fs_service::EntryKind::File => domain::FileKind::File,
-                    fs_service::EntryKind::Directory => domain::FileKind::Directory,
-                },
-                ignored: e.ignored,
-            })
-            .collect(),
+        entries: tree.entries.into_iter().map(file_entry_response).collect(),
         truncated: tree.truncated,
+    }
+}
+
+fn file_entry_response(e: fs_service::FileEntry) -> domain::FileEntry {
+    domain::FileEntry {
+        path: e.path,
+        kind: match e.kind {
+            fs_service::EntryKind::File => domain::FileKind::File,
+            fs_service::EntryKind::Directory => domain::FileKind::Directory,
+        },
+        ignored: e.ignored,
+        symlink: e.symlink.map(|target| match target {
+            fs_service::SymlinkTarget::File => domain::SymlinkTarget::File,
+            fs_service::SymlinkTarget::Directory => domain::SymlinkTarget::Directory,
+            fs_service::SymlinkTarget::External => domain::SymlinkTarget::External,
+            fs_service::SymlinkTarget::Broken => domain::SymlinkTarget::Broken,
+            fs_service::SymlinkTarget::Unavailable => domain::SymlinkTarget::Unavailable,
+        }),
     }
 }
 
@@ -10107,7 +10198,11 @@ mod tests {
         assert_eq!(session.kind, SessionKind::Editor);
         assert_eq!(session.terminal_id, Some(terminal_id));
         assert_eq!(session.state, SessionState::Starting);
-        assert!(session.editor.is_none());
+        let editor = session
+            .editor
+            .expect("save target exists before the handshake");
+        assert_eq!(editor.path, "src/lib.rs");
+        assert!(editor.read_only);
     }
 
     #[test]

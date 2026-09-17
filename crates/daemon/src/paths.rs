@@ -111,9 +111,20 @@ fn socket_path_from(forge_socket: Option<std::ffi::OsString>) -> Result<PathBuf,
     Ok(resolve_runtime_dir()?.join("daemon.sock"))
 }
 
-/// Absolute path to the singleton lockfile, next to the socket (§9.2).
+/// The singleton follows the socket namespace, including `FORGE_SOCKET`.
 pub fn lock_path() -> Result<PathBuf, PathError> {
-    Ok(resolve_runtime_dir()?.join("daemon.lock"))
+    lock_path_from(std::env::var_os("FORGE_SOCKET"))
+}
+
+fn lock_path_from(forge_socket: Option<std::ffi::OsString>) -> Result<PathBuf, PathError> {
+    let socket = socket_path_from(forge_socket)?;
+    let default = resolve_runtime_dir()?.join("daemon.sock");
+    if socket == default {
+        return Ok(default.with_extension("lock"));
+    }
+    let mut name = socket.into_os_string();
+    name.push(".lock");
+    Ok(name.into())
 }
 
 /// Platform data directory root (`~/Library/Application Support/Forge` on macOS,
@@ -244,7 +255,7 @@ mod tests {
     #[test]
     fn lock_sits_next_to_socket() {
         let sock = socket_path_from(None).unwrap();
-        let lock = lock_path().unwrap();
+        let lock = lock_path_from(None).unwrap();
         assert_eq!(sock.parent(), lock.parent());
         assert!(lock.ends_with("daemon.lock"));
     }
@@ -272,6 +283,23 @@ mod tests {
             ensure_private_dir(&not_a_dir),
             Err(PathError::NotPrivate { .. })
         ));
+    }
+
+    #[test]
+    fn overridden_sockets_have_independent_locks() {
+        let a = lock_path_from(Some("/tmp/forge-dev-a/daemon.sock".into())).unwrap();
+        let b = lock_path_from(Some("/tmp/forge-dev-b/daemon.sock".into())).unwrap();
+        assert_eq!(a, PathBuf::from("/tmp/forge-dev-a/daemon.sock.lock"));
+        assert_ne!(a, b);
+        assert_ne!(a, lock_path_from(None).unwrap());
+        assert_ne!(
+            lock_path_from(Some("/tmp/forge/daemon.dev".into())).unwrap(),
+            lock_path_from(Some("/tmp/forge/daemon.test".into())).unwrap()
+        );
+        assert_ne!(
+            lock_path_from(Some("/tmp/forge/daemon.lock".into())).unwrap(),
+            PathBuf::from("/tmp/forge/daemon.lock")
+        );
     }
 
     fn mode_of(path: &std::path::Path) -> u32 {

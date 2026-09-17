@@ -136,6 +136,7 @@ impl Outgoing {
 pub struct CommandPort {
     tx: flume::Sender<Outgoing>,
     reload: Arc<Mutex<Option<PendingReload>>>,
+    retarget: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -150,7 +151,22 @@ impl CommandPort {
         Self {
             tx,
             reload: Arc::new(Mutex::new(None)),
+            retarget: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// One coalesced metadata slot survives a saturated command queue.
+    pub fn retarget(&self, path: String) {
+        *self.retarget.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+        // A full queue already wakes the writer, which checks the slot before every command.
+        let _ = self.tx.try_send(Outgoing::GetState { request_id: 0 });
+    }
+
+    pub fn take_retarget(&self) -> Option<String> {
+        self.retarget
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// Enqueue, or say busy. Never drops a `request_id` on the floor.
@@ -382,13 +398,7 @@ fn serve(
     // Marks are decoration: a git failure must not take the buffer with it.
     let push_marks = |daemon: &Arc<Daemon>, path: &str, text: &str| {
         if let Some(marks) = daemon.editor_git_marks(session_id, path, text) {
-            let _ = daemon.send_editor_command(
-                session_id,
-                Outgoing::GitMarks {
-                    request_id: 0,
-                    marks,
-                },
-            );
+            daemon.publish_editor_git_marks(session_id, path, marks);
         }
     };
     push_marks(&daemon, &buffer.path, &buffer.text);
@@ -411,10 +421,16 @@ fn serve(
     };
     {
         let writer = Arc::clone(&writer);
+        let daemon = Arc::clone(&daemon);
         std::thread::Builder::new()
             .name("forge-editor-cmd".to_owned())
             .spawn(move || {
                 while let Ok(command) = commands.recv() {
+                    if let Some(path) = daemon.take_editor_retarget(session_id) {
+                        if send(&writer, &DaemonMessage::Retarget { path }).is_err() {
+                            break;
+                        }
+                    }
                     let optional = matches!(command, Outgoing::GitMarks { .. });
                     match send(&writer, &command.into_message()) {
                         Ok(()) => {}
@@ -433,9 +449,6 @@ fn serve(
             .expect("spawn the editor command writer");
     }
 
-    // The path and revision the *daemon* opened, never what the editor names:
-    // a save writes where the request said, so the editor cannot redirect it.
-    let path = buffer.path.clone();
     let mut revision = buffer.revision.clone();
     // Whether the last save was refused because the file moved. Held here
     // rather than on the session, because this thread is what learns it.
@@ -465,6 +478,10 @@ fn serve(
                 text,
                 document_version,
             }) => {
+                let operation = daemon.editor_file_operation();
+                let Ok((_, path)) = daemon.editor_target(session_id) else {
+                    return;
+                };
                 // Blocking disk IO, on this thread and never under the core
                 // lock: `save_editor_buffer` clones the root and writes off it.
                 // Enforced here, not only in the editor: `read_only` travels in
@@ -472,6 +489,7 @@ fn serve(
                 // buggy or replaced editor must not be able to write through
                 // a buffer that was opened read-only.
                 if read_only {
+                    drop(operation);
                     let refusal = DaemonMessage::SaveRefused {
                         request_id,
                         reason: "this buffer is open read-only".to_owned(),
@@ -487,8 +505,6 @@ fn serve(
                         revision = written.clone();
                         conflict = false;
                         daemon.clear_editor_conflict(session_id);
-                        // The working tree moved, so the gutter did too.
-                        push_marks(&daemon, &path, &text);
                         DaemonMessage::Saved {
                             request_id,
                             revision: written,
@@ -522,8 +538,12 @@ fn serve(
                         DaemonMessage::SaveRefused { request_id, reason }
                     }
                 };
+                drop(operation);
                 if send(&writer, &answer).is_err() {
                     return;
+                }
+                if matches!(answer, DaemonMessage::Saved { .. }) {
+                    push_marks(&daemon, &path, &text);
                 }
             }
             // Straight through: the editor already coalesced this against its
@@ -568,6 +588,9 @@ fn serve(
                 }
             }
             Ok(EditorMessage::RunDiagnostics { request_id }) => {
+                let Ok((_, path)) = daemon.editor_target(session_id) else {
+                    return;
+                };
                 let found = daemon.editor_diagnostics(session_id, &path);
                 let answer = DaemonMessage::Diagnostics {
                     request_id,
@@ -579,6 +602,9 @@ fn serve(
                 }
             }
             Ok(EditorMessage::ChangeDetails { request_id, line }) => {
+                let Ok((_, path)) = daemon.editor_target(session_id) else {
+                    return;
+                };
                 let found = daemon.editor_change_details(session_id, &path, line);
                 let answer = match found {
                     Some(hunk) => DaemonMessage::ChangeDetails {
@@ -801,7 +827,7 @@ fn flush(
     conflict: bool,
 ) {
     let Some(state) = state else { return };
-    let session = daemon.record_editor_state(
+    daemon.record_editor_state(
         session_id,
         EditorState {
             path: state.path,
@@ -820,11 +846,6 @@ fn flush(
             conflict,
         },
     );
-    if let Some(session) = session {
-        daemon
-            .registry
-            .broadcast_domain(protocol::DaemonEvent::SessionUpdated(session));
-    }
 }
 
 /// Whether a state may be broadcast right now.
@@ -973,5 +994,20 @@ mod tests {
             Err(Busy),
             "a saturated queue refuses rather than dropping the request_id"
         );
+    }
+
+    #[test]
+    fn retarget_coalesces_even_when_the_command_queue_is_full() {
+        let (tx, rx) = flume::bounded(1);
+        let port = CommandPort::new(tx);
+        port.try_send(Outgoing::GetState { request_id: 1 }).unwrap();
+        port.retarget("first.rs".into());
+        port.retarget("last.rs".into());
+        rx.recv().unwrap();
+        assert_eq!(port.take_retarget().as_deref(), Some("last.rs"));
+        assert_eq!(port.take_retarget(), None);
+        port.retarget("idle.rs".into());
+        assert!(rx.try_recv().is_ok(), "an idle writer must be woken");
+        assert_eq!(port.take_retarget().as_deref(), Some("idle.rs"));
     }
 }

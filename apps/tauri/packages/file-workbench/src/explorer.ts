@@ -66,6 +66,8 @@ export type ExplorerOptions = {
   onOpen: (path: string) => void;
   onRefresh?: () => void;
   onContextMenu?: (row: TreeRow, point: { x: number; y: number }) => void;
+  onPointerDown?: (event: PointerEvent, row: TreeRow) => void;
+  onExpandDirectory?: (path: string) => void;
   onDirectoriesChange?: (paths: string[]) => void;
   /** Reported on every change, so a host chrome never re-derives the listing. */
   onDerived?: (derived: ExplorerDerived) => void;
@@ -77,14 +79,9 @@ export type ExplorerOptions = {
    * up with `editFailed(message)` so the name can be corrected.
    */
   onEditCommit?: (request: EditRequest, name: string) => void;
-  /** The field closed itself — Escape, a click away, or a name that changed nothing. */
+  /** Closing the field never cancels a disk operation already submitted. */
   onEditCancel?: (request: EditRequest) => void;
-  /**
-   * An opaque ignored directory was opened. The host peels it with
-   * `ListDirectory` and merges the answer into the listing; the package has
-   * already marked the path as opened so a later `setState` does not fold it
-   * shut again.
-   */
+  /** Compatibility fallback for hosts predating per-directory loading. */
   onExpandOpaque?: (path: string) => void;
 };
 export type ExplorerState = {
@@ -115,14 +112,11 @@ export type ExplorerHandle = {
   /** Narrow the listing. The only way in when the filter box is the host's. */
   setFilter: (query: string) => void;
   reset: () => void;
+  collapseAll: () => void;
+  expand: (path: string) => void;
   reveal: (path: string) => void;
-  /**
-   * Follow the host's active document.
-   *
-   * Unlike `reveal` it never drops the filter — following is not a "show me
-   * this" gesture — and a path the listing does not have leaves the selection
-   * alone rather than falling back to the first row.
-   */
+  retarget: (from: string, to: string) => void;
+  /** Follow an active document without dropping a filter or interrupting an edit. */
   follow: (path: string) => void;
   /** Open the inline field, or close it (`null`) once the host has written. */
   edit: (request: EditRequest | null) => void;
@@ -130,6 +124,7 @@ export type ExplorerHandle = {
   editFailed: (message: string) => void;
   action: (action: ExplorerAction) => void;
   selected: () => TreeRow | undefined;
+  isEditing: () => boolean;
   destroy: () => void;
 };
 
@@ -219,6 +214,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   const id = `file-workbench-${++nextId}`;
   const framed = (options.chrome ?? "full") === "full";
   const root = element("section", "fw-explorer");
+  root.dataset.fileTreeRoot = "";
   // Unnamed, a `section` is not a landmark, which is what the tree alone
   // should be: the host's own frame carries the name in `"list"` chrome.
   if (framed) root.setAttribute("aria-label", options.label ?? "Files");
@@ -282,6 +278,9 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   };
 
   let state: ExplorerState = { tree: null };
+  let listingEntries: FileTree["entries"] | undefined;
+  let loadedDirectories: FileTree["loadedDirectories"];
+  let listingTruncated = false;
   let rows: TreeRow[] = [];
   /* The filter lives here rather than on the input, because in `"list"` chrome
      the input is the host's and the package never sees it. */
@@ -290,12 +289,17 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   let reported = "";
   let editing: EditRequest | null = null;
   let editOriginal = "";
+  let submitting = false;
+  let editFocusFrame = 0;
+  let editRow: TreeRow | undefined;
+  let revealPath: string | null = null;
+  let preservedPath: string | null = null;
   /* Bumped when the draft row appears or goes: a create is the one edit that
      changes the listing, and `built` has to notice. A rename does not. */
   let drafts = 0;
   let collapsed = new Set<string>();
   let seen = new Set<string>();
-  // Expansion intent survives a root listing, which contains only ignored placeholders.
+  // Expansion intent survives parent refreshes that temporarily omit loaded descendants.
   let openedIgnored = new Set<string>();
   const pendingDirectories = new Set<string>();
   let selectedPath: string | null = null;
@@ -349,10 +353,22 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     node.dataset.ignored = String(row.ignored);
     node.setAttribute("aria-level", String(row.depth + 1));
     node.setAttribute("aria-selected", String(at === index));
+    node.dataset.fileDirectory = String(!row.isFile);
     if (row.isFile || row.opaque) node.removeAttribute("aria-expanded");
     else node.setAttribute("aria-expanded", String(!row.folded));
     node.style.paddingInlineStart = `${row.depth * 2 + 1}ch`;
     node.title = row.opaque ? `${row.path} — ignored; contents not listed` : row.path;
+    if (row.symlink) {
+      const target =
+        row.symlink === "External"
+          ? "target is outside the checkout"
+          : row.symlink === "Broken"
+            ? "target is missing"
+            : row.symlink === "Unavailable"
+              ? "target is unavailable"
+              : `linked ${row.symlink.toLowerCase()}`;
+      node.title = `${row.path} — ${target}`;
+    }
     entry.branch.textContent = row.isFile ? "·" : row.opaque ? "─" : row.folded ? "▸" : "▾";
     entry.icon.hidden = !gutter;
     entry.icon.style.setProperty("--fw-icon-url", icon ? `url("${icon.url}")` : "none");
@@ -414,6 +430,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
         row.folded,
         row.opaque,
         row.ignored,
+        row.symlink ?? "",
         icon?.url ?? "",
         icon?.tint === true,
         decoration?.label ?? "",
@@ -451,10 +468,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   function placeEdit(): void {
     if (!editing) return;
     const at = editIndex();
-    if (at < 0) {
-      closeEdit(true);
-      return;
-    }
+    if (at < 0) return;
     const row = rows[at];
     editBox.hidden = false;
     editBox.style.top = `${at * rowHeight}px`;
@@ -472,12 +486,29 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     const request = editing;
     if (!request) return;
     editing = null;
+    cancelAnimationFrame(editFocusFrame);
+    editFocusFrame = 0;
+    submitting = false;
+    field.readOnly = false;
+    field.removeAttribute("aria-busy");
+    editRow = undefined;
     editBox.hidden = true;
     editError.hidden = true;
     editError.textContent = "";
     field.removeAttribute("aria-invalid");
-    if (request.kind === "create") drafts += 1;
+    drafts += 1;
     if (notify) options.onEditCancel?.(request);
+  }
+
+  function focusEdit(): void {
+    field.focus({ preventScroll: true });
+    cancelAnimationFrame(editFocusFrame);
+    const request = editing;
+    // Menu teardown can restore its trigger after the inline field first takes focus.
+    editFocusFrame = requestAnimationFrame(() => {
+      editFocusFrame = 0;
+      if (!destroyed && editing === request) field.focus({ preventScroll: true });
+    });
   }
 
   function abandonEdit(): void {
@@ -488,12 +519,15 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
 
   function commitEdit(): void {
     const request = editing;
-    if (!request) return;
-    const name = editedName(field.value, editOriginal);
-    if (name === null) {
+    if (!request || submitting) return;
+    const name = field.value;
+    if (name !== "" && name === editOriginal) {
       abandonEdit();
       return;
     }
+    submitting = true;
+    field.readOnly = true;
+    field.setAttribute("aria-busy", "true");
     options.onEditCommit?.(request, name);
   }
 
@@ -503,27 +537,36 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       rebuild();
       return;
     }
-    const previous = editing;
+    if (submitting) return;
     editing = request;
-    if (previous?.kind === "create" || request.kind === "create") drafts += 1;
-    if (request.kind === "create" && collapsed.delete(request.parent)) folds += 1;
+    revealPath = null;
+    drafts += 1;
+    expandAncestors(request.kind === "create" ? request.parent : request.path);
+    folds += 1;
     editError.hidden = true;
     editError.textContent = "";
     field.removeAttribute("aria-invalid");
     if (request.kind === "rename") {
       const row = rows.find((item) => item.path === request.path);
-      editOriginal = row?.label ?? request.path.slice(request.path.lastIndexOf("/") + 1);
+      editRow = row;
+      editOriginal = request.path.slice(request.path.lastIndexOf("/") + 1);
       selectedPath = request.path;
     } else {
       editOriginal = "";
       selectedPath = DRAFT;
     }
+    field.setAttribute(
+      "aria-label",
+      request.kind === "rename"
+        ? `Rename ${request.path}`
+        : `New ${request.directory ? "folder" : "file"} path`,
+    );
     field.value = editOriginal;
     rebuild();
     const at = editIndex();
     if (at < 0) return;
     select(at);
-    field.focus({ preventScroll: true });
+    focusEdit();
     const span = nameSelection(editOriginal, rows[at].isFile);
     field.setSelectionRange(span.start, span.end);
   }
@@ -531,10 +574,10 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   /** The blank row a create is typed on, slotted in as the parent's first child. */
   function withDraft(base: TreeRow[], parent: string, directory: boolean): TreeRow[] {
     const found = parent === "" ? -1 : base.findIndex((row) => row.path === parent);
-    if (parent !== "" && found < 0) return base;
-    const at = found + 1;
+    const missingParent = parent !== "" && found < 0;
+    const at = missingParent ? Math.max(0, Math.min(index, base.length)) : found + 1;
     const row: TreeRow = {
-      depth: found < 0 ? 0 : base[found].depth + 1,
+      depth: missingParent ? (editRow?.depth ?? 0) : found < 0 ? 0 : base[found].depth + 1,
       label: "",
       path: DRAFT,
       isFile: !directory,
@@ -542,6 +585,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       ignored: false,
       opaque: false,
     };
+    editRow = row;
     return [...base.slice(0, at), row, ...base.slice(at)];
   }
 
@@ -554,12 +598,31 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
         filterTree(state.tree, query),
         filtered ? new Set() : collapsed,
         openedIgnored,
+        new Set([
+          ...(preservedPath ? [preservedPath] : []),
+          ...(editing ? [editing.kind === "create" ? editing.parent : editing.path] : []),
+        ]),
       );
       files = 0;
       for (const row of rows) if (row.isFile) files += 1;
       // A filter reveals matches, not additional directory interests.
       const watchedRows = filtered ? treeRows(state.tree, collapsed, openedIgnored) : rows;
       const paths = watchDirectories(watchedRows);
+      // A partial parent listing may omit the requested path; walk its known ancestors anyway.
+      if (revealPath && options.onExpandDirectory) {
+        const loaded = new Set(state.tree?.loadedDirectories);
+        const parts = revealPath.split("/");
+        for (let i = 0; i < parts.length; i++) {
+          const ancestor = parts.slice(0, i).join("/");
+          if (loaded.has(ancestor)) continue;
+          if (!paths.includes(ancestor)) paths.push(ancestor);
+          if (!pendingDirectories.has(ancestor)) {
+            pendingDirectories.add(ancestor);
+            requestDirectory(ancestor);
+          }
+          break;
+        }
+      }
       const key = JSON.stringify(paths);
       if (key !== directories) {
         directories = key;
@@ -568,11 +631,19 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       for (const path of unloadedDirectories(state.tree, watchedRows, openedIgnored)) {
         if (pendingDirectories.has(path)) continue;
         pendingDirectories.add(path);
-        options.onExpandOpaque?.(path);
+        requestDirectory(path);
       }
       // After the counts and the watch interest: a name nobody has typed yet
       // is not a file, and an unwritten row is nothing to watch.
       if (editing?.kind === "create") rows = withDraft(rows, editing.parent, editing.directory);
+      // An unrelated refresh cannot discard the draft before its explicit result arrives.
+      if (
+        editing?.kind === "rename" &&
+        editRow &&
+        !rows.some((row) => row.path === (editing?.kind === "rename" ? editing.path : ""))
+      ) {
+        rows.splice(Math.max(0, Math.min(index, rows.length)), 0, editRow);
+      }
     }
     if (selectedPath === null) {
       // No selection yet: the first row stands in, so the keyboard has a
@@ -602,6 +673,10 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       refresh.disabled = loading;
     }
     placeEdit();
+    if (revealPath !== null && rows[index]?.path === revealPath) {
+      select(index);
+      revealPath = null;
+    }
     root.setAttribute("aria-busy", String(loading));
     // Only on a change: a host chrome is a render, and `rebuild` runs on every
     // `setState` — including the ones that carry the same listing back.
@@ -634,7 +709,10 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     const parts = path.split("/");
     let moved = false;
     for (let i = 1; i <= parts.length; i++) {
-      if (collapsed.delete(parts.slice(0, i).join("/"))) moved = true;
+      const ancestor = parts.slice(0, i).join("/");
+      seen.add(ancestor);
+      openedIgnored.add(ancestor);
+      if (collapsed.delete(ancestor)) moved = true;
     }
     return moved;
   }
@@ -647,26 +725,30 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   function activate(): void {
     const row = rows[index];
     if (!row || row.path === DRAFT) return;
-    if (row.opaque || (!row.isFile && row.ignored && row.folded)) {
+    if (!row.isFile && row.folded) {
       peelOpaque(row.path);
       return;
     }
     if (row.isFile) options.onOpen(row.path);
     else {
-      row.folded ? collapsed.delete(row.path) : collapsed.add(row.path);
+      revealPath = null;
+      collapsed.add(row.path);
       folds += 1;
       rebuild();
     }
   }
 
-  /** Ask the host for one level under an opaque ignored directory. */
+  function requestDirectory(path: string): void {
+    (options.onExpandDirectory ?? options.onExpandOpaque)?.(path);
+  }
+
   function peelOpaque(path: string): void {
     openedIgnored.add(path);
     pendingDirectories.add(path);
     seen.add(path);
     collapsed.delete(path);
     folds += 1;
-    options.onExpandOpaque?.(path);
+    requestDirectory(path);
     rebuild();
   }
 
@@ -686,7 +768,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     else if (command === "open") activate();
     else {
       const row = rows[index];
-      if (command === "expand" && row && (row.opaque || (row.ignored && row.folded))) {
+      if (command === "expand" && row && !row.isFile && row.folded) {
         peelOpaque(row.path);
         return;
       }
@@ -697,7 +779,10 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       if (!target) return;
       if ("select" in target) select(rows.findIndex((row) => row.path === target.select));
       else {
-        if ("fold" in target) collapsed.add(target.fold);
+        if ("fold" in target) {
+          revealPath = null;
+          collapsed.add(target.fold);
+        }
         if ("unfold" in target) collapsed.delete(target.unfold);
         folds += 1;
         rebuild();
@@ -708,13 +793,18 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   /* By path and not by the painted `data-index`: closing the field drops the
      draft row and shifts every index below it, and the paint that would fix
      the attributes is a frame away when the click lands. */
-  function rowFrom(event: MouseEvent): number | null {
+  function rowFrom(event: MouseEvent | PointerEvent): number | null {
     const node = (event.target as Element).closest<HTMLElement>("[data-path]");
     const path = node?.dataset.path;
     if (path === undefined) return null;
     const at = rows.findIndex((row) => row.path === path);
     return at < 0 ? null : at;
   }
+  root.onpointerdown = (event) => {
+    if (editBox.contains(event.target as Node)) return;
+    const at = rowFrom(event);
+    if (at !== null && rows[at].path !== DRAFT) options.onPointerDown?.(event, rows[at]);
+  };
   list.onclick = (event) => {
     if (editBox.contains(event.target as Node)) return;
     const at = rowFrom(event);
@@ -726,8 +816,9 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   list.oncontextmenu = (event) => {
     if (editBox.contains(event.target as Node)) return;
     const at = rowFrom(event);
-    if (at === null || !options.onContextMenu) return;
+    if (at === null || rows[at].path === DRAFT || !options.onContextMenu) return;
     event.preventDefault();
+    event.stopPropagation();
     select(at);
     options.onContextMenu(rows[at], { x: event.clientX, y: event.clientY });
   };
@@ -747,19 +838,21 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     if (event.key === "Enter") commitEdit();
     else abandonEdit();
   };
-  field.onblur = (event) => {
-    if (!editing) return;
-    /* Focus that went *nowhere* is not the person leaving: a menu unmounting
-       as the field opens, or the window losing focus, both land on nothing,
-       and a rename abandoned by switching apps is not a rename abandoned.
-       Cancel rather than commit, so a half-typed name is never applied by
-       clicking somewhere; Enter is the only thing that writes. */
-    if (event.relatedTarget === null) return;
-    closeEdit(true);
-    rebuild();
-  };
   list.onkeydown = (event) => {
     if (event.target === field) return;
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+      const row = rows[index];
+      if (row && row.path !== DRAFT && options.onContextMenu) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = list.getBoundingClientRect();
+        options.onContextMenu(row, {
+          x: rect.left + 16,
+          y: rect.top + (index + 1) * rowHeight - list.scrollTop,
+        });
+      }
+      return;
+    }
     if (event.isComposing || event.altKey || event.metaKey || event.ctrlKey) return;
     const commands: Record<string, ExplorerAction> = {
       ArrowDown: "next",
@@ -804,7 +897,15 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
 
   return {
     setState(next) {
-      const changed = next.tree !== state.tree;
+      // Reactive hosts may retain the containing proxy while replacing its arrays.
+      const changed =
+        next.tree !== state.tree ||
+        next.tree?.entries !== listingEntries ||
+        next.tree?.loadedDirectories !== loadedDirectories ||
+        !!next.tree?.truncated !== listingTruncated;
+      listingEntries = next.tree?.entries;
+      loadedDirectories = next.tree?.loadedDirectories;
+      listingTruncated = !!next.tree?.truncated;
       state = next;
       if (changed) {
         if (!state.tree?.loadedDirectories) pendingDirectories.clear();
@@ -821,13 +922,28 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     edit,
     editFailed(message) {
       if (!editing) return;
+      submitting = false;
+      field.readOnly = false;
+      field.removeAttribute("aria-busy");
       editError.textContent = message;
       editError.hidden = false;
       field.setAttribute("aria-invalid", "true");
-      field.focus({ preventScroll: true });
+      focusEdit();
+    },
+    collapseAll() {
+      if (editing) return;
+      revealPath = null;
+      preservedPath = null;
+      collapsed = new Set(directoryPaths(state.tree));
+      openedIgnored.clear();
+      pendingDirectories.clear();
+      folds += 1;
+      rebuild();
     },
     reset() {
       closeEdit(false);
+      revealPath = null;
+      preservedPath = null;
       collapsed.clear();
       seen.clear();
       openedIgnored.clear();
@@ -838,11 +954,17 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       search.value = "";
       list.scrollTop = 0;
       state = { tree: null };
+      listingEntries = undefined;
+      loadedDirectories = undefined;
+      listingTruncated = false;
       revision += 1;
       rebuild();
     },
     reveal(path) {
-      closeEdit(false);
+      closeEdit(true);
+      preservedPath = path;
+      revealPath = path;
+      pendingDirectories.clear();
       query = "";
       search.value = "";
       expandAncestors(path);
@@ -853,10 +975,35 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       // selecting row 0; `rebuild` has already kept the wanted path.
       if (rows[index]?.path === path) select(index);
     },
+    retarget(from, to) {
+      if (editing || selectedPath === null) return;
+      const next =
+        selectedPath === from
+          ? to
+          : selectedPath.startsWith(`${from}/`)
+            ? `${to}${selectedPath.slice(from.length)}`
+            : selectedPath;
+      if (next === selectedPath) return;
+      selectedPath = next;
+      preservedPath = next;
+      revealPath = next;
+      expandAncestors(next);
+      folds++;
+      rebuild();
+    },
     follow(path) {
       // A name being typed is not interrupted by an unrelated tab change; the
       // next follow catches up.
       if (editing) return;
+      if (!treeHasPath(path) && options.onExpandDirectory && query.trim() === "") {
+        if (selectedPath === path) return;
+        revealPath = path;
+        expandAncestors(path);
+        folds += 1;
+        selectedPath = path;
+        rebuild();
+        return;
+      }
       const plan = planFollow({
         path,
         rows,
@@ -878,8 +1025,14 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       if (rows[index]?.path === path) select(index);
     },
     action,
+    expand(path) {
+      if (editing) return;
+      const row = rows.find((item) => item.path === path);
+      if (row && !row.isFile && row.folded) peelOpaque(path);
+    },
     // Never the draft: a row with no path yet is nothing a host can act on.
     selected: () => (rows[index]?.path === DRAFT ? undefined : rows[index]),
+    isEditing: () => editing !== null,
     destroy() {
       destroyed = true;
       closeEdit(false);

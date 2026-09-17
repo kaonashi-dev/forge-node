@@ -1,4 +1,6 @@
-use domain::{AgentProfileId, AgentProviderId, ProjectId, PtySize, SessionId, WorkspaceId};
+use domain::{
+    AgentProfileId, AgentProviderId, ProjectId, PtySize, SessionId, TerminalId, WorkspaceId,
+};
 use serde::Deserialize;
 
 use super::input::KeyPress;
@@ -62,6 +64,13 @@ pub enum RuntimeCommand {
         text: String,
         #[serde(default)]
         id: u64,
+    },
+    /// A file reference may only reach the attachment the gesture named.
+    PasteTarget {
+        session_id: SessionId,
+        terminal_id: TerminalId,
+        text: String,
+        connection_generation: u64,
     },
     /// A mouse event for a program that asked to read the mouse (§11.6).
     ///

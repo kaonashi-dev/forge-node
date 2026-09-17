@@ -19,6 +19,11 @@ import {
   requestFindInFiles,
   showSession,
   showCode,
+  retargetWorkspaceViews,
+  syncEditorViewPaths,
+  viewsStore,
+  revealInTree,
+  treeReveal,
 } from "./viewsStore";
 
 vi.mock("../runtime/api", () => ({ closeEditor: vi.fn().mockResolvedValue(undefined) }));
@@ -52,6 +57,41 @@ beforeEach(() => {
 });
 
 describe("Find in Files", () => {
+  it("keeps a reveal scoped to its checkout across switching and a confirmed move", () => {
+    const original = `close-test-${workspace}`;
+    revealInTree("src/a.ts");
+    setWorkbenchStore("workspace", "another-checkout");
+    expect(treeReveal()).toBeNull();
+    retargetWorkspaceViews(original, "src", "lib");
+    setWorkbenchStore("workspace", original);
+    expect(treeReveal()).toBe("lib/a.ts");
+  });
+  it("retargets parked editors and pending reveals by segments", () => {
+    openEditorTerminal("nested", "src/a.ts", "parked");
+    retargetWorkspaceViews("parked", "src", "lib");
+    expect(viewsStore.byWorkspace.parked.active).toEqual({
+      kind: "editor-terminal",
+      session: "nested",
+      path: "lib/a.ts",
+    });
+    revealInTree("src-other/a.ts");
+    retargetWorkspaceViews(`close-test-${workspace}`, "src", "lib");
+    expect(treeReveal()).toBe("src-other/a.ts");
+  });
+
+  it("adopts authoritative editor paths without opening another session or switching modes", () => {
+    showSession();
+    syncEditorViewPaths([
+      sessionFixture({ id: "dirty", kind: "Editor", editor: { ...editor, path: "renamed.ts" } }),
+    ]);
+    expect(currentViews().active).toEqual({
+      kind: "editor-terminal",
+      session: "dirty",
+      path: "renamed.ts",
+    });
+    expect(currentViews().open).toHaveLength(1);
+    expect(centerMode()).toBe("session");
+  });
   it("opens a Code search tab from a session and reuses it on repeated requests", () => {
     showSession();
     requestFindInFiles();

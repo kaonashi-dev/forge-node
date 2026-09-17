@@ -17,7 +17,8 @@ pub mod worktree;
 
 pub use change::{change_context, commit, push, ChangeSnapshot, MAX_FILES, MAX_PATCH_BYTES};
 pub use command::{
-    run_git, run_git_network, GitError, GitOutput, GIT_NETWORK_TIMEOUT, GIT_TIMEOUT,
+    run_git, run_git_bounded, run_git_network, GitError, GitOutput, GIT_NETWORK_TIMEOUT,
+    GIT_TIMEOUT,
 };
 pub use diff::{
     change_summary, commit_count, commits_since, working_tree_diff, ChangeSummaryLine, CommitEntry,

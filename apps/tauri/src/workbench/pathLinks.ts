@@ -9,6 +9,7 @@ import { openEditor, openEditorAt } from "../store/viewsStore";
 import { workbenchStore } from "../store/workbenchStore";
 import { openFile, warmFileTree } from "./api";
 import { buildPathIndex, findPathRefs, resolvePath, type PathIndex, type PathRef } from "./pathref";
+import { navigationFileIndex } from "./fileIndex";
 
 /** The absolute path of the checkout, which is how output spells it. */
 export function workspaceRoot(): string | null {
@@ -17,23 +18,14 @@ export function workspaceRoot(): string | null {
   return forgeStore.workspaces.find((workspace) => workspace.id === id)?.path ?? null;
 }
 
-let cache: { entries: unknown; index: PathIndex } | null = null;
+let cache: { tree: unknown; index: PathIndex } | null = null;
 
-/**
- * What the loaded tree can say about a guessed path, or `null` for "nothing
- * read this checkout".
- *
- * A truncated listing counts as nothing: the scan hit its budget, so a file
- * missing from it is not evidence that the file is missing.
- *
- * Rebuilt only when the tree itself is replaced. The listing is thousands of
- * entries and this is read per hovered cell.
- */
+/** Cached by listing identity because terminal hover reads it per cell. */
 export function pathIndex(): PathIndex | null {
-  const tree = workbenchStore.tree;
-  if (!tree || tree.truncated || tree.workspace_id !== workbenchStore.workspace) return null;
-  if (cache?.entries !== tree.entries) {
-    cache = { entries: tree.entries, index: buildPathIndex(tree.entries) };
+  const tree = navigationFileIndex();
+  if (!tree || tree.workspace_id !== workbenchStore.workspace) return null;
+  if (cache?.tree !== tree) {
+    cache = { tree, index: buildPathIndex(tree.entries, !tree.truncated) };
   }
   return cache.index;
 }
@@ -52,6 +44,7 @@ export function warmPathIndex(): void {
  * rather than what was written.
  */
 export function linkedRefs(text: string): PathRef[] {
+  warmPathIndex();
   const root = workspaceRoot();
   const index = pathIndex();
   const linked: PathRef[] = [];

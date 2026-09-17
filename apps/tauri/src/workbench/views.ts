@@ -6,6 +6,8 @@
 // name. The terminal is not in here — it is the floor the strip sits on and
 // exists for every checkout.
 
+import { retargetPath } from "./pathOperations";
+
 export type WorkbenchView =
   | { kind: "terminal" }
   | { kind: "diff" }
@@ -84,6 +86,21 @@ export const TERMINAL_VIEW: WorkbenchView = { kind: "terminal" };
 
 export function emptyViews(): ParkedViews {
   return { open: [], active: TERMINAL_VIEW };
+}
+
+export function retargetView(view: WorkbenchView, from: string, to: string): WorkbenchView {
+  if (view.kind !== "editor-terminal" && view.kind !== "preview") return view;
+  const path = retargetPath(view.path, from, to);
+  return path === view.path ? view : { ...view, path };
+}
+
+export function retargetViews(views: ParkedViews, from: string, to: string): ParkedViews {
+  const open = views.open.map((view) => retargetView(view, from, to));
+  const active = retargetView(views.active, from, to);
+  if (active === views.active && open.every((view, index) => view === views.open[index]))
+    return views;
+  const unique = new Map(open.map((view) => [viewKey(view), view]));
+  return { open: [...unique.values()], active };
 }
 
 /** A stable identity for a view, for keys and comparisons. */

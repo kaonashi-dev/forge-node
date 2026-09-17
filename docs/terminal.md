@@ -115,13 +115,14 @@ daemon's own environment with a widened `PATH` (`/usr/local/bin`,
 
 One dedicated OS thread per live PTY:
 
-1. Read up to 64 KiB from the master.
-2. Under the core lock, feed the engine and collect any device replies; then
-   **release the lock** and write those replies back to the PTY. A blocked PTY
-   write must never happen while the core lock is held.
-3. Emit a coalesced delta to subscribers at most every `FRAME = 8 ms`
-   (≤125 deltas/s). During the inter-frame sleep the kernel PTY buffer fills,
-   so an output flood collapses into one delta per frame.
+1. Wait in `poll` for input or the next frame/synchronized-output deadline,
+   then drain up to 64 KiB from the master.
+2. `pump_terminal_batch` feeds the engine, optionally emits, routes activity,
+   and advances the idle clock in one core-lock acquisition. Release the lock
+   before writing device replies back to the PTY.
+3. Emit to attached subscribers at most every `FRAME = 8 ms` (≤125 deltas/s).
+   Reads continue independently of that floor, without a post-read sleep;
+   unwatched terminals drain output without constructing deltas.
 4. On EOF the child has exited: the session becomes
    `Exited { code, signal }` and the runtime is dropped. This is the **only**
    exit path — `KillSession` just makes EOF happen.
@@ -188,16 +189,17 @@ Signaling the group means a shell's grandchildren (`npm run dev` started from
 
 Scrollback lives only in daemon memory, bounded by
 `terminal.scrollback_lines` (default 10 000, hard max 100 000). It is never
-persisted (ADR-009); after a daemon restart a session is `Orphaned` with no
+persisted (ADR-009). A daemon restart purges sessions by default; with
+`sessions.persist_history = true`, live rows become `Orphaned` with no terminal
 history, and `RestartSession` starts a fresh terminal.
 
 ## Invariants to preserve
 
 - Exactly one VT engine exists, in the daemon. Never add `terminal-core` or a
-  second emulator to `client`/`ui`.
+  second emulator to `client`/`apps/tauri`.
 - `emit_seq` increments per emitted delta only.
-- The core lock is taken per feed and released before any channel send that
-  could block; lock order is `inner → registry`.
+- The core lock is taken once per processed PTY batch and released before any
+  blocking I/O; lock order is `inner → registry`.
 - `SpawnSpec.env` is complete; keep the daemon-injected `TERM`, `COLORTERM`,
   `FORGE_SESSION_ID`, `FORGE_WORKSPACE` when changing spawn construction.
 

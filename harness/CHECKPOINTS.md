@@ -119,8 +119,11 @@ Every box is a `grep` over the diff, not a general impression.
 - [ ] `SpawnSpec.env` is still a complete environment (not an overlay) and the
       launch preserves `TERM`, `COLORTERM`, `FORGE_SESSION_ID` and
       `FORGE_WORKSPACE`.
-- [ ] `domain::RESERVED_PROFILE_VARS` never arrives from an `AgentProfile.env`:
-      the builder drops them and `SaveAgentProfile` refuses to store them.
+- [ ] Profiles select accounts through `AgentProfile.config_dir` and the
+      descriptor's `ConfigDirSpec`, not arbitrary environment variables. Relative
+      directories resolve against the user's home; unsupported directory
+      overrides are refused. Descriptor variables never overlap
+      `domain::RESERVED_PROFILE_VARS`, and custom executables are probed on save.
 - [ ] A read-only launch (§16.9) still applies the descriptor's `ReviewStyle`
       flags **after** a profile's own arguments so they win, is still *refused*
       (`InvalidRequest` / `AgentError::ReviewUnsupported`) for a provider that
@@ -177,7 +180,16 @@ Every box is a `grep` over the diff, not a general impression.
       `PreconditionFailed` if the disk changed; the GUI re-reads, it does not
       embed the content in the error. The Tauri editor still sends reads and
       writes through the runtime bridge rather than doing workspace filesystem
-      work in the WebView.
+       work in the WebView.
+- [ ] `ListDirectory` observations and the demand-driven `ListFiles` index have
+      independent request identities; old replies and watch generations are rejected.
+      Native watch limits do not prevent explicit reads of uncovered folders.
+- [ ] Mutation completion is separate from refresh. Uncertain writes reconcile
+      without replay. Confirmed moves retarget authoritative save paths and editor
+      metadata without replacing buffers; coordination runs outside the core lock
+      and excludes Git decorations and control-socket writes.
+- [ ] Startup acquires both socket and data-directory ownership before SQLite
+      initialization; separate socket overrides cannot share one metadata authority.
 - [ ] Directory watches are connection-scoped and bounded: `WatchFiles`
       canonicalizes every path inside the checkout before watching it (128
       directories, 4096 bytes per path), the notify callback only `try_send`s

@@ -550,6 +550,7 @@ export type ShellSnapshot = {
 };
 
 export type ConnectedPayload = {
+  connection_generation: number;
   daemon: DaemonInfo;
   session_count: number;
   store: ShellSnapshot;

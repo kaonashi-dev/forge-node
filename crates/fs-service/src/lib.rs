@@ -1,14 +1,6 @@
-//! # fs-service
-//!
-//! Workspace filesystem operations for Forge (ADR-012): list, read, write and
-//! search, with every path kept inside the checkout. The daemon is the only
-//! caller; the GUI never opens a file itself.
-//!
-//! Listing and content search prefer the system `git` CLI (ADR-008) so
-//! `.gitignore` comes for free. A non-repo checkout falls back to a bounded
-//! directory walk. Writes are atomic (`temp` + `rename`) and conditioned on a
-//! content revision so an agent editing the same path cannot be overwritten in
-//! silence.
+//! Disk directory reads, a separate Git-backed navigation index, and file operations.
+//! The daemon calls this service outside its core lock; paths stay inside the checkout.
+//! Content writes require a revision and replace atomically (ADR-012).
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
@@ -17,8 +9,10 @@ use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
-use git_service::{discover_root, run_git, GitError};
+use git_service::{discover_root, run_git, run_git_bounded, GitError};
 use thiserror::Error;
+
+mod entry_move;
 
 /// Soft ceiling for one file's contents on the wire.
 pub const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
@@ -29,9 +23,14 @@ pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Soft ceiling for how many paths a tree listing returns.
 pub const MAX_TREE_ENTRIES: usize = 10_000;
+const MAX_TREE_BYTES: usize = 1024 * 1024;
 
 /// Soft ceiling for one [`list_directory`] answer (a single folder's children).
 pub const MAX_DIRECTORY_ENTRIES: usize = 2_000;
+
+pub const MAX_DIRECTORY_PATH_BYTES: usize = 4096;
+/// Conservative JSON wire-size budget, including worst-case string escaping.
+pub const MAX_DIRECTORY_BYTES: usize = 1024 * 1024;
 
 /// Soft ceiling for search hits.
 pub const MAX_SEARCH_RESULTS: usize = 200;
@@ -133,6 +132,23 @@ pub struct FileEntry {
     /// Excluded by `.gitignore`. Always `false` from the `read_dir` fallback,
     /// which has no exclude rules to consult.
     pub ignored: bool,
+    pub symlink: Option<SymlinkTarget>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SymlinkTarget {
+    File,
+    Directory,
+    External,
+    Broken,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryListing {
+    pub path: String,
+    pub entries: Vec<FileEntry>,
+    pub truncated: bool,
 }
 
 /// A bounded listing of paths under a workspace.
@@ -232,24 +248,32 @@ pub fn list_files(root: &Path) -> Result<FileTree, FsError> {
 
 /// List the immediate children of one directory under `root`.
 ///
-/// Used to peel an opaque ignored folder the root listing collapsed. One level
-/// only: a child that is itself a wholly-ignored directory comes back as a
-/// single [`EntryKind::Directory`] row. Dependency package directories are
-/// omitted, never peeled. `relative` must be non-empty and resolve to a
-/// directory inside the checkout.
-pub fn list_directory(root: &Path, relative: &str) -> Result<FileTree, FsError> {
-    let root = canonicalize_root(root)?;
-    let rel = normalize_rel(relative.trim_matches('/'));
-    if rel.is_empty() {
-        return Err(FsError::EscapesWorkspace(relative.to_string()));
+/// Empty means root. Symlink aliases remain in returned paths, but expansion
+/// and reads must resolve inside the checkout. Permission errors propagate.
+pub fn list_directory(root: &Path, relative: &str) -> Result<DirectoryListing, FsError> {
+    if relative.len() > MAX_DIRECTORY_PATH_BYTES {
+        return Err(FsError::TooLarge {
+            size: relative.len() as u64,
+            limit: MAX_DIRECTORY_PATH_BYTES,
+        });
     }
-    if path_under_dependency_dir(&rel) {
-        return Ok(FileTree {
+    let root = canonicalize_root(root)?;
+    let dir = resolve_inside(&root, relative)?;
+    let rel = Path::new(relative)
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if path_under_dependency_dir(&rel) || rel.split('/').any(|p| p == ".git") {
+        return Ok(DirectoryListing {
+            path: rel,
             entries: Vec::new(),
             truncated: false,
         });
     }
-    let dir = resolve_inside(&root, &rel)?;
     let meta = fs::metadata(&dir).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             FsError::NotFound(rel.clone())
@@ -261,59 +285,86 @@ pub fn list_directory(root: &Path, relative: &str) -> Result<FileTree, FsError> 
         return Err(FsError::NotFound(rel));
     }
 
-    let read = match fs::read_dir(&dir) {
-        Ok(r) => r,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            return Ok(FileTree {
-                entries: Vec::new(),
-                truncated: false,
-            });
-        }
-        Err(e) => return Err(FsError::Io(e)),
-    };
-
-    let mut children: Vec<(String, bool)> = Vec::new();
+    let read = fs::read_dir(&dir)?;
+    let mut entries = Vec::new();
+    let mut bytes = rel.len() * 6 + 128;
     let mut truncated = false;
     for entry in read {
         let entry = entry?;
         let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name == ".git" || is_dependency_dir_name(&name) {
+        let Some(name) = name.to_str() else {
+            truncated = true;
+            continue;
+        };
+        if name == ".git" || is_dependency_dir_name(name) {
             continue;
         }
-        if children.len() >= MAX_DIRECTORY_ENTRIES {
+        if entries.len() >= MAX_DIRECTORY_ENTRIES {
             truncated = true;
             break;
         }
-        let child_rel = format!("{rel}/{name}");
+        let path_bytes = rel.len() + usize::from(!rel.is_empty()) + name.len();
+        let entry_bytes = path_bytes * 6 + 128;
+        if path_bytes > MAX_DIRECTORY_PATH_BYTES || bytes + entry_bytes > MAX_DIRECTORY_BYTES {
+            truncated = true;
+            break;
+        }
+        let child_rel = if rel.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{rel}/{name}")
+        };
         let ft = entry.file_type()?;
-        children.push((child_rel, ft.is_dir()));
+        let symlink = ft
+            .is_symlink()
+            .then(|| symlink_target(&root, &entry.path()));
+        let kind = if ft.is_dir() || symlink == Some(SymlinkTarget::Directory) {
+            EntryKind::Directory
+        } else {
+            EntryKind::File
+        };
+        bytes += entry_bytes;
+        entries.push(FileEntry {
+            path: child_rel,
+            kind,
+            ignored: false,
+            symlink,
+        });
     }
-    children.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
 
     let ignored = if is_git_repo(&root) {
-        ignored_paths_among(&root, children.iter().map(|(p, _)| p.as_str()))?
+        ignored_paths_among(
+            &dir,
+            entries
+                .iter()
+                .map(|e| e.path.rsplit('/').next().unwrap_or(&e.path)),
+        )?
     } else {
         HashSet::new()
     };
 
-    let mut entries = Vec::with_capacity(children.len());
-    for (path, is_dir) in children {
-        let path_ignored = ignored.contains(path.as_str());
-        entries.push(FileEntry {
-            path,
-            kind: if is_dir {
-                EntryKind::Directory
-            } else {
-                EntryKind::File
-            },
-            // A directory under an ignored parent is almost always ignored
-            // itself; flag it so the GUI keeps nested package/build dirs opaque
-            // until the next peel. Non-dir ignored files stay openable by name.
-            ignored: path_ignored,
-        });
+    for entry in &mut entries {
+        entry.ignored = ignored.contains(entry.path.rsplit('/').next().unwrap_or(&entry.path));
     }
-    Ok(FileTree { entries, truncated })
+    Ok(DirectoryListing {
+        path: rel,
+        entries,
+        truncated,
+    })
+}
+
+fn symlink_target(root: &Path, path: &Path) -> SymlinkTarget {
+    match fs::canonicalize(path) {
+        Ok(target) if !target.starts_with(root) => SymlinkTarget::External,
+        Ok(target) => match fs::metadata(target) {
+            Ok(meta) if meta.is_dir() => SymlinkTarget::Directory,
+            Ok(meta) if meta.is_file() => SymlinkTarget::File,
+            _ => SymlinkTarget::Unavailable,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => SymlinkTarget::Broken,
+        Err(_) => SymlinkTarget::Unavailable,
+    }
 }
 
 /// Paths `git check-ignore` reports as ignored, among `candidates`.
@@ -326,22 +377,61 @@ fn ignored_paths_among<'a>(
         return Ok(HashSet::new());
     }
     let mut ignored = HashSet::new();
-    // One argv per chunk: `run_git` has no stdin (`check-ignore -z` needs
-    // `--stdin`), and a 2 000-child folder would otherwise blow past ARG_MAX.
+    // Each answer only echoes these bounded candidates (at most 4x for quoting),
+    // so Git cannot recursively accumulate ignored descendants before the cap.
     for chunk in paths.chunks(128) {
-        let mut args: Vec<&str> = Vec::with_capacity(2 + chunk.len());
+        let literal: Vec<_> = chunk.iter().map(|path| format!("./{path}")).collect();
+        let mut args: Vec<&str> = Vec::with_capacity(4 + chunk.len());
+        args.extend(["-c", "core.quotePath=true"]);
         args.push("check-ignore");
         args.push("--");
-        args.extend(chunk.iter().copied());
+        args.extend(literal.iter().map(String::as_str));
         let out = run_git(Some(root), &args)?;
-        for path in out.stdout.lines() {
-            if path.is_empty() {
-                continue;
+        if out.status != 0 && out.status != 1 {
+            out.ok(&args)?;
+            continue;
+        }
+        for (candidate, literal) in chunk.iter().zip(&literal) {
+            let quoted = git_quoted_path(literal);
+            if out.stdout.lines().any(|path| path == quoted) {
+                ignored.insert((*candidate).to_string());
             }
-            ignored.insert(normalize_rel(path));
         }
     }
     Ok(ignored)
+}
+
+fn git_quoted_path(path: &str) -> String {
+    if !path
+        .bytes()
+        .any(|b| !(32..127).contains(&b) || b == b'"' || b == b'\\')
+    {
+        return path.to_owned();
+    }
+    let mut quoted = String::with_capacity(path.len() * 4 + 2);
+    quoted.push('"');
+    for b in path.bytes() {
+        match b {
+            b'\n' => quoted.push_str("\\n"),
+            b'\r' => quoted.push_str("\\r"),
+            b'\t' => quoted.push_str("\\t"),
+            7 => quoted.push_str("\\a"),
+            8 => quoted.push_str("\\b"),
+            11 => quoted.push_str("\\v"),
+            12 => quoted.push_str("\\f"),
+            b'"' => quoted.push_str("\\\""),
+            b'\\' => quoted.push_str("\\\\"),
+            32..=126 => quoted.push(char::from(b)),
+            _ => {
+                quoted.push('\\');
+                quoted.push(char::from(b'0' + (b >> 6)));
+                quoted.push(char::from(b'0' + ((b >> 3) & 7)));
+                quoted.push(char::from(b'0' + (b & 7)));
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// Read one file relative to `root`, rejecting binaries and oversize files.
@@ -355,6 +445,9 @@ pub fn read_file(root: &Path, relative: &str) -> Result<FileContents, FsError> {
             FsError::Io(e)
         }
     })?;
+    if !meta.is_file() {
+        return Err(FsError::NotFound(relative.to_string()));
+    }
     if meta.len() > MAX_FILE_BYTES as u64 {
         return Ok(FileContents {
             path: normalize_rel(relative),
@@ -584,26 +677,102 @@ pub fn create_path(root: &Path, relative: &str, kind: PathKind) -> Result<(), Fs
     Ok(())
 }
 
-/// Move `from` to `to`, both workspace-relative (A11).
-///
-/// Refuses an existing destination for the same reason `create_path` does. The
-/// rename is not atomic across filesystems and is not asked to be: both paths
-/// are inside one checkout.
+/// Move workspace-relative entries without overwriting; identical paths are refused.
 pub fn rename_path(root: &Path, from: &str, to: &str) -> Result<(), FsError> {
+    prepare_rename(root, from, to)?.apply()
+}
+
+/// Validated entry paths; final symlinks are moved, never followed.
+pub struct Rename {
+    root: PathBuf,
+    source: PathBuf,
+    source_directory: Option<PathBuf>,
+    target: PathBuf,
+    from: PathBuf,
+    to: PathBuf,
+}
+
+pub fn prepare_rename(root: &Path, from: &str, to: &str) -> Result<Rename, FsError> {
+    const MAX_RENAME_PATH_BYTES: usize = 4096;
+    for path in [from, to] {
+        if path.len() > MAX_RENAME_PATH_BYTES {
+            return Err(FsError::TooLarge {
+                size: path.len() as u64,
+                limit: MAX_RENAME_PATH_BYTES,
+            });
+        }
+    }
     let root = canonicalize_root(root)?;
-    let source = resolve_inside(&root, from)?;
-    let target = resolve_inside(&root, to)?;
-    if !source.exists() {
-        return Err(FsError::NotFound(normalize_rel(from)));
+    let source = resolve_entry_inside(&root, from)?;
+    let target = resolve_entry_inside(&root, to)?;
+    let meta = source.symlink_metadata().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            FsError::NotFound(normalize_rel(from))
+        } else {
+            FsError::Io(error)
+        }
+    })?;
+    let source_directory = if meta.is_dir() {
+        Some(fs::canonicalize(&source)?)
+    } else {
+        None
+    };
+    if source == target
+        || source_directory
+            .as_ref()
+            .is_some_and(|dir| target.starts_with(dir))
+    {
+        return Err(FsError::AlreadyExists(to.to_owned()));
     }
-    if target.exists() {
-        return Err(FsError::AlreadyExists(normalize_rel(to)));
+    Ok(Rename {
+        root,
+        source,
+        source_directory,
+        target,
+        from: PathBuf::from(from),
+        to: PathBuf::from(to),
+    })
+}
+
+impl Rename {
+    /// Map an open document by path components, including aliases of a moved directory.
+    pub fn retarget(&self, relative: &str) -> Result<Option<String>, FsError> {
+        let path = Path::new(relative);
+        let mapped = if let Ok(suffix) = path.strip_prefix(&self.from) {
+            Some(self.to.join(suffix))
+        } else {
+            // A broken alias in an unrelated editor cannot veto this validated move.
+            let Ok(entry) = resolve_entry_inside(&self.root, relative) else {
+                return Ok(None);
+            };
+            entry
+                .strip_prefix(self.source_directory.as_ref().unwrap_or(&self.source))
+                .ok()
+                .map(|suffix| {
+                    self.target
+                        .strip_prefix(&self.root)
+                        .unwrap_or(&self.target)
+                        .join(suffix)
+                })
+        };
+        Ok(mapped.map(|p| {
+            p.components()
+                .collect::<PathBuf>()
+                .to_string_lossy()
+                .into_owned()
+        }))
     }
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
+
+    /// Refuses an occupied destination atomically, including dangling symlinks.
+    pub fn apply(self) -> Result<(), FsError> {
+        entry_move::rename(&self.root, &self.source, &self.target).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                FsError::AlreadyExists(self.to.to_string_lossy().into_owned())
+            } else {
+                FsError::Io(error)
+            }
+        })
     }
-    fs::rename(&source, &target)?;
-    Ok(())
 }
 
 /// Delete `relative`, recursively for a directory (A11).
@@ -613,18 +782,15 @@ pub fn rename_path(root: &Path, from: &str, to: &str) -> Result<(), FsError> {
 /// would have to keep, garbage-collect and explain. The GUI asks first.
 pub fn delete_path(root: &Path, relative: &str) -> Result<(), FsError> {
     let root = canonicalize_root(root)?;
-    let path = resolve_inside(&root, relative)?;
-    // The workspace root is not a path *inside* the workspace. `resolve_inside`
-    // rejects `..` but is perfectly happy with `""`, `"/"` and `"."`, all of
-    // which resolve to the root — and this function removes directories
-    // recursively, so that is the whole checkout.
-    if path == root {
-        return Err(FsError::EscapesWorkspace(relative.to_string()));
-    }
-    if !path.exists() {
-        return Err(FsError::NotFound(normalize_rel(relative)));
-    }
-    if path.is_dir() {
+    let path = resolve_entry_inside(&root, relative)?;
+    let meta = path.symlink_metadata().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            FsError::NotFound(normalize_rel(relative))
+        } else {
+            FsError::Io(error)
+        }
+    })?;
+    if meta.is_dir() {
         fs::remove_dir_all(&path)?;
     } else {
         fs::remove_file(&path)?;
@@ -699,14 +865,14 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
      * still need this subtraction and would have to be parsed out of the same
      * NUL-separated stream.
      */
-    let gone = run_git(Some(root), &["ls-files", "--deleted", "-z"])?;
+    let gone = run_git_bounded(Some(root), &["ls-files", "--deleted", "-z"], MAX_TREE_BYTES)?;
     let deleted: HashSet<&str> = gone
         .stdout
         .split('\0')
         .filter(|path| !path.is_empty())
         .collect();
 
-    let out = run_git(
+    let out = run_git_bounded(
         Some(root),
         &[
             "ls-files",
@@ -715,9 +881,11 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
             "--exclude-standard",
             "-z",
         ],
+        MAX_TREE_BYTES,
     )?;
     let mut entries = Vec::new();
     let mut truncated = false;
+    let mut bytes = 0;
     // An unmerged path is in the index once per stage, so `--cached` names it
     // up to three times; the tree wants one row.
     let mut seen = HashSet::new();
@@ -732,6 +900,11 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
         if path.ends_with('/') || deleted.contains(path) {
             continue;
         }
+        let entry_bytes = path.len() * 6 + 128;
+        if bytes + entry_bytes > MAX_TREE_BYTES {
+            truncated = true;
+            break;
+        }
         let path = normalize_rel(path);
         if path_under_dependency_dir(&path) {
             continue;
@@ -739,11 +912,10 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
         if !seen.insert(path.clone()) {
             continue;
         }
-        entries.push(FileEntry {
-            path,
-            kind: EntryKind::File,
-            ignored: false,
-        });
+        if let Some(entry) = index_entry(root, path, false)? {
+            bytes += entry_bytes;
+            entries.push(entry);
+        }
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -771,7 +943,7 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
      * spent on the work first.
      */
     if !truncated {
-        let ignored = run_git(
+        let ignored = run_git_bounded(
             Some(root),
             &[
                 "ls-files",
@@ -782,6 +954,7 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
                 "--no-empty-directory",
                 "-z",
             ],
+            MAX_TREE_BYTES,
         )?;
         let mut extra = Vec::new();
         for path in ignored.stdout.split('\0') {
@@ -792,21 +965,19 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
                 truncated = true;
                 break;
             }
-            // The trailing slash is git saying "and everything under it".
-            let directory = path.ends_with('/');
+            let entry_bytes = path.len() * 6 + 128;
+            if bytes + entry_bytes > MAX_TREE_BYTES {
+                truncated = true;
+                break;
+            }
             let path = normalize_rel(path.trim_end_matches('/'));
             if path.is_empty() || path_under_dependency_dir(&path) || !seen.insert(path.clone()) {
                 continue;
             }
-            extra.push(FileEntry {
-                path,
-                kind: if directory {
-                    EntryKind::Directory
-                } else {
-                    EntryKind::File
-                },
-                ignored: true,
-            });
+            if let Some(entry) = index_entry(root, path, true)? {
+                bytes += entry_bytes;
+                extra.push(entry);
+            }
         }
         extra.sort_by(|a, b| a.path.cmp(&b.path));
         entries.append(&mut extra);
@@ -815,10 +986,31 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
     Ok(FileTree { entries, truncated })
 }
 
+fn index_entry(root: &Path, path: String, ignored: bool) -> Result<Option<FileEntry>, FsError> {
+    let absolute = root.join(&path);
+    let meta = match absolute.symlink_metadata() {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let symlink = meta.is_symlink().then(|| symlink_target(root, &absolute));
+    let kind = if meta.is_dir() || symlink == Some(SymlinkTarget::Directory) {
+        EntryKind::Directory
+    } else {
+        EntryKind::File
+    };
+    Ok(Some(FileEntry {
+        path,
+        kind,
+        ignored,
+        symlink,
+    }))
+}
+
 fn list_via_walk(root: &Path) -> Result<FileTree, FsError> {
     let mut entries = Vec::new();
     let mut truncated = false;
-    walk(root, root, &mut entries, &mut truncated)?;
+    walk(root, root, &mut entries, &mut truncated, &mut 0)?;
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(FileTree { entries, truncated })
 }
@@ -828,6 +1020,7 @@ fn walk(
     dir: &Path,
     entries: &mut Vec<FileEntry>,
     truncated: &mut bool,
+    bytes: &mut usize,
 ) -> Result<(), FsError> {
     if *truncated {
         return Ok(());
@@ -850,7 +1043,10 @@ fn walk(
         let path = entry.path();
         let ft = entry.file_type()?;
         if ft.is_dir() {
-            walk(root, &path, entries, truncated)?;
+            walk(root, &path, entries, truncated, bytes)?;
+            if *truncated {
+                return Ok(());
+            }
         } else if ft.is_file() || ft.is_symlink() {
             if entries.len() >= MAX_TREE_ENTRIES {
                 *truncated = true;
@@ -860,11 +1056,23 @@ fn walk(
                 .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
-                .replace('\\', "/");
+                .into_owned();
+            let entry_bytes = rel.len() * 6 + 128;
+            if *bytes + entry_bytes > MAX_TREE_BYTES {
+                *truncated = true;
+                return Ok(());
+            }
+            *bytes += entry_bytes;
             entries.push(FileEntry {
                 path: rel,
-                kind: EntryKind::File,
+                kind: if ft.is_symlink() && symlink_target(root, &path) == SymlinkTarget::Directory
+                {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::File
+                },
                 ignored: false,
+                symlink: ft.is_symlink().then(|| symlink_target(root, &path)),
             });
         }
     }
@@ -877,7 +1085,7 @@ fn search_by_name(root: &Path, query: &str, limit: usize) -> Result<SearchResult
     for (order, entry) in tree.entries.into_iter().enumerate() {
         // The tree lists ignored files so they can be opened; a name search is
         // for the work, and `git grep` below already excludes them.
-        if entry.ignored {
+        if entry.ignored || entry.kind != EntryKind::File {
             continue;
         }
         let Some(score) = fuzzy_score(&entry.path, query) else {
@@ -899,7 +1107,7 @@ fn search_by_name(root: &Path, query: &str, limit: usize) -> Result<SearchResult
     // Best first, and ties in listing order so a query that matches a whole
     // directory does not reshuffle it on the next keystroke.
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let truncated = scored.len() > limit;
+    let truncated = tree.truncated || scored.len() > limit;
     scored.truncate(limit);
     Ok(SearchResults {
         matches: scored.into_iter().map(|(_, _, hit)| hit).collect(),
@@ -966,7 +1174,7 @@ const CONTEXT_ARG: &str = "3";
 fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchResults, FsError> {
     let tree = list_via_walk(root)?;
     let mut matches = Vec::new();
-    let mut truncated = false;
+    let mut truncated = tree.truncated;
     for entry in tree.entries {
         if matches.len() >= limit {
             truncated = true;
@@ -1048,7 +1256,7 @@ fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResul
             recent.clear();
             recent_path = path;
         }
-        let path_norm = path.replace('\\', "/");
+        let path_norm = path.to_owned();
         let hit = query.is_none_or(|needle| line_text.contains(needle));
         if let Some(last) = matches.last().filter(|_| matches.len() >= limit) {
             // Past the cap, a record is either the tail of the last hit's
@@ -1417,10 +1625,6 @@ const LENGTH_PENALTY_PER: usize = 8;
 /// different languages on different sides of a socket; what matters is that
 /// they *agree*, so `fuzzy_score_matches_the_palette` pins the cases that
 /// distinguish it from any other reasonable scorer.
-///
-/// The scoring is the point of the change: `search_by_name` used to keep the
-/// first `limit` subsequence hits in directory-walk order, so a query whose
-/// best answer sorted late was answered with `truncated: true` and without it.
 fn fuzzy_score(path: &str, query: &str) -> Option<i32> {
     let needle: Vec<char> = query.to_lowercase().chars().filter(|c| *c != ' ').collect();
     if needle.is_empty() {
@@ -1429,6 +1633,13 @@ fn fuzzy_score(path: &str, query: &str) -> Option<i32> {
 
     let raw: Vec<char> = path.chars().collect();
     let hay: Vec<char> = path.to_lowercase().chars().collect();
+    // Lowercasing can expand a character; bonuses belong to its first folded scalar.
+    let boundaries: Vec<bool> = raw
+        .iter()
+        .enumerate()
+        .flat_map(|(i, c)| c.to_lowercase().enumerate().map(move |(part, _)| (i, part)))
+        .map(|(i, part)| part == 0 && starts_word(&raw, i))
+        .collect();
 
     let mut score = 0i32;
     let mut needle_index = 0usize;
@@ -1442,7 +1653,7 @@ fn fuzzy_score(path: &str, query: &str) -> Option<i32> {
             continue;
         }
         score += 1;
-        if starts_word(&raw, &hay, index) {
+        if boundaries[index] {
             score += WORD_START_BONUS;
         }
         if previous_match == index as isize - 1 {
@@ -1460,11 +1671,11 @@ fn fuzzy_score(path: &str, query: &str) -> Option<i32> {
 
 /// Whether index `i` begins a word: start of string, after a separator, or the
 /// upper-case character of a camelCase hump.
-fn starts_word(raw: &[char], hay: &[char], i: usize) -> bool {
+fn starts_word(raw: &[char], i: usize) -> bool {
     if i == 0 {
         return true;
     }
-    let before = hay[i - 1];
+    let before = raw[i - 1];
     if before == ' ' || before == '-' || before == '/' || before == '_' || before == '.' {
         return true;
     }
@@ -1481,6 +1692,16 @@ fn is_git_repo(root: &Path) -> bool {
 
 fn canonicalize_root(root: &Path) -> Result<PathBuf, FsError> {
     fs::canonicalize(root).map_err(FsError::Io)
+}
+
+// Mutations name a directory entry, not the target of its final symlink.
+fn resolve_entry_inside(root: &Path, relative: &str) -> Result<PathBuf, FsError> {
+    let rel = Path::new(relative);
+    let name = rel
+        .file_name()
+        .ok_or_else(|| FsError::EscapesWorkspace(relative.to_string()))?;
+    let parent = rel.parent().and_then(Path::to_str).unwrap_or("");
+    Ok(resolve_inside(root, parent)?.join(name))
 }
 
 fn resolve_inside(root: &Path, relative: &str) -> Result<PathBuf, FsError> {
@@ -1522,13 +1743,280 @@ fn resolve_inside(root: &Path, relative: &str) -> Result<PathBuf, FsError> {
 }
 
 fn normalize_rel(path: &str) -> String {
-    path.replace('\\', "/")
+    path.to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn directory_root_lists_real_empty_hidden_and_ignored_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .arg(root)
+            .status()
+            .unwrap()
+            .success());
+        fs::write(root.join(".gitignore"), ".agents/\nbuild/\n*.secret\n").unwrap();
+        for path in [
+            ".agents",
+            "empty",
+            "build",
+            "build/.agents",
+            "node_modules",
+            ".venv",
+        ] {
+            fs::create_dir_all(root.join(path)).unwrap();
+        }
+        for name in [
+            "space name.secret",
+            "quote\".secret",
+            "line\n.secret",
+            "é.secret",
+            "back\\slash.secret",
+        ] {
+            fs::write(root.join(name), "").unwrap();
+        }
+        let listing = list_directory(root, "").unwrap();
+        assert_eq!(listing.path, "");
+        assert!(!listing.truncated);
+        assert!(!listing
+            .entries
+            .iter()
+            .any(|e| matches!(e.path.as_str(), ".git" | "node_modules" | ".venv")));
+        for name in [".agents", "empty", "build"] {
+            let entry = listing.entries.iter().find(|e| e.path == name).unwrap();
+            assert_eq!(entry.kind, EntryKind::Directory);
+            assert_eq!(entry.ignored, name != "empty");
+        }
+        assert!(listing
+            .entries
+            .iter()
+            .filter(|e| e.path.ends_with(".secret"))
+            .all(|e| e.ignored));
+        assert!(list_directory(root, ".agents").unwrap().entries.is_empty());
+        let nested = list_directory(root, "build/./").unwrap();
+        assert_eq!(nested.path, "build");
+        assert_eq!(nested.entries[0].path, "build/.agents");
+        assert!(nested.entries[0].ignored);
+        assert!(list_directory(root, "/").is_err());
+        assert!(list_directory(root, "../").is_err());
+        assert!(list_directory(root, ".gitignore").is_err());
+        assert!(list_directory(root, "missing").is_err());
+        assert!(delete_path(root, "").is_err());
+        assert!(rename_path(root, "", "oops").is_err());
+        assert!(rename_path(root, ".", "oops").is_err());
+    }
+
+    #[test]
+    fn directory_links_report_targets_and_preserve_aliases() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let outside = tempfile::tempdir().unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .arg(root)
+            .status()
+            .unwrap()
+            .success());
+        fs::create_dir(root.join("real")).unwrap();
+        fs::write(root.join("real/file"), "text").unwrap();
+        symlink("real", root.join("alias")).unwrap();
+        symlink("real/file", root.join("file-link")).unwrap();
+        symlink("missing", root.join("broken")).unwrap();
+        symlink(outside.path(), root.join("external")).unwrap();
+        symlink("loop", root.join("loop")).unwrap();
+        let listing = list_directory(root, "").unwrap();
+        for (name, target, kind) in [
+            ("alias", SymlinkTarget::Directory, EntryKind::Directory),
+            ("file-link", SymlinkTarget::File, EntryKind::File),
+            ("broken", SymlinkTarget::Broken, EntryKind::File),
+            ("external", SymlinkTarget::External, EntryKind::File),
+            ("loop", SymlinkTarget::Unavailable, EntryKind::File),
+        ] {
+            let entry = listing.entries.iter().find(|e| e.path == name).unwrap();
+            assert_eq!(entry.symlink, Some(target));
+            assert_eq!(entry.kind, kind);
+        }
+        let alias = list_directory(root, "alias").unwrap();
+        assert_eq!(alias.path, "alias");
+        assert_eq!(alias.entries[0].path, "alias/file");
+        assert!(matches!(
+            list_directory(root, "external"),
+            Err(FsError::EscapesWorkspace(_))
+        ));
+        assert!(matches!(
+            read_file(root, "external/file"),
+            Err(FsError::EscapesWorkspace(_))
+        ));
+    }
+
+    #[test]
+    fn directory_budgets_mark_partial_before_accumulating_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..=MAX_DIRECTORY_ENTRIES {
+            fs::write(tmp.path().join(format!("f{i}")), "").unwrap();
+        }
+        let listing = list_directory(tmp.path(), "").unwrap();
+        assert!(listing.truncated);
+        assert_eq!(listing.entries.len(), MAX_DIRECTORY_ENTRIES);
+        let large = tempfile::tempdir().unwrap();
+        for i in 0..1000 {
+            fs::write(large.path().join(format!("{i:04}{}", "x".repeat(240))), "").unwrap();
+        }
+        let listing = list_directory(large.path(), "").unwrap();
+        assert!(listing.truncated);
+        assert!(listing.entries.len() < 1000);
+        assert!(
+            listing
+                .entries
+                .iter()
+                .map(|e| e.path.len() * 6 + 128)
+                .sum::<usize>()
+                + 128
+                <= MAX_DIRECTORY_BYTES
+        );
+        assert!(matches!(
+            list_directory(large.path(), &"x".repeat(MAX_DIRECTORY_PATH_BYTES + 1)),
+            Err(FsError::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn directory_permission_failures_are_not_empty_successes() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("private");
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
+        let denied = fs::read_dir(&path).is_err();
+        let result = list_directory(tmp.path(), "private");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        // Privileged test runners can bypass mode bits.
+        if denied {
+            assert!(
+                matches!(result, Err(FsError::Io(e)) if e.kind() == std::io::ErrorKind::PermissionDenied)
+            );
+        }
+    }
+
+    #[test]
+    fn directory_listing_honors_configured_excludes_and_keeps_emptied_parents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let excludes = tempfile::NamedTempFile::new().unwrap();
+        fs::write(excludes.path(), ".agents/\n").unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .arg(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(tmp.path())
+            .args(["config", "core.excludesFile"])
+            .arg(excludes.path())
+            .status()
+            .unwrap()
+            .success());
+        fs::create_dir(tmp.path().join(".agents")).unwrap();
+        fs::write(tmp.path().join(".agents/last"), "").unwrap();
+        fs::rename(tmp.path().join(".agents/last"), tmp.path().join("moved")).unwrap();
+        let listing = list_directory(tmp.path(), "").unwrap();
+        let entry = listing
+            .entries
+            .iter()
+            .find(|e| e.path == ".agents")
+            .unwrap();
+        assert_eq!(entry.kind, EntryKind::Directory);
+        assert!(entry.ignored);
+        assert!(list_directory(tmp.path(), ".agents")
+            .unwrap()
+            .entries
+            .is_empty());
+    }
+
+    #[test]
+    fn unrepresentable_directory_names_are_reported_as_partial() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let name = std::ffi::OsStr::from_bytes(b"bad-\xff");
+        // macOS filesystems may refuse invalid UTF-8 at creation time.
+        if fs::write(tmp.path().join(name), "").is_err() {
+            return;
+        }
+        let listing = list_directory(tmp.path(), "").unwrap();
+        assert!(listing.truncated);
+        assert!(listing.entries.is_empty());
+    }
+
+    #[test]
+    fn entry_mutations_do_not_follow_the_final_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("real"), "keep").unwrap();
+        fs::create_dir(root.join("tree")).unwrap();
+        fs::write(root.join("tree/child"), "keep child").unwrap();
+        for (index, target) in ["real", "tree", "missing", "."].iter().enumerate() {
+            let link = format!("alias-{index}");
+            symlink(target, root.join(&link)).unwrap();
+            rename_path(root, &link, "renamed").unwrap();
+            assert_eq!(
+                fs::read_link(root.join("renamed")).unwrap(),
+                Path::new(target)
+            );
+            delete_path(root, "renamed").unwrap();
+            assert!(root.join("renamed").symlink_metadata().is_err());
+        }
+        assert_eq!(fs::read(root.join("real")).unwrap(), b"keep");
+        assert_eq!(fs::read(root.join("tree/child")).unwrap(), b"keep child");
+        assert!(rename_path(root, ".", "moved-root").is_err());
+        assert!(delete_path(root, ".").is_err());
+        symlink("missing", root.join("occupied")).unwrap();
+        assert!(matches!(
+            rename_path(root, "real", "occupied"),
+            Err(FsError::AlreadyExists(_))
+        ));
+    }
+
+    #[test]
+    fn entry_mutations_reject_an_escaping_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("keep"), "keep").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("alias")).unwrap();
+        assert!(delete_path(root.path(), "alias/keep").is_err());
+        assert!(rename_path(root.path(), "alias/keep", "moved").is_err());
+        assert_eq!(fs::read(outside.path().join("keep")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn text_reads_refuse_non_regular_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(dir.path().join("socket")).unwrap();
+        assert!(matches!(
+            read_file(dir.path(), "socket"),
+            Err(FsError::NotFound(_))
+        ));
+        assert!(matches!(
+            read_file(dir.path(), "."),
+            Err(FsError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn fuzzy_boundaries_follow_case_expansion() {
+        assert_eq!(fuzzy_score("İx", "x"), Some(1));
+        assert_eq!(fuzzy_score("İ/x", "x"), Some(1 + WORD_START_BONUS));
+        assert_eq!(fuzzy_score("İaX", "x"), Some(1 + WORD_START_BONUS));
+        assert_eq!(fuzzy_score("İ.x", "x"), Some(1 + WORD_START_BONUS));
+    }
 
     #[test]
     fn definition_rank_reads_the_shapes_a_declaration_has() {
@@ -2322,6 +2810,228 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         let err = rename_path(tmp.path(), "a.rs", "b.rs").unwrap_err();
         assert!(matches!(err, FsError::AlreadyExists(_)));
         assert_eq!(fs::read_to_string(tmp.path().join("b.rs")).unwrap(), "b");
+    }
+
+    #[test]
+    fn rename_destination_created_after_preparation_is_never_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        for symlink in [false, true] {
+            fs::write(tmp.path().join("source"), "source").unwrap();
+            let movement = prepare_rename(tmp.path(), "source", "target").unwrap();
+            if symlink {
+                std::os::unix::fs::symlink("missing", tmp.path().join("target")).unwrap();
+            } else {
+                fs::write(tmp.path().join("target"), "competitor").unwrap();
+            }
+            assert!(matches!(movement.apply(), Err(FsError::AlreadyExists(_))));
+            assert_eq!(
+                fs::read_to_string(tmp.path().join("source")).unwrap(),
+                "source"
+            );
+            if symlink {
+                assert_eq!(
+                    fs::read_link(tmp.path().join("target")).unwrap(),
+                    Path::new("missing")
+                );
+            } else {
+                assert_eq!(
+                    fs::read_to_string(tmp.path().join("target")).unwrap(),
+                    "competitor"
+                );
+            }
+            fs::remove_file(tmp.path().join("target")).unwrap();
+        }
+    }
+
+    #[test]
+    fn prepared_moves_refuse_replaced_parent_symlinks() {
+        for swap_source in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            fs::create_dir(tmp.path().join("src")).unwrap();
+            fs::create_dir(tmp.path().join("dst")).unwrap();
+            fs::write(tmp.path().join("src/file"), "inside").unwrap();
+            fs::write(outside.path().join("file"), "outside").unwrap();
+            let movement = prepare_rename(tmp.path(), "src/file", "dst/file").unwrap();
+            let parent = if swap_source { "src" } else { "dst" };
+            fs::rename(tmp.path().join(parent), tmp.path().join("original")).unwrap();
+            std::os::unix::fs::symlink(outside.path(), tmp.path().join(parent)).unwrap();
+            assert!(movement.apply().is_err());
+            assert_eq!(
+                fs::read_to_string(outside.path().join("file")).unwrap(),
+                "outside"
+            );
+            let source = if swap_source {
+                "original/file"
+            } else {
+                "src/file"
+            };
+            assert_eq!(
+                fs::read_to_string(tmp.path().join(source)).unwrap(),
+                "inside"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_broken_editor_alias_cannot_veto_a_move() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("other"), "keep").unwrap();
+        std::os::unix::fs::symlink("missing", tmp.path().join("alias")).unwrap();
+        let movement = prepare_rename(tmp.path(), "other", "renamed").unwrap();
+        assert_eq!(movement.retarget("alias/file").unwrap(), None);
+        movement.apply().unwrap();
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("renamed")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn literal_unix_names_round_trip_through_directory_index_read_and_write() {
+        let tmp = git_repo();
+        fs::create_dir(tmp.path().join("nested")).unwrap();
+        fs::create_dir(tmp.path().join("back")).unwrap();
+        fs::write(tmp.path().join("back/slash.secret"), "other").unwrap();
+        for parent in ["", "nested"] {
+            for name in [r"back\slash.secret", ":(glob)*", ":(literal)name"] {
+                let path = if parent.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{parent}/{name}")
+                };
+                fs::write(tmp.path().join(&path), "original").unwrap();
+                let listing = list_directory(tmp.path(), parent).unwrap();
+                assert!(listing.entries.iter().any(|entry| entry.path == path));
+                assert!(list_files(tmp.path())
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .any(|entry| entry.path == path));
+                let contents = read_file(tmp.path(), &path).unwrap();
+                assert_eq!(contents.path, path);
+                write_file(tmp.path(), &contents.path, "changed", &contents.revision).unwrap();
+                assert_eq!(
+                    fs::read_to_string(tmp.path().join(&path)).unwrap(),
+                    "changed"
+                );
+            }
+        }
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("back/slash.secret")).unwrap(),
+            "other"
+        );
+    }
+
+    #[test]
+    fn navigation_index_preserves_directory_link_types() {
+        for git in [false, true] {
+            let tmp = if git {
+                git_repo()
+            } else {
+                tempfile::tempdir().unwrap()
+            };
+            fs::create_dir(tmp.path().join("real")).unwrap();
+            fs::write(tmp.path().join("real/file"), "text").unwrap();
+            std::os::unix::fs::symlink("real", tmp.path().join("alias")).unwrap();
+            let index = list_files(tmp.path()).unwrap();
+            let entry = index
+                .entries
+                .iter()
+                .find(|entry| entry.path == "alias")
+                .unwrap();
+            assert_eq!(entry.kind, EntryKind::Directory);
+            assert_eq!(entry.symlink, Some(SymlinkTarget::Directory));
+        }
+    }
+
+    #[test]
+    fn name_search_carries_source_index_incompleteness_even_without_hits() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..8000 {
+            fs::write(tmp.path().join(format!("file-{i:05}")), "").unwrap();
+        }
+        let result = search_files(tmp.path(), "missing", SearchKind::Name, 20).unwrap();
+        assert!(result.matches.is_empty());
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn rename_case_only_and_invalid_moves() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("Folder")).unwrap();
+        fs::write(tmp.path().join("Folder/file"), "keep").unwrap();
+        for (from, to) in [
+            ("", "x"),
+            (".", "x"),
+            ("Folder", "."),
+            ("Folder", "Folder"),
+            ("Folder", "Folder/new/child"),
+        ] {
+            assert!(rename_path(tmp.path(), from, to).is_err(), "{from} -> {to}");
+        }
+        assert!(!tmp.path().join("Folder/new").exists());
+        if tmp.path().join("folder").exists() {
+            assert!(rename_path(tmp.path(), "folder", "folder/new/child").is_err());
+            assert!(!tmp.path().join("Folder/new").exists());
+        }
+        rename_path(tmp.path(), "Folder", "folder").unwrap();
+        let names: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from("folder")]);
+        rename_path(tmp.path(), "folder/file", "folder/FILE").unwrap();
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("folder/FILE")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn rename_external_symlink_moves_only_the_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside.path(), "outside").unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("link")).unwrap();
+        rename_path(tmp.path(), "link", "moved").unwrap();
+        assert_eq!(
+            fs::read_link(tmp.path().join("moved")).unwrap(),
+            outside.path()
+        );
+        assert_eq!(fs::read_to_string(outside.path()).unwrap(), "outside");
+    }
+
+    #[test]
+    fn rename_retargets_by_components_and_does_not_overwrite_a_hardlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("src")).unwrap();
+        fs::create_dir(tmp.path().join("src-other")).unwrap();
+        fs::write(tmp.path().join("src/file"), "keep").unwrap();
+        std::os::unix::fs::symlink("src", tmp.path().join("alias")).unwrap();
+        let movement = prepare_rename(tmp.path(), "src", "moved").unwrap();
+        assert_eq!(
+            movement.retarget("src/file").unwrap().as_deref(),
+            Some("moved/file")
+        );
+        assert_eq!(
+            movement.retarget("alias/file").unwrap().as_deref(),
+            Some("moved/file")
+        );
+        assert_eq!(movement.retarget("src-other/file").unwrap(), None);
+        fs::hard_link(tmp.path().join("src/file"), tmp.path().join("other")).unwrap();
+        assert!(matches!(
+            rename_path(tmp.path(), "src/file", "other"),
+            Err(FsError::AlreadyExists(_))
+        ));
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("src/file")).unwrap(),
+            "keep"
+        );
+        assert!(matches!(
+            prepare_rename(tmp.path(), "src", &"x".repeat(4097)),
+            Err(FsError::TooLarge { .. })
+        ));
     }
 
     #[test]

@@ -237,6 +237,30 @@ fn file_watches_follow_atomic_saves_and_are_connection_scoped() {
     stop_daemon(&client);
 }
 
+#[test]
+fn file_watches_preserve_the_alias_used_by_a_lazy_directory_listing() {
+    let td = start_daemon();
+    let client = Client::connect(&td.socket, "file-watch-alias").expect("connect");
+    let repo = test_support::init_repo().expect("git repo");
+    std::fs::create_dir(repo.path().join("real")).unwrap();
+    std::os::unix::fs::symlink("real", repo.path().join("alias")).unwrap();
+    let workspace = add_main_workspace(&client, repo.path());
+    let events = client.events();
+    client.watch_files(workspace, vec!["alias".into()]).unwrap();
+    std::fs::write(repo.path().join("real/new.txt"), "new").unwrap();
+    assert!(wait_for(&events, Duration::from_secs(5), |event| {
+        matches!(event, DaemonEvent::FileChanged { workspace_id, path }
+            if *workspace_id == workspace && path == "alias/new.txt")
+    })
+    .is_some());
+    let listing = client.list_directory(workspace, "alias").unwrap();
+    assert!(listing
+        .entries
+        .iter()
+        .any(|entry| entry.path == "alias/new.txt"));
+    stop_daemon(&client);
+}
+
 /// Create a shell session and wait until it reaches `Running`, returning its ids.
 fn create_shell_session(
     client: &Client,
@@ -1616,4 +1640,53 @@ fn stats_does_not_touch_singleton_lock() {
         !side_lock.exists(),
         "stats must not create a daemon.lock next to the test socket"
     );
+}
+
+#[test]
+fn another_socket_cannot_initialize_an_owned_data_directory() {
+    use std::os::unix::process::CommandExt;
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let data = tmp.path().join("data");
+    let lock = daemon::lockfile::acquire(
+        &data.join("app.db.lock"),
+        "owner",
+        "test",
+        domain::Timestamp::now(),
+    )
+    .unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_forge-daemon"))
+        .env("FORGE_SOCKET", tmp.path().join("other.sock"))
+        .env("FORGE_DATA_DIR", &data)
+        .env("FORGE_CONFIG_DIR", tmp.path().join("config"))
+        .process_group(0)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut status = None;
+    let exited = poll_until(Duration::from_secs(5), || {
+        status = child.try_wait().unwrap();
+        status.is_some()
+    });
+    if !exited {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(-(child.id() as i32)),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let _ = child.wait();
+    }
+    assert!(exited, "the conflicting daemon must refuse startup");
+    assert!(!status.unwrap().success());
+    assert!(
+        !data.join("app.db").exists(),
+        "ownership must be checked before SQLite opens"
+    );
+    drop(lock);
+    assert!(daemon::lockfile::acquire(
+        &data.join("app.db.lock"),
+        "next",
+        "test",
+        domain::Timestamp::now()
+    )
+    .is_ok());
 }

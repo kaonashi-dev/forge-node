@@ -238,11 +238,14 @@ if mode == "crash":
     sys.exit(1)
 
 def await_message(sock, *names):
+    global path
     # The daemon sends GitMarks unprompted; a fake that reads blindly would
     # take it for the answer it asked for. Dispatch by name, like the real one.
     deadline = time.time() + 20
     while time.time() < deadline:
         msg = unpack(read_frame(sock))[0]
+        if "Retarget" in msg:
+            path = msg["Retarget"]["path"]
         for name in names:
             if name in msg:
                 return name, msg[name]
@@ -342,6 +345,24 @@ if mode == "save":
     with open(".forge-editor-save", "w") as fh:
         detail = payload.get("revision") or payload.get("reason") or ""
         fh.write("%s %s\n" % (name, detail))
+
+if mode == "move":
+    original = path
+    receipt = ".forge-move-" + os.path.basename(original)
+    count = 0
+    while True:
+        msg = unpack(read_frame(sock))[0]
+        if "Retarget" in msg:
+            path = msg["Retarget"]["path"]
+        elif "GetState" in msg:
+            # An old queued state must never redirect the daemon's save destination.
+            sock.sendall(state(original, 7))
+        elif "Save" in msg:
+            count += 1
+            sock.sendall(save_request(2000 + count, "draft " + original + "\n", count + 1))
+            name, _ = await_message(sock, "Saved", "SaveRefused")
+            with open(receipt, "w") as fh:
+                fh.write("%s %s %d\n" % (name, path, count))
 
 while True:
     time.sleep(0.25)
@@ -664,6 +685,109 @@ fn await_receipt(path: &Path) -> String {
     fs::read_to_string(path).expect("receipt")
 }
 
+#[test]
+fn moving_a_directory_retargets_all_editors_and_serializes_saves() {
+    let harness = common::Harness::new();
+    install_editor_mode(&harness, "move", None);
+    let repo = test_support::init_repo().unwrap();
+    fs::create_dir(repo.path().join("src")).unwrap();
+    for name in ["a.rs", "b.rs"] {
+        fs::write(repo.path().join("src").join(name), "before\n").unwrap();
+    }
+    let running = harness.boot();
+    let client = running.connect("editor-moves");
+    let observer = running.connect("editor-moves-observer");
+    let events = client.events();
+    let observed = observer.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let mut ids = Vec::new();
+    for name in ["a.rs", "b.rs"] {
+        let Response::SessionCreated { session_id, .. } = client
+            .request(Request::CreateEditorSession {
+                workspace_id: workspace,
+                path: format!("src/{name}"),
+                line: None,
+                autosave: false,
+                read_only: false,
+            })
+            .unwrap()
+        else {
+            panic!("editor session")
+        };
+        common::wait_for_running(&events, |s| s.id == session_id);
+        ids.push(session_id);
+    }
+    // The save may reach disk on either side of the move; neither order may recreate src.
+    client
+        .request(Request::OverwriteEditorBuffer { session_id: ids[0] })
+        .unwrap();
+    client
+        .request(Request::RenamePath {
+            workspace_id: workspace,
+            from: "src".into(),
+            to: "moved".into(),
+        })
+        .unwrap();
+    assert!(common::wait_for(&observed, common::DEADLINE, |event| matches!(event,
+        DaemonEvent::SessionUpdated(s) if s.id == ids[1] && s.editor.as_ref().is_some_and(|e| e.path == "moved/b.rs")
+    )).is_some());
+    assert!(await_receipt(&repo.path().join(".forge-move-a.rs")).starts_with("Saved "));
+    for (id, name) in ids.iter().zip(["a.rs", "b.rs"]) {
+        client
+            .request(Request::OverwriteEditorBuffer { session_id: *id })
+            .unwrap();
+        assert!(common::poll_until(common::DEADLINE, || {
+            fs::read_to_string(repo.path().join(format!(".forge-move-{name}")))
+                .is_ok_and(|s| s.starts_with(&format!("Saved moved/{name}")))
+        }));
+        assert_eq!(
+            fs::read_to_string(repo.path().join("moved").join(name)).unwrap(),
+            format!("draft src/{name}\n")
+        );
+        assert_eq!(
+            common::session(&client, *id).unwrap().editor.unwrap().path,
+            format!("moved/{name}")
+        );
+    }
+    assert!(!repo.path().join("src").exists());
+    let error = client.request(Request::RenamePath {
+        workspace_id: workspace,
+        from: "moved/a.rs".into(),
+        to: "moved/b.rs".into(),
+    });
+    assert!(error.is_err());
+    assert_eq!(
+        common::session(&client, ids[0])
+            .unwrap()
+            .editor
+            .unwrap()
+            .path,
+        "moved/a.rs"
+    );
+    client
+        .request(Request::RenamePath {
+            workspace_id: workspace,
+            from: "moved/a.rs".into(),
+            to: "moved/A.rs".into(),
+        })
+        .unwrap();
+    client
+        .request(Request::OverwriteEditorBuffer { session_id: ids[0] })
+        .unwrap();
+    assert!(common::poll_until(common::DEADLINE, || {
+        fs::read_to_string(repo.path().join(".forge-move-a.rs"))
+            .is_ok_and(|s| s.starts_with("Saved moved/A.rs"))
+    }));
+    assert_eq!(
+        common::session(&observer, ids[0])
+            .unwrap()
+            .editor
+            .unwrap()
+            .path,
+        "moved/A.rs"
+    );
+}
+
 /// A refusal must not be a dead end.
 ///
 /// The daemon conditions the write on the revision it last saw. When an agent
@@ -787,6 +911,32 @@ fn a_refused_save_offers_both_sides_and_take_disk_resolves_it() {
     assert_eq!(path, "a.rs");
     assert_eq!(disk, "an agent wrote this\n", "what was there instead");
     assert_eq!(mine, "from the editor\n", "the draft that was refused");
+    client
+        .request(Request::RenamePath {
+            workspace_id: workspace,
+            from: "a.rs".into(),
+            to: "renamed.rs".into(),
+        })
+        .unwrap();
+    let Response::EditorConflict {
+        path,
+        disk: moved_disk,
+        mine: moved_mine,
+    } = client
+        .request(Request::GetEditorConflict { session_id })
+        .unwrap()
+    else {
+        panic!("the move must retain the conflict")
+    };
+    assert_eq!(path, "renamed.rs");
+    assert_eq!(moved_disk, disk);
+    assert_eq!(moved_mine, mine);
+    let editor = common::session(&client, session_id)
+        .unwrap()
+        .editor
+        .unwrap();
+    assert_eq!(editor.path, "renamed.rs");
+    assert!(editor.conflict);
 }
 
 /// The gutter's marks are the daemon's `git diff`, not the editor's.

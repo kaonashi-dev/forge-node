@@ -31,6 +31,7 @@ import { clipboardPaste } from "./clipboard";
 import { mayTakeCaret, registerTerminalFocus } from "./focus";
 import { runtimeStore } from "../store/runtimeStore";
 import { centerMode } from "../store/viewsStore";
+import { registerFileTerminal } from "../workbench/fileDrag";
 
 /** Breathing room between the grid and the pane edges (`TERMINAL_PAD`). */
 const PAD = 8;
@@ -663,6 +664,21 @@ export function TerminalPane() {
     // The only thing that moves the caret across a session switch; `./focus`
     // has why the pane cannot do it on mount alone.
     const takeCaret = () => keys.focus({ preventScroll: true });
+    onCleanup(
+      registerFileTerminal(host, {
+        identity: () => {
+          const session = runtimeStore.activeSession;
+          const terminal = runtimeStore.activeTerminal;
+          return runtimeStore.connection.kind === "connected" &&
+            centerMode() === "session" &&
+            session &&
+            terminal
+            ? { session, terminal }
+            : null;
+        },
+        focus: takeCaret,
+      }),
+    );
     onCleanup(registerTerminalFocus(takeCaret));
     createEffect(() => {
       if (mayTakeCaret(centerMode(), runtimeStore.activeSession, document.activeElement, keys)) {

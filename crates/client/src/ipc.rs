@@ -1,20 +1,6 @@
-//! Synchronous protocol client over a Unix domain socket (§10, §10.5).
-//!
-//! This is the GUI side of the wire. It intentionally uses only `std`
-//! (`std::os::unix::net::UnixStream` plus threads) and `flume` channels — never
-//! `tokio` and never a GUI toolkit — so `client` stays on the `client → protocol →
-//! domain` spine of §17 and the GUI thread never blocks on IO.
-//!
-//! [`Client::connect`] performs the §9.2 handshake, then spawns **one** reader
-//! thread that decodes [`DaemonMessage`]s with a [`protocol::FrameDecoder`] and
-//! routes them: a `Response` wakes the request waiter registered under its
-//! `request_id`; an `Event` is pushed onto the events channel the GUI drains.
-//! Requests are correlated with an [`AtomicU64`] id and a per-request bounded
-//! oneshot; the socket's write half is guarded by a `Mutex` so request writers
-//! and the reader thread (which owns the read half via
-//! [`UnixStream::try_clone`]) never fight. On EOF or socket error the reader
-//! marks the client disconnected, drops every pending waiter (waking each with
-//! [`ClientError::Disconnected`]) and closes the events channel.
+//! Blocking Unix-socket client with one reader routing correlated replies and
+//! bounded events. Callers must bridge requests off UI/input threads; this
+//! module provides neither Tokio nor GUI scheduling. Replica state lives in `store`.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -784,19 +770,19 @@ impl Client {
         }
     }
 
-    /// Immediate children of one directory (ADR-012), for peeling an opaque ignored folder.
+    /// Immediate children on disk; an empty path lists the workspace root.
     pub fn list_directory(
         &self,
         workspace_id: domain::WorkspaceId,
         path: impl Into<String>,
-    ) -> Result<domain::FileTree, ClientError> {
+    ) -> Result<domain::DirectoryListing, ClientError> {
         match self.request(Request::ListDirectory {
             workspace_id,
             path: path.into(),
         })? {
-            Response::FileTree(tree) => Ok(tree),
+            Response::DirectoryListing(listing) => Ok(listing),
             _ => Err(ClientError::UnexpectedResponse {
-                expected: "FileTree",
+                expected: "DirectoryListing",
             }),
         }
     }

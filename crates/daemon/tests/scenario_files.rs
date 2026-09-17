@@ -8,6 +8,42 @@ use std::fs;
 use protocol::{ErrorCode, Request, Response};
 
 #[test]
+fn directory_contract_round_trip_includes_root_empty_folders_and_symlinks() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    fs::create_dir(repo.path().join(".agents")).unwrap();
+    fs::write(repo.path().join(".gitignore"), ".agents/\n").unwrap();
+    std::os::unix::fs::symlink(".agents", repo.path().join("alias")).unwrap();
+    let daemon = harness.boot();
+    let client = daemon.connect("directories");
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let listing = client.list_directory(workspace, "").unwrap();
+    assert_eq!(listing.path, "");
+    assert!(!listing.truncated);
+    let entry = listing
+        .entries
+        .iter()
+        .find(|e| e.path == ".agents")
+        .unwrap();
+    assert_eq!(entry.kind, domain::FileKind::Directory);
+    assert!(entry.ignored);
+    assert_eq!(entry.symlink, None);
+    let alias = listing.entries.iter().find(|e| e.path == "alias").unwrap();
+    assert_eq!(alias.symlink, Some(domain::SymlinkTarget::Directory));
+    let empty = client.list_directory(workspace, "alias").unwrap();
+    assert_eq!(empty.path, "alias");
+    assert!(empty.entries.is_empty());
+    assert!(!empty.truncated);
+    fs::write(repo.path().join(".agents/new"), "").unwrap();
+    assert_eq!(
+        client.list_directory(workspace, "alias").unwrap().entries[0].path,
+        "alias/new"
+    );
+    assert!(client.list_directory(workspace, "../").is_err());
+    assert!(client.list_directory(workspace, "missing").is_err());
+}
+
+#[test]
 fn list_read_write_and_revision_conflict() {
     let harness = common::Harness::new();
     let repo = test_support::init_repo().expect("git repo");
@@ -266,6 +302,56 @@ fn create_rename_and_delete_paths() {
         assert_eq!(refusal_code(err), ErrorCode::InvalidRequest, "for {root:?}");
     }
     assert!(repo.path().join("keep.rs").is_file());
+}
+
+#[test]
+fn rename_guards_entries_and_broadcasts_both_paths_without_a_watch() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().unwrap();
+    fs::create_dir(repo.path().join("tree")).unwrap();
+    fs::write(repo.path().join("tree/file"), "keep").unwrap();
+    std::os::unix::fs::symlink("tree", repo.path().join("alias")).unwrap();
+    std::os::unix::fs::symlink("missing", repo.path().join("occupied")).unwrap();
+    let daemon = harness.boot();
+    let client = daemon.connect("safe-moves");
+    let observer = daemon.connect("move-observer");
+    let events = observer.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    for (from, to) in [
+        (".", "root"),
+        ("tree", "tree/new/child"),
+        ("tree", "tree"),
+        ("alias", "occupied"),
+    ] {
+        assert!(client
+            .request(Request::RenamePath {
+                workspace_id: workspace,
+                from: from.into(),
+                to: to.into(),
+            })
+            .is_err());
+    }
+    assert!(!repo.path().join("tree/new").exists());
+    client
+        .request(Request::RenamePath {
+            workspace_id: workspace,
+            from: "alias".into(),
+            to: "ALIAS".into(),
+        })
+        .unwrap();
+    for expected in ["alias", "ALIAS"] {
+        assert!(common::wait_for(&events, common::DEADLINE, |event| matches!(event,
+            protocol::DaemonEvent::FileChanged { workspace_id, path } if *workspace_id == workspace && path == expected
+        )).is_some());
+    }
+    assert_eq!(
+        fs::read_link(repo.path().join("ALIAS")).unwrap(),
+        std::path::Path::new("tree")
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("tree/file")).unwrap(),
+        "keep"
+    );
 }
 
 /// A tracked path that has been deleted is gone from the listing.

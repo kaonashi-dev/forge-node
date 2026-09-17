@@ -330,6 +330,7 @@ fn handle_control(
     message: DaemonMessage,
 ) -> anyhow::Result<()> {
     match message {
+        DaemonMessage::Retarget { path } => app.retarget(path.into()),
         DaemonMessage::Reveal {
             request_id,
             line,

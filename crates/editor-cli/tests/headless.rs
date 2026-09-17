@@ -187,6 +187,46 @@ fn start(text: &str, display_path: &str) -> Host {
     host
 }
 
+#[test]
+fn retarget_over_control_keeps_the_live_document_and_undo() {
+    let host = start("hello", "old.txt");
+    let before = host.frame();
+    host.input(vec![EditorInput::Text("draft ".into())]);
+    let edited = host.frame_at_version(before.doc_version + 1);
+    host.send(DaemonMessage::Retarget {
+        path: "new.rs".into(),
+    });
+    host.send(DaemonMessage::GetState { request_id: 900 });
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let message = host
+            .messages
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if let EditorMessage::State {
+            request_id: Some(900),
+            state,
+        } = message
+        {
+            assert_eq!(state.path, "new.rs");
+            assert_eq!(state.document_version, edited.doc_version);
+            assert_eq!(state.column, edited.caret.column + 1);
+            assert!(state.dirty);
+            break;
+        }
+    }
+    host.key(WireKey::Char('z'), modifiers::CONTROL);
+    let undone = host.frame_at_version(edited.doc_version + 1);
+    assert_eq!(
+        undone.rows[0]
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<String>(),
+        "hello"
+    );
+}
+
 fn numbered(lines: usize) -> String {
     let mut out = String::new();
     for line in 0..lines {

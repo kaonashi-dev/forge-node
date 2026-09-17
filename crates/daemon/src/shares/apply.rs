@@ -1,8 +1,5 @@
-//! The effects behind a share plan: validate, observe, write, repair (§14.2).
-//!
-//! Nothing here decides anything — [`super::plan`] does that — and nothing here
-//! runs under the core lock: every function can block on the filesystem or on a
-//! subprocess.
+//! Filesystem and subprocess effects for [`super::plan`], including cleanup
+//! verification. Call outside the core lock; planning policy lives in `plan.rs`.
 
 use std::io;
 use std::path::{Component, Path};
@@ -137,15 +134,20 @@ pub fn observe(ctx: &ShareContext, rule: &ShareRule) -> Observation {
 /// is that a monorepo cannot make provisioning take minutes.
 #[must_use]
 pub fn measure(path: &Path) -> (Option<u64>, Option<u64>) {
+    measure_with_limit(path, MAX_MEASURE_ENTRIES)
+}
+
+fn measure_with_limit(path: &Path, limit: u64) -> (Option<u64>, Option<u64>) {
     let mut bytes = 0_u64;
     let mut entries = 0_u64;
+    let mut discovered = 1_u64;
     let mut stack = vec![path.to_path_buf()];
     while let Some(current) = stack.pop() {
         let Ok(meta) = std::fs::symlink_metadata(&current) else {
             continue;
         };
         entries += 1;
-        if entries > MAX_MEASURE_ENTRIES {
+        if entries > limit {
             return (None, None);
         }
         if meta.is_symlink() {
@@ -160,6 +162,10 @@ pub fn measure(path: &Path) -> (Option<u64>, Option<u64>) {
                 continue;
             };
             for entry in read.flatten() {
+                if discovered >= limit {
+                    return (None, None);
+                }
+                discovered += 1;
                 stack.push(entry.path());
             }
         }
@@ -252,7 +258,7 @@ fn write_into(ctx: &ShareContext, source: &Path, target: &Path, cloning: bool) -
         std::fs::create_dir_all(parent)?;
     }
     if EntryKind::of(target).exists() {
-        backup(ctx, target)?;
+        backup(ctx, target, false)?;
         remove_any(target)?;
     }
     if cloning && clone_path(source, target).is_ok() {
@@ -267,7 +273,7 @@ fn link_into(ctx: &ShareContext, store: &Path, target: &Path) -> io::Result<()> 
         std::fs::create_dir_all(parent)?;
     }
     if EntryKind::of(target).exists() {
-        backup(ctx, target)?;
+        backup(ctx, target, false)?;
         remove_any(target)?;
     }
     symlink(store, target)
@@ -312,6 +318,7 @@ fn clone_path(source: &Path, target: &Path) -> io::Result<()> {
 #[cfg(target_os = "linux")]
 fn clone_path(source: &Path, target: &Path) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
 
     // `FICLONE` is file-to-file; a directory is left to the recursive copy.
     if !source.is_file() {
@@ -321,12 +328,17 @@ fn clone_path(source: &Path, target: &Path) -> io::Result<()> {
     }
     const FICLONE: nix::libc::c_ulong = 0x4004_9409;
     let src = std::fs::File::open(source)?;
-    let dst = std::fs::File::create(target)?;
+    let permissions = src.metadata()?.permissions();
+    let dst = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(target)?;
     // SAFETY: both descriptors are open for the duration of the call and
     // `FICLONE` takes the source fd by value, writing nothing to userspace.
     let rc = unsafe { nix::libc::ioctl(dst.as_raw_fd(), FICLONE, src.as_raw_fd()) };
     if rc == 0 {
-        Ok(())
+        dst.set_permissions(permissions)
     } else {
         let err = io::Error::last_os_error();
         let _ = std::fs::remove_file(target);
@@ -397,11 +409,8 @@ fn copy_tree(source: &Path, target: &Path, budget: &mut Budget) -> io::Result<()
     Err(io::Error::other("not a file, directory or symlink"))
 }
 
-/// Move whatever is at `path` into the project's backup directory.
-///
-/// Nothing this feature replaces is ever destroyed without a copy first: the
-/// file in the way may be the only one of its kind on the machine.
-fn backup(ctx: &ShareContext, path: &Path) -> io::Result<()> {
+/// Adoption still needs its source; replacements may move theirs aside.
+fn backup(ctx: &ShareContext, path: &Path, preserve_source: bool) -> io::Result<()> {
     let Some(root) = ctx.backups.as_ref() else {
         return Ok(());
     };
@@ -414,10 +423,12 @@ fn backup(ctx: &ShareContext, path: &Path) -> io::Result<()> {
     let dir = root.join(stamp);
     std::fs::create_dir_all(&dir)?;
     let into = dir.join(name);
-    if std::fs::rename(path, &into).is_ok() {
+    if !preserve_source && std::fs::rename(path, &into).is_ok() {
         return Ok(());
     }
-    // Across filesystems `rename` refuses; a copy is still a backup.
+    if preserve_source && clone_path(path, &into).is_ok() {
+        return Ok(());
+    }
     copy_tree(path, &into, &mut Budget::default())
 }
 
@@ -559,14 +570,7 @@ fn state_of(ctx: &ShareContext, rule: &ShareRule) -> ShareState {
     }
 }
 
-/// Bytes for a small file, length for a large one, nothing for a directory.
-///
-/// **Not mtime.** `std::fs::copy` preserves it on macOS (`fclonefileat`) and
-/// does not on Linux, so a copy would read as diverged on one platform and as
-/// applied on the other — and `ShareCleanup::RemoveInjected` decides whether a
-/// file is ours from exactly this answer. Comparing the content of a `.env` is
-/// cheap; walking a `node_modules` to colour a dot in the settings section is
-/// not, so past the cap the length is the whole answer.
+// Status is a cheap heuristic; destructive cleanup needs verified_copy instead.
 fn diverged(source: &Path, target: &Path) -> bool {
     const CONTENT_COMPARE_MAX: u64 = 1024 * 1024;
 
@@ -589,6 +593,29 @@ fn diverged(source: &Path, target: &Path) -> bool {
         (Ok(a), Ok(b)) => a != b,
         _ => false,
     }
+}
+
+fn verified_copy(source: &Path, target: &Path) -> bool {
+    use std::io::Read as _;
+
+    const MAX_COMPARE_BYTES: u64 = 1024 * 1024;
+    let read = |path: &Path| -> io::Result<Vec<u8>> {
+        let meta = std::fs::symlink_metadata(path)?;
+        if !meta.is_file() || meta.len() > MAX_COMPARE_BYTES {
+            return Err(io::Error::other(
+                "copy cannot be verified within the cleanup budget",
+            ));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(MAX_COMPARE_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_COMPARE_BYTES {
+            return Err(io::Error::other("copy grew beyond the cleanup budget"));
+        }
+        Ok(bytes)
+    };
+    matches!((read(source), read(target)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// Move a real file into the project's shared store and leave a link (§14.2).
@@ -620,7 +647,7 @@ pub fn adopt_into_store(ctx: &ShareContext, relative: &str) -> io::Result<()> {
     if let Some(parent) = store.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    backup(ctx, &source)?;
+    backup(ctx, &source, true)?;
     if std::fs::rename(&source, &store).is_err() {
         copy_tree(&source, &store, &mut Budget::default())?;
         remove_any(&source)?;
@@ -694,17 +721,147 @@ pub fn clean_up(ctx: &ShareContext, rule: &ShareRule, mode: ShareCleanup) -> Sha
             Err(e) => action.note = Some(e.to_string()),
         },
         ShareCleanup::RemoveInjected => match state_of(ctx, rule) {
-            ShareState::Applied => match remove_any(&target) {
-                Ok(()) => action.verb = ShareVerb::Remove,
-                Err(e) => action.note = Some(e.to_string()),
-            },
+            ShareState::Applied
+                if match rule.strategy {
+                    ShareStrategy::Link => true,
+                    ShareStrategy::Copy | ShareStrategy::Clone => {
+                        verified_copy(&ctx.source.join(&relative), &target)
+                    }
+                    _ => false,
+                } =>
+            {
+                match remove_any(&target) {
+                    Ok(()) => action.verb = ShareVerb::Remove,
+                    Err(e) => action.note = Some(e.to_string()),
+                }
+            }
             ShareState::Missing => action.note = Some("nothing there".to_owned()),
             // Severed, diverged or foreign: somebody's file now.
             _ => {
-                action.note = Some("changed since Forge wrote it — left alone".to_owned());
+                action.note =
+                    Some("changed or could not verify Forge's copy — left alone".to_owned());
             }
         },
         _ => action.note = Some("unknown cleanup mode".to_owned()),
     }
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context(root: &Path) -> ShareContext {
+        let source = root.join("source");
+        let target = root.join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        ShareContext {
+            source,
+            target,
+            store: Some(root.join("store")),
+            backups: Some(root.join("backups")),
+            caps: Capabilities {
+                supports_clone: false,
+                same_filesystem: true,
+            },
+            explicit: true,
+        }
+    }
+
+    #[test]
+    fn adoption_preserves_source_and_backup_on_the_same_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = context(dir.path());
+        std::fs::write(ctx.source.join(".env"), "secret").unwrap();
+        adopt_into_store(&ctx, ".env").unwrap();
+        assert_eq!(std::fs::read(ctx.source.join(".env")).unwrap(), b"secret");
+        assert_eq!(
+            std::fs::read(ctx.store_path(".env").unwrap()).unwrap(),
+            b"secret"
+        );
+        assert!(ctx.source.join(".env").is_symlink());
+        let backup_dir = std::fs::read_dir(ctx.backups.unwrap())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read(backup_dir.join(".env")).unwrap(), b"secret");
+    }
+
+    #[test]
+    fn cleanup_preserves_unverified_copies_and_run_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = context(dir.path());
+        let rule = ShareRule {
+            id: domain::ShareRuleId::new(),
+            project_id: domain::ProjectId::new(),
+            path: "entry".into(),
+            strategy: ShareStrategy::Copy,
+            enabled: true,
+            position: 0,
+            created_at: domain::Timestamp::now(),
+        };
+        let source = ctx.source.join("entry");
+        let target = ctx.target.join("entry");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("user-work"), "keep").unwrap();
+        assert_eq!(
+            clean_up(&ctx, &rule, ShareCleanup::RemoveInjected).verb,
+            ShareVerb::Skip
+        );
+        assert_eq!(std::fs::read(target.join("user-work")).unwrap(), b"keep");
+
+        let rule = ShareRule {
+            path: "large".into(),
+            ..rule
+        };
+        let source = ctx.source.join("large");
+        let target = ctx.target.join("large");
+        std::fs::write(&source, vec![b'a'; 1024 * 1024 + 1]).unwrap();
+        std::fs::write(&target, vec![b'b'; 1024 * 1024 + 1]).unwrap();
+        assert_eq!(
+            clean_up(&ctx, &rule, ShareCleanup::RemoveInjected).verb,
+            ShareVerb::Skip
+        );
+        assert!(target.exists());
+        std::fs::remove_file(&source).unwrap();
+        assert_eq!(
+            clean_up(&ctx, &rule, ShareCleanup::RemoveInjected).verb,
+            ShareVerb::Skip
+        );
+        assert!(target.exists());
+
+        std::fs::write(&source, "same").unwrap();
+        std::fs::write(&target, "same").unwrap();
+        let run = ShareRule {
+            strategy: ShareStrategy::Run {
+                command: "true".into(),
+                timeout_secs: 1,
+            },
+            ..rule.clone()
+        };
+        assert_eq!(
+            clean_up(&ctx, &run, ShareCleanup::RemoveInjected).verb,
+            ShareVerb::Skip
+        );
+        assert!(target.exists());
+        assert_eq!(
+            clean_up(&ctx, &rule, ShareCleanup::RemoveInjected).verb,
+            ShareVerb::Remove
+        );
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn measurement_stops_at_discovery_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.path().join(i.to_string()), "x").unwrap();
+        }
+        assert_eq!(measure_with_limit(dir.path(), 5), (None, None));
+        assert_eq!(measure_with_limit(dir.path(), 6), (Some(5), Some(6)));
+    }
 }

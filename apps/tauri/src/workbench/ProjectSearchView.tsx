@@ -127,6 +127,9 @@ export function ProjectSearchView() {
       <Show when={workbenchStore.searchError}>
         {(error) => <p class="panel-error">{error()}</p>}
       </Show>
+      <Show when={contentResults() && workbenchStore.searchStale}>
+        <p class="panel-note">Files changed. Search again to refresh these results.</p>
+      </Show>
       <Show
         when={workbenchStore.workspace !== null}
         fallback={<EmptyState message="No checkout selected." />}

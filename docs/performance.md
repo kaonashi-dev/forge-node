@@ -63,7 +63,8 @@ its cost times its rung.
 |------|------|-------|--------|
 | per cell | ~10 000 / frame | `ui::terminal::terminal_row`, `cell_style` | **zero allocations, zero lock acquisitions** |
 | per row | ~50 / frame, ~50 / delta | `DeltaBuilder::delta`, `CellGrid::apply_delta` | one `Vec` at most |
-| per PTY chunk / per delta | ≤125 /s **per attached terminal** (`FRAME` = 8 ms) | `Daemon::pump_terminal`, `route_terminal_delta`, `runtime_loop` | no syscall that can block, no clone that scales with the grid |
+| per PTY batch | input-driven; not capped by `FRAME` | `Daemon::pump_terminal_batch` | no blocking syscall or grid-sized clone under the core lock |
+| per emitted delta | ≤125 /s **per attached terminal** (`FRAME` = 8 ms) | `route_terminal_delta`, `runtime_loop` | no syscall that can block, no clone that scales with the grid |
 | per frame | every repaint | Tauri frontend render | nothing derivable from the store |
 | per store change | user actions and daemon broadcasts | `RuntimeUpdate::State` handling | this is where per-frame work belongs |
 | per request | user-initiated | daemon request handlers | subprocesses and disk are fine, **outside the core lock** |
@@ -130,6 +131,7 @@ the allocation.
 | checked arithmetic on a client-supplied offset | `fetch_scrollback` (`MAX_SCROLLBACK_FETCH`) |
 | bounded scan that reports what it skipped | `analytics::recent_transcripts` |
 | event count and path bytes checked in the watch callback | `daemon::file_watch` (`MAX_PATHS`, `MAX_PATH_BYTES`) |
+| bounded stdout/stderr readers with group kill on overflow | `git_service::run_git_bounded`, used by the global file index |
 
 A bounded scan that silently truncates is worse than one that refuses: report
 `skipped`/`truncated` rather than looking exhaustive.
@@ -226,10 +228,26 @@ it may have changed while unwatched; removing one or keeping the same set
 does not invalidate anything. Compact tree rows also watch their intermediate
 directories so a new sibling can split the compact row.
 
-A root listing collapses ignored directories into placeholders. Expanded rows
-stay visible until their one-level reads arrive, keeping watch interests stable
-during reconciliation. The GUI records completed directory reads, including
-empty ones, so an empty folder does not trigger a read loop.
+The explorer reads immediate disk children independently per directory, including
+root and empty directories. Previous children stay visible during reads and
+errors; completed empty reads are remembered. Invalidations retain one refresh
+debt per directory while a read is active, and a fixed coalescing deadline does
+not slide under continuous writes. Closed directories are stale rather than
+recursively re-read. The global navigation index has its own demand-driven load;
+the explorer does not pay for a repository-wide listing after each write.
+
+Directory responses carry request IDs and generations; watcher ACKs carry
+interest generations. Both reject late answers. The host rejects a missing,
+closed or full workbench queue instead of losing commands. Mutation results
+settle independently of refresh results; uncertain writes reconcile with bounded
+reads and are never replayed automatically.
+
+File dragging (`workbench/fileDrag.ts`) retains one pointer payload, one hover
+deadline and at most one animation frame. Each drag frame performs one DOM hit
+test and a bounded 12 px edge-scroll step; it stops scheduling at the scroll
+limit. It never traverses the file index or terminal grid. A 600 ms hover may
+request one ordinary lazy folder expansion, and release submits one correlated
+move or targeted paste. Pointer motion itself performs no daemon requests.
 
 Git decorations retain one pending refresh when a filesystem event arrives
 during a diff read or its 10-second cooldown. The pending deadline does not
@@ -269,9 +287,9 @@ exceptions exist in the tree and are correct: `reap_child` polls `WNOHANG` for
 500 ms then delegates, and `kill_groups_blocking` polls `group_alive` with an
 early exit.
 
-`pty_loop` is the reference for the common case: it blocks in `read(2)` and the
-frame floor is a sleep *after* a successful read, never a spin. An idle terminal
-costs zero.
+`pty_loop` waits in `poll(2)` until input or a frame/synchronized-output deadline,
+then drains a bounded batch into `pump_terminal_batch`. It never sleeps after a
+successful read: the 8 ms floor limits attached-terminal emits, not PTY reads.
 
 ### Damage-driven, and know what damage you actually have
 
@@ -354,9 +372,9 @@ impl, not by the next statement.
 
 ## Locks
 
-The daemon has one global `Mutex<Inner>`, and `Daemon::pump_terminal` takes it
-up to 125 times a second **per terminal**. Everything under it is on the delta
-rung.
+The daemon has one global `Mutex<Inner>`, and `Daemon::pump_terminal_batch` takes it
+once per processed batch. Batch frequency follows input, not the 125/s emission
+floor. Everything under the lock shares that input-driven cost rung.
 
 `AGENTS.md` states the rule as "never hold the core lock across `.await`". Read
 it as the stronger thing it means: **never hold the core lock across anything
@@ -407,9 +425,8 @@ sequential HTTPS calls with a fresh, unpooled client each time.
 
 ## WebView budgets
 
-The rungs above are the daemon's. These are the shell's, from
-`plan-ui-ux.md` §3.3, and they are the numbers a change to `apps/tauri` is
-measured against.
+The rungs above are the daemon's. The following table defines the shell's
+budgets for changes to `apps/tauri`.
 
 | Surface | Budget | How it is held |
 |---|---|---|

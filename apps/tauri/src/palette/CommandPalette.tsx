@@ -1,9 +1,9 @@
-import { Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { COMMAND_PALETTE } from "../actions/actions";
 import { enterContext } from "../actions/dispatch";
 import { forgeStore } from "../store/forgeStore";
 import { runtimeStore } from "../store/runtimeStore";
-import { Combobox, Dialog, type ComboboxOption } from "../ui";
+import { Button, Combobox, Dialog, type ComboboxOption } from "../ui";
 import { Icon, LangIcon, SessionGlyph } from "../theme/icons";
 import {
   FILES,
@@ -16,8 +16,10 @@ import {
   type PaletteEntry,
   type PaletteScope,
 } from "./entries";
-import { workbenchStore } from "../store/workbenchStore";
+import { setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import { initialFiles, recentPaths } from "../workbench/recentFiles";
+import { navigationFileIndex } from "../workbench/fileIndex";
+import { warmFileTree } from "../workbench/api";
 
 /** Rows shown before the list scrolls. */
 const VISIBLE_ROWS = 12;
@@ -61,7 +63,18 @@ export function CommandPalette(props: CommandPaletteProps) {
    */
   const [searching, setSearching] = createSignal(false);
 
-  const treePaths = () => workbenchStore.tree?.entries.map((entry) => entry.path) ?? null;
+  createEffect(() => {
+    const workspace = workbenchStore.workspace;
+    if (workspace && admits(props.scope, FILES)) warmFileTree(workspace);
+  });
+
+  const index = createMemo(navigationFileIndex);
+  const treePaths = createMemo(
+    () =>
+      index()
+        ?.entries.filter((entry) => entry.kind === "File")
+        .map((entry) => entry.path) ?? null,
+  );
 
   /** Every file in the checkout. Not built until the first character. */
   const allFiles = createMemo(() =>
@@ -150,6 +163,21 @@ export function CommandPalette(props: CommandPaletteProps) {
           </Show>
         }
       />
+      <Show when={admits(props.scope, FILES) && index()?.truncated}>
+        <p class="panel-note">Partial file index — some paths may not be listed.</p>
+      </Show>
+      <Show when={admits(props.scope, FILES) && workbenchStore.treeError}>
+        <p class="panel-error">Could not refresh the file index: {workbenchStore.treeError}</p>
+        <Button
+          onClick={() => {
+            setWorkbenchStore("treeError", null);
+            const workspace = workbenchStore.workspace;
+            if (workspace) warmFileTree(workspace);
+          }}
+        >
+          Retry file index
+        </Button>
+      </Show>
     </Dialog>
   );
 }

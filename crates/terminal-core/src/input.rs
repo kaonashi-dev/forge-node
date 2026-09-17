@@ -239,15 +239,19 @@ pub fn encode_key(key: Key, mods: Modifiers, modes: &TermModes) -> Vec<u8> {
     }
 }
 
-/// Encode pasted text: wrapped in bracketed-paste markers when the mode is
-/// active, otherwise sent verbatim (§11.6). In bracketed mode any embedded end
-/// marker is stripped so pasted content can't spoof the terminator.
+/// Wrap bracketed paste and remove embedded terminators, including nested ones.
+/// Without bracketed mode, send the text verbatim.
 #[must_use]
 pub fn paste(text: &str, modes: &TermModes) -> Vec<u8> {
     if modes.bracketed_paste {
         let mut v = Vec::with_capacity(text.len() + 12);
         v.extend_from_slice(b"\x1b[200~");
-        v.extend_from_slice(text.replace("\x1b[201~", "").as_bytes());
+        for byte in text.bytes() {
+            v.push(byte);
+            if v.ends_with(b"\x1b[201~") {
+                v.truncate(v.len() - 6);
+            }
+        }
         v.extend_from_slice(b"\x1b[201~");
         v
     } else {
@@ -613,6 +617,7 @@ mod tests {
         assert_eq!(paste("hi", &m), b"\x1b[200~hi\x1b[201~");
         // Embedded terminator is stripped.
         assert_eq!(paste("a\x1b[201~b", &m), b"\x1b[200~ab\x1b[201~");
+        assert_eq!(paste("a\x1b[20\x1b[201~1~b", &m), b"\x1b[200~ab\x1b[201~");
     }
 
     #[test]

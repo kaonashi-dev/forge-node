@@ -69,11 +69,17 @@ describe("mayAutoRefresh", () => {
     expect(mayAutoRefresh(SESSION)).toBe(false);
   });
 
-  it("allows a retry after a failure", () => {
+  it("keeps a failure visible until an explicit retry", () => {
     beginSessionChanges(SESSION);
     failSessionChanges(SESSION, "git said no");
     expect(splitEntry(SESSION).error).toBe("git said no");
-    expect(mayAutoRefresh(SESSION)).toBe(true);
+    expect(mayAutoRefresh(SESSION)).toBe(false);
+    expect(mayAutoRefresh(SESSION, Date.now() + REFRESH_FLOOR_MS)).toBe(false);
+    beginSessionChanges(SESSION);
+    expect(splitEntry(SESSION).loading).toBe(true);
+    expect(splitEntry(SESSION).error).toBeNull();
+    applySessionChanges(SESSION, changes());
+    expect(splitEntry(SESSION).readAt).not.toBeNull();
   });
 });
 

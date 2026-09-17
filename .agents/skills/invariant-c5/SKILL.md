@@ -6,7 +6,7 @@ description: Runtime invariant checklist for harness reviewer (CHECKPOINTS C5). 
 # Invariant C5 — runtime
 
 - [ ] Lock order `inner -> registry`; no core lock across `.await` or blocking I/O.
-- [ ] `pump_terminal` one critical section per PTY chunk; `FRAME` vs `IDLE_FRAME`.
+- [ ] `pump_terminal_batch` one critical section per processed batch; deadline-driven `poll`, no post-read sleep; `FRAME` limits attached emits, not reads.
 - [ ] `emit_seq` once per **emitted** delta.
 - [ ] Runtime-only fields have no SQLite column.
 - [ ] Migrations append-only at end of `migrations.rs`.

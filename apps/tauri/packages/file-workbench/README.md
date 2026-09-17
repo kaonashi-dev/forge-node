@@ -1,6 +1,6 @@
 # File workbench
 
-A non-modal, terminal-styled file explorer and plain-text editor. The DOM API
+A non-modal, terminal-styled file explorer. The DOM API
 works with plain TypeScript or a framework: mount into an element, update through
 the handle, and call `destroy()` on unmount. There are no Solid, React, Tauri,
 filesystem, network, global keyboard or application-store dependencies.
@@ -15,12 +15,6 @@ TypeScript declarations and the stylesheet. Install the tarball in the consumer.
 ```ts
 import { createFileExplorer } from "@forge-node/file-workbench";
 import "@forge-node/file-workbench/style.css";
-
-const editor = createFileEditor(editorElement, {
-  doc: initialText,
-  onChange: () => markUnsaved(),
-  onCursor: ({ line, column }) => showPosition(line, column),
-});
 
 const explorer = createFileExplorer(treeElement, {
   icon: (row) =>
@@ -39,31 +33,22 @@ explorer.setState({
   },
 });
 
-// A host-approved disk update retains the selection and scroll position.
-editor.setDoc(newText);
-// Switching documents resets selection and undo history.
-editor.setDoc(otherDocumentText, false);
-
 // On unmount:
 explorer.destroy();
-editor.destroy();
 ```
 
-The root entry only loads the explorer. Import `/editor` lazily to keep the
-editor out of the initial bundle. `/tree` exposes pure listing/filter/navigation
-helpers. `/symbol` exposes identifier extraction without importing an editor.
+The root entry exports the explorer. `/tree` exposes pure listing/filter/navigation
+helpers. Document editing belongs to the host; Forge uses its daemon-supervised editor.
 
 ## Ownership and extension points
 
-- The host owns file identities, active documents, drafts, revision checks, saves,
-  tabs and persistence. `onChange` is an invalidation, not a full-document copy;
-  call `editor.text()` when saving or otherwise needing the complete text.
-- `setDoc()` is silent: it never calls `onChange`. It does report cursor changes.
-  The host must resolve conflicts before applying external content.
-- A `FileTree` contains relative paths. `Directory` entries can represent empty
-  folders; ignored directory entries are opaque until the host peels them
-  (`onExpandOpaque` → one-level listing merged in). Directories implied by file
-  paths are synthesized. The package does not crawl them.
+- The host owns file identities, active documents, filesystem mutations, tabs
+  and persistence. The package reports gestures and renders supplied observations.
+- A `FileTree` contains relative paths. `Directory` entries represent real empty
+  folders too. Lazy hosts supply `loadedDirectories` and answer
+  `onExpandDirectory(path)` with immediate children for every folder, ignored or
+  not. Legacy `onExpandOpaque` remains available. The package never crawls disk;
+  the host owns request IDs, generations, retries and per-directory errors.
 - `setState` updates the listing and optional decorations without discarding
   expanded directories. `reset` clears workspace-local navigation.
 - `reveal(path)` is the explicit _show this path in the tree_ gesture: it opens
@@ -89,9 +74,8 @@ helpers. `/symbol` exposes identifier extraction without importing an editor.
     placeholder and the two different empty states — nothing here, versus
     nothing matching the filter — without walking the rows a second time.
   - `state.error` is not drawn in `"list"` chrome; the host renders failures.
-  - The tree hides itself when there are no rows. Collapse the mount element
-    too (`.fw-mount[hidden]`), or the host's message renders beside an empty
-    box that is still claiming the space.
+  - Keep the stable mount available for root/background interactions and root
+    creation even when no real files exist. Draft rows count as visible rows.
 - `icon` resolves a row's mark to a URL the host owns, called per painted row
   and never per listing. The package places the artwork and keeps its colours;
   it ships none of its own and reads nothing but the row. When the resolver's
@@ -113,17 +97,28 @@ helpers. `/symbol` exposes identifier extraction without importing an editor.
   - `Enter` commits through `onEditCommit(request, name)` and the field stays
     open: the host writes, then calls `edit(null)` on success or
     `editFailed(message)` to show the refusal on the row and let the name be
-    corrected. `Escape` cancels. Losing focus cancels — but only to somewhere:
-    a blur with no `relatedTarget` (a menu unmounting, the window going away)
-    is not the person leaving the field.
-  - A name that is blank or unchanged is a cancel, not a write. `editedName`
-    and `nameSelection` are exported as the pure rules behind that and behind
-    the stem-not-extension preselection, so a host can test its own copy.
+    corrected. `Escape` cancels an unsubmitted edit. Losing focus leaves the
+    field intact so menu dismissal and workspace refreshes do not discard a draft.
+  - Rename edits the target basename, never its compact visual label. The host
+    validates the proposed name/path before writing. A submitted field cannot
+    send Enter twice; `editFailed` restores editing without losing its value.
   - While the field has focus the tree's own keymap stands down, so arrows,
     Enter and the filter chord belong to the input.
 - `onDirectoriesChange` reports root (`""`) and expanded directories, not an
   instruction to recursively scan the workspace. Filtering does not create new
   watch interests. Native watchers belong to the host and must have budgets.
+- `collapseAll()` folds the current directories. `reveal(path)` retains its
+  ancestor intent as lazy responses arrive. `onPointerDown(event, row)` is an
+  optional host gesture hook on the stable tree element; row nodes retain
+  `data-path` and `data-file-directory` and the tree has `data-file-tree-root`. A host drag controller owns
+  capture, thresholds, cancellation and click suppression, not recycled rows.
+  `expand(path)` opens a folded folder without changing selection or scroll and
+  ignores an active inline edit. Forge's controller uses it after hover dwell;
+  `reveal(path)` remains the confirmed-move selection action.
+- `retarget(from, to)` maps retained selection after a confirmed move, even if
+  the old row has already left the listing. Link target metadata is preserved
+  in rows and explained in tooltips; directory links remain addressable rather
+  than compacting through their target.
 - The explorer uses delegated events, a ResizeObserver and windowed rows. Only
   the visible range plus overscan has DOM nodes. Its animation frame is scheduled
   by changes/scrolling, with no continuous render loop.
@@ -134,9 +129,7 @@ helpers. `/symbol` exposes identifier extraction without importing an editor.
 
 ## Styling
 
-Use `.fw-document` around an editor, `.fw-document-head` for its toolbar,
-`.fw-document-content` for the editor host, and `.fw-document-foot` for status.
-The explorer supplies its own frame. Both use the following optional variables;
+The explorer supplies its own frame and uses the following optional variables;
 defaults use CSS system colors and monospace, with no imported app theme:
 
 | Variable                                      | Purpose                                    |
@@ -147,24 +140,16 @@ defaults use CSS system colors and monospace, with no imported app theme:
 | `--fw-added`, `--fw-modified`, `--fw-deleted` | Optional decorations                       |
 | `--fw-font`, `--fw-font-size`                 | Monospaced typography                      |
 | `--fw-row-height`                             | Unitless row height in pixels, at least 16 |
-| `--fw-editor-line-height`                     | Unitless line height for the editor only   |
-
-The editor's own type is set two different ways, because the two behave
-differently. Font size is ordinary inheritance — `.fw-editor` is `font:
-inherit`, so setting `font-size` on the host element is enough. Line height is
-a custom property, because the gutter, the highlight layer and the textarea
-each read `--fw-line-height` and have to agree to the pixel: one override on
-`--fw-editor-line-height` moves all three together, where three separate
-`line-height` declarations would drift apart the moment one was missed.
 
 ## Standalone example
 
 With Forge's Vite dev server running, open
 `/packages/file-workbench/demo/`. It imports only the public package entries and
-mounts both components without Solid or Tauri. The in-memory fixture includes
-external updates, unsaved-draft protection and a 50,000-file listing.
+mounts an explorer without Solid or Tauri. The in-memory fixture shows a small
+listing and reports the selected file in a status element.
 
 In Forge, the adapter maps theme tokens, dialogs, shortcuts and revisioned IO.
 The daemon watches visible directories and parents of open documents, coalesces
 native events, and releases watches with the connection. This is not a recursive
-workspace index; closed subtrees still refresh when the full listing is re-read.
+workspace index; closed directories reconcile when expanded. The global file
+palette uses a separate bounded index, not only the currently expanded tree.

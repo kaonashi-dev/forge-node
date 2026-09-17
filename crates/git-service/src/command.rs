@@ -182,7 +182,22 @@ pub(crate) fn git_path(dir: &Path, name: &str) -> Option<PathBuf> {
 /// - [`GitError::Timeout`] if the command runs longer than [`GIT_TIMEOUT`]; the
 ///   child process is sent `SIGKILL` before returning.
 pub fn run_git(repo: Option<&Path>, args: &[&str]) -> Result<GitOutput, GitError> {
-    run_git_inner(repo, args, GIT_TIMEOUT, false)
+    run_git_inner(repo, args, GIT_TIMEOUT, false, None)
+}
+
+/// Refuse stdout or stderr over `limit` bytes, killing and reaping the command group.
+pub fn run_git_bounded(
+    repo: Option<&Path>,
+    args: &[&str],
+    limit: usize,
+) -> Result<GitOutput, GitError> {
+    run_git_inner(
+        repo,
+        args,
+        GIT_TIMEOUT,
+        false,
+        Some(limit.min(8 * 1024 * 1024)),
+    )
 }
 
 /// Run a `git` command that talks to a remote, with its own timeout and with
@@ -201,7 +216,7 @@ pub fn run_git_network(
     args: &[&str],
     timeout: Duration,
 ) -> Result<GitOutput, GitError> {
-    run_git_inner(repo, args, timeout, true)
+    run_git_inner(repo, args, timeout, true, None)
 }
 
 fn run_git_inner(
@@ -209,6 +224,7 @@ fn run_git_inner(
     args: &[&str],
     timeout: Duration,
     network: bool,
+    output_limit: Option<usize>,
 ) -> Result<GitOutput, GitError> {
     use std::os::unix::process::CommandExt as _;
 
@@ -261,7 +277,10 @@ fn run_git_inner(
     // enforce a wall-clock timeout with `recv_timeout` (std has none built in).
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        let _ = tx.send(match output_limit {
+            Some(limit) => bounded_output(child, limit),
+            None => child.wait_with_output(),
+        });
     });
 
     match rx.recv_timeout(timeout) {
@@ -285,6 +304,47 @@ fn run_git_inner(
             "git worker thread disconnected before reporting a result",
         ))),
     }
+}
+
+fn bounded_output(
+    mut child: std::process::Child,
+    limit: usize,
+) -> std::io::Result<std::process::Output> {
+    let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    std::thread::scope(|scope| {
+        let stderr = scope.spawn(move || capture(stderr, limit, pid));
+        let stdout = capture(stdout, limit, pid);
+        let stderr = stderr.join().unwrap_or_else(|_| {
+            kill_process_group(pid);
+            Err(std::io::Error::other("git stderr reader panicked"))
+        });
+        let status = child.wait()?;
+        Ok(std::process::Output {
+            status,
+            stdout: stdout?,
+            stderr: stderr?,
+        })
+    })
+}
+
+fn capture(reader: Option<impl std::io::Read>, limit: usize, pid: u32) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    if let Some(reader) = reader {
+        if let Err(error) = reader.take(limit as u64 + 1).read_to_end(&mut bytes) {
+            kill_process_group(pid);
+            return Err(error);
+        }
+    }
+    if bytes.len() > limit {
+        kill_process_group(pid);
+        return Err(std::io::Error::other(format!(
+            "git output exceeds {limit}-byte capture budget"
+        )));
+    }
+    Ok(bytes)
 }
 
 /// How long to wait for the worker to reap a killed child before giving up on it.
@@ -311,6 +371,33 @@ fn kill_process_group(pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_capture_kills_and_reaps_an_overproducing_process() {
+        use std::os::unix::process::CommandExt;
+        for redirect in ["", " >&2"] {
+            let child = Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    &format!("while :; do printf '0123456789abcdef'{redirect}; done"),
+                ])
+                .process_group(0)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            let error = bounded_output(child, 128).unwrap_err();
+            assert!(error.to_string().contains("capture budget"));
+            assert_eq!(
+                nix::sys::wait::waitpid(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    Some(nix::sys::wait::WaitPidFlag::WNOHANG)
+                ),
+                Err(nix::errno::Errno::ECHILD)
+            );
+        }
+    }
 
     fn output(status: i32, stdout: &str, stderr: &str) -> GitOutput {
         GitOutput {

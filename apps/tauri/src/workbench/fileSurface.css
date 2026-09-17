@@ -64,7 +64,58 @@
   padding-inline: var(--space-12);
 }
 
+.fw-root-identity {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-8);
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-align: start;
+  width: 100%;
+}
+.fw-root-identity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fw-root-identity:hover {
+  background: var(--bg-hover);
+}
 .fw-host .fw-mount {
   flex: 1;
   min-height: 0;
+}
+.fw-tree-edit-field[aria-busy="true"] {
+  color: var(--fg-muted);
+}
+
+.file-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+.fw-host .fw-tree {
+  touch-action: none;
+}
+.file-drop-target {
+  outline: 1px solid var(--accent-solid);
+  outline-offset: -1px;
+  background-color: var(--accent-soft);
+}
+.file-drag-label {
+  position: fixed;
+  pointer-events: none;
+  z-index: 1000;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: var(--space-8);
+  background: var(--bg-base);
+  color: var(--fg-default);
+  border: 1px solid var(--accent-solid);
+  font: var(--forge-mono-size) var(--font-mono);
 }
