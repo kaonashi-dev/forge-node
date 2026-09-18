@@ -8,6 +8,7 @@
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::io::{self, Write};
 
 /// Maximum size, in bytes, of a single frame's payload. A declared or produced
 /// length above this is a hard error: the caller must close the connection
@@ -58,17 +59,49 @@ pub enum ProtocolCodecError {
 /// [`MAX_FRAME_SIZE`].
 #[allow(clippy::cast_possible_truncation)] // length is checked <= MAX_FRAME_SIZE < u32::MAX
 pub fn encode_frame<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtocolCodecError> {
-    let payload = rmp_serde::to_vec_named(msg)?;
-    if payload.len() > MAX_FRAME_SIZE {
+    let mut writer = FrameWriter {
+        bytes: vec![0; LEN_PREFIX],
+        overflow: None,
+    };
+    let result = msg.serialize(&mut rmp_serde::Serializer::new(&mut writer).with_struct_map());
+    if let Some(size) = writer.overflow {
         return Err(ProtocolCodecError::FrameTooLarge {
-            size: payload.len(),
+            size,
             max: MAX_FRAME_SIZE,
         });
     }
-    let mut frame = Vec::with_capacity(LEN_PREFIX + payload.len());
-    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    frame.extend_from_slice(&payload);
-    Ok(frame)
+    result?;
+    let size = writer.bytes.len() - LEN_PREFIX;
+    writer.bytes[..LEN_PREFIX].copy_from_slice(&(size as u32).to_be_bytes());
+    Ok(writer.bytes)
+}
+
+struct FrameWriter {
+    bytes: Vec<u8>,
+    overflow: Option<usize>,
+}
+
+impl Write for FrameWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let size = (self.bytes.len() - LEN_PREFIX).saturating_add(bytes.len());
+        if size > MAX_FRAME_SIZE {
+            self.overflow = Some(size);
+            return Err(io::Error::other("frame payload exceeds MAX_FRAME_SIZE"));
+        }
+        let needed = size + LEN_PREFIX;
+        if needed > self.bytes.capacity() {
+            let capacity = needed
+                .max(self.bytes.capacity().saturating_mul(2))
+                .min(MAX_FRAME_SIZE + LEN_PREFIX);
+            self.bytes.reserve_exact(capacity - self.bytes.len());
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Decode a message from a single frame's *payload* (no length prefix).
@@ -267,6 +300,37 @@ mod tests {
         let big = vec![0u8; MAX_FRAME_SIZE + 64];
         let err = encode_frame(&big).unwrap_err();
         assert!(matches!(err, ProtocolCodecError::FrameTooLarge { .. }));
+    }
+
+    #[test]
+    fn encoding_stops_a_streaming_serializer_at_the_budget() {
+        struct Stream(std::cell::Cell<usize>);
+        impl Serialize for Stream {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeSeq;
+                let mut seq = serializer.serialize_seq(Some(MAX_FRAME_SIZE * 2))?;
+                for _ in 0..MAX_FRAME_SIZE * 2 {
+                    self.0.set(self.0.get() + 1);
+                    seq.serialize_element(&0u8)?;
+                }
+                seq.end()
+            }
+        }
+        let stream = Stream(std::cell::Cell::new(0));
+        assert!(matches!(
+            encode_frame(&stream),
+            Err(ProtocolCodecError::FrameTooLarge { .. })
+        ));
+        assert!(stream.0.get() <= MAX_FRAME_SIZE);
+    }
+
+    #[test]
+    fn maximum_payload_round_trips() {
+        // MessagePack str32 uses five bytes before the UTF-8 payload.
+        let text = "x".repeat(MAX_FRAME_SIZE - 5);
+        let frame = encode_frame(&text).unwrap();
+        assert_eq!(frame.len(), MAX_FRAME_SIZE + LEN_PREFIX);
+        assert_eq!(decode_frame::<String>(&frame).unwrap().0, text);
     }
 
     #[test]
