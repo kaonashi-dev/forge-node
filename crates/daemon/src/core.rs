@@ -5390,7 +5390,7 @@ impl Daemon {
         let mut next_wake = None;
 
         let mut reply = None;
-        let mut bell = false;
+        let bell;
         let mut session_update = None;
         let clipboard;
 
@@ -5413,6 +5413,8 @@ impl Daemon {
             }
             // Independent of the emit clock: a copy is a gesture, not damage.
             clipboard = rt.take_clipboard();
+            // Attention must reach the rail even when nobody watches the grid.
+            bell = rt.engine.take_bell();
 
             let now = Instant::now();
             let emit_at = rt
@@ -5433,7 +5435,6 @@ impl Daemon {
                 let seq = rt.emit_seq;
                 let mut delta = rt.delta_builder.delta(&mut rt.engine);
                 delta.seq = seq;
-                bell = rt.engine.take_bell();
                 // Empty OSC 2 is a reset, stored as `None` so resolve falls back.
                 // `is_some()` on the raw string pinned a stale title; `Some("")`
                 // would pin an empty one and blank the rail row.
@@ -9935,6 +9936,41 @@ mod tests {
     // ---------------------------------------------------------------
     // Emitted-delta sequencing (§10.5)
     // ---------------------------------------------------------------
+
+    #[test]
+    fn unwatched_terminal_bell_is_delivered_without_a_delta_or_replay() {
+        let (daemon, tmp, _backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let workspace = seeded_workspace(&daemon, tmp.path());
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Shell,
+                None,
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        let terminal_id = only_session(&daemon).terminal_id.unwrap();
+        let client = ClientId::new();
+        let rx = daemon.registry.register(client);
+        daemon.pump_terminal_batch(terminal_id, b"\x07", false, false, true);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            DaemonMessage::Event(DaemonEvent::TerminalBell { terminal_id: id }) if id == terminal_id
+        ));
+        assert!(rx.try_recv().is_err());
+
+        daemon.registry.subscribe(client, terminal_id);
+        daemon.pump_terminal(terminal_id, b"watched", false);
+        assert!(rx.try_iter().all(|message| !matches!(
+            message,
+            DaemonMessage::Event(DaemonEvent::TerminalBell { .. })
+        )));
+    }
 
     /// The wire sequence a client checks for gaps counts **emitted deltas**, not
     /// engine feeds. Bytes that arrive while nobody is attached still reach the
