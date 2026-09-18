@@ -1247,6 +1247,14 @@ impl App {
         format!("{}…", &line[..cut])
     }
 
+    /// Retain the document, selection, undo and in-flight save across a move.
+    pub fn retarget(&mut self, path: PathBuf) {
+        self.path = path;
+        self.grammar = Grammar::for_path(&self.path.to_string_lossy());
+        self.rescan();
+        self.damage_all = true;
+    }
+
     /// Replace the buffer with what the daemon read from disk.
     ///
     /// A new document, not an edit: the draft is discarded because the person
@@ -2904,6 +2912,32 @@ mod tests {
         assert_eq!(app.document().as_str(), "");
         app.handle_key(control('y'));
         assert_eq!(app.document().as_str(), "abc");
+    }
+
+    #[test]
+    fn retarget_preserves_draft_selection_undo_and_in_flight_save() {
+        let mut app = app("hello", false);
+        app.set_integrated();
+        app.handle_key(key(KeyCode::Char('X')));
+        app.request_save();
+        let (request, text, _) = app.take_save_request().unwrap();
+        app.handle_key(shifted(KeyCode::Right));
+        let before = app.wire_state();
+        app.retarget("moved.rs".into());
+        let after = app.wire_state();
+        assert_eq!(after.path, "moved.rs");
+        assert_eq!(after.line, before.line);
+        assert_eq!(after.column, before.column);
+        assert_eq!(after.selection_length, before.selection_length);
+        assert_eq!(after.document_version, before.document_version);
+        assert_eq!(app.document().as_str(), text);
+        assert!(after.dirty);
+        app.save_confirmed(request, "saved".into());
+        assert!(!app.document().is_dirty());
+        app.handle_key(control('z'));
+        assert_eq!(app.document().as_str(), "hello");
+        app.handle_key(control('y'));
+        assert_eq!(app.document().as_str(), "Xhello");
     }
 
     #[test]

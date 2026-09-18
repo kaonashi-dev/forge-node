@@ -1,17 +1,4 @@
-// U1: the person's own bindings, over the defaults.
-//
-// Where they live. `plan-ui-ux.md` proposed `~/…/Forge/keymap.json` "read by
-// the daemon, same path family as `theme.json`" — but there is no such family:
-// `theme.json` is a protocol fixture, and the daemon has no config-directory
-// reader to add a second file to. What it does have is `app_state`, the
-// key-value store that already holds every other `ui.*` preference and is
-// already shared with any other shell on the same daemon. So the overrides go
-// there, under one key, as the same JSON a file would have held — and if a
-// file reader is ever added, it produces this shape and nothing below changes.
-//
-// Pure, and its own module: merging and conflict detection are the parts with
-// a right and a wrong answer, and both are answerable without a DOM.
-
+// Merge stored shortcut preferences over defaults; report unresolved conflicts.
 import { ACTIONS, defaultBindings, type ActionId, type Binding, type ContextId } from "./actions";
 import { describeChord, keyIsKnown, parseChord, type Chord } from "./keys";
 
@@ -122,6 +109,17 @@ export function mergeBindings(
     const key = pairKey(binding);
     const override = decided.get(key);
     if (!override) {
+      // The macOS open alias yields to an explicit claim, even by another action.
+      const claimedOpenAlias =
+        binding.action === "open_file_palette" &&
+        chordSignature(binding.chord) === "cmd-o" &&
+        [...decided.values()].some(
+          (item) =>
+            item.context === binding.context &&
+            item.chord !== null &&
+            chordSignature(parseChord(item.chord)) === "cmd-o",
+        );
+      if (claimedOpenAlias) continue;
       merged.push(binding);
       continue;
     }

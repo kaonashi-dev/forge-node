@@ -557,7 +557,11 @@ export function EditorView(props: EditorViewProps) {
                   >
                     {gutterMark(row)?.glyph ?? " "}
                   </span>
-                  <span class="ed-fold" aria-hidden="true">
+                  <span
+                    class="ed-fold"
+                    classList={{ "ed-fold-toggle": row.fold !== null }}
+                    aria-hidden="true"
+                  >
                     {row.fold === null ? " " : row.fold > 0 ? "\u25b8" : "\u25be"}
                   </span>
                   <span class="ed-text">

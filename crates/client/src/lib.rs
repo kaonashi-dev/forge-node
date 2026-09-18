@@ -7,6 +7,7 @@
 mod ipc;
 mod store;
 
+pub use domain::{DirectoryListing, SymlinkTarget};
 pub use ipc::{Branches, Client, ClientError, DaemonInfo, SendContextResult};
 pub use store::{CellGrid, DeltaOutcome, EventOutcome, Store};
 // Re-exported so a GUI can name what `Store::providers` holds, and what

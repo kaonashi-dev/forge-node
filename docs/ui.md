@@ -42,6 +42,38 @@ Each workspace has one Code entry in Projects and one Code tab in the title bar,
 available even before a file is opened. Individual editor sessions appear as file
 tabs inside Code. Closing the last file leaves Code open with its empty state.
 
+## Files
+
+The Files sidebar is a lazy disk tree, independent of the global file index.
+Empty and hidden folders are visible; ignored folders are decorated and loaded
+on expansion. Errors retain the last successful children and partial listings
+are labelled. Reveal loads the required ancestors before selecting its target.
+
+Right-click, Ctrl-click or Shift+F10 opens Forge's menu on rows and on the
+root/background, including an empty checkout. Root offers new file/folder,
+refresh, collapse and copy workspace path; rename, move and delete are entry
+actions. Rename edits only the basename even on a compact folder chain. Create
+accepts a validated nested relative path. The field stays pending until its own
+mutation result, preserves its text on refusal, and cannot submit twice.
+
+The embedded files/text selector, filter input and content-search block are
+removed. File search remains global: Cmd+P and the macOS Cmd+O alias open the
+file palette, with custom keybindings taking precedence. Cmd+Shift+F opens
+content search. Refresh remains a tree action and a context-menu item.
+Confirmed moves retarget open/parked views, previews, recent files and reveal
+requests. Editor tabs keep their session identity and follow daemon path
+metadata, including changes initiated in another client.
+
+Drag a row at least 5 px to move it to a folder or to the blank tree area
+(checkout root). The hover label names the operation. A 600 ms folder hover
+expands it; the tree scrolls at its edges. A drop on the visible terminal instead
+pastes the absolute, shell-quoted path, with no Enter or file contents. The file
+menu's **Insert reference in terminal** performs the same targeted paste.
+If no session terminal is visible and connected, the menu reports that instead.
+Escape, pointer cancellation, window blur, unmount, workspace/session changes
+and reconnect cancel a gesture. Capture belongs to the stable explorer mount,
+not a recycled row, and the release click and terminal mouse reports are consumed.
+
 ## Terminal
 
 Damaged rows arrive on `runtime:cells` separately from `runtime:state`, so a

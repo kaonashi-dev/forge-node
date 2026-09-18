@@ -29,8 +29,11 @@ pub fn send_runtime_command(
 /// Workbench reads go to their own worker, never to the thread that carries
 /// terminal input: a `git diff` of a large checkout is seconds of subprocess.
 #[tauri::command]
-pub fn send_workbench_command(runtime: State<'_, Runtime>, command: WorkbenchCommand) {
-    runtime.send_workbench(command);
+pub fn send_workbench_command(
+    runtime: State<'_, Runtime>,
+    command: WorkbenchCommand,
+) -> Result<(), String> {
+    runtime.send_workbench(command)
 }
 
 /// Ask the platform for a directory, for "Add project".

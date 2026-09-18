@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Print a macOS SDK path the installed Apple ld can parse.
+#
+# xcrun --show-sdk-path prefers the highest-versioned SDK on disk, which can be
+# newer than the Command Line Tools linker (MacOSX27 TBD files name arm64e.x1;
+# ld from CLT 26.x does not). Cargo then fails at link with
+# "tapi error: malformed file / unknown architecture".
+#
+# Honours an existing SDKROOT when that SDK actually links. Otherwise prefers
+# xcrun's default, then the MacOSX.sdk symlink next to the tools, then other
+# SDKs in the same directories. Stdout is the path; diagnostics go to stderr.
+
+set -euo pipefail
+
+if [ "$(uname -s)" != Darwin ]; then
+  printf 'macos-sdk: not Darwin\n' >&2
+  exit 1
+fi
+
+if ! command -v cc >/dev/null 2>&1; then
+  printf 'macos-sdk: cc not found (xcode-select --install)\n' >&2
+  exit 1
+fi
+
+note() { printf 'macos-sdk: %s\n' "$*" >&2; }
+
+sdk_links() {
+  local sdk="$1" out
+  [ -d "$sdk" ] || return 1
+  out="$(mktemp "${TMPDIR:-/tmp}/forge-sdk.XXXXXX")"
+  if echo 'int main(void){return 0;}' | cc -isysroot "$sdk" -x c - -o "$out" >/dev/null 2>&1; then
+    rm -f "$out"
+    return 0
+  fi
+  rm -f "$out"
+  return 1
+}
+
+resolve() {
+  local p="$1"
+  [ -n "$p" ] && [ -d "$p" ] || return 1
+  (cd "$p" && pwd -P) 2>/dev/null
+}
+
+candidates=()
+seen=" "
+add() {
+  local r
+  r="$(resolve "${1:-}" || true)"
+  [ -n "$r" ] || return 0
+  case "$seen" in
+    *" $r "*) return 0 ;;
+  esac
+  seen="$seen$r "
+  candidates+=("$r")
+}
+
+user_sdk=""
+if [ -n "${SDKROOT:-}" ]; then
+  user_sdk="$(resolve "$SDKROOT" || true)"
+  add "$SDKROOT"
+fi
+
+xcrun_sdk="$(xcrun --show-sdk-path 2>/dev/null || true)"
+add "$xcrun_sdk"
+
+for dir in \
+  /Library/Developer/CommandLineTools/SDKs \
+  /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs
+do
+  [ -d "$dir" ] || continue
+  add "$dir/MacOSX.sdk"
+  for s in "$dir"/MacOSX[0-9]*.sdk; do
+    add "$s"
+  done
+done
+
+chosen=""
+for sdk in "${candidates[@]}"; do
+  if sdk_links "$sdk"; then
+    chosen="$sdk"
+    break
+  fi
+done
+
+if [ -z "$chosen" ]; then
+  note "no macOS SDK the installed ld can parse (xcode-select -p is $(xcode-select -p 2>/dev/null || echo unknown))"
+  note "xcrun default: ${xcrun_sdk:-<none>}"
+  exit 1
+fi
+
+if [ -n "$user_sdk" ] && [ "$user_sdk" != "$chosen" ]; then
+  note "SDKROOT=$SDKROOT does not link; using $chosen"
+elif [ -n "$xcrun_sdk" ]; then
+  x_resolved="$(resolve "$xcrun_sdk" || true)"
+  if [ "$x_resolved" != "$chosen" ]; then
+    note "xcrun picked $xcrun_sdk, which this ld cannot parse; using $chosen"
+  fi
+fi
+
+printf '%s\n' "$chosen"

@@ -1,13 +1,5 @@
-// What the changes split holds, keyed by session.
-//
-// Its own store rather than a field on `workbenchStore`: that one is about the
-// checkout on screen and clears whenever the focus moves, while a split belongs
-// to one terminal and has to survive switching to another tab and back.
-//
-// Everything here is runtime-only in the strongest sense — the daemon purges
-// session rows on startup, so a split remembered across a relaunch would point
-// at a session that no longer exists. Only the *preference* is persisted, in
-// `shell/layout.ts`.
+// Session-keyed changes reads survive tab switches, independently of checkout
+// focus. Answers stay runtime-only; the split preference lives in shell/layout.ts.
 
 import { createStore } from "solid-js/store";
 import type { SessionChanges } from "../workbench/types";
@@ -96,7 +88,7 @@ export function forgetSession(session: string): void {
  */
 export function mayAutoRefresh(session: string, now = Date.now()): boolean {
   const entry = splitEntry(session);
-  if (entry.loading) return false;
+  if (entry.loading || entry.error !== null) return false;
   if (entry.readAt === null) return true;
   return now - entry.readAt >= REFRESH_FLOOR_MS;
 }

@@ -216,6 +216,7 @@ impl ShellSnapshot {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ConnectedPayload {
+    pub connection_generation: u64,
     pub daemon: DaemonInfoDto,
     pub session_count: usize,
     pub store: ShellSnapshot,

@@ -65,6 +65,7 @@ export type ConfirmRequest = {
 
 export const [runtimeStore, setRuntimeStore] = createStore({
   connection: { kind: "idle" } as ConnectionState,
+  connectionGeneration: 0,
   activeSession: null as string | null,
   activeTerminal: null as string | null,
   /**

@@ -11,7 +11,7 @@
     "dev": "vite --port 1420",
     "build": "bun run typecheck && vite build && bun run bundle",
     "preview": "vite preview",
-    "test": "bun run build:file-workbench && bun scripts/runtime.ts && vitest run && bun test",
+    "test": "bun run build:file-workbench && bun scripts/runtime.ts && vitest run && bun test && bun test ./packages/file-workbench/tests",
     "typecheck": "bun run build:file-workbench && bun scripts/runtime.ts && tsc --noEmit && tsc -p tsconfig.scripts.json",
     "check": "bun run build:file-workbench && bun run lint && bun run fmt:check && bun run test && bun run build",
     "codegen": "bun scripts/codegen-types.ts",

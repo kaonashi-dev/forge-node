@@ -30,11 +30,7 @@ pub use view::{
 
 /// Version of the control wire. The handshake refuses any other value, the way
 /// `protocol::PROTOCOL_VERSION` does for the client wire.
-///
-/// 3 added the windowed DOM surface (`ViewFrame` / `Input` / `SetView`), which
-/// a version-2 editor cannot serve: it would take the buffer and paint ANSI
-/// nobody reads.
-pub const CONTROL_VERSION: u16 = 3;
+pub const CONTROL_VERSION: u16 = 4;
 
 /// Hard cap for one decoded control frame.
 ///
@@ -199,6 +195,9 @@ mod tests {
     #[test]
     fn every_message_round_trips() {
         let daemon_messages = vec![
+            DaemonMessage::Retarget {
+                path: "moved/file.rs".into(),
+            },
             DaemonMessage::Welcome {
                 version: CONTROL_VERSION,
                 session_id: "s-1".into(),
@@ -329,6 +328,7 @@ mod tests {
     #[test]
     fn a_foreign_version_is_refused() {
         assert!(message::version_matches(CONTROL_VERSION));
+        assert!(!message::version_matches(CONTROL_VERSION - 1));
         assert!(!message::version_matches(CONTROL_VERSION + 1));
     }
 

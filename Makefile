@@ -21,6 +21,15 @@ ICNS        := $(ROOT)/assets/icon/forge.icns
 UNAME_S := $(shell uname -s)
 IS_DARWIN := $(if $(filter Darwin,$(UNAME_S)),1,)
 
+# xcrun can pick an SDK newer than this ld; scripts/macos-sdk skips those.
+ifeq ($(IS_DARWIN),1)
+SDKROOT := $(shell "$(ROOT)/scripts/macos-sdk")
+ifeq ($(strip $(SDKROOT)),)
+$(error no linker-compatible macOS SDK — see scripts/macos-sdk)
+endif
+export SDKROOT
+endif
+
 .DEFAULT_GOAL := help
 
 .PHONY: help \
@@ -209,6 +218,7 @@ clippy: ## `cargo clippy --workspace --all-targets -- -D warnings`
 info: ## Print resolved paths and toolchain
 	@printf 'ROOT=%s\n' "$(ROOT)"
 	@printf 'UNAME_S=%s\n' "$(UNAME_S)"
+	@printf 'SDKROOT=%s\n' "$${SDKROOT:-<unset>}"
 	@printf 'TAURI_APP=%s\n' "$(TAURI_APP)"
 	@printf 'DAEMON_DBG=%s\n' "$(DAEMON_DBG)"
 	@printf 'DAEMON_REL=%s\n' "$(DAEMON_REL)"

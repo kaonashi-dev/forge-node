@@ -441,8 +441,8 @@ export const ACTIONS: Action[] = [
   },
   {
     id: "file_tree_filter",
-    label: "File Tree: Filter",
-    detail: "Focus the filter box above the tree",
+    label: "File Tree: Find File",
+    detail: "Open global file search",
     palette: false,
   },
   {
@@ -590,6 +590,7 @@ export function defaultBindings(): Binding[] {
     // and on Linux `ctrl-h` is a terminal's backspace.
     bind(`${MOD}-shift-h`, "toggle_features", APP),
     bind(`${MOD}-p`, "open_file_palette", APP),
+    ...(isMac() ? [bind("cmd-o", "open_file_palette", APP)] : []),
     // Scoped to the editor, not to the app: on Linux `MOD` is `ctrl`, and
     // `ctrl-s` is a terminal's own key.
     bind(`${MOD}-s`, "save_file", EDITOR),

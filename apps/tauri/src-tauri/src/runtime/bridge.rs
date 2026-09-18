@@ -139,6 +139,21 @@ impl Runtime {
     }
 
     pub fn send(&self, command: RuntimeCommand) -> Result<(), String> {
+        if let RuntimeCommand::PasteTarget {
+            connection_generation,
+            ..
+        } = &command
+        {
+            let latest = lock(&self.latest);
+            if !latest.status.connected
+                || latest
+                    .payload
+                    .as_ref()
+                    .is_none_or(|payload| payload.connection_generation != *connection_generation)
+            {
+                return Err("terminal connection changed".into());
+            }
+        }
         self.commands
             .try_send(command)
             .map_err(|error| match error {
@@ -149,12 +164,9 @@ impl Runtime {
             })
     }
 
-    /// Queue a workbench read. Dropped while disconnected: the panel that
-    /// asked learns from `runtime:disconnected`, not from a second channel.
-    pub fn send_workbench(&self, command: WorkbenchCommand) {
-        if let Some(sender) = lock(&self.workbench).as_ref() {
-            let _ = sender.try_send(command);
-        }
+    /// Success acknowledges enqueueing; execution reports through workbench events.
+    pub fn send_workbench(&self, command: WorkbenchCommand) -> Result<(), String> {
+        workbench::enqueue(lock(&self.workbench).as_ref(), command)
     }
 
     pub fn host_status(&self) -> HostStatus {
@@ -204,6 +216,7 @@ struct EditorAttachment {
 /// Emits the two event streams and keeps the `connect` command's cached
 /// snapshot in step with them.
 struct Emitter<'a> {
+    connection_generation: u64,
     client: &'a Client,
     app: &'a AppHandle,
     latest: &'a Mutex<Latest>,
@@ -232,6 +245,7 @@ impl Emitter<'_> {
         remember_connected(
             self.latest,
             ConnectedPayload {
+                connection_generation: self.connection_generation,
                 daemon: self.daemon.clone(),
                 session_count: snapshot.sessions.len(),
                 store: snapshot,
@@ -321,6 +335,7 @@ fn runtime_loop(
     let locator = Locator::from_env();
     let mut preferred_session = None;
     let mut size = DEFAULT_SIZE;
+    let mut connection_generation = 0;
 
     loop {
         let _ = app.emit("runtime:connecting", ());
@@ -352,6 +367,7 @@ fn runtime_loop(
                 continue;
             }
         };
+        connection_generation += 1;
         let mut at = Attached {
             session,
             terminal,
@@ -366,6 +382,7 @@ fn runtime_loop(
         *lock(&workbench) = Some(workbench::start(app.clone(), Arc::clone(&client)));
         preferred_session = Some(at.session);
         let emitter = Emitter {
+            connection_generation,
             client: &client,
             app: &app,
             latest: &latest,
@@ -373,6 +390,7 @@ fn runtime_loop(
         };
         let snapshot = ShellSnapshot::from_store(&store);
         let payload = ConnectedPayload {
+            connection_generation,
             session_count: snapshot.sessions.len(),
             store: snapshot,
             daemon: emitter.daemon.clone(),
@@ -408,6 +426,9 @@ fn runtime_loop(
                     Err(flume::TryRecvError::Empty) => break,
                     Err(flume::TryRecvError::Disconnected) => return,
                 };
+                if !command_on_connection(&command, connection_generation) {
+                    continue;
+                }
                 match run_command(
                     command,
                     &client,
@@ -960,6 +981,29 @@ fn due_closes(pending: &HashSet<SessionId>, store: &Store) -> Vec<SessionId> {
         .collect()
 }
 
+fn command_on_connection(command: &RuntimeCommand, generation: u64) -> bool {
+    match command {
+        RuntimeCommand::PasteTarget {
+            connection_generation,
+            ..
+        } => *connection_generation == generation,
+        _ => true,
+    }
+}
+
+fn paste_target_matches(
+    store: &Store,
+    at: &Attached,
+    session: SessionId,
+    terminal: TerminalId,
+) -> bool {
+    at.session == session
+        && at.terminal == terminal
+        && store.sessions.iter().any(|item| {
+            item.id == session && item.terminal_id == Some(terminal) && item.state.is_active()
+        })
+}
+
 fn flush_pending_closes(pending: &mut HashSet<SessionId>, store: &Store, client: &Client) {
     for id in due_closes(pending, store) {
         pending.remove(&id);
@@ -1008,6 +1052,25 @@ fn run_command(
                 .unwrap_or_default();
             let bytes = input::encode_paste(&text, &modes);
             write_input(client, at, bytes, id, pending_echo)
+        }
+        RuntimeCommand::PasteTarget {
+            session_id,
+            terminal_id,
+            text,
+            ..
+        } => {
+            if !paste_target_matches(store, at, session_id, terminal_id) {
+                return Err(CommandError::refused(
+                    "The terminal destination changed; reference was not inserted.",
+                ));
+            }
+            let Some(grid) = store.terminal(&terminal_id) else {
+                return Err(CommandError::refused(
+                    "The terminal destination is no longer attached.",
+                ));
+            };
+            let bytes = input::encode_paste(&text, &grid.modes);
+            write_input(client, at, bytes, 0, pending_echo)
         }
         // The pane only sends these while a program asked to read the mouse,
         // and the encoder refuses the events the *active* mode does not report
@@ -3360,6 +3423,54 @@ mod tests {
         assert!(Effect::nothing().damage.is_none());
     }
 
+    #[test]
+    fn a_queued_reference_is_not_replayed_on_a_new_connection_to_the_same_terminal() {
+        let (commands, receiver) = flume::bounded(1);
+        let runtime = Runtime {
+            commands,
+            latest: Arc::new(Mutex::new(Latest::default())),
+            workbench: Arc::new(Mutex::new(None)),
+        };
+        let session = SessionId::new();
+        let terminal = TerminalId::new();
+        let reference = || RuntimeCommand::PasteTarget {
+            session_id: session,
+            terminal_id: terminal,
+            text: "'/checkout/a b'".into(),
+            connection_generation: 1,
+        };
+        assert!(runtime.send(reference()).is_err());
+        let payload = ConnectedPayload {
+            connection_generation: 1,
+            daemon: DaemonInfoDto {
+                protocol_version: 1,
+                daemon_version: "test".into(),
+                instance_id: "same-daemon".into(),
+                started_at: domain::Timestamp::now(),
+                editor_surface: client::EditorSurface::Cells,
+            },
+            session_count: 0,
+            store: ShellSnapshot::from_store(&Store::new()),
+            active_session: Some(session),
+            active_terminal: Some(terminal),
+        };
+        remember_connected(&runtime.latest, payload.clone());
+        runtime.send(reference()).unwrap();
+        assert!(runtime.send(reference()).is_err());
+        let queued = receiver.recv().unwrap();
+        assert!(command_on_connection(&queued, 1));
+        remember_connected(
+            &runtime.latest,
+            ConnectedPayload {
+                connection_generation: 2,
+                ..payload
+            },
+        );
+        assert!(!command_on_connection(&queued, 2));
+        assert!(runtime.send(reference()).is_err());
+        assert!(receiver.is_empty());
+    }
+
     fn sample_session(state: domain::SessionState) -> domain::Session {
         let id = SessionId::new();
         domain::Session {
@@ -3381,6 +3492,41 @@ mod tests {
             ended_at: None,
             base_commit: None,
         }
+    }
+
+    #[test]
+    fn a_reference_never_follows_a_changed_session_or_restarted_terminal() {
+        let terminal = TerminalId::new();
+        let mut session = sample_session(domain::SessionState::Running);
+        session.terminal_id = Some(terminal);
+        let at = attached(terminal, session.id, 0);
+        let mut store = Store::new();
+        let _ = store.apply_event(&DaemonEvent::SessionCreated(session.clone()));
+        assert!(paste_target_matches(&store, &at, session.id, terminal));
+        assert!(!paste_target_matches(
+            &store,
+            &at,
+            SessionId::new(),
+            terminal
+        ));
+        assert!(!paste_target_matches(
+            &store,
+            &at,
+            session.id,
+            TerminalId::new()
+        ));
+        let other = attached(TerminalId::new(), SessionId::new(), 0);
+        assert!(!paste_target_matches(&store, &other, session.id, terminal));
+        session.terminal_id = Some(TerminalId::new());
+        let _ = store.apply_event(&DaemonEvent::SessionUpdated(session.clone()));
+        assert!(!paste_target_matches(&store, &at, session.id, terminal));
+        session.terminal_id = Some(terminal);
+        session.state = domain::SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        };
+        let _ = store.apply_event(&DaemonEvent::SessionUpdated(session.clone()));
+        assert!(!paste_target_matches(&store, &at, session.id, terminal));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { buildExcerpts, shouldSearchContent } from "../panels/fileContentSearch";
 import { clearFindInFiles, findInFilesPending, openEditorAt } from "../store/viewsStore";
 import { workbenchStore } from "../store/workbenchStore";
@@ -16,8 +16,10 @@ import {
   scheduleContentSearch,
   setContentQuery,
 } from "./projectSearch";
+import { isSearchExcerptTarget, searchWheelChainsVertically } from "./projectSearchWheel";
 
 export function ProjectSearchView() {
+  let root: HTMLDivElement | undefined;
   let field: HTMLInputElement | undefined;
   const [folded, setFolded] = createSignal<ReadonlySet<string>>(new Set());
   const files = createMemo(() => buildExcerpts(contentResults()?.matches ?? []));
@@ -30,6 +32,23 @@ export function ProjectSearchView() {
     ),
   );
   const allFolded = () => files().length > 0 && files().every((file) => folded().has(file.path));
+
+  onMount(() => {
+    const node = root;
+    if (!node) return;
+    const onWheel = (event: WheelEvent) => {
+      // Nested overflow-x plus `overscroll-behavior: none` keeps the wheel on WebKit.
+      if (!searchWheelChainsVertically(event) || !isSearchExcerptTarget(event.target)) return;
+      const scroller = node.closest(".center-view");
+      if (!(scroller instanceof HTMLElement) || scroller.scrollHeight <= scroller.clientHeight) {
+        return;
+      }
+      scroller.scrollTop += event.deltaY;
+      event.preventDefault();
+    };
+    node.addEventListener("wheel", onWheel, { passive: false });
+    onCleanup(() => node.removeEventListener("wheel", onWheel));
+  });
 
   createEffect(() => scheduleContentSearch(workbenchStore.workspace, contentQuery()));
   createEffect(() => {
@@ -68,7 +87,7 @@ export function ProjectSearchView() {
   };
 
   return (
-    <div class="project-search" style={syntaxColors()}>
+    <div class="project-search" ref={(element) => (root = element)} style={syntaxColors()}>
       <header class="project-search-bar">
         <SearchField
           class="project-search-field"
@@ -107,6 +126,9 @@ export function ProjectSearchView() {
 
       <Show when={workbenchStore.searchError}>
         {(error) => <p class="panel-error">{error()}</p>}
+      </Show>
+      <Show when={contentResults() && workbenchStore.searchStale}>
+        <p class="panel-note">Files changed. Search again to refresh these results.</p>
       </Show>
       <Show
         when={workbenchStore.workspace !== null}

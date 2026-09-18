@@ -100,6 +100,7 @@ export type FileEntry = {
   /** Excluded by `.gitignore`: listed so it can be opened, greyed so it reads
    * as outside the work. */
   ignored: boolean;
+  symlink?: "File" | "Directory" | "External" | "Broken" | "Unavailable" | null;
 };
 
 export type FileTree = {

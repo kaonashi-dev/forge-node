@@ -7,12 +7,17 @@ import { noteFileOpened } from "../workbench/recentFiles";
 import { opensInEditor } from "../workbench/previewRoute";
 import { openTerminalEditor } from "../runtime/api";
 import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
+import type { Session } from "../runtime/types";
+import { retargetPath } from "../workbench/pathOperations";
+import { retargetEditorConflict } from "./editorConflictStore";
 import {
   closeView,
   emptyViews,
   focusView,
   openView,
   sameView,
+  retargetView,
+  retargetViews,
   stepView,
   FEATURE_COMPOSE_VIEW,
   PR_COMPOSE_VIEW,
@@ -295,12 +300,18 @@ export function stepCodeView(delta: number): void {
  * mounted: the sidebar can be collapsed, or on another view. The request
  * stands until the tree picks it up, and the tree clears it.
  */
-const [pendingReveal, setPendingReveal] = createSignal<string | null>(null);
+const [pendingReveal, setPendingReveal] = createSignal<{ workspace: string; path: string } | null>(
+  null,
+);
 
-export const treeReveal = pendingReveal;
+export const treeReveal = () => {
+  const reveal = pendingReveal();
+  return reveal?.workspace === workbenchStore.workspace ? reveal.path : null;
+};
 
 export function revealInTree(path: string): void {
-  setPendingReveal(path);
+  const workspace = workbenchStore.workspace;
+  if (workspace) setPendingReveal({ workspace, path });
 }
 
 export function clearTreeReveal(): void {
@@ -338,4 +349,46 @@ export function requestFindInFiles(query: string | null = null): void {
 
 export function clearFindInFiles(): void {
   setPendingFindInFiles(null);
+}
+
+export function retargetWorkspaceViews(workspace: string, from: string, to: string): void {
+  const views = store.byWorkspace[workspace];
+  if (views) setStore("byWorkspace", workspace, retargetViews(views, from, to));
+  const closed = closedByWorkspace[workspace];
+  if (closed)
+    setClosedByWorkspace(
+      workspace,
+      closed.map((view) => retargetView(view, from, to)),
+    );
+  setPendingReveal((reveal) =>
+    reveal?.workspace === workspace
+      ? { ...reveal, path: retargetPath(reveal.path, from, to) }
+      : reveal,
+  );
+  if (workspace !== workbenchStore.workspace) return;
+  setPendingLine((reveal) =>
+    reveal === null ? null : { ...reveal, path: retargetPath(reveal.path, from, to) },
+  );
+}
+
+/** Session metadata is authoritative even when another client performed the move. */
+export function syncEditorViewPaths(sessions: readonly Session[]): void {
+  const paths = new Map<string, string>();
+  for (const session of sessions) {
+    if (!session.editor) continue;
+    paths.set(session.id, session.editor.path);
+    retargetEditorConflict(session.id, session.editor.path);
+  }
+  const sync = (view: WorkbenchView): WorkbenchView => {
+    if (view.kind !== "editor-terminal") return view;
+    const path = paths.get(view.session);
+    return path && path !== view.path ? { ...view, path } : view;
+  };
+  for (const [workspace, views] of Object.entries(store.byWorkspace)) {
+    const open = views.open.map(sync);
+    const active = sync(views.active);
+    if (active !== views.active || open.some((view, index) => view !== views.open[index])) {
+      setStore("byWorkspace", workspace, { open, active });
+    }
+  }
 }

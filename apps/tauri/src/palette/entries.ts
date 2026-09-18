@@ -9,7 +9,7 @@ import { ACTIONS, type ActionId } from "../actions/actions";
 import { boundChord } from "../actions/bindings";
 import { actionIsBound } from "../actions/dispatch";
 import { describeChord } from "../actions/keys";
-import { filter, filterPaths } from "./fuzzy";
+import { filter, filterPaths, rankPaths } from "./fuzzy";
 import type { ShellSnapshot } from "../runtime/types";
 import {
   sessionIsActive,
@@ -251,6 +251,16 @@ export function fileEntries(
     search: path,
     choice: { kind: "open_file", path },
   }));
+}
+
+/** Rank the listing, then build rows only for the hits the palette will show. */
+export function fileHits(
+  workspaceId: string | null,
+  treePaths: string[] | null,
+  query: string,
+): PaletteEntry[] {
+  if (!workspaceId || !treePaths) return [];
+  return fileEntries(workspaceId, rankPaths(treePaths, query, FILE_LIMIT));
 }
 
 /**

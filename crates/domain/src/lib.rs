@@ -49,8 +49,8 @@ pub use editor_frame::{
 };
 pub use external::{ExternalAgentSession, ExternalTranscript, TranscriptStore};
 pub use file::{
-    FileContents, FileEntry, FileKind, FileTree, ImageContents, SearchKind, SearchMatch,
-    SearchResults,
+    DirectoryListing, FileContents, FileEntry, FileKind, FileTree, ImageContents, SearchKind,
+    SearchMatch, SearchResults, SymlinkTarget,
 };
 pub use harness::{
     HarnessAdvanceAction, HarnessArtifactKind, HarnessAttempt, HarnessEvent, HarnessFeature,

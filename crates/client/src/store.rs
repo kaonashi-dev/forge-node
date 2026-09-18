@@ -1,16 +1,6 @@
-//! The passive GUI-side replica of daemon state (§11.5, ADR-011).
-//!
-//! ADR-011 makes the daemon the single source of truth for every terminal grid:
-//! it runs the only `TerminalEngine`, sends a [`TerminalSnapshot`] on attach and
-//! [`TerminalDelta`]s afterwards. The GUI never emulates — it keeps a *replica
-//! of cells* ([`CellGrid`]) plus the plain domain lists, and renders from them
-//! (`apps/tauri` depends on `client`, never on `terminal-core`; §17).
-//!
-//! [`Store`] holds that replica. It is deliberately free of any GUI type:
-//! the GUI reads its public fields and drives it from protocol messages
-//! ([`Store::apply_snapshot`], [`Store::apply_event`]). The sequence rules of
-//! §10.5 live entirely in [`CellGrid::apply_delta`], which returns a
-//! [`DeltaOutcome`] telling the caller when a re-attach is required.
+//! Passive domain and cell-grid replica, with no GUI types or VT engine (ADR-011).
+//! [`Store`] consumes snapshots/events; [`CellGrid::apply_delta`] enforces
+//! sequencing and returns [`DeltaOutcome`] when the caller must reattach.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -634,8 +624,8 @@ impl CellGrid {
         self.seed_scrollback_tail(snapshot);
     }
 
-    /// Merge fetched history by absolute index (0 = oldest), keeping the newest
-    /// [`MAX_SCROLLBACK_CACHE_ROWS`] cached rows.
+    /// Merge fetched history by absolute index (0 = oldest), retaining the
+    /// requested page and evicting rows furthest from it when the cache is full.
     pub fn merge_scrollback(&mut self, block: &ScrollbackRows) {
         if let Some(snapshot) = &block.snapshot {
             if snapshot.seq < self.last_seq || snapshot.scrollback_generation != block.generation {
@@ -654,7 +644,21 @@ impl CellGrid {
                 break;
             };
             self.scrollback_cache.insert(absolute, row.clone());
-            self.trim_scrollback_cache();
+            while self.scrollback_cache.len() > MAX_SCROLLBACK_CACHE_ROWS {
+                let Some((&first, &last)) = self
+                    .scrollback_cache
+                    .keys()
+                    .next()
+                    .zip(self.scrollback_cache.keys().next_back())
+                else {
+                    break;
+                };
+                if absolute.abs_diff(first) > absolute.abs_diff(last) {
+                    self.scrollback_cache.pop_first();
+                } else {
+                    self.scrollback_cache.pop_last();
+                }
+            }
         }
     }
 
@@ -708,12 +712,6 @@ impl CellGrid {
             .saturating_sub(MAX_SCROLLBACK_CACHE_ROWS);
         for (i, row) in snapshot.scrollback_tail.iter().enumerate().skip(skip) {
             self.scrollback_cache.insert(base + i as i64, row.clone());
-        }
-    }
-
-    fn trim_scrollback_cache(&mut self) {
-        while self.scrollback_cache.len() > MAX_SCROLLBACK_CACHE_ROWS {
-            self.scrollback_cache.pop_first();
         }
     }
 }
@@ -1264,6 +1262,31 @@ mod tests {
         assert!(grid.is_scrollback_cached(-10));
         assert!(grid.is_scrollback_cached(-7));
         assert!(!grid.is_scrollback_cached(-6));
+    }
+
+    #[test]
+    fn fetched_older_page_survives_a_full_newer_cache() {
+        let mut grid = CellGrid::from_snapshot(&snapshot(5, 4, 3, 10_000, 5_000));
+        let mut older = Row::blank(4);
+        Arc::make_mut(&mut older.cells)[0].text = "old".into();
+        grid.merge_scrollback(&ScrollbackRows {
+            snapshot: None,
+            generation: 0,
+            from_line: 4_800,
+            rows: vec![older.clone(); 200],
+        });
+        assert_eq!(grid.scrollback_row(-5_200), Some(&older));
+        assert_eq!(grid.scrollback_row(-5_001), Some(&older));
+        assert_eq!(grid.scrollback_cache.len(), MAX_SCROLLBACK_CACHE_ROWS);
+        let newer = Row::blank(4);
+        grid.merge_scrollback(&ScrollbackRows {
+            snapshot: None,
+            generation: 0,
+            from_line: 9_800,
+            rows: vec![newer.clone(); 200],
+        });
+        assert_eq!(grid.scrollback_row(-1), Some(&newer));
+        assert_eq!(grid.scrollback_cache.len(), MAX_SCROLLBACK_CACHE_ROWS);
     }
 
     #[test]

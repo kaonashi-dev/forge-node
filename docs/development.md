@@ -9,6 +9,11 @@
   CLI (`scripts/harness`, `./init.sh` step 3). No other JS runtime is needed.
 - macOS or Linux. The code uses Unix sockets, PTYs and signals directly;
   Windows is not a target.
+- On macOS, `xcrun --show-sdk-path` can point at an SDK newer than the
+  installed `ld` (a leftover MacOSX27 SDK names `arm64e.x1`; CLT 26.x's
+  linker does not). `scripts/dev`, `scripts/package-macos` and the Makefile
+  export a linker-compatible `SDKROOT` via `scripts/macos-sdk`. A bare
+  `cargo` invocation needs the same: `export SDKROOT="$(scripts/macos-sdk)"`.
 - For prompt icons in the terminal canvas, install
   [JetBrainsMono Nerd Font](https://github.com/ryanoasis/nerd-fonts) (Mono).
   The app ships plain JetBrains Mono and prefers the Nerd Font face when the
@@ -34,9 +39,10 @@ while no Linux artifact is published. `cargo deny check` is not part of
 `scripts/dev check`, so run it locally after touching dependencies (and before
 distributing; ADR-002).
 
-Packaging lives in `scripts/package-macos` and `scripts/package-linux`. Neither
-is run by `scripts/dev` or by CI; run them by hand and see `--help` for the
-signing/notarization and runtime-dependency contracts.
+Packaging lives in `scripts/package-macos` and `scripts/package-linux`, outside
+`scripts/dev` and ordinary PR CI. The tag-triggered macOS release workflow runs
+`scripts/package-macos`; see `--help` for local signing/notarization and
+runtime-dependency contracts.
 
 For moving a build to another machine, `scripts/dist` wraps those packagers
 into one transferable tarball per platform with an embedded `install.sh`:
@@ -75,9 +81,9 @@ fixture exporter.
 typechecks. `make test-tauri` checks only the frontend and its Rust host;
 `make test-frontend` avoids Rust compilation entirely.
 
-The packagers select only `forge-daemon` and `forge-tauri`, in one Cargo
+The packagers select `forge-daemon`, `forge-editor` and `forge-tauri`, in one Cargo
 invocation per architecture. This lets Cargo share dependency features and
-schedule both graphs together. The frontend must finish first because
+schedule their graphs together. The frontend must finish first because
 `forge-tauri/custom-protocol` embeds its output. Universal macOS packages still
 need a separate native build for each architecture.
 
@@ -105,7 +111,7 @@ Release LTO and codegen settings remain defined in the root `Cargo.toml`.
 
 ```sh
 scripts/dev daemon               # isolated runtime under $FORGE_DEV_DIR (fresh mktemp)
-scripts/dev daemon info          # scratch paths for that isolated run, not the daily ones
+scripts/dev daemon info          # fresh scratch paths unless FORGE_DEV_DIR is reused
 cargo run -p daemon --bin forge-daemon -- info   # daily per-user paths (no FORGE_* override)
 forge-daemon run                 # acquire the singleton lock, bind, serve (default)
 forge-daemon dump --json         # not wired — prints a notice and exits 0
@@ -114,13 +120,17 @@ forge-daemon stats               # GetStats against a running daemon; does not s
 
 The Tauri app connects to the per-user daemon or starts the adjacent
 `target/debug/forge-daemon`, adds the current directory if the store has no
-project, and creates or reuses a live shell. Run `scripts/dev daemon` separately
-only when backend logs need to remain in the foreground.
+project, and creates or reuses a live shell. To join a foreground
+`scripts/dev daemon`, apply the export line it prints before launching the GUI.
 
 `scripts/dev daemon` **isolates**: a fresh `mktemp` directory gets `FORGE_SOCKET`,
 `FORGE_DATA_DIR`, and `FORGE_CONFIG_DIR` unless `FORGE_DEV_DIR` is already set.
 The daily singleton (the one the GUI talks to) is untouched. The table below is
 what that daily daemon uses.
+
+Each helper invocation creates a new scratch directory unless `FORGE_DEV_DIR`
+is reused. Set it to the first run's printed directory before asking
+`scripts/dev daemon info` about that run.
 
 The daemon is a singleton **per set of paths** via an advisory `flock` on
 `daemon.lock`. A second `run` against the same lock exits **0** while the first
@@ -158,7 +168,7 @@ restart (no hot reload). See [`config.example.toml`](./config.example.toml).
 | the schema | `crates/persistence/src/migrations.rs` (append only) → [persistence.md](./persistence.md) |
 | paths, config, logging, singleton | `crates/daemon/src/{paths,config,logging,lockfile}.rs` |
 | Tauri frontend layout, panels, terminal | `apps/tauri/src` → [ui.md](./ui.md) |
-| the terminal editor | `crates/editor-core` (document model), `crates/editor-cli` (binary) → [editor.md](./editor.md) |
+| the editor | `crates/editor-core` (document model), `crates/editor-control` (control wire), `crates/editor-cli` (binary) → [editor.md](./editor.md) |
 | theme tokens | `apps/tauri/src/theme/tokens.ts` → [theming.md](./theming.md) |
 | cost rungs | [performance.md](./performance.md) |
 
@@ -199,7 +209,8 @@ Dependency direction is one-way and enforced by `Cargo.toml`:
   `oxfmt`, and `tsc --noEmit`. Do not add `any`.
 - Protocol and domain enums are `#[non_exhaustive]`: add a wildcard arm in
   cross-crate matches.
-- Mutations return `Response::Ack`; state changes are broadcast as events.
+- Mutations normally return `Response::Ack`; session creation returns
+  `SessionCreated { session_id, terminal_id }`. State changes are broadcast.
 - Never hold the daemon core lock across `.await`; lock order
   `inner → registry`.
 - Persisted enum tags are stable strings — renaming a variant is a migration.

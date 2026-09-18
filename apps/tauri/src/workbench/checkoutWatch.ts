@@ -1,18 +1,10 @@
-// Keeping the Files panel honest when git moves the checkout under it.
-//
-// `gitSync` re-reads the rail's status at the right moments but publishes only
-// `branch` + counts, and a `git pull` moves HEAD without renaming the branch.
-// `WorkspaceStatus.head` (the OID from `# branch.oid`) is what separates a pull
-// from a no-event; `dirty` is the second signal, covering `git stash` and
-// `git restore`, which move the working tree without moving HEAD. When either
-// changes since the last look, the tree and the diff are re-read in place.
-//
-// The re-read must not null `workbenchStore.tree`: the null between checkouts
-// is what resets the panel's folds, so folding shut on every pull is the bug
-// this avoids. Replacing the tree while it stays non-null keeps them.
-
 import { createEffect } from "solid-js";
-import { beginWorkbenchRequest, failWorkbenchRequest, loadFileTree } from "./api";
+import {
+  beginWorkbenchRequest,
+  failWorkbenchRequest,
+  loadFileTree,
+  invalidateDirectories,
+} from "./api";
 import { refreshDiff } from "./decorations";
 import { forgeStore } from "../store/forgeStore";
 import { workbenchStore } from "../store/workbenchStore";
@@ -53,6 +45,8 @@ export function startCheckoutWatch(): () => void {
     // not be the one the movement was seen in.
     const workspace = workbenchStore.workspace;
     if (!workspace) return;
+    invalidateDirectories(workspace);
+    if (!workbenchStore.tree && !workbenchStore.loading.tree) return;
     beginWorkbenchRequest("tree");
     void loadFileTree(workspace).catch((error) => failWorkbenchRequest("tree", error));
   }
@@ -66,7 +60,7 @@ export function startCheckoutWatch(): () => void {
     const before = marks.get(workspace) ?? null;
     marks.set(workspace, after);
     if (!checkoutMoved(before, after)) return;
-    clearTimeout(timer);
+    if (timer !== undefined) return;
     timer = setTimeout(() => {
       timer = undefined;
       rereadTree();

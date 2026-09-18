@@ -15,6 +15,7 @@ must match the code.
 | [session-context.md](./session-context.md) | cite/handoff/spawn across providers — Forge mediation, GUI, `forge-daemon session\|context` |
 | [protocol.md](./protocol.md) | every request/response/event, error codes, the `client` crate |
 | [terminal.md](./terminal.md) | PTY → engine → delta pipeline, sequence/resync, backpressure, kill semantics, shell environment |
+| [editor.md](./editor.md) | document engine, daemon control wire, cells/DOM surfaces and previews |
 | [agents.md](./agents.md) | built-in providers, detection algorithm, launch spec |
 | [worktrees.md](./worktrees.md) | project discovery, managed worktree placement/slugs, create/remove safety rules |
 | [persistence.md](./persistence.md) | SQLite schema, migration rules, startup reconciliation |

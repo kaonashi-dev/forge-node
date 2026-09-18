@@ -235,6 +235,7 @@ pub enum Response {
     RebaseState(RebaseState),
     /// Files under a workspace, answering `ListFiles` (ADR-012).
     FileTree(FileTree),
+    DirectoryListing(domain::DirectoryListing),
     /// One file's contents, answering `ReadFile` (ADR-012).
     FileContents(FileContents),
     /// One image's bytes, answering `ReadImage` (ADR-012).

@@ -50,7 +50,9 @@ export function Sidebar() {
             return count > 0 ? { count, label: `${count} waiting on you` } : null;
           },
         }
-      : {}),
+      : item === "Files"
+        ? { contentClass: "files-body" }
+        : {}),
   }));
 
   return (

@@ -42,3 +42,11 @@ describe("listing equality", () => {
     expect(sameListing(null, listing(["a.rs"]))).toBe(false);
   });
 });
+
+it("detects changed symlink target status", () => {
+  const before = listing(["link"]);
+  const after = listing(["link"]);
+  before.entries[0].symlink = "External";
+  after.entries[0].symlink = "Broken";
+  expect(sameListing(before, after)).toBe(false);
+});

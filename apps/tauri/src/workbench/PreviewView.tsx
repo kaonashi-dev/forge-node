@@ -1,8 +1,18 @@
-import { Match, Show, Switch, createMemo, createResource, onMount } from "solid-js";
+import {
+  Match,
+  Show,
+  Switch,
+  createEffect,
+  createMemo,
+  createResource,
+  on,
+  onCleanup,
+} from "solid-js";
 
 import { beginWorkbenchRequest, failWorkbenchRequest, openFile, previewImageReader } from "./api";
 import { Markdown } from "./Markdown";
 import { previewKindFor } from "./previewRoute";
+import { svgDataUrl } from "./previewImages";
 import { workbenchStore } from "../store/workbenchStore";
 
 /**
@@ -20,13 +30,22 @@ export function PreviewView(props: { workspace: string; path: string }) {
 
   /* Markdown and SVG are text, so they come through the same `ReadFile` the
      editor's conflict view uses; only a raster needs `ReadImage`. */
-  onMount(() => {
-    if (kind() === "image") return;
-    beginWorkbenchRequest("file");
-    void openFile(props.workspace, props.path).catch((error) =>
-      failWorkbenchRequest("file", error),
-    );
-  });
+  createEffect(
+    on(
+      () => [props.workspace, props.path, kind()] as const,
+      ([workspace, path, previewKind]) => {
+        if (previewKind === "image") return;
+        let active = true;
+        onCleanup(() => {
+          active = false;
+        });
+        beginWorkbenchRequest("file");
+        void openFile(workspace, path).catch((error) => {
+          if (active) failWorkbenchRequest("file", error);
+        });
+      },
+    ),
+  );
 
   const text = createMemo(() =>
     workbenchStore.file?.path === props.path ? (workbenchStore.file?.text ?? null) : null,
@@ -38,11 +57,10 @@ export function PreviewView(props: { workspace: string; path: string }) {
    * written: an `<img>` refuses to run it, a div would not.
    */
   const svgUrl = createMemo(() => {
+    if (kind() !== "svg") return null;
     const body = text();
     if (body === null) return null;
-    return `data:image/svg+xml;base64,${btoa(
-      String.fromCharCode(...new TextEncoder().encode(body)),
-    )}`;
+    return svgDataUrl(body);
   });
 
   const [raster] = createResource(

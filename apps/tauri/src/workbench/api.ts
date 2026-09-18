@@ -1,8 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
-import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
+import { batch } from "solid-js";
+import {
+  invalidateFileIndex,
+  setLoading,
+  setWorkbenchStore,
+  workbenchStore,
+} from "../store/workbenchStore";
 import { markApplying, setSharesStore } from "../store/sharesStore";
+import { directories, directoryTree } from "./directoryState";
+import {
+  pathOperations,
+  PathOperationError,
+  requestIdentity,
+  type PathOperation,
+  type PathOperationResult,
+} from "./operations";
+import { parentPath, validatePath, validateRename } from "./pathOperations";
 import { createImageReader } from "./previewImages";
-import type { JuvaKind, SearchKind } from "./types";
+import type { FileTree, JuvaKind, SearchKind } from "./types";
+import { sameListing } from "./fileInvalidation";
 
 /**
  * Workbench reads go to their own worker on the host, never to the thread that
@@ -138,25 +154,71 @@ export async function deleteExternalSession(
 }
 
 export async function loadFileTree(workspace: string): Promise<void> {
-  await send({ type: "load_file_tree", workspace });
+  if (workspace !== workbenchStore.workspace) return;
+  const request_id = requestIdentity();
+  batch(() => {
+    setWorkbenchStore("treeRequest", { request_id, version: workbenchStore.treeVersion });
+    beginWorkbenchRequest("tree");
+  });
+  try {
+    await send({ type: "load_file_tree", workspace, request_id });
+  } catch (error) {
+    failFileIndex({ workspace, request_id, error: normalizeError(error).message });
+  }
 }
 
-/** Peel one opaque ignored directory into the listing. */
+export function acceptFileIndex(answer: {
+  workspace: string;
+  request_id: string;
+  tree: FileTree;
+}): void {
+  const request = workbenchStore.treeRequest;
+  if (answer.workspace !== workbenchStore.workspace || request?.request_id !== answer.request_id)
+    return;
+  const stale = request.version !== workbenchStore.treeVersion;
+  batch(() => {
+    if (!sameListing(workbenchStore.tree, answer.tree)) setWorkbenchStore("tree", answer.tree);
+    setWorkbenchStore({ treeRequest: null, treeError: null, treeStale: stale });
+    setLoading("tree", false);
+  });
+  if (stale) warmFileTree(answer.workspace);
+}
+
+export function failFileIndex(failure: {
+  workspace: string;
+  request_id: string;
+  error: string;
+}): void {
+  if (
+    failure.workspace !== workbenchStore.workspace ||
+    workbenchStore.treeRequest?.request_id !== failure.request_id
+  )
+    return;
+  batch(() => {
+    setWorkbenchStore({ treeRequest: null, treeError: failure.error });
+    setLoading("tree", false);
+  });
+}
+
+directories.configure((request) => send({ type: "load_file_directory", ...request }));
+export const ensureDirectory = directories.ensure;
+export const invalidateDirectories = directories.invalidate;
+export const setDirectoryInterests = directories.setInterests;
+
 export async function loadFileDirectory(workspace: string, path: string): Promise<void> {
-  await send({ type: "load_file_directory", workspace, path });
+  ensureDirectory(workspace, path, true);
 }
 
-/**
- * Read the listing unless one is already in hand or on its way.
- *
- * The one guard every surface that wants a tree goes through — the panel, the
- * palette and the path-link index — so opening two of them reads the checkout
- * once, and a failure lands where the panel already shows it.
- */
+/** Share one demand-driven navigation read between the palette and terminal references. */
 export function warmFileTree(workspace: string): void {
-  if (workbenchStore.tree || workbenchStore.loading.tree || workbenchStore.treeError) return;
-  beginWorkbenchRequest("tree");
-  void loadFileTree(workspace).catch((error) => failWorkbenchRequest("tree", error));
+  if (
+    workspace !== workbenchStore.workspace ||
+    (workbenchStore.tree && !workbenchStore.treeStale) ||
+    workbenchStore.loading.tree ||
+    workbenchStore.treeError
+  )
+    return;
+  void loadFileTree(workspace);
 }
 
 export async function openFile(workspace: string, path: string): Promise<void> {
@@ -170,28 +232,65 @@ export async function loadImage(workspace: string, path: string): Promise<void> 
 
 export const previewImageReader = createImageReader(loadImage);
 
-/**
- * A11: the three path mutations, all of which answer by re-listing the tree.
- *
- * ADR-012 in full: the WebView names a workspace-relative path and the daemon
- * does the work. Nothing here touches a filesystem, and the daemon refuses a
- * path that leaves the checkout, an overwrite, and the checkout root itself.
- */
+function validateOperation(operation: PathOperation, error: string | null): void {
+  if (error)
+    throw new PathOperationError({
+      ...operation,
+      operation_id: requestIdentity(),
+      success: false,
+      uncertain: false,
+      error,
+    });
+}
+
+/** Resolves on the daemon result; a failed refresh cannot undo a successful mutation. */
 export async function createPath(
   workspace: string,
   path: string,
   directory: boolean,
-): Promise<void> {
-  await send({ type: "create_path", workspace, path, directory });
+): Promise<PathOperationResult> {
+  const operation: PathOperation = { workspace, kind: "create", to: path, directory };
+  validateOperation(operation, validatePath(path));
+  return pathOperations.run(operation, (operation_id) =>
+    send({ type: "create_path", workspace, path, directory, operation_id }),
+  );
 }
 
-export async function renamePath(workspace: string, from: string, to: string): Promise<void> {
-  await send({ type: "rename_path", workspace, from, to });
+export async function renamePath(
+  workspace: string,
+  from: string,
+  to: string,
+): Promise<PathOperationResult> {
+  const tree = directoryTree();
+  const directory =
+    tree?.workspace_id === workspace
+      ? tree.entries.find((entry) => entry.path === from)?.kind === "Directory"
+      : undefined;
+  const operation: PathOperation = { workspace, kind: "rename", from, to, directory };
+  validateOperation(operation, validateRename(from, to));
+  return pathOperations.run(operation, (operation_id) =>
+    send({ type: "rename_path", workspace, from, to, operation_id }),
+  );
 }
 
-export async function deletePath(workspace: string, path: string): Promise<void> {
-  await send({ type: "delete_path", workspace, path });
+export async function deletePath(workspace: string, path: string): Promise<PathOperationResult> {
+  const operation: PathOperation = { workspace, kind: "delete", from: path };
+  validateOperation(operation, validatePath(path));
+  return pathOperations.run(operation, (operation_id) =>
+    send({ type: "delete_path", workspace, path, operation_id }),
+  );
 }
+
+pathOperations.subscribe((result) => {
+  directories.operation(result, result.directory);
+  invalidateFileIndex(result.workspace);
+});
+pathOperations.onUncertain((operation) => {
+  for (const path of [operation.from, operation.to]) {
+    if (path !== undefined) directories.ensure(operation.workspace, parentPath(path), true);
+  }
+  invalidateFileIndex(operation.workspace);
+});
 
 /** Conditioned on the revision of the last read (ADR-012). */
 export async function saveFile(
@@ -209,6 +308,10 @@ export async function searchFiles(
   kind: SearchKind = "name",
   limit: number | null = null,
 ): Promise<void> {
+  // Palette Name search shares this request, not find-in-files' freshness token.
+  if (kind === "content") {
+    setWorkbenchStore("searchReadVersion", workbenchStore.treeVersion);
+  }
   await send({ type: "search_files", workspace, query, kind, limit });
 }
 

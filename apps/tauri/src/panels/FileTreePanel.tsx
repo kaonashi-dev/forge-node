@@ -19,98 +19,72 @@ import {
   untrack,
 } from "solid-js";
 import { FILES } from "../actions/actions";
-import { enterContext, registerAction } from "../actions/dispatch";
-import {
-  clearTreeReveal,
-  currentViews,
-  openEditor,
-  openEditorAt,
-  openProjectSearch,
-  treeReveal,
-} from "../store/viewsStore";
+import { enterContext, invokeAction, registerAction } from "../actions/dispatch";
+import { clearTreeReveal, currentViews, openEditor, treeReveal } from "../store/viewsStore";
 import { forgeStore } from "../store/forgeStore";
-import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
+import { workbenchStore } from "../store/workbenchStore";
 import {
   beginWorkbenchRequest,
   createPath,
   deletePath,
+  ensureDirectory,
   failWorkbenchRequest,
-  loadFileDirectory,
-  loadFileTree,
+  invalidateDirectories,
   openFile,
   renamePath,
-  warmFileTree,
+  setDirectoryInterests,
 } from "../workbench/api";
-import { watchFiles, fileWatchError } from "../workbench/fileWatch";
+import {
+  directoryError,
+  directoryLoading,
+  directoryStatus,
+  directoryTree,
+} from "../workbench/directoryState";
+import { parentPath, validatePath, validateRename } from "../workbench/pathOperations";
+import { subscribePathOperations } from "../workbench/operations";
+import { watchFiles, fileWatchError, rearmFileWatches } from "../workbench/fileWatch";
 import { ensureDiff } from "../workbench/decorations";
 import { installTreeFollow } from "../workbench/treeFollow";
-import { requestConfirm } from "../store/runtimeStore";
+import { requestConfirm, requestTextInput } from "../store/runtimeStore";
 import { fileDecorations, folderCounts } from "../workbench/treeDecorations";
 import { Icon, langIconUrl } from "../theme/icons";
 import { themeBase } from "../theme/ThemeProvider";
 import { baseIsLight } from "../theme/tokens";
-import {
-  ContextMenu,
-  EmptyState,
-  FilterHeader,
-  IconButton,
-  Skeleton,
-  Tooltip,
-  type MenuItem,
-} from "../ui";
-import { groupContentHits, rowHitSegments, shouldSearchContent } from "./fileContentSearch";
-import {
-  askedNeedle,
-  contentQuery,
-  contentResults,
-  scheduleContentSearch,
-  setContentQuery,
-} from "../workbench/projectSearch";
-import { HitText } from "../workbench/HitText";
+import { ContextMenu, EmptyState, Skeleton, type MenuItem } from "../ui";
+import { createFileDrag } from "../workbench/fileDrag";
+import { sendTargetedPaste } from "../runtime/api";
+import { runtimeStore } from "../store/runtimeStore";
 
-type FilesMode = "filter" | "content";
-
-/* The two folder glyphs the package cannot render.
- *
- * `ICONS` are lucide *Solid components* and the package may not import Solid,
- * so a mark it draws has to be a URL. These are the same two glyphs traced out
- * to `public/icons/ui/`, placed by the package as a tint (`mask-image` over
- * `currentColor`) rather than as artwork — see that directory's README. The
- * alternative, a Solid overlay the host positions over the list, would put a
- * component on every one of the 50 000 rows the tree is budgeted for. */
 const FOLDER_ICON = "/icons/ui/folder.svg";
 const FOLDER_OPEN_ICON = "/icons/ui/folder-open.svg";
+type MenuTarget = { kind: "root" } | { kind: "file" | "directory"; path: string };
 
 export function FileTreePanel() {
   let host!: HTMLDivElement;
   let explorer: ExplorerHandle | undefined;
+  let drag: ReturnType<typeof createFileDrag> | undefined;
   let leaveFiles: (() => void) | undefined;
-  let filterInput: HTMLInputElement | undefined;
+  let pending: object | null = null;
+  let disposed = false;
+  let interactionEpoch = 0;
   const [directories, setDirectories] = createSignal<string[]>([""]);
-  const [invalidated, setInvalidated] = createSignal(false);
   const [mounted, setMounted] = createSignal(false);
-  const [mode, setMode] = createSignal<FilesMode>("filter");
-  const [filterQuery, setFilterQuery] = createSignal("");
+  const [operationError, setOperationError] = createSignal<string | null>(null);
   const [derived, setDerived] = createSignal<ExplorerDerived>({
     rows: 0,
     files: 0,
     filtered: false,
     truncated: false,
-    // Seeded from the store: the explorer is only built in `onMount`, and a
-    // panel that renders once with `loading: false` flashes the empty state
-    // over a read that is already in flight.
-    loading: workbenchStore.loading.tree,
+    loading: directoryLoading(),
   });
-  const [menu, setMenu] = createSignal<{
-    x: number;
-    y: number;
-    path: string;
-    isFile: boolean;
-  } | null>(null);
-  const contentGroups = createMemo(() => {
-    const results = contentResults();
-    return results ? groupContentHits(results.matches) : [];
+  const [menu, setMenu] = createSignal<{ x: number; y: number; target: MenuTarget } | null>(null);
+  const listing = createMemo(() => {
+    const tree = directoryTree();
+    return tree ? { ...tree } : null;
   });
+  const workspaceInfo = createMemo(() =>
+    forgeStore.workspaces.find((item) => item.id === workbenchStore.workspace),
+  );
   const decorations = createMemo(() => {
     const marks = fileDecorations(workbenchStore.diff?.files ?? []);
     const result = new Map<string, FileDecoration>();
@@ -119,13 +93,12 @@ export function FileTreePanel() {
       result.set(path, { label: String(count), tone: "modified" });
     return result;
   });
-  /* A file wears its language mark, in the artwork's own colours, because a
-     file type is not a choice and the hue is what makes the tree scannable. A
-     directory wears the folder the twisty already implies, tinted, because
-     structure is chrome. Both are read off the name, which is all `ListFiles`
-     carries — never the contents. The resolver runs during a paint rather than
-     under the effect, so the variant goes to `setState` as the revision and
-     the rows repaint when the theme flips. */
+  const directoryFailures = createMemo(() =>
+    directories().flatMap((path) => {
+      const error = path ? directoryStatus(path)?.error : null;
+      return error ? [{ path, error }] : [];
+    }),
+  );
   const light = createMemo(() => baseIsLight(themeBase()));
   function iconFor(row: TreeRow): RowIcon | null {
     if (!row.isFile) return { url: row.folded ? FOLDER_ICON : FOLDER_OPEN_ICON, tint: true };
@@ -140,33 +113,51 @@ export function FileTreePanel() {
   }
   function refresh(): void {
     const workspace = workbenchStore.workspace;
-    if (!workspace || workbenchStore.loading.tree) return;
-    beginWorkbenchRequest("tree");
-    void loadFileTree(workspace).catch((error) => failWorkbenchRequest("tree", error));
+    if (workspace) {
+      invalidateDirectories(workspace);
+      rearmFileWatches(workspace, "");
+    }
+  }
+  function search(): void {
+    invokeAction("open_file_palette");
   }
   onMount(() => {
+    drag = createFileDrag(host, {
+      workspace: () => {
+        const workspace = workspaceInfo();
+        return workspace ? { id: workspace.id, path: workspace.path } : null;
+      },
+      connected: () => runtimeStore.connection.kind === "connected",
+      editing: () => explorer?.isEditing() ?? false,
+      expand: (path) => explorer?.expand(path),
+      reveal: (path) => explorer?.reveal(path),
+      move: renamePath,
+      paste: sendTargetedPaste,
+      error: setOperationError,
+    });
     explorer = createFileExplorer(host, {
       chrome: "list",
       icon: iconFor,
       onOpen: open,
+      onPointerDown: (event, row) => {
+        const workspaceId = workbenchStore.workspace;
+        if (workspaceId) drag?.down(event, { workspaceId, path: row.path, isFile: row.isFile });
+      },
       onDerived: setDerived,
       onDirectoriesChange: setDirectories,
       onEditCommit: commitEdit,
-      // Whatever closed the field — Escape, a click away, or the renamed row
-      // leaving the listing because the write landed — nothing is waiting now.
       onEditCancel: () => {
         pending = null;
       },
-      onFilterFocus: () => filterInput?.focus({ preventScroll: true }),
-      onContextMenu: (row, point) => setMenu({ ...point, path: row.path, isFile: row.isFile }),
-      onExpandOpaque: (path) => {
+      onFilterFocus: search,
+      onContextMenu: (row, point) =>
+        setMenu({
+          ...point,
+          target: { kind: row.isFile ? "file" : "directory", path: row.path },
+        }),
+      onExpandDirectory: (path) => {
         const workspace = workbenchStore.workspace;
-        if (!workspace) return;
-        setLoading("directory", true);
-        void loadFileDirectory(workspace, path).catch((error) => {
-          setLoading("directory", false);
-          failWorkbenchRequest("tree", error);
-        });
+        if (workspace) ensureDirectory(workspace, path);
       },
     });
     const bindings = [
@@ -177,56 +168,74 @@ export function FileTreePanel() {
       registerAction("file_tree_open", () => explorer?.action("open")),
       registerAction("file_tree_first", () => explorer?.action("first")),
       registerAction("file_tree_last", () => explorer?.action("last")),
-      registerAction("file_tree_filter", () => {
-        setMode("filter");
-        explorer?.action("filter");
-      }),
+      registerAction("file_tree_filter", search),
       registerAction("file_tree_refresh", refresh),
       registerAction("file_tree_rename", () => {
         const row = explorer?.selected();
-        if (row) rename(row.path);
+        if (row) explorer?.edit({ kind: "rename", path: row.path });
       }),
       registerAction("file_tree_delete", () => {
         const row = explorer?.selected();
         if (row) remove(row.path, row.isFile);
       }),
+      subscribePathOperations((result) => {
+        if (
+          result.workspace !== workbenchStore.workspace ||
+          result.kind !== "rename" ||
+          pending ||
+          explorer?.isEditing()
+        )
+          return;
+        if (result.from && result.to) explorer?.retarget(result.from, result.to);
+      }),
     ];
     setMounted(true);
     onCleanup(() => {
+      disposed = true;
+      drag?.destroy();
+      pending = null;
       explorer?.destroy();
       leaveFiles?.();
       for (const unbind of bindings) unbind();
     });
   });
   createEffect(() => {
-    const workspace = workbenchStore.workspace;
-    const paths = directories();
-    if (workspace) onCleanup(watchFiles(workspace, paths, () => setInvalidated(true)));
+    runtimeStore.connection;
+    runtimeStore.connection.kind;
+    runtimeStore.connectionGeneration;
+    runtimeStore.activeSession;
+    runtimeStore.activeTerminal;
+    workbenchStore.workspace;
+    drag?.cancel();
   });
   createEffect(() => {
-    if (!invalidated() || workbenchStore.loading.tree) return;
-    const timer = setTimeout(() => {
-      setInvalidated(false);
-      refresh();
-    }, 250);
-    onCleanup(() => clearTimeout(timer));
+    const workspace = workbenchStore.workspace;
+    const paths = directories();
+    if (!workspace) return;
+    untrack(() => {
+      setDirectoryInterests(workspace, paths);
+      onCleanup(watchFiles(workspace, paths, () => undefined));
+    });
+  });
+  createEffect(() => {
+    const workspace = workbenchStore.workspace;
+    if (workspace) onCleanup(() => setDirectoryInterests(workspace, []));
   });
   let previousWorkspace: string | null | undefined;
   createEffect(() => {
     if (!mounted()) return;
     const workspace = workbenchStore.workspace;
     if (workspace !== previousWorkspace) {
+      interactionEpoch++;
       previousWorkspace = workspace;
+      pending = null;
       explorer?.reset();
-      setFilterQuery("");
-      setMode("filter");
+      setOperationError(null);
       setMenu(null);
     }
-    // No `error`: in `chrome: "list"` the package draws no message, and the
-    // panel renders the failure and the empty states with Forge's own kit.
     const state = {
-      tree: workbenchStore.tree,
-      loading: workbenchStore.loading.tree,
+      tree: listing(),
+      loading: directoryLoading(),
       decorations: decorations(),
       revision: light(),
     };
@@ -234,117 +243,119 @@ export function FileTreePanel() {
   });
   createEffect(() => {
     const workspace = workbenchStore.workspace;
-    if (workspace) warmFileTree(workspace);
+    if (workspace) untrack(() => ensureDirectory(workspace));
     ensureDiff();
   });
-  /* The tree follows the active editor on its own rather than being pushed by
-     each opener: the palette, a path link, a tab click and a close falling
-     back to a neighbour all end in `active`, and a parked view restored on a
-     workspace switch is not a call at all. Registered before the reveal effect
-     below so an explicit "show me this path" — a breadcrumb segment, a
-     changes-list row — still wins when the panel is mounting. */
   installTreeFollow({
     mounted,
-    tree: () => workbenchStore.tree,
+    tree: listing,
     view: () => currentViews().active,
     follow: (path) => explorer?.follow(path),
   });
   createEffect(() => {
-    if (!mounted() || !workbenchStore.tree) return;
+    if (!mounted() || !workbenchStore.workspace) return;
     const path = treeReveal();
     if (path) {
-      setMode("filter");
-      explorer?.reveal(path);
-      // `reveal` drops the filter to guarantee the row is in the listing, so
-      // the box the person can see has to drop it too.
-      setFilterQuery("");
+      untrack(() => explorer?.reveal(path));
       clearTreeReveal();
     }
   });
-  createEffect(() => {
-    if (mode() !== "content") return;
-    scheduleContentSearch(workbenchStore.workspace, contentQuery());
-  });
-  function dirname(path: string): string {
-    const cut = path.lastIndexOf("/");
-    return cut < 0 ? "" : path.slice(0, cut);
-  }
-
-  function parentOf(path: string, isFile: boolean): string {
-    return isFile ? dirname(path) : path;
-  }
 
   function under(parent: string, name: string): string {
     return parent === "" ? name : `${parent}/${name}`;
   }
-
-  function withWorkspace(run: (workspace: string) => Promise<unknown>): void {
-    const workspace = workbenchStore.workspace;
-    if (!workspace) return;
-    void run(workspace).catch((error) => failWorkbenchRequest("tree", error));
+  function create(target: MenuTarget, directory: boolean): void {
+    if (!workbenchStore.workspace) return;
+    const parent =
+      target.kind === "root" ? "" : target.kind === "file" ? parentPath(target.path) : target.path;
+    explorer?.edit({ kind: "create", parent, directory });
   }
-
-  /* A11: create and rename are typed on the row, the way an editor does it.
-     Only delete keeps a dialog — it is the one that cannot be taken back. */
-  function create(path: string, isFile: boolean, directory: boolean): void {
-    explorer?.edit({ kind: "create", parent: parentOf(path, isFile), directory });
-  }
-
-  function rename(path: string): void {
-    explorer?.edit({ kind: "rename", path });
-  }
-
-  /**
-   * The path an open field is waiting to see land.
-   *
-   * `create_path` / `rename_path` go to the host's workbench worker, which
-   * answers with a re-listing on success and a `workbench:file_failed` event
-   * on refusal — the `invoke` resolves either way, so neither outcome reaches
-   * the promise. The listing arriving is not itself the answer: the watcher
-   * re-reads the checkout for any write, an agent's included. The path being
-   * *in* it is.
-   */
-  let pending: string | null = null;
-
   function commitEdit(request: EditRequest, name: string): void {
     const workspace = workbenchStore.workspace;
     if (!workspace) {
-      explorer?.edit(null);
+      explorer?.editFailed("Select a checkout first.");
       return;
     }
-    const target =
-      request.kind === "rename" ? under(dirname(request.path), name) : under(request.parent, name);
-    setWorkbenchStore("fileError", null);
-    pending = target;
+    const target = under(
+      request.kind === "rename" ? parentPath(request.path) : request.parent,
+      name,
+    );
+    const error =
+      name.trim() === ""
+        ? "Enter a name."
+        : request.kind === "rename" && /[/\\]/.test(name)
+          ? "Enter a name without separators. Use Move to… to choose another folder."
+          : (validatePath(name) ??
+            (request.kind === "rename"
+              ? validateRename(request.path, target)
+              : validatePath(target)));
+    if (error) {
+      explorer?.editFailed(error);
+      return;
+    }
+    const attempt = {};
+    pending = attempt;
+    setOperationError(null);
     const write =
       request.kind === "rename"
         ? renamePath(workspace, request.path, target)
         : createPath(workspace, target, request.directory);
-    void write.catch((error) => {
-      pending = null;
-      explorer?.editFailed(error instanceof Error ? error.message : String(error));
-    });
-  }
-
-  createEffect(() => {
-    const error = workbenchStore.fileError;
-    const entries = workbenchStore.tree?.entries;
-    const target = pending;
-    if (!target) return;
-    untrack(() => {
-      if (error) {
-        pending = null;
-        // On the row, not in a toast: the name that was refused is the thing
-        // the person is looking at, and it stays there to be corrected.
-        explorer?.editFailed(error);
-      } else if (entries?.some((entry) => entry.path === target)) {
+    void write
+      .then(() => {
+        if (disposed || pending !== attempt || workbenchStore.workspace !== workspace) return;
         pending = null;
         explorer?.edit(null);
-      }
+        explorer?.reveal(target);
+        if (request.kind === "create" && !request.directory) open(target);
+      })
+      .catch((error) => {
+        if (disposed || pending !== attempt || workbenchStore.workspace !== workspace) return;
+        pending = null;
+        explorer?.editFailed(error instanceof Error ? error.message : String(error));
+      });
+  }
+  function move(path: string, value = parentPath(path), error?: string): void {
+    const workspace = workbenchStore.workspace;
+    if (!workspace) return;
+    const epoch = interactionEpoch;
+    const current = () =>
+      !disposed && workspace === workbenchStore.workspace && epoch === interactionEpoch;
+    let submitting = false;
+    requestTextInput({
+      title: `Move ${path}`,
+      label: error ?? "Destination folder relative to checkout (empty for root)",
+      value,
+      placeholder: "e.g. src/components",
+      confirmLabel: "Move",
+      allowEmpty: true,
+      onSubmit: (parent) => {
+        if (submitting || !current()) return;
+        submitting = true;
+        const target = under(parent, path.slice(path.lastIndexOf("/") + 1));
+        const invalid = (parent ? validatePath(parent) : null) ?? validateRename(path, target);
+        // The shared prompt dismisses synchronously after submit; reopen after that dismissal.
+        if (invalid) {
+          queueMicrotask(() => {
+            if (current()) move(path, parent, invalid);
+          });
+          return;
+        }
+        void renamePath(workspace, path, target)
+          .then(() => {
+            if (current()) explorer?.reveal(target);
+          })
+          .catch((failure) => {
+            if (!current()) return;
+            move(path, parent, failure instanceof Error ? failure.message : String(failure));
+          });
+      },
     });
-  });
-
+  }
   function remove(path: string, isFile: boolean): void {
+    const workspace = workbenchStore.workspace;
+    if (!workspace) return;
+    const epoch = interactionEpoch;
+    let submitting = false;
     requestConfirm({
       title: `Delete ${path}?`,
       description: isFile
@@ -352,25 +363,82 @@ export function FileTreePanel() {
         : "The folder and everything in it are removed from the checkout. Git is the only way back.",
       confirmLabel: "Delete",
       destructive: true,
-      onConfirm: () => withWorkspace((workspace) => deletePath(workspace, path)),
+      onConfirm: () => {
+        if (
+          submitting ||
+          disposed ||
+          epoch !== interactionEpoch ||
+          workspace !== workbenchStore.workspace
+        )
+          return;
+        submitting = true;
+        void deletePath(workspace, path).catch((error) => {
+          if (!disposed && epoch === interactionEpoch && workbenchStore.workspace === workspace)
+            setOperationError(error instanceof Error ? error.message : String(error));
+        });
+      },
     });
   }
-
-  function menuItems(path: string, isFile: boolean): MenuItem[] {
-    const absolute = () => {
-      const root = forgeStore.workspaces.find((item) => item.id === workbenchStore.workspace)?.path;
-      return root ? `${root.replace(/\/$/, "")}/${path}` : path;
-    };
-    return [
-      ...(isFile
-        ? [{ kind: "item" as const, label: "Open", icon: "file" as const, run: () => open(path) }]
-        : []),
+  function menuItems(target: MenuTarget): MenuItem[] {
+    const workspace = workbenchStore.workspace;
+    const path = target.kind === "root" ? "" : target.path;
+    const root = workspaceInfo()?.path;
+    const absolute = root ? (path ? `${root.replace(/\/$/, "")}/${path}` : root) : path;
+    const createItems: MenuItem[] = [
       {
         kind: "item",
-        label: "Copy path",
-        icon: "copy",
-        run: () => void navigator.clipboard?.writeText(absolute()).catch(() => undefined),
+        label: "New file…",
+        icon: "file",
+        disabled: !workspace,
+        run: () => create(target, false),
       },
+      {
+        kind: "item",
+        label: "New folder…",
+        icon: "folder",
+        disabled: !workspace,
+        run: () => create(target, true),
+      },
+    ];
+    const copy: MenuItem = {
+      kind: "item",
+      label: target.kind === "root" ? "Copy workspace path" : "Copy path",
+      icon: "copy",
+      disabled: !root,
+      run: () => void navigator.clipboard?.writeText(absolute).catch(() => undefined),
+    };
+    if (target.kind === "root")
+      return [
+        ...createItems,
+        { kind: "rule" },
+        { kind: "item", label: "Refresh", icon: "refresh", disabled: !workspace, run: refresh },
+        {
+          kind: "item",
+          label: "Collapse folders",
+          icon: "folder",
+          run: () => explorer?.collapseAll(),
+        },
+        copy,
+      ];
+    return [
+      ...(target.kind === "file"
+        ? [
+            { kind: "item" as const, label: "Open", icon: "file" as const, run: () => open(path) },
+            {
+              kind: "item" as const,
+              label: "Insert reference in terminal",
+              icon: "square-terminal" as const,
+              run: () =>
+                host.dispatchEvent(
+                  new CustomEvent("forge:file-reference", {
+                    bubbles: true,
+                    detail: { workspaceId: workspace, path },
+                  }),
+                ),
+            },
+          ]
+        : []),
+      copy,
       {
         kind: "item",
         label: "Copy relative path",
@@ -378,34 +446,43 @@ export function FileTreePanel() {
         run: () => void navigator.clipboard?.writeText(path).catch(() => undefined),
       },
       { kind: "rule" },
+      ...createItems,
       {
         kind: "item",
-        label: "New file…",
-        icon: "file",
-        run: () => create(path, isFile, false),
+        label: "Rename…",
+        icon: "edit",
+        run: () => explorer?.edit({ kind: "rename", path }),
       },
-      {
-        kind: "item",
-        label: "New folder…",
-        icon: "folder",
-        run: () => create(path, isFile, true),
-      },
-      { kind: "item", label: "Rename…", icon: "edit", run: () => rename(path) },
+      { kind: "item", label: "Move to…", icon: "folder", run: () => move(path) },
       {
         kind: "item",
         label: "Delete",
         icon: "trash",
         destructive: true,
-        run: () => remove(path, isFile),
+        run: () => remove(path, target.kind === "file"),
       },
     ];
   }
-
+  function textTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest("input, textarea, [contenteditable=true]");
+  }
   return (
-    // `focusin`/`focusout` rather than `focus`/`blur`: focus moving from the
-    // panel to the filter box or a row inside it must not read as leaving.
     <div
       class="panel-body fw-host"
+      tabIndex={0}
+      onContextMenu={(event) => {
+        if (textTarget(event.target)) return;
+        event.preventDefault();
+        setMenu({ x: event.clientX, y: event.clientY, target: { kind: "root" } });
+      }}
+      onKeyDown={(event) => {
+        if (textTarget(event.target)) return;
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        setMenu({ x: rect.left + 16, y: rect.top + 24, target: { kind: "root" } });
+      }}
       onFocusIn={() => {
         leaveFiles ??= enterContext(FILES);
       }}
@@ -416,174 +493,69 @@ export function FileTreePanel() {
         }
       }}
     >
-      <FilterHeader
-        label={mode() === "filter" ? "Filter files" : "Search in files"}
-        placeholder={mode() === "filter" ? "Filter files…" : "Search in files…"}
-        query={mode() === "filter" ? filterQuery() : contentQuery()}
-        onQuery={(value) => {
-          if (mode() === "filter") {
-            setFilterQuery(value);
-            explorer?.setFilter(value);
-          } else {
-            setContentQuery(value);
-          }
+      <button
+        type="button"
+        class="fw-root-identity"
+        title={workspaceInfo()?.path}
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          setMenu({ x: rect.left, y: rect.bottom, target: { kind: "root" } });
         }}
-        rows={[
-          {
-            label: "Files panel mode",
-            value: mode(),
-            options: [
-              { value: "filter" as const, label: "files" },
-              { value: "content" as const, label: "text" },
-            ],
-            onChange: (value: FilesMode) => {
-              setMode(value);
-              if (value === "filter") explorer?.setFilter(filterQuery());
-            },
-          },
-        ]}
-        ref={(element) => (filterInput = element)}
       >
-        <Show when={mode() === "content"}>
-          <IconButton
-            label="Open the results in a tab"
-            disabled={workbenchStore.workspace === null}
-            onClick={openProjectSearch}
-          >
-            <Icon name="maximize" class="forge-icon-muted" size={13} />
-          </IconButton>
-        </Show>
-        <Tooltip label="Re-read the checkout" contents>
-          <IconButton
-            label="Re-read the checkout"
-            disabled={workbenchStore.loading.tree || workbenchStore.workspace === null}
-            onClick={refresh}
-          >
-            <Icon name="refresh" class="forge-icon-muted" size={13} />
-          </IconButton>
-        </Tooltip>
-      </FilterHeader>
-      <Show when={workbenchStore.treeError}>{(error) => <p class="panel-error">{error()}</p>}</Show>
+        <Icon name="folder-open" size={14} />
+        <span>{workspaceInfo()?.path.split("/").filter(Boolean).at(-1) ?? "Files"}</span>
+      </button>
+      <Show when={directoryError()}>{(error) => <p class="panel-error">{error()}</p>}</Show>
+      <For each={directoryFailures()}>
+        {(failure) => (
+          <p class="panel-error">
+            {failure.path}: {failure.error}{" "}
+            <button
+              type="button"
+              onClick={() => {
+                const workspace = workbenchStore.workspace;
+                if (workspace) ensureDirectory(workspace, failure.path, true);
+              }}
+            >
+              Retry
+            </button>
+          </p>
+        )}
+      </For>
+      <Show when={operationError()}>{(error) => <p class="panel-error">{error()}</p>}</Show>
       <Show when={fileWatchError()}>{(error) => <p class="panel-note">{error()}</p>}</Show>
-      {/* The mount stays in the tree for the panel's life — the package owns
-          that element from `onMount` on. Content mode only hides it. */}
-      <div ref={host} class="fw-mount" hidden={mode() === "content" || derived().rows === 0} />
-      <Show when={mode() === "content"}>
-        <Show when={workbenchStore.searchError}>
-          {(error) => <p class="panel-error">{error()}</p>}
-        </Show>
+      <div ref={host} class="fw-mount" />
+      <Show when={!directoryTree()?.loadedDirectories?.includes("") && derived().rows === 0}>
         <Show
-          when={workbenchStore.workspace !== null}
-          fallback={<EmptyState message="No checkout selected." />}
+          when={!derived().loading}
+          fallback={<Skeleton label="Reading the checkout" rows={8} />}
         >
-          <Show
-            when={shouldSearchContent(contentQuery())}
-            fallback={
-              <p class="empty-copy">Type at least two characters to search the checkout.</p>
+          <EmptyState
+            message={
+              workbenchStore.workspace === null
+                ? "No checkout selected."
+                : "Unable to read the checkout."
             }
-          >
-            <Show when={workbenchStore.loading.search && !contentResults()}>
-              <p class="panel-note">Searching…</p>
-            </Show>
-            <Show when={contentResults()}>
-              {(results) => (
-                <>
-                  <Show
-                    when={results().matches.length > 0}
-                    fallback={<p class="empty-copy">Nothing matches that.</p>}
-                  >
-                    <p class="panel-note">
-                      {`${results().matches.length} match${results().matches.length === 1 ? "" : "es"}`}
-                      {results().truncated ? " (truncated)" : ""}
-                    </p>
-                    <ul class="file-search-hits">
-                      <For each={contentGroups()}>
-                        {(group) => (
-                          <li class="file-search-group">
-                            <div class="file-search-path">{group.path}</div>
-                            <ul>
-                              <For each={group.matches}>
-                                {(match) => (
-                                  <li>
-                                    <button
-                                      type="button"
-                                      class="forge-row file-search-hit"
-                                      onClick={() => openEditorAt(match.path, match.line)}
-                                    >
-                                      <span class="file-search-line">{match.line}</span>
-                                      <span class="file-search-text">
-                                        <HitText
-                                          segments={rowHitSegments(match.text, askedNeedle() ?? "")}
-                                        />
-                                      </span>
-                                    </button>
-                                  </li>
-                                )}
-                              </For>
-                            </ul>
-                          </li>
-                        )}
-                      </For>
-                    </ul>
-                  </Show>
-                  <Show when={results().truncated}>
-                    <p class="panel-note">
-                      Search stopped at the hit budget — not every match is here.
-                    </p>
-                  </Show>
-                </>
-              )}
-            </Show>
-          </Show>
+          />
         </Show>
       </Show>
-      <Show when={mode() === "filter"}>
-        <Show
-          when={workbenchStore.tree}
-          fallback={
-            <Show
-              when={!derived().loading}
-              fallback={<Skeleton label="Reading the checkout" rows={8} />}
-            >
-              <EmptyState
-                message={
-                  workbenchStore.workspace === null
-                    ? "No checkout selected."
-                    : "Unable to read the checkout."
-                }
-                actions={
-                  workbenchStore.workspace === null
-                    ? [
-                        { action: "add_project", label: "Add a project", icon: "folder-open" },
-                        { action: "new_worktree", label: "New worktree", icon: "git-branch" },
-                      ]
-                    : []
-                }
-              />
-            </Show>
-          }
-        >
-          <Show when={derived().rows === 0}>
-            <p class="empty-copy">
-              {derived().filtered ? "Nothing matches that." : "This checkout has no files."}
-            </p>
-          </Show>
-          <Show when={derived().rows > 0}>
-            <p class="panel-note">{`${derived().files} files shown`}</p>
-          </Show>
-          {/* A truncated listing that reads as exhaustive is worse than one that
-              admits it stopped. */}
-          <Show when={derived().truncated}>
-            <p class="panel-note">Listing stopped at the scan budget — not every file is here.</p>
-          </Show>
-        </Show>
+      <Show
+        when={directoryTree() && derived().rows === 0 && !derived().loading && !directoryError()}
+      >
+        <p class="empty-copy">This checkout has no files. Use the folder menu to create one.</p>
+      </Show>
+      <Show when={derived().rows > 0}>
+        <p class="panel-note">{`${derived().files} files shown`}</p>
+      </Show>
+      <Show when={derived().truncated}>
+        <p class="panel-note">Listing stopped at the scan budget — not every entry is here.</p>
       </Show>
       <Show when={menu()}>
         {(item) => (
           <ContextMenu
             x={item().x}
             y={item().y}
-            items={menuItems(item().path, item().isFile)}
+            items={menuItems(item().target)}
             onDismiss={() => setMenu(null)}
           />
         )}

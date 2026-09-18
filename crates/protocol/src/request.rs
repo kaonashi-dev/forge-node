@@ -1,13 +1,7 @@
-//! Requests a client can send to the daemon (§10.2).
-//!
-//! Each [`Request`] is wrapped by the caller in
-//! [`crate::ClientMessage::Request`] with a `request_id`; the daemon answers
-//! with a [`crate::DaemonMessage::Response`] carrying the same `request_id` and
-//! a `Result<`[`crate::response::Response`]`, `[`crate::error::ProtocolError`]`>`.
-//!
-//! Removed relative to v1 (§10.2): `FocusSession` (pure GUI state, ADR-003) and
-//! generic `Subscribe`/`Unsubscribe` (terminal subscription is `AttachTerminal`;
-//! domain events broadcast to every client).
+//! Client request vocabulary, independent of transport or execution.
+//! [`crate::ClientMessage::Request`] carries the identity echoed in the reply;
+//! [`crate::response::Response`] defines successful results and `AttachTerminal`
+//! establishes terminal subscriptions.
 
 use domain::{
     AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy, ContextEnvelope,
@@ -484,15 +478,12 @@ pub enum Request {
         /// Workspace whose checkout is listed.
         workspace_id: WorkspaceId,
     },
-    /// List the immediate children of one directory → [`crate::response::Response::FileTree`].
-    ///
-    /// Peels an opaque ignored folder the root [`Request::ListFiles`] collapsed.
-    /// One level only; language dependency directories are omitted. Local and
-    /// synchronous like [`Request::ListFiles`] (ADR-012).
+    /// Immediate children on disk → [`crate::response::Response::DirectoryListing`].
+    /// Local and synchronous; dependency directories and `.git` are omitted.
     ListDirectory {
         /// Workspace the path is relative to.
         workspace_id: WorkspaceId,
-        /// Workspace-relative directory. Must be non-empty.
+        /// Workspace-relative directory; empty means the root.
         path: String,
     },
     /// Read one file → [`crate::response::Response::FileContents`].

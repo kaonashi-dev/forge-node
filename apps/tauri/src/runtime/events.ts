@@ -1,5 +1,12 @@
-import { fileWatchReady, reconnectFileWatches, failFileWatch } from "../workbench/fileWatch";
+import {
+  fileWatchReady,
+  reconnectFileWatches,
+  failFileWatch,
+  disconnectFileWatches,
+  rearmFileWatches,
+} from "../workbench/fileWatch";
 import { fileChangesChannel } from "./bus";
+import { batch } from "solid-js";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "../ui";
 import type { CellsPayload, EditorFramePayload } from "../terminal/types";
@@ -11,14 +18,29 @@ import { readJobLog } from "./api";
 import { applyTranscript, failTranscript, setRuntimeStore } from "../store/runtimeStore";
 import { asSessionTranscript } from "./externalTranscript";
 import { applySessionChanges, failSessionChanges } from "../store/sessionChangesStore";
-import { setLoading, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
+import {
+  invalidateFileIndex,
+  setLoading,
+  setWorkbenchStore,
+  workbenchStore,
+} from "../store/workbenchStore";
 import { refreshDiff } from "../workbench/decorations";
 import { createEditorAutosaveSync } from "./editorAutosave";
 import { AUTOSAVE_KEY, readFlag } from "../shell/layout";
-import { previewImageReader, setEditorAutosave } from "../workbench/api";
+import {
+  acceptFileIndex,
+  failFileIndex,
+  previewImageReader,
+  setEditorAutosave,
+} from "../workbench/api";
 import { dataUrl } from "../workbench/previewImages";
-import { sameListing } from "../workbench/fileInvalidation";
-import { mergeDirectory, retainExpandedDirectories } from "../workbench/mergeDirectory";
+import {
+  directories,
+  type DirectoryAnswer,
+  type DirectoryFailure,
+} from "../workbench/directoryState";
+import { pathOperations, type PathOperationResult } from "../workbench/operations";
+import { parentPath } from "../workbench/pathOperations";
 import type {
   Branches,
   FileContents,
@@ -51,7 +73,9 @@ import {
   editorFrameChannel,
   previewCellsChannel,
 } from "./bus";
-import { openEditorTerminal } from "../store/viewsStore";
+import { retargetWorkbenchPaths } from "../workbench/retarget";
+import { startDocumentWatch } from "../workbench/documentWatch";
+import { openEditorTerminal, syncEditorViewPaths } from "../store/viewsStore";
 import { applyEditorConflict, failEditorConflict } from "../store/editorConflictStore";
 import type {
   ConnectedPayload,
@@ -72,19 +96,31 @@ import {
   setSharesError,
 } from "../store/sharesStore";
 
+pathOperations.subscribe((result) => {
+  if (result.kind === "rename" && result.from && result.to) {
+    retargetWorkbenchPaths(result.workspace, result.from, result.to);
+  }
+});
+
 const syncEditorAutosave = createEditorAutosaveSync(setEditorAutosave);
 
 export function applyConnected(payload: ConnectedPayload): void {
   applyShellSnapshot(payload.store);
+  syncEditorViewPaths(forgeStore.sessions);
   syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false), true);
   adoptPendingLaunches();
-  reconnectFileWatches();
+
   // A workbench command queued across a drop is answered by nothing, and its
   // `loading` flag is what every one of these reads is guarded by: left up, the
   // tree, the file and the decorations are never asked for again. The reads are
   // idempotent and their surfaces re-ask on the next effect run.
-  setWorkbenchStore("loading", {});
+  batch(() => {
+    setWorkbenchStore("loading", {});
+    setWorkbenchStore("treeRequest", null);
+    if (workbenchStore.workspace) invalidateFileIndex(workbenchStore.workspace);
+  });
   setRuntimeStore({
+    connectionGeneration: payload.connection_generation,
     connection: {
       kind: "connected",
       instanceId: payload.daemon.instance_id,
@@ -94,6 +130,19 @@ export function applyConnected(payload: ConnectedPayload): void {
     activeSession: payload.active_session,
     activeTerminal: payload.active_terminal,
   });
+  directories.connection(true);
+  reconnectFileWatches();
+  pathOperations.reconcile(
+    (operation) => {
+      for (const path of [operation.from, operation.to]) {
+        if (path !== undefined) directories.ensure(operation.workspace, parentPath(path), true);
+      }
+    },
+    () => {
+      const workspace = workbenchStore.workspace;
+      if (workspace) directories.invalidate(workspace);
+    },
+  );
 }
 
 /** Agent launches that outlive their tab: bind them once the snapshot lands. */
@@ -146,14 +195,22 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
     listen<Tagged<T>>(event, ({ payload: [session, value] }) => apply(session, value));
 
   return Promise.all([
-    listen<[string, string]>("workbench:file_changed", ({ payload }) =>
-      fileChangesChannel.publish(payload),
-    ),
-    listen<string>("workbench:watch_ready", ({ payload }) => fileWatchReady(payload)),
-    listen<Failure>("workbench:watch_failed", ({ payload }) => {
-      const { workspace } = payload;
-      if (workspace && forCurrent(workspace)) failFileWatch(workspace, payload.error);
+    listen<[string, string]>("workbench:file_changed", ({ payload }) => {
+      invalidateFileIndex(payload[0]);
+      directories.changed(payload[0], payload[1]);
+      rearmFileWatches(payload[0], payload[1]);
+      fileChangesChannel.publish(payload);
     }),
+    listen<{ workspace: string; generation: number }>("workbench:watch_ready", ({ payload }) =>
+      fileWatchReady(payload.workspace, payload.generation),
+    ),
+    listen<{ workspace: string; generation: number; error: string }>(
+      "workbench:watch_failed",
+      ({ payload }) => failFileWatch(payload.workspace, payload.error, payload.generation),
+    ),
+    listen<PathOperationResult>("workbench:path_result", ({ payload }) =>
+      pathOperations.settle(payload),
+    ),
     answer<WorkspaceDiff>("workbench:diff", "diff", (diff) =>
       setWorkbenchStore({ diff, diffError: null }),
     ),
@@ -189,33 +246,17 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
     listen<SessionFailure>("workbench:external_transcript_failed", ({ payload }) =>
       failTranscript(payload.session, payload.error),
     ),
-    /* A re-listing that says nothing new is dropped rather than stored: every
-       surface downstream keys off the object, and a save that changed no name
-       would otherwise repaint the tree. */
-    answer<FileTree>("workbench:file_tree", "tree", (listing) => {
-      const tree = retainExpandedDirectories(workbenchStore.tree, listing);
-      setWorkbenchStore(
-        sameListing(workbenchStore.tree, tree) ? { treeError: null } : { tree, treeError: null },
-      );
-    }),
-    failure("workbench:file_tree_failed", "tree", "treeError"),
-    listen<[string, string, FileTree]>("workbench:file_directory", ({ payload }) => {
-      const [workspace, path, listing] = payload;
-      if (!forCurrent(workspace) || !workbenchStore.tree) return;
-      setLoading("directory", false);
-      setWorkbenchStore({
-        tree: mergeDirectory(workbenchStore.tree, path, listing),
-        treeError: null,
-      });
-    }),
-    listen<{ workspace: string | null; error: string }>(
-      "workbench:file_directory_failed",
-      ({ payload }) => {
-        setLoading("directory", false);
-        if (payload.workspace === null || forCurrent(payload.workspace)) {
-          setWorkbenchStore("treeError", payload.error);
-        }
-      },
+    listen<{ workspace: string; request_id: string; tree: FileTree }>(
+      "workbench:file_tree",
+      ({ payload }) => acceptFileIndex(payload),
+    ),
+    listen<{ workspace: string; request_id: string; error: string }>(
+      "workbench:file_tree_failed",
+      ({ payload }) => failFileIndex(payload),
+    ),
+    listen<DirectoryAnswer>("workbench:directory", ({ payload }) => directories.accept(payload)),
+    listen<DirectoryFailure>("workbench:directory_failed", ({ payload }) =>
+      directories.fail(payload),
     ),
     answer<FileContents>("workbench:file", "file", (file) =>
       setWorkbenchStore({ file, fileError: null }),
@@ -239,9 +280,17 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
         previewImageReader.settle(payload.workspace, payload.path, { error: payload.error }),
     ),
     answer<SearchResults>("workbench:search", "search", (search) =>
-      setWorkbenchStore({ search, searchError: null }),
+      setWorkbenchStore({
+        search,
+        searchError: null,
+        searchStale: workbenchStore.searchReadVersion !== workbenchStore.treeVersion,
+      }),
     ),
     failure("workbench:search_failed", "search", "searchError"),
+    answer<SearchResults>("workbench:name_search", "nameSearch", (search) =>
+      setWorkbenchStore({ nameSearch: search, nameSearchError: null }),
+    ),
+    failure("workbench:name_search_failed", "nameSearch", "nameSearchError"),
     answer<RebaseState>("workbench:rebase", "rebase", (rebase) =>
       setWorkbenchStore({ rebase, rebaseError: null }),
     ),
@@ -434,6 +483,9 @@ function announceJob(job: Job): void {
 export async function bindRuntimeEvents(): Promise<UnlistenFn> {
   const unlisteners = await Promise.all([
     listen("runtime:connecting", () => {
+      pathOperations.disconnect();
+      directories.connection(false);
+      disconnectFileWatches();
       setRuntimeStore("connection", { kind: "connecting" });
     }),
     listen<ConnectedPayload>("runtime:connected", (event) => {
@@ -441,6 +493,7 @@ export async function bindRuntimeEvents(): Promise<UnlistenFn> {
     }),
     listen<StatePayload>("runtime:state", (event) => {
       applyShellSnapshot(event.payload.store);
+      syncEditorViewPaths(forgeStore.sessions);
       syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false));
       adoptPendingLaunches();
       setRuntimeStore("activeSession", event.payload.active_session);
@@ -530,6 +583,10 @@ export async function bindRuntimeEvents(): Promise<UnlistenFn> {
       seedHarnessOutput(event.payload.job_id, event.payload.lines);
     }),
     listen<DisconnectedPayload>("runtime:disconnected", (event) => {
+      setWorkbenchStore("treeRequest", null);
+      pathOperations.disconnect();
+      directories.connection(false);
+      disconnectFileWatches();
       setRuntimeStore("connection", {
         kind: "disconnected",
         reason: event.payload.reason,
@@ -537,7 +594,9 @@ export async function bindRuntimeEvents(): Promise<UnlistenFn> {
     }),
   ]);
 
+  const stopDocumentWatch = startDocumentWatch();
   return () => {
+    stopDocumentWatch();
     for (const unlisten of unlisteners) {
       unlisten();
     }

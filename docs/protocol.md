@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 23` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 25` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -22,11 +22,53 @@ a Unix domain socket (ADR-004). The GUI-side implementation is
   renders any message as JSON for debugging (`forge-daemon dump --json`, not
   yet wired).
 
+## Tauri workbench envelope
+
+The WebView's `send_workbench_command` is a separate host API, not an addition
+to the daemon wire. It rejects when the worker is absent, closed or its bounded
+queue is full. Accepted means enqueued, not completed.
+
+- `create_path`, `rename_path`, `delete_path` carry `operation_id` and finish on
+  `workbench:path_result { operation_id, workspace, kind, from, to, success,
+  error, uncertain }`. Structured daemon refusals are definitive; transport
+  failures are uncertain. Listing failures never complete mutations.
+- `load_file_directory` carries `{ workspace, path, request_id, generation }`.
+  `workbench:directory` echoes these plus `{ entries, truncated }`;
+  `workbench:directory_failed` echoes them plus `message`.
+- `load_file_tree` carries `{ workspace, request_id }`; its success echoes those
+  plus `tree`, and failure echoes them plus `error`. The request identity rejects
+  previous workspace/connection reads; invalidation during a read owes a follow-up.
+- `watch_files` carries a generation echoed by `workbench:watch_ready` and
+  `workbench:watch_failed`, so an old ACK cannot arm new interests.
+
+These identifiers belong to the UI interaction/connection lifecycle. Daemon
+request/reply IDs still correlate the actual filesystem operation. Unknown
+write outcomes are reconciled by reading affected paths, never by replaying a
+mutation automatically.
+
+## Tauri targeted paste
+
+The host's `runtime:connected` payload and cached `connect` answer include a
+`connection_generation`, incremented for every successful host connection even
+when the daemon instance and PTY identities survive. `send_runtime_command`
+accepts `paste_target { session_id, terminal_id, connection_generation, text }`.
+It rejects a disconnected/stale generation at enqueue; the runtime also drops
+queued references from an older generation before execution. It refuses a
+changed attachment, mismatched session-to-terminal mapping or ended session,
+then uses that terminal replica's modes with `encode_paste`. No Enter is appended.
+Queue acceptance is not execution confirmation; execution refusals use the
+existing runtime notice. Neither rejection nor reconnect replays a paste.
+
+The WebView constructs a shell-quoted absolute path from its known workspace
+root, rejecting control characters. This host-local envelope adds no daemon
+message: the encoded bytes travel through ordinary terminal input. Filesystem
+drops use the correlated workbench `rename_path` operation above.
+
 ## Handshake (§9.2)
 
 ```
 client → Hello { protocol_version, client_version, client_kind }
-daemon → HelloAck { protocol_version, daemon_version, instance_id, started_at }
+daemon → HelloAck { protocol_version, daemon_version, instance_id, started_at, editor_surface }
        | HelloReject { daemon_protocol_version, reason }
 ```
 
@@ -43,9 +85,11 @@ DaemonMessage::Event    (DaemonEvent)
 ```
 
 - Requests are correlated by `request_id`; the client may pipeline.
-- **Mutations answer `Ack`** and the resulting domain object arrives as a
+- **Mutations normally answer `Ack`** and the resulting domain object arrives as a
   broadcast `DaemonEvent` to *every* client (including the caller). Clients
-  therefore have one code path for "state changed", not two.
+  therefore have one code path for "state changed", not two. Session creation
+  also returns `Response::SessionCreated { session_id, terminal_id }`; use those
+  IDs directly rather than reloading a snapshot to guess which session is new.
 - Domain events are low-volume and broadcast. Terminal deltas go only to
   clients that attached to that terminal; others get a coalesced
   `TerminalActivity` (≤1/s per terminal) for unread badges.
@@ -74,14 +118,17 @@ DaemonMessage::Event    (DaemonEvent)
 | | `RemoveWorktree { workspace_id, force }` | `WorkspaceRemoved`; pre-checks unless `force`. |
 | | `RenameWorkspace { workspace_id, display_name }` | `WorkspaceUpdated`. `None` clears the human label so the rail falls back to the branch. |
 | | `RefreshWorkspaceStatus { workspace_id }` | `WorkspaceUpdated` carrying branch + `WorkspaceStatus { dirty, head, ahead, behind }` — `head` is the commit oid, the signal the GUI re-reads the file tree and diff on. Throttled to one `git status` every 2 s per workspace (ADR-008). |
-| Branches | `ListBranches { project_id }` | `Response::Branches { branches, remotes, default_branch }`. A **local** ref read — never touches the network, so it is safe on a thread that also carries keystrokes. Each `BranchRef` says which workspace already has it checked out. |
+| Branches | `ListBranches { project_id }` | `Response::Branches { branches, remotes, default_branch }`. A **local**, synchronous ref read; the GUI runs it on the workbench worker because Git can block terminal input even without network access. Each `BranchRef` says which workspace already has it checked out. |
 | | `FetchRemote { project_id, remote }` | `Ack` **as soon as the fetch starts**, then `RemoteRefsUpdated` when it finishes. One of the asynchronous requests (with `CreatePullRequest` and `RefreshPullRequests`): a fetch can take minutes and the GUI's command channel also carries terminal input. A fetch already in flight for that project is coalesced, not queued. `remote: None` = `origin`, falling back to the only remote configured; `GitError` when there is none. |
 | | `GetWorkspaceDiff { workspace_id, context_lines }` | `Response::WorkspaceDiff(WorkspaceDiff)` — the checkout's uncommitted changes, one unified patch per file (§16.7). Local and **synchronous**, like `ListBranches`: `git diff` opens no socket, so there is nothing to ack early and report through an event. Not broadcast either: a diff is a view one client asked for, not shared state. `context_lines: None` takes the service default (12, wider than git's 3 — this feeds a window, not a pager). |
 | | `ListFiles { workspace_id }` | `Response::FileTree(FileTree)` — tracked and untracked-but-not-ignored paths, plus opaque ignored directories (ADR-012). Language dependency directories (`node_modules`, `vendor`, …) are omitted. Local and **synchronous** like `GetWorkspaceDiff`. Paths are relative and stay inside the checkout. |
-| | `ListDirectory { workspace_id, path }` | `Response::FileTree(FileTree)` — immediate children of one directory, for peeling an opaque ignored folder. One level; nested ignored directories stay opaque; dependency dirs are omitted. Local and **synchronous** like `ListFiles`. |
+| | `ListDirectory { workspace_id, path }` | `Response::DirectoryListing { path, entries, truncated }` — immediate real disk children; `path: ""` reads root. Includes empty/hidden/ignored directories; `.git` and dependency directories are omitted. Optional `FileEntry.symlink` distinguishes internal file/directory links from external, broken and unavailable targets. Internal aliases retain their logical paths. Bounded to 2000 entries and 1 MiB per answer, with 4096-byte paths; partial results are explicit and read errors propagate. Local and **synchronous** like `ListFiles`. |
 | | `ReadFile { workspace_id, path }` | `Response::FileContents(FileContents)` — text plus a `revision` the next write must present. Refuses binaries and oversize files without truncating. |
 | | `ReadImage { workspace_id, path }` | `Response::ImageContents(ImageContents)` — one image's bytes as base64 plus its media type, for the Markdown preview. `InvalidRequest` for a path without an image extension (checked before the path is touched) and for a file over `fs_service::MAX_IMAGE_BYTES` (8 MiB), which is refused rather than cut. |
 | | `WriteFile { workspace_id, path, text, expected_revision }` | `Ack`. `PreconditionFailed` when the on-disk content no longer matches the revision (an agent wrote the same path); the GUI re-reads with `ReadFile`. |
+| | `CreatePath { workspace_id, path, directory }` | `Ack` after creating an empty entry and missing parents; refuses occupied paths and escapes. |
+| | `RenamePath { workspace_id, from, to }` | `Ack` after an exclusive move inside the checkout. Root, identical paths, occupied destinations and moves into descendants are refused. Confirmed moves retarget editors and broadcast `FileChanged` for both paths. |
+| | `DeletePath { workspace_id, path }` | `Ack` after deletion; directories are recursive, final symlink entries are removed without following them. Root is refused. There is no trash or undo. |
 | | `SearchFiles { workspace_id, query, kind, limit }` | `Response::SearchResults(SearchResults)` — fuzzy name match, fixed-string `git grep -F` content search, or `Definition`: a `git grep -w -F` for the bare word kept only where the line declares it. The answer echoes `query`, which is what tells a client whose lookup it is. |
 | | `WatchFiles { workspace_id, directories }` | Replaces this **connection's** directory watches and answers `Ack`; an empty list releases them. Directories are workspace-relative and non-recursive, capped before they are watched (128 per connection, 4096 bytes per path) and must canonicalize inside the checkout — a path that escapes is refused, one that no longer resolves is skipped, since the listing the client watched from is always a moment older than the checkout. Native events are coalesced (~150 ms, at most 32 paths per batch) and reported as `FileChanged`; a lost event becomes one empty-path invalidation. The `Ack` is not itself news: the set is replaced in place with no gap, so a client reconciles after an *arm* (first watch, new checkout, reconnect, retry) and not after every reply. The subscription belongs to the connection and dies with it. |
 | Sessions | `CreateShellSession { workspace_id, parent, role }` | `SessionCreated` (state `Starting`, then `SessionUpdated` → `Running`). |
@@ -111,7 +158,7 @@ DaemonMessage::Event    (DaemonEvent)
 | Agents | `ListAgentProviders` | `Response::Providers(Vec<ProviderInfo { descriptor, detection }>)`. |
 | | `RefreshAgentDetection { provider_id }` | `Some(id)` re-probes exactly that provider (`NotFound` for an unknown id) without disturbing the other cached results; `None` re-detects all. `AgentDetectionChanged`. |
 | | `SetProviderExecutable { provider_id, path }` | Override persisted; `None` clears. |
-| | `SaveAgentProfile { profile }` | Create or replace a launch profile (§13.4); one upsert, like `CreateContextEnvelope`, so the client builds the whole object including its id. Validated here: `Conflict` for a duplicate name, `InvalidRequest` for a bad or reserved variable, `ProviderNotInstalled` when its own executable fails the version probe. `AgentProfilesChanged`. |
+| | `SaveAgentProfile { profile }` | Create or replace a launch profile; the client supplies its id. `Conflict` for a duplicate name, `InvalidRequest` for a config directory the provider does not support, `ProviderNotInstalled` when its own executable fails the version probe. Profiles declare a config directory and arguments, not arbitrary environment variables. `AgentProfilesChanged`. |
 | | `RemoveAgentProfile { profile_id }` | Deletes it; sessions it already started keep running. `AgentProfilesChanged`. |
 | Shared files | `DetectShareCandidates { project_id }` | `Response::ShareCandidates` — the project's ignored paths, classified, with the strategy Forge would propose. One `git status --ignored=matching` plus a bounded walk: local and **synchronous** like `ListBranches`, and `truncated` says the list is a floor rather than the whole tree. |
 | | `SetProjectShares { project_id, rules }` | Replaces the project's whole rule set (§14.2). The set, not a row: adding, reordering, enabling and re-pointing a strategy are one edit of one list. `InvalidRequest` for a path that is absolute, contains `..`, or names the git directory. `ProjectSharesChanged`. |
@@ -167,7 +214,7 @@ Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 | `RemoteRefsUpdated { project_id, remote, updated, error }` | A background `FetchRemote` finished. Carries the outcome, not the refs: clients re-ask `ListBranches` when they care, which keeps one source of truth. `error` holds git's own words (`Permission denied (publickey)`) on failure. |
 | `PullRequestOpened { workspace_id, url, error }` | A background `CreatePullRequest` finished. `url` on success, `error` with the CLI's own words otherwise. A success also invalidates the pull-request cache and starts a refresh, so the new PR appears without waiting out the TTL. |
 | `PullRequestsUpdated { state }` | A background `RefreshPullRequests` finished. Carries the **whole** `PullRequestState` — like usage and detection, a merge of two refreshes would leave a client with a list that never existed. `state.sources` says why a project contributed nothing (no repo, no remote, unsupported host, unparseable remote, failed); `state.failures` holds per-repository errors that did not sink the rest; `state.error` is set only when every queried host failed. |
-| `FileChanged { workspace_id, path }` | A watched file changed on disk (ADR-012), sent only to the connection that declared the watch. Carries no content — the GUI re-reads with `ReadFile` and offers reload-or-keep when the buffer is dirty. `path` is workspace-relative; an **empty** path is a resync (the watcher lost events to a full queue or an oversized batch, or could not hand one over to a client whose own queue was full) and asks the client to re-read what it shows. A notification never costs the connection: an undeliverable one becomes an owed resync, retried, rather than a disconnect. |
+| `FileChanged { workspace_id, path }` | Native watch notifications go to the watching connection; successful Forge renames also broadcast invalidations for both paths. An event is not proof of watch coverage. Carries no content; clients reconcile relevant reads without discarding dirty buffers. `path` is workspace-relative; an **empty** path asks the client to resync its visible surface. An undeliverable native notification becomes an owed resync, retried rather than disconnecting. |
 | `HarnessFeatureChanged { project_id, feature }` | A feature row changed because a step finished. The daemon advances the cycle itself, so a client that asked for nothing still learns that a spec is ready for its gate, or that a feature is done. |
 | `JobUpdated(Job)` | A headless run was accepted, started, or reached a final state; carries the whole row, like `SessionUpdated`. **This is the event a harness step waits on**: a job in a final state has finished, with an exit code that says how, and nobody had to read a terminal to find out. |
 | `JobOutput { job_id, from_line, lines }` | Lines a running job wrote, coalesced on a ~120 ms interval and summarised for reading (a raw `stream-json` line is not something a person reads; the provider's own words stay in the log file). Broadcast to every client, like `TerminalActivity`: a job has no subscription because it has no grid to keep in sync, and its output is text a client either follows live or reads later with `ReadJobLog`. |
@@ -226,7 +273,8 @@ reader thread, `flume` channels — no tokio, no GUI toolkit):
   `PROTOCOL_VERSION` and `ClientKind::Gui`; callers do not supply one.
 - `request(body)` / `request_timeout(body, dur)` block until the matching
   response arrives. They must be bridged off the UI thread.
-- `events()` returns an unbounded receiver the GUI must drain promptly.
+- `events()` returns a bounded receiver (64 events). The reader uses nonblocking
+  delivery; overflow disconnects so the GUI reconnects for a fresh snapshot.
 - On EOF every pending request wakes with `ClientError::Disconnected`.
 - Typed wrappers cover the requests the GUI makes by hand, including
   `set_app_state(key, value)` / `get_app_state(key) -> Option<String>`

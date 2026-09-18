@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { runtimeStore } from "../store/runtimeStore";
 import type { EditorInputEvent } from "../terminal/editorKeys";
 import type {
   ConfigPaths,
@@ -33,14 +34,7 @@ export async function configPaths(): Promise<ConfigPaths> {
   return invoke<ConfigPaths>("config_paths");
 }
 
-/**
- * Send one command to the runtime thread.
- *
- * Failures are swallowed by the callers below on purpose: the channel is
- * bounded and the host reports what actually happened through `runtime:*`
- * events, so a rejected promise here would be a second, contradictory source
- * of truth about the connection.
- */
+/** Resolves on queue acceptance; execution failures arrive through runtime events. */
 async function send(command: Record<string, unknown>): Promise<void> {
   await invoke("send_runtime_command", { command });
 }
@@ -535,6 +529,20 @@ export async function sendMouse(event: {
 
 export async function sendPaste(text: string, id: number): Promise<void> {
   await send({ type: "paste", text, id });
+}
+
+export async function sendTargetedPaste(
+  session: string,
+  terminal: string,
+  text: string,
+): Promise<void> {
+  await send({
+    type: "paste_target",
+    session_id: session,
+    terminal_id: terminal,
+    text,
+    connection_generation: runtimeStore.connectionGeneration,
+  });
 }
 
 export async function resizeTerminal(

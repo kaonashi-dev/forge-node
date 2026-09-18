@@ -52,6 +52,9 @@ protocol         ClientMessage/DaemonMessage, framing, handshake, requests,
 terminal-core    PtyBackend/PtyHandle (portable-pty), TerminalEngine trait,
                  AlacrittyEngine, DeltaBuilder
 terminal-input   pure key/mouse/paste mapping shared without PTY/VT dependencies
+editor-core      document, transactions, history, search and syntax; no I/O
+editor-control   independent daemon–editor control framing and messages
+editor-cli       standalone/integrated editor host      → binary forge-editor
 agents           provider registry, verified detection, five built-ins
                  (claude, codex, opencode, cursor, grok)
 git-service      git CLI wrapper (LC_ALL=C, 30s local timeout), repo + worktree ops
@@ -97,11 +100,38 @@ The file surface splits presentation from IO the same way. The windowed explorer
 lives in `apps/tauri/packages/file-workbench`, which has no Solid, Tauri or
 filesystem dependency; `apps/tauri` adapts that package to the daemon's reads
 and Forge's theme. Editing is not in that package and is not in the GUI at all:
-it is `forge-editor` under a daemon PTY, painted by the terminal renderer
+it is `forge-editor`, supervised by the daemon: the cells surface uses the
+terminal renderer and the headless DOM surface publishes bounded line windows
 (`docs/editor.md`). External edits arrive through
 connection-scoped directory watches (`WatchFiles`): `daemon::file_watch`
 coalesces native events into `FileChanged`, the GUI re-reads only what it shows,
 and every read and write still goes through `fs-service` (ADR-012).
+
+The explorer reads real immediate children with `ListDirectory`, including the
+root (`path: ""`), empty directories and dotfiles. Each directory retains its
+last good children alongside request identity, generation, invalidation debt,
+loading/error and partial status. Closed directories are read when opened;
+file-change paths reconcile affected parents rather than scan the checkout.
+`ListFiles` remains a separate bounded navigation index, loaded on demand by
+the global file palette and terminal references and augmented by known lazy
+directory entries. It never decides which directories exist in the explorer.
+
+Workbench enqueue is fallible. Path mutations have frontend operation IDs and
+an explicit result event, separate from directory and file-read failures.
+Only acknowledged moves retarget previews, parked views and recent paths;
+editor sessions also follow authoritative session path metadata. A timeout or
+disconnect retires the pending interaction as uncertain and schedules reads
+for reconciliation, never automatically repeats the write. Watch acknowledgments
+carry the exact generation of installed interests so stale ACKs cannot arm a
+new subscription.
+
+`workbench/fileDrag.ts` owns the explorer's pointer gesture and file-reference
+menu listener. The portable explorer only exposes row metadata and expansion;
+`TerminalPane` registers its live session/terminal identity. Tree drops reuse
+the confirmed-result rename API. Terminal drops send a host-local targeted paste
+with both identities and the connection generation, validated again before
+`encode_paste` writes to the existing PTY. No file contents or filesystem access
+are involved in constructing the quoted absolute reference.
 
 ## Authoritative terminal (ADR-011)
 
@@ -125,13 +155,16 @@ The client keeps a passive `CellGrid` of cells and applies row diffs.
 
 ## Sessions & the graph (ADR-010)
 
-A session is a persistent domain node (`Shell` or `Agent`) with a state machine
+A session is a domain node (`Shell`, `Agent`, or `Editor`) with a state machine
 (`Starting → Running → Exited/Orphaned/Failed`, restart back to `Starting`) and a
 `parent_session_id` / `root_session_id`. The graph is logical, not the process
 tree: children are re-parented to the grandparent on close, depth is capped at 8,
 and cycles / cross-project parents are rejected. Kill signals the whole process
 group (SIGHUP for shells, SIGTERM for agents, SIGKILL after the grace period), so
 grandchildren never orphan.
+
+Editor sessions hold an unsaved buffer and are unconditionally exempt from idle
+stopping; see [editor.md](./editor.md) for their control channel and surfaces.
 
 Every live session also carries a runtime-only `last_activity_at` — the last
 moment its PTY produced output or received input — bumped at most once a second

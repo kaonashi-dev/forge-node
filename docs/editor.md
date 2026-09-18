@@ -1,6 +1,6 @@
 # Editor
 
-Two crates build the terminal editor:
+Three crates build the editor:
 
 - `crates/editor-core` is the document model — text, selection, transactions,
   history, versions, search. It owns no terminal, no filesystem and no Forge
@@ -8,17 +8,15 @@ Two crates build the terminal editor:
   byte budget, the version counter and undo cannot be bypassed.
 - `crates/editor-cli` builds `forge-editor`, the standalone binary: argument
   parsing, a bounded read, raw mode, key bindings and the viewport.
+- `crates/editor-control` owns the independent daemon–editor control wire,
+  including integrated buffer reads, saves and DOM view frames.
 
-The integrated route — the same binary under the daemon's PTY, with its own
-control channel — is **the** editor, and the only one. The DOM editor that used
-to live in `apps/tauri/packages/file-workbench` is gone: that package is a file
-explorer now. Opening any file in the Code tab opens a `forge-editor` session.
-
-What that cost, stated plainly: a rendered Markdown document, an SVG and a
-raster image no longer have a surface of their own — they open as text, and a
-binary one is refused by `CreateEditorSession` like any other. `Markdown.tsx`
-survives because the pull-request view renders with it, and `CompareView`
-survives because the conflict banner does.
+The integrated editor uses the same engine through a private control channel.
+`[editor] surface = "cells"` paints its PTY output; the experimental `"dom"`
+surface paints bounded view frames from a headless editor. Neither puts a
+document engine in the WebView. `apps/tauri/packages/file-workbench` owns the
+file explorer. Markdown, SVG and raster previews have a separate read-only
+surface; editing text opens a `forge-editor` session.
 
 ## Run it
 
@@ -34,9 +32,8 @@ dash).
 
 ## The integrated route
 
-Opening a file in the Code tab runs `forge-editor` as a daemon session. There is
-no flag: with nothing to fall back to, `ui.editor.terminal` would have been a
-switch that turns the editor off.
+Opening text for editing runs `forge-editor` as a daemon session. The default
+cells route below uses a PTY; see the DOM surface section for its headless route.
 
 What happens then:
 
@@ -73,10 +70,9 @@ the last row in both modes; only the idle bar and successful save messages are s
 unsaved changes with a dot until the daemon confirms the save. Closing one or
 several unsaved tabs asks for confirmation before detaching their buffers.
 
-**Colour is the grammar's, and it is scanned whole.** `editor_core::Syntax`
-scans the document into per-line spans on every mutation and never per row: a
-block comment opened above decides the colour of everything below it, so the
-scan cannot be limited to what is on screen. The grammar comes from the
+**Colour is the grammar's.** `editor_core::Syntax` caches per-line spans and
+resumes scanning from the changed line until lexer state and text converge;
+a block comment can propagate damage beyond the visible window. The grammar comes from the
 extension (`Grammar::for_path`) and an unknown one stays plain — a wrong colour
 is worse than none. Past 512 KiB the buffer is shown plain, which is what bounds
 the cost rather than merely spreading it. The scopes paint in the ANSI 16, so
@@ -103,11 +99,20 @@ arms one.
 
 **A save is a request, never a write from the editor.** `Ctrl-S` sends
 `SaveRequest` with the buffer text; the daemon writes it through
-`fs-service::write_file` at the path *it* opened, conditioned on the revision
+`fs-service::write_file` at its current authoritative target, conditioned on the revision
 *it* last wrote, and answers `Saved { revision }` or `SaveRefused { reason }`.
 The editor confirms the snapshot it sent, so a keystroke that lands mid-write
 leaves the buffer dirty — which is the truth. A revision mismatch is a refusal,
 not an error: an agent wrote the same path and the buffer is intact.
+
+**Confirmed moves retarget metadata, not the buffer.** The daemon coordinates
+save and rename with its file-operation mutex outside the core lock, updates the
+current save target and conflict paths, and sends `Retarget` on the editor control
+channel (`editor_control::CONTROL_VERSION`). The document, undo history, caret
+and unsaved edits survive. Activity and retarget snapshots are enqueued in core-lock
+order; optional Git decorations and control-socket writes do not hold the
+file-operation mutex. Generic external filesystem events cannot establish rename
+identity and must not silently reassign a draft to a guessed destination.
 
 `read_only` is enforced **in the daemon**, not only in the editor: it travels in
 `Open` as a courtesy, but a read-only session refuses a `SaveRequest` before it
@@ -140,10 +145,9 @@ living with no window pill of its own.
 
 ## Two surfaces, one editor
 
-`[editor] surface` decides what an integrated session presents. It is a flag
-because the two are at different stages of feature parity, not because the
-choice is a preference; it goes away when the DOM one has everything the TUI
-has (`plan/plan-editor-dom-surface.md`).
+`[editor] surface` decides what an integrated session presents. Both surfaces
+use the same document and daemon-owned save path; their presentation routes
+are described below.
 
 - `cells` (the default) is everything above: the TUI under the daemon's PTY,
   painted by the GUI as a passive cell grid.

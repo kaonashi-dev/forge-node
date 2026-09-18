@@ -1622,8 +1622,18 @@ button.forge-md-box {
 }
 .project-search-excerpt {
   border-top: 1px solid var(--border-subtle);
+  /* `overflow-x` makes this a scrollport. `*` sets overscroll-behavior: none,
+     so a vertical wheel over a long hit would stop here instead of moving
+     `.center-view`. Clip Y so this is not a vertical scroller; chain it. */
   overflow-x: auto;
+  overflow-y: clip;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: auto;
   padding: var(--space-4) 0;
+  scrollbar-width: none;
+}
+.project-search-excerpt::-webkit-scrollbar {
+  display: none;
 }
 .project-search-lines {
   min-width: 100%;
@@ -1639,9 +1649,10 @@ button.forge-md-box {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   line-height: 1.6;
+  min-width: 100%;
   padding: 0;
   text-align: left;
-  width: 100%;
+  width: max-content;
 }
 .project-search-line.hit {
   color: var(--fg-default);
@@ -1663,6 +1674,8 @@ button.forge-md-box {
   width: 6ch;
 }
 .project-search-code {
+  /* Shrink would clip the line inside the file's `overflow: hidden`. */
+  flex: none;
   tab-size: 4;
   white-space: pre;
 }

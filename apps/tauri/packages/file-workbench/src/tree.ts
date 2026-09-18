@@ -1,18 +1,25 @@
 // Flat listings become directory rows; filtering preserves the source listing budget.
 
-export type FileEntry = { path: string; kind: string; ignored: boolean };
+export type FileEntry = {
+  path: string;
+  kind: string;
+  ignored: boolean;
+  symlink?: "File" | "Directory" | "External" | "Broken" | "Unavailable" | null;
+};
 export type FileTree = {
   entries: readonly FileEntry[];
   truncated: boolean;
-  /** Host-local reads, including empty directories; absent on a fresh root listing. */
+  /** Completed one-level reads, including empty directories; omitted by flat-index hosts. */
   loadedDirectories?: readonly string[];
 };
 
 type Node = {
   dirs: Map<string, Node>;
-  files: { name: string; ignored: boolean }[];
+  files: { name: string; ignored: boolean; symlink?: FileEntry["symlink"] }[];
 
   opaque: boolean;
+  ignored?: boolean;
+  symlink?: FileEntry["symlink"];
 };
 
 export type TreeRow = {
@@ -28,6 +35,7 @@ export type TreeRow = {
   ignored: boolean;
 
   opaque: boolean;
+  symlink?: FileEntry["symlink"];
 };
 
 export function watchDirectories(rows: readonly TreeRow[]): string[] {
@@ -50,21 +58,12 @@ export function unloadedDirectories(
   rows: readonly TreeRow[],
   opened: ReadonlySet<string>,
 ): string[] {
-  const placeholders = new Set(
-    tree?.entries
-      .filter((entry) => entry.kind === "Directory" && entry.ignored)
-      .map((entry) => entry.path),
-  );
   const loaded = new Set(tree?.loadedDirectories);
+  if (tree?.loadedDirectories) {
+    return watchDirectories(rows).filter((path) => !loaded.has(path));
+  }
   return rows
-    .filter(
-      (row) =>
-        !row.isFile &&
-        !row.folded &&
-        opened.has(row.path) &&
-        placeholders.has(row.path) &&
-        !loaded.has(row.path),
-    )
+    .filter((row) => !row.isFile && !row.folded && opened.has(row.path) && !loaded.has(row.path))
     .map((row) => row.path);
 }
 
@@ -85,6 +84,7 @@ export function treeRows<T extends FileTree>(
   tree: T | null,
   collapsed: Set<string>,
   openedIgnored: ReadonlySet<string> = new Set(),
+  preserve: ReadonlySet<string> = new Set(),
 ): TreeRow[] {
   if (!tree) return [];
 
@@ -106,15 +106,26 @@ export function treeRows<T extends FileTree>(
 
     if (entry.kind === "Directory") {
       const child = node.dirs.get(name) ?? emptyNode();
-      if (entry.ignored) child.opaque = true;
+      child.ignored = entry.ignored;
+      child.symlink = entry.symlink;
+      if (entry.ignored && !tree.loadedDirectories) child.opaque = true;
       node.dirs.set(name, child);
     } else {
-      node.files.push({ name, ignored: entry.ignored });
+      node.files.push({ name, ignored: entry.ignored, symlink: entry.symlink });
     }
   }
 
   const rows: TreeRow[] = [];
-  flatten(root, "", 0, collapsed, openedIgnored, rows);
+  flatten(
+    root,
+    "",
+    0,
+    collapsed,
+    openedIgnored,
+    rows,
+    preserve,
+    tree.loadedDirectories ? new Set(tree.loadedDirectories) : undefined,
+  );
   return rows;
 }
 
@@ -133,13 +144,22 @@ function flatten(
   collapsed: Set<string>,
   openedIgnored: ReadonlySet<string>,
   rows: TreeRow[],
+  preserve: ReadonlySet<string>,
+  loaded?: ReadonlySet<string>,
 ): void {
   const dirs = [...node.dirs.entries()].sort(([a], [b]) => compareNames(a, b));
   for (const [name, initialChild] of dirs) {
     let label = name;
     let path = join(prefix, name);
     let child = initialChild;
-    while (!child.opaque && child.files.length === 0 && child.dirs.size === 1) {
+    while (
+      !child.opaque &&
+      !child.symlink &&
+      child.files.length === 0 &&
+      child.dirs.size === 1 &&
+      !preserve.has(path) &&
+      (!loaded || (loaded.has(path) && !collapsed.has(path)))
+    ) {
       const [only, next] = child.dirs.entries().next().value as [string, Node];
       label = `${label}/${only}`;
       path = join(path, only);
@@ -157,10 +177,11 @@ function flatten(
       path,
       isFile: false,
       folded,
-      ignored: allIgnored(child),
+      ignored: child.ignored ?? allIgnored(child),
       opaque,
+      ...(child.symlink ? { symlink: child.symlink } : {}),
     });
-    if (!folded) flatten(child, path, depth + 1, collapsed, openedIgnored, rows);
+    if (!folded) flatten(child, path, depth + 1, collapsed, openedIgnored, rows, preserve, loaded);
   }
 
   for (const file of [...node.files].sort((a, b) => compareNames(a.name, b.name))) {
@@ -172,6 +193,7 @@ function flatten(
       folded: false,
       ignored: file.ignored,
       opaque: false,
+      ...(file.symlink ? { symlink: file.symlink } : {}),
     });
   }
 }
@@ -185,7 +207,10 @@ export function directoryPaths<T extends FileTree>(tree: T | null): string[] {
   const dirs = new Set<string>();
   for (const entry of tree.entries) {
     const parts = entry.path.split("/").filter(Boolean);
-    const upto = entry.kind === "Directory" && !entry.ignored ? parts.length : parts.length - 1;
+    const upto =
+      entry.kind === "Directory" && (!entry.ignored || tree.loadedDirectories !== undefined)
+        ? parts.length
+        : parts.length - 1;
     let prefix = "";
     for (let i = 0; i < upto; i += 1) {
       prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];

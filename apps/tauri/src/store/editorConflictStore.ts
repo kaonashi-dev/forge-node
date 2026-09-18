@@ -10,6 +10,7 @@
 // two documents on the broadcast channel are exactly what its bound is for.
 
 import { createStore } from "solid-js/store";
+import { forgeStore } from "./forgeStore";
 
 export type EditorConflict = {
   path: string;
@@ -39,7 +40,14 @@ export function startEditorConflictLoad(session: string): void {
 }
 
 export function applyEditorConflict(session: string, conflict: EditorConflict): void {
-  setStore("bySession", session, { conflict, error: null, loading: false });
+  const path =
+    forgeStore.sessions.find((item) => item.id === session)?.editor?.path ?? conflict.path;
+  setStore("bySession", session, { conflict: { ...conflict, path }, error: null, loading: false });
+}
+
+export function retargetEditorConflict(session: string, path: string): void {
+  const conflict = store.bySession[session]?.conflict;
+  if (conflict && conflict.path !== path) setStore("bySession", session, "conflict", "path", path);
 }
 
 export function failEditorConflict(session: string, error: string): void {

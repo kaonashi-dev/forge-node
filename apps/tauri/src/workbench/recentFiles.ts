@@ -9,6 +9,7 @@
 
 import { forgeStore } from "../store/forgeStore";
 import { setAppState } from "../runtime/api";
+import { retargetPath } from "./pathOperations";
 
 /** Where the per-checkout lists live in `app_state`. */
 export const RECENT_FILES_KEY = "ui.files.recent";
@@ -107,5 +108,26 @@ export function noteFileOpened(workspace: string | null, path: string): void {
   const current = parseRecent(forgeStore.app_state[RECENT_FILES_KEY]);
   if (current[workspace]?.[0] === path) return;
   const next = withOpened(current, workspace, path);
+  void setAppState(RECENT_FILES_KEY, JSON.stringify(next)).catch(() => undefined);
+}
+
+export function withMoved(
+  current: RecentFiles,
+  workspace: string,
+  from: string,
+  to: string,
+): RecentFiles {
+  const previous = current[workspace];
+  if (!previous) return current;
+  const next = [...new Set(previous.map((path) => retargetPath(path, from, to)))];
+  if (next.length === previous.length && next.every((path, index) => path === previous[index]))
+    return current;
+  return { ...current, [workspace]: next };
+}
+
+export function retargetRecentFiles(workspace: string, from: string, to: string): void {
+  const current = parseRecent(forgeStore.app_state[RECENT_FILES_KEY]);
+  const next = withMoved(current, workspace, from, to);
+  if (next === current) return;
   void setAppState(RECENT_FILES_KEY, JSON.stringify(next)).catch(() => undefined);
 }

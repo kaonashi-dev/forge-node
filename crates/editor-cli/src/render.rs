@@ -321,14 +321,14 @@ fn draw_completion(app: &App, out: &mut impl Write, height: usize) -> io::Result
 
 /// What one ruler mark looks like: a glyph and a colour.
 ///
-/// The caret is a pointer rather than a bar so it reads as *where you are*
-/// against the marks around it.
+/// The caret used to be a pointer (`◀`) that tracked the viewport like a
+/// scrollbar thumb. Change and match ticks stay; the caret cell is blank.
 fn ruler_style(mark: crate::app::RulerMark) -> (char, style::Color) {
     use crate::app::RulerMark;
     match mark {
         RulerMark::Change => ('\u{2502}', style::Color::Yellow),
         RulerMark::Match => ('\u{2502}', style::Color::Blue),
-        RulerMark::Caret => ('\u{25c0}', style::Color::Reset),
+        RulerMark::Caret => (' ', style::Color::Reset),
     }
 }
 

@@ -1,12 +1,15 @@
-import { Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { COMMAND_PALETTE } from "../actions/actions";
 import { enterContext } from "../actions/dispatch";
 import { forgeStore } from "../store/forgeStore";
 import { runtimeStore } from "../store/runtimeStore";
-import { Combobox, Dialog, type ComboboxOption } from "../ui";
+import { Button, Combobox, Dialog, type ComboboxOption } from "../ui";
 import { Icon, LangIcon, SessionGlyph } from "../theme/icons";
 import {
+  BRANCHES,
+  CREATE,
   FILES,
+  SESSIONS,
   admits,
   fileEntries,
   paletteEntries,
@@ -16,8 +19,11 @@ import {
   type PaletteEntry,
   type PaletteScope,
 } from "./entries";
-import { workbenchStore } from "../store/workbenchStore";
+import { setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
 import { initialFiles, recentPaths } from "../workbench/recentFiles";
+import { navigationFileIndex, navigationFilePaths } from "../workbench/fileIndex";
+import { nameResults, scheduleNameSearch } from "../workbench/paletteSearch";
+import { warmFileTree } from "../workbench/api";
 
 /** Rows shown before the list scrolls. */
 const VISIBLE_ROWS = 12;
@@ -44,31 +50,37 @@ export type CommandPaletteProps = {
 export function CommandPalette(props: CommandPaletteProps) {
   const [query, setQuery] = createSignal("");
 
-  /*
-   * Files are built separately from everything else: they come from another
-   * store, exist only once a checkout's tree has been read, and — unlike every
-   * other group — are too many to build before they are wanted. Once built
-   * they are the same kind of row and go through the same ranking.
-   */
-
   /**
    * Whether the repository listing has been needed yet.
    *
-   * The palette opens on the recent files, so the thousands of paths under
-   * them are not built until somebody types — and then built once, because
-   * this is what `allFiles` depends on rather than the query itself. A memo
-   * keyed on the query would rebuild every entry object on every keystroke.
+   * The palette opens on the recent files. Typed queries go to
+   * `SearchFiles { kind: Name }` so ranking stays in the daemon.
    */
   const [searching, setSearching] = createSignal(false);
 
-  const treePaths = () => workbenchStore.tree?.entries.map((entry) => entry.path) ?? null;
+  createEffect(() => {
+    const workspace = workbenchStore.workspace;
+    if (workspace && admits(props.scope, FILES)) warmFileTree(workspace);
+  });
 
-  /** Every file in the checkout. Not built until the first character. */
-  const allFiles = createMemo(() =>
-    searching() && admits(props.scope, FILES)
-      ? fileEntries(workbenchStore.workspace, treePaths())
-      : [],
-  );
+  const index = createMemo(navigationFileIndex);
+  const treePaths = createMemo(() => navigationFilePaths());
+
+  createEffect(() => {
+    if (searching() && admits(props.scope, FILES)) {
+      scheduleNameSearch(workbenchStore.workspace, query());
+    }
+  });
+
+  const allFiles = createMemo(() => {
+    if (!(searching() && admits(props.scope, FILES))) return [];
+    const hits = nameResults();
+    if (!hits) return [];
+    return fileEntries(
+      workbenchStore.workspace,
+      hits.matches.map((match) => match.path),
+    );
+  });
 
   /**
    * What the file list opens on: recently opened here, then whatever has
@@ -103,7 +115,15 @@ export function CommandPalette(props: CommandPaletteProps) {
         : paletteEntries(forgeStore, runtimeStore.activeSession).filter((entry) =>
             admits(props.scope, entry.group),
           );
-    return rank([...base, ...files()], query());
+    const ranked = rank(base, query());
+    const listed = files();
+    if (listed.length === 0) return ranked;
+    const head = new Set<string>([CREATE, SESSIONS, BRANCHES]);
+    return [
+      ...ranked.filter((entry) => head.has(entry.group)),
+      ...listed,
+      ...ranked.filter((entry) => !head.has(entry.group)),
+    ];
   });
 
   const options = createMemo<ComboboxOption<PaletteEntry>[]>(() =>
@@ -150,6 +170,24 @@ export function CommandPalette(props: CommandPaletteProps) {
           </Show>
         }
       />
+      <Show when={admits(props.scope, FILES) && index()?.truncated}>
+        <p class="panel-note">Partial file index — some paths may not be listed.</p>
+      </Show>
+      <Show when={admits(props.scope, FILES) && workbenchStore.nameSearchError}>
+        <p class="panel-error">{workbenchStore.nameSearchError}</p>
+      </Show>
+      <Show when={admits(props.scope, FILES) && workbenchStore.treeError}>
+        <p class="panel-error">Could not refresh the file index: {workbenchStore.treeError}</p>
+        <Button
+          onClick={() => {
+            setWorkbenchStore("treeError", null);
+            const workspace = workbenchStore.workspace;
+            if (workspace) warmFileTree(workspace);
+          }}
+        >
+          Retry file index
+        </Button>
+      </Show>
     </Dialog>
   );
 }

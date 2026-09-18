@@ -20,9 +20,9 @@ export function needleOf(query: string): string[] {
  */
 export function scoreWith(needle: string[], candidate: string): number | null {
   if (needle.length === 0) return 0;
-  const hay = [...candidate.toLowerCase()];
-  const raw = [...candidate];
-
+  // Walk the string in place. Spreading into code-point arrays allocated two
+  // new arrays per candidate. File paths are ranked in the daemon.
+  const hay = candidate.toLowerCase();
   let score = 0;
   let needleIndex = 0;
   let previousMatch = -2;
@@ -30,14 +30,13 @@ export function scoreWith(needle: string[], candidate: string): number | null {
     if (needleIndex >= needle.length) break;
     if (hay[index] !== needle[needleIndex]) continue;
     score += 1;
+    const prev = index === 0 ? "" : hay[index - 1];
     const startsWord =
       index === 0 ||
-      hay[index - 1] === " " ||
-      hay[index - 1] === "-" ||
-      hay[index - 1] === "/" ||
-      (raw[index] === raw[index].toUpperCase() &&
-        raw[index] !== raw[index].toLowerCase() &&
-        raw[index - 1] !== raw[index - 1].toUpperCase());
+      prev === " " ||
+      prev === "-" ||
+      prev === "/" ||
+      (isUpper(candidate, index) && !isUpper(candidate, index - 1));
     if (startsWord) score += 8;
     if (previousMatch === index - 1) score += 4;
     previousMatch = index;
@@ -47,6 +46,12 @@ export function scoreWith(needle: string[], candidate: string): number | null {
   // A short label that used most of its characters is a better hit than a long
   // one that happened to contain the same letters.
   return score - Math.floor(hay.length / 8);
+}
+
+function isUpper(text: string, index: number): boolean {
+  if (index < 0 || index >= text.length) return false;
+  const character = text[index];
+  return character === character.toUpperCase() && character !== character.toLowerCase();
 }
 
 export function score(query: string, candidate: string): number | null {
@@ -83,9 +88,17 @@ const DEPTH_PENALTY = 2;
  * are labels rather than paths, and giving them a basename would mean deciding
  * that the half of "New Terminal" after a space is the important half.
  */
+function slashCount(path: string): number {
+  let n = 0;
+  for (let i = 0; i < path.length; i += 1) {
+    if (path.charCodeAt(i) === 47) n += 1;
+  }
+  return n;
+}
+
 export function scorePath(needle: string[], path: string): number | null {
   if (needle.length === 0) return 0;
-  const depth = path.split("/").length - 1;
+  const depth = slashCount(path);
 
   if (!needle.includes("/")) {
     const base = path.slice(path.lastIndexOf("/") + 1);
@@ -107,12 +120,29 @@ export function filterPaths<T extends { path: string }>(entries: T[], query: str
   if (query.trim() === "") return entries;
   const needle = needleOf(query);
   const scored: { score: number; index: number; entry: T }[] = [];
-  entries.forEach((entry, index) => {
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
     const value = scorePath(needle, entry.path);
     if (value !== null) scored.push({ score: value, index, entry });
-  });
+  }
   scored.sort((a, b) => b.score - a.score || a.index - b.index);
   return scored.map((item) => item.entry);
+}
+
+/** Rank paths and keep at most `limit`, so the palette never materialises every row. */
+export function rankPaths(paths: readonly string[], query: string, limit: number): string[] {
+  if (limit <= 0) return [];
+  if (query.trim() === "") return paths.slice(0, limit);
+  const needle = needleOf(query);
+  const scored: { score: number; index: number; path: string }[] = [];
+  for (let index = 0; index < paths.length; index += 1) {
+    const path = paths[index];
+    const value = scorePath(needle, path);
+    if (value !== null) scored.push({ score: value, index, path });
+  }
+  scored.sort((a, b) => b.score - a.score || a.index - b.index);
+  if (scored.length > limit) scored.length = limit;
+  return scored.map((item) => item.path);
 }
 
 /**

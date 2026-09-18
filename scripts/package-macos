@@ -102,6 +102,12 @@ done
 
 [ "$(uname -s)" = "Darwin" ] || die "this script only runs on macOS (uname is $(uname -s))"
 
+# xcrun --show-sdk-path can pick an SDK newer than this ld (leftover MacOSX27
+# TBD files name arm64e.x1). scripts/macos-sdk selects a linker-compatible one.
+SDKROOT="$("$repo_root/scripts/macos-sdk")" \
+  || die "no macOS SDK the installed linker can parse (xcode-select -p; xcrun --show-sdk-path)"
+export SDKROOT
+
 require_cmd cargo
 require_cmd rustup
 require_cmd plutil "part of the Xcode Command Line Tools: xcode-select --install"
@@ -223,6 +229,7 @@ if [ "$dry_run" -eq 1 ]; then
   printf '    version        %s\n' "$version"
   printf '    bundle id      %s\n' "$bundle_id"
   printf '    macOS minimum  %s\n' "$macos_min"
+  printf '    SDKROOT        %s\n' "$SDKROOT"
   printf '    slices         %s\n' "${slices[*]}"
   for slice in "${slices[@]}"; do
     printf '    %-14s cargo build --release --locked --target %s -p daemon -p %s --bin %s --bin %s --features %s/custom-protocol\n' \
@@ -274,9 +281,12 @@ for slice in "${slices[@]}"; do
     -p daemon -p editor-cli -p "$gui_crate" \
     --bin "$daemon_name" --bin "$editor_name" --bin "$gui_bin" \
     --features "$gui_crate/custom-protocol" \
-    || die "cargo build failed for $rust_target — the toolchain must be able to \
-cross-compile that slice (check: xcode-select -p, and that the macOS SDK supports it); \
-build without --universal for a $host_slice-only bundle"
+    || {
+      extra=""
+      [ "$universal" -eq 1 ] \
+        && extra="; build without --universal for a $host_slice-only bundle"
+      die "cargo build failed for $rust_target (SDKROOT=${SDKROOT:-<unset>})$extra"
+    }
 done
 
 note "assembling $app (version $version, bundle id $bundle_id)"

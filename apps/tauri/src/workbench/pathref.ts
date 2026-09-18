@@ -174,22 +174,29 @@ function underRoot(parts: string[], root: string): string | null {
 /** What a loaded file tree can answer about a guessed path. */
 export type PathIndex = {
   files: ReadonlySet<string>;
+  directories: ReadonlySet<string>;
+  complete: boolean;
   /** Basename to the files carrying it, for a reference that named no directory. */
   byName: ReadonlyMap<string, string[]>;
 };
 
-export function buildPathIndex(entries: readonly FileEntry[]): PathIndex {
+export function buildPathIndex(entries: readonly FileEntry[], complete = true): PathIndex {
   const files = new Set<string>();
+  const directories = new Set<string>();
   const byName = new Map<string, string[]>();
   for (const entry of entries) {
-    if (entry.kind === "Directory") continue;
+    if (entry.kind === "Directory") {
+      directories.add(entry.path);
+      continue;
+    }
+    if (entry.kind !== "File") continue;
     files.add(entry.path);
     const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
     const bucket = byName.get(name);
     if (bucket) bucket.push(entry.path);
     else byName.set(name, [entry.path]);
   }
-  return { files, byName };
+  return { files, directories, byName, complete };
 }
 
 /**
@@ -202,10 +209,12 @@ export function buildPathIndex(entries: readonly FileEntry[]): PathIndex {
 export function resolvePath(candidate: string, index: PathIndex | null): string | null {
   if (index === null) return candidate;
   if (index.files.has(candidate)) return candidate;
+  if (index.directories.has(candidate)) return null;
 
   // `git diff` spells the same file `a/src/x.rs` and `b/src/x.rs`.
   const undiffed = candidate.replace(/^[ab]\//, "");
   if (undiffed !== candidate && index.files.has(undiffed)) return undiffed;
+  if (!index.complete) return candidate;
 
   const name = candidate.slice(candidate.lastIndexOf("/") + 1);
   const named = index.byName.get(name) ?? [];

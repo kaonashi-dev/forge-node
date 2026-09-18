@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filter, filterPaths, score } from "./fuzzy";
+import { filter, filterPaths, rankPaths, score } from "./fuzzy";
 
 describe("fuzzy score", () => {
   it("requires every query character, in order", () => {
@@ -119,5 +119,15 @@ describe("scorePath", () => {
   it("keeps the input order on an empty query", () => {
     const paths = ["b.ts", "a.ts", "c.ts"];
     expect(rank("  ", paths)).toEqual(paths);
+  });
+
+  it("caps ranked paths before the palette builds rows", () => {
+    expect(
+      rankPaths(
+        ["src/entries-helpers/notes.md", "docs/entries/overview.md", "src/palette/entries.ts"],
+        "entries",
+        1,
+      ),
+    ).toEqual(["src/palette/entries.ts"]);
   });
 });

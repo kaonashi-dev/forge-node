@@ -1,17 +1,6 @@
-//! Workbench reads, on their own thread.
-//!
-//! Local synchronous reads (ADR-012): `git diff`, a file tree, a file, a
-//! search, a stopped rebase. The daemon answers them without acking-then-eventing,
-//! which is why they must not run where terminal input runs — a `git diff` of a
-//! large checkout is seconds of subprocess, and that channel also carries
-//! `RuntimeCommand::Input`.
-//!
-//! Sharing the client across two threads is what it was built for:
-//! `Shared.write` is a `Mutex<UnixStream>` documented as serialized across
-//! request writers, `pending` correlates by `request_id`, and every waiter has
-//! its own channel. Nothing here touches the `Store` — a `WorkspaceDiff`, a
-//! `FileTree` and a `RebaseState` are runtime-only, with no column and no
-//! `Store` field — so the two threads share no mutable state at all.
+//! Workbench reads and mutations on a bounded worker separate from terminal input.
+//! Correlated results belong to the requesting WebView interaction, never the Store.
+//! The shared client serializes socket writes and correlates daemon replies.
 
 use std::sync::Arc;
 use std::thread;
@@ -81,14 +70,18 @@ pub enum WorkbenchCommand {
     WatchFiles {
         workspace: WorkspaceId,
         directories: Vec<String>,
+        generation: u64,
     },
     LoadFileTree {
         workspace: WorkspaceId,
+        request_id: String,
     },
-    /// Immediate children of one directory, for peeling an opaque ignored folder.
+    /// Immediate children on disk; an empty path reads the root.
     LoadFileDirectory {
         workspace: WorkspaceId,
         path: String,
+        request_id: String,
+        generation: u64,
     },
     OpenFile {
         workspace: WorkspaceId,
@@ -106,18 +99,21 @@ pub enum WorkbenchCommand {
         text: String,
         revision: String,
     },
-    /// Make an empty file or a directory (A11). Never overwrites.
+    /// Never overwrites an existing entry.
     CreatePath {
+        operation_id: String,
         workspace: WorkspaceId,
         path: String,
         directory: bool,
     },
     RenamePath {
+        operation_id: String,
         workspace: WorkspaceId,
         from: String,
         to: String,
     },
     DeletePath {
+        operation_id: String,
         workspace: WorkspaceId,
         path: String,
     },
@@ -273,6 +269,101 @@ struct Failure {
     error: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PathOperationKind {
+    Create,
+    Rename,
+    Delete,
+}
+
+#[derive(Debug, Serialize)]
+struct PathResult {
+    operation_id: String,
+    workspace: WorkspaceId,
+    kind: PathOperationKind,
+    from: Option<String>,
+    to: Option<String>,
+    success: bool,
+    error: Option<String>,
+    uncertain: bool,
+}
+
+impl PathResult {
+    fn new(
+        operation_id: String,
+        workspace: WorkspaceId,
+        kind: PathOperationKind,
+        from: Option<String>,
+        to: Option<String>,
+        result: Result<(), client::ClientError>,
+    ) -> Self {
+        // Only an acknowledged result or structured refusal establishes the write's outcome.
+        let uncertain =
+            matches!(&result, Err(error) if !matches!(error, client::ClientError::Protocol(_)));
+        Self {
+            operation_id,
+            workspace,
+            kind,
+            from,
+            to,
+            success: result.is_ok(),
+            error: result.err().map(|error| error.to_string()),
+            uncertain,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DirectoryRequest {
+    workspace: WorkspaceId,
+    path: String,
+    request_id: String,
+    generation: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct IndexPayload {
+    workspace: WorkspaceId,
+    request_id: String,
+    tree: domain::FileTree,
+}
+
+#[derive(Debug, Serialize)]
+struct IndexFailure {
+    workspace: WorkspaceId,
+    request_id: String,
+    error: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DirectoryPayload {
+    #[serde(flatten)]
+    request: DirectoryRequest,
+    entries: Vec<domain::FileEntry>,
+    truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DirectoryFailure {
+    #[serde(flatten)]
+    request: DirectoryRequest,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WatchReady {
+    workspace: WorkspaceId,
+    generation: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct WatchFailure {
+    workspace: WorkspaceId,
+    generation: u64,
+    error: String,
+}
+
 /// A preview asks for several images at once, so a failure names its path.
 #[derive(Clone, Debug, Serialize)]
 struct ImageFailure {
@@ -325,6 +416,21 @@ struct StatusPayload {
 
 /// The sender half, held by the shell so a command can reach the worker.
 pub type WorkbenchSender = flume::Sender<WorkbenchCommand>;
+
+pub(super) fn enqueue(
+    sender: Option<&WorkbenchSender>,
+    command: WorkbenchCommand,
+) -> Result<(), String> {
+    sender
+        .ok_or_else(|| "workbench worker is unavailable".to_string())?
+        .try_send(command)
+        .map_err(|error| match error {
+            flume::TrySendError::Full(_) => "workbench command queue is full".to_string(),
+            flume::TrySendError::Disconnected(_) => {
+                "workbench command queue is disconnected".to_string()
+            }
+        })
+}
 
 /// Start a worker for one connection.
 ///
@@ -437,22 +543,79 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
         WorkbenchCommand::WatchFiles {
             workspace,
             directories,
+            generation,
         } => match client.watch_files(workspace, directories) {
-            Ok(()) => emit(app, "workbench:watch_ready", &workspace),
-            Err(error) => fail(app, "workbench:watch_failed", Some(workspace), &error),
+            Ok(()) => emit(
+                app,
+                "workbench:watch_ready",
+                &WatchReady {
+                    workspace,
+                    generation,
+                },
+            ),
+            Err(error) => emit(
+                app,
+                "workbench:watch_failed",
+                &WatchFailure {
+                    workspace,
+                    generation,
+                    error: error.to_string(),
+                },
+            ),
         },
-        WorkbenchCommand::LoadFileTree { workspace } => match client.list_files(workspace) {
-            Ok(tree) => emit(app, "workbench:file_tree", &(workspace, tree)),
-            Err(error) => fail(app, "workbench:file_tree_failed", Some(workspace), &error),
+        WorkbenchCommand::LoadFileTree {
+            workspace,
+            request_id,
+        } => match client.list_files(workspace) {
+            Ok(tree) => emit(
+                app,
+                "workbench:file_tree",
+                &IndexPayload {
+                    workspace,
+                    request_id,
+                    tree,
+                },
+            ),
+            Err(error) => emit(
+                app,
+                "workbench:file_tree_failed",
+                &IndexFailure {
+                    workspace,
+                    request_id,
+                    error: error.to_string(),
+                },
+            ),
         },
-        WorkbenchCommand::LoadFileDirectory { workspace, path } => {
-            match client.list_directory(workspace, path.clone()) {
-                Ok(tree) => emit(app, "workbench:file_directory", &(workspace, path, tree)),
-                Err(error) => fail(
+        WorkbenchCommand::LoadFileDirectory {
+            workspace,
+            path,
+            request_id,
+            generation,
+        } => {
+            let result = client.list_directory(workspace, path.clone());
+            let request = DirectoryRequest {
+                workspace,
+                path,
+                request_id,
+                generation,
+            };
+            match result {
+                Ok(listing) => emit(
                     app,
-                    "workbench:file_directory_failed",
-                    Some(workspace),
-                    &error,
+                    "workbench:directory",
+                    &DirectoryPayload {
+                        request,
+                        entries: listing.entries,
+                        truncated: listing.truncated,
+                    },
+                ),
+                Err(error) => emit(
+                    app,
+                    "workbench:directory_failed",
+                    &DirectoryFailure {
+                        request,
+                        message: error.to_string(),
+                    },
                 ),
             }
         }
@@ -486,36 +649,64 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             // carrying the content.
             Err(error) => fail(app, "workbench:save_failed", Some(workspace), &error),
         },
-        /*
-         * The three path mutations, and the re-read that follows each.
-         *
-         * The tree is a read rather than a subscription (see `core.rs`), so
-         * nothing would redraw on its own: the listing is asked for again here
-         * and lands on `workbench:file_tree`, which is the same event the
-         * panel already reconciles. One round trip from the WebView's point of
-         * view rather than two.
-         */
         WorkbenchCommand::CreatePath {
+            operation_id,
             workspace,
             path,
             directory,
-        } => match client.create_path(workspace, path, directory) {
-            Ok(()) => relist(app, client, workspace),
-            Err(error) => fail(app, "workbench:file_failed", Some(workspace), &error),
-        },
+        } => {
+            let result = client.create_path(workspace, path.clone(), directory);
+            emit(
+                app,
+                "workbench:path_result",
+                &PathResult::new(
+                    operation_id,
+                    workspace,
+                    PathOperationKind::Create,
+                    None,
+                    Some(path),
+                    result,
+                ),
+            );
+        }
         WorkbenchCommand::RenamePath {
+            operation_id,
             workspace,
             from,
             to,
-        } => match client.rename_path(workspace, from, to) {
-            Ok(()) => relist(app, client, workspace),
-            Err(error) => fail(app, "workbench:file_failed", Some(workspace), &error),
-        },
-        WorkbenchCommand::DeletePath { workspace, path } => {
-            match client.delete_path(workspace, path) {
-                Ok(()) => relist(app, client, workspace),
-                Err(error) => fail(app, "workbench:file_failed", Some(workspace), &error),
-            }
+        } => {
+            let result = client.rename_path(workspace, from.clone(), to.clone());
+            emit(
+                app,
+                "workbench:path_result",
+                &PathResult::new(
+                    operation_id,
+                    workspace,
+                    PathOperationKind::Rename,
+                    Some(from),
+                    Some(to),
+                    result,
+                ),
+            );
+        }
+        WorkbenchCommand::DeletePath {
+            operation_id,
+            workspace,
+            path,
+        } => {
+            let result = client.delete_path(workspace, path.clone());
+            emit(
+                app,
+                "workbench:path_result",
+                &PathResult::new(
+                    operation_id,
+                    workspace,
+                    PathOperationKind::Delete,
+                    Some(path),
+                    None,
+                    result,
+                ),
+            );
         }
         WorkbenchCommand::SearchFiles {
             workspace,
@@ -523,10 +714,17 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             kind,
             limit,
         } => match parse_search_kind(&kind) {
-            Ok(kind) => match client.search_files(workspace, query, kind, limit) {
-                Ok(results) => emit(app, "workbench:search", &(workspace, results)),
-                Err(error) => fail(app, "workbench:search_failed", Some(workspace), &error),
-            },
+            Ok(kind) => {
+                let (ok, failed) = if kind == SearchKind::Name {
+                    ("workbench:name_search", "workbench:name_search_failed")
+                } else {
+                    ("workbench:search", "workbench:search_failed")
+                };
+                match client.search_files(workspace, query, kind, limit) {
+                    Ok(results) => emit(app, ok, &(workspace, results)),
+                    Err(error) => fail(app, failed, Some(workspace), &error),
+                }
+            }
             Err(error) => fail_text(app, "workbench:search_failed", Some(workspace), &error),
         },
         WorkbenchCommand::LoadRebaseState { workspace } => {
@@ -791,14 +989,6 @@ fn harness_fail(
     );
 }
 
-/// Re-read the tree after a mutation, and report a failed read as a failed read.
-fn relist(app: &AppHandle, client: &client::Client, workspace: WorkspaceId) {
-    match client.list_files(workspace) {
-        Ok(tree) => emit(app, "workbench:file_tree", &(workspace, tree)),
-        Err(error) => fail(app, "workbench:file_tree_failed", Some(workspace), &error),
-    }
-}
-
 fn rebase(
     app: &AppHandle,
     result: Result<domain::RebaseState, client::ClientError>,
@@ -875,4 +1065,213 @@ fn fail_external(app: &AppHandle, event: &str, session: String, error: &client::
             error: error.to_string(),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, to_value};
+
+    #[test]
+    fn enqueue_reports_unavailable_full_and_closed_without_losing_accepted_commands() {
+        let command = || WorkbenchCommand::LoadFileTree {
+            workspace: WorkspaceId::new(),
+            request_id: "index-1".into(),
+        };
+        assert_eq!(
+            enqueue(None, command()),
+            Err("workbench worker is unavailable".into())
+        );
+        let (sender, receiver) = flume::bounded(1);
+        assert_eq!(enqueue(Some(&sender), command()), Ok(()));
+        assert_eq!(
+            enqueue(Some(&sender), command()),
+            Err("workbench command queue is full".into())
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WorkbenchCommand::LoadFileTree { .. })
+        ));
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(enqueue(Some(&sender), command()), Ok(()));
+        drop(receiver);
+        assert_eq!(
+            enqueue(Some(&sender), command()),
+            Err("workbench command queue is disconnected".into())
+        );
+    }
+
+    #[test]
+    fn mutations_require_operation_identity() {
+        let workspace = WorkspaceId::new();
+        for mut command in [
+            json!({"type": "create_path", "workspace": workspace, "path": ".agents", "directory": true}),
+            json!({"type": "rename_path", "workspace": workspace, "from": "src", "to": "lib"}),
+            json!({"type": "delete_path", "workspace": workspace, "path": "lib"}),
+        ] {
+            assert!(serde_json::from_value::<WorkbenchCommand>(command.clone()).is_err());
+            command["operation_id"] = json!("operation-1");
+            let parsed = serde_json::from_value::<WorkbenchCommand>(command).unwrap();
+            let operation_id = match parsed {
+                WorkbenchCommand::CreatePath { operation_id, .. }
+                | WorkbenchCommand::RenamePath { operation_id, .. }
+                | WorkbenchCommand::DeletePath { operation_id, .. } => operation_id,
+                other => panic!("unexpected command: {other:?}"),
+            };
+            assert_eq!(operation_id, "operation-1");
+        }
+    }
+
+    #[test]
+    fn acknowledged_mutations_serialize_explicit_outcomes_and_paths() {
+        let workspace = WorkspaceId::new();
+        for (kind, name, from, to) in [
+            (PathOperationKind::Create, "create", None, Some(".agents")),
+            (
+                PathOperationKind::Rename,
+                "rename",
+                Some("src"),
+                Some("lib"),
+            ),
+            (PathOperationKind::Delete, "delete", Some("lib"), None),
+        ] {
+            let payload = PathResult::new(
+                "operation-1".into(),
+                workspace,
+                kind,
+                from.map(String::from),
+                to.map(String::from),
+                Ok(()),
+            );
+            assert_eq!(
+                to_value(payload).unwrap(),
+                json!({
+                    "operation_id": "operation-1", "workspace": workspace, "kind": name,
+                    "from": from, "to": to, "success": true, "error": null, "uncertain": false,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn lost_replies_are_uncertain_but_daemon_refusals_are_definite() {
+        for (error, uncertain) in [
+            (client::ClientError::Disconnected, true),
+            (client::ClientError::Timeout, true),
+            (
+                client::ClientError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
+                true,
+            ),
+            (
+                client::ClientError::UnexpectedResponse { expected: "Ack" },
+                true,
+            ),
+            (
+                client::ClientError::Protocol(client::ProtocolError::invalid_request(
+                    "destination exists",
+                )),
+                false,
+            ),
+        ] {
+            let message = error.to_string();
+            let payload = PathResult::new(
+                "operation-2".into(),
+                WorkspaceId::new(),
+                PathOperationKind::Rename,
+                Some("src".into()),
+                Some("lib".into()),
+                Err(error),
+            );
+            assert!(!payload.success);
+            assert_eq!(payload.error.as_deref(), Some(message.as_str()));
+            assert_eq!(payload.uncertain, uncertain);
+            assert_eq!(payload.operation_id, "operation-2");
+        }
+    }
+
+    #[test]
+    fn directory_results_preserve_root_request_identity_on_both_outcomes() {
+        let workspace = WorkspaceId::new();
+        let command: WorkbenchCommand = serde_json::from_value(json!({
+            "type": "load_file_directory", "workspace": workspace, "path": "",
+            "request_id": "root-7", "generation": 7,
+        }))
+        .unwrap();
+        let WorkbenchCommand::LoadFileDirectory {
+            workspace,
+            path,
+            request_id,
+            generation,
+        } = command
+        else {
+            panic!("expected directory command");
+        };
+        let request = || DirectoryRequest {
+            workspace,
+            path: path.clone(),
+            request_id: request_id.clone(),
+            generation,
+        };
+        assert_eq!(
+            to_value(DirectoryPayload {
+                request: request(),
+                entries: vec![],
+                truncated: true
+            })
+            .unwrap(),
+            json!({
+                "workspace": workspace, "path": "", "request_id": "root-7", "generation": 7,
+                "entries": [], "truncated": true,
+            })
+        );
+        assert_eq!(
+            to_value(DirectoryFailure {
+                request: request(),
+                message: "permission denied".into()
+            })
+            .unwrap(),
+            json!({
+                "workspace": workspace, "path": "", "request_id": "root-7", "generation": 7,
+                "message": "permission denied",
+            })
+        );
+    }
+
+    #[test]
+    fn watch_results_echo_the_interest_generation_on_both_outcomes() {
+        let workspace = WorkspaceId::new();
+        let command: WorkbenchCommand = serde_json::from_value(json!({
+            "type": "watch_files", "workspace": workspace, "directories": ["", "src"], "generation": 42,
+        })).unwrap();
+        let WorkbenchCommand::WatchFiles {
+            workspace,
+            directories,
+            generation,
+        } = command
+        else {
+            panic!("expected watch command");
+        };
+        assert_eq!(directories, ["", "src"]);
+        assert_eq!(
+            to_value(WatchReady {
+                workspace,
+                generation
+            })
+            .unwrap(),
+            json!({
+                "workspace": workspace, "generation": 42,
+            })
+        );
+        assert_eq!(
+            to_value(WatchFailure {
+                workspace,
+                generation,
+                error: "watch failed".into()
+            })
+            .unwrap(),
+            json!({
+                "workspace": workspace, "generation": 42, "error": "watch failed",
+            })
+        );
+    }
 }

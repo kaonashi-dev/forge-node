@@ -53,6 +53,8 @@ pub enum DaemonMessage {
     },
     /// Turn saving-on-a-pause on or off for a live buffer.
     SetAutosave { request_id: u64, autosave: bool },
+    /// Change display metadata without replacing the document or its undo history.
+    Retarget { path: String },
     /// Move the caret to a line (and optionally a display column).
     Reveal {
         request_id: u64,
