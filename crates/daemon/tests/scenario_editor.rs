@@ -484,18 +484,17 @@ fn editor_state_survives_a_client_reconnect() {
     let events = client.events();
     let workspace = common::add_main_workspace(&client, repo.path());
     let (session_id, _terminal) = create_editor(&client, &events, workspace, "a.rs", Some(1));
-    assert!(
-        common::poll_until(common::DEADLINE, || {
-            common::session(&client, session_id)
-                .and_then(|s| s.editor)
-                .is_some()
-        }),
-        "state should land on the session after the handshake"
-    );
-    let before = common::session(&client, session_id)
-        .unwrap()
-        .editor
-        .unwrap();
+    // Running still carries version 0 until the fake editor's State arrives.
+    let update = common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::SessionUpdated(session)
+            if session.id == session_id
+                && session.editor.as_ref().is_some_and(|state| state.document_version == 1))
+    })
+    .expect("the editor must publish its state before reconnecting");
+    let DaemonEvent::SessionUpdated(session) = update else {
+        unreachable!();
+    };
+    let before = session.editor.unwrap();
     assert_eq!(before.path, "a.rs");
     assert!(before.read_only);
 
@@ -504,8 +503,7 @@ fn editor_state_survives_a_client_reconnect() {
     let after = common::session(&again, session_id)
         .and_then(|s| s.editor)
         .expect("snapshot recovers editor state");
-    assert_eq!(after.path, before.path);
-    assert_eq!(after.document_version, before.document_version);
+    assert_eq!(after, before);
 }
 
 #[test]
