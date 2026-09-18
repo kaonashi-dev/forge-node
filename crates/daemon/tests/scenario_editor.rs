@@ -1,4 +1,4 @@
-//! Feature 19: a daemon-supervised `forge-editor` under a real PTY.
+//! A daemon-supervised `forge-editor` under a real PTY.
 //!
 //! The harness PATH is a single directory. These tests write a small Python
 //! stand-in that speaks the control protocol, so the suite does not depend on
@@ -1199,13 +1199,8 @@ fn the_dom_surface_carries_input_down_and_windows_back_up() {
         })
         .expect("SendEditorInput");
 
-    assert!(
-        common::poll_until(common::DEADLINE, || repo
-            .path()
-            .join(".forge-editor-surface")
-            .exists()),
-        "the headless editor never received the surface traffic"
-    );
+    // The fake closes its receipt before publishing the response frame.
+    let answer = wait_for_frame(&events, session_id, 2);
     let seen = fs::read_to_string(repo.path().join(".forge-editor-surface")).unwrap();
     assert!(
         seen.contains("view 0 88"),
@@ -1220,7 +1215,6 @@ fn the_dom_surface_carries_input_down_and_windows_back_up() {
     let argv = fs::read_to_string(repo.path().join(".forge-editor-argv")).unwrap();
     assert!(argv.contains("--headless"), "argv was {argv:?}");
 
-    let answer = wait_for_frame(&events, session_id, 2);
     assert_eq!(answer.rows[0].text(), "Xfn main");
     assert_eq!(answer.caret.column, 1);
 }

@@ -68,18 +68,26 @@ fn fallback_runtime_dir() -> PathBuf {
     PathBuf::from(format!("/tmp/{APP_DIR}-{}", uid()))
 }
 
-/// Resolve the runtime directory whose socket path fits [`MAX_SOCKET_PATH_LEN`].
-///
-/// Returns the directory and the socket path within it. Tries the preferred
-/// location first, then the `/tmp` fallback, and errors if neither fits.
+/// Prefer the platform runtime directory, falling back to `/tmp` if the socket would not fit.
 pub fn resolve_runtime_dir() -> Result<PathBuf, PathError> {
-    let candidates = preferred_runtime_dir()
+    resolve_runtime_dir_for_name("daemon.sock")
+}
+
+pub(crate) fn resolve_runtime_dir_for_name(socket_name: &str) -> Result<PathBuf, PathError> {
+    runtime_dir_for_name(preferred_runtime_dir(), socket_name)
+}
+
+fn runtime_dir_for_name(
+    preferred: Option<PathBuf>,
+    socket_name: &str,
+) -> Result<PathBuf, PathError> {
+    let candidates = preferred
         .into_iter()
         .chain(std::iter::once(fallback_runtime_dir()));
 
     let mut last_too_long: Option<PathError> = None;
     for dir in candidates {
-        let sock = dir.join("daemon.sock");
+        let sock = dir.join(socket_name);
         let len = sock.as_os_str().len();
         if len < MAX_SOCKET_PATH_LEN {
             return Ok(dir);
@@ -238,6 +246,30 @@ mod tests {
             sock.as_os_str().len()
         );
         assert!(sock.ends_with("daemon.sock"));
+    }
+
+    #[test]
+    fn runtime_directory_budget_includes_the_actual_socket_name() {
+        let preferred = PathBuf::from(format!("/tmp/{}", "x".repeat(50)));
+        let editor_name = "editor-01990aab123470008000000000000001.sock";
+        assert_eq!(
+            preferred.join(editor_name).as_os_str().len(),
+            MAX_SOCKET_PATH_LEN
+        );
+        assert_eq!(
+            runtime_dir_for_name(Some(preferred.clone()), "daemon.sock").unwrap(),
+            preferred
+        );
+        assert_eq!(
+            runtime_dir_for_name(Some(preferred), editor_name).unwrap(),
+            fallback_runtime_dir()
+        );
+
+        let fits = PathBuf::from(format!("/tmp/{}", "x".repeat(49)));
+        assert_eq!(
+            runtime_dir_for_name(Some(fits.clone()), editor_name).unwrap(),
+            fits
+        );
     }
 
     #[test]
