@@ -1,4 +1,3 @@
-//! Git refs as the GUI needs to see them (§14, branches plan §3).
 //!
 //! A [`BranchRef`] is one row of the branch picker: enough to sort the list, to
 //! label it, and to know whether choosing it would fail before trying. It is a
@@ -22,7 +21,6 @@ pub enum RefScope {
     },
 }
 
-/// One branch offered by the picker (§14.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchRef {
     /// Short branch name, without `refs/heads/` or the remote prefix:
@@ -43,7 +41,7 @@ pub struct BranchRef {
     ///
     /// Git refuses to check the same branch out twice, so a row with this set
     /// is offered *disabled*: the picker can say which worktree holds it
-    /// instead of letting the user discover it as a `Conflict` error (§14.3).
+    /// instead of letting the user discover it as a `Conflict` error.
     pub checked_out_in: Option<WorkspaceId>,
 }
 
@@ -65,7 +63,6 @@ impl BranchRef {
     }
 }
 
-/// A configured git remote (§14.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Remote {
     /// The remote's name, e.g. `origin`.

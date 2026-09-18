@@ -1,4 +1,4 @@
-//! Adoption and forgetting of worktrees (§14.4).
+//! Adoption and forgetting of worktrees.
 //!
 //! The rescan sees every entry `git worktree list` reports and every row the
 //! model holds; what to do with them is this module's only concern. [`plan`] is

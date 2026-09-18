@@ -59,7 +59,7 @@ pub enum IdleAction {
     Stop(IdleReason),
 }
 
-/// Thresholds from `[sessions]` in `config.toml` (§15.4).
+/// Thresholds from `[sessions]` in `config.toml`.
 ///
 /// `None` means "off"; the config layer maps `0` to `None` so a user can
 /// disable a rule without knowing a sentinel value.

@@ -1,4 +1,4 @@
-//! Codex usage from local OAuth credentials (§16.2).
+//! Codex usage from local OAuth credentials.
 //!
 //! Reads the access token from `~/.codex/auth.json` (honouring `$CODEX_HOME`)
 //! and calls the ChatGPT usage endpoint with it. Nothing here logs the token.

@@ -38,16 +38,6 @@ export type FilterHeaderProps = {
   children?: JSX.Element;
 };
 
-/**
- * The scope chips and the search box every list panel opens with (§4.2 U12).
- *
- * History, Features and the feature tab each had their own copy of this, and
- * the three had drifted: one cleared its query with a button, one did not; two
- * announced their search box and one did not; the chip rows used the same
- * class name for different spacing. One component means the filter behaves the
- * same in every panel, which is the whole of the value — it is not a big
- * component.
- */
 export function FilterHeader(props: FilterHeaderProps) {
   return (
     <div class="filter-header">

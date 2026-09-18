@@ -12,27 +12,18 @@ use domain::{
 };
 use protocol::{DaemonEvent, ProviderInfo, Response};
 
-/// Outcome of feeding one [`TerminalDelta`] to a [`CellGrid`], implementing the
-/// per-terminal sequence rules of §10.5.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DeltaOutcome {
     /// `delta.seq == last_seq + 1`: the delta was applied and `last_seq`
     /// advanced.
     Applied,
-    /// `delta.seq <= last_seq`: a duplicate/reordered delta, discarded (§10.5).
+    /// `delta.seq <= last_seq`: a duplicate/reordered delta, discarded.
     Stale,
-    /// `delta.seq > last_seq + 1`: a gap in the stream. The delta was *not*
-    /// applied; the GUI must re-attach the terminal to obtain a fresh snapshot
-    /// (§10.5). This should not normally happen and is logged as a bug.
+    /// `delta.seq > last_seq + 1`: discarded; reattach to obtain a fresh snapshot.
     NeedsResync,
 }
 
-/// Outcome of applying one [`DaemonEvent`] to a [`Store`].
-///
-/// The only actionable variant is [`EventOutcome::NeedsResync`]: a terminal
-/// delta arrived with a sequence gap and the GUI must re-`AttachTerminal`
-/// (§10.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EventOutcome {
@@ -49,96 +40,50 @@ pub enum EventOutcome {
     Ignored,
 }
 
-/// The GUI-side replica of daemon state (§11.5).
-///
-/// Every field is public: the GUI reads them directly to render the sidebar,
-/// session lists and terminals. Mutation goes exclusively through
-/// [`Store::apply_snapshot`] and [`Store::apply_event`] so the replica always
-/// mirrors the authoritative daemon (ADR-011).
-/// How many lines of a running job's stream a replica keeps.
-///
-/// Enough to see what the agent is doing right now, short of holding a whole
-/// run in memory in every client.
 const JOB_TAIL_LINES: usize = 400;
 
 #[derive(Clone, Debug, Default)]
 pub struct Store {
     /// Organizational groups shown above projects in the sidebar.
     pub project_groups: Vec<ProjectGroup>,
-    /// All known projects (§7.1).
     pub projects: Vec<Project>,
-    /// All known workspaces (§7.2).
     pub workspaces: Vec<Workspace>,
-    /// All known sessions (§7.3).
     pub sessions: Vec<Session>,
     /// Read-only agent sessions discovered on disk (e.g. Claude Code
     /// transcripts) that the daemon did not launch. Refreshed on each snapshot.
     pub external_agents: Vec<ExternalAgentSession>,
-    /// Agent providers with their detection state (§13.1).
     pub providers: Vec<ProviderInfo>,
-    /// Saved launch profiles (§13.4), in provider then name order.
+    /// In provider then name order.
     pub agent_profiles: Vec<AgentProfile>,
-    /// Every project's file-sharing rules (§14.2), in application order.
+    /// In application order.
     pub worktree_shares: Vec<ShareRule>,
-    /// Every project's worktree-ignore rules (§14.4). Loaded whole, like the
-    /// share rules: the rail's context menu edits the set and the settings
-    /// dialog shows it.
     pub worktree_ignores: Vec<WorktreeIgnore>,
-    /// Opaque app-state key/value pairs (§15.2).
     pub app_state: Vec<(String, String)>,
-    /// Latest usage per *account* (§16.2, §13.4): a provider reports one
+    /// Latest usage per account: a provider reports one
     /// reading for its default login and one per profile that moved its config
     /// directory. Empty until a provider that declares a usage source reports.
     pub usage: Vec<ProviderUsage>,
     /// Complete cached pull-request state from the daemon.
     pub pull_requests: PullRequestState,
-    /// The tail of each running job's event stream, newest last.
-    ///
-    /// Bounded, and dropped when the job leaves the list: a step can stream for
-    /// minutes and nobody scrolls back through a finished one here — the whole
-    /// transcript is a file the daemon serves with `ReadJobLog`. What this is
-    /// for is watching the step that is running *now*, which is the one
-    /// question the Feature tab could not answer before.
+    /// Bounded tail, newest last; full transcripts are read through `ReadJobLog`.
     pub job_output: HashMap<JobId, VecDeque<String>>,
-    /// Headless agent runs the daemon has started, oldest first (§ jobs).
-    ///
-    /// Held whole rather than by id because the list *is* the view: a job's
-    /// interest is mostly "what is running now, and how did the last ones
-    /// end". The output itself is not here — that is a file the daemon writes
-    /// and a client follows through `JobOutput` or reads with `ReadJobLog`.
+    /// Oldest first; output is stored separately.
     pub jobs: Vec<Job>,
     /// Cell replicas for the terminals the GUI is attached to, keyed by id.
     pub terminals: HashMap<TerminalId, CellGrid>,
-    /// Terminals that rang the bell while the GUI was looking somewhere else.
-    ///
-    /// The flag cannot live in [`CellGrid`]: `terminals` only holds the
-    /// *attached* replica, so a bell stored there could only ever describe the
-    /// session already on screen — the one that by definition is not asking to
-    /// be found. `TerminalBell` is broadcast for every terminal (`core.rs`
-    /// `broadcast_domain`), so keeping the set beside the replicas is what lets
-    /// the rail say *which* agent stopped to ask.
+    /// Kept outside `CellGrid` so unattached terminals can retain attention flags.
     pending_bell: HashSet<TerminalId>,
-    /// Terminals that produced output while the GUI was looking somewhere else.
-    ///
-    /// Same reason as [`Store::pending_bell`]: `TerminalActivity` is only sent
-    /// to clients that are *not* subscribed to that terminal, so storing it on
-    /// the attached grid meant the unread mark could never be set for anyone.
+    /// `TerminalActivity` arrives only for unattached terminals, which have no grid.
     pending_activity: HashSet<TerminalId>,
 }
 
 impl Store {
-    /// Create an empty store.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Populate the domain lists from a [`Response::Snapshot`] (answering
-    /// `GetSnapshot`, §10.2). Any other response variant is ignored.
-    /// Extend one job's tail with lines read back from its log.
-    ///
-    /// Used when a step is opened after it has already been streaming: the
-    /// events only carry what arrived while somebody was listening.
+    /// Seed an empty tail from the log; events omit output produced before subscription.
     pub fn seed_job_output(&mut self, job_id: JobId, lines: Vec<String>) {
         let tail = self.job_output.entry(job_id).or_default();
         if !tail.is_empty() {
@@ -212,12 +157,12 @@ impl Store {
         self.pending_activity.retain(|id| live.contains(id));
     }
 
-    /// Apply one unsolicited [`DaemonEvent`] to the replica (§10.3).
+    /// Apply one unsolicited [`DaemonEvent`] to the replica.
     ///
     /// Domain events (`Project*`/`Workspace*`/`Session*`) add, update or remove
     /// entries by id. Terminal events route to the matching [`CellGrid`]. The
     /// returned [`EventOutcome`] tells the caller whether a terminal re-attach is
-    /// required (§10.5).
+    /// required.
     #[must_use]
     pub fn apply_event(&mut self, event: &DaemonEvent) -> EventOutcome {
         match event {
@@ -412,7 +357,7 @@ impl Store {
     }
 
     /// Insert (or replace) a [`CellGrid`] for a terminal from an `AttachAck`
-    /// snapshot (§10.5). Call this when a `Response::AttachAck` arrives.
+    /// snapshot. Call this when a `Response::AttachAck` arrives.
     pub fn attach_terminal(&mut self, terminal_id: TerminalId, snapshot: &TerminalSnapshot) {
         // Arriving *is* reading it: whatever the terminal rang or printed while
         // the user was elsewhere has now been looked at, so the marks are spent
@@ -425,7 +370,7 @@ impl Store {
 
     /// Whether a terminal asked for the user while they were looking elsewhere.
     ///
-    /// This is the "needs you" signal of §16.3: agent CLIs ring the bell when
+    /// Agent CLIs ring the bell when
     /// they stop to ask a question, and the daemon broadcasts it for every
     /// terminal. The attached terminal is never included — the user is already
     /// looking at it.
@@ -446,7 +391,7 @@ impl Store {
     }
 
     /// Merge a fetched block of scrollback into a terminal's cache
-    /// (`FetchScrollback` flow, §11.5). No-op if the terminal is not attached.
+    /// (`FetchScrollback` flow). No-op if the terminal is not attached.
     pub fn merge_scrollback(&mut self, terminal_id: &TerminalId, block: &ScrollbackRows) {
         if let Some(grid) = self.terminals.get_mut(terminal_id) {
             grid.merge_scrollback(block);
@@ -459,7 +404,7 @@ impl Store {
         self.terminals.get(terminal_id)
     }
 
-    /// Value of a persisted GUI preference from the last snapshot (§15.2);
+    /// Value of a persisted GUI preference from the last snapshot;
     /// `None` if the key is absent. The daemon stays authoritative — writes go
     /// through `Client::set_app_state`, not this replica.
     #[must_use]
@@ -480,7 +425,6 @@ fn upsert_by<T>(items: &mut Vec<T>, value: T, is_match: impl Fn(&T) -> bool) {
     }
 }
 
-/// Maximum scrollback rows a [`CellGrid`] keeps cached (§11.5).
 ///
 /// The daemon holds up to `MAX_SCROLLBACK_LINES` (100 000) per terminal and
 /// serves any of them through `FetchScrollback`, so the GUI only needs enough
@@ -503,7 +447,7 @@ pub struct CellGrid {
     pub cursor: Cursor,
     /// Terminal modes (alt screen, mouse, ...) at `last_seq`.
     pub modes: TermModes,
-    /// The sequence of the last snapshot/delta applied (§10.5).
+    /// The sequence of the last snapshot/delta applied.
     pub last_seq: u64,
     /// The PTY size the grid was last sized to.
     pub size: PtySize,
@@ -517,7 +461,6 @@ pub struct CellGrid {
 }
 
 impl CellGrid {
-    /// Build a grid from an attach/resync [`TerminalSnapshot`] (§10.5).
     ///
     /// The snapshot's `scrollback_tail` is seeded into the cache at the correct
     /// negative offsets: its last row (nearest the viewport) at `-1`, the one
@@ -541,7 +484,7 @@ impl CellGrid {
         grid
     }
 
-    /// Apply one [`TerminalDelta`], enforcing the §10.5 sequence rules exactly.
+    /// Discard stale deltas; a sequence gap requires reattachment.
     ///
     /// - `seq <= last_seq`  → [`DeltaOutcome::Stale`] (discarded).
     /// - `seq == last_seq+1` → [`DeltaOutcome::Applied`]: damaged rows overwrite
@@ -607,7 +550,7 @@ impl CellGrid {
     }
 
     /// Replace the whole grid from a fresh [`TerminalSnapshot`] after a resync
-    /// (§10.5). Resets `last_seq`, the scrollback cache and the transient
+    /// Resets `last_seq`, the scrollback cache and the transient
     /// bell/activity flags.
     pub fn apply_resync(&mut self, snapshot: &TerminalSnapshot) {
         self.visible = snapshot.visible.clone();
@@ -682,7 +625,7 @@ impl CellGrid {
 
     /// The `(min, max)` negative offsets currently held in the cache, or `None`
     /// if empty. The GUI uses this to size its virtual scrollbar and to decide
-    /// which block to fetch next (§11.5).
+    /// which block to fetch next.
     #[must_use]
     pub fn scrollback_cached_extent(&self) -> Option<(i64, i64)> {
         let min = *self.scrollback_cache.keys().next()?;

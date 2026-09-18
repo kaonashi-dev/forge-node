@@ -1,4 +1,4 @@
-//! What a project could share, and what kind of thing each path is (§14.2).
+//! Sharing candidates and filesystem classification.
 //!
 //! Detection exists to make the first rule cheap, not to define what may be
 //! shared: anything the user names is a valid rule. The classification is a

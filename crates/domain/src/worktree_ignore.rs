@@ -1,4 +1,4 @@
-//! Worktrees a project asked Forge to forget (§14.4).
+//! Worktrees a project asked Forge to forget.
 //!
 //! A worktree made by another tool — a parallel agent's scratch checkout, say —
 //! is adopted by the rescan, and dropping its row only lasts until the next
@@ -12,7 +12,6 @@ use crate::ids::{ProjectId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// How far an ignore rule reaches from its path (§14.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -23,7 +22,6 @@ pub enum IgnoreScope {
     Subtree,
 }
 
-/// One worktree-ignore rule of one project (§14.4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeIgnore {
     /// The project whose rescan consults this rule.

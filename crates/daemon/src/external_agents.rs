@@ -163,7 +163,7 @@ pub fn discover(
         return Vec::new();
     };
     // `CLAUDE_CONFIG_DIR` for Claude Code and `XDG_DATA_HOME` for opencode are
-    // what a profile moves, so each account is a store of its own (§13.4).
+    // what a profile moves, so each account is a store of its own.
     let claude = accounts(&home.join(".claude"), CLAUDE_PROVIDER, profiles, &home, "");
     let opencode = accounts(
         &opencode_data_dir(&home),
@@ -203,7 +203,7 @@ struct Account {
 
 /// Every directory one provider keeps its data in: `default`, plus a profile's
 /// resolved config directory with `leaf` appended, for each profile of that
-/// provider (§13.4). Duplicate directories are dropped by canonical path, so a
+/// provider. Duplicate directories are dropped by canonical path, so a
 /// profile pointing at the default directory is the default account and not a
 /// second one.
 fn accounts(
@@ -815,7 +815,7 @@ fn opencode_message_text(base: &Path, message_id: &str) -> Option<String> {
 /// opencode's *default* data directory. It follows XDG on every platform
 /// (including macOS), so it is `$XDG_DATA_HOME/opencode` or
 /// `~/.local/share/opencode`; a profile's directory replaces it, because a
-/// profile is what sets `XDG_DATA_HOME` for the launch (§13.4). The session
+/// profile is what sets `XDG_DATA_HOME` for the launch. The session
 /// databases sit here; the legacy JSON tree is `storage/` inside.
 fn opencode_data_dir(home: &Path) -> PathBuf {
     match std::env::var_os("XDG_DATA_HOME") {
@@ -1538,7 +1538,7 @@ mod tests {
     }
 
     /// The account list a scan walks: the default store first, then one per
-    /// profile of that provider, resolved against `$HOME` (§13.4).
+    /// profile of that provider, resolved against `$HOME`.
     #[test]
     fn every_profile_of_a_provider_adds_an_account_to_scan() {
         let home = Path::new("/home/me");

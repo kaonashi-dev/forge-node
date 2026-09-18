@@ -1,9 +1,9 @@
 //! Git and worktree operations on the system `git` CLI (ADR-008).
 //!
-//! Every command runs with `-C <repo>`, `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`,
-//! a 30 s timeout, and never inside a user PTY. Returns crate-local result
-//! structs; does not construct `domain::Workspace` — the daemon maps git
-//! output into domain objects. Network commands use [`command::run_git_network`].
+//! Local commands use [`run_git`] with a 30 s timeout; network commands use
+//! [`run_git_network`] with a separate budget and noninteractive SSH policy.
+//! Neither runs inside a user PTY. Results are crate-local; the daemon maps
+//! Git output into domain objects.
 
 pub mod change;
 pub mod command;

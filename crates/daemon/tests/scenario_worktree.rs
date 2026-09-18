@@ -1,14 +1,14 @@
-//! §19 scenario C: create a worktree, launch an agent and a shell in it, and
+//! Create a worktree, launch an agent and a shell in it, and
 //! confirm both really run there while the main checkout keeps its branch.
 //!
 //! `tests/integration.rs::worktree_lifecycle` already covers create/remove on
 //! disk. What it does not cover — and what the scenario is actually about — is
 //! that a session launched in the worktree has the worktree as its working
-//! directory (§13.3 `cwd = workspace.path`), and that none of it moves the main
-//! checkout off its branch (§14.3 uses `git worktree add`, never `checkout`).
+//! directory (`cwd = workspace.path`), and that none of it moves the main
+//! checkout off its branch (`git worktree add`, never `checkout`).
 //!
 //! The agent half runs a generated fake CLI rather than a real Codex, so the
-//! test is deterministic and needs nothing installed (§21 "Determinismo"); it
+//! test needs no installed agent CLI; it
 //! is still the complete daemon launch path, PTY included.
 
 mod common;
@@ -43,7 +43,6 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
     };
     let project_id = projects[0].id;
 
-    // --- create the worktree (§14.3) ---
     client
         .request(Request::CreateWorktree {
             project_id,
@@ -115,7 +114,6 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
          through FORGE_WORKSPACE (§13.3)"
     );
 
-    // --- §14.4: a worktree with live sessions is not removed without force ---
     let refused = client.request(Request::RemoveWorktree {
         workspace_id: worktree.id,
         force: false,
@@ -159,23 +157,7 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
     common::stop_daemon(&client);
 }
 
-/// §14.4 lists exactly three reasons to refuse a `force: false` removal:
-/// running sessions in that workspace, a dirty working tree, and a merge or
-/// rebase in progress. A worktree whose sessions have *ended* passes all three,
-/// so removing it must work.
-///
-/// Regression test. `RemoveWorktree` used to remove the directory from disk
-/// first and only then delete the workspace row, which SQLite refuses while the
-/// terminated sessions still reference it (`sessions.workspace_id ON DELETE
-/// RESTRICT`, migration 2). The request failed with `ErrorCode::Internal`
-/// *after* the worktree was already gone, the workspace stayed in the model and
-/// in SQLite pointing at a directory that no longer existed, and no
-/// `WorkspaceRemoved` was broadcast — so the sidebar kept offering a workspace
-/// whose every future session would fail to spawn.
-///
-/// It now deletes sessions before the workspace (the foreign-key order
-/// `remove_project` documents) and touches the disk last, so a failure can no
-/// longer leave SQLite and the filesystem disagreeing.
+// Ended sessions still reference the workspace; removal must respect foreign-key order.
 #[test]
 fn a_worktree_whose_sessions_have_ended_can_be_removed() {
     const BRANCH: &str = "feature/ended-sessions";

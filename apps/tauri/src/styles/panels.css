@@ -1,6 +1,6 @@
 /*
  * The sidebar views: panel frames, the file tree, list cards and the shared
- * filter header (§4.2 U12/U13).
+ * filter header.
  */
 
 /* -------------------------------------------------------------- panels --- */
@@ -195,9 +195,6 @@
   color: var(--forge-git-deleted);
 }
 
-/* §4.2 U8: git's verdict on a tree row. A single glyph rather than a full
-   status word — the row is 26px of a 320px panel, and the colour carries as
-   much of the meaning as the letter does. */
 .tree-git {
   flex: none;
   font-family: var(--font-mono);
@@ -306,8 +303,6 @@
   white-space: nowrap;
 }
 
-/* §4.2 U12: one filter header, in every list panel. `.history-filters` is
-   kept as an alias for the two call sites that still spell it that way. */
 .filter-header {
   display: flex;
   flex-direction: column;
@@ -336,9 +331,6 @@
   height: var(--control-sm);
   padding: 0 var(--space-8);
 }
-/* §4.2 U13: the box, the header and the metadata row all come from
-   `.list-card` in `ui/ui.css` now. What is left here is what makes a run
-   look like a run and a pull request like a pull request. */
 .history-provider,
 .pr-number {
   color: var(--accent-solid);

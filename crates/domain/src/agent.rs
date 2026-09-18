@@ -7,7 +7,6 @@ use crate::ids::{AgentProfileId, AgentProviderId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// PTY dimensions, including pixel size for programs that query it (§7.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PtySize {
     pub cols: u16,
@@ -28,19 +27,12 @@ impl Default for PtySize {
 }
 
 impl PtySize {
-    /// Largest grid the daemon will allocate for a client-supplied size. A
-    /// terminal is a viewport, not a document, so 1000×500 is already well past
-    /// any real display.
+    /// Allocation ceiling for untrusted viewport dimensions.
     pub const MAX_COLS: u16 = 1000;
     /// See [`PtySize::MAX_COLS`].
     pub const MAX_ROWS: u16 = 500;
 
-    /// Clamp `cols`/`rows` into the supported range before the geometry reaches
-    /// the emulator. `cols`/`rows` arrive over the socket as attacker-controlled
-    /// `u16`s, and the VT engine reserves `cols * rows` cells eagerly: an
-    /// unclamped `65535×65535` asks for ~4.3e9 cells (~170 GB) and aborts the
-    /// daemon with every live PTY inside it. A zero dimension is raised to 1
-    /// because the engine divides by both.
+    /// Clamp before the emulator allocates `cols * rows` cells; zero would divide by zero.
     #[must_use]
     pub fn sanitized(self) -> Self {
         Self {
@@ -51,8 +43,7 @@ impl PtySize {
     }
 }
 
-/// A fully resolved spawn specification. `env` is the *complete* environment,
-/// not an incremental overlay (§7.6).
+/// `env` is the complete environment, not an incremental overlay.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnSpec {
     /// Absolute, already-resolved program path.
@@ -62,7 +53,6 @@ pub struct SpawnSpec {
     pub env: Vec<(String, String)>,
 }
 
-/// Where a resolved environment came from (§12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EnvSource {
@@ -72,7 +62,6 @@ pub enum EnvSource {
     ProcessFallback,
 }
 
-/// The login-shell environment resolved once and cached (§12).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedEnvironment {
     pub shell: PathBuf,
@@ -83,7 +72,6 @@ pub struct ResolvedEnvironment {
 }
 
 impl ResolvedEnvironment {
-    /// Look up a variable by name.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&str> {
         self.vars
@@ -93,29 +81,21 @@ impl ResolvedEnvironment {
     }
 }
 
-/// A request to launch a provider inside a workspace (§7.6).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchAgentRequest {
     pub provider_id: AgentProviderId,
     pub cwd: PathBuf,
-    /// Empty in the MVP.
     pub extra_args: Vec<String>,
     pub executable_override: Option<PathBuf>,
-    /// A provider session id to re-enter instead of starting a fresh
-    /// conversation (§13.5). The id is the provider's own — the one its
-    /// transcript records — and only means something to the CLI that wrote it.
+    /// Provider-owned transcript id, not a Forge session id.
     pub resume_session_id: Option<String>,
-    /// A prompt to hand the agent at launch instead of having the user type it
-    /// (§16.8). Refused for a provider that declares no [`PromptStyle`].
+    /// Refused for a provider that declares no [`PromptStyle`].
     pub initial_prompt: Option<String>,
-    /// Launch in the provider's own read-only mode (§16.9). Refused for a
-    /// provider that declares no [`ReviewStyle`]: a review that can write is
-    /// not the thing that was asked for.
+    /// Refused rather than downgraded if the provider declares no [`ReviewStyle`].
     #[serde(default)]
     pub read_only: bool,
 }
 
-/// How a version probe resolved for a provider (§7.6, §13.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum DetectionStatus {
@@ -138,7 +118,7 @@ impl DetectionStatus {
     }
 }
 
-/// How to ask a provider's CLI what the account has used (§7.5).
+/// The CLI must emit one JSON usage object on stdout.
 ///
 /// Forge does not scrape provider-specific output. The probe's contract is one
 /// JSON object on stdout:
@@ -158,12 +138,7 @@ pub struct UsageProbe {
     pub timeout_ms: u64,
 }
 
-/// One rolling allowance window a provider reports (§16.2).
-///
-/// The reading is a whole percent, not a float: the protocol stays `Eq` (no
-/// float comparison in a wire type), and a meter has no use for the precision.
-/// A window past its allowance reads as 100 — "full" is the whole message a
-/// meter can carry.
+/// Whole percentages preserve wire equality; usage beyond the allowance is capped at 100.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageWindow {
     /// Percent of the allowance consumed, `0..=100`.
@@ -174,22 +149,11 @@ pub struct UsageWindow {
     pub resets_at: Option<Timestamp>,
 }
 
-/// What a provider reports having used, across one or more windows (§16.2).
-///
-/// A provider can expose several windows at once (a rolling session limit and a
-/// weekly one, say); each becomes a [`UsageWindow`]. An empty `windows` means
-/// the provider is known but reported nothing — rendered as no meter, never as
-/// zero.
+/// Empty `windows` means no reading, not zero usage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderUsage {
     pub provider_id: AgentProviderId,
-    /// The launch profile whose account this reading came from, or `None` for
-    /// the provider's default account (§13.4).
-    ///
-    /// A provider is not one allowance: a profile that moves the config
-    /// directory logs into a second account with limits of its own, and
-    /// reporting only the default one is what made a `Personal` profile's
-    /// meter read as somebody else's.
+    /// Account whose allowance was read; `None` selects the provider's default.
     #[serde(default)]
     pub profile_id: Option<AgentProfileId>,
     /// The windows the provider reports, in display order.
@@ -199,9 +163,7 @@ pub struct ProviderUsage {
 }
 
 impl ProviderUsage {
-    /// Whether two readings carry the same information, ignoring *when* each was
-    /// taken. `collected_at` advances on every sweep, so comparing whole structs
-    /// would always differ; the daemon uses this to broadcast only real changes.
+    /// Ignores `collected_at` so unchanged readings do not trigger broadcasts.
     #[must_use]
     pub fn same_reading(&self, other: &Self) -> bool {
         self.provider_id == other.provider_id
@@ -216,13 +178,7 @@ impl ProviderUsage {
     }
 }
 
-/// Where a provider's usage reading comes from (§16.2).
-///
-/// Every provider-specific fact lives in the `agents` crate; this only names the
-/// mechanism. `Cli` keeps the original JSON-contract probe intact; the OAuth
-/// variants read the provider's existing local credentials and call its usage
-/// endpoint — no extra login, and `GrokAcp` spends one short-lived JSON-RPC
-/// handshake for the same reason.
+/// Provider-specific usage collection is implemented in the `agents` crate.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum UsageSource {
@@ -237,7 +193,6 @@ pub enum UsageSource {
     GrokAcp,
 }
 
-/// The result of detecting a single provider (§7.6).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectionResult {
     pub provider_id: AgentProviderId,
@@ -245,7 +200,6 @@ pub struct DetectionResult {
     pub checked_at: Timestamp,
 }
 
-/// How to verify a candidate binary is the intended provider (§7.5).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VersionProbe {
     /// Typically `["--version"]`.
@@ -255,12 +209,7 @@ pub struct VersionProbe {
     pub timeout_ms: u32,
 }
 
-/// Informational capability flags (§7.5).
-///
-/// `supports_resume` mirrors whether the descriptor carries a [`ResumeStyle`],
-/// and `supports_initial_prompt` mirrors its [`PromptStyle`] the same way:
-/// neither is a second source of truth, both restate a spelling that either
-/// exists on the descriptor or does not. `interactive_tui` is informative.
+/// Informational flags derived from the descriptor's declared launch styles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCapabilities {
     pub interactive_tui: bool,
@@ -269,25 +218,11 @@ pub struct AgentCapabilities {
     #[serde(default)]
     pub supports_headless: bool,
     pub supports_resume: bool,
-    /// Whether the provider has a mode of its own that reads without writing
-    /// (§16.9). Restates the presence of a [`ReviewStyle`], like the flags
-    /// above restate their own spellings.
     #[serde(default)]
     pub supports_review: bool,
 }
 
-/// How a provider takes a prompt at launch, rather than typed into its TUI
-/// (§16.8).
-///
-/// The sibling of [`ResumeStyle`], and declared for the same reason: the
-/// spelling belongs beside the descriptor that owns it, so nothing else
-/// branches on a provider id (principle P2).
-///
-/// The prompt is passed as **one argument**, never interpolated into a command
-/// line. It arrives at the child through `execve`, so a prompt containing
-/// quotes, newlines or a `$(…)` is text and not a shell injection — which
-/// matters here more than usual, because a prompt is assembled from a template,
-/// a diff and whatever the user typed.
+/// Prompts are passed as one argument, never interpolated into a shell command.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PromptStyle {
@@ -297,17 +232,7 @@ pub enum PromptStyle {
     Flag { flag: String },
 }
 
-/// How a provider is launched so that it reads and reasons but does not write
-/// (§16.9).
-///
-/// The third sibling of [`ResumeStyle`] and [`PromptStyle`], declared for the
-/// same reason: the spelling belongs beside the descriptor that owns it.
-///
-/// This is what makes an automatic pull-request review safe to start in a
-/// checkout the user is working in. Every built-in has such a mode — Claude's
-/// plan permission mode, Codex's read-only sandbox, OpenCode's `plan` agent,
-/// Cursor's ask mode — and a provider that declares none may not be launched
-/// for a review at all, rather than being launched able to edit.
+/// Provider-owned read-only flags; an absent declaration forbids review launches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewStyle {
     /// The provider's own flags for a read-only session, in order.
@@ -328,12 +253,6 @@ impl PromptStyle {
     }
 }
 
-/// How a provider re-enters one of its own earlier sessions (§13.5).
-///
-/// The two shapes are the two spellings the CLIs use for the same idea, and
-/// both end as "these tokens, then the session id". Declaring it as data keeps
-/// the provider-specific spelling next to the descriptor that owns it, so no
-/// other crate branches on a provider id (principle P2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ResumeStyle {
@@ -408,7 +327,7 @@ pub struct HeadlessSpec {
     /// the conversation this one started.
     ///
     /// Names only: parsing the stream is the daemon's job, because this crate
-    /// depends on `serde` alone and knows nothing of JSON documents (§17).
+    /// depends on `serde` alone and knows nothing of JSON documents.
     pub session_id_fields: Vec<String>,
     /// Flag granting one more writable directory on the headless command
     /// line, for providers that sandbox file writes to their cwd.
@@ -496,7 +415,7 @@ impl HeadlessSpec {
 }
 
 /// How a provider speaks [Agent Client Protocol](https://agentclientprotocol.com)
-/// over stdio (§ plan-agnostic-orchestrator Phase 4).
+/// over stdio.
 ///
 /// The sibling of [`HeadlessSpec`]: same job row, same log, same envelope; a
 /// different wire. `None` on a descriptor means CLI-only for now.
@@ -622,10 +541,7 @@ impl AcpPermissionPolicy {
     }
 }
 
-/// Which wire a harness worker uses.
-///
-/// Today every job is [`WorkerTransport::Cli`]. [`WorkerTransport::Acp`] is
-/// the Phase 4 arm: same settlement path, structured `session/update` stream.
+/// Job launch currently supports only [`WorkerTransport::Cli`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum WorkerTransport {
@@ -643,7 +559,6 @@ impl WorkerTransport {
     }
 }
 
-/// Declarative description of an agent provider (§7.5).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentDescriptor {
     pub id: AgentProviderId,
@@ -652,13 +567,11 @@ pub struct AgentDescriptor {
     pub binary_candidates: Vec<String>,
     pub default_args: Vec<String>,
     pub version_probe: VersionProbe,
-    /// Where to read account usage, when the provider exposes it (§16.2).
     /// `None` means no usage is reported for this provider.
     pub usage_source: Option<UsageSource>,
-    /// How the provider re-enters an earlier session of its own (§13.5).
     /// `None` means it offers no way to, so its history is read-only.
     pub resume: Option<ResumeStyle>,
-    /// How the provider takes a prompt at launch (§16.8). `None` means it only
+    /// How the provider takes a prompt at launch. `None` means it only
     /// takes one typed into its TUI, so nothing may be launched *for* it.
     pub prompt: Option<PromptStyle>,
     /// How the provider runs a task headless. `None` means it has no such
@@ -667,24 +580,16 @@ pub struct AgentDescriptor {
     /// How the provider speaks ACP over stdio. `None` means CLI-only for now.
     #[serde(default)]
     pub acp: Option<AcpSpec>,
-    /// How the provider is put in a read-only posture (§16.9). `None` means it
+    /// How the provider is put in a read-only posture. `None` means it
     /// has none, so nothing may launch it for a review.
     #[serde(default)]
     pub review: Option<ReviewStyle>,
     pub capabilities: AgentCapabilities,
-    /// How this provider is pointed at a profile's own config directory
-    /// (§13.4). `None` means it documents no such switch, so a profile for it
-    /// can only change the binary and the arguments.
+    /// `None` forbids profile-specific config directories.
     pub config_dir: Option<ConfigDirSpec>,
 }
 
-/// How a provider is told to keep one profile's account apart from another's
-/// (§13.4).
-///
-/// One directory per profile, whatever the provider calls the variables
-/// pointing at it: OpenCode needs two because it splits configuration from
-/// credentials, the others one. Declared next to the descriptor in the
-/// `agents` crate so nothing else branches on a provider id (principle P2).
+/// All declared variables point to the same profile directory.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigDirSpec {
     /// Every variable set to the profile's directory, all to the same path.
@@ -693,13 +598,6 @@ pub struct ConfigDirSpec {
     pub help: String,
 }
 
-/// A named way to launch a provider: its own binary, its own account and its
-/// own arguments (§13.4).
-///
-/// A profile is not a provider. It borrows the provider's descriptor — icon,
-/// detection, binary candidates, usage source — and overrides only how the
-/// process starts. Four fields, because a profile that could set anything was
-/// a second, worse copy of the provider's own configuration file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub id: AgentProfileId,
@@ -728,7 +626,7 @@ pub struct AgentProfile {
 }
 
 /// Environment variables a profile may never set: Forge owns the terminal
-/// contract with the child process (§13.3), and a provider whose config
+/// contract with the child process, and a provider whose config
 /// directory was spelled with one of these would break the emulator rather
 /// than switch accounts.
 pub const RESERVED_PROFILE_VARS: [&str; 5] = [
@@ -765,7 +663,6 @@ impl AgentProfile {
     }
 }
 
-/// Where a child session should run relative to its parent (§8.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ChildWorkspacePolicy {

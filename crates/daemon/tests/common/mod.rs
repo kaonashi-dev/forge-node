@@ -1,6 +1,6 @@
-//! Shared harness for the §19 acceptance-scenario integration tests.
+//! Shared harness for acceptance-scenario integration tests.
 //!
-//! `tests/integration.rs` already covers the §21 integration list against a
+//! `tests/integration.rs` covers terminal lifecycle against a
 //! daemon with an in-memory database and the machine's real environment. The
 //! scenarios in this directory need two things that harness cannot give them,
 //! so they get their own:
@@ -12,7 +12,7 @@
 //!   reports, which on a developer machine depends on which agent CLIs happen
 //!   to be installed. Every daemon booted here runs with a generated login
 //!   shell that exports a `PATH` containing exactly one directory the test
-//!   owns, so detection (§13.1) sees only the fake binaries the test wrote and
+//!   owns, so detection sees only the fake binaries the test wrote and
 //!   probes nothing else — no real provider, no `/usr/local/bin`.
 //!
 //! Everything that depends on PTY or process timing polls with a generous
@@ -61,7 +61,7 @@ impl Harness {
         let tmp = tempfile::tempdir_in("/tmp").expect("tempdir");
         let bin = tmp.path().join("bin");
         fs::create_dir_all(&bin).expect("create the fake PATH directory");
-        // §12 resolves the environment by running `env -0` inside the login
+        // Environment resolution runs `env -0` inside the login
         // shell. `env` is not a shell builtin, so with a `PATH` holding only
         // this directory the probe would print nothing between its sentinels,
         // the daemon would quietly take the process fallback — the machine's
@@ -71,7 +71,7 @@ impl Harness {
         std::os::unix::fs::symlink("/usr/bin/env", bin.join("env"))
             .expect("link /usr/bin/env into the fake PATH");
         // A home of its own: a launch profile's relative config directory is
-        // resolved against `$HOME` (§13.4), and the developer's real one is
+        // resolved against `$HOME`, and the developer's real one is
         // neither hermetic nor somewhere a test may write.
         fs::create_dir_all(tmp.path().join("home")).expect("create the fake home directory");
         let shell = write_executable(tmp.path(), "forge-test-shell", &login_shell_script(&bin));
@@ -100,7 +100,7 @@ impl Harness {
     }
 
     /// `$HOME` for everything the daemon launches, and what a profile's
-    /// relative config directory is resolved against (§13.4).
+    /// relative config directory is resolved against.
     #[must_use]
     pub fn home(&self) -> PathBuf {
         self.tmp.path().join("home")
@@ -112,7 +112,7 @@ impl Harness {
         &self.db
     }
 
-    /// The transcript stores the usage scan reads (§16.2): `claude/projects/…`
+    /// The transcript stores the usage scan reads: `claude/projects/…`
     /// and `codex/sessions/…` live under here, and the harness' login shell
     /// points `CLAUDE_CONFIG_DIR`/`CODEX_HOME` at them.
     #[must_use]
@@ -123,7 +123,7 @@ impl Harness {
     /// Start a daemon over this harness' database, socket and worktrees root,
     /// and wait until it is accepting connections.
     ///
-    /// This is the production entry point ([`Daemon::start`], §15.3): it runs
+    /// This is the production entry point ([`Daemon::start`]): it runs
     /// the startup reconciliation, the path validation, the worktree rescan and
     /// the background detection sweep, which is exactly what scenarios E, F and
     /// G are about.
@@ -201,7 +201,7 @@ impl TestDaemon {
         Client::connect(&self.socket, client_version).expect("connect to the test daemon")
     }
 
-    /// Simulate `kill -9` on the daemon (§19 G).
+    /// Simulate `kill -9` on the daemon.
     ///
     /// The accept loop stops and unlinks the socket, and *nothing else
     /// happens*: no session is killed, no row is updated, the PTY children are
@@ -277,7 +277,7 @@ fn write_executable(dir: &Path, name: &str, script: &str) -> PathBuf {
     path
 }
 
-/// The generated login shell (§12) that pins `PATH` to `bin`.
+/// The generated login shell pins `PATH` to `bin`.
 ///
 /// The daemon resolves the environment by running `<shell> -l -c '... env -0
 /// ...'`. The `-l` is dropped here on purpose: a real login shell sources
@@ -319,7 +319,7 @@ fn login_shell_script(bin: &Path) -> String {
     )
 }
 
-/// Check the generated shell the way §12 will, and fail the test setup if the
+/// Check the generated shell through environment resolution, and fail setup if the
 /// answer is not the single directory the harness owns.
 ///
 /// This guard exists because the failure it catches is silent: if the login
@@ -347,11 +347,11 @@ fn assert_hermetic_login_shell(shell: &Path, bin: &Path) {
 
 /// Write a fake agent CLI into `dir` and return its path.
 ///
-/// * `<name> --version` prints `version_output`, which is what the §13.1 probe
+/// * `<name> --version` prints `version_output`, which is what the version probe
 ///   reads to accept or reject the binary.
 /// * Launched as an agent it prints `<marker>_cwd_ok` when the daemon really
 ///   started it inside the workspace it advertises through `FORGE_WORKSPACE`
-///   (§13.3), `<marker>_cwd_bad` otherwise, and then behaves like a TUI that
+///   or `<marker>_cwd_bad` otherwise, and then behaves like a TUI that
 ///   stays up, so the session stays `Running` until something kills it.
 ///
 /// Both sides of the cwd comparison are resolved with `pwd -P`, so the macOS
@@ -526,7 +526,6 @@ pub fn session(client: &Client, session_id: SessionId) -> Option<Session> {
     sessions(client).into_iter().find(|s| s.id == session_id)
 }
 
-/// Every provider with its current detection result (§13.1).
 pub fn providers(client: &Client) -> Vec<ProviderInfo> {
     match client
         .request(Request::ListAgentProviders)
@@ -547,7 +546,7 @@ pub fn provider(client: &Client, id: &str) -> ProviderInfo {
 
 /// Wait until every provider's detection result satisfies `pred`.
 ///
-/// Startup detection runs on its own thread (§13.1), so the first snapshot a
+/// Startup detection runs on its own thread, so the first snapshot a
 /// client takes can still carry the default `NotFound` placeholders.
 pub fn wait_for_detection(client: &Client, mut pred: impl FnMut(&[ProviderInfo]) -> bool) {
     assert!(
@@ -666,7 +665,7 @@ pub fn wait_for_running(
     }
 }
 
-/// `AttachTerminal` at `cols`x`rows`, returning the `AttachAck` snapshot (§10.5).
+/// Returns the `AttachAck` snapshot at the requested dimensions.
 pub fn attach(
     client: &Client,
     terminal_id: TerminalId,
@@ -756,7 +755,7 @@ fn snapshot_line_starting_with(
 }
 
 /// Type `text` into a terminal's PTY, as a real keyboard would: Enter is a
-/// carriage return, not a line feed (§11.6).
+/// carriage return, not a line feed.
 pub fn write_input(client: &Client, terminal_id: TerminalId, text: &str) {
     let response = client
         .request(Request::WriteTerminalInput {
@@ -772,7 +771,7 @@ const READY_MARKER: &str = "forge_shell_ready";
 
 /// Block until the shell inside `terminal_id` actually executes what it is sent.
 ///
-/// `SessionState::Running` only means the PTY was spawned (§7.3); the shell's
+/// `SessionState::Running` only means the PTY was spawned; the shell's
 /// line editor discards whatever was typed before it started. The sentinel is
 /// written with a quote in the middle so the *echo* of the typed line cannot
 /// match it: only real command output does.
@@ -791,7 +790,7 @@ pub fn wait_for_shell_prompt(
     panic!("the shell never reached a prompt within {DEADLINE:?}");
 }
 
-/// Kill a session and wait until it is reported `Exited` (§7.3).
+/// Waits for `Exited`, not just the kill acknowledgment.
 pub fn kill_and_wait(
     client: &Client,
     events: &flume::Receiver<DaemonEvent>,
@@ -809,7 +808,7 @@ pub fn kill_and_wait(
 
 /// Ask the daemon to stop. The response may never arrive: the connection
 /// handler breaks out of its read loop as soon as the shutdown flag is set
-/// (§9.1), so a dropped connection is a valid outcome.
+/// so a dropped connection is a valid outcome.
 pub fn stop_daemon(client: &Client) {
     match client.request(Request::StopDaemon {
         kill_sessions: true,

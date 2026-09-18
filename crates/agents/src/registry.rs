@@ -45,7 +45,7 @@ impl AgentRegistry {
     }
 
     /// Set (`Some`) or clear (`None`) the user's executable override for a
-    /// provider (`SetProviderExecutable`, §10.2).
+    /// provider (`SetProviderExecutable`).
     pub fn set_override(&mut self, id: &AgentProviderId, path: Option<PathBuf>) {
         match path {
             Some(path) => {
@@ -58,7 +58,7 @@ impl AgentRegistry {
     }
 
     /// Detect every provider, honoring per-provider overrides, cache the
-    /// results, and return them in registration order (§13.1).
+    /// results, and return them in registration order.
     pub fn detect_all(&mut self, env: &ResolvedEnvironment) -> Vec<DetectionResult> {
         let results: Vec<DetectionResult> = self
             .adapters
@@ -89,7 +89,6 @@ impl AgentRegistry {
         self.detections.get(id)
     }
 
-    /// Build a launch spec for a provider, routing through its adapter (§13.3).
     ///
     /// A stored per-provider override is applied when the request does not
     /// already carry its own `executable_override`.
@@ -106,7 +105,7 @@ impl AgentRegistry {
         self.build_launch_with_config_dir(req, env, None)
     }
 
-    /// [`Self::build_launch`] pointed at a profile's config directory (§13.4).
+    /// [`Self::build_launch`] pointed at a profile's config directory.
     ///
     /// # Errors
     /// As [`Self::build_launch`].

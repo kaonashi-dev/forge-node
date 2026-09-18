@@ -1,5 +1,3 @@
-//! Project domain type (§7.1).
-
 use crate::ids::{ProjectGroupId, ProjectId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

@@ -78,7 +78,7 @@ const DEFAULT_SIZE: PtySize = PtySize {
 
 /// The harness preview is a *window onto* a session, not the place it is
 /// driven from, so it is sized for reading the last dozen lines rather than
-/// for working (§5.8). The feature tab overrides it once it has measured.
+/// for working. The feature tab overrides it once it has measured.
 const PREVIEW_SIZE: PtySize = PtySize {
     cols: 100,
     rows: 12,
@@ -191,7 +191,7 @@ struct Attached {
     scroll_offset: u64,
 }
 
-/// The second terminal a feature tab watches a harness session through (§5.8).
+/// Secondary terminal attachment for the harness preview.
 ///
 /// One at a time. Attaching replaces whatever the preview held — which is what
 /// makes clicking through a feature's sessions cheap — and it is deliberately
@@ -410,7 +410,7 @@ fn runtime_loop(
         // The newest keystroke whose bytes reached the daemon and whose echo
         // has not gone back out yet.
         let mut pending_echo: u64 = 0;
-        // Close on a live session only kills (§7.3); the row is removed once
+        // Close on a live session only kills; the row is removed once
         // the process is terminal. Without this set the rail keeps a ghost.
         let mut pending_close: HashSet<SessionId> = HashSet::new();
         let mut reconnect = false;
@@ -831,7 +831,7 @@ fn emit_job_event(app: &AppHandle, event: &DaemonEvent) {
             );
         }
         // Provisioning acks when it starts, so this is where the GUI learns
-        // what a worktree actually got (§14.2). It is not shell state — the
+        // what a worktree actually got. It is not shell state — the
         // actions are a read, like a diff — so it rides its own event rather
         // than republishing the snapshot.
         DaemonEvent::SharesApplied {
@@ -931,7 +931,7 @@ struct AgentLaunch {
     resume: Option<String>,
     prompt: Option<String>,
     /// Launch in the provider's own read-only mode, and tag the session as a
-    /// review (§16.9). The daemon refuses a provider that declares no such
+    /// review. The daemon refuses a provider that declares no such
     /// mode rather than starting one that could write.
     read_only: bool,
     /// The session this one was handed off from, so the graph records the edge
@@ -963,7 +963,7 @@ impl Effect {
 
 /// Sessions the user asked to close that still have to die first.
 ///
-/// Close on a live session only kills (§7.3). The daemon refuses `CloseSession`
+/// Close on a live session only kills. The daemon refuses `CloseSession`
 /// until the process is terminal, so the host remembers the id and removes the
 /// row on exit — otherwise the rail keeps a ghost check-and-dot.
 #[must_use]

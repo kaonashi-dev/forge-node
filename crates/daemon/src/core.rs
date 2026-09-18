@@ -83,7 +83,7 @@ pub(crate) struct Inner {
     idle_warned: HashSet<SessionId>,
     /// Provider session id this launch was resumed from. Runtime-only, like `terminal_id`.
     resumed_from: HashMap<SessionId, String>,
-    /// Sessions launched in the provider's read-only mode (§16.9). Runtime-only
+    /// Sessions launched in the provider's read-only mode. Runtime-only
     /// like `resumed_from`, and remembered for the *opposite* reason the
     /// initial prompt is forgotten: a restarted review that came back able to
     /// write would be a different session wearing the same name.
@@ -96,7 +96,7 @@ pub(crate) struct Inner {
     drafting: HashSet<WorkspaceId>,
     /// Coalesces `RefreshPullRequests` globally — one refresh covers every host.
     pr_refreshing: bool,
-    /// Coalesces `ApplyShares` per workspace (§14.2). A second request rides
+    /// Coalesces `ApplyShares` per workspace. A second request rides
     /// the first one's run rather than queueing a second copy of it.
     provisioning: HashSet<WorkspaceId>,
     /// Runtime-only: a job is a process and none survive a restart.
@@ -107,14 +107,14 @@ pub(crate) struct Inner {
     /// Last `git status` per workspace (ADR-008 throttle).
     status_checks: HashMap<WorkspaceId, Instant>,
     /// Last usage reading per *account* — one provider can report several
-    /// (§13.4); `GetSnapshot` must not re-probe CLIs. Kept in probe order so
+    /// `GetSnapshot` must not re-probe CLIs. Kept in probe order so
     /// a later reader does not reshuffle between sweeps.
     usage: Vec<domain::ProviderUsage>,
     /// Login-shell fallback notice, once per daemon rather than once per spawn.
     env_fallback_noticed: bool,
     /// `TERM`/`TERMINFO` for shells. Filesystem probe; cannot change mid-session.
     term_selection: Option<TermSelection>,
-    /// Project worktree-ignore rules (§14.4), keyed by project and loaded once.
+    /// Project worktree-ignore rules, keyed by project and loaded once.
     /// The rescan reads them without a query; `SetWorktreeIgnores` replaces a
     /// project's list in the same critical section as its rows.
     worktree_ignores: HashMap<ProjectId, Vec<WorktreeIgnore>>,
@@ -2095,7 +2095,7 @@ impl Daemon {
                         .collect();
                     // `gh` is looked up along the login-shell PATH, not the
                     // daemon's: a GUI launched from Finder has neither
-                    // Homebrew nor any user bin directory on its own (§12).
+                    // Homebrew nor any user bin directory on its own.
                     let env = daemon.resolved_env(&mut inner);
                     (projects, env.path_entries)
                 };
@@ -3036,12 +3036,10 @@ impl Daemon {
             .broadcast_domain(DaemonEvent::WorkspaceCreated(ws.clone()));
         // After the row exists and the event is out: the worktree is visible
         // immediately in a "setting up" state instead of the request thread
-        // freezing for as long as a setup script takes (§14.2).
+        // freezing for as long as a setup script takes.
         self.start_provisioning(ws.id, ShareTrigger::Created, None);
         Ok(ws)
     }
-
-    // ------------------------------------------- shared files (§14.2) ---
 
     /// The rules that apply to a project: its own, or the global
     /// `[worktrees]` list synthesised into rules when it has none.
@@ -3375,8 +3373,6 @@ impl Daemon {
         }
         Ok(Response::Ack)
     }
-
-    // --------------------------------------- worktree ignores (§14.4) ---
 
     fn list_worktree_ignores(&self, project_id: ProjectId) -> Result<Response, ProtocolError> {
         let inner = self.lock();
@@ -3894,7 +3890,6 @@ impl Daemon {
         }
     }
 
-    /// Open a file in a daemon-supervised `forge-editor` process (feature 19).
     ///
     /// The buffer is read here, through `fs-service`, off the core lock; the
     /// editor process never touches the checkout. The control socket is bound
@@ -4223,13 +4218,13 @@ impl Daemon {
             None,
             initial_prompt,
             // A harness child writes code; only a pull-request review asks for
-            // the provider's read-only mode (§16.9).
+            // the provider's read-only mode.
             false,
         )
     }
 
     /// Persist an envelope and either paste it into a live PTY or spawn a child
-    /// that starts with it (§8.3).
+    /// that starts with it.
     #[allow(clippy::too_many_arguments)]
     fn send_context(
         self: &Arc<Self>,
@@ -4970,7 +4965,7 @@ impl Daemon {
                 // Never re-pick off PATH by *candidate*: only the probed binary,
                 // or the one the profile names, may run. A profile's bare name
                 // is still looked up on PATH — that is where the wrapper script
-                // standing in for a shell alias lives (§13.4).
+                // standing in for a shell alias lives.
                 let program = match profile.and_then(|p| p.executable.clone()) {
                     Some(path) => agents::resolve_executable(&path, &env)
                         .filter(|resolved| is_executable_file(resolved))
@@ -5999,7 +5994,7 @@ impl Daemon {
     /// Core lock released: each usage probe is a subprocess or HTTP call.
     ///
     /// One provider can be several logins: the default account plus every
-    /// profile that moved its config directory (§13.4). Each is probed on its
+    /// profile that moved its config directory. Each is probed on its
     /// own, because each has its own allowance — reporting only the default one
     /// is what showed a profile's meter as somebody else's numbers. Profiles
     /// are few and the sweep is every five minutes, so the extra calls are
@@ -6083,7 +6078,7 @@ impl Daemon {
             (env, profiles)
         };
         // Every account, not just the default one: a profile moves the
-        // transcripts this reads along with the config directory (§13.4).
+        // transcripts this reads along with the config directory.
         let analytics = agents::collect_analytics(window_days, &env, &profiles);
         self.usage_stats
             .lock()
@@ -6342,7 +6337,7 @@ impl Daemon {
                 self.resolved_env(&mut inner)
             };
             // A bare name is probed where it will actually be found at launch —
-            // on the login shell's PATH, not under the daemon's cwd (§13.4).
+            // on the login shell's PATH, not under the daemon's cwd.
             let resolved = agents::resolve_executable(&path, &env).unwrap_or_else(|| path.clone());
             let status = agents::detect(&descriptor, &env, Some(&resolved)).status;
             if !status.is_installed() {
@@ -6392,7 +6387,7 @@ impl Daemon {
     }
 
     /// Drop the scans that read a provider's own directories, because the set
-    /// of profiles is the set of accounts they cover (§13.4). Discovery keys on
+    /// of profiles is the set of accounts they cover. Discovery keys on
     /// the profiles itself; the token scan only knows its window.
     fn forget_account_scans(&self) {
         self.usage_stats
@@ -6776,7 +6771,7 @@ struct UsageSource {
     accounts: Vec<(Option<domain::AgentProfileId>, Option<PathBuf>)>,
 }
 
-/// A profile's config directory as an absolute path (§13.4), or `None` when it
+/// A profile's config directory as an absolute path, or `None` when it
 /// shares the provider's default account.
 ///
 /// Resolved against the *user's* home, not the daemon's working directory:
@@ -7057,7 +7052,6 @@ struct AgentLaunch {
     resume: Option<String>,
     /// Fresh launch only. A restart must not re-send the original prompt.
     initial_prompt: Option<String>,
-    /// Launch in the provider's own read-only mode (§16.9).
     read_only: bool,
 }
 
@@ -7267,7 +7261,7 @@ fn file_change(status: git_service::FileChange) -> domain::DiffStatus {
 
 /// One terminal row as plain text, with its trailing blanks dropped.
 ///
-/// A wide grapheme's continuation cell carries no text (§11.4), so pushing
+/// A wide grapheme's continuation cell carries no text, so pushing
 /// every cell's `&str` is already correct for it — and allocates nothing per
 /// cell beyond the string being built.
 fn row_text(row: &domain::Row) -> String {
@@ -7400,7 +7394,7 @@ mod tests {
     }
 
     /// The sweeper only broadcasts when the reading changes; `collected_at`
-    /// advancing on every sweep must not count as a change (§16.2).
+    /// advancing on every sweep must not count as a change.
     #[test]
     fn same_usage_ignores_collected_at_but_not_windows() {
         let a = usage("claude", 40);
@@ -7422,7 +7416,7 @@ mod tests {
         );
     }
 
-    /// A daemon core over an in-memory DB, without the §15.3 startup scans or
+    /// A daemon core over an in-memory DB, without startup scans or
     /// the agent-detection thread. The `TempDir` backs `worktrees_root` and is
     /// returned so it outlives the daemon.
     fn test_daemon() -> (Arc<Daemon>, tempfile::TempDir) {
@@ -7431,7 +7425,7 @@ mod tests {
     }
 
     /// A daemon core driving a [`FakePtyBackend`], so the session lifecycle can
-    /// be exercised without spawning real processes (§21 "Determinismo"). The
+    /// be exercised without spawning real processes. The
     /// backend handle is returned so a test can assert on what was written to
     /// the PTY and decide when the "child" exits.
     fn test_daemon_with_pty(
@@ -7898,7 +7892,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Session lifecycle over a fake PTY (§21)    // ---------------------------------------------------------------
 
     /// A workspace whose path really exists, so a spawn can use it as its cwd.
     fn seeded_workspace(daemon: &Daemon, dir: &std::path::Path) -> WorkspaceId {
@@ -7978,7 +7971,7 @@ mod tests {
     }
 
     /// Clicking a discovered transcript re-enters the conversation: the launch
-    /// carries the provider's own resume arguments (§13.5), and a restart of
+    /// carries the provider's own resume arguments, and a restart of
     /// that session stays on the same conversation instead of quietly opening a
     /// blank one under a title that says otherwise.
     #[test]
@@ -8076,7 +8069,7 @@ mod tests {
     /// A pull-request review starts in a checkout the user is working in, so
     /// the read-only flags are the difference between a reader and something
     /// that can edit it — and a restart that dropped them would quietly turn
-    /// one into the other (§16.9).
+    /// one into the other.
     #[test]
     fn a_read_only_agent_session_keeps_its_flags_across_a_restart() {
         let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
@@ -8312,7 +8305,7 @@ mod tests {
             }
         );
 
-        // §13.3: the spawn carries a complete environment with the daemon's own
+        // The spawn carries a complete environment with the daemon's own
         // variables injected, and runs in the workspace directory.
         let spec = backend.last_spawn().expect("a spawn happened");
         assert_eq!(spec.cwd, tmp.path());
@@ -8324,7 +8317,7 @@ mod tests {
         };
         assert_eq!(var("TERM").as_deref(), Some("xterm-256color"));
         assert_eq!(var("COLORTERM").as_deref(), Some("truecolor"));
-        // §15.4: shell sessions are login shells by default, so they source the
+        // Shell sessions are login shells by default, so they source the
         // same profile the user's own terminal does.
         assert_eq!(spec.args, ["-l"]);
         assert_eq!(var("FORGE_SESSION_ID"), Some(session.id.to_string()));
@@ -8480,7 +8473,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Terminal request validation (§10.2)
     // ---------------------------------------------------------------
 
     #[test]
@@ -8728,7 +8720,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Graph validation (ADR-010, §21)
     // ---------------------------------------------------------------
 
     #[test]
@@ -8797,13 +8788,13 @@ mod tests {
         assert_eq!(err.code, ErrorCode::InvalidRequest);
     }
 
-    /// §8.2: `NewManagedWorktree` "is implemented in the daemon (create
+    /// `NewManagedWorktree` is implemented in the daemon (create
     /// worktree + session in a single operation)" — the UI may or may not
     /// expose it, the daemon must honour it. It used to be rejected outright.
     #[test]
     fn a_child_session_can_be_given_a_brand_new_managed_worktree() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let (daemon, _tmp) = test_daemon();
         daemon.add_project(repo.path()).expect("add a git project");
@@ -8872,11 +8863,11 @@ mod tests {
     }
 
     /// With no `branch_hint` the daemon still has to produce a valid, unique
-    /// branch rather than fail (§8.2).
+    /// branch rather than fail.
     #[test]
     fn a_new_managed_worktree_child_without_a_branch_hint_gets_a_generated_one() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let (daemon, _tmp) = test_daemon();
         daemon.add_project(repo.path()).expect("add a git project");
@@ -8938,7 +8929,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Re-parenting on close (ADR-010, §21)
     // ---------------------------------------------------------------
 
     #[test]
@@ -9010,7 +9000,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // State machine (§7.3, §21)
     // ---------------------------------------------------------------
 
     #[test]
@@ -9043,7 +9032,7 @@ mod tests {
             .get(session)
             .expect("query")
             .expect("the session row");
-        // §15.2 persists the discriminant, not the `Failed` reason.
+        // Persistence stores the discriminant, not the `Failed` reason.
         assert!(matches!(persisted.state, SessionState::Failed { .. }));
 
         // Running is not reachable from Failed either; only a restart is.
@@ -9104,7 +9093,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // RemoveProjectPolicy (§10.2)
     // ---------------------------------------------------------------
 
     #[test]
@@ -9189,7 +9177,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Notices (§7.1, §15.3, §23)
     // ---------------------------------------------------------------
 
     #[test]
@@ -9477,7 +9464,7 @@ mod tests {
         let notices = daemon.take_pending_notices();
         assert!(warning_containing(&notices, "gone"), "{notices:?}");
         assert_eq!(notices.len(), 2, "one per missing project and workspace");
-        // §15.3 step 3 never deletes.
+        // Startup reconciliation must preserve missing projects.
         let inner = daemon.lock();
         assert!(inner.projects.contains_key(&project));
         assert!(inner.workspaces.contains_key(&workspace));
@@ -9499,13 +9486,12 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Worktree rescan (§15.3 step 4)
     // ---------------------------------------------------------------
 
     #[test]
     fn rescan_picks_up_worktrees_added_and_removed_outside_the_app() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let (daemon, tmp) = test_daemon();
         daemon.add_project(repo.path()).expect("add a git project");
@@ -9569,7 +9555,7 @@ mod tests {
     #[test]
     fn forget_an_adopted_worktree_and_the_next_rescan_does_not_readopt_it() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let (daemon, tmp) = test_daemon();
         daemon.add_project(repo.path()).expect("add a git project");
@@ -9624,7 +9610,7 @@ mod tests {
     #[test]
     fn a_worktree_directory_deleted_by_hand_is_dropped_by_the_next_rescan() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let (daemon, tmp) = test_daemon();
         daemon.add_project(repo.path()).expect("add a git project");
@@ -9668,7 +9654,7 @@ mod tests {
     #[test]
     fn a_managed_removal_leaves_a_tombstone_the_next_rescan_collects() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let (daemon, _tmp) = test_daemon();
         daemon.add_project(repo.path()).expect("add a git project");
@@ -9723,7 +9709,7 @@ mod tests {
     #[test]
     fn creating_a_managed_worktree_clears_a_stale_tombstone_and_reuses_the_path() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let (daemon, _tmp) = test_daemon();
         daemon.add_project(repo.path()).expect("add a git project");
@@ -9774,7 +9760,7 @@ mod tests {
     #[test]
     fn ignoring_a_folder_drops_the_rows_under_it_and_blocks_readoption() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let (daemon, tmp) = test_daemon();
         daemon.add_project(repo.path()).expect("add a git project");
@@ -9830,7 +9816,7 @@ mod tests {
     #[test]
     fn a_worktree_ignore_rule_cannot_hide_the_project_root() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let (daemon, _tmp) = test_daemon();
         daemon.add_project(repo.path()).expect("add a git project");
@@ -9855,7 +9841,7 @@ mod tests {
     #[test]
     fn the_config_ignore_list_keeps_a_folder_out_of_a_new_project() {
         let Ok(repo) = test_support::temp_repo::init_repo() else {
-            return; // git is not installed: skip (§21).
+            return; // Requires an installed git.
         };
         let mut config = Config::default();
         config.worktrees.ignore = vec!["agent-wts".to_owned()];
@@ -9934,7 +9920,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Emitted-delta sequencing (§10.5)
     // ---------------------------------------------------------------
 
     #[test]
@@ -10068,7 +10053,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Editor sessions (feature 19)
     // ---------------------------------------------------------------
 
     fn write_executable(dir: &Path, name: &str) -> PathBuf {

@@ -1,4 +1,4 @@
-//! `config.toml` loading (§15.4).
+//! `config.toml` loading.
 //!
 //! The GUI reads the `[terminal]` keys; the daemon reads `[sessions]`,
 //! `[worktrees]`, `[git]`, `[github]` and `[daemon]`. Changes require a restart
@@ -7,7 +7,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Top-level config document (§15.4).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -43,7 +42,7 @@ pub struct SessionsConfig {
     /// on top of the interactive rc file. Turn it off for a shell that rejects
     /// `-l`, which exits immediately and leaves the session dead on arrival.
     pub login_shell: bool,
-    /// The `TERM` advertised to shell sessions (§13.3).
+    /// The `TERM` advertised to shell sessions.
     ///
     /// Defaults to Ghostty's entry so an in-app shell identifies itself the way
     /// the user's terminal does. The daemon checks that the name has a terminfo
@@ -59,12 +58,12 @@ pub struct SessionsConfig {
     pub terminfo_dir: String,
     /// Keep the session history across daemon restarts.
     ///
-    /// Off by default. A PTY never survives the daemon (§3.3), so every session
+    /// Off by default. A PTY never survives the daemon, so every session
     /// row a restart finds is already dead; keeping them turns the tree into a
     /// growing pile of `Orphaned` entries. With this off the daemon drops the
     /// session rows on startup and the app opens on a clean tree; with it on
     /// they are reconciled to `Orphaned` instead and `RestartSession` can bring
-    /// one back (§7.3, §15.3).
+    /// one back.
     pub persist_history: bool,
 
     /// Inactivity (no terminal output *and* no input) after which a live agent
@@ -108,7 +107,7 @@ pub struct SessionsConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorktreesConfig {
-    /// Empty = default of §14.2.
+    /// Empty selects the platform's default managed-worktree root.
     pub root: String,
 
     /// Files to copy from the main checkout into every worktree Forge creates.
@@ -145,7 +144,6 @@ pub struct WorktreesConfig {
     pub ignore: Vec<String>,
 }
 
-/// Git behaviour the user can tune (§14, branches plan §4).
 ///
 /// Both knobs default to `0`, which reads as "use the built-in behaviour":
 /// the `git-service` network timeout, and no automatic fetching.
@@ -173,7 +171,7 @@ pub struct GitConfig {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GithubConfig {
-    /// `gh` executable or path. Empty searches the login-shell `PATH` (§12)
+    /// `gh` executable or path. Empty searches the login-shell `PATH`
     /// for `gh`, then falls back to the daemon's own.
     pub executable: String,
     /// Wall-clock budget for one `gh` invocation. `0` uses `GH_TIMEOUT`.
@@ -189,7 +187,7 @@ pub struct GithubConfig {
 /// The integrated terminal editor, `forge-editor` under the daemon's PTY.
 ///
 /// H1 is read-only: the integrated buffer is opened so its save is refused
-/// rather than let a draft exist that nothing could persist (feature 19).
+/// rather than let a draft exist that nothing could persist.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorConfig {
@@ -314,7 +312,7 @@ impl GitConfig {
 impl GithubConfig {
     /// Resolve the executable, timeout, and search path passed to `git-service`.
     ///
-    /// `path_entries` is the login-shell `PATH` (§12). A GUI launched from
+    /// `path_entries` is the login-shell `PATH`. A GUI launched from
     /// Finder does not inherit the user's shell `PATH`, so an unconfigured bare
     /// `gh` is unlaunchable there even though it works in every terminal on the
     /// same machine; handing the resolved directories to `git-service` is what
@@ -398,19 +396,18 @@ impl Config {
         }
     }
 
-    /// Clamp `scrollback_lines` to the documented maximum of 100_000 (§11.4).
+    /// Clamps to 100,000 lines.
     #[must_use]
     pub fn effective_scrollback(&self) -> u32 {
         self.terminal.scrollback_lines.min(100_000)
     }
 
-    /// The configured kill grace period (§11.3).
     #[must_use]
     pub fn kill_grace(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.sessions.kill_grace_ms)
     }
 
-    /// The configured terminfo database, or `None` to discover it (§13.3).
+    /// `None` requests terminfo discovery.
     #[must_use]
     pub fn terminfo_dir(&self) -> Option<&Path> {
         let dir = self.sessions.terminfo_dir.trim();

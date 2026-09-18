@@ -1,20 +1,8 @@
-/*
- * The centre column: the stack itself, the empty state, the open-file strip,
- * and the views inside it — editor, diff, PR, feature, job stream.
- *
- * Global rather than route-scoped even though the editor and the diff are
- * lazily loaded (§3.2 P11): `.center-stack`, `.center-view` and the strip are
- * painted by `CenterStack`, which is in the entry chunk, so splitting this
- * file further would put the frame in one chunk and its contents in another.
- */
+/* Global because CenterStack needs these styles before lazy views load. */
 
 /* ----------------------------------------------------------- workbench --- */
 
-/* The single column is spelled out rather than left implicit. An implicit
-   `auto` track is sized to its content in WebKit, so the tab strip's own width
-   became the width of the editor under it and every file was cut off mid-line
-   with the rest of the column left black. Must stay in this file: the settings
-   chunk is lazy, and Code is painted before that route is ever opened. */
+/* WebKit sizes implicit auto tracks to content; minmax prevents tab-strip overflow. */
 .center-stack {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

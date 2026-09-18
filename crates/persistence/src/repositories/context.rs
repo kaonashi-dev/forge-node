@@ -1,10 +1,10 @@
-//! Context envelopes repository (§8.3, §15.2).
+//! Context envelopes repository.
 //!
 //! The two structured fields — `artifacts` and `git_context` — are stored as
 //! JSON TEXT via `serde_json` (ADR-009 keeps them out of dedicated columns). The
 //! `artifacts_json` column is NOT NULL and holds `"[]"` for an empty list;
 //! `git_context_json` is NULL when there is no Git context. In the MVP only
-//! `summary`/`instructions` are populated (§8.3), but the full schema is stored
+//! `summary`/`instructions` are populated, but the full schema is stored
 //! faithfully so the type is ready before orchestration.
 
 use domain::{ContextArtifactRef, ContextEnvelope, ContextId, GitContextRef, SessionId};
@@ -27,7 +27,7 @@ impl<'a> ContextRepo<'a> {
         Self { conn }
     }
 
-    /// Insert a context envelope. Envelopes are append-only (§8.3), so there is
+    /// Insert a context envelope. Envelopes are append-only, so there is
     /// no update path.
     ///
     /// # Errors

@@ -1,4 +1,4 @@
-//! Grok account usage over its ACP entry (§16.2).
+//! Grok account usage over its ACP entry.
 //!
 //! The odd one of the four. Claude and Codex keep their meter behind an HTTP
 //! endpoint that a local OAuth token opens; Grok does not publish one at all —
@@ -73,7 +73,7 @@ fn ask_for_billing(executable: &Path, args: &[String], env: &ResolvedEnvironment
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    // Under the resolved login environment (§12), so a profile that moved
+    // Under the resolved login environment, so a profile that moved
     // `GROK_HOME` is answered for *that* account and not the default one.
     command.env_clear();
     for (key, value) in &env.vars {

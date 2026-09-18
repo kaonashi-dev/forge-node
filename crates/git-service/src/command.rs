@@ -1,6 +1,6 @@
 //! Running `git` as a plain, captured subprocess (ADR-008).
 //!
-//! Every git invocation goes through [`run_git`], which:
+//! Local Git invocations go through [`run_git`] or [`run_git_bounded`], which:
 //! - prepends `-C <repo>` when a working directory is given,
 //! - forces a stable, parseable locale (`LC_ALL=C`),
 //! - disables interactive credential/prompt hangs (`GIT_TERMINAL_PROMPT=0`),

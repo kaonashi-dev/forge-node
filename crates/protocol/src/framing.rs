@@ -2,7 +2,7 @@
 //!
 //! A frame is a `u32` big-endian payload length plus that many bytes of
 //! MessagePack. Helpers operate on buffers, never sockets, so both the
-//! daemon's blocking accept loop and the client's reader thread can share
+//! daemon's async server and the client's blocking reader thread can share
 //! them. Structs are named maps (`rmp_serde::to_vec_named`) so an older peer
 //! skips unknown fields instead of misreading a positional array.
 
@@ -12,7 +12,7 @@ use std::io::{self, Write};
 
 /// Maximum size, in bytes, of a single frame's payload. A declared or produced
 /// length above this is a hard error: the caller must close the connection
-/// rather than allocate unbounded memory (ADR-004, §10.5).
+/// rather than allocate unbounded memory (ADR-004).
 pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 
 /// Width of the big-endian length prefix.
@@ -31,7 +31,7 @@ pub enum ProtocolCodecError {
     /// Deserializing a payload from MessagePack failed.
     #[error("failed to decode MessagePack payload")]
     Decode(#[from] rmp_serde::decode::Error),
-    /// Rendering a message to JSON failed (used by `dump --json`, §10.4).
+    /// Rendering a message to JSON failed.
     #[error("failed to render message as JSON")]
     Json(#[from] serde_json::Error),
     /// A frame's payload length exceeds [`MAX_FRAME_SIZE`]. Fatal for the
@@ -148,7 +148,7 @@ pub fn decode_frame<T: DeserializeOwned>(bytes: &[u8]) -> Result<(T, usize), Pro
 }
 
 /// Pretty-print a message as JSON for the daemon's `dump --json` debug
-/// subcommand (§10.4/§10.1). Uses `serde_json`, independent of the MessagePack
+/// representation. Uses `serde_json`, independent of the MessagePack
 /// wire format.
 ///
 /// # Errors
@@ -170,7 +170,7 @@ pub struct FrameDecoder {
     /// Offset of the first unconsumed byte in `buf`.
     ///
     /// Frames are consumed by advancing this cursor, not by draining the front
-    /// of the buffer: on the terminal-delta path (§10.5) `next_frame` runs many
+    /// of the buffer: on the terminal-delta path `next_frame` runs many
     /// times a second, and `Vec::drain(..n)` memmoves the whole remainder every
     /// time. The prefix is reclaimed by [`FrameDecoder::compact`].
     start: usize,

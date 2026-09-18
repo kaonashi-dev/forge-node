@@ -1,4 +1,4 @@
-//! Launch profiles end to end (§13.4).
+//! Launch profiles end to end.
 //!
 //! A profile is the saved form of what a hand-written shell wrapper did:
 //! `CLAUDE_CONFIG_DIR=~/.claude-personal claude --model opus`. What matters is
@@ -28,13 +28,7 @@ fn profile(name: &str, config_dir: Option<&str>, args: &[&str]) -> AgentProfile 
     }
 }
 
-/// The whole point of §13.4: the agent runs with the profile's directory and
-/// arguments, the directory is created first, and a restart repeats it.
-///
-/// The directory here is the one the form suggests — a bare `.claude-personal`
-/// — because that is the case that used to fail: resolved against the daemon's
-/// working directory it is `/.claude-personal`, which under launchd is a
-/// read-only file system.
+// A bare profile directory must resolve under HOME, not launchd's `/` working directory.
 #[test]
 fn a_relative_config_directory_lands_in_the_home_directory() {
     let harness = common::Harness::new();
@@ -276,7 +270,7 @@ fn saving_a_profile_rejects_what_a_launch_could_not_honor() {
     assert_eq!(protocol_code(&refused), ErrorCode::InvalidRequest);
 
     // A profile may bring its own binary, but only one the version probe
-    // accepts — the same rule `SetProviderExecutable` follows (§13.1 step 4).
+    // accepts — the same rule `SetProviderExecutable` follows.
     let mut foreign = profile("Foreign", None, &[]);
     foreign.executable = Some(harness.root().join("nothing-here"));
     let refused = save(foreign).expect_err("an executable that is not there is refused");

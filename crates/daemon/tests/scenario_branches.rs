@@ -1,5 +1,5 @@
 //! Branches, remotes and on-demand reconciliation, end to end through the
-//! protocol (§14.1, §14.3; branches plan phases 2–4 and 6).
+//! protocol.
 //!
 //! What these cover that `git-service`'s own tests cannot: the *daemon's*
 //! behaviour around git — that `ListBranches` knows which worktree already
@@ -362,18 +362,10 @@ fn refresh_project_picks_up_a_worktree_created_outside_the_app() {
         .find(|w| w.branch.as_deref() == Some("made/outside"))
         .expect("the outside worktree is now a workspace");
     assert_eq!(adopted.kind, WorkspaceKind::GitWorktree);
-    // Forge did not create it, so Forge will never delete it from disk (§14.4).
+    // Externally created worktrees must survive on disk.
     assert!(!adopted.managed_by_app);
 }
 
-/// A managed worktree deleted outside the app must leave the rail, and must
-/// still be removable if it is somehow still there.
-///
-/// The status poll is the first thing that touches a vanished worktree, and it
-/// used to swallow the git failure and answer `Ack`. The §15.3 step-4 diff that
-/// would drop the row runs only at daemon start and from `RefreshProject`, so
-/// the workspace stayed on screen — with a status dot, and with every action on
-/// it failing — until the next restart.
 #[test]
 fn a_worktree_deleted_by_hand_leaves_the_model_on_the_next_status_poll() {
     let harness = common::Harness::new();
@@ -425,7 +417,6 @@ fn a_worktree_deleted_by_hand_leaves_the_model_on_the_next_status_poll() {
         "the vanished worktree is no longer offered in the rail"
     );
 
-    // The branch is still there: nothing here deletes one (§14.4).
     let Response::Branches { branches, .. } = client
         .request(Request::ListBranches { project_id })
         .expect("ListBranches")
@@ -604,7 +595,7 @@ fn a_new_worktree_gets_the_configured_files_and_setup_script() {
         panic!("expected WorkspaceCreated");
     };
 
-    // Provisioning acks when it *starts* (§14.2): the worktree appears first
+    // Provisioning acks when it starts: the worktree appears first
     // and the files land when `SharesApplied` says so. Asserting right after
     // the reply would be asserting against a race, not against behaviour.
     common::wait_for(&events, common::DEADLINE, |event| {

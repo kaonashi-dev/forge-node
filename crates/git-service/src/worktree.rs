@@ -1,7 +1,7 @@
 //! Managed worktree operations: slug generation, validation, create, remove
-//! and removal pre-checks (§14.2, §14.3, §14.4).
+//! and removal pre-checks.
 //!
-//! This crate never deletes a branch (§14.4) — [`remove`] only removes the
+//! This crate never deletes a branch — [`remove`] only removes the
 //! worktree working directory and prunes stale administrative entries.
 
 use crate::command::{run_git, GitError};
@@ -9,10 +9,9 @@ use crate::repository::{list_branches, list_worktrees};
 use std::collections::HashSet;
 use std::path::Path;
 
-/// Maximum slug length (§14.2).
 const MAX_SLUG_LEN: usize = 64;
 
-/// Removal pre-checks returned to the caller so the GUI can confirm (§14.4).
+/// Removal pre-checks returned to the caller so the GUI can confirm.
 ///
 /// The daemon combines these with its own "running sessions in this workspace"
 /// check before allowing a non-forced removal.
@@ -27,7 +26,7 @@ pub struct RemovePrechecks {
 /// Slug used when the input contains nothing that can safely name a directory.
 const FALLBACK_SLUG: &str = "worktree";
 
-/// Turn a branch name into a filesystem-safe slug (§14.2).
+/// Turn a branch name into a filesystem-safe slug.
 ///
 /// Rules: `/` becomes `-`; any character outside `[A-Za-z0-9._-]` becomes `-`;
 /// runs of `-` collapse to one; the result is capped at 64 characters. The
@@ -74,9 +73,9 @@ pub fn slugify(branch: &str) -> String {
 /// Produce a slug for `branch` that is not already present in `existing`.
 ///
 /// The base slug is [`slugify`]; on collision a numeric suffix `-2`, `-3`, …
-/// is appended until a free name is found (§14.2).
+/// is appended until a free name is found.
 ///
-/// The 64-character cap of §14.2 applies to the *final* name, so the base is
+/// The 64-character cap applies to the final name, so the base is
 /// shortened to make room for the suffix rather than pushed past the limit: a
 /// 64-character branch slug that collides used to produce a 66-character
 /// directory name.
@@ -124,7 +123,7 @@ fn reject_option_like(what: &str, value: &str) -> Result<(), GitError> {
     Ok(())
 }
 
-/// Validate a branch name with `git check-ref-format --branch` (§14.3).
+/// Validate a branch name with `git check-ref-format --branch`.
 ///
 /// A leading `-` is rejected before git ever sees the value: `check-ref-format`
 /// would parse `--help` as its own option and exit 0, letting an option-looking
@@ -146,7 +145,6 @@ pub fn validate_branch_name(branch: &str) -> Result<(), GitError> {
     }
 }
 
-/// Create a worktree at `path` for `branch` (§14.3).
 ///
 /// Behaviour:
 /// - branch does **not** exist ⇒ `worktree add <path> -b <branch> <base>`
@@ -156,7 +154,7 @@ pub fn validate_branch_name(branch: &str) -> Result<(), GitError> {
 ///   carrying that worktree's path.
 ///
 /// The branch name is validated first. This never creates the parent directory
-/// or sets permissions — the daemon owns location and `0700` mode (§14.2).
+/// or sets permissions — the daemon owns location and `0700` mode.
 ///
 /// # Errors
 /// - [`GitError::InvalidBranchName`] for an invalid branch name.
@@ -206,7 +204,7 @@ pub fn create(repo: &Path, path: &Path, branch: &str, base: Option<&str>) -> Res
     Ok(())
 }
 
-/// Drop administrative entries whose working directory is gone (§14.4).
+/// Drop administrative entries whose working directory is gone.
 ///
 /// Never touches a working directory; only `.git/worktrees/` bookkeeping is
 /// removed, which is exactly what a hand-deleted worktree leaves behind.
@@ -219,7 +217,7 @@ pub fn prune(repo: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
-/// Remove the worktree at `path`, then prune stale administrative entries (§14.4).
+/// Remove the worktree at `path`, then prune stale administrative entries.
 ///
 /// Never deletes the branch. With `force = false` git itself refuses to remove a
 /// dirty worktree; callers should consult [`precheck_remove`] first.
@@ -254,7 +252,6 @@ pub fn remove(repo: &Path, path: &Path, force: bool) -> Result<(), GitError> {
     Ok(())
 }
 
-/// Compute removal pre-checks for the worktree at `path` (§14.4).
 ///
 /// Reports whether the worktree is dirty (`status --porcelain`) and whether a
 /// merge or rebase is in progress (presence of `MERGE_HEAD`, `rebase-merge/` or
@@ -380,7 +377,7 @@ mod tests {
 
     #[test]
     fn unique_slug_keeps_the_64_char_cap_when_adding_a_suffix() {
-        // The cap of §14.2 is on the directory name that actually gets created,
+        // The cap is on the directory name that actually gets created,
         // so the suffix has to fit inside it, not extend past it.
         let base = slugify(&"a".repeat(200));
         assert_eq!(base.len(), MAX_SLUG_LEN);

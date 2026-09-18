@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build distributable Linux artifacts for Forge Node (§17, §18 Fase 9).
+# Build distributable Linux artifacts for Forge Node.
 #
 # This script is NEVER run automatically — not by `scripts/dev`, not by CI.
 # Run it by hand, on the oldest distro you intend to support (the produced

@@ -103,7 +103,7 @@ impl From<&DaemonInfo> for DaemonInfoDto {
     }
 }
 
-/// Per-session attention flags for tab washes (§16.3). Mirrors
+/// Per-session attention flags for tab washes. Mirrors
 /// `apps/tauri on the runtime thread.
 #[derive(Clone, Debug, Serialize)]
 pub struct SessionAttentionFlags {
@@ -136,9 +136,9 @@ pub struct ShellSnapshot {
     pub workspaces: Vec<Workspace>,
     pub sessions: Vec<Session>,
     pub providers: Vec<ProviderInfo>,
-    /// Subscription meters read from provider endpoints (§16.2).
+    /// Provider-reported allowances, not transcript token counts.
     pub usage: Vec<ProviderUsage>,
-    /// Agent runs discovered on disk that the daemon did not launch (§13.5).
+    /// Discovered history, not daemon-owned sessions.
     /// Read-only: the History panel resumes them by asking the provider's own
     /// CLI to re-enter its session, never by replaying the transcript.
     pub external_agents: Vec<ExternalAgentSession>,
@@ -146,20 +146,19 @@ pub struct ShellSnapshot {
     /// only `RefreshPullRequests` may touch the network.
     pub pull_requests: PullRequestState,
     pub launchables: Vec<Launchable>,
-    /// Launch profiles (§13.4), for the settings section that edits them.
     ///
     /// `launchables` already flattens these into rows the `+` menu can start,
     /// but a profile is also a thing with an executable, arguments and an
     /// environment, and none of that survives the flattening.
     pub agent_profiles: Vec<AgentProfile>,
-    /// Every project's file-sharing rules (§14.2), in application order, for
+    /// Every project's file-sharing rules, in application order, for
     /// the settings section that edits them.
     pub worktree_shares: Vec<domain::ShareRule>,
-    /// Every project's worktree-ignore rules (§14.4), for the settings dialog
+    /// Every project's worktree-ignore rules, for the settings dialog
     /// that undoes them.
     pub worktree_ignores: Vec<domain::WorktreeIgnore>,
     pub session_attention: HashMap<SessionId, SessionAttentionFlags>,
-    /// Persisted GUI preferences (§15.2). The daemon stays authoritative:
+    /// Persisted GUI preferences. The daemon stays authoritative:
     /// writes go through `SetAppState`, and this is the last read of them.
     pub app_state: HashMap<String, String>,
     pub live_sessions: usize,

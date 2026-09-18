@@ -1,4 +1,4 @@
-//! §16.2: the settings screen's stats page, end to end through the daemon.
+//! Usage analytics, end to end through the daemon.
 //!
 //! The daemon under test reads its transcripts from the harness tree, not from
 //! the developer's home (`common` points `CLAUDE_CONFIG_DIR`/`CODEX_HOME` at

@@ -8,7 +8,7 @@ use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Default number of scrollback lines included in a snapshot tail (§11.4).
+/// Default number of scrollback lines included in a snapshot tail.
 pub const DEFAULT_SCROLLBACK_TAIL: usize = 200;
 
 /// A rendered cell color. Named 0–15 colors are folded into `Indexed`.
@@ -38,7 +38,7 @@ impl CellFlags {
     pub const HIDDEN: Self = Self(1 << 6);
     /// Leading cell of a wide (double-width) grapheme.
     pub const WIDE_CHAR: Self = Self(1 << 7);
-    /// Continuation cell of a wide grapheme; carries no text (§11.4).
+    /// Continuation cell of a wide grapheme; carries no text.
     pub const WIDE_SPACER: Self = Self(1 << 8);
 
     #[must_use]
@@ -68,7 +68,7 @@ impl std::ops::BitOr for CellFlags {
 }
 
 /// One terminal cell. `text` holds the full grapheme cluster; continuation
-/// cells of wide characters carry the `WIDE_SPACER` flag and empty text (§11.4).
+/// cells of wide characters carry the `WIDE_SPACER` flag and empty text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
     pub text: CompactString,
@@ -174,7 +174,6 @@ pub struct Cursor {
     pub visible: bool,
 }
 
-/// Mouse reporting mode (§11.6).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum MouseMode {
@@ -188,7 +187,7 @@ pub enum MouseMode {
     AnyEvent,
 }
 
-/// Terminal modes needed by the renderer and input mapping (§11.4, §11.6).
+/// Terminal modes needed by the renderer and input mapping.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TermModes {
     pub alt_screen: bool,
@@ -201,7 +200,7 @@ pub struct TermModes {
     pub focus_events: bool,
 }
 
-/// Damage reported by the engine since the last poll (§11.4).
+/// Damage reported by the engine since the last poll.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Damage {
@@ -221,7 +220,7 @@ pub struct CellPatch {
     pub row: Row,
 }
 
-/// A complete snapshot of the grid at a given `seq` (§11.4). Sent on attach and
+/// A complete snapshot of the grid at a given `seq`. Sent on attach and
 /// on resync.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalSnapshot {
@@ -238,7 +237,7 @@ pub struct TerminalSnapshot {
     pub title: Option<String>,
 }
 
-/// The changed rows between two `seq` values (§11.4).
+/// The changed rows between two `seq` values.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalDelta {
     pub seq: u64,
@@ -264,7 +263,7 @@ impl TerminalDelta {
     }
 }
 
-/// A block of scrollback rows returned by `FetchScrollback` (§10.2).
+/// A block of scrollback rows returned by `FetchScrollback`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScrollbackRows {
     pub generation: u64,

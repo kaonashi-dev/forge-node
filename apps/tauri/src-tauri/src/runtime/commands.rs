@@ -47,7 +47,7 @@ pub enum RuntimeCommand {
     /// A key press for the attached terminal.
     ///
     /// `id` is the WebView's own counter, echoed back on the frame that
-    /// rendered the press so it can close its latency sample (§2.9).
+    /// rendered the press so it can close its latency sample.
     Input {
         key: KeyPress,
         #[serde(default)]
@@ -72,7 +72,7 @@ pub enum RuntimeCommand {
         text: String,
         connection_generation: u64,
     },
-    /// A mouse event for a program that asked to read the mouse (§11.6).
+    /// A mouse event for a program that enabled mouse reporting.
     ///
     /// Only sent while the terminal is in a reporting mode: the pane keeps the
     /// mouse for selection otherwise, and the *encoder* is what decides
@@ -128,12 +128,12 @@ pub enum RuntimeCommand {
         profile: Option<AgentProfileId>,
         workspace: Option<WorkspaceId>,
         /// A provider session id to re-enter instead of starting a fresh
-        /// conversation (§13.5) — what a history card's Resume sends. The
+        /// conversation — what a history card's Resume sends. The
         /// provider's own CLI does the re-entering; nothing here replays a
         /// transcript.
         #[serde(default)]
         resume: Option<String>,
-        /// Hand the agent a prompt to start from rather than an empty shell (§16.8).
+        /// Initial prompt, distinct from resuming an existing conversation.
         #[serde(default)]
         prompt: Option<String>,
         /// The session this was handed off from, recorded as a graph edge so
@@ -141,11 +141,10 @@ pub enum RuntimeCommand {
         #[serde(default)]
         parent: Option<SessionId>,
         /// Start the provider in its own read-only mode, which is what an
-        /// automatic pull-request review runs in (§16.9).
+        /// automatic pull-request review runs in.
         #[serde(default)]
         read_only: bool,
     },
-    /// Spawn a child under a parent with any provider (§8.2).
     CreateChildSession {
         parent: SessionId,
         provider: AgentProviderId,
@@ -162,7 +161,7 @@ pub enum RuntimeCommand {
         #[serde(default)]
         branch_hint: Option<String>,
     },
-    /// Persist a context envelope and deliver or spawn (§8.3).
+    /// Persists before delivery or child launch.
     SendContext {
         source: SessionId,
         #[serde(default)]
@@ -191,7 +190,6 @@ pub enum RuntimeCommand {
     Resize {
         size: PtySize,
     },
-    /// Persist one opaque GUI preference (§15.2).
     ///
     /// The daemon owns it: this writes and the value comes back on the next
     /// snapshot, rather than the WebView keeping a second copy that a second
@@ -207,16 +205,16 @@ pub enum RuntimeCommand {
     CloseSession {
         session_id: SessionId,
     },
-    /// Stop a running session without removing its row (§7.3).
+    /// Stops the process but retains the session row.
     KillSession {
         session_id: SessionId,
     },
-    /// Bring an exited or orphaned session back with a fresh PTY (§7.3).
+    /// Restarts with a fresh PTY.
     RestartSession {
         session_id: SessionId,
     },
     /// Set the user title, or clear it with `null` so the terminal-reported one
-    /// takes over again (§7.3).
+    /// takes over again.
     RenameSession {
         session_id: SessionId,
         title: Option<String>,
@@ -225,7 +223,6 @@ pub enum RuntimeCommand {
     RefreshWorkspaceStatus {
         workspace: WorkspaceId,
     },
-    /// Create a managed git worktree (§14.3).
     CreateWorktree {
         project: ProjectId,
         branch: String,
@@ -245,7 +242,6 @@ pub enum RuntimeCommand {
         editor: String,
         path: String,
     },
-    /// Open a file in a daemon-supervised `forge-editor` (feature 19).
     OpenEditor {
         workspace: WorkspaceId,
         path: String,
@@ -354,7 +350,6 @@ pub enum RuntimeCommand {
     // channel on git: the row redraws from the event the daemon sends, not
     // from a return value. That is why they belong here and not on the
     // workbench worker, which exists for the reads that answer inline.
-    /// Register a directory as a project (§10.2).
     AddProject {
         path: String,
         /// Drop it straight into a group, which is what the group's own
@@ -390,7 +385,7 @@ pub enum RuntimeCommand {
     RemoveProjectGroup {
         group: domain::ProjectGroupId,
     },
-    /// Remove a project (§10.2). No policy ever deletes a branch.
+    /// No policy deletes a branch.
     RemoveProject {
         project: ProjectId,
         policy: ProjectRemovalPolicy,
@@ -401,7 +396,7 @@ pub enum RuntimeCommand {
         #[serde(default)]
         display_name: Option<String>,
     },
-    /// Remove a managed worktree (§14.4). Never deletes a branch.
+    /// Never deletes a branch.
     ///
     /// Without `force` the daemon refuses while the tree is dirty or sessions
     /// are running and says which — that message is meant to be shown before
@@ -413,19 +408,19 @@ pub enum RuntimeCommand {
     },
 
     // ------------------------------------------------------------ agents ---
-    /// Re-probe the agent CLIs; `null` refreshes every provider (§13.1).
+    /// `null` refreshes every provider.
     RefreshDetection {
         #[serde(default)]
         provider: Option<AgentProviderId>,
     },
-    /// Create or replace a launch profile (§13.4).
+    /// Replaces a profile with the same id.
     SaveAgentProfile {
         profile: domain::AgentProfile,
     },
     RemoveAgentProfile {
         profile: AgentProfileId,
     },
-    /// Replace a project's whole file-sharing rule set (§14.2).
+    /// Replaces the whole file-sharing rule set.
     SetProjectShares {
         project: ProjectId,
         rules: Vec<domain::ShareRule>,
@@ -437,7 +432,7 @@ pub enum RuntimeCommand {
         #[serde(default)]
         cleanup: domain::ShareCleanup,
     },
-    /// Replace a project's whole worktree-ignore set (§14.4). The daemon
+    /// Replace a project's whole worktree-ignore set. The daemon
     /// rescans the project before it acks, so the rows a new rule covers are
     /// already gone when this returns.
     SetWorktreeIgnores {
@@ -452,7 +447,6 @@ pub enum RuntimeCommand {
     },
 
     // ----------------------------------------------------------- harness ---
-    /// Bind a feature to the orchestrator session running it (§harness).
     LinkHarnessSession {
         project: ProjectId,
         feature: u32,
@@ -463,7 +457,7 @@ pub enum RuntimeCommand {
         job_id: domain::JobId,
     },
     /// Attach a second, small terminal to watch a harness session without
-    /// leaving the feature tab (§5.8).
+    /// leaving the feature tab.
     ///
     /// One at a time: attaching replaces whatever the preview held, which is
     /// what makes clicking through a feature's sessions cheap.

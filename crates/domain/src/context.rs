@@ -1,4 +1,3 @@
-//! Context envelope types (§8.3).
 //!
 //! `summary` and `instructions` are the primary fields; artifacts and git
 //! context are optional. Cross-session delivery goes through `SendContext`
@@ -8,7 +7,6 @@ use crate::ids::{ContextId, SessionId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// The kind of artifact a context envelope carries (§8.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ContextArtifactKind {
@@ -38,7 +36,7 @@ pub struct GitContextRef {
     pub commit: Option<String>,
 }
 
-/// An explicit, auditable transfer of context between sessions (§8.3, §23).
+/// An explicit, auditable transfer of context between sessions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextEnvelope {
     pub id: ContextId,

@@ -1,8 +1,8 @@
-//! Singleton enforcement via an advisory `flock` (§9.2).
+//! Singleton enforcement via an advisory `flock`.
 //!
 //! The authority is the `flock(LOCK_EX | LOCK_NB)`, not the PID written into the
 //! file: the JSON body is purely informative. If the lock cannot be taken,
-//! another daemon owns it and this process exits with code 0 (§9.1 double-spawn
+//! another daemon owns it and this process exits with code 0 (double-spawn
 //! race).
 
 use std::fs::{File, OpenOptions};
@@ -16,7 +16,7 @@ pub struct DaemonLock {
     _lock: Flock<File>,
 }
 
-/// Informative lock metadata (§9.2). The `flock` is the real authority.
+/// Informative metadata; only the `flock` proves ownership.
 #[derive(serde::Serialize)]
 struct LockInfo<'a> {
     pid: u32,

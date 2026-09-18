@@ -13,7 +13,7 @@ pub enum JuvaKind {
     CommitMessage,
     /// A pull-request title and body for commits ahead of the base.
     PullRequest,
-    /// A prose review of what a checkout changed, for the Review tab (§16.7).
+    /// A prose review of what a checkout changed, for the Review tab.
     ChangeReview,
     /// Unknown variant from a newer peer.
     #[serde(other)]

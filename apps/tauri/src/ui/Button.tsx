@@ -78,26 +78,12 @@ export type IconButtonProps = Omit<
   /** Required: an icon alone says nothing to a screen reader. */
   label: string;
   variant?: ButtonVariant;
-  /**
-   * Drop the tooltip.
-   *
-   * For the handful of glyphs whose meaning is the thing next to them — the
-   * `×` on a notice, a disclosure chevron — where a tip that repeats the label
-   * is noise rather than help. The `aria-label` stays either way.
-   */
+  /** Hides the tooltip but preserves the accessible label. */
   hideTooltip?: boolean;
   tooltipPlacement?: "top" | "bottom" | "left" | "right";
 };
 
-/**
- * A square, chromeless button holding a single glyph.
- *
- * It carries its own tooltip. `title` was what named these before, and a
- * `title` never appears for someone arriving by keyboard — so every icon-only
- * control in the shell was unlabelled for exactly the people who could not
- * guess the glyph. Wrapping here rather than at ~40 call sites is what makes
- * that true of all of them at once (§4.3 U17).
- */
+/** Includes a keyboard-accessible tooltip; native `title` is insufficient. */
 export function IconButton(props: IconButtonProps) {
   const [own, rest] = splitProps(props, [
     "children",

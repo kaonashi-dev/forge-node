@@ -10,17 +10,7 @@ export type SkeletonProps = {
   class?: string;
 };
 
-/**
- * Placeholder rows for content that is on its way (§5.3).
- *
- * Replaces `Reading…` in the places where the shape of the answer is already
- * known — a file tree, a list of pull requests, a diff. The point is not the
- * shimmer: it is that the panel does not change size when the answer lands,
- * so nothing under the pointer moves at the moment someone reaches for it.
- *
- * `aria-busy` with a label rather than a live region: a screen reader should
- * hear "loading the file tree" once, not a row count that means nothing.
- */
+/** Match the expected content height to prevent layout shifts when loading completes. */
 export function Skeleton(props: SkeletonProps) {
   return (
     <div

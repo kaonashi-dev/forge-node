@@ -1,4 +1,4 @@
-//! The state of a stopped rebase, merge, cherry-pick or revert (§14).
+//! The state of a stopped rebase, merge, cherry-pick or revert.
 //!
 //! Runtime-only, like [`crate::diff::WorkspaceDiff`] and
 //! [`crate::workspace::WorkspaceStatus`]: no column, no migration, no `Store`

@@ -18,19 +18,6 @@ export type ListCardProps = {
   class?: string;
 };
 
-/**
- * The card a list panel repeats (§4.2 U13).
- *
- * `history-card`, `feature-card` and `pr-card` were three copies of the same
- * arrangement — glyph, title, aside, meta, body, actions — and the three had
- * already drifted in padding, gap and which line the metadata sat on. One
- * component means a list of runs and a list of pull requests read as the same
- * kind of thing, which they are.
- *
- * The whole card is clickable when `onOpen` is given, and then the header is a
- * real `<button>`: a `div` with a click handler is not reachable by keyboard,
- * and these cards are the primary way into a run.
- */
 export function ListCard(props: ListCardProps) {
   return (
     <article class={`list-card ${props.class ?? ""}`}>

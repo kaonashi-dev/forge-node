@@ -17,12 +17,12 @@ enum Command {
     Run,
     /// Print the resolved paths and effective config, then exit.
     Info,
-    /// Stream protocol messages as JSON for debugging (§10.4). Not yet wired.
+    /// Stream protocol messages as JSON for debugging. Not yet wired.
     Dump {
         #[arg(long)]
         json: bool,
     },
-    /// Print runtime statistics from a running daemon (§22).
+    /// Print runtime statistics from a running daemon.
     Stats,
     /// List, read, or spawn child sessions against a running daemon.
     Session(SessionCli),

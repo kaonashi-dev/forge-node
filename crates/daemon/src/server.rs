@@ -1,5 +1,5 @@
 //! The IPC server: bind the UDS, accept connections, run the handshake, and
-//! pump requests/events (§9, §10). Built on tokio; blocking work (git, PTY
+//! pump requests/events. Built on tokio; blocking work (git, PTY
 //! spawn) is offloaded with `spawn_blocking` so the accept loop never stalls.
 
 use std::path::{Path, PathBuf};
@@ -33,7 +33,6 @@ pub fn bind(socket_path: &Path) -> std::io::Result<UnixListener> {
     Ok(listener)
 }
 
-/// Run the accept loop until a shutdown is requested (§9.1).
 pub async fn serve(daemon: Arc<Daemon>, listener: UnixListener, socket_path: PathBuf) {
     loop {
         if daemon.is_shutting_down() {
@@ -72,7 +71,7 @@ async fn wait_for_shutdown(daemon: &Arc<Daemon>) {
     }
 }
 
-/// Read one length-prefixed frame payload (§ADR-004 framing) from `reader`.
+/// Read one length-prefixed frame payload (ADR-004) from `reader`.
 async fn read_frame(reader: &mut (impl AsyncReadExt + Unpin)) -> std::io::Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
     match reader.read_exact(&mut len_buf).await {
@@ -96,7 +95,6 @@ async fn read_frame(reader: &mut (impl AsyncReadExt + Unpin)) -> std::io::Result
 async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::Result<()> {
     let (mut read_half, mut write_half) = stream.into_split();
 
-    // ---- Handshake (§9.2) ----
     let Some(first) = read_frame(&mut read_half).await? else {
         return Ok(());
     };
@@ -169,13 +167,12 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     // ---- Read loop: decode requests, dispatch, reply ----
     let result = read_loop(&daemon, client_id, &mut read_half).await;
 
-    // Cleanup on disconnect (§9.1): drop subscriptions + channel, ending the writer.
+    // Dropping the channel ends the writer on disconnect.
     daemon.registry().unregister(client_id);
     writer.abort();
     result
 }
 
-/// Decode requests from one client and dispatch them (§10.1).
 ///
 /// Each request is handled in its own task rather than awaited inline. Requests
 /// are correlated by `request_id`, so the protocol has always allowed a client
@@ -214,10 +211,10 @@ async fn read_loop(
             _ => None,
         };
 
-        // §22: one span per request, carrying the `request_id` and the request
+        // One span per request, carrying the `request_id` and the request
         // *variant* only. The payload never goes near the log — a
         // `WriteTerminalInput` body is the user's keystrokes and a
-        // `CreateContextEnvelope` carries prompt text (§23).
+        // `CreateContextEnvelope` carries prompt text.
         let span = tracing::info_span!(
             "ipc.request",
             request_id,
@@ -278,8 +275,8 @@ async fn read_loop(
             }
 
             // A dropped response is not recoverable for the client: it blocks on
-            // its `request_id` with no timeout of its own (§10.1). The outbound
-            // queue is bounded (§10.5) and a busy terminal can fill it, so on a
+            // its `request_id` with no timeout of its own. The outbound
+            // queue is bounded and a busy terminal can fill it, so on a
             // failed send the connection is torn down and the client sees a clean
             // disconnect instead of hanging forever.
             let delivered = daemon.registry().send_to(
@@ -309,11 +306,10 @@ async fn read_loop(
     Ok(())
 }
 
-/// The variant name of a request, for the `ipc.request` span (§22).
+/// The variant name of a request, for the `ipc.request` span.
 ///
 /// Returns a `&'static str` on purpose: it is impossible for a payload —
 /// keystrokes, environment values, prompt text — to reach the log through this
-/// (§22 "never terminal content nor environment values", §23).
 fn request_name(request: &Request) -> &'static str {
     match request {
         Request::GetSnapshot => "GetSnapshot",

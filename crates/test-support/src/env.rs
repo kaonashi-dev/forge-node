@@ -1,4 +1,4 @@
-//! Test builders for [`domain::ResolvedEnvironment`] (§12).
+//! Test builders for [`domain::ResolvedEnvironment`].
 //!
 //! The daemon resolves a login-shell environment once and caches it; agents and
 //! daemon tests need a plausible value without shelling out. These helpers build

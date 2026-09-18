@@ -1,8 +1,8 @@
-//! §19 scenarios E and G: what survives a daemon that went away.
+//! Session history and graph reconstruction after daemon restart.
 //!
 //! Both scenarios hinge on the same thing the GUI cannot fake — a daemon
 //! process that dies without telling anyone, and a second one that opens the
-//! same database afterwards (§15.3). `common::TestDaemon::crash` models the
+//! same database afterwards. `common::TestDaemon::crash` models the
 //! `kill -9` of scenario G: the accept loop stops and the socket is unlinked,
 //! but no session is killed and no row is rewritten, so the reconciliation of
 //! the next daemon has exactly the state a crash leaves behind.
@@ -23,8 +23,7 @@ fn keep_history(cfg: &mut daemon::config::Config) {
     cfg.sessions.persist_history = true;
 }
 
-/// §19 G: after a daemon restart every previously live session comes back
-/// `Orphaned` and none comes back `Running` (§15.3 step 2, §3.3).
+// Session history survives, but its PTYs do not.
 #[test]
 fn a_daemon_restart_orphans_every_previously_running_session() {
     const COUNT: usize = 3;
@@ -116,7 +115,7 @@ fn a_daemon_restart_orphans_every_previously_running_session() {
     crashed.kill_leftover_sessions();
 
     // An Orphaned session is not a dead end: `RestartSession` is the documented
-    // way back (§7.3), which is what makes the restarted sidebar usable.
+    // way back, which is what makes the restarted sidebar usable.
     let session_id = sessions[0].id;
     client
         .request(Request::RestartSession { session_id })
@@ -184,7 +183,7 @@ fn a_fresh_start_drops_the_session_history_by_default() {
     common::stop_daemon(&client);
 }
 
-/// §19 E: a child session created with a role stays nested under its parent
+/// A child session created with a role stays nested under its parent
 /// across a daemon restart, both come back `Orphaned`, and restarting the child
 /// keeps the parent (ADR-010).
 #[test]
@@ -200,7 +199,6 @@ fn a_child_session_stays_nested_across_a_daemon_restart_and_keeps_its_parent() {
 
         // A: a root session.
         let (parent_id, _) = common::create_shell_session(&client, &events, workspace_id);
-        // B: "New child session" with the Planner role (§8.1, §8.2).
         let (child_id, _) =
             common::create_child_session(&client, &events, parent_id, SessionRole::Planner);
 
@@ -256,7 +254,7 @@ fn a_child_session_stays_nested_across_a_daemon_restart_and_keeps_its_parent() {
 
     crashed.kill_leftover_sessions();
 
-    // `RestartSession` on B: Orphaned → Starting → Running (§7.3), and the
+    // `RestartSession` on B: Orphaned → Starting → Running, and the
     // graph edge must survive it.
     client
         .request(Request::RestartSession {

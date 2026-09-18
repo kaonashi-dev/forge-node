@@ -634,7 +634,7 @@
   color: var(--fg-default);
 }
 /* A folded row carries what is under it: collapsing a checkout must never be
-   able to hide a question (§16.3). */
+   able to hide a pending question. */
 .tree-row.wants-you {
   color: var(--attention-solid);
 }
@@ -1057,7 +1057,6 @@
 
 /* Controls, fields and cards now live in `ui/ui.css`, next to `src/ui/`. */
 
-/* Phase 3–4 shell additions */
 /* The two answers under the list: what to call it, and what to start in it. */
 .branch-picker-fields {
   border-top: 1px solid var(--border-subtle);
@@ -1134,7 +1133,6 @@
   margin: 0;
   padding-left: var(--space-20);
 }
-/* Rules that keep worktrees out of the rail (§14.4). */
 .worktree-ignores {
   display: grid;
   gap: var(--space-10);
@@ -1171,7 +1169,6 @@
   flex: 1;
 }
 
-/* What a new checkout will arrive with (§14.2): one line, under the fields. */
 .branch-picker-shares {
   color: var(--fg-muted);
   font-size: var(--text-xs);

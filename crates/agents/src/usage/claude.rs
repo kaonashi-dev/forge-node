@@ -1,11 +1,11 @@
-//! Claude usage from local OAuth credentials (§16.2).
+//! Claude usage from local OAuth credentials.
 //!
 //! Reads the access token from `~/.claude/.credentials.json`, falling back on
 //! macOS to the login Keychain (`security find-generic-password`, the existing
 //! subprocess pattern — no new crate). Then calls the Anthropic usage endpoint.
 //! Nothing here logs the token.
 //!
-//! A profile that moved the config directory is a different login (§13.4), so
+//! A profile that moved the config directory is a different login, so
 //! its credentials are read from that directory and the Keychain is not
 //! consulted: the Keychain holds one item for the default account, and falling
 //! back to it would print the default account's allowance under the profile's

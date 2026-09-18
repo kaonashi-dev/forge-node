@@ -959,8 +959,6 @@
 
 /* ------------------------------------------------------------------ kbd --- */
 
-/* §4.1 U7. One chord, drawn once, from the merged binding table — never from
-   a string in a tooltip that a rebind cannot reach. */
 .forge-kbd {
   background: var(--bg-raised);
   border: 1px solid var(--border-subtle);
@@ -975,8 +973,6 @@
 
 /* --------------------------------------------------------------- switch --- */
 
-/* §5.3. One answer for a boolean setting: the change takes effect at once, so
-   it is a switch and not a checkbox — a checkbox promises a form to submit. */
 .forge-switch {
   align-items: center;
   display: flex;
@@ -1253,8 +1249,6 @@
 
 /* ------------------------------------------------------------- listcard --- */
 
-/* §4.2 U13. One card for a run, a feature and a pull request — three copies
-   that had already drifted in padding, gap and where the metadata sat. */
 .list-card {
   background: var(--bg-raised);
   border: 1px solid var(--border-subtle);
@@ -1314,8 +1308,6 @@
 
 /* ---------------------------------------------------------- empty state --- */
 
-/* §4.3 U18. An empty panel that says what to do about it, with the chord read
-   off the binding table rather than written into the copy. */
 .empty-state {
   display: flex;
   flex-direction: column;

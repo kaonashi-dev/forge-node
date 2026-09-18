@@ -1,7 +1,7 @@
-//! Sessions repository (§7.3, §15.2).
+//! Sessions repository.
 //!
 //! `terminal_id` is deliberately not a column: it is pure runtime state,
-//! regenerated on every spawn/restart (§15.2). Loaded sessions therefore always
+//! regenerated on every spawn/restart. Loaded sessions therefore always
 //! have `terminal_id == None`. The title's two parts map to the `user_title` and
 //! `terminal_title` columns; the state maps to `last_state` + `last_exit_code`
 //! (see [`crate::repositories`] for the exact encoding).
@@ -35,7 +35,7 @@ impl<'a> SessionRepo<'a> {
     }
 
     /// Insert a session, or update every persisted column in place if its id
-    /// already exists. `terminal_id` is never written (§15.2).
+    /// already exists. `terminal_id` is never written.
     ///
     /// # Errors
     /// Returns [`DbError`] on a failed statement (e.g. a `workspace_id` or
@@ -229,7 +229,7 @@ impl RawSession {
             role: role_from_str(&self.role)?,
             parent_session_id: id_from_opt::<SessionId>("SessionId", self.parent_session_id)?,
             root_session_id: id_from_str::<SessionId>("SessionId", &self.root_session_id)?,
-            // Pure runtime state, never persisted (§15.2): always None on load.
+            // Runtime-only: always None on load.
             terminal_id: None,
             // The editor's buffer state is runtime-only too: the draft lives in
             // the editor process and a row on disk carries no buffer.
@@ -246,7 +246,7 @@ impl RawSession {
             state: state_from_parts(&self.last_state, self.last_exit_code)?,
             created_at,
             launch_command: self.launch_command,
-            // Runtime state, never persisted (§15.2), like `terminal_id`. A row
+            // Runtime state, never persisted, like `terminal_id`. A row
             // on disk describes a session whose PTY is already gone, so the
             // best available answer is when it ended, else when it began.
             last_activity_at: ended_at.unwrap_or(created_at),

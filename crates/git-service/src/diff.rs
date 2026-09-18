@@ -1,4 +1,4 @@
-//! Per-file working-tree patches for the GUI's diff view (§16.7).
+//! Per-file working-tree patches for the GUI's diff view.
 //!
 //! The sibling of [`crate::change`], and deliberately not the same thing:
 //! `change_context` produces *one* bounded blob for Juva to read, while this

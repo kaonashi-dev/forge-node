@@ -1,4 +1,3 @@
-//! Aggregated agent usage analytics (§16.2).
 //!
 //! [`ProviderUsage`](crate::ProviderUsage) answers "how much of this month's
 //! allowance is gone" — one meter per rolling window, read from the provider's
@@ -21,7 +20,7 @@ use crate::{AgentProviderId, Timestamp};
 /// One dollar, in the micro-dollar unit costs are counted in.
 pub const MICROS_PER_USD: u64 = 1_000_000;
 
-/// Token counts, split the way the providers report them (§16.2).
+/// Token counts, split the way the providers report them.
 ///
 /// `reasoning` is a *subset* of `output` — thinking tokens are output tokens
 /// that were billed as output — so it is never added into [`Self::total`]. The
@@ -72,7 +71,6 @@ impl TokenTotals {
     }
 }
 
-/// What one provider's transcripts add up to over the scanned window (§16.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAnalytics {
     pub provider_id: AgentProviderId,
@@ -108,7 +106,6 @@ pub struct DailyUsage {
     pub tokens: u64,
 }
 
-/// Everything the settings screen's stats page reads (§16.2).
 ///
 /// Built by scanning the provider transcript stores; see
 /// `agents::collect_analytics`. An empty `providers` means no transcript in the

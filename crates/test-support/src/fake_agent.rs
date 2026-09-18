@@ -1,5 +1,4 @@
-//! Fake agent executables for provider-detection tests (§21 "Determinismo",
-//! §7.5/§7.6 detection).
+//! Fake executables let detection tests run without installed agent CLIs.
 //!
 //! Detection probes a candidate binary by running it with `--version` and
 //! matching a substring of its output. These helpers write a tiny `#!/bin/sh`
@@ -70,7 +69,7 @@ pub fn write_fake_agent(dir: &Path, name: &str, version_output: &str) -> PathBuf
 }
 
 /// Like [`write_fake_agent`], but the script sleeps for `sleep` before printing,
-/// for exercising probe-timeout handling (§7.5 `VersionProbe::timeout_ms`).
+/// for exercising `VersionProbe::timeout_ms` handling.
 #[must_use]
 pub fn write_slow_fake_agent(
     dir: &Path,

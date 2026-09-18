@@ -1,4 +1,4 @@
-//! Published token prices, per model (§16.2).
+//! Published token prices, per model.
 //!
 //! A provider-specific fact, so it lives here and nowhere else (principle P2).
 //! The table is deliberately small and deliberately incomplete: a model we have

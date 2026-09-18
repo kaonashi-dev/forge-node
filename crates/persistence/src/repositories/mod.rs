@@ -1,4 +1,4 @@
-//! One repository per table (§15.2). Each repository is a thin, stateless
+//! One repository per table. Each repository is a thin, stateless
 //! wrapper that borrows a [`rusqlite::Connection`] and maps every domain field
 //! faithfully to and from its columns.
 //!
@@ -36,8 +36,8 @@ use domain::{SessionKind, SessionRole, SessionState, Timestamp, WorkspaceKind};
 use crate::db::DbError;
 
 /// Reason substituted for `SessionState::Failed` on load: the original reason is
-/// not a column (§15.2), so it cannot survive a restart. This is acceptable —
-/// any session that was live becomes `Orphaned` on reconciliation anyway (§15.3).
+/// not a column, so it cannot survive a restart. This is acceptable —
+/// any session that was live becomes `Orphaned` on reconciliation anyway.
 pub(crate) const FAILED_REASON_PLACEHOLDER: &str = "reason not persisted across restart";
 
 // ---- path <-> TEXT --------------------------------------------------------
@@ -173,9 +173,9 @@ pub(crate) fn role_from_str(s: &str) -> Result<SessionRole, DbError> {
 // ---- SessionState <-> (last_state TEXT, last_exit_code INTEGER) -------------
 //
 // Only the discriminant is stored in `last_state`; the exit code goes to its own
-// column. `signal` has no column, so it is lost across a restart (§15.2) — this
+// column. `signal` has no column, so it is lost across a restart — this
 // is acceptable because a `Running` session is reconciled to `Orphaned` anyway
-// (§15.3). `Failed { reason }` likewise loses its reason and is reconstructed
+// `Failed { reason }` likewise loses its reason and is reconstructed
 // with `FAILED_REASON_PLACEHOLDER`.
 
 pub(crate) fn state_discriminant(state: &SessionState) -> Result<&'static str, DbError> {
@@ -207,12 +207,12 @@ pub(crate) fn state_from_parts(
     match discriminant {
         "Starting" => Ok(SessionState::Starting),
         "Running" => Ok(SessionState::Running),
-        // signal is not a column (§15.2), so it is reconstructed as None.
+        // Signal has no column.
         "Exited" => Ok(SessionState::Exited {
             code: exit_code,
             signal: None,
         }),
-        // reason is not a column (§15.2); reconstruct a generic one.
+        // Reason has no column; reconstruct a generic one.
         "Failed" => Ok(SessionState::Failed {
             reason: FAILED_REASON_PLACEHOLDER.to_owned(),
         }),
@@ -256,7 +256,7 @@ mod tests {
     }
 
     /// An `Editor` session is stored with the plain tag `"Editor"`; a client
-    /// from before feature 19 decoding that row is the reason `PROTOCOL_VERSION`
+    /// without editor support decoding that row is the reason `PROTOCOL_VERSION`
     /// moved, not a reason to hide the kind.
     #[test]
     fn session_kind_editor_round_trips() {
@@ -370,7 +370,7 @@ mod tests {
         );
     }
 
-    /// §15.2: `signal` and `reason` have no columns. They must come back as a
+    /// `signal` and `reason` have no columns. They must come back as a
     /// documented placeholder rather than silently pretending to be the original.
     #[test]
     fn a_state_is_rebuilt_from_its_discriminant_and_exit_code() {

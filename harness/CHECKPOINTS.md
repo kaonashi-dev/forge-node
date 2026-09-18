@@ -46,12 +46,12 @@
 - [ ] The diff adds no new `#[ignore]`, no `#[allow(...)]` without a
       justification in the same file, and no `unwrap()`/`expect()` in daemon
       runtime paths where the error is recoverable.
-- [ ] New comments explain a constraint, a rejected alternative, or a known
-      exception (`AGENTS.md` § *Comments And Code*). They do not restate the
-      next line, narrate history (`used to`), copy a plan doc / `AGENTS.md`
-      into a file header, or cite `§N` as current truth. A touch of an old
-      file that already has that noise deletes the redundant comment next to
-      the change; it does not rewrite the crate.
+- [ ] Comments are absent by default; retained comments explain a non-obvious
+      constraint, contract or flow in one short sentence where possible
+      (`AGENTS.md`, Comments And Code). No identifier restatements, history,
+      ambiguous narration, file-level essays or references to plan sections,
+      phases or task IDs. Required safety/exception comments and tooling
+      directives remain; nearby redundant comments are removed.
 
 ## C4 — Boundaries between crates
 

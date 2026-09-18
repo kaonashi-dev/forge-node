@@ -1,4 +1,4 @@
-//! Caching in front of the transcript token scan (§16.2).
+//! Caching in front of the transcript token scan.
 //!
 //! `agents::collect_analytics` reads every recent transcript on disk line by
 //! line — hundreds of megabytes on a machine that has been busy for a month.
@@ -44,7 +44,7 @@ impl Cache {
     /// Drop the cached scan, so the next call re-reads the transcripts.
     ///
     /// The window is not the only thing the answer depends on: a launch profile
-    /// is an account, and its transcripts are part of the total (§13.4). Saving
+    /// is an account, and its transcripts are part of the total. Saving
     /// or deleting one changes the numbers now, not a minute from now.
     pub fn invalidate(&mut self) {
         self.scanned_at = None;

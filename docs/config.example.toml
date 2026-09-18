@@ -1,4 +1,4 @@
-# Forge config.toml (§15.4). Copy to your platform config dir and edit:
+# Copy to your platform config directory and edit:
 #   macOS  ~/Library/Application Support/Forge/config.toml
 #   Linux  $XDG_CONFIG_HOME/forge/config.toml  (default ~/.config/forge/)
 # A missing file uses these defaults. Changes require a restart in the MVP
@@ -53,7 +53,7 @@ root = ""                       # empty = <data-dir>/worktrees
 #
 # These two are the **global default layer**: they apply to a project that has
 # no rules of its own. Per-project rules live in Settings → "Shared files"
-# (§14.2), take effect without a restart, and can also link a file into a
+# take effect without a restart, and can also link a file into a
 # shared store, copy-on-write clone a directory the size of node_modules, or
 # run a command to produce one. A project with its own rules ignores the list
 # below entirely — merging the two would make it impossible to remove an

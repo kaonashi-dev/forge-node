@@ -1,5 +1,4 @@
 //! Filesystem paths: socket + lockfile (ADR-004) and data/config/runtime dirs
-//! (§15.1).
 //!
 //! The socket path is the delicate one: a Unix domain socket path must fit in
 //! `sun_path` (104 bytes on macOS, 108 on Linux). We require the *full* path to
@@ -128,7 +127,7 @@ fn lock_path_from(forge_socket: Option<std::ffi::OsString>) -> Result<PathBuf, P
 }
 
 /// Platform data directory root (`~/Library/Application Support/Forge` on macOS,
-/// `$XDG_DATA_HOME/forge` on Linux) (§15.1).
+/// `$XDG_DATA_HOME/forge` on Linux).
 ///
 /// When `FORGE_DATA_DIR` is set and non-empty, that directory is used as-is:
 /// a dev daemon runs against scratch state instead of the daily database.
@@ -142,7 +141,6 @@ pub fn data_dir() -> Result<PathBuf, PathError> {
     Ok(dirs.data_dir().to_path_buf())
 }
 
-/// Platform config directory root (§15.1).
 ///
 /// Same override shape as [`data_dir`]: `FORGE_CONFIG_DIR` points a dev
 /// daemon at a scratch config instead of the daily one.
@@ -156,22 +154,18 @@ pub fn config_dir() -> Result<PathBuf, PathError> {
     Ok(dirs.config_dir().to_path_buf())
 }
 
-/// `config.toml` path (§15.4).
 pub fn config_file() -> Result<PathBuf, PathError> {
     Ok(config_dir()?.join("config.toml"))
 }
 
-/// SQLite database path (§15.1).
 pub fn db_path() -> Result<PathBuf, PathError> {
     Ok(data_dir()?.join("app.db"))
 }
 
-/// Default managed-worktree root (§14.2).
 pub fn worktrees_root() -> Result<PathBuf, PathError> {
     Ok(data_dir()?.join("worktrees"))
 }
 
-/// Logs directory (`app.log`, `daemon.log`) (§15.1).
 pub fn logs_dir() -> Result<PathBuf, PathError> {
     Ok(data_dir()?.join("logs"))
 }

@@ -7,7 +7,7 @@
 use crate::command::{run_git, GitError};
 use std::path::{Path, PathBuf};
 
-/// One ref as reported by `for-each-ref` (§14.3).
+/// One ref as reported by `for-each-ref`.
 ///
 /// Crate-local, like [`RepoStatus`] and [`WorktreeEntry`]: this crate reports
 /// what git says and the daemon maps it into `domain::BranchRef`, which also
@@ -41,7 +41,7 @@ pub struct RepoStatus {
     pub behind: Option<u32>,
 }
 
-/// One entry from `git worktree list --porcelain` (§14).
+/// One entry from `git worktree list --porcelain`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorktreeEntry {
     /// Absolute path of the worktree's working directory.
@@ -74,7 +74,7 @@ impl WorktreeEntry {
     }
 }
 
-/// Discover the top-level working directory containing `path` (§14.1).
+/// Discover the top-level working directory containing `path`.
 ///
 /// Uses `rev-parse --show-toplevel`. If `path` is inside another repository's
 /// worktree, git reports that worktree's toplevel and it is accepted as-is.
@@ -90,7 +90,7 @@ pub fn discover_root(path: &Path) -> Result<PathBuf, GitError> {
     }
 }
 
-/// The repository's **common** git directory, absolute (§14.2).
+/// The repository's **common** git directory, absolute.
 ///
 /// Every worktree of a repository shares one common dir: `--git-dir` from
 /// inside a linked worktree answers `.git/worktrees/<name>`, while this answers
@@ -116,7 +116,6 @@ pub fn common_dir(repo: &Path) -> Result<PathBuf, GitError> {
     Ok(PathBuf::from(dir))
 }
 
-/// Whether `path` is tracked by git in `repo` (§14.2).
 ///
 /// A tracked file needs no sharing rule: git already puts it in every worktree,
 /// and an injected copy on top of it would show as a modification.
@@ -128,7 +127,7 @@ pub fn is_tracked(repo: &Path, relative: &str) -> Result<bool, GitError> {
     Ok(out.success())
 }
 
-/// Paths git ignores in `repo`, as `git status` reports them (§14.2).
+/// Paths git ignores in `repo`, as `git status` reports them.
 ///
 /// `--ignored=matching` names a directory that matches an ignore pattern
 /// *as the directory* rather than walking into it, so `node_modules/` is one
@@ -180,7 +179,7 @@ pub fn ignored_paths(repo: &Path) -> Result<Vec<IgnoredPath>, GitError> {
 }
 
 /// Rewrite the block of ignore rules Forge manages in the repository's
-/// **common** `info/exclude` (§14.2).
+/// **common** `info/exclude`.
 ///
 /// Everything outside the delimiters is preserved verbatim, and an empty
 /// `patterns` removes the block. This is what keeps an injected `.env` or
@@ -243,7 +242,6 @@ const EXCLUDE_BEGIN: &str = "# >>> forge: shared files (managed, do not edit)";
 /// Closing delimiter of the managed block in `info/exclude`.
 const EXCLUDE_END: &str = "# <<< forge";
 
-/// One path `git status --ignored` reported (§14.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IgnoredPath {
     /// Relative to the repository root, with no trailing slash.
@@ -331,7 +329,7 @@ pub fn short_commit(commit: &str) -> String {
 /// How many characters of a hash a list shows. Git's own default abbreviation.
 const SHORT_COMMIT_LEN: usize = 7;
 
-/// The remote's default branch (`origin/HEAD` target), best effort (§14.1).
+/// Best-effort resolution of the `origin/HEAD` target.
 ///
 /// Uses `symbolic-ref refs/remotes/origin/HEAD` and strips the
 /// `refs/remotes/origin/` prefix. Returns `None` if no such ref exists.
@@ -378,7 +376,7 @@ pub fn list_branches(repo: &Path) -> Result<Vec<String>, GitError> {
         .collect())
 }
 
-/// Every local and remote-tracking branch, newest commit first (§14.3).
+/// Every local and remote-tracking branch, newest commit first.
 ///
 /// One `for-each-ref` over `refs/heads` **and** `refs/remotes` rather than two
 /// `git branch` calls: it is a single subprocess, it sorts server-side, and it

@@ -618,7 +618,7 @@ fn verified_copy(source: &Path, target: &Path) -> bool {
     matches!((read(source), read(target)), (Ok(a), Ok(b)) if a == b)
 }
 
-/// Move a real file into the project's shared store and leave a link (§14.2).
+/// Move a real file into the project's shared store and leave a link.
 ///
 /// The one operation that changes the user's primary checkout, which is why it
 /// is explicit, backs the original up first, and refuses rather than guesses.
@@ -655,7 +655,7 @@ pub fn adopt_into_store(ctx: &ShareContext, relative: &str) -> io::Result<()> {
     symlink(&store, &source)
 }
 
-/// Copy a store file back into a workspace as a real file (§14.2).
+/// Copy a store file back into a workspace as a real file.
 ///
 /// # Errors
 /// [`io::Error`] when the store has no such file or the copy fails.
@@ -679,7 +679,7 @@ pub fn materialize(ctx: &ShareContext, relative: &str) -> io::Result<()> {
     copy_tree(&store, &target, &mut Budget::default())
 }
 
-/// Undo one rule in one workspace, as far as the cleanup mode allows (§14.2).
+/// Undo one rule in one workspace, as far as the cleanup mode allows.
 ///
 /// `RemoveInjected` deletes only what can still be recognized as Forge's: a
 /// link into the store, or a copy that has not been touched since. A modified

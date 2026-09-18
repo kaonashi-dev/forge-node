@@ -91,8 +91,6 @@ pub async fn pick_directory(app: AppHandle, title: Option<String>) -> Option<Str
         .map(|path| path.display().to_string())
 }
 
-/// The version and the on-disk files the settings screen reports (§15.1,
-/// §15.4), .
 ///
 /// Paths are strings because they are only ever *shown*, and one of them may
 /// be missing entirely on a platform with no home directory — the screen says

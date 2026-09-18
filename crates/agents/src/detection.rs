@@ -1,4 +1,4 @@
-//! Provider detection (§13.1).
+//! Provider detection.
 //!
 //! For a descriptor we locate a candidate binary on the resolved PATH, run its
 //! version probe under a hard timeout, and verify the output. The probe is
@@ -17,10 +17,10 @@ use domain::{
     AgentDescriptor, DetectionResult, DetectionStatus, ResolvedEnvironment, Timestamp, VersionProbe,
 };
 
-/// Maximum bytes read from a version probe's stdout or stderr (§13.1).
+/// Per-stream byte cap for version probes.
 const MAX_PROBE_OUTPUT: usize = 64 * 1024;
 
-/// Detect a single provider following the §13.1 algorithm.
+/// Probe candidates in priority order.
 ///
 /// - `override_path`, when present, is used directly and skips the PATH search
 ///   (step 1); it is still verified by the version probe.
@@ -172,7 +172,7 @@ fn run_args(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // The probe runs under the resolved login environment (§12), not the
+    // The probe runs under the resolved login environment, not the
     // daemon's own environment.
     cmd.env_clear();
     for (key, value) in &env.vars {
@@ -236,7 +236,7 @@ fn run_args(
 /// Capped at [`MAX_PROBE_OUTPUT`]: the probed program is whatever happens to sit
 /// on `PATH` under a candidate name, and a misidentified binary that streams
 /// would otherwise grow this buffer without bound inside the daemon. Only the
-/// first non-empty line is ever used (§13.1), so the cap costs nothing.
+/// first non-empty line is ever used, so the cap costs nothing.
 fn read_all(stream: Option<impl Read>) -> Vec<u8> {
     let mut buf = Vec::new();
     if let Some(stream) = stream {
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn falls_through_to_the_lower_priority_candidate() {
-        // §7.5: `opencode2` is the lower-priority candidate; it is only reached
+        // `opencode2` is the lower-priority candidate; it is only reached
         // when `opencode` is absent from PATH.
         let dir = tempfile::tempdir().unwrap();
         write_script(dir.path(), "opencode2", &echo_script("opencode 2.0.0"));
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn path_entries_are_searched_in_order() {
-        // §13.1 step 2: the candidate is looked up along `path_entries`, first
+        // The candidate is looked up along `path_entries`, first
         // match wins — the same precedence a shell gives PATH.
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();

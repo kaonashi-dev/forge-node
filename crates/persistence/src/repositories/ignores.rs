@@ -1,4 +1,3 @@
-//! Project worktree-ignore rules repository (§14.4, §15.2).
 //!
 //! One row per `(project_id, path)`: a rule has no identity of its own and the
 //! rescan keys on the path, so the path is the primary key. `RemoveWorktree`

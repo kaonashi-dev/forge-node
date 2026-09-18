@@ -1,4 +1,4 @@
-//! Provisioning a workspace from its project's sharing rules (§14.2).
+//! Provisioning a workspace from its project's sharing rules.
 //!
 //! A managed worktree lives under `worktrees.root`, away from the repository,
 //! so it starts without the untracked files the project needs to run. These
@@ -17,7 +17,7 @@ pub mod plan;
 use std::path::{Path, PathBuf};
 
 /// Directory inside the repository's **common** git dir that holds the files
-/// `Link` rules point at (§14.2).
+/// `Link` rules point at.
 ///
 /// The common dir is the one path every workspace of a project agrees on, so
 /// the store moves with the repository, dies with it, and never makes one

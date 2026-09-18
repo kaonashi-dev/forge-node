@@ -1,5 +1,4 @@
 //! A dependency-free fake [`PtyBackend`] for deterministic terminal tests
-//! (§21 "Determinismo").
 //!
 //! Real PTYs spawn real children, whose timing and output are non-deterministic;
 //! terminal-engine and session tests instead drive [`FakePtyBackend`], which
@@ -38,7 +37,6 @@ use std::time::Duration;
 
 use terminal_core::{ExitStatus, PtyBackend, PtyError, PtyHandle, PtyReader};
 
-/// Default fake pid and process-group id, matching the value suggested in §17.
 pub const DEFAULT_FAKE_PID: u32 = 424_242;
 
 /// All mutable and configured state shared between a [`FakePtyBackend`] and the
@@ -100,7 +98,7 @@ fn lock(state: &Mutex<FakePtyState>) -> MutexGuard<'_, FakePtyState> {
 }
 
 /// A fake [`PtyBackend`] that replays a preloaded byte script and records input,
-/// resizes, and termination for assertions (§21).
+/// resizes, and termination for assertions.
 ///
 /// The backend and the handle it spawns share one state object, so control
 /// methods ([`set_exited`](Self::set_exited)) and inspectors

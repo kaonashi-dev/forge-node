@@ -1,4 +1,4 @@
-//! Terminal golden tests (§21 "Terminal golden"): feed ANSI byte sequences into
+//! Terminal golden tests: feed ANSI byte sequences into
 //! [`AlacrittyEngine`] and snapshot the resulting grid with `insta`. Covers plain
 //! text, SGR colors (16/256/truecolor), cursor movement, clear, alt-screen,
 //! wide/CJK characters, and resize-with-reflow.

@@ -1,5 +1,3 @@
-//! Workspaces repository (§7.2, §15.2).
-
 use std::path::PathBuf;
 
 use domain::{ProjectId, Workspace, WorkspaceId, WorkspaceStatus};

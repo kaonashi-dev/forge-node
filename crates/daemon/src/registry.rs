@@ -11,7 +11,6 @@ use std::sync::{Mutex, MutexGuard};
 use domain::{ClientId, TerminalId};
 use protocol::{DaemonEvent, DaemonMessage};
 
-/// Bounded outbound queue depth per client (§10.5).
 pub const CLIENT_QUEUE_CAPACITY: usize = 256;
 
 /// One connected client's outbound channel and subscription state.
@@ -23,7 +22,6 @@ struct ClientHandle {
     finished: HashMap<TerminalId, DaemonEvent>,
 }
 
-/// Registry of connected clients (§9.3).
 #[derive(Default)]
 pub struct ClientRegistry {
     clients: Mutex<HashMap<ClientId, ClientHandle>>,
@@ -59,14 +57,14 @@ impl ClientRegistry {
         rx
     }
 
-    /// Remove a client and all its subscriptions (on disconnect, §9.1).
+    /// Removes all subscriptions as well as the client.
     pub fn unregister(&self, id: ClientId) {
         self.lock_clients().remove(&id);
     }
 
-    /// Number of currently connected clients. Used by `stats` (§22) and to
+    /// Number of currently connected clients. Used by `stats` and to
     /// decide whether a `DaemonNotice` can be delivered now or must be queued
-    /// for the first client (§15.3 runs before the accept loop).
+    /// for the first client (startup runs before the accept loop).
     pub fn client_count(&self) -> usize {
         self.lock_clients().len()
     }
@@ -75,7 +73,7 @@ impl ClientRegistry {
     /// `false` if the client is gone or its queue is full.
     ///
     /// Callers must not ignore `false` for a *response*: the client is blocked
-    /// on that `request_id` and has no timeout of its own (§10.1). See
+    /// on that `request_id` and has no timeout of its own. See
     /// [`crate::server`], which closes the connection instead so the client
     /// observes a disconnect rather than hanging forever.
     #[must_use]
@@ -84,7 +82,7 @@ impl ClientRegistry {
         clients.get(&id).is_some_and(|c| c.tx.try_send(msg).is_ok())
     }
 
-    /// Broadcast a low-volume domain event to every client (§10.3).
+    /// Broadcast to every connected client.
     pub fn broadcast_domain(&self, event: DaemonEvent) {
         let clients = self.lock_clients();
         for c in clients.values() {
@@ -95,7 +93,6 @@ impl ClientRegistry {
         }
     }
 
-    /// Subscribe a client to a terminal (`AttachTerminal`, §10.4).
     pub fn subscribe(&self, id: ClientId, terminal_id: TerminalId) {
         if let Some(c) = self.lock_clients().get_mut(&id) {
             c.subscriptions.insert(terminal_id);
@@ -142,7 +139,7 @@ impl ClientRegistry {
             .collect()
     }
 
-    /// Route a terminal delta to its subscribers, applying the §10.5 backpressure
+    /// Route a terminal delta to its subscribers, applying the backpressure
     /// policy. `resync` is called lazily to build a fresh snapshot event only for
     /// clients that need one (behind clients whose queue has drained).
     pub fn route_terminal_delta(
@@ -233,7 +230,7 @@ impl ClientRegistry {
     }
 
     /// Send a coalesced activity/bell event to clients NOT subscribed to the
-    /// terminal (§10.4), for unread badges.
+    /// terminal, for unread badges.
     pub fn notify_non_subscribers(&self, terminal_id: TerminalId, event: DaemonEvent) {
         let clients = self.lock_clients();
         for c in clients.values() {

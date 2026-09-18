@@ -381,7 +381,6 @@ fn neither_a_scroll_nor_a_keystroke_blanks_the_screen() {
     );
 }
 
-// ---- integrated mode (feature 19) ------------------------------------------
 //
 // A fake daemon speaks the real `editor-control` protocol over a Unix socket:
 // handshake, Open, then the request traffic. The editor must build its buffer

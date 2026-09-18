@@ -1,17 +1,4 @@
-//! Externally-discovered agent sessions.
-//!
-//! Read-only history of agent CLI sessions found on disk that the daemon never
-//! launched — e.g. Claude Code transcripts under
-//! `~/.claude/projects/<slug>/*.jsonl`. They are surfaced in the history panel
-//! next to daemon-owned sessions so a run started outside Forge (in a plain
-//! shell, or before the project was added) stays reachable.
-//!
-//! Unlike [`crate::Session`], these are not nodes of the session graph: they
-//! have no PTY, no lifecycle and no row in the daemon DB. They are recomputed
-//! from disk on each snapshot. There is no PTY to attach to, but the run itself
-//! is not a dead end: the GUI hands the recorded `session_id` back to the CLI
-//! that wrote it, which re-enters the conversation in a session of its own
-//! (§13.5).
+//! Discovered transcripts have no PTY or daemon DB row; resuming launches a session.
 
 use crate::ids::{AgentProfileId, ProjectId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};
@@ -46,12 +33,9 @@ pub struct ExternalTranscript {
     pub truncated: bool,
 }
 
-/// One agent session transcript discovered on disk (§ future, ADR-010 note).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalAgentSession {
-    /// The provider's own session id (e.g. Claude Code's `sessionId`). Stable
-    /// across snapshots, so the GUI can key cards on it — and the id its CLI
-    /// resumes by (§13.5).
+    /// Provider-owned resume id, stable across snapshots.
     pub session_id: String,
     /// The Forge project this transcript belongs to, matched by recorded `cwd`.
     pub project_id: ProjectId,
@@ -61,13 +45,7 @@ pub struct ExternalAgentSession {
     pub workspace_id: Option<WorkspaceId>,
     /// Provider slug, e.g. `"claude"`. Drives the card glyph/label.
     pub provider: String,
-    /// The launch profile whose account this transcript was found in, or
-    /// `None` for the provider's default one (§13.4).
-    ///
-    /// Resuming is what needs it: a run recorded under a profile's config
-    /// directory only exists for a CLI started with that same directory, so a
-    /// resume that dropped the profile would ask the default account for a
-    /// session id it has never seen.
+    /// Resume must use this profile's account; `None` selects the default account.
     #[serde(default)]
     pub profile_id: Option<AgentProfileId>,
     /// Display title: the provider's generated title when present, else the

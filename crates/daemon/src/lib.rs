@@ -59,7 +59,7 @@ pub fn info() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ask a running daemon for runtime statistics and print them (§22).
+/// Ask a running daemon for runtime statistics and print them.
 ///
 /// Connects to the resolved socket (honoring `FORGE_SOCKET`), sends
 /// `GetStats`, and writes stable `key=value` lines to stdout. Does **not**
@@ -83,7 +83,7 @@ pub fn stats() -> anyhow::Result<()> {
 }
 
 /// Run the daemon: acquire the singleton lock, open the DB, bind the socket, and
-/// serve until a shutdown signal or `StopDaemon` (§9).
+/// serve until a shutdown signal or `StopDaemon`.
 pub fn run() -> anyhow::Result<()> {
     let socket_path = paths::socket_path()?;
     let lock_path = paths::lock_path()?;
@@ -156,7 +156,7 @@ pub fn run() -> anyhow::Result<()> {
         }
     });
 
-    // §9.1: whichever path got us here — `StopDaemon` or SIGTERM/SIGINT — every
+    // Whether triggered by `StopDaemon` or SIGTERM/SIGINT, every
     // live session is killed with the configured grace *before* the process
     // leaves. The per-session escalation of `KillSession` runs on a detached
     // thread and would die with us, leaving anything that ignored the first
@@ -168,10 +168,10 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 /// How long the accept loop gets to wind down and unlink its socket after a
-/// shutdown signal (§9.1).
+/// shutdown signal.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Resolve when the process receives SIGTERM or SIGINT (§9.1).
+/// Resolve when the process receives SIGTERM or SIGINT.
 async fn shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");

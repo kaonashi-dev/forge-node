@@ -1,4 +1,4 @@
-//! Supervisor for one integrated editor session (feature 19).
+//! Supervisor for one integrated editor session.
 //!
 //! The daemon binds a private Unix socket **before** it spawns
 //! `forge-editor`; the editor connects after spawn (`portable-pty` closes

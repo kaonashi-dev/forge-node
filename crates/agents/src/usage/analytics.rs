@@ -52,12 +52,12 @@ pub const MAX_WINDOW_DAYS: u16 = 365;
 /// it and is told the rest was skipped.
 const SCAN_LIMIT: usize = 500;
 
-/// Read every supported provider's transcripts and aggregate them (§16.2).
+/// Read every supported provider's transcripts and aggregate them.
 ///
 /// `window_days` is clamped into `1..=MAX_WINDOW_DAYS`; `0` means the default.
 /// The result is ordered by tokens descending, so the busiest provider leads.
 ///
-/// `profiles` are the launch profiles (§13.4): each one that moves a provider's
+/// `profiles` are the launch profiles: each one that moves a provider's
 /// config directory moves its transcripts with it, so a machine whose work runs
 /// under a `Personal` profile would otherwise report an empty month. Every
 /// account is read and the totals are the sum — this page is what the machine
@@ -458,7 +458,7 @@ fn codex_transcripts(
 
 /// Every directory `provider`'s transcripts may live in: the account the
 /// resolved environment points at, plus one per launch profile that moved it
-/// (§13.4), each with `leaf` appended.
+/// with `leaf` appended to each directory.
 ///
 /// Duplicates are dropped by canonical path, because a profile pointing at the
 /// default account would otherwise have every one of its turns counted twice.
@@ -692,7 +692,7 @@ mod tests {
     }
 
     /// A profile moves the config directory, and the transcripts move with it
-    /// (§13.4). Reading only the default account would report an empty month
+    /// Reading only the default account would report an empty month
     /// for a machine whose work all runs under a `Personal` profile.
     #[test]
     fn a_profiles_account_is_read_alongside_the_default_one() {
