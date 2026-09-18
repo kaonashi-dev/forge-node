@@ -103,6 +103,7 @@ impl Subscription {
                     let Some(daemon) = daemon.upgrade() else {
                         break;
                     };
+                    daemon.invalidate_file_index(workspace);
                     owed = false;
                     for path in pending {
                         if !daemon.registry.send_to(

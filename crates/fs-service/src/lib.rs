@@ -13,6 +13,9 @@ use git_service::{discover_root, run_git, run_git_bounded, GitError};
 use thiserror::Error;
 
 mod entry_move;
+mod name_search;
+
+pub use name_search::search_names;
 
 /// Soft ceiling for one file's contents on the wire.
 pub const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
@@ -240,7 +243,7 @@ pub struct SearchResults {
 pub fn list_files(root: &Path) -> Result<FileTree, FsError> {
     let root = canonicalize_root(root)?;
     if is_git_repo(&root) {
-        list_via_git(&root)
+        list_via_git(&root, true)
     } else {
         list_via_walk(&root)
     }
@@ -850,7 +853,7 @@ pub fn language_for(path: &str) -> &'static str {
     }
 }
 
-fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
+fn list_via_git(root: &Path, include_ignored: bool) -> Result<FileTree, FsError> {
     /*
      * `--cached` answers from the *index*, not from the worktree, and nothing
      * that removes a file touches the index on its own: a `rm`, an agent
@@ -912,7 +915,7 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
         if !seen.insert(path.clone()) {
             continue;
         }
-        if let Some(entry) = index_entry(root, path, false)? {
+        if let Some(entry) = git_index_entry(root, path, false)? {
             bytes += entry_bytes;
             entries.push(entry);
         }
@@ -941,8 +944,11 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
      *
      * Appended after the tracked rows and never interleaved, so the budget is
      * spent on the work first.
+     *
+     * Name search skips this pass: it already drops ignored rows, and the
+     * extra `ls-files` is a whole-tree walk the query cannot use.
      */
-    if !truncated {
+    if include_ignored && !truncated {
         let ignored = run_git_bounded(
             Some(root),
             &[
@@ -970,11 +976,13 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
                 truncated = true;
                 break;
             }
-            let path = normalize_rel(path.trim_end_matches('/'));
-            if path.is_empty() || path_under_dependency_dir(&path) || !seen.insert(path.clone()) {
+            let path = normalize_rel(path);
+            if path_under_dependency_dir(path.trim_end_matches('/'))
+                || !seen.insert(path.trim_end_matches('/').to_owned())
+            {
                 continue;
             }
-            if let Some(entry) = index_entry(root, path, true)? {
+            if let Some(entry) = git_index_entry(root, path, true)? {
                 bytes += entry_bytes;
                 extra.push(entry);
             }
@@ -984,6 +992,38 @@ fn list_via_git(root: &Path) -> Result<FileTree, FsError> {
     }
 
     Ok(FileTree { entries, truncated })
+}
+
+/// `ls-files` already says file vs `--directory` folder. `lstat` every path
+/// was the listing's cost; dotted basenames skip it. Extensionless names
+/// (Makefile, a directory symlink) still pay, so kind stays correct.
+fn git_index_entry(root: &Path, raw: String, ignored: bool) -> Result<Option<FileEntry>, FsError> {
+    let directory = raw.ends_with('/');
+    let path = normalize_rel(raw.trim_end_matches('/'));
+    if path.is_empty() {
+        return Ok(None);
+    }
+    if directory {
+        return Ok(Some(FileEntry {
+            path,
+            kind: EntryKind::Directory,
+            ignored,
+            symlink: None,
+        }));
+    }
+    if raw
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.contains('.'))
+    {
+        return Ok(Some(FileEntry {
+            path,
+            kind: EntryKind::File,
+            ignored,
+            symlink: None,
+        }));
+    }
+    index_entry(root, path, ignored)
 }
 
 fn index_entry(root: &Path, path: String, ignored: bool) -> Result<Option<FileEntry>, FsError> {
@@ -1081,38 +1121,7 @@ fn walk(
 
 fn search_by_name(root: &Path, query: &str, limit: usize) -> Result<SearchResults, FsError> {
     let tree = list_files(root)?;
-    let mut scored: Vec<(i32, usize, SearchMatch)> = Vec::new();
-    for (order, entry) in tree.entries.into_iter().enumerate() {
-        // The tree lists ignored files so they can be opened; a name search is
-        // for the work, and `git grep` below already excludes them.
-        if entry.ignored || entry.kind != EntryKind::File {
-            continue;
-        }
-        let Some(score) = fuzzy_score(&entry.path, query) else {
-            continue;
-        };
-        scored.push((
-            score,
-            order,
-            SearchMatch {
-                text: entry.path.clone(),
-                path: entry.path,
-                line: 0,
-                column: 0,
-                before: Vec::new(),
-                after: Vec::new(),
-            },
-        ));
-    }
-    // Best first, and ties in listing order so a query that matches a whole
-    // directory does not reshuffle it on the next keystroke.
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let truncated = tree.truncated || scored.len() > limit;
-    scored.truncate(limit);
-    Ok(SearchResults {
-        matches: scored.into_iter().map(|(_, _, hit)| hit).collect(),
-        truncated,
-    })
+    Ok(name_search::search_names(&tree, query, limit))
 }
 
 fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchResults, FsError> {
@@ -1609,79 +1618,6 @@ fn is_whole_word(line: &str, index: usize, len: usize) -> bool {
     !before.is_some_and(word) && !after.is_some_and(word)
 }
 
-/// A match at the start of a path segment or a camelCase word.
-const WORD_START_BONUS: i32 = 8;
-/// A match immediately after the previous one.
-const RUN_BONUS: i32 = 4;
-/// How many characters of path cost one point, so a short path wins a tie.
-const LENGTH_PENALTY_PER: usize = 8;
-
-/// How well `path` answers `query`, or `None` when it does not.
-///
-/// The formula is the one the palette already uses in
-/// `apps/tauri/src/palette/fuzzy.ts` — a point per matched character, a bonus
-/// for landing on a word boundary, a bonus for a run, and a penalty for
-/// length. It is duplicated rather than shared because the two run in
-/// different languages on different sides of a socket; what matters is that
-/// they *agree*, so `fuzzy_score_matches_the_palette` pins the cases that
-/// distinguish it from any other reasonable scorer.
-fn fuzzy_score(path: &str, query: &str) -> Option<i32> {
-    let needle: Vec<char> = query.to_lowercase().chars().filter(|c| *c != ' ').collect();
-    if needle.is_empty() {
-        return Some(0);
-    }
-
-    let raw: Vec<char> = path.chars().collect();
-    let hay: Vec<char> = path.to_lowercase().chars().collect();
-    // Lowercasing can expand a character; bonuses belong to its first folded scalar.
-    let boundaries: Vec<bool> = raw
-        .iter()
-        .enumerate()
-        .flat_map(|(i, c)| c.to_lowercase().enumerate().map(move |(part, _)| (i, part)))
-        .map(|(i, part)| part == 0 && starts_word(&raw, i))
-        .collect();
-
-    let mut score = 0i32;
-    let mut needle_index = 0usize;
-    let mut previous_match: isize = -2;
-
-    for index in 0..hay.len() {
-        if needle_index >= needle.len() {
-            break;
-        }
-        if hay[index] != needle[needle_index] {
-            continue;
-        }
-        score += 1;
-        if boundaries[index] {
-            score += WORD_START_BONUS;
-        }
-        if previous_match == index as isize - 1 {
-            score += RUN_BONUS;
-        }
-        previous_match = index as isize;
-        needle_index += 1;
-    }
-
-    if needle_index < needle.len() {
-        return None;
-    }
-    Some(score - (hay.len() / LENGTH_PENALTY_PER) as i32)
-}
-
-/// Whether index `i` begins a word: start of string, after a separator, or the
-/// upper-case character of a camelCase hump.
-fn starts_word(raw: &[char], i: usize) -> bool {
-    if i == 0 {
-        return true;
-    }
-    let before = raw[i - 1];
-    if before == ' ' || before == '-' || before == '/' || before == '_' || before == '.' {
-        return true;
-    }
-    raw[i].is_uppercase() && !raw[i - 1].is_uppercase()
-}
-
 fn is_binary(buf: &[u8]) -> bool {
     buf.iter().take(BINARY_PROBE).any(|&b| b == 0)
 }
@@ -2008,14 +1944,6 @@ mod tests {
             read_file(dir.path(), "."),
             Err(FsError::NotFound(_))
         ));
-    }
-
-    #[test]
-    fn fuzzy_boundaries_follow_case_expansion() {
-        assert_eq!(fuzzy_score("İx", "x"), Some(1));
-        assert_eq!(fuzzy_score("İ/x", "x"), Some(1 + WORD_START_BONUS));
-        assert_eq!(fuzzy_score("İaX", "x"), Some(1 + WORD_START_BONUS));
-        assert_eq!(fuzzy_score("İ.x", "x"), Some(1 + WORD_START_BONUS));
     }
 
     #[test]
@@ -2384,6 +2312,13 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
                 .find(|e| e.path == "dist")
                 .map(|e| e.kind),
             Some(EntryKind::Directory)
+        );
+        assert_eq!(
+            tree.entries
+                .iter()
+                .find(|e| e.path == "ok.txt")
+                .map(|e| e.symlink),
+            Some(None)
         );
     }
 
@@ -3068,43 +3003,6 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         let tmp = git_repo();
         let err = delete_path(tmp.path(), "gone.rs").unwrap_err();
         assert!(matches!(err, FsError::NotFound(_)));
-    }
-
-    #[test]
-    fn fuzzy_subsequence() {
-        // A match is still a subsequence test; the score only orders the ones
-        // that matched.
-        assert!(fuzzy_score("src/app_shell.rs", "appshell").is_some());
-        assert!(fuzzy_score("FooBar", "fb").is_some());
-        assert!(fuzzy_score("abc", "acx").is_none());
-    }
-
-    #[test]
-    fn fuzzy_score_prefers_word_starts_over_incidental_letters() {
-        // "fb" landing on two word starts must beat the same two letters
-        // buried mid-word, whatever order the walk produced them in.
-        let hump = fuzzy_score("FooBar", "fb").expect("camelCase hump matches");
-        let buried = fuzzy_score("offbeat", "fb").expect("buried letters match");
-        assert!(hump > buried, "{hump} should beat {buried}");
-    }
-
-    #[test]
-    fn fuzzy_score_prefers_the_shorter_path_on_an_equal_match() {
-        let short = fuzzy_score("src/a.rs", "ars").expect("matches");
-        let long = fuzzy_score("src/a.rs/very/long/tail/indeed/here", "ars").expect("matches");
-        assert!(short > long, "{short} should beat {long}");
-    }
-
-    #[test]
-    fn fuzzy_score_rewards_a_run_of_consecutive_characters() {
-        let run = fuzzy_score("zshell", "she").expect("matches");
-        let scattered = fuzzy_score("zsxhxe", "she").expect("matches");
-        assert!(run > scattered, "{run} should beat {scattered}");
-    }
-
-    #[test]
-    fn fuzzy_score_has_nothing_to_say_about_an_empty_query() {
-        assert_eq!(fuzzy_score("anything", ""), Some(0));
     }
 
     #[test]

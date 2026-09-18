@@ -13,6 +13,7 @@ pub mod editor;
 pub mod editor_wire;
 pub mod environment;
 pub mod external_agents;
+mod file_index;
 mod file_watch;
 pub mod harness_io;
 pub mod harness_runner;

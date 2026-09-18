@@ -138,6 +138,9 @@ pub struct Daemon {
     pull_requests: Mutex<crate::pull_requests::Cache>,
     /// Own lock: a month of JSONL must not sit in front of a keystroke.
     usage_stats: Mutex<crate::usage_stats::Cache>,
+    /// Own lock: `git ls-files` must not sit on the core lock or re-walk every
+    /// palette keystroke. Invalidated on `FileChanged` and path mutations.
+    file_index: crate::file_index::Cache,
     /// The two sides of a refused editor save, per session.
     ///
     /// Own lock, like `pull_requests` and for the same reason: `GetEditorConflict`
@@ -368,6 +371,7 @@ impl Daemon {
             external_agents: Mutex::new(crate::external_agents::Cache::default()),
             pull_requests: Mutex::new(crate::pull_requests::Cache::default()),
             usage_stats: Mutex::new(crate::usage_stats::Cache::default()),
+            file_index: crate::file_index::Cache::default(),
             instance_id,
             version,
             started_at: Timestamp::now(),
@@ -1385,6 +1389,7 @@ impl Daemon {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             crate::usage_stats::Cache::default();
+        self.file_index.clear();
 
         self.registry.broadcast_domain(DaemonEvent::FactoryReset);
         if !failed_worktrees.is_empty() {
@@ -2492,8 +2497,28 @@ impl Daemon {
     /// List files under a workspace (ADR-012). Lock released before IO.
     fn list_files(&self, workspace_id: WorkspaceId) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
-        let tree = fs_service::list_files(&path).map_err(fs_err)?;
-        Ok(Response::FileTree(file_tree_response(workspace_id, tree)))
+        let tree = self.navigation_tree(workspace_id, &path)?;
+        Ok(Response::FileTree(file_tree_response(
+            workspace_id,
+            tree.as_ref().clone(),
+        )))
+    }
+
+    /// Shared `git ls-files` listing for `ListFiles` and name search.
+    fn navigation_tree(
+        &self,
+        workspace_id: WorkspaceId,
+        root: &Path,
+    ) -> Result<std::sync::Arc<fs_service::FileTree>, ProtocolError> {
+        if let Some(tree) = self.file_index.get(workspace_id, root) {
+            return Ok(tree);
+        }
+        let tree = fs_service::list_files(root).map_err(fs_err)?;
+        Ok(self.file_index.put(workspace_id, root.to_owned(), tree))
+    }
+
+    pub(crate) fn invalidate_file_index(&self, workspace_id: WorkspaceId) {
+        self.file_index.invalidate(workspace_id);
     }
 
     /// Immediate children on disk; the workspace lookup releases the lock before IO.
@@ -2561,6 +2586,7 @@ impl Daemon {
             fs_service::PathKind::File
         };
         fs_service::create_path(&root, relative, kind).map_err(fs_err)?;
+        self.invalidate_file_index(workspace_id);
         Ok(Response::Ack)
     }
 
@@ -2612,6 +2638,7 @@ impl Daemon {
                     .broadcast_domain(DaemonEvent::SessionUpdated(session.clone()));
             }
         }
+        self.invalidate_file_index(workspace_id);
         for path in [from, to] {
             self.registry.broadcast_domain(DaemonEvent::FileChanged {
                 workspace_id,
@@ -2629,6 +2656,7 @@ impl Daemon {
     ) -> Result<Response, ProtocolError> {
         let root = self.workspace_path(workspace_id)?;
         fs_service::delete_path(&root, relative).map_err(fs_err)?;
+        self.invalidate_file_index(workspace_id);
         Ok(Response::Ack)
     }
 
@@ -2642,7 +2670,10 @@ impl Daemon {
     ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
         match fs_service::write_file(&path, relative, text, expected_revision) {
-            Ok(()) => Ok(Response::Ack),
+            Ok(()) => {
+                self.invalidate_file_index(workspace_id);
+                Ok(Response::Ack)
+            }
             Err(fs_service::FsError::RevisionMismatch { .. }) => {
                 Err(ProtocolError::precondition_failed(
                     "file changed on disk while you were editing it",
@@ -2672,7 +2703,15 @@ impl Daemon {
                 return Err(ProtocolError::invalid_request("unknown search kind"));
             }
         };
-        let results = fs_service::search_files(&path, query, kind, limit).map_err(fs_err)?;
+        let results = match kind {
+            fs_service::SearchKind::Name => {
+                let tree = self.navigation_tree(workspace_id, &path)?;
+                fs_service::search_names(&tree, query, limit)
+            }
+            fs_service::SearchKind::Content | fs_service::SearchKind::Definition => {
+                fs_service::search_files(&path, query, kind, limit).map_err(fs_err)?
+            }
+        };
         Ok(Response::SearchResults(domain::SearchResults {
             workspace_id,
             query: query.to_string(),

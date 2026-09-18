@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { setWorkbenchStore } from "../store/workbenchStore";
-import { navigationFileIndex } from "./fileIndex";
+import { navigationFileIndex, navigationFilePaths } from "./fileIndex";
 
 vi.mock("./directoryState", () => ({
   freshDirectoryTree: () => null,
@@ -28,4 +28,17 @@ it("refreshes the cached navigation entries when Solid retains the containing st
   expect(navigationFileIndex()).not.toBe(old);
   setWorkbenchStore("treeStale", true);
   expect(navigationFileIndex()?.truncated).toBe(true);
+});
+
+it("caches file paths for the palette without filtering the listing on each keystroke", () => {
+  setWorkbenchStore("tree", {
+    workspace_id: "w",
+    entries: [
+      { path: "src", kind: "Directory", ignored: false },
+      { path: "src/a.ts", kind: "File", ignored: false },
+    ],
+    truncated: false,
+  });
+  expect(navigationFilePaths()).toEqual(["src/a.ts"]);
+  expect(navigationFilePaths()).toBe(navigationFilePaths());
 });

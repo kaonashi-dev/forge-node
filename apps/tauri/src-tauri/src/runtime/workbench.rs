@@ -714,10 +714,17 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             kind,
             limit,
         } => match parse_search_kind(&kind) {
-            Ok(kind) => match client.search_files(workspace, query, kind, limit) {
-                Ok(results) => emit(app, "workbench:search", &(workspace, results)),
-                Err(error) => fail(app, "workbench:search_failed", Some(workspace), &error),
-            },
+            Ok(kind) => {
+                let (ok, failed) = if kind == SearchKind::Name {
+                    ("workbench:name_search", "workbench:name_search_failed")
+                } else {
+                    ("workbench:search", "workbench:search_failed")
+                };
+                match client.search_files(workspace, query, kind, limit) {
+                    Ok(results) => emit(app, ok, &(workspace, results)),
+                    Err(error) => fail(app, failed, Some(workspace), &error),
+                }
+            }
             Err(error) => fail_text(app, "workbench:search_failed", Some(workspace), &error),
         },
         WorkbenchCommand::LoadRebaseState { workspace } => {

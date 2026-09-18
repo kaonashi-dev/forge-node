@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 git-service.workspace = true
+neo_frizbee = "0.13"
 thiserror.workspace = true
 tracing.workspace = true
 

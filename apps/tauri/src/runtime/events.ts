@@ -287,6 +287,10 @@ async function bindWorkbenchEvents(): Promise<UnlistenFn[]> {
       }),
     ),
     failure("workbench:search_failed", "search", "searchError"),
+    answer<SearchResults>("workbench:name_search", "nameSearch", (search) =>
+      setWorkbenchStore({ nameSearch: search, nameSearchError: null }),
+    ),
+    failure("workbench:name_search_failed", "nameSearch", "nameSearchError"),
     answer<RebaseState>("workbench:rebase", "rebase", (rebase) =>
       setWorkbenchStore({ rebase, rebaseError: null }),
     ),

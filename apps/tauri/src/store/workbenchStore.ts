@@ -48,6 +48,9 @@ export const [workbenchStore, setWorkbenchStore] = createStore({
   /* Its own field and not `fileError`: a failed `git grep` must not read as a
      failed `ReadFile`, which is what the editor's re-read is guarded by. */
   searchError: null as string | null,
+  /** Palette file ranking. Separate from `search` so Cmd+P cannot blank find-in-files. */
+  nameSearch: null as SearchResults | null,
+  nameSearchError: null as string | null,
   rebase: null as RebaseState | null,
   rebaseError: null as string | null,
   branches: null as Branches | null,
@@ -106,6 +109,8 @@ export function focusWorkspace(workspace: string | null): void {
     search: null,
     searchStale: false,
     searchError: null,
+    nameSearch: null,
+    nameSearchError: null,
     rebase: null,
     rebaseError: null,
     loading: {},

@@ -184,6 +184,8 @@ Every box is a `grep` over the diff, not a general impression.
 - [ ] `ListDirectory` observations and the demand-driven `ListFiles` index have
       independent request identities; old replies and watch generations are rejected.
       Native watch limits do not prevent explicit reads of uncovered folders.
+      The daemon may cache `ListFiles` until `FileChanged` or a path mutation;
+      `SearchKind::Name` ranks that cache and does not walk on every keystroke.
 - [ ] Mutation completion is separate from refresh. Uncertain writes reconcile
       without replay. Confirmed moves retarget authoritative save paths and editor
       metadata without replacing buffers; coordination runs outside the core lock
