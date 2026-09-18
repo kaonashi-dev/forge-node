@@ -308,6 +308,10 @@
   min-width: 0;
   overflow: auto;
   position: relative;
+  scrollbar-width: none;
+}
+.editor-view-scroll::-webkit-scrollbar {
+  display: none;
 }
 .editor-view-content {
   position: relative;
@@ -382,6 +386,9 @@
 }
 .ed-fold {
   color: var(--fg-faint);
+}
+.ed-fold-toggle {
+  cursor: pointer;
 }
 .ed-text {
   color: var(--forge-term-fg);
