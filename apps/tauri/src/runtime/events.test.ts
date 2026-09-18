@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emit } from "@tauri-apps/api/event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { focusWorkspace, setWorkbenchStore, workbenchStore } from "../store/workbenchStore";
-import { createPath, ensureDirectory, renamePath } from "../workbench/api";
+import { createPath, ensureDirectory, renamePath, searchFiles } from "../workbench/api";
 import { openEditorTerminal, viewsStore } from "../store/viewsStore";
 import { directories, directoryError, directoryTree } from "../workbench/directoryState";
 import { pathOperations } from "../workbench/operations";
@@ -104,6 +104,21 @@ describe("correlated workbench events", () => {
     await emit("workbench:directory_failed", { ...read, message: "Permission denied" });
     expect(directoryError()).toBe("Permission denied");
     expect(directoryTree()?.entries.some((entry) => entry.path === "new.ts")).toBe(true);
+  });
+  it("name search cannot clear find-in-files staleness", async () => {
+    setWorkbenchStore({ treeVersion: 0, searchReadVersion: 0, searchStale: false });
+    await searchFiles("w", "needle", "content");
+    expect(workbenchStore.searchReadVersion).toBe(0);
+    await emit("workbench:file_changed", ["w", "src/a.ts"]);
+    expect(workbenchStore.searchStale).toBe(true);
+    expect(workbenchStore.treeVersion).toBe(1);
+    await searchFiles("w", "a.ts", "name");
+    expect(workbenchStore.searchReadVersion).toBe(0);
+    await emit("workbench:search", [
+      "w",
+      { workspace_id: "w", query: "needle", matches: [], truncated: false },
+    ]);
+    expect(workbenchStore.searchStale).toBe(true);
   });
   it("retargets the existing editor session and index on a confirmed rename result", async () => {
     openEditorTerminal("moving-editor", "src/a.ts", "w");

@@ -2513,8 +2513,11 @@ impl Daemon {
         if let Some(tree) = self.file_index.get(workspace_id, root) {
             return Ok(tree);
         }
+        let generation = self.file_index.begin(workspace_id);
         let tree = fs_service::list_files(root).map_err(fs_err)?;
-        Ok(self.file_index.put(workspace_id, root.to_owned(), tree))
+        Ok(self
+            .file_index
+            .put(workspace_id, root.to_owned(), tree, generation))
     }
 
     pub(crate) fn invalidate_file_index(&self, workspace_id: WorkspaceId) {

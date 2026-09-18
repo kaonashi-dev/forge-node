@@ -50,13 +50,6 @@ export type CommandPaletteProps = {
 export function CommandPalette(props: CommandPaletteProps) {
   const [query, setQuery] = createSignal("");
 
-  /*
-   * Files are built separately from everything else: they come from another
-   * store, exist only once a checkout's tree has been read, and — unlike every
-   * other group — are too many to build before they are wanted. Once built
-   * they are the same kind of row and go through the same ranking.
-   */
-
   /**
    * Whether the repository listing has been needed yet.
    *

@@ -8,6 +8,7 @@ import {
   deletePath,
   renamePath,
   ensureDirectory,
+  searchFiles,
 } from "./api";
 import { directories, directoryTree } from "./directoryState";
 import { OPERATION_TIMEOUT_MS, pathOperations } from "./operations";
@@ -194,6 +195,15 @@ describe("workbench path transport", () => {
     expect(
       commands.some((command) => command.type === "load_file_directory" && command.path === "new"),
     ).toBe(true);
+  });
+  it("only content search stamps find-in-files freshness", async () => {
+    setWorkbenchStore({ treeVersion: 4, searchReadVersion: 1 });
+    await searchFiles("w", "foo", "name");
+    expect(workbenchStore.searchReadVersion).toBe(1);
+    await searchFiles("w", "foo", "definition");
+    expect(workbenchStore.searchReadVersion).toBe(1);
+    await searchFiles("w", "foo", "content");
+    expect(workbenchStore.searchReadVersion).toBe(4);
   });
   it("stale directory observations cannot restore a deleted file to a fresh index", async () => {
     ensureDirectory("w", "src");

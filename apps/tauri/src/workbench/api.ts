@@ -308,7 +308,10 @@ export async function searchFiles(
   kind: SearchKind = "name",
   limit: number | null = null,
 ): Promise<void> {
-  setWorkbenchStore("searchReadVersion", workbenchStore.treeVersion);
+  // Palette Name search shares this request, not find-in-files' freshness token.
+  if (kind === "content") {
+    setWorkbenchStore("searchReadVersion", workbenchStore.treeVersion);
+  }
   await send({ type: "search_files", workspace, query, kind, limit });
 }
 
