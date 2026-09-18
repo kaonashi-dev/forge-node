@@ -1,5 +1,5 @@
 import { Checkbox as Kobalte } from "@kobalte/core/checkbox";
-import { Icon } from "../theme/icons";
+import { Icon } from "../theme/icons/index";
 
 export type CheckboxProps = {
   checked: boolean;

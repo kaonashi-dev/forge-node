@@ -186,7 +186,7 @@ export function selectAllIn(target: EventTarget | null): boolean {
  *
  * The table is read per event rather than captured at install time, so a
  * rebind in Settings takes effect on the next keystroke instead of on the next
- * launch (§4.1 U1).
+ * launch.
  */
 export function installKeymap(table: () => Binding[] = mergedBindings): () => void {
   const onKeyDown = (event: KeyboardEvent) => {

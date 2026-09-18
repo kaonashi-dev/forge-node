@@ -2,9 +2,10 @@ import type { Manifest } from "vite";
 
 type Edge = "imports" | "dynamicImports";
 
-/** Rollup's chunk names for the editor route's own modules. */
-const EDITOR_CHUNKS = new Set(["EditorTerminalPane"]);
-const EDITOR_SOURCE = /(?:^|\/)src\/terminal\/EditorTerminalPane\.tsx?$/;
+/** Rollup's chunk names for the editor surfaces' own modules. */
+const EDITOR_CHUNKS = new Set(["EditorTerminalPane", "EditorView"]);
+const EDITOR_SOURCE =
+  /(?:^|\/)src\/features\/editor\/(?:cells\/EditorTerminalPane|dom\/EditorView)\.tsx?$/;
 
 export function bundleGroups(manifest: Manifest): {
   initial: Set<string>;
@@ -37,9 +38,10 @@ export function bundleGroups(manifest: Manifest): {
     (key) => EDITOR_SOURCE.test(key) || EDITOR_CHUNKS.has(manifest[key].name ?? ""),
   );
   if (editorEntry.length === 0) throw new Error("No editor route in the Vite manifest.");
+  const eagerEditor = editorEntry.filter((key) => initial.has(key));
+  if (eagerEditor.length > 0) throw new Error("The editor route is no longer deferred.");
   const editor = new Set(
     [...reachable(editorEntry, ["imports"])].filter((key) => !initial.has(key)),
   );
-  if (editor.size === 0) throw new Error("The editor route is no longer deferred.");
   return { initial, editor };
 }

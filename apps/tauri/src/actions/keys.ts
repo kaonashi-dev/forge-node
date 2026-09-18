@@ -150,7 +150,7 @@ const MODIFIERS = new Set(["cmd", "ctrl", "alt", "shift"]);
  * `parseChord` takes anything after the modifiers as the key, so
  * `"not-a-real-chord"` parses cleanly into a binding that can never fire.
  * That is fine for the table in this file, which is written by hand and read
- * by a test — but not for §4.1's user keymap, where the string comes from
+ * by a test — but not for the user keymap, where the string comes from
  * storage and a dead binding would look like a shortcut that simply broke.
  */
 export function keyIsKnown(key: string): boolean {

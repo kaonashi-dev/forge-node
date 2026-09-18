@@ -1,6 +1,6 @@
 import { TextField as Kobalte } from "@kobalte/core/text-field";
 import { Show, splitProps, type JSX } from "solid-js";
-import { Icon } from "../theme/icons";
+import { Icon } from "../theme/icons/index";
 
 /** Fields ride the same two rungs as the rest of the controls. */
 export type FieldSize = "sm" | "md";

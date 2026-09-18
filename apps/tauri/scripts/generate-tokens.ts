@@ -1,6 +1,6 @@
 // CSS provides the first-paint theme before the runtime applies derived values.
 import { resolve } from "node:path";
-import { palettes, staticTokens, toCssVariables, type ThemeBaseId } from "../src/theme/tokens.ts";
+import { palettes, staticTokens, toCssVariables, type ThemeBaseId } from "../src/theme/tokens";
 
 const out = resolve(import.meta.dir, "../src/theme/tokens.css");
 

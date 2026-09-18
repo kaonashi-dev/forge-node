@@ -1,6 +1,6 @@
 import { Tabs as Kobalte } from "@kobalte/core/tabs";
 import { For, Show, type JSX } from "solid-js";
-import { Icon, type ForgeIconName } from "../theme/icons";
+import { Icon, type ForgeIconName } from "../theme/icons/index";
 import { Tooltip } from "./Tooltip";
 
 export type TabDef = {

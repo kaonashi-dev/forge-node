@@ -103,7 +103,6 @@ export type ActionId =
   | "reopen_closed_tab"
   | "toggle_git"
   | "toggle_history"
-  /* §16.7-16.8 — the three things you can do to the session on screen. */
   | "session_handoff"
   | "session_spawn_child"
   | "session_send_context"

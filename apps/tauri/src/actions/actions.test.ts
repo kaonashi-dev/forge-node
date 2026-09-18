@@ -124,7 +124,7 @@ describe("default bindings (actions.rs port)", () => {
   /*
    * Bare letters are only safe because a context nests with the element tree.
    *
-   * Two trees claim them now — the file tree and the project rail (§4.1 U4) —
+   * Two trees claim them — the file tree and the project rail —
    * and both enter their context on focus rather than on mount, which is the
    * property that makes `j` a chord in one place and a letter everywhere else.
    */

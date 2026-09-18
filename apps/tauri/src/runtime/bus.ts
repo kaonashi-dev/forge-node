@@ -5,7 +5,7 @@
 // Routing it through `createStore` would put the proxy machinery on the delta
 // rung for no subscriber that wanted it.
 
-import type { CellsPayload, EditorFramePayload } from "../terminal/types";
+import type { CellsPayload, EditorFramePayload } from "../contracts/terminal";
 
 type Listener<T> = (payload: T) => void;
 
@@ -27,7 +27,7 @@ function channel<T>() {
 
 export const cellsChannel = channel<CellsPayload>();
 /**
- * The harness preview's frames (§5.8).
+ * The harness preview's frames.
  *
  * Its own channel, not a second subscriber on `cellsChannel`: the two
  * surfaces paint different terminals, and a canvas that had to check every
@@ -39,7 +39,7 @@ export const previewCellsChannel = channel<CellsPayload>();
  * Frames for a daemon-supervised editor in the Code region.
  *
  * Its own channel so the hidden main pane never has to filter terminal ids
- * on the delta rung (feature 19).
+ * on the delta rung.
  */
 export const editorCellsChannel = channel<CellsPayload>();
 /**
