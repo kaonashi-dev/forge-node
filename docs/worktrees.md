@@ -5,13 +5,13 @@ repository concurrently, each on its own branch and directory, without
 stepping on each other's files. The main checkout is just another
 `Workspace` (`kind = Main`) — nothing in the code special-cases it (P4).
 
-Crates: `git-service` (Git CLI wrapper), `daemon/src/core.rs` (the
-`ProjectService`/`WorkspaceService` logic). Plan references: §14. ADR-008 (Git
-CLI first).
+Crates: `git-service` (Git CLI wrapper), `daemon/src/core.rs` (project and
+workspace orchestration). ADR-008 (Git CLI first).
 
 ## Git invocation rules (ADR-008, `git-service/src/command.rs`)
 
-Every application Git call goes through `git_service::run_git`, which:
+Local application Git calls go through `git_service::run_git` (or its bounded
+capture variant), which:
 
 - runs `git -C <repo> …` as a **background subprocess**, never inside a user
   PTY;
@@ -25,6 +25,9 @@ Every application Git call goes through `git_service::run_git`, which:
 
 Test fixtures (`test-support::temp_repo`) may call `git` directly; application
 code must not.
+
+Network operations use `git_service::run_git_network`, with the configured
+network timeout (120 s by default), SSH batch mode, and askpass disabled.
 
 ## Project discovery (§14.1, `repository.rs`)
 

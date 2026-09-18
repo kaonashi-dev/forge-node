@@ -19,20 +19,21 @@ project exists, and attaches a live shell.
 ## Checks
 
 ```sh
-bun run test               # vitest
+bun run check              # canonical: lint + fmt + vitest + bun:test + boundaries + build
+bun run test               # Vitest + Bun tooling/package tests
 bun run build              # typecheck + vite build + bundle budgets
+bun run boundaries         # detected ownership edges and import cycles (limitations in architecture doc)
 bun run lint               # oxlint (correctness, Solid-aware)
 bun run fmt:check          # oxfmt --check (printWidth 100, 2 spaces)
 bun run fmt                # oxfmt --write
 cargo test -p forge-tauri
-make check              # rust gate + oxlint + oxfmt + vitest + bun:test + tsc + bundle budgets
-make lint               # oxlint only
-make fmt-tauri          # oxfmt write
-make fmt-check-tauri    # oxfmt check
 ```
 
 After a protocol change, re-export the wire fixtures and regenerate the typed
-copies the round-trip tests read; CI fails on drift between them:
+copies the round-trip tests read; CI fails on drift between them.
+
+The generator writes `src/contracts/generated/fixtures.ts`; wire type mirrors
+live alongside it under `src/contracts/` and are maintained separately:
 
 ```sh
 cargo run -p protocol --bin export-fixtures
@@ -67,17 +68,24 @@ what lets `FORGE_DAEMON_BIN` point at a debug build.
 ```
 apps/tauri/
   src/
+    app/               composition: lifecycle, shell, integrations, palette
+    contracts/         wire types (generated/ holds generated fixtures)
+    runtime/           Tauri invoke transport, frame channels, shared clock
+    state/             snapshot, connection, workspace, preferences, dialogs
+    navigation/        parked views, tab order/MRU, sidebar state
     actions/           chord → action dispatch
-    harness/           feature types, gate rules, harness API
-    palette/           command palette and its fuzzy filter
-    panels/            sidebar views: history, PR, features, files, git
-    settings/          the settings route and its sections
-    shell/             title bar, sidebar container (Sidebar.tsx), projects view
-                       (ProjectsView.tsx), tabs, attention bar
-    store/             Solid stores: forge, runtime, workbench, harness, views
-    terminal/          canvas renderer, viewport, selection, latency
-    theme/             tokens, controls, icons
+    features/          terminal, editor, files, git, pull-requests, sessions,
+                       projects, harness, settings
+    shared/            cell-grid, input, markdown, paths
+    theme/             tokens, theme primitives, icons
     ui/                shared control kit
-    workbench/         centre tabs: editor, diff, feature, PR compose/detail
-  src-tauri/           Rust host (runtime, workbench, cells, locator)
+  src-tauri/src/
+    lib.rs             Tauri setup and command registration
+    commands.rs        thin Tauri command entry points
+    menus.rs           native menu construction
+    daemon/            daemon connection and startup
+    runtime/           runtime loop, input mapping, cell encoder, snapshots
+      workbench/       one bounded worker; command definitions and capability handlers
 ```
+
+Ownership, dependency rules and "where to change X": [docs/frontend-architecture.md](../../docs/frontend-architecture.md).

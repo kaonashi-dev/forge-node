@@ -167,7 +167,9 @@ restart (no hot reload). See [`config.example.toml`](./config.example.toml).
 | idle policy | `crates/daemon/src/idle.rs` |
 | the schema | `crates/persistence/src/migrations.rs` (append only) → [persistence.md](./persistence.md) |
 | paths, config, logging, singleton | `crates/daemon/src/{paths,config,logging,lockfile}.rs` |
-| Tauri frontend layout, panels, terminal | `apps/tauri/src` → [ui.md](./ui.md) |
+| Tauri frontend layout, panels, terminal | `apps/tauri/src` → [frontend-architecture.md](./frontend-architecture.md) |
+| Tauri listener lifecycle and cross-feature workflows | `apps/tauri/src/app/{lifecycle,integrations}/` → [frontend-architecture.md](./frontend-architecture.md#lifecycle) |
+| Tauri host command dispatch | `apps/tauri/src-tauri/src/runtime/bridge.rs`; `apps/tauri/src-tauri/src/runtime/workbench/` for the separate workbench worker |
 | the editor | `crates/editor-core` (document model), `crates/editor-control` (control wire), `crates/editor-cli` (binary) → [editor.md](./editor.md) |
 | theme tokens | `apps/tauri/src/theme/tokens.ts` → [theming.md](./theming.md) |
 | cost rungs | [performance.md](./performance.md) |

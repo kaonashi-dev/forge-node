@@ -9,15 +9,17 @@ Day-to-day layout and behaviour details live next to the code:
 
 | Area | Where |
 |------|--------|
-| Shell (title, sidebar and its Projects view, tabs) | `apps/tauri/src/shell/` |
-| Other sidebar views (files, git, history, PR, harness) | `apps/tauri/src/panels/` |
-| Workbench (diff, feature, PR, previews) | `apps/tauri/src/workbench/` |
-| Terminal editor pane | `apps/tauri/src/terminal/EditorTerminalPane.tsx` |
+| Shell (title, sidebar container, tabs) | `apps/tauri/src/app/shell/` |
+| Projects view and worktree workflows | `apps/tauri/src/features/projects/` |
+| Other sidebar views (files, git, history, PR, harness) | `apps/tauri/src/features/` |
+| Workbench (diff, feature, PR, previews) | `apps/tauri/src/features/{git,pull-requests,harness,files}/` |
+| Editor surfaces (cells and DOM) | `apps/tauri/src/features/editor/{cells,dom}/` |
 | Reusable explorer package (no Solid or Tauri) | `apps/tauri/packages/file-workbench/` |
-| Terminal Canvas | `apps/tauri/src/terminal/` |
+| Terminal Canvas | `apps/tauri/src/shared/cell-grid/` |
 | Control kit | `apps/tauri/src/ui/` |
 | Theme tokens | `apps/tauri/src/theme/` + [theming.md](./theming.md) |
 | Actions / keymap | `apps/tauri/src/actions/` |
+| Ownership map and dependency rules | [frontend-architecture.md](./frontend-architecture.md) |
 | App README | `apps/tauri/README.md` |
 
 ## Layout (summary)
@@ -78,15 +80,17 @@ not a recycled row, and the release click and terminal mouse reports are consume
 
 Damaged rows arrive on `runtime:cells` separately from `runtime:state`, so a
 frame of output never serializes the session tree with it. The Canvas renderer
-paints style runs; selection, clipboard, IME, and mouse reporting live under
-`src/terminal/`. Latency gate: `make latency-tauri` (p95 ≤ 50 ms).
+paints style runs; selection, IME, and mouse reporting live under
+`features/terminal/` and `shared/cell-grid/`, with clipboard helpers in
+`shared/input/`. These paths are relative to `apps/tauri/src/`.
+Latency gate: `make latency-tauri` (p95 ≤ 50 ms).
 
 ## Controls
 
 Call sites import from `apps/tauri/src/ui/` (Button, Dialog, Menu, …). Look is
 Forge CSS + tokens; interaction primitives are `@kobalte/core` behind that
-boundary. Structural chrome (tab strip, tree row, palette row) stays in shell /
-palette modules on purpose.
+boundary. Structural chrome belongs to `app/shell/`, `app/palette/` and the
+owning feature; explorer rows are rendered by `packages/file-workbench`.
 
 ## Keyboard
 

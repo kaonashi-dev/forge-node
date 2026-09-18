@@ -75,14 +75,17 @@ Two rungs deserve special care because they are easy to miss:
 - **Unwatched sessions no longer throttle the child.** The 8 ms floor is the
   emit cadence for an attached terminal. Reads wait on `poll` and drain
   available bytes independently of that floor.
-- **Per-frame is not per-user-action.** A background agent's delta repaints the sidebar, the diff pane and the PR list too.
+- **Per-frame is not per-user-action.** Terminal frames must stay separate from
+  sidebar, diff and PR state; routing a background delta through shared shell
+  state would make unrelated surfaces pay its frame rate.
 
 ## Memory
 
 ### Nothing that scales with the grid may be deep-cloned per event
 
-`RuntimeUpdate::State` carries `store: Store` by value, and `Store` owns
-`terminals: HashMap<TerminalId, CellGrid>`. Each `CellGrid` holds `visible` plus
+In the original Rust GUI, `RuntimeUpdate::State` carried `store: Store` by value,
+and `Store` owns `terminals: HashMap<TerminalId, CellGrid>`.
+Each `CellGrid` holds `visible` plus
 a `scrollback_cache` capped at `MAX_SCROLLBACK_CACHE_ROWS = 5_000`, and
 `push_scrolled_lines` fills that cache within seconds of any scrolling output.
 A `Cell` is 40 B padded, so a 200-column replica saturates at ~40 MB — copied on
@@ -95,9 +98,10 @@ it is bounded and drops, the way the daemon side already does
 (`registry.rs`: `flume::bounded(256)` plus a fresh resync for a `behind`
 client — never a replayed backlog).
 
-> **Status: partly fixed.** Grid rows are `Arc`, and both the daemon outbound
-> queue and the client event queue are bounded. `Store` itself can still be
-> cloned on slower GUI paths; see *Known open* below.
+> **Current Tauri path.** Grid rows are `Arc`, and both the daemon outbound queue
+> and the client event queue are bounded. The host builds `ShellSnapshot` from a
+> borrowed `Store`, cloning shell metadata but not its terminal grids, and sends
+> frames separately. The whole-store emission above is a historical finding.
 
 ### Cap before you allocate, not after
 
@@ -242,9 +246,9 @@ closed or full workbench queue instead of losing commands. Mutation results
 settle independently of refresh results; uncertain writes reconcile with bounded
 reads and are never replayed automatically.
 
-File dragging (`workbench/fileDrag.ts`) retains one pointer payload, one hover
-deadline and at most one animation frame. Each drag frame performs one DOM hit
-test and a bounded 12 px edge-scroll step; it stops scheduling at the scroll
+File dragging (`apps/tauri/src/features/files/explorer/fileDrag.ts`) retains one
+pointer payload, one hover deadline and at most one animation frame. Each drag
+frame performs one DOM hit test and a bounded 12 px edge-scroll step; it stops scheduling at the scroll
 limit. It never traverses the file index or terminal grid. A 600 ms hover may
 request one ordinary lazy folder expansion, and release submits one correlated
 move or targeted paste. Pointer motion itself performs no daemon requests.
@@ -432,8 +436,8 @@ budgets for changes to `apps/tauri`.
 |---|---|---|
 | Editor (`surface = cells`) | keystroke → paint p95 ≤ 16 ms on a 20 000-line file; open ≤ 100 ms after `ReadFile` returns | `forge-editor` under a PTY, painted by the same canvas renderer as a terminal (`docs/editor.md`). The cost is a frame of cells: the editor damages the rows an edit reached and the loop paints at most once per 8 ms. |
 | Editor (`surface = dom`) | one window per input burst, ≤125/s; a window is what is on screen plus 2×24 overscan, never the file | The rung is **visible DOM rows**, not VT cells. A headless host publishes `ViewFrame`s and the browser composites the scroll, so scrolling costs the rows that entered the window and nothing repaints. Frames are clamped while they are built (`VIEW_ROW_BUDGET`), because the per-row caps do not compose into a frame budget. A window of 88 syntax-coloured Rust rows measures ~19 KB; the whole window is resent on every frame, so a sustained scroll tops out near 2.4 MB/s over a local Unix socket — the per-row `stale` delta in the plan is the fix if that ever shows up in a profile. Rows ship behind an `Arc`, so broadcasting to a second client is a refcount. |
-| Diff | expand a 2 000-line patch ≤ 50 ms | Patch rows are DOM (`workbench/diff/PatchView.tsx`), mounted only while a file section is open. |
-| Job stream | 1 000 lines/s with main-thread idle ≥ 70 % | `store/jobOutput.ts` appends at absolute store paths and copies the tail only when it overshoots budget by `OUTPUT_SLACK`; `JobStreamView` uses `Index`, and reads layout on scroll rather than per batch. |
+| Diff | expand a 2 000-line patch ≤ 50 ms | Patch rows are DOM (`apps/tauri/src/features/git/diff/PatchView.tsx`), mounted only while a file section is open. |
+| Job stream | 1 000 lines/s with main-thread idle ≥ 70 % | `apps/tauri/src/features/harness/jobOutput.ts` appends at absolute store paths and copies the tail only when it overshoots budget by `OUTPUT_SLACK`; `JobStreamView` uses `Index`, and reads layout on scroll rather than per batch. |
 | File tree | 50 000 paths at 60 fps; filter keystroke ≤ 8 ms | Windowed rows with an overscan; the filter narrows the daemon's listing rather than re-scoring it. |
 | Bundle | initial JS ≤ 350 kB gz; editor chunk ≤ 250 kB gz | `apps/tauri/scripts/check-bundle.ts`, run by `bun run build`. Fails the build when either is exceeded. |
 
@@ -443,13 +447,13 @@ Two costs on this side are deliberate and documented rather than fixed:
   whenever `scroll_offset > 0`, because a damage list is expressed in
   live-viewport rows and means nothing against a window of the scrollback. The
   floor is raised from 16 ms to 33 ms while scrolled (`CELL_SEND_FLOOR_SCROLLED`
-  in `runtime/bridge.rs`), which halves it. That is not a latency regression:
-  latency is measured against the keystroke that produced the output, and a
-  scrolled viewport is by definition not showing what a keystroke would produce.
+  in `apps/tauri/src-tauri/src/runtime/bridge.rs`), which halves it. That is not a
+  latency regression: latency is measured against the keystroke that produced the
+  output, and a scrolled viewport is by definition not showing what a keystroke would produce.
 - **The colour of a cell is cached, the font already was.** `ColorCache`
-  (`terminal/palette.ts`) holds one `#rrggbb` per indexed slot and a bounded map
-  for truecolour. Before it, a full-screen 256-colour TUI rebuilt a string per
-  run per frame — per-cell work on the frame rung.
+  (`apps/tauri/src/shared/cell-grid/palette.ts`) holds one `#rrggbb` per indexed
+  slot and a bounded map for truecolour. Before it, a full-screen 256-colour TUI
+  rebuilt a string per run per frame — per-cell work on the frame rung.
 
 ## Known open
 
@@ -457,11 +461,17 @@ Carry these forward; they are real, verified, and not yet fixed.
 
 | Item | Where | Why it still matters |
 |---|---|---|
-| `Store` deep-cloned on slower GUI paths | `ui::runtime`, `client::Store` | Terminal rows are `Arc` and both event queues are bounded. Remaining clones are whole-store snapshots, not per-cell. |
 | Whole-grid delta on a line feed | `DeltaBuilder::delta` | Mid-screen edits now travel as column patches. A line feed can still report `TermDamage::Full` (see Alacritty `Term::damage()`), so that path still repaints the viewport. |
 | WAL write under the core lock | `Daemon::pump_terminal` | fsync is gone (`synchronous = NORMAL`) but the write still holds the global mutex on the delta rung. |
 | `resolved_env` under the core lock | `Daemon::resolved_env` | 796 ms measured, 5 s worst case, taken while the socket is being bound. |
-| One `impl Render`, no list virtualization | `apps/tauri` | Every delta repaints the whole window; every scroll list builds its off-screen rows. |
+
+The original Rust-GUI observations about `ui::runtime` cloning the whole `Store`
+and one `impl Render` repainting the window are historical, not descriptions of
+the current Tauri implementation. The host bridge borrows `Store` when constructing
+shell snapshots and emits terminal frames separately; the portable explorer is
+windowed. This does not establish virtualization or render cost for every other
+list. Current frontend ownership and lifecycle follow-ups are tracked in
+[frontend-architecture.md](./frontend-architecture.md).
 
 ## How this was measured
 
