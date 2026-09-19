@@ -21,7 +21,7 @@ and strengthened with patterns from
 | `crates/harness-service/src/transition.rs` | **The transition table**: the one place a feature's status is decided |
 | `crates/daemon/src/harness_runner.rs` | Deterministic coordinator that starts jobs and advances on exit codes |
 | `crates/daemon/src/jobs.rs` | Headless provider runs, streamed to job logs and UI events |
-| `apps/tauri/src/harness` and feature views | Product UI for registration, gates, timelines and artefacts |
+| `apps/tauri/src/features/harness` | Product UI for registration, gates, timelines and artefacts |
 | `.claude/agents/` | `spec-author`, `implementer`, `reviewer`, `committer` |
 | `.agents/skills/` | `/feature`, `/feature-go`, `/feature-status`, `/feature-commit`, `invariant-c4/c5/c7` |
 

@@ -1,5 +1,4 @@
 //! Filesystem paths: socket + lockfile (ADR-004) and data/config/runtime dirs
-//! (§15.1).
 //!
 //! The socket path is the delicate one: a Unix domain socket path must fit in
 //! `sun_path` (104 bytes on macOS, 108 on Linux). We require the *full* path to
@@ -69,18 +68,26 @@ fn fallback_runtime_dir() -> PathBuf {
     PathBuf::from(format!("/tmp/{APP_DIR}-{}", uid()))
 }
 
-/// Resolve the runtime directory whose socket path fits [`MAX_SOCKET_PATH_LEN`].
-///
-/// Returns the directory and the socket path within it. Tries the preferred
-/// location first, then the `/tmp` fallback, and errors if neither fits.
+/// Prefer the platform runtime directory, falling back to `/tmp` if the socket would not fit.
 pub fn resolve_runtime_dir() -> Result<PathBuf, PathError> {
-    let candidates = preferred_runtime_dir()
+    resolve_runtime_dir_for_name("daemon.sock")
+}
+
+pub(crate) fn resolve_runtime_dir_for_name(socket_name: &str) -> Result<PathBuf, PathError> {
+    runtime_dir_for_name(preferred_runtime_dir(), socket_name)
+}
+
+fn runtime_dir_for_name(
+    preferred: Option<PathBuf>,
+    socket_name: &str,
+) -> Result<PathBuf, PathError> {
+    let candidates = preferred
         .into_iter()
         .chain(std::iter::once(fallback_runtime_dir()));
 
     let mut last_too_long: Option<PathError> = None;
     for dir in candidates {
-        let sock = dir.join("daemon.sock");
+        let sock = dir.join(socket_name);
         let len = sock.as_os_str().len();
         if len < MAX_SOCKET_PATH_LEN {
             return Ok(dir);
@@ -128,7 +135,7 @@ fn lock_path_from(forge_socket: Option<std::ffi::OsString>) -> Result<PathBuf, P
 }
 
 /// Platform data directory root (`~/Library/Application Support/Forge` on macOS,
-/// `$XDG_DATA_HOME/forge` on Linux) (§15.1).
+/// `$XDG_DATA_HOME/forge` on Linux).
 ///
 /// When `FORGE_DATA_DIR` is set and non-empty, that directory is used as-is:
 /// a dev daemon runs against scratch state instead of the daily database.
@@ -142,7 +149,6 @@ pub fn data_dir() -> Result<PathBuf, PathError> {
     Ok(dirs.data_dir().to_path_buf())
 }
 
-/// Platform config directory root (§15.1).
 ///
 /// Same override shape as [`data_dir`]: `FORGE_CONFIG_DIR` points a dev
 /// daemon at a scratch config instead of the daily one.
@@ -156,22 +162,18 @@ pub fn config_dir() -> Result<PathBuf, PathError> {
     Ok(dirs.config_dir().to_path_buf())
 }
 
-/// `config.toml` path (§15.4).
 pub fn config_file() -> Result<PathBuf, PathError> {
     Ok(config_dir()?.join("config.toml"))
 }
 
-/// SQLite database path (§15.1).
 pub fn db_path() -> Result<PathBuf, PathError> {
     Ok(data_dir()?.join("app.db"))
 }
 
-/// Default managed-worktree root (§14.2).
 pub fn worktrees_root() -> Result<PathBuf, PathError> {
     Ok(data_dir()?.join("worktrees"))
 }
 
-/// Logs directory (`app.log`, `daemon.log`) (§15.1).
 pub fn logs_dir() -> Result<PathBuf, PathError> {
     Ok(data_dir()?.join("logs"))
 }
@@ -244,6 +246,30 @@ mod tests {
             sock.as_os_str().len()
         );
         assert!(sock.ends_with("daemon.sock"));
+    }
+
+    #[test]
+    fn runtime_directory_budget_includes_the_actual_socket_name() {
+        let preferred = PathBuf::from(format!("/tmp/{}", "x".repeat(50)));
+        let editor_name = "editor-01990aab123470008000000000000001.sock";
+        assert_eq!(
+            preferred.join(editor_name).as_os_str().len(),
+            MAX_SOCKET_PATH_LEN
+        );
+        assert_eq!(
+            runtime_dir_for_name(Some(preferred.clone()), "daemon.sock").unwrap(),
+            preferred
+        );
+        assert_eq!(
+            runtime_dir_for_name(Some(preferred), editor_name).unwrap(),
+            fallback_runtime_dir()
+        );
+
+        let fits = PathBuf::from(format!("/tmp/{}", "x".repeat(49)));
+        assert_eq!(
+            runtime_dir_for_name(Some(fits.clone()), editor_name).unwrap(),
+            fits
+        );
     }
 
     #[test]

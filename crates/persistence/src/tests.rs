@@ -1,5 +1,5 @@
 //! Integration-style tests for the persistence layer, run against fresh
-//! in-memory databases (§15). Each test opens its own [`Db`], so WAL,
+//! in-memory databases. Each test opens its own [`Db`], so WAL,
 //! `foreign_keys = ON` and the migrations all run per test.
 
 use std::path::PathBuf;
@@ -87,7 +87,7 @@ fn migrations_apply_and_user_version_advances() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // Bump this with every appended migration (§15.2): `user_version` is the
+    // Bump this with every appended migration: `user_version` is the
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
@@ -95,7 +95,6 @@ fn migrations_apply_and_user_version_advances() {
         "eleven migrations applied => user_version == 11"
     );
 
-    // Every §15.2 table is queryable.
     for table in [
         "projects",
         "project_groups",
@@ -364,8 +363,6 @@ fn version_three_database_upgrades_and_keeps_its_sessions() {
     assert_eq!(session.agent_profile_id, None);
     assert!(db.agent_profiles().list().unwrap().is_empty());
 }
-
-// ---- agent profiles (§13.4) -------------------------------------------------
 
 fn mk_profile(provider: &str, name: &str) -> AgentProfile {
     AgentProfile {
@@ -684,12 +681,12 @@ fn session_roundtrip_custom_role_states_and_graph() {
     db.sessions().upsert(&root).unwrap();
 
     let loaded = db.sessions().get(root_id).unwrap().unwrap();
-    // terminal_id is runtime-only: None on load (§15.2).
+    // Runtime terminal ids cannot survive a reload.
     assert_eq!(loaded.terminal_id, None);
     // last_activity_at is runtime-only too: a loaded row describes a session
     // whose PTY is gone, so it reads back as when the session ended.
     assert_eq!(loaded.last_activity_at, root.ended_at.unwrap());
-    // signal has no column: reconstructed as None (§15.2).
+    // Signal has no column: reconstructed as None.
     assert_eq!(
         loaded.state,
         SessionState::Exited {
@@ -1150,8 +1147,6 @@ fn referential_actions_protect_the_tree_from_the_leaves_up() {
     assert!(db.projects().get(project_id).unwrap().is_none());
 }
 
-// ---- shared files (§14.2) --------------------------------------------------
-
 fn mk_rule(project: ProjectId, path: &str, strategy: ShareStrategy) -> ShareRule {
     ShareRule {
         id: ShareRuleId::new(),
@@ -1252,8 +1247,6 @@ fn removing_a_project_takes_its_rules_with_it() {
     db.projects().delete(project.id).unwrap();
     assert!(db.shares().list_all().unwrap().is_empty());
 }
-
-// ---- worktree ignores (§14.4) ----------------------------------------------
 
 fn mk_ignore(project: ProjectId, path: &str, scope: IgnoreScope) -> WorktreeIgnore {
     WorktreeIgnore {

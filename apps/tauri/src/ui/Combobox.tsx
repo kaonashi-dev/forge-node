@@ -48,26 +48,7 @@ export type ComboboxProps<T> = {
   inputClass?: string;
 };
 
-/**
- * The filtered list every picker in the shell is (§4.1 U6).
- *
- * The command palette and the branch picker each had their own copy of this:
- * two `onKeyDown` switches, two cursor clamps, two `aria-activedescendant`
- * computations and two `scrollIntoView` effects, already drifting. One
- * component means the keyboard behaves the same in both — and that the file
- * palette gets it for free.
- *
- * **Why this is not Kobalte's `Combobox`.** Kobalte's is a closed, select-like
- * control: it owns a persistent value, filters its own options, and positions
- * its list with a popper in a portal. This is the opposite shape — always
- * open, full-bleed inside a modal, showing every result the caller decided on,
- * with headings, and yielding an *action* rather than a value it keeps. Every
- * one of those is something Kobalte's version would have to be fought out of,
- * so what is shared here is the semantics, hand-held once, rather than a
- * primitive bent into a shape it was not built for. The ARIA below is the
- * combobox pattern in full: `role="combobox"` on the input, `aria-controls`
- * and `aria-activedescendant` onto a `role="listbox"` of `role="option"`.
- */
+/** Always open; callers filter results and selection invokes an action without retaining a value. */
 export function Combobox<T>(props: ComboboxProps<T>) {
   let input!: HTMLInputElement;
   let list: HTMLDivElement | undefined;

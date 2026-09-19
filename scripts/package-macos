@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build a distributable `Forge Node.app` bundle for macOS (§17, §18 Fase 9).
+# Build a distributable `Forge Node.app` bundle for macOS.
 #
 # The GUI is the Tauri app in `apps/tauri` (Rust host crate `forge-tauri`); the
 # runtime is the Rust `forge-daemon`.

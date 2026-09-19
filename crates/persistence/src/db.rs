@@ -1,5 +1,5 @@
 //! The database handle, connection setup, error type and daemon-startup
-//! reconciliation (§15, ADR-009).
+//! reconciliation (ADR-009).
 
 use std::path::Path;
 
@@ -57,7 +57,7 @@ impl DbError {
 /// terminal stream).
 ///
 /// On open the connection is put in WAL mode with foreign-key enforcement on,
-/// and the schema is migrated to the latest version (§15.2). Repositories are
+/// and the schema is migrated to the latest version. Repositories are
 /// reached through the accessor methods ([`Db::projects`], [`Db::sessions`], ...);
 /// each borrows the underlying connection for the duration of the call.
 pub struct Db {
@@ -85,7 +85,7 @@ impl Db {
         Self::init(conn)
     }
 
-    /// Apply connection pragmas (§15.2: WAL + `foreign_keys = ON` +
+    /// Apply connection pragmas (WAL + `foreign_keys = ON` +
     /// `busy_timeout`) and run migrations. Foreign keys are enforced from the
     /// first application write; see the note on the migration window below.
     fn init(mut conn: Connection) -> Result<Db, DbError> {
@@ -95,7 +95,7 @@ impl Db {
         // WAL lets readers and one writer coexist, but a second writer still
         // contends: without `busy_timeout` that returns `SQLITE_BUSY`
         // immediately instead of retrying, and the daemon writes from both the
-        // request handlers and the PTY threads (§9.3).
+        // request handlers and the PTY threads.
         //
         // `synchronous = NORMAL` is the correct durability level under WAL: the
         // default `FULL` fsyncs the WAL on *every* commit, and one of those
@@ -116,7 +116,7 @@ impl Db {
         // pragma on, the intermediate `DROP TABLE` would trip constraints from
         // rows that are about to be re-pointed. The pragma goes back on below,
         // before any application statement runs, so runtime writes are still
-        // fully enforced (§15.2).
+        // fully enforced.
         migrations().to_latest(&mut conn)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         Ok(Db { conn })
@@ -128,13 +128,13 @@ impl Db {
         &self.conn
     }
 
-    /// Reconciliation step 2 of §15.3: any session that was `Starting` or
+    /// Any session that was `Starting` or
     /// `Running` when the daemon last stopped could not have kept its PTY alive
-    /// (§3.3), so it is marked `Orphaned` with an `ended_at` of now. Returns the
+    /// so it is marked `Orphaned` with an `ended_at` of now. Returns the
     /// number of rows updated.
     ///
     /// This is the sole safe transition for those states after a restart — a
-    /// PTY never survives the daemon (§3.3), so we never pretend otherwise.
+    /// PTY never survives the daemon, so we never pretend otherwise.
     ///
     /// # Errors
     /// Returns [`DbError`] if the update statement fails.
@@ -149,14 +149,14 @@ impl Db {
     }
 
     /// Drop every session row: the "fresh start" alternative to
-    /// [`Db::reconcile_orphaned`] (§15.3 step 2), selected by
+    /// [`Db::reconcile_orphaned`], selected by
     /// `sessions.persist_history = false`.
     ///
-    /// A PTY never survives the daemon (§3.3), so on startup *every* persisted
+    /// A PTY never survives the daemon, so on startup every persisted
     /// session is already dead. Keeping them only grows a tree of `Orphaned`
     /// rows nobody restarts, so by default the daemon starts on an empty
     /// session list instead. Context envelopes are owned by their source
-    /// session and cascade with it (§8.3); projects, workspaces, provider
+    /// session and cascade with it; projects, workspaces, provider
     /// overrides and app state are untouched. Returns the number of rows
     /// deleted.
     ///
@@ -192,7 +192,6 @@ impl Db {
         Ok(())
     }
 
-    /// Projects repository (§7.1).
     #[must_use]
     pub fn projects(&self) -> ProjectRepo<'_> {
         ProjectRepo::new(&self.conn)
@@ -204,49 +203,41 @@ impl Db {
         ProjectGroupRepo::new(&self.conn)
     }
 
-    /// Workspaces repository (§7.2).
     #[must_use]
     pub fn workspaces(&self) -> WorkspaceRepo<'_> {
         WorkspaceRepo::new(&self.conn)
     }
 
-    /// Sessions repository (§7.3).
     #[must_use]
     pub fn sessions(&self) -> SessionRepo<'_> {
         SessionRepo::new(&self.conn)
     }
 
-    /// Context envelopes repository (§8.3).
     #[must_use]
     pub fn context(&self) -> ContextRepo<'_> {
         ContextRepo::new(&self.conn)
     }
 
-    /// Provider executable overrides repository (§13.2).
     #[must_use]
     pub fn provider_overrides(&self) -> ProviderOverrideRepo<'_> {
         ProviderOverrideRepo::new(&self.conn)
     }
 
-    /// Agent launch profiles repository (§13.4).
     #[must_use]
     pub fn agent_profiles(&self) -> AgentProfileRepo<'_> {
         AgentProfileRepo::new(&self.conn)
     }
 
-    /// Per-project file-sharing rules repository (§14.2).
     #[must_use]
     pub fn shares(&self) -> ShareRepo<'_> {
         ShareRepo::new(&self.conn)
     }
 
-    /// Project worktree-ignore rules repository (§14.4).
     #[must_use]
     pub fn ignores(&self) -> IgnoreRepo<'_> {
         IgnoreRepo::new(&self.conn)
     }
 
-    /// Opaque application/layout state repository (ADR-003, §15.2).
     #[must_use]
     pub fn app_state(&self) -> AppStateRepo<'_> {
         AppStateRepo::new(&self.conn)
@@ -260,7 +251,7 @@ mod tests {
     #[test]
     fn connection_pragmas_are_applied() {
         let db = Db::open_in_memory().unwrap();
-        // §15.2 + the WAL contention note in `init`: a contended lock must retry
+        // A contended WAL lock must retry
         // for 5 s rather than fail with `SQLITE_BUSY` on the first attempt.
         let busy_timeout: i64 = db
             .conn()

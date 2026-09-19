@@ -1,4 +1,4 @@
-//! Per-user config and data directories for the Tauri host (§15.1).
+//! Per-user config and data directories for the Tauri host.
 //!
 //! Resolved with `directories` using the same qualifier/organization/application
 //! triple as the daemon (`crates/daemon/src/paths.rs`): empty qualifier, empty
@@ -26,24 +26,23 @@ fn project_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from("", "", APP_NAME)
 }
 
-/// Platform config directory root (§15.1), or `None` on a platform with no
+/// Platform config directory root, or `None` on a platform with no
 /// home directory for this user. Absence is a readout, never a failure: the
 /// settings screen says so and the app keeps running.
 pub fn config_dir() -> Option<PathBuf> {
     Some(project_dirs()?.config_dir().to_path_buf())
 }
 
-/// `config.toml` path, shared with the daemon (§15.4).
+/// `config.toml` path, shared with the daemon.
 pub fn config_file() -> Option<PathBuf> {
     Some(config_dir()?.join("config.toml"))
 }
 
-/// Platform data directory root (§15.1).
 pub fn data_dir() -> Option<PathBuf> {
     Some(project_dirs()?.data_dir().to_path_buf())
 }
 
-/// Logs directory holding `app.log` next to `daemon.log` (§15.1).
+/// Holds `app.log` next to `daemon.log`.
 pub fn logs_dir() -> Option<PathBuf> {
     Some(data_dir()?.join("logs"))
 }

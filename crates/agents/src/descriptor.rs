@@ -1,4 +1,4 @@
-//! The provider adapter contract (ADR-007) and the launch-spec builder (§13.3).
+//! Provider adapters and launch construction (ADR-007).
 //!
 //! ADR-007 defines two levels. Level 1 is the [`AgentDescriptor`] (static
 //! data, see [`crate::builtins`]). Level 2 is the [`AgentAdapter`] trait, for
@@ -35,7 +35,7 @@ pub enum AgentError {
     PromptUnsupported(AgentProviderId),
     /// A read-only launch was asked for by a provider that declares no such
     /// mode. Refused rather than downgraded: a review that can write is not a
-    /// weaker review, it is a different thing (§16.9).
+    /// weaker review, it is a different thing.
     #[error("agent provider `{0}` has no read-only mode")]
     ReviewUnsupported(AgentProviderId),
     /// A version probe could not be executed.
@@ -59,10 +59,9 @@ pub trait AgentAdapter: Send + Sync {
     /// The static descriptor backing this adapter.
     fn descriptor(&self) -> &AgentDescriptor;
 
-    /// Detect whether the provider is installed in `env` (§13.1).
     fn detect(&self, env: &ResolvedEnvironment) -> DetectionResult;
 
-    /// Build a fully-resolved [`SpawnSpec`] for a launch request (§13.3).
+    /// Returns a fully resolved [`SpawnSpec`].
     ///
     /// # Errors
     /// Returns [`AgentError::NotInstalled`] when neither the request's override
@@ -73,7 +72,7 @@ pub trait AgentAdapter: Send + Sync {
         env: &ResolvedEnvironment,
     ) -> Result<SpawnSpec, AgentError>;
 
-    /// Build a [`SpawnSpec`] pointed at a profile's config directory (§13.4).
+    /// Build a [`SpawnSpec`] pointed at a profile's config directory.
     ///
     /// Defaulted, because a profile's directory is a property of the launch and
     /// not of the provider: an adapter only overrides this if its own
@@ -125,26 +124,26 @@ impl AgentAdapter for DescriptorAdapter {
     }
 }
 
-/// Build a fully-resolved [`SpawnSpec`] for a descriptor and request (§13.3).
+/// Build a fully-resolved [`SpawnSpec`] for a descriptor and request.
 ///
 /// - `program` is resolved to an absolute path: the request's
 ///   `executable_override` if present, else the first candidate found on
 ///   `env.path_entries`.
 /// - `args` is `descriptor.default_args`, then the resume arguments when
-///   `req.resume_session_id` is set (§13.5), then `req.extra_args`.
+///   `req.resume_session_id` is set, then `req.extra_args`.
 /// - `env` is the complete resolved environment plus the terminal hints
 ///   `TERM=xterm-256color` and `COLORTERM=truecolor`.
 ///
 /// **The `PATH` fallback is unverified**: it finds a *file with the right name*,
 /// not a binary the version probe accepted, and those differ exactly where it
 /// matters — `agent` on `PATH` is often the Grok CLI, which [`detection::detect`]
-/// rejects for the `cursor` descriptor (§7.5, §13.1 step 4). A caller that has a
+/// rejects for the `cursor` descriptor. A caller that has a
 /// detection result must therefore pass its
 /// [`DetectionStatus::Installed`](domain::DetectionStatus::Installed)
-/// executable as `req.executable_override`; the daemon always does (§13.3), so
+/// executable as `req.executable_override`; the daemon always does, so
 /// the fallback only serves callers with no detection at all.
 ///
-/// The per-session variables `FORGE_SESSION_ID` and `FORGE_WORKSPACE` (§13.3)
+/// The per-session variables `FORGE_SESSION_ID` and `FORGE_WORKSPACE`
 /// are deliberately **not** set here: this crate has no `SessionId`, and the
 /// daemon injects them per session when it spawns the PTY, keeping this builder
 /// pure and independent of session state.
@@ -163,7 +162,7 @@ pub fn build_launch(
     build_launch_with_config_dir(descriptor, req, env, None)
 }
 
-/// [`build_launch`] pointed at a profile's own config directory (§13.4).
+/// [`build_launch`] pointed at a profile's own config directory.
 ///
 /// `config_dir` must already be absolute — [`domain::AgentProfile::resolve_config_dir`]
 /// is what makes it so. Every variable the descriptor's
@@ -186,7 +185,7 @@ pub fn build_launch_with_config_dir(
     // Resume leads the arguments: `codex resume <id>` is a subcommand, and a
     // subcommand that came after a profile's flags would not parse. The two
     // that spell it as a flag do not care where it sits, so one order serves
-    // both (§13.5).
+    // both.
     if let Some(session_id) = &req.resume_session_id {
         let style = descriptor
             .resume
@@ -197,7 +196,7 @@ pub fn build_launch_with_config_dir(
     args.extend(req.extra_args.iter().cloned());
     // The read-only flags go *after* the profile's own, so they win: a profile
     // that names OpenCode's `build` agent must not quietly turn a review into
-    // a session that can edit the checkout it was started in (§16.9).
+    // a session that can edit the checkout it was started in.
     if req.read_only {
         let style = descriptor
             .review
@@ -248,7 +247,7 @@ fn apply_config_dir(
 }
 
 /// `env` as a profile's account sees it: the same environment with the
-/// provider's config-directory variables pointed at `config_dir` (§13.4).
+/// provider's config-directory variables pointed at `config_dir`.
 ///
 /// This is what makes a usage probe read the *profile's* credentials rather
 /// than the default account's — the reading and the launch have to agree on
@@ -268,7 +267,7 @@ pub fn env_for_config_dir(
     env
 }
 
-/// Create a profile's config directory before launching (§13.4).
+/// Create a profile's config directory before launching.
 ///
 /// It is the `mkdir -p` a hand-written shell wrapper ran before exporting
 /// `CLAUDE_CONFIG_DIR`, and `dir` must already be absolute
@@ -292,7 +291,7 @@ pub fn ensure_config_dir(descriptor: &AgentDescriptor, dir: &Path) -> std::io::R
     Ok(())
 }
 
-/// Resolve the program to launch to an absolute path (§13.3).
+/// Resolve the program to launch to an absolute path.
 ///
 /// The candidate walk runs no version probe — see the warning on
 /// [`build_launch`] about who may rely on it.
@@ -313,7 +312,7 @@ fn resolve_program(
         .ok_or_else(|| AgentError::NotInstalled(descriptor.id.clone()))
 }
 
-/// Resolve a profile's chosen executable to an absolute path (§13.4).
+/// Resolve a profile's chosen executable to an absolute path.
 ///
 /// A bare name is looked up on the resolved login-shell PATH before anything
 /// else: that is where the wrapper script standing in for a shell alias lives,
@@ -715,7 +714,7 @@ mod tests {
 
     /// The review flags come after the profile's own so they win: a profile
     /// that named OpenCode's `build` agent must not turn a review into a
-    /// session that can edit the checkout it started in (§16.9).
+    /// session that can edit the checkout it started in.
     #[test]
     fn a_read_only_launch_appends_the_providers_flags_after_the_profiles() {
         let dir = tempfile::tempdir().unwrap();

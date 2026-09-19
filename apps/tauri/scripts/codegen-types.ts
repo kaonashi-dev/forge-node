@@ -4,7 +4,7 @@ import { dirname, join, relative } from "node:path";
 import { readJson } from "./files";
 
 const fixturesDir = join(import.meta.dir, "../tests/fixtures");
-const outFile = join(import.meta.dir, "../src/runtime/generated/fixtures.ts");
+const outFile = join(import.meta.dir, "../src/contracts/generated/fixtures.ts");
 const MAX_FIXTURE_BYTES = 16 * 1024 * 1024;
 
 function toExportName(file: string): string {

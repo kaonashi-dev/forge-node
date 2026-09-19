@@ -1,18 +1,6 @@
-//! Agent Client Protocol worker transport (Phase 4 skeleton).
-//!
-//! The full JSON-RPC session loop (`initialize` → `session/new` →
-//! `session/prompt` → `session/update`) lands when harness jobs prefer ACP
-//! over CLI. What exists today:
-//!
-//! - [`domain::AcpSpec`] / [`domain::AcpPermissionPolicy`] on the descriptor
-//! - [`domain::AcpPermissionPolicy::decide`] — the allow/deny matrix a future
-//!   `session/request_permission` handler will call
-//! - Claude's `acp` and Grok's `agent stdio` entries in `agents::builtins`
-//!
-//! Until spawn is wired, harness jobs keep using CLI with
-//! `--permission-mode acceptEdits` as the same posture on a different wire.
+//! ACP permission policy seam; harness jobs currently launch through the CLI transport.
 
-#![allow(dead_code)] // Phase 4 spawn will call these; the matrix is already tested in domain.
+#![allow(dead_code)] // The ACP session transport is not wired to job launch yet.
 
 use std::path::{Path, PathBuf};
 

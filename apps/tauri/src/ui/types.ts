@@ -1,5 +1,5 @@
 import type { JSX } from "solid-js";
-import type { ForgeIconName } from "../theme/icons";
+import type { ForgeIconName } from "../theme/icons/index";
 
 /** The four control heights the shell uses. Matches `--forge-control-*`. */
 export type ControlSize = "xs" | "sm" | "md" | "lg";

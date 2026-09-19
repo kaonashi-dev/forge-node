@@ -1,5 +1,3 @@
-//! Projects repository (§7.1, §15.2).
-
 use std::path::PathBuf;
 
 use domain::{Project, ProjectGroupId, ProjectId, Timestamp};

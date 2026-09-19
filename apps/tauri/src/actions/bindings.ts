@@ -1,14 +1,14 @@
 // The binding table the running app actually uses.
 //
 // `defaultBindings()` is what ships; this is that, with the person's overrides
-// on top (§4.1 U1). One reactive source so the dispatcher, the palette, every
+// on top. One reactive source so the dispatcher, the palette, every
 // tooltip and Settings › Keyboard all read the same table — a chord shown in a
 // tooltip that a rebind has already moved is worse than no tooltip.
 
 import { createMemo } from "solid-js";
 import { defaultBindings, type ActionId, type Binding } from "./actions";
-import { forgeStore } from "../store/forgeStore";
-import { setAppState } from "../runtime/api";
+import { forgeStore } from "../state/forgeStore";
+import { sendRuntimeCommand } from "../runtime/host";
 import {
   KEYMAP_KEY,
   conflicts,
@@ -47,7 +47,11 @@ export function bindingsFor(action: ActionId): Binding[] {
 
 /** Store a new set of overrides. The daemon owns them, like every `ui.*` key. */
 export function writeOverrides(next: KeymapOverride[]): void {
-  void setAppState(KEYMAP_KEY, serializeKeymap(next)).catch(() => undefined);
+  void sendRuntimeCommand({
+    type: "set_app_state",
+    key: KEYMAP_KEY,
+    value: serializeKeymap(next),
+  }).catch(() => undefined);
 }
 
 /**

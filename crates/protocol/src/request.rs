@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// What to do with worktrees and running sessions when a project is removed
-/// (§10.2). Branches are never deleted by any policy.
+/// Branches are never deleted by any policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum RemoveProjectPolicy {
@@ -42,7 +42,7 @@ pub struct SendContextSpawn {
     pub workspace_policy: ChildWorkspacePolicy,
 }
 
-/// A POSIX signal a client can ask the daemon to deliver to a session (§10.2).
+/// A POSIX signal a client can ask the daemon to deliver to a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Signal {
@@ -73,7 +73,6 @@ impl Signal {
     }
 }
 
-/// A request from a client to the daemon (§10.2).
 ///
 /// Variants are grouped as in the plan: Global, Projects, Workspaces, Sessions,
 /// Terminals, Agents.
@@ -81,7 +80,7 @@ impl Signal {
 #[non_exhaustive]
 pub enum Request {
     // ----- Global -----
-    /// Full initial state (§10.2) → [`crate::response::Response::Snapshot`].
+    /// Full initial state → [`crate::response::Response::Snapshot`].
     GetSnapshot,
     /// Ask the daemon to shut down; optionally killing live sessions first.
     StopDaemon {
@@ -95,13 +94,13 @@ pub enum Request {
     /// the metadata database. Repository contents, branches, commits,
     /// `config.toml`, logs, and repository-owned `harness/` files are retained.
     FactoryReset,
-    /// Read an opaque app-state key (§15.2) →
+    /// Read an opaque app-state key →
     /// [`crate::response::Response::AppState`].
     GetAppState {
         /// The app-state key.
         key: String,
     },
-    /// Write an opaque app-state key (§15.2) → `Ack`.
+    /// Write an opaque app-state key → `Ack`.
     SetAppState {
         /// The app-state key.
         key: String,
@@ -114,7 +113,7 @@ pub enum Request {
     /// The `Ack` means the refresh started (or coalesced with one already in
     /// flight), not that the remote operation completed.
     RefreshPullRequests,
-    /// Runtime statistics from a live daemon (§22) →
+    /// Runtime statistics from a live daemon →
     /// [`crate::response::Response::DaemonStats`].
     ///
     /// Synchronous and local like [`Request::GetWorkspaceDiff`]: counts under
@@ -231,7 +230,7 @@ pub enum Request {
     ReadJobLog { job_id: JobId, from_line: u64 },
 
     // ----- Projects -----
-    /// Add a project directory (§14.1) → `Ack`; `ProjectAdded` broadcast.
+    /// Add a project directory → `Ack`; `ProjectAdded` broadcast.
     AddProject {
         /// Path to the directory to add.
         path: PathBuf,
@@ -267,7 +266,7 @@ pub enum Request {
         /// Destination group, or `None` for General.
         project_group_id: Option<ProjectGroupId>,
     },
-    /// Remove a project subject to `policy` (§10.2) → `Ack`.
+    /// Remove a project subject to `policy` → `Ack`.
     RemoveProject {
         /// The project to remove.
         project_id: ProjectId,
@@ -303,7 +302,7 @@ pub enum Request {
         /// The owning project.
         project_id: ProjectId,
     },
-    /// Create a managed git worktree (§14.3) → `Ack`; `WorkspaceCreated`.
+    /// Create a managed git worktree → `Ack`; `WorkspaceCreated`.
     CreateWorktree {
         /// The owning project.
         project_id: ProjectId,
@@ -314,7 +313,7 @@ pub enum Request {
         /// Optional explicit name/slug for the worktree.
         name: Option<String>,
     },
-    /// Remove a worktree (§14.4) → `Ack`; `WorkspaceRemoved`.
+    /// Remove a worktree → `Ack`; `WorkspaceRemoved`.
     RemoveWorktree {
         /// The worktree to remove.
         workspace_id: WorkspaceId,
@@ -339,7 +338,7 @@ pub enum Request {
     },
 
     // ----- Branches and remotes -----
-    /// Every local and remote-tracking branch of a project (§14.3) →
+    /// Every local and remote-tracking branch of a project →
     /// [`crate::response::Response::Branches`].
     ///
     /// Reads the refs already on disk; it never touches the network. Use
@@ -642,7 +641,6 @@ pub enum Request {
     CreateShellSession {
         /// Workspace the session runs in.
         workspace_id: WorkspaceId,
-        /// Optional parent in the session graph (§8.1).
         parent: Option<SessionId>,
         /// The session's role tag.
         role: SessionRole,
@@ -653,26 +651,26 @@ pub enum Request {
         workspace_id: WorkspaceId,
         /// The agent provider to launch.
         provider_id: AgentProviderId,
-        /// Launch profile to apply, or `None` for the bare provider (§13.4).
+        /// `None` selects the bare provider.
         profile_id: Option<AgentProfileId>,
         /// Optional parent in the session graph.
         parent: Option<SessionId>,
         /// The session's role tag.
         role: SessionRole,
-        /// A provider session id to re-enter rather than start fresh (§13.5).
+        /// Provider-owned resume id, not a Forge session id.
         /// Refused when the provider declares no way to resume.
         resume: Option<String>,
         /// A prompt to hand the agent at launch rather than have the user type
-        /// it (§16.8). Refused when the provider declares no way to take one.
+        /// it. Refused when the provider declares no way to take one.
         initial_prompt: Option<String>,
-        /// Launch the provider in its own read-only mode (§16.9), which is
+        /// Launch the provider in its own read-only mode, which is
         /// what an automatic pull-request review starts in. Refused with
         /// `InvalidRequest` when the provider declares no such mode, the same
         /// way `resume` and `initial_prompt` are.
         #[serde(default)]
         read_only: bool,
     },
-    /// Open a file in a daemon-supervised `forge-editor` process (feature 19)
+    /// Open a file in a daemon-supervised `forge-editor` process
     /// → `SessionCreated`; buffer state arrives as `SessionUpdated`.
     ///
     /// The daemon reads the file through `fs-service` and hands the text to the
@@ -754,7 +752,7 @@ pub enum Request {
     /// when it refused, so this is the second `Ctrl-S` by another name.
     OverwriteEditorBuffer { session_id: SessionId },
     /// Create a child session under a parent, choosing its workspace via
-    /// `workspace_policy` (§8.2) → `Ack`; `SessionCreated`.
+    /// `workspace_policy` → `Ack`; `SessionCreated`.
     CreateChildSession {
         /// The parent session.
         parent_session_id: SessionId,
@@ -762,7 +760,7 @@ pub enum Request {
         kind: SessionKind,
         /// Provider to launch when `kind` is [`SessionKind::Agent`].
         provider_id: Option<AgentProviderId>,
-        /// Launch profile to apply, or `None` for the bare provider (§13.4).
+        /// `None` selects the bare provider.
         profile_id: Option<AgentProfileId>,
         /// The child's role tag.
         role: SessionRole,
@@ -776,19 +774,19 @@ pub enum Request {
         /// The session to kill.
         session_id: SessionId,
     },
-    /// Close (remove) a session; rejected while active without a kill (§7.3)
+    /// Close (remove) a session; rejected while active without a kill
     /// → `Ack`.
     CloseSession {
         /// The session to close.
         session_id: SessionId,
     },
-    /// Restart a terminal/exited session (§7.3) → `Ack`; `SessionUpdated`.
+    /// Restart a terminal/exited session → `Ack`; `SessionUpdated`.
     RestartSession {
         /// The session to restart.
         session_id: SessionId,
     },
     /// Set or clear the user title; `None` clears it, falling back to the
-    /// terminal title (§7.3) → `Ack`; `SessionUpdated`.
+    /// terminal title → `Ack`; `SessionUpdated`.
     RenameSession {
         /// The session to rename.
         session_id: SessionId,
@@ -802,13 +800,13 @@ pub enum Request {
         /// The new role.
         role: SessionRole,
     },
-    /// Persist a context envelope (§8.3) → `Ack`.
+    /// Persist a context envelope → `Ack`.
     CreateContextEnvelope {
         /// The envelope to store.
         envelope: ContextEnvelope,
     },
     /// Deliver context to an existing session, or spawn a child that starts
-    /// with it (§8.3) → `Ack` when targeting an existing session;
+    /// with it → `Ack` when targeting an existing session;
     /// [`crate::response::Response::SessionCreated`] when spawning.
     ///
     /// Exactly one of `target_session_id` or `spawn` must be set. The daemon
@@ -832,7 +830,7 @@ pub enum Request {
         /// Cap on transcript bytes when `include_transcript` is set.
         max_transcript_bytes: Option<u32>,
     },
-    /// Envelopes where `session_id` is the source or the target (§8.3) →
+    /// Envelopes where `session_id` is the source or the target →
     /// [`crate::response::Response::ContextEnvelopes`].
     ListContextEnvelopes {
         /// Session whose inbox and outbox are listed.
@@ -840,7 +838,7 @@ pub enum Request {
     },
 
     // ----- Terminals -----
-    /// Subscribe to a terminal and fetch its snapshot (§10.5) →
+    /// Subscribe to a terminal and fetch its snapshot →
     /// [`crate::response::Response::AttachAck`].
     AttachTerminal {
         /// The terminal to attach to.
@@ -860,14 +858,14 @@ pub enum Request {
         /// Bytes to write to the PTY master.
         bytes: Vec<u8>,
     },
-    /// Resize a terminal's PTY; last writer wins in the MVP (§10.4) → `Ack`.
+    /// Resize a terminal's PTY; last writer wins → `Ack`.
     ResizeTerminal {
         /// The target terminal.
         terminal_id: TerminalId,
         /// The new PTY size.
         size: PtySize,
     },
-    /// Fetch a block of scrollback (§10.2) →
+    /// Fetch a block of scrollback →
     /// [`crate::response::Response::ScrollbackRows`].
     FetchScrollback {
         /// The target terminal.
@@ -877,7 +875,7 @@ pub enum Request {
         /// Maximum number of rows to return.
         count: u32,
     },
-    /// Deliver a signal to a session's process group (§11.3) → `Ack`.
+    /// Deliver a signal to a session's process group → `Ack`.
     SendSignal {
         /// The target session.
         session_id: SessionId,
@@ -889,12 +887,12 @@ pub enum Request {
     /// List agent providers with detection state →
     /// [`crate::response::Response::Providers`].
     ListAgentProviders,
-    /// Read the account usage every installed provider reports (§16.2) →
+    /// Read the account usage every installed provider reports →
     /// [`crate::response::Response::ProviderUsage`]. Providers that declare no
     /// usage probe are simply absent from the answer.
     ListProviderUsage,
     /// Aggregate what the agents on this machine have actually spent, read from
-    /// their own transcripts (§16.2) →
+    /// their own transcripts →
     /// [`crate::response::Response::UsageAnalytics`].
     ///
     /// Deliberately separate from [`Request::ListProviderUsage`]: that one asks
@@ -907,7 +905,7 @@ pub enum Request {
         /// and an over-large value is clamped rather than refused.
         window_days: Option<u16>,
     },
-    /// Re-run detection for one provider, or all when `None` (§13.1) → `Ack`;
+    /// Re-run detection for one provider, or all when `None` → `Ack`;
     /// `AgentDetectionChanged`.
     RefreshAgentDetection {
         /// The provider to re-detect, or `None` for all.
@@ -920,7 +918,7 @@ pub enum Request {
         /// The executable path, or `None` to remove the override.
         path: Option<PathBuf>,
     },
-    /// Create a launch profile, or replace one with the same id (§13.4) →
+    /// Create a launch profile, or replace one with the same id →
     /// `Ack`; `AgentProfilesChanged`.
     ///
     /// One upsert rather than a create/update pair, following
@@ -930,7 +928,7 @@ pub enum Request {
         /// The profile to store.
         profile: AgentProfile,
     },
-    /// Delete a launch profile (§13.4) → `Ack`; `AgentProfilesChanged`.
+    /// Delete a launch profile → `Ack`; `AgentProfilesChanged`.
     ///
     /// Sessions the profile already launched keep running and keep pointing at
     /// it; only new launches are affected.
@@ -939,7 +937,6 @@ pub enum Request {
         profile_id: AgentProfileId,
     },
 
-    // -------------------------------------------------- shared files (§14.2) ---
     /// Ignored paths a project could share → `ShareCandidates`.
     ///
     /// A local, synchronous, bounded read like `ListBranches`: one `git status
@@ -1020,7 +1017,6 @@ pub enum Request {
         workspace_id: Option<WorkspaceId>,
     },
 
-    // --------------------------------------- worktree ignores (§14.4) ---
     /// A project's worktree-ignore rules → `WorktreeIgnores`.
     ///
     /// A local read: the daemon keeps the rules loaded, so this is a clone, not

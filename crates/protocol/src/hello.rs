@@ -1,14 +1,8 @@
-//! The connection handshake (§9.2).
-//!
-//! A client opens with [`Hello`]; the daemon replies with either [`HelloAck`]
-//! (versions match) or [`HelloReject`] (they do not). In the MVP the daemon
-//! requires `protocol_version` equality; N/N-1 compatibility is deferred (§9.2).
+//! The handshake requires exact `protocol_version` equality.
 
 use domain::Timestamp;
 use serde::{Deserialize, Serialize};
 
-/// What kind of client is connecting. Only the GUI exists in the MVP; the
-/// debug CLI (`dump --json`, §10.4) also connects as [`ClientKind::Gui`] for now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ClientKind {
@@ -19,14 +13,13 @@ pub enum ClientKind {
     Unknown,
 }
 
-/// First message a client sends after connecting (§9.2).
+/// Must be the first message after connecting.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     /// The protocol version the client speaks; see [`crate::PROTOCOL_VERSION`].
     pub protocol_version: u32,
     /// The client's own build version, informational.
     pub client_version: String,
-    /// The kind of client connecting.
     pub client_kind: ClientKind,
 }
 
@@ -43,25 +36,20 @@ impl Hello {
     }
 }
 
-/// Sent by the daemon when the handshake succeeds (§9.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloAck {
     /// The protocol version the daemon speaks.
     pub protocol_version: u32,
     /// The daemon's build version, informational.
     pub daemon_version: String,
-    /// The daemon instance identifier from `daemon.lock` (§9.2).
+    /// The daemon instance identifier from `daemon.lock`.
     ///
     /// Kept as a `String` (the lockfile stores it as JSON text) to avoid a
     /// `uuid` dependency in this crate; the daemon generates and formats it.
     pub instance_id: String,
     /// When this daemon instance started.
     pub started_at: Timestamp,
-    /// Which surface an integrated editor session presents.
-    ///
-    /// Daemon-wide, so it belongs in the handshake and not on a session: the
-    /// GUI has to know which pane to mount before an editor exists. `#[serde(default)]`
-    /// so an older daemon means the surface it could only have had.
+    /// Daemon-wide surface, needed before mounting an editor; missing means `Cells`.
     #[serde(default)]
     pub editor_surface: EditorSurface,
 }
@@ -78,7 +66,6 @@ pub enum EditorSurface {
     Dom,
 }
 
-/// Sent by the daemon when the handshake fails on version mismatch (§9.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloReject {
     /// The protocol version the daemon requires.

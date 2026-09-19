@@ -1,18 +1,18 @@
-//! Phase 2 gate: key-to-delta latency, and what the canvas is actually sent.
+//! Key-to-delta latency and canvas payload measurement.
 //!
 //! Types into a real session on a running daemon, times the round trip from the
 //! write to the delta that carried its echo, and encodes each frame the way the
 //! WebView receives it — so the byte cost printed here is the byte cost on the
 //! IPC path, not an estimate of it.
 //!
-//! Exit 0 when the p95 is inside the §2 budget, 1 when it is not or when the
+//! Exit 0 when the p95 is within budget, 1 when it is not or when the
 //! daemon cannot be reached. Never run automatically: it starts a session and
 //! types into it.
 //!
 //! Two modes:
 //!
 //! ```sh
-//! forge-tauri-latency                      # a shell session (the §2 gate)
+//! forge-tauri-latency                      # a shell session
 //! forge-tauri-latency --editor <path>      # forge-editor on that file (R33)
 //! ```
 //!

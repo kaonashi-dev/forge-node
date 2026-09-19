@@ -1,12 +1,12 @@
 //! [`AlacrittyEngine`]: the default [`TerminalEngine`] built on
-//! `alacritty_terminal` 0.26 (§11.4).
+//! `alacritty_terminal` 0.26.
 //!
 //! We drive `alacritty_terminal` as a *library*: a [`Term`] plus the standalone
 //! `vte::ansi::Processor`. We deliberately do **not** use its `EventLoop`/`tty`
-//! — the PTY is ours (§11.2, [`crate::pty`]). Byte input goes through
+//! — the PTY is ours ([`crate::pty`]). Byte input goes through
 //! [`Processor::advance`](alacritty_terminal::vte::ansi::Processor::advance),
 //! row damage comes from [`Term::damage`]/[`Term::reset_damage`], and a small
-//! [`EventProxy`] captures title/bell/PTY-reply events (§11.4).
+//! [`EventProxy`] captures title/bell/PTY-reply events.
 //!
 //! All emulator types are translated into the shared [`domain::terminal`] wire
 //! types so nothing downstream depends on `alacritty_terminal`.
@@ -32,9 +32,7 @@ use domain::{
 
 use crate::engine::TerminalEngine;
 
-/// Default scrollback lines per terminal (§11.4).
 pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
-/// Hard cap on configurable scrollback (§11.4).
 pub const MAX_SCROLLBACK_LINES: usize = 100_000;
 
 /// Largest OSC 52 payload accepted onto the clipboard.
@@ -111,7 +109,7 @@ impl Dimensions for TermDimensions {
     }
 }
 
-/// The default authoritative engine (§11.4, ADR-011).
+/// The authoritative engine (ADR-011).
 pub struct AlacrittyEngine {
     term: Term<EventProxy>,
     processor: ansi::Processor,
@@ -126,7 +124,7 @@ pub struct AlacrittyEngine {
 }
 
 impl AlacrittyEngine {
-    /// Construct an engine with the default scrollback (§11.4).
+    /// Uses the default scrollback limit.
     #[must_use]
     pub fn new(size: PtySize) -> Self {
         Self::with_scrollback(size, DEFAULT_SCROLLBACK_LINES)
@@ -274,7 +272,7 @@ impl AlacrittyEngine {
 
 /// Map a `vte` color to the shared [`Color`]. Named 0–15 fold into `Indexed`;
 /// the terminal default fg/bg (and every other special named slot) folds into
-/// `Color::Default`; indexed and RGB pass through (§11.4).
+/// `Color::Default`; indexed and RGB pass through.
 fn convert_color(color: AnsiColor) -> Color {
     match color {
         AnsiColor::Named(named) => {
@@ -290,7 +288,6 @@ fn convert_color(color: AnsiColor) -> Color {
     }
 }
 
-/// Map `alacritty` cell flags onto the shared [`CellFlags`] bitset (§11.4).
 fn convert_flags(flags: Flags) -> CellFlags {
     let mut out = CellFlags::empty();
     if flags.contains(Flags::BOLD) {
@@ -324,7 +321,7 @@ fn convert_flags(flags: Flags) -> CellFlags {
 }
 
 /// Convert one emulator cell. Wide-char continuation cells carry no text but
-/// keep the `WIDE_SPACER` flag (§11.4).
+/// keep the `WIDE_SPACER` flag.
 fn convert_cell(cell: &AlacCell) -> Cell {
     let flags = convert_flags(cell.flags);
     let is_spacer = cell

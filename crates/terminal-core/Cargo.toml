@@ -9,7 +9,7 @@ authors.workspace = true
 [features]
 default = ["engine-alacritty"]
 # Feature flag so an alternative VT engine can be evaluated without touching
-# SessionService or ui (§11.4).
+# SessionService or ui.
 engine-alacritty = ["dep:alacritty_terminal"]
 
 [dependencies]

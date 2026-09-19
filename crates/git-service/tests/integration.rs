@@ -1,4 +1,4 @@
-//! Integration tests against **real** temporary git repositories (§21: never
+//! Integration tests against real temporary git repositories (never
 //! mock git). Every test that touches git skips gracefully when the `git`
 //! binary is not available so the suite stays green in minimal environments.
 
@@ -151,7 +151,7 @@ fn create_new_branch_worktree_then_list_and_remove() {
     let after = list_worktrees(repo.path()).unwrap();
     assert!(after.iter().all(|w| canon(&w.path) != wt_canon));
 
-    // Removing a worktree never deletes the branch (§14.4).
+    // Removing a worktree must preserve its branch.
     assert!(list_branches(repo.path())
         .unwrap()
         .iter()
@@ -185,7 +185,6 @@ fn remove_worktree_whose_directory_was_deleted_by_hand() {
     let after = list_worktrees(repo.path()).unwrap();
     assert!(after.iter().all(|w| canon(&w.path) != wt_canon));
 
-    // Still never the branch (§14.4).
     assert!(list_branches(repo.path())
         .unwrap()
         .iter()
@@ -385,7 +384,6 @@ fn the_repo_argument_routes_the_command_into_that_working_tree() {
 }
 
 // ---------------------------------------------------------------------------
-// Refs and remotes (§14.3, branches plan phases 3 and 4)
 // ---------------------------------------------------------------------------
 
 /// A second repository that `origin` can point at, so the fetch path is

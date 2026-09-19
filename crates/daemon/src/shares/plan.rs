@@ -1,5 +1,4 @@
 //! What applying a rule *would* do — a pure function of the rules and the disk
-//! (§14.2).
 //!
 //! Every decision this feature makes lives here, so the whole table can be
 //! tested without a filesystem, a repository or a daemon. `apply.rs` reads

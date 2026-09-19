@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build and distribute Forge Node as an installable app (§17, §18 Fase 9).
+# Build and distribute Forge Node as an installable app.
 #
 # One artifact to copy between machines. `build` produces a single tarball
 # holding the packaged app plus a self-contained install.sh, so a faster

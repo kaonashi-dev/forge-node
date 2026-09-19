@@ -1,12 +1,4 @@
-//! Unsolicited events the daemon pushes to clients (§10.3).
-//!
-//! Domain events (projects/workspaces/sessions) are low-volume and broadcast to
-//! every connected client. Terminal deltas go only to clients that ran
-//! `AttachTerminal`; non-subscribers get coalesced `TerminalActivity` instead
-//! (§10.4). Each event travels inside [`crate::DaemonMessage::Event`].
-//!
-//! `SessionExited` from v1 is folded into `SessionUpdated` so session state has
-//! a single update path (§10.3).
+//! Domain events are broadcast; terminal deltas go only to attached subscribers.
 
 use domain::{
     AgentProfile, DetectionResult, EditorFrame, Job, JobId, JuvaDraft, Project, ProjectGroup,
@@ -16,8 +8,6 @@ use domain::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Severity of a [`DaemonEvent::DaemonNotice`] (§10.3), used to decide how the
-/// GUI surfaces it as a notification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum NoticeLevel {
@@ -32,7 +22,6 @@ pub enum NoticeLevel {
     Unknown,
 }
 
-/// An event pushed by the daemon (§10.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum DaemonEvent {
@@ -70,14 +59,8 @@ pub enum DaemonEvent {
     },
     /// A session was created; carries its full state.
     SessionCreated(Session),
-    /// A session changed: state, title, role, or parent (§10.3).
     SessionUpdated(Session),
-    /// A session was dropped from the model by `CloseSession`/`RemoveProject`.
-    ///
-    /// **Correction to the plan:** §10.3 does not list this event, yet
-    /// `CloseSession` (§7.3) deletes the session from the model; without it a
-    /// client replica would keep a ghost entry until its next `GetSnapshot`.
-    /// The enum is `#[non_exhaustive]`, so adding it is additive and safe.
+    /// Clients must drop the session without waiting for another snapshot.
     SessionRemoved {
         /// The removed session.
         session_id: SessionId,
@@ -106,22 +89,21 @@ pub enum DaemonEvent {
         session_id: SessionId,
         frame: EditorFrame,
     },
-    /// Changed rows for an attached terminal (§10.5). Sent only to subscribers.
+    /// Sent only to attached subscribers.
     TerminalDelta {
         /// The terminal the delta belongs to.
         terminal_id: TerminalId,
         /// The changed rows, cursor and modes at the new `seq`.
         delta: TerminalDelta,
     },
-    /// A fresh snapshot after a subscriber fell behind (§10.5).
+    /// Replaces the replica after a subscriber falls behind.
     TerminalResync {
         /// The terminal being resynced.
         terminal_id: TerminalId,
         /// The full grid snapshot to reset to.
         snapshot: TerminalSnapshot,
     },
-    /// Coalesced activity indicator for non-subscribers (§10.4), for unread
-    /// badges.
+    /// Coalesced activity for non-subscribers' unread badges.
     TerminalActivity {
         /// The terminal that produced output.
         terminal_id: TerminalId,
@@ -131,44 +113,32 @@ pub enum DaemonEvent {
         /// The terminal that rang.
         terminal_id: TerminalId,
     },
-    /// Per-provider usage was re-read (§16.2). Carries the whole set, so a
-    /// client that missed one keeps a consistent picture rather than a merge
-    /// of two moments.
+    /// Replaces the whole usage set; clients must not merge readings.
     ProviderUsageChanged {
         /// Usage for every provider that reported any.
         usage: Vec<ProviderUsage>,
     },
-    /// The set of launch profiles changed (§13.4). Carries all of them, like
-    /// the usage and detection events: a client that missed one still ends up
-    /// with a consistent list rather than a merge of two moments.
+    /// Replaces the whole profile set.
     AgentProfilesChanged {
         /// Every saved profile, in provider then name order.
         profiles: Vec<AgentProfile>,
     },
-    /// A project's sharing rules changed (§14.2). Carries the project's whole
-    /// set, like `AgentProfilesChanged`: a client that missed one edit still
-    /// ends up with a consistent list rather than a merge of two moments.
+    /// Replaces this project's whole sharing-rule set.
     ProjectSharesChanged {
         /// The project whose rules these are.
         project_id: ProjectId,
         /// Every rule of that project, in application order.
         rules: Vec<ShareRule>,
     },
-    /// A project's worktree-ignore rules changed (§14.4). Carries the whole
-    /// set, like `ProjectSharesChanged`: the rescan's GC collects a tombstone
-    /// on its own, and a client that missed one edit still ends up consistent.
+    /// Replaces this project's whole ignore-rule set, including collected tombstones.
     ProjectWorktreeIgnoresChanged {
         /// The project whose rules these are.
         project_id: ProjectId,
         /// Every rule of that project.
         rules: Vec<WorktreeIgnore>,
     },
-    /// A workspace finished being provisioned (§14.2).
-    ///
-    /// `ApplyShares` and `CreateWorktree` ack when the work *starts*; this is
-    /// where it lands. `error` is set when the run could not be attempted at
-    /// all — a per-rule failure is a `Skip`/note inside `actions`, because a
-    /// worktree with three of four shares is still a usable worktree.
+    /// Completion after `ApplyShares`/`CreateWorktree` ack; per-rule failures are
+    /// `Skip` actions, while `error` means provisioning itself could not proceed.
     SharesApplied {
         /// The workspace that was provisioned.
         workspace_id: WorkspaceId,
@@ -179,12 +149,11 @@ pub enum DaemonEvent {
         /// Set when the run itself could not proceed.
         error: Option<String>,
     },
-    /// Agent detection results changed (§13.1).
     AgentDetectionChanged {
         /// The updated detection results.
         results: Vec<DetectionResult>,
     },
-    /// A background `FetchRemote` finished (§14.1).
+    /// A background `FetchRemote` finished.
     ///
     /// Carries the outcome rather than the refs themselves: the client asks
     /// `ListBranches` again when it cares, which keeps this event small and
@@ -209,7 +178,7 @@ pub enum DaemonEvent {
         /// Failure message when `url` is `None`.
         error: Option<String>,
     },
-    /// A `DraftWithJuva` finished (§16.7, §16.8).
+    /// A `DraftWithJuva` finished.
     ///
     /// The draft always arrives: when the `[juva]` endpoint is off, unreachable
     /// or slow, this carries the deterministic local draft and `fell_back` says
@@ -276,14 +245,12 @@ pub enum DaemonEvent {
         /// The row after the change.
         feature: Box<domain::HarnessFeature>,
     },
-    /// A daemon-level notice to surface as a notification (§10.3).
     DaemonNotice {
         /// The severity of the notice.
         level: NoticeLevel,
         /// The human-readable message.
         message: String,
     },
-    /// The daemon is shutting down (§9.1).
     DaemonShuttingDown {
         /// Why the daemon is shutting down.
         reason: String,

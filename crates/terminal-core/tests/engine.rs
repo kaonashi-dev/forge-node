@@ -1,5 +1,5 @@
 //! Engine behavior tests: damage tracking, snapshot/delta building, title/bell,
-//! and mode parsing (§11.4, ADR-011). These are deterministic and drive the
+//! and mode parsing (ADR-011). These are deterministic and drive the
 //! engine directly (no PTY).
 
 #![cfg(feature = "engine-alacritty")]
@@ -187,7 +187,6 @@ fn title_and_bell() {
 
 #[test]
 fn scrollback_limits_match_the_plan() {
-    // §11.4: 10 000 lines by default, 100 000 as the hard configurable cap.
     assert_eq!(DEFAULT_SCROLLBACK_LINES, 10_000);
     assert_eq!(MAX_SCROLLBACK_LINES, 100_000);
 }
@@ -220,7 +219,7 @@ fn snapshot_tail_is_capped_at_the_requested_length() {
     for i in 0..500 {
         e.feed(format!("l{i}\r\n").as_bytes());
     }
-    // The default tail is 200 rows (§11.4), and the engine never returns more
+    // The default tail is 200 rows, and the engine never returns more
     // than the caller asked for even when far more history exists.
     assert!(e.scrollback_len() > DEFAULT_SCROLLBACK_TAIL as u64);
     let snap = e.snapshot(DEFAULT_SCROLLBACK_TAIL);

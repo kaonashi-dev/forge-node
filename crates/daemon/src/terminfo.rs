@@ -1,4 +1,4 @@
-//! Locating the terminfo entry for the `TERM` we advertise to sessions (§13.3).
+//! Locating the terminfo entry for the `TERM` we advertise to sessions.
 //!
 //! A `TERM` name is only useful if the child process can *find* its terminfo
 //! entry: an unknown name leaves every ncurses program (`vim`, `htop`, `less`)

@@ -1,5 +1,5 @@
 //! Minimal PTY smoke test: spawn `/bin/echo hi`, read its output, and reap it.
-//! Bounded by timeouts so it can never hang CI (§21). Uses a real PTY, so it is
+//! Bounded by timeouts so it can never hang CI. Uses a real PTY, so it is
 //! skipped when `/bin/echo` is absent.
 
 use std::io::Read;
@@ -35,9 +35,9 @@ fn spawn_echo_read_and_reap() {
         handle.process_group() > 0,
         "process group leader should be reported"
     );
-    // §11.2 criterion (b): the child is its own session/group leader after
+    // The child is its own session/group leader after
     // `setsid`, so its pgid is its pid — and stays that value for the life of
-    // the handle rather than following the terminal's foreground job (§11.3
+    // the handle rather than following the terminal's foreground job (the
     // signals `-pgid`).
     let pgid = handle.process_group();
     assert_eq!(

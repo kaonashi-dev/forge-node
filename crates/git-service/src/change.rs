@@ -1,4 +1,4 @@
-//! Working-tree diffs and local commits for Juva (§14 adjacent).
+//! Working-tree diffs and local commits for Juva.
 //!
 //! Read paths stay local (`run_git`). [`push`] opens a socket and therefore
 //! goes through [`crate::run_git_network`] — same hardening as [`crate::fetch`].

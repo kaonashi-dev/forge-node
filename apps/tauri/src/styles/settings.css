@@ -1,21 +1,8 @@
-/*
- * The settings screen — every section of it, plus the stats surfaces.
- *
- * The one genuinely route-scoped stylesheet (§5.2). `SettingsRoute` is loaded
- * lazily and imports this, so a window that never opens settings never
- * downloads it; every other file here is chrome the first frame needs.
- */
+/* Loaded by SettingsRoute; global chrome must not depend on this stylesheet. */
 
 /* ------------------------------------------------------------ settings --- */
 
-/*
- * A screen, not a third column.
- *
- * Fixed to the window under the title bar rather than placed in the centre
- * grid: settings framed by the sidebar on one side and a bare window edge on
- * the other reads as a panel whose terminal went missing. The title bar stays
- * uncovered because it carries the window controls and the drag region.
- */
+/* Leave the title bar exposed for window controls and dragging. */
 .settings-layer {
   background: var(--bg-base);
   display: grid;
@@ -963,11 +950,6 @@
 }
 
 /* --- Settings: keyboard --------------------------------------------------- */
-/*
- * §4.1 U2. Every action and the chord it answers to, rebindable in place.
- * A table rather than a list of rows: four columns that have to line up down
- * the page is what a table is for, and a grid of `div`s would be one.
- */
 .keymap-table {
   border-collapse: collapse;
   font-size: var(--text-sm);
@@ -1022,7 +1004,7 @@
   color: var(--fg-subtle);
 }
 
-/* Shared files (§14.2): a list of rules, each one a path, a strategy and what
+/* Shared files: a list of rules, each one a path, a strategy and what
    it currently looks like in every checkout. */
 .share-rules,
 .share-candidates {

@@ -272,7 +272,7 @@ fn source_status_tag(status: &PullRequestSourceStatus) -> u8 {
 
 /// Query every eligible host and map transport rows into domain state.
 ///
-/// `path_entries` is the resolved login-shell `PATH` (§12): without it a GUI
+/// `path_entries` is the resolved login-shell `PATH`: without it a GUI
 /// launched from Finder cannot find a `gh` that every terminal on the machine
 /// finds.
 #[must_use]

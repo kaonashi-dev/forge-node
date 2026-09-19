@@ -733,7 +733,7 @@ impl PendingJob {
 /// The provider's own session id carried by one line of its event stream.
 ///
 /// Lives here rather than on [`HeadlessSpec`] because the `domain` crate
-/// depends on `serde` alone and has no JSON parser (§17); the descriptor
+/// depends on `serde` alone and has no JSON parser; the descriptor
 /// carries the field names, this reads them. A line that is not JSON at all —
 /// a provider that streams plain text — is simply not a line that carries one.
 pub(crate) fn session_id_in(line: &str, fields: &[String]) -> Option<String> {

@@ -1,4 +1,4 @@
-//! The built-in agent descriptors (§7.5 table).
+//! Built-in provider launch and detection declarations.
 //!
 //! Descriptors carry only static data (candidate binaries, version probe,
 //! capabilities); all behavior lives in [`crate::detection`] and
@@ -46,7 +46,7 @@ fn claude_headless() -> Option<HeadlessSpec> {
         mode_args: vec!["-p".to_owned()],
         // A headless Spec/Implement must Write harness artefacts with nobody
         // to click Allow. `acceptEdits` is the CLI stand-in for the ACP
-        // permission policy that answers the same question on Phase 4.
+        // permission policy for the ACP transport.
         permission_args: vec!["--permission-mode".to_owned(), "acceptEdits".to_owned()],
         stream_args: vec![
             "--output-format".to_owned(),
@@ -130,7 +130,6 @@ fn claude_acp() -> Option<AcpSpec> {
     })
 }
 
-/// The read-only postures, one per built-in (§16.9).
 ///
 /// Each was read off the CLI's own `--help`, and each is the provider's own
 /// answer to "look but do not touch" rather than a sandbox Forge imposes:
@@ -207,12 +206,12 @@ fn grok_config_dir() -> Option<ConfigDirSpec> {
     })
 }
 
-/// Every built-in provider descriptor, in picker order (§7.5, §13.2).
+/// Returns descriptors in picker order.
 #[must_use]
 pub fn builtins() -> Vec<AgentDescriptor> {
     vec![
         // Claude and Codex read their existing local OAuth credentials to report
-        // usage, and Grok answers the same question over its ACP entry (§16.2).
+        // usage, and Grok answers the same question over its ACP entry.
         // OpenCode bills per model provider and Cursor exposes no local endpoint
         // of any kind, so neither declares a usage source.
         descriptor(
@@ -322,7 +321,6 @@ pub fn builtin(id: &str) -> Option<AgentDescriptor> {
     builtins().into_iter().find(|d| d.id.as_str() == id)
 }
 
-/// Claude Code's account switch (§13.4).
 ///
 /// `CLAUDE_CONFIG_DIR` is what a hand-written `claude-work` wrapper exported:
 /// settings, login, history and plugins move there instead of `~/.claude`.
@@ -333,7 +331,7 @@ fn claude_config_dir() -> Option<ConfigDirSpec> {
     })
 }
 
-/// Codex CLI's account switch (§13.4). `CODEX_HOME` is its `CLAUDE_CONFIG_DIR`;
+/// `CODEX_HOME` selects Codex's account;
 /// `usage::codex` already reads credentials through it.
 fn codex_config_dir() -> Option<ConfigDirSpec> {
     Some(ConfigDirSpec {
@@ -342,7 +340,7 @@ fn codex_config_dir() -> Option<ConfigDirSpec> {
     })
 }
 
-/// OpenCode's account switch (§13.4) — two variables for one directory.
+/// OpenCode needs two variables to switch both config and credentials.
 ///
 /// OpenCode splits what the other two keep together: `OPENCODE_CONFIG_DIR`
 /// moves `opencode.json` and the agents, commands and plugins beside it, while
@@ -362,7 +360,7 @@ fn opencode_config_dir() -> Option<ConfigDirSpec> {
 /// Construct a built-in descriptor. Built-ins probe with `--version`
 /// and take no default args; only the id, display name, candidate list,
 /// expected marker, config directory, resume, prompt and read-only spellings
-/// differ (§7.5, §13.4, §16.8, §16.9).
+/// differ.
 #[allow(clippy::too_many_arguments)]
 fn descriptor(
     id: &str,
@@ -812,7 +810,7 @@ mod tests {
     }
 
     /// A config-directory variable must never collide with the terminal
-    /// contract (§13.3): the launch would break the emulator instead of
+    /// contract: the launch would break the emulator instead of
     /// switching accounts.
     #[test]
     fn no_config_directory_variable_is_reserved() {

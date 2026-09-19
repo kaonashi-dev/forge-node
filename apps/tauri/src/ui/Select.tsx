@@ -1,6 +1,6 @@
 import { Select as Kobalte } from "@kobalte/core/select";
 import { Show, type JSX } from "solid-js";
-import { Icon } from "../theme/icons";
+import { Icon } from "../theme/icons/index";
 import type { ForgeIconName } from "../theme/icons/forgeIcons";
 
 export type SelectOption<T> = {

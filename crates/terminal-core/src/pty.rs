@@ -1,11 +1,11 @@
-//! PTY backend abstraction and a `portable-pty` implementation (§11.2).
+//! PTY backend abstraction and a `portable-pty` implementation.
 //!
 //! The daemon owns every PTY (ADR-005). This module defines the two traits the
 //! rest of the daemon programs against — [`PtyBackend`] (a factory) and
 //! [`PtyHandle`] (one live child) — plus [`PortablePtyBackend`], the default
 //! implementation built on the `portable-pty` crate.
 //!
-//! ## §11.2 substitution criteria
+//! ## Backend requirements
 //!
 //! The plan keeps `portable-pty` only if it can (a) `setsid` + acquire a
 //! controlling TTY, (b) expose the child's process-group id, (c) apply
@@ -18,7 +18,7 @@
 //!   because the child called `setsid`, it is its own session/group leader, so
 //!   at spawn `pgid == child_pid`. See [`PtyHandle::process_group`].
 //! - **(c)** `openpty`/`resize` fill `winsize.ws_xpixel`/`ws_ypixel` from
-//!   [`PtySize::pixel_width`]/`pixel_height` and issue `TIOCSWINSZ` (§7.6).
+//!   [`PtySize::pixel_width`]/`pixel_height` and issue `TIOCSWINSZ`.
 //! - **(d)** master and slave fds are set `FD_CLOEXEC`, and `close_random_fds()`
 //!   runs in `pre_exec`, so no daemon fds leak into the child.
 //!
@@ -36,7 +36,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair};
 /// Exactly one of `code`/`signal` is normally `Some`. Note that `portable-pty`
 /// only surfaces a *signal name* (from `strsignal`), not the numeric signal, so
 /// `signal` is a best-effort parse and is usually `None` for signal-terminated
-/// children; the daemon's kill path (§11.3) reaps with `nix::waitpid` when it
+/// children; the daemon's kill path reaps with `nix::waitpid` when it
 /// needs the precise numeric signal.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExitStatus {
@@ -67,7 +67,6 @@ pub enum PtyError {
     Backend(String),
 }
 
-/// Factory for PTY-backed child processes (§11.2).
 pub trait PtyBackend: Send + Sync {
     /// Open a PTY sized to `size` and spawn `spec` into its slave side.
     ///
@@ -81,10 +80,10 @@ pub trait PtyBackend: Send + Sync {
     ) -> Result<Box<dyn PtyHandle>, PtyError>;
 }
 
-/// A single live PTY child (§11.2).
+/// A single live PTY child.
 ///
 /// The PTY read loop runs on a dedicated blocking thread that reads 64 KiB
-/// buffers from [`PtyHandle::reader`] and feeds the engine (§11.2); this trait
+/// buffers from [`PtyHandle::reader`] and feeds the engine; this trait
 /// only exposes the handles and control operations.
 pub trait PtyHandle: Send {
     /// A fresh readable handle for the child's output. Cloned from the master,
@@ -99,7 +98,7 @@ pub trait PtyHandle: Send {
     fn resize(&mut self, size: domain::PtySize) -> Result<(), PtyError>;
     /// PID of the spawned child.
     fn child_pid(&self) -> u32;
-    /// Process-group id of the child (the group leader after `setsid`, §11.3).
+    /// Process-group id of the child (the group leader after `setsid`).
     fn process_group(&self) -> i32;
     /// Poll whether the child has exited, without blocking.
     ///
@@ -185,7 +184,7 @@ impl PortablePtyBackend {
 }
 
 /// Translate the shared [`domain::PtySize`] into `portable-pty`'s size type,
-/// preserving pixel dimensions (§7.6).
+/// preserving pixel dimensions.
 fn to_pp_size(size: domain::PtySize) -> portable_pty::PtySize {
     portable_pty::PtySize {
         rows: size.rows,
@@ -221,7 +220,7 @@ impl PtyBackend for PortablePtyBackend {
             .openpty(to_pp_size(size))
             .map_err(|e| PtyError::Open(e.to_string()))?;
 
-        // Build a *complete* environment from the resolved SpawnSpec (§7.6):
+        // Build a complete environment from the resolved SpawnSpec:
         // clear the inherited base env, then set exactly what the spec carries.
         let mut cmd = CommandBuilder::new(&spec.program);
         cmd.args(&spec.args);
@@ -261,7 +260,7 @@ struct PortablePtyHandle {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     child_pid: u32,
-    /// The child's own process-group id, captured at spawn (§11.2 criterion b).
+    /// The child's own process-group id, captured at spawn.
     process_group: i32,
 }
 
@@ -296,7 +295,7 @@ impl PtyHandle for PortablePtyHandle {
         // process group, which only equals the child's pgid until the child
         // hands the foreground to a job of its own: run `vim` in a session shell
         // and a later call returns vim's pgid instead. `KillSession` signals
-        // `-pgid` (§11.3), so re-reading it here would have killed the
+        // `-pgid`, so re-reading it here would have killed the
         // foreground job and left the shell — and its other children — running.
         // The child called `setsid`, so its pgid equals its pid for its whole
         // life and one read at spawn is both correct and stable.

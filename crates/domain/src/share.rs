@@ -1,4 +1,4 @@
-//! Files a project shares between its workspaces (§14.2).
+//! Files a project shares between its workspaces.
 //!
 //! A managed worktree lives under `worktrees.root`, away from the repository,
 //! so it starts without the untracked files a project needs to run: `.env`, a
@@ -14,7 +14,6 @@
 use crate::ids::{ProjectId, ShareRuleId, Timestamp};
 use serde::{Deserialize, Serialize};
 
-/// How one path becomes available in a workspace (§14.2).
 ///
 /// No single mechanism is right for every file, which is why this is a rule and
 /// not a list: a secret wants one copy everyone sees, a dependency directory
@@ -52,7 +51,7 @@ impl ShareStrategy {
     }
 
     /// Whether this strategy writes a file the removal path can recognize as
-    /// Forge's own (§`ShareCleanup::RemoveInjected`).
+    /// Forge's own (see [`ShareCleanup::RemoveInjected`]).
     #[must_use]
     pub const fn writes_a_file(&self) -> bool {
         matches!(self, Self::Copy | Self::Clone | Self::Link)
@@ -70,7 +69,6 @@ impl ShareStrategy {
     }
 }
 
-/// One sharing rule of one project (§14.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShareRule {
     /// Identity, stable across edits of the path or the strategy.
@@ -134,7 +132,7 @@ impl ShareClass {
     }
 }
 
-/// A path Forge found ignored in the project and can propose a rule for (§14.2).
+/// An ignored project path eligible for a sharing rule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShareCandidate {
     /// Relative to the repository root.
@@ -154,7 +152,6 @@ pub struct ShareCandidate {
     pub already_ruled: bool,
 }
 
-/// What one rule looks like in one workspace right now (§14.2).
 ///
 /// Runtime-only, like [`crate::WorkspaceStatus`]: recomputed on demand, never
 /// persisted, and "not measured" is not the same as "applied".
@@ -195,7 +192,6 @@ pub struct ShareStatusEntry {
     pub state: ShareState,
 }
 
-/// What applying a rule did, or would do (§14.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -234,7 +230,7 @@ pub struct ShareAction {
 }
 
 /// What happens to the files a rule already put in every workspace when the
-/// rule is removed (§14.2).
+/// rule is removed.
 ///
 /// Removal is the one edit with effects outside its own row, so it is asked
 /// once, explicitly, and never guessed.

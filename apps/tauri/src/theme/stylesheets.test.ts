@@ -10,7 +10,7 @@ import late from "../styles/late.css?raw";
 import components from "../ui/ui.css?raw";
 
 /**
- * The gate that keeps the token ladders load-bearing (`plan-ui-ux.md` §5.1).
+ * Reject styles that bypass theme tokens.
  *
  * The stylesheets held 221 raw spacing values, seven raw `z-index` integers
  * and ten radius literals before this ran, and every one of them was a place

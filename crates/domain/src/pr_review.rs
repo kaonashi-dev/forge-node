@@ -1,4 +1,4 @@
-//! What to ask an agent for when reviewing someone else's pull request (§16.9).
+//! Read-only prompts for reviewing another author's pull request.
 //!
 //! The sibling of [`crate::pr_task`], and deliberately not the same thing. A
 //! `PrTask` is about *your own* uncommitted work on the way to opening a pull

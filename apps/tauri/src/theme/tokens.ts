@@ -198,7 +198,7 @@ export const palettes = {
     ],
   ),
   /*
-   * The two light bases (§5.4 T1).
+   * The two light bases.
    *
    * Built to the same rules as the dark three and checked by the same tests:
    * `ui.test.ts` holds text at 4.5 on every surface and the derived status
@@ -419,38 +419,10 @@ export const metrics = {
  * constant is a second place to change it. These stay in the stylesheet.
  */
 export const scale = {
-  /**
-   * The spacing ladder, named by the pixel value it carries.
-   *
-   * Ordinal names (`--space-5` for 12px) were the first cut, and they made the
-   * ladder unextendable: the shell stylesheet used 10px thirty times and 14px four
-   * times, and neither has an ordinal slot that does not renumber every rung
-   * above it. Value names take an insertion without touching a single call
-   * site, which is what let §5.1's migration finish instead of stalling on a
-   * missing rung and putting a raw `px` back.
-   *
-   * 1 and 3 are here for hairlines and the gaps between chips, not as general
-   * spacing. Everything off this ladder is snapped to it — 5→6, 7→8, 9→8,
-   * 18→16 — because a scale nobody may round to is a list, not a scale.
-   */
+  /** Pixel-valued names permit new steps without renumbering existing tokens. */
   space: [1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32],
-  /**
-   * The hairline radius, below the four in `metrics`.
-   *
-   * It lives here and not there because it is new: `metrics` is mirrored into
-   * the `--forge-*` layer §5.1 is retiring, and a rung added to a layer being
-   * deleted has to be moved again the day it goes.
-   */
   radius2XS: 3,
-  /**
-   * The stacking ladder, documented for years and now a token.
-   *
-   * Two halves. Below 40 is *within* a pane — a handle over its neighbours, a
-   * badge over the canvas, a sticky strip over what scrolls beneath it — and
-   * those numbers only compete with their own siblings. From 40 up is the
-   * overlay ladder, where a menu, a scrim, a dialog and a tooltip all have to
-   * agree, and where a raw integer is how two of them end up equal.
-   */
+  /** Values below 40 stack within panes; 40 and above order global overlays. */
   z: {
     raised: 1,
     over: 2,

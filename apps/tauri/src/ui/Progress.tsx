@@ -12,14 +12,6 @@ export type ProgressProps = {
   class?: string;
 };
 
-/**
- * A bar for work that takes long enough to need one (§5.3).
- *
- * Indeterminate when `value` is absent, and that is the common case here: a
- * `LoadDiff` has no percentage to report, and inventing one is worse than
- * saying "working". A determinate bar is for the few things that can count —
- * a job's steps, a fetch with a total.
- */
 export function Progress(props: ProgressProps) {
   return (
     <Kobalte

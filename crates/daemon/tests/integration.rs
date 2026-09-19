@@ -1,10 +1,6 @@
-//! End-to-end daemon integration tests (§21): a real daemon on a temporary
+//! End-to-end daemon integration tests: a real daemon on a temporary
 //! socket driven by the real `client`, spawning real shell PTYs.
 //!
-//! Covers the §21 integration list — spawn, I/O, resize, kill (with a `sleep`
-//! grandchild that must die too, §11.3), reconnect with grid verification,
-//! 20 concurrent sessions, full queue → resync (§10.5), `StopDaemon` (§9.1) —
-//! plus scenarios A, D and H of §19 and the worktree lifecycle of §14.
 //!
 //! Everything that depends on PTY or process timing polls with a generous
 //! deadline instead of sleeping a fixed amount, so the suite stays honest on
@@ -41,7 +37,7 @@ fn start_daemon() -> TestDaemon {
 
 /// The config every test starts from.
 ///
-/// Sessions run `/bin/sh` rather than `$SHELL` (§15.4 `[sessions].shell`): the
+/// Sessions run `/bin/sh` rather than `$SHELL`: the
 /// developer's login shell sources rc files that can hang or leave background
 /// work behind, which has nothing to do with what these tests assert. POSIX `sh`
 /// gives the same `set +m`, `$!`, `$$` and job semantics on macOS and Linux.
@@ -52,7 +48,7 @@ fn test_config() -> daemon::config::Config {
 }
 
 fn start_daemon_with(cfg: daemon::config::Config) -> TestDaemon {
-    // Keep the socket path short by rooting it under /tmp (§ADR-004).
+    // Keep the socket path short by rooting it under /tmp (ADR-004).
     let tmp = tempfile::tempdir_in("/tmp").expect("tempdir");
     let socket = tmp.path().join("d.sock");
     let db = persistence::Db::open_in_memory().expect("db");
@@ -159,7 +155,6 @@ fn number_after(text: &str, key: &str) -> Option<i32> {
     None
 }
 
-/// Whether `pid` still exists, via `kill(pid, 0)` (§11.3 verification).
 fn pid_alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
@@ -287,7 +282,7 @@ fn create_shell_session(
     }
 }
 
-/// `AttachTerminal` at `cols`x`rows`, returning the `AttachAck` snapshot (§10.5).
+/// Returns the `AttachAck` snapshot at the requested dimensions.
 fn attach(
     client: &Client,
     terminal_id: TerminalId,
@@ -314,7 +309,7 @@ const READY_MARKER: &str = "forge_shell_ready";
 
 /// Block until the shell inside `terminal_id` actually executes what it is sent.
 ///
-/// `SessionState::Running` only means the PTY was spawned (§7.3). An interactive
+/// `SessionState::Running` only means the PTY was spawned. An interactive
 /// shell is still sourcing rc files at that point, and its line editor discards
 /// whatever was typed before it started — the characters are echoed by the tty
 /// and then dropped, so the grid shows the command but it never runs. Typing
@@ -342,7 +337,7 @@ fn wait_for_shell_prompt(
 ///
 /// Newlines are sent as `\r`, not `\n`. Pressing Enter on a terminal transmits
 /// carriage return, which is what `terminal_core::input` encodes for
-/// `Key::Enter` (§11.6); an interactive shell runs its own line editor in raw
+/// `Key::Enter`; an interactive shell runs its own line editor in raw
 /// mode and does not accept a bare line feed as "submit". Sending `\n` here left
 /// the command echoed on the grid but never executed, so assertions that only
 /// looked for the typed text passed while the ones that waited for its *output*
@@ -357,7 +352,7 @@ fn write_input(client: &Client, terminal_id: TerminalId, text: &str) {
     assert_eq!(resp, Response::Ack);
 }
 
-/// Kill a session and wait until it is reported `Exited` (§7.3).
+/// Waits for `Exited`, not just the kill acknowledgment.
 fn kill_and_wait(
     client: &Client,
     events: &flume::Receiver<DaemonEvent>,
@@ -374,7 +369,7 @@ fn kill_and_wait(
 }
 
 /// Ask the daemon to stop. The response may never arrive: the connection handler
-/// breaks out of its read loop as soon as the shutdown flag is set (§9.1), so a
+/// breaks out of its read loop as soon as the shutdown flag is set, so a
 /// dropped connection is a valid outcome here.
 fn stop_daemon(client: &Client) {
     match client.request(Request::StopDaemon {
@@ -569,7 +564,7 @@ fn resize_terminal_reaches_the_grid_and_the_pty() {
     let workspace_id = add_main_workspace(&client, repo.path());
     let (session_id, terminal_id) = create_shell_session(&client, &events, workspace_id);
 
-    // Terminals spawn at 80x24 (§11.2); attaching at the same size must not
+    // Terminals spawn at 80x24; attaching at the same size must not
     // resize anything.
     let snapshot = attach(&client, terminal_id, 80, 24);
     assert_eq!(snapshot.size.cols, 80);
@@ -590,7 +585,6 @@ fn resize_terminal_reaches_the_grid_and_the_pty() {
     // The program inside the PTY must observe the new geometry: `ResizeTerminal`
     // drives `TIOCSWINSZ` on the master, so `stty` reads back "rows cols". The
     // delta carrying that output must be shaped by the new size as well
-    // (§10.5, §11.4).
     write_input(&client, terminal_id, "stty size\n");
     let mut width = None;
     let seen = wait_for(&events, Duration::from_secs(30), |ev| match ev {
@@ -660,7 +654,7 @@ fn a_second_attach_keeps_the_geometry_it_adopted() {
     stop_daemon(&client);
 }
 
-/// §11.3, the invariant the plan spells out: the kill signal goes to `-pgid`,
+/// The kill signal goes to `-pgid`,
 /// never to the individual pid, "which would orphan grandchildren".
 #[test]
 fn kill_session_kills_grandchildren() {
@@ -674,7 +668,7 @@ fn kill_session_kills_grandchildren() {
     wait_for_shell_prompt(&client, &events, terminal_id);
 
     // `set +m` turns job control off so the background `sleep` stays in the
-    // session's process group (the child is its leader after `setsid`, §11.3)
+    // session's process group (the child is its leader after `setsid`)
     // instead of being given one of its own. That is what makes this a test of
     // `kill(-pgid)`: with a plain `kill(pid)` the shell would die and the
     // grandchild would survive as an orphan.
@@ -703,7 +697,7 @@ fn kill_session_kills_grandchildren() {
         .expect("KillSession");
 
     // Poll instead of sleeping: SIGHUP reaches the whole group at once, but the
-    // escalation to SIGKILL waits out the grace period (3 s by default, §11.3).
+    // escalation to SIGKILL waits out the grace period (3 s by default).
     assert!(
         poll_until(Duration::from_secs(30), || !pid_alive(grandchild)),
         "the `sleep` grandchild must die with its process group, not be orphaned"
@@ -720,7 +714,7 @@ fn kill_session_kills_grandchildren() {
     stop_daemon(&client);
 }
 
-/// §11.3 ends with "reap; estado `Exited { signal }`": after the kill the child
+/// After the kill the child
 /// must be waited for — no zombie left in the process table for the lifetime of
 /// the daemon — and the resulting `Exited` must carry the *numeric* signal that
 /// terminated it, not an empty status.
@@ -776,7 +770,7 @@ fn a_killed_shell_is_reaped_and_reports_its_signal() {
 }
 
 /// A `tracing` writer that keeps everything the daemon logs in memory, so a test
-/// can assert on what did — and did not — reach the log (§22).
+/// can assert on what did — and did not — reach the log.
 #[derive(Clone, Default)]
 struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -803,7 +797,7 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for LogCapture {
     }
 }
 
-/// §22/§23: the log carries the *shape* of the traffic — one `ipc.request` span
+/// The log carries the shape of the traffic — one `ipc.request` span
 /// per request, with its id and variant — and never its content. Neither the
 /// bytes a client writes to a PTY nor the bytes the child writes back may appear
 /// anywhere in it.
@@ -865,7 +859,7 @@ fn terminal_content_never_reaches_the_log() {
     stop_daemon(&client);
 }
 
-/// §9.1: on the way out the daemon kills every live session with the configured
+/// On the way out the daemon kills every live session with the configured
 /// grace — including one that *ignores* the first signal, which is what the
 /// escalation to SIGKILL exists for.
 ///
@@ -901,7 +895,7 @@ fn shutdown_kills_a_session_that_ignores_the_first_signal() {
     );
 }
 
-/// Scenario D of §19: closing the GUI does not kill the PTY, and a brand-new
+/// Closing the GUI does not kill the PTY, and a brand-new
 /// client that re-attaches sees the same grid — no lost or duplicated lines.
 #[test]
 fn reconnect_with_a_new_client_preserves_the_grid() {
@@ -947,7 +941,7 @@ fn reconnect_with_a_new_client_preserves_the_grid() {
         );
         (session_id, terminal_id)
         // Dropping the client disconnects it; the daemon drops its
-        // subscriptions and keeps the PTY running (§9.1).
+        // subscriptions and keeps the PTY running.
     };
 
     // Keep the GUI absent long enough for the background child to emit SECOND.
@@ -1008,7 +1002,7 @@ fn reconnect_with_a_new_client_preserves_the_grid() {
     stop_daemon(&client);
 }
 
-/// Phase 0.3 reference-machine smoke. This is ignored in CI because it needs
+/// Reference-machine smoke, ignored in CI because it needs
 /// the four real provider binaries and their user-level authentication state.
 #[test]
 #[ignore = "requires installed claude, codex, opencode, and cursor-agent TUIs"]
@@ -1082,7 +1076,7 @@ fn installed_agent_tuis_render_and_accept_input() {
     stop_daemon(&client);
 }
 
-/// Phase 0.5 reference-machine measurement for the daemon-owned part of the
+/// Reference-machine measurement for the daemon-owned part of the
 /// input path. The GUI records the remaining delta-to-render interval itself.
 #[test]
 #[ignore = "reference-machine latency measurement"]
@@ -1131,7 +1125,7 @@ fn key_byte_to_grid_delta_p95_is_under_33ms() {
     stop_daemon(&client);
 }
 
-/// Phase 0.2 macOS reference smoke for real full-screen terminal programs.
+/// macOS reference smoke for real full-screen terminal programs.
 #[test]
 #[ignore = "requires local vim and htop binaries"]
 fn macos_vim_htop_color_and_alt_screen_smoke() {
@@ -1199,7 +1193,7 @@ fn macos_vim_htop_color_and_alt_screen_smoke() {
     stop_daemon(&client);
 }
 
-/// §21: 20 concurrent sessions in one workspace, all reaching `Running`,
+/// 20 concurrent sessions in one workspace, all reaching `Running`,
 /// all writable, all closable.
 #[test]
 fn twenty_concurrent_sessions() {
@@ -1240,7 +1234,6 @@ fn twenty_concurrent_sessions() {
         write_input(&client, *terminal_id, "echo forge_many\n");
     }
 
-    // Kill them all, then close them once they are terminal (§7.3).
     for session_id in running.keys() {
         client
             .request(Request::KillSession {
@@ -1277,7 +1270,7 @@ fn twenty_concurrent_sessions() {
     stop_daemon(&client);
 }
 
-/// §9.1: `StopDaemon { kill_sessions: true }` kills live sessions, flips the
+/// `StopDaemon { kill_sessions: true }` kills live sessions, flips the
 /// shutdown flag and lets the accept loop unlink the socket on its way out.
 #[test]
 fn stop_daemon_kills_sessions_and_frees_the_socket() {
@@ -1339,7 +1332,6 @@ struct SlowClient {
 }
 
 impl SlowClient {
-    /// Connect and perform the §9.2 handshake.
     fn connect(socket: &Path) -> SlowClient {
         let stream = UnixStream::connect(socket).expect("connect");
         let mut slow = SlowClient {
@@ -1404,13 +1396,13 @@ impl SlowClient {
     }
 }
 
-/// §10.5 / scenario H of §19: a subscriber that stops draining must not grow the
+/// A subscriber that stops draining must not grow the
 /// daemon's memory without bound. Once its 256-deep queue fills, the backlog is
 /// dropped and it gets one fresh `TerminalResync` instead.
 #[test]
 fn slow_subscriber_gets_a_resync_instead_of_an_unbounded_backlog() {
     // Wide lines so each delta is big enough to fill the kernel socket buffer
-    // quickly; the queue behind it then fills at the ~125 deltas/s of §10.5.
+    // quickly; the queue behind it then fills at ~125 deltas/s.
     const FLOOD: &str = "forge_backpressure_flood_forge_backpressure_flood_forge_bp_xx";
 
     let td = start_daemon();
@@ -1446,7 +1438,7 @@ fn slow_subscriber_gets_a_resync_instead_of_an_unbounded_backlog() {
     assert!(matches!(resp, Response::AttachAck { .. }));
 
     // `set +m` keeps `yes` in the session's process group so the kill at the end
-    // takes it down with the shell (§11.3).
+    // takes it down with the shell.
     write_input(&client, terminal_id, &format!("set +m; yes {FLOOD}\n"));
 
     // Let the flood run while the slow client ignores its socket. This is the
@@ -1456,7 +1448,7 @@ fn slow_subscriber_gets_a_resync_instead_of_an_unbounded_backlog() {
     // What has to overflow is the daemon's queue, and ahead of it sits a
     // kernel socket buffer whose size is the platform's business — a GitHub
     // macOS runner absorbs several hundred deltas there. So the pause is not
-    // sized to fill the 256-deep queue (~2 s at the §10.5 delta floor) but to
+    // sized to fill the 256-deep queue (~2 s at the delta floor) but to
     // out-produce buffer *and* queue together by a wide margin, because a
     // pause that only just fills them leaves nothing to drop and the resync
     // never comes. `yes` also stops the moment the drain below keeps up, so

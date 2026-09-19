@@ -1,5 +1,4 @@
 //! Real temporary git repositories for git-service and daemon integration tests
-//! (§21 "Determinismo": integration tests use real PTYs and real git repos).
 //!
 //! Unlike the fakes in this crate, [`TempRepo`] shells out to the real `git`
 //! binary in a fresh [`tempfile::TempDir`], so tests exercise the same git

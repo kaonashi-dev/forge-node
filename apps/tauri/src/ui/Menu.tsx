@@ -1,6 +1,6 @@
 import { DropdownMenu } from "@kobalte/core/dropdown-menu";
 import { For, Show, type JSX } from "solid-js";
-import { Icon } from "../theme/icons";
+import { Icon } from "../theme/icons/index";
 import type { MenuItem } from "./types";
 
 export type MenuProps = {

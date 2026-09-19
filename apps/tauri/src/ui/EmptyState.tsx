@@ -1,7 +1,7 @@
 import { For, Show } from "solid-js";
 import type { ActionId } from "../actions/actions";
 import { invokeAction } from "../actions/dispatch";
-import { Icon, type ForgeIconName } from "../theme/icons";
+import { Icon, type ForgeIconName } from "../theme/icons/index";
 import { Kbd } from "./Kbd";
 
 export type EmptyAction = {
@@ -13,19 +13,10 @@ export type EmptyAction = {
 export type EmptyStateProps = {
   /** What is not here, in a sentence. */
   message: string;
-  /**
-   * Ways out, as actions rather than as handlers.
-   *
-   * Every row goes back through the dispatcher, so it is a second *way in* to
-   * something the palette and the menus already do rather than a second
-   * implementation of it — and the chord beside it is read off the merged
-   * binding table, so it cannot drift from what the key actually does
-   * (§4.3 U18, the pattern `EmptyCenter` set).
-   */
+  /** Action IDs keep dispatch and displayed shortcuts aligned with user bindings. */
   actions?: ReadonlyArray<EmptyAction>;
 };
 
-/** An empty panel that says what to do about it. */
 export function EmptyState(props: EmptyStateProps) {
   return (
     <div class="empty-state">

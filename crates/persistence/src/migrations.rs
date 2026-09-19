@@ -1,32 +1,8 @@
-//! Schema migrations (§15.2).
-//!
-//! Versioning is owned by [`rusqlite_migration`], which tracks the applied
-//! migration count in SQLite's `PRAGMA user_version`. The plan's conceptual
-//! `schema_version` table (§15.2) is therefore *not* created by hand — the
-//! `user_version` pragma is its concrete implementation, and it advances by one
-//! per applied migration.
-//!
-//! Migrations are only ever *appended* to [`migrations`]; existing ones are
-//! never edited, so already-migrated databases upgrade cleanly.
-//!
-//! 1. [`INITIAL_SCHEMA`] — exactly the §15.2 schema.
-//! 2. [`REFERENTIAL_ACTIONS`] — referential actions plus the foreign-key
-//!    indexes the original schema omitted.
-//! 3. [`PROJECT_GROUPS`] — organizational groups for related projects.
-//! 4. [`AGENT_PROFILES`] — named launch profiles per agent provider.
-//! 5. [`PROJECT_ICONS`] — optional per-project icon glyph.
-//! 6. [`WORKSPACE_DISPLAY_NAMES`] — optional human label on a workspace.
-//! 7. [`SESSION_LAUNCH_COMMAND`] — foreground command a shell ran, for resurrect.
-//! 8. [`WORKTREE_SHARES`] — per-project rules for provisioning a worktree.
-//! 9. [`SESSION_BASE_COMMIT`] — the commit a session started from.
-//! 10. [`PROFILE_CONFIG_DIR`] — a profile's config directory, replacing its
-//!     free-form environment.
+//! Append-only migrations; `rusqlite_migration` tracks applied count in `user_version`.
 
 use rusqlite_migration::{Migrations, M};
 
-/// The one initial migration (§15.2). WAL and `foreign_keys` are enabled per
-/// connection in [`crate::db::Db::open`], not here — they are connection
-/// pragmas, not schema.
+/// WAL and foreign keys are connection pragmas, configured in [`crate::db::Db::open`].
 pub const INITIAL_SCHEMA: &str = "\
 CREATE TABLE projects (
     id             TEXT PRIMARY KEY,
@@ -95,7 +71,7 @@ CREATE TABLE app_state (
 /// next start. The actions below encode what the domain already means:
 ///
 /// - `context_envelopes.source_session_id` → `CASCADE`: an envelope is owned by
-///   the session that produced it (§8.3) and dies with it.
+///   the session that produced it and dies with it.
 /// - `context_envelopes.target_session_id` → `SET NULL`: the envelope survives a
 ///   deleted recipient, it simply no longer points anywhere.
 /// - `sessions.parent_session_id` → `SET NULL`: a belt-and-braces backstop; the
@@ -177,7 +153,6 @@ ALTER TABLE projects ADD COLUMN project_group_id TEXT
 CREATE INDEX idx_projects_group ON projects (project_group_id);
 ";
 
-/// Migration 4: named launch profiles per agent provider (§13.4).
 ///
 /// A profile is a saved way to start a known provider — its own command,
 /// arguments and environment — so `claude` can be launched as "Personal" or
@@ -211,7 +186,6 @@ CREATE UNIQUE INDEX idx_agent_profiles_name
 ALTER TABLE sessions ADD COLUMN agent_profile_id TEXT;
 ";
 
-/// Migration 5: a per-project icon (§7.1).
 ///
 /// A nullable column, and null is the state every existing project keeps: no
 /// icon means the UI draws the project's initials, which is what it drew
@@ -225,7 +199,6 @@ pub const PROJECT_ICONS: &str = "\
 ALTER TABLE projects ADD COLUMN icon TEXT;
 ";
 
-/// Migration 6: an optional human label on a workspace (§7.2).
 ///
 /// Independent of the git branch: several worktrees of one project often share
 /// opaque branch names (`hind`, `langostino`), and the rail needs a word the
@@ -244,7 +217,6 @@ pub const SESSION_LAUNCH_COMMAND: &str = "\
 ALTER TABLE sessions ADD COLUMN launch_command TEXT;
 ";
 
-/// Migration 8: per-project file-sharing rules (§14.2).
 ///
 /// A managed worktree starts without the untracked files a project needs to
 /// run. The global `[worktrees] copy` list could only say the same thing for
@@ -282,7 +254,7 @@ pub const SESSION_BASE_COMMIT: &str = "\
 ALTER TABLE sessions ADD COLUMN base_commit TEXT;
 ";
 
-/// Migration 10: a profile is a directory, not an environment (§13.4).
+/// Profiles select accounts by directory rather than arbitrary environment variables.
 ///
 /// A profile could set any variable it liked; what every real one actually set
 /// was the provider's config directory, and the rest was a second, worse copy
@@ -308,7 +280,6 @@ UPDATE agent_profiles SET config_dir = (
 ALTER TABLE agent_profiles DROP COLUMN env_json;
 ";
 
-/// Migration 11: worktrees a project asked Forge to forget (§14.4).
 ///
 /// A worktree made by another tool is adopted by the rescan, and one whose
 /// directory vanished stays in `git worktree list` as `prunable`; in both cases

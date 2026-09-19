@@ -1,5 +1,3 @@
-//! Typed identifiers and the shared `Timestamp` type (§7).
-//!
 //! All UUID-based IDs are newtypes over `uuid::Uuid` v7 (time-ordered).
 //! Timestamps are `time::OffsetDateTime` in UTC, serialized as RFC-3339.
 
@@ -8,9 +6,6 @@ use std::fmt;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// Defines a newtype wrapper over `uuid::Uuid` with v7 generation and
-/// string round-tripping. IDs are ordered by their inner UUID (time-ordered
-/// for v7), which keeps sidebar/session ordering stable and chronological.
 macro_rules! uuid_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
@@ -26,13 +21,11 @@ macro_rules! uuid_id {
                 Self(Uuid::now_v7())
             }
 
-            /// Wrap an existing UUID.
             #[must_use]
             pub const fn from_uuid(id: Uuid) -> Self {
                 Self(id)
             }
 
-            /// The inner UUID.
             #[must_use]
             pub const fn as_uuid(&self) -> Uuid {
                 self.0
@@ -90,27 +83,16 @@ uuid_id!(
 );
 uuid_id!(
     /// Identifies a live terminal runtime. Runtime-only, never persisted;
-    /// regenerated on every spawn/restart (§15.2).
+    /// regenerated on every spawn/restart.
     TerminalId
 );
 uuid_id!(
     /// Identifies a connected IPC client.
     ClientId
 );
-uuid_id!(
-    /// Identifies a context envelope (§8.3).
-    ContextId
-);
-uuid_id!(
-    /// Identifies a saved launch profile for an agent provider (§13.4).
-    AgentProfileId
-);
-uuid_id!(
-    /// Identifies one sharing rule of a project (§14.2). Declared here rather
-    /// than in `share`: `uuid_id!` is a `macro_rules!` of this module with no
-    /// `#[macro_export]`, so it is not reachable from a sibling.
-    ShareRuleId
-);
+uuid_id!(ContextId);
+uuid_id!(AgentProfileId);
+uuid_id!(ShareRuleId);
 uuid_id!(
     /// Identifies one headless agent run (`crate::job::Job`). Runtime-only,
     /// like [`TerminalId`]: a job is a process, and no process outlives the
@@ -118,9 +100,7 @@ uuid_id!(
     JobId
 );
 
-/// Identifies an agent provider, e.g. `"claude"`, `"codex"`, `"opencode"`,
-/// `"cursor"`. Unlike the UUID ids this is a stable, human-readable string
-/// (§7.5) so descriptors and overrides can key on it.
+/// Stable provider slug, such as `"claude"`, rather than a generated UUID.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AgentProviderId(pub String);
 
@@ -154,7 +134,7 @@ impl From<&str> for AgentProviderId {
     }
 }
 
-/// A UTC timestamp, serialized as an RFC-3339 string (§7).
+/// A UTC timestamp, serialized as an RFC-3339 string.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Timestamp(#[serde(with = "time::serde::rfc3339")] pub OffsetDateTime);
 
@@ -175,7 +155,6 @@ impl Timestamp {
         self.0
     }
 
-    /// RFC-3339 rendering, used for SQLite persistence (§15).
     #[must_use]
     pub fn to_rfc3339(&self) -> String {
         self.0

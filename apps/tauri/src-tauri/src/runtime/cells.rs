@@ -1,4 +1,4 @@
-//! Compact wire encoding for the terminal viewport (Phase 2).
+//! Compact wire encoding for the terminal viewport.
 //!
 //! The [`CellGrid`] stays on the runtime thread (ADR-011): what crosses the IPC
 //! boundary is the *painted* form of the rows that changed — adjacent cells
@@ -21,7 +21,7 @@ use client::CellGrid;
 use domain::{Cell, CellFlags, Color, CursorShape, Row, TermModes, TerminalId};
 use serde::Serialize;
 
-/// Rows fetched per scrollback request (§11.5); `SCROLLBACK_PAGE`.
+/// Rows fetched per scrollback request.
 pub const SCROLLBACK_PAGE: u32 = 64;
 
 /// Wire sentinel for the terminal's default *foreground*.

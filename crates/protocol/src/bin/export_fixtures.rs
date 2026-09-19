@@ -313,7 +313,7 @@ fn sample_scrollback_rows() -> ScrollbackRows {
 }
 
 /// A provider with a *positive* detection result, so the populated snapshot
-/// carries the shape a running daemon really sends (§13.1).
+/// carries the shape a running daemon really sends.
 fn sample_provider() -> ProviderInfo {
     let provider_id = AgentProviderId::new("claude");
     ProviderInfo {
@@ -598,7 +598,6 @@ fn main() {
         },
     );
 
-    // ---- Diff & file browser (Phase 4B/4C) ----
     write(&out, "workspace_diff", &sample_workspace_diff());
     write(&out, "file_tree", &sample_file_tree());
     write(&out, "file_contents", &sample_file_contents());
@@ -1111,7 +1110,7 @@ fn main() {
 
 /// A `Response::Snapshot` whose heavy provider/profile/job/usage arrays are
 /// empty: the probe needs the project/workspace/session lists to decode, and
-/// the frontend models those collections as empty for Phase 1.
+/// the frontend models those collections as empty.
 fn sample_snapshot_response() -> Response {
     Response::Snapshot {
         project_groups: vec![sample_project_group()],

@@ -1,12 +1,12 @@
-//! §19 scenarios F and B (the halves that do not need the GUI).
+//! Provider detection and concurrent launches through the daemon.
 //!
 //! Every daemon here boots with a `PATH` containing exactly one directory the
-//! test wrote (see `common`), so detection (§13.1) reports what the fixtures
+//! test wrote (see `common`), so detection reports what the fixtures
 //! say and nothing about the machine running the suite. That is what makes
 //! "OpenCode is not found" and "`agent` is the Grok CLI, not Cursor" testable
 //! at all: on the reference machine all four providers are installed.
 //!
-//! Not covered here: the picker rows and the "Set path…" dialog of §13.2, and
+//! Not covered here: the picker rows and the "Set path…" dialog, and
 //! the `Cmd+Shift+]` switch time of scenario B — both are GUI.
 
 mod common;
@@ -14,7 +14,7 @@ mod common;
 use domain::{AgentProviderId, DetectionStatus, SessionRole, SessionState};
 use protocol::{DaemonEvent, ErrorCode, Request};
 
-/// §19 F: a provider whose only candidate is a foreign binary is `Rejected`,
+/// A provider whose only candidate is a foreign binary is `Rejected`,
 /// a missing one is `NotFound` and refuses to launch without taking anything
 /// else down, and "Set path…" moves a provider to `Installed` — and actually
 /// launches that binary — on the same running daemon.
@@ -25,7 +25,7 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
 
     // `agent` is the Cursor descriptor's preferred candidate, but on many
     // machines it is the Grok CLI — the reason that descriptor carries
-    // `expect_substring = "cursor"` (§7.5).
+    // `expect_substring = "cursor"`.
     common::write_fake_agent_cli(harness.bin(), "agent", "forge_grok", "grok-cli 1.2.0");
     // One provider that really is installed, so "the others keep working" is
     // observable rather than vacuous.
@@ -45,7 +45,6 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
     let events = client.events();
     let workspace_id = common::add_main_workspace(&client, repo.path());
 
-    // --- startup detection (§13.1) ---
     common::wait_for_detection(&client, |providers| {
         providers.iter().all(|p| match p.descriptor.id.as_str() {
             "claude" => p.detection.status.is_installed(),
@@ -94,7 +93,6 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
         "the installed provider launches in its workspace"
     );
 
-    // --- "Set path…" (§13.2) on the running daemon ---
     client
         .request(Request::SetProviderExecutable {
             provider_id: AgentProviderId::new("cursor"),
@@ -162,9 +160,9 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
     common::stop_daemon(&client);
 }
 
-/// §19 B, daemon side: the four providers coexist as four live sessions of the
+/// The four providers coexist as four live sessions of the
 /// same workspace, each with its own PTY. (The `Cmd+Shift+]` switch budget of
-/// the scenario is a GUI measurement, §20.)
+/// the scenario is a GUI measurement.)
 #[test]
 fn the_four_providers_coexist_as_live_sessions_of_one_workspace() {
     // (provider id, binary name detection looks for, marker prefix)
@@ -173,7 +171,7 @@ fn the_four_providers_coexist_as_live_sessions_of_one_workspace() {
         ("codex", "codex"),
         ("opencode", "opencode"),
         // The Cursor descriptor accepts `cursor-agent` on the strength of its
-        // name alone (§13.1 step 4).
+        // name alone.
         ("cursor", "cursor-agent"),
     ];
 
@@ -234,15 +232,7 @@ fn the_four_providers_coexist_as_live_sessions_of_one_workspace() {
     common::stop_daemon(&client);
 }
 
-/// §13.1 rejects the foreign `agent` binary for the `cursor` provider, so
-/// launching that provider must be refused too (§13.3, DoD §29).
-///
-/// Regression test. The launch path used to resolve the program by walking the
-/// same candidate list *without* running the probe, so `CreateAgentSession`
-/// spawned the very binary detection had just refused: the picker said
-/// "Rejected" while the session that opened was somebody else's CLI. Launching
-/// now goes through the `Installed` executable or fails with
-/// `ProviderNotInstalled`.
+// Launch must use the probed executable, never fall back to a rejected candidate.
 #[test]
 fn launching_a_provider_whose_only_candidate_was_rejected_is_refused() {
     let harness = common::Harness::new();

@@ -90,7 +90,7 @@ struct LockedFeaturesFile {
     path: PathBuf,
     file: FeaturesFile,
     _process_guard: MutexGuard<'static, ()>,
-    _file_lock: Option<FeaturesFileLock>,
+    _file_lock: FeaturesFileLock,
 }
 
 struct FeaturesFileLock {
@@ -211,7 +211,7 @@ fn load_mut(project_root: &Path) -> Result<LockedFeaturesFile, HarnessError> {
     })
 }
 
-fn acquire_features_lock(path: &Path) -> Result<Option<FeaturesFileLock>, HarnessError> {
+fn acquire_features_lock(path: &Path) -> Result<FeaturesFileLock, HarnessError> {
     let lock_path = path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -225,15 +225,13 @@ fn acquire_features_lock(path: &Path) -> Result<Option<FeaturesFileLock>, Harnes
     let deadline = Instant::now() + LOCK_WAIT;
     loop {
         match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
-            Ok(lock) => return Ok(Some(FeaturesFileLock { _lock: lock })),
+            Ok(lock) => return Ok(FeaturesFileLock { _lock: lock }),
             Err((returned, nix::errno::Errno::EWOULDBLOCK)) => {
                 file = returned;
                 if Instant::now() >= deadline {
-                    tracing::warn!(
-                        path = %lock_path.display(),
-                        "could not acquire harness features lock before deadline; writing without the file lock"
-                    );
-                    return Ok(None);
+                    return Err(HarnessError::Conflict(
+                        "harness state is busy; retry after the current writer finishes".into(),
+                    ));
                 }
                 std::thread::sleep(LOCK_POLL);
             }
@@ -799,6 +797,32 @@ pub fn register_from_issue(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn lock_contention_refuses_mutation_until_the_owner_releases() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("harness")).unwrap();
+        let path = features_path(dir.path());
+        let original = r#"{"project":"t","features":[]}"#;
+        fs::write(&path, original).unwrap();
+        // Separate opens contend through flock even within the same process.
+        let owner = acquire_features_lock(&path).unwrap();
+        let input = || RegisterInput {
+            spec_raw: "do the thing".into(),
+            title: Some("Do Thing".into()),
+            source_issue: None,
+            workspace_id: None,
+            workspace_path: None,
+        };
+        assert!(matches!(
+            register_feature(dir.path(), input()),
+            Err(HarnessError::Conflict(_))
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(!dir.path().join("harness/progress").exists());
+        drop(owner);
+        assert_eq!(register_feature(dir.path(), input()).unwrap().id, 1);
+    }
 
     #[test]
     fn register_and_timeline() {

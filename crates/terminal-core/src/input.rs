@@ -1,4 +1,4 @@
-// Pure keyboard/mouse to PTY byte mapping (§11.6).
+// Pure keyboard/mouse to PTY byte mapping.
 //
 // This source is also compiled by the `terminal-input` leaf crate so the GUI
 // can reuse the exact mapping without depending on PTYs or a terminal engine.
@@ -93,7 +93,7 @@ impl Modifiers {
 
 const ESC: u8 = 0x1b;
 
-/// Prefix `bytes` with ESC when Alt/Meta is held (Meta = ESC prefix, §11.6).
+/// Prefix `bytes` with ESC when Alt/Meta is held.
 fn with_alt(mods: Modifiers, mut bytes: Vec<u8>) -> Vec<u8> {
     if mods.alt {
         let mut out = Vec::with_capacity(bytes.len() + 1);
@@ -141,7 +141,7 @@ fn tilde(n: u8, mods: Modifiers) -> Vec<u8> {
 /// modifiers.
 ///
 /// These six keys share one encoding family in `xterm`, which is what the
-/// terminfo entry for the `TERM=xterm-256color` we advertise to children (§13.3)
+/// terminfo entry for the `TERM=xterm-256color` we advertise to children
 /// describes: `kcuu1=\EOA`/`khome=\EOH`/`kend=\EOF` in application-cursor mode,
 /// the `CSI` form otherwise, and `CSI 1 ; <mod> <letter>` whenever a modifier is
 /// held.
@@ -184,7 +184,6 @@ fn function_key(n: u8, mods: Modifiers) -> Vec<u8> {
     }
 }
 
-/// Map a key press to the bytes to write to the PTY (§11.6).
 #[must_use]
 pub fn encode_key(key: Key, mods: Modifiers, modes: &TermModes) -> Vec<u8> {
     match key {
@@ -278,7 +277,7 @@ pub enum MouseEventKind {
     Motion,
 }
 
-/// Encode a mouse event for the active reporting mode (§11.6).
+/// Uses the active reporting mode.
 ///
 /// `col`/`row` are **0-based** cell coordinates; the protocol's 1-based values
 /// are produced here. Emits the SGR (1006) form when [`TermModes::mouse_sgr`] is
@@ -524,7 +523,6 @@ mod tests {
 
     #[test]
     fn ctrl_covers_the_whole_letter_range() {
-        // Ctrl+a..Ctrl+z map onto 0x01..=0x1a (§11.6 "Ctrl+letra").
         for (i, c) in ('a'..='z').enumerate() {
             let expected = u8::try_from(i + 1).unwrap();
             assert_eq!(
@@ -553,7 +551,7 @@ mod tests {
 
     #[test]
     fn alt_meta_prefixes_every_esc_capable_key() {
-        // Alt/Meta is an ESC prefix (§11.6), including on top of Ctrl.
+        // Alt/Meta prefixes ESC even when Ctrl is also held.
         assert_eq!(
             encode_key(
                 Key::Char('c'),

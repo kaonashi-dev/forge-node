@@ -60,9 +60,7 @@
 }
 
 /* --- Harness: features panel -------------------------------------------- */
-/* The box comes from `.list-card` (§4.2 U13); what is the feature card's own
-   is the phase edge below, and a tighter gap — these cards carry two nested
-   lists and the card gap would double every separation inside them. */
+/* Nested lists already add spacing, so feature cards need a tighter gap. */
 .feature-card {
   border-left-width: 2px;
   gap: var(--space-4);
@@ -131,10 +129,7 @@
   color: var(--fg-muted);
   font-family: var(--font-mono);
 }
-/* One indent mechanism in the app (§4.2 U14): a `--depth` custom property the
-   row multiplies, not `padding-left` arithmetic in three components' JSX. The
-   step is the same `--space-12` the sidebar and file tree indent by, so a
-   nested agent lines up with a nested session. */
+/* Match the sidebar and file-tree indentation step. */
 .feature-agent {
   gap: var(--space-6);
   width: 100%;

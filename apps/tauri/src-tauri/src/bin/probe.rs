@@ -1,4 +1,4 @@
-//! Phase 1 wire gate: connect, print session count, attach, print first delta.
+//! Wire smoke: connect, print session count, attach, print first delta.
 //!
 //! Exit 0 on success (an idle terminal with no delta is still success).
 //! Exit 1 if the socket cannot be reached and the daemon cannot be spawned.

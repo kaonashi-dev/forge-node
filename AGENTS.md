@@ -33,24 +33,25 @@
 
 ## Comments And Code
 
-A comment carries a constraint the types cannot. It is not narration, history, or a second copy of a plan doc. This applies to Rust (`//!` / `///` / `//`) and TypeScript (`/**` / `//`) the same way.
+A comment-free implementation is the default. Add a comment only when removing it would hide a non-obvious constraint, contract, or reason for a flow. This applies to source, tests, scripts, Rust docs and TypeScript JSDoc alike.
 
 - Write the *why that is not in the next line*: a rejected alternative, a unit, a lock/IO exception, a protocol quirk, a budget. If a reader who knows the language already has it, delete the comment.
-- One sentence is the default. A block comment must name a constraint. Essays belong in `docs/` or an ADR, with at most a pointer from the code (`ADR-008`, `docs/performance.md`).
+- Prefer one short sentence, usually one or two lines. Longer comments must preserve essential contract or safety details; move design explanations to `docs/` or an ADR rather than compressing an essay into a long line.
 - Do not restate the identifier (`/// All known projects` on `projects`, `/// Create an empty store` on `new()`, `/** The project rail. */` on `SIDEBAR`).
 - Do not keep history in comments (`used to`, `the Feature tab could not answer before`, brand-hue archaeology). Git holds that.
-- Do not cite old plan section numbers (`§11.5`) as if they were current truth. Point at the type, the ADR, or this file.
-- Crate/module `//!` (and a TS file header) is a map: what this module owns, what it must not do, where the rest lives. Not a retelling of `docs/architecture.md`. Two to six lines; the rest is a doc.
+- Never cite plan sections, phases, task IDs or local planning files in comments (for example `§16.9`). If a reference is necessary, use a resolvable symbol, maintained documentation path or ADR; state the local constraint without requiring the reader to follow it.
+- File and module headers are optional. Keep one only when ownership or a boundary is not evident from the file name and code; use one or two sentences, not an architecture summary.
 - Public `///` / JSDoc is for the *caller*: contract, error, units, non-obvious ordering. Private `//` is for the *next editor*: the trap. Do not paste the same paragraph in both.
 - A name beats a comment. Extract a function, a type, or a constant (`RESIZE_DEBOUNCE_MS`) rather than explaining a magic block. Ambiguous pronouns (`this`, `the whole point`) without a referent are a defect — name the thing.
 - Tests comment the surprising assertion or the fixture's trap (Solid `createComputed` vs `createEffect`, `navigator.platform` under vitest), not arrange/act/assert.
 - Required comments stay required, and stay short, in the same file: every core-lock exception, every `#[allow]`, every recoverable-`unwrap` absence in daemon paths.
+- Before adding or retaining a comment, ask what a reader would get wrong without it. If there is no concrete answer, delete it. Preserve safety contracts, license notices and tooling directives; zero comments is a default, not a deletion quota.
 
 Rust: `rustfmt` defaults and `clippy -D warnings` are the gate. Match `#[non_exhaustive]` with a wildcard arm from other crates. Do not `unwrap()` / `expect()` on a recoverable daemon path. `#[must_use]` on pure getters that are easy to ignore.
 
 TypeScript (`apps/tauri`): Bun is pinned in `.bun-version` and the package manifest; `bun run check` runs `oxlint`, `oxfmt`, Vitest under Bun, native tooling tests, typechecks and bundle budgets. `strict` is on; do not add `any`. Bun APIs and types belong in tooling, never the WebView. Theme values come from `src/theme/tokens.ts`, never a hex. A helper with a right and a wrong answer lives in its own module so a test can import it without Solid's server build — that split is the comment, not an essay above the form.
 
-Existing code has a lot of the anti-pattern (file-level essays, field restatements, `used to` history, `§N` citations). Do not copy it. New code follows this section; a touch of an old file is the moment to delete the redundant comment next to the change, not to rewrite the crate.
+When touching existing code, remove nearby redundant or stale comments instead of adding another explanation. Keep comment-only cleanups free of behavior changes.
 
 ## Boundaries And Invariants
 

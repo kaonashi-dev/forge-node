@@ -1,4 +1,3 @@
-//! Per-project file-sharing rules repository (§14.2, §15.2).
 //!
 //! A rule says how one path reaches every workspace of a project. The strategy
 //! is stored as JSON for the same reason `agent_profiles.args_json` is: nothing

@@ -1,5 +1,5 @@
 //! The stopped sequencer: an in-progress rebase, merge, cherry-pick or revert,
-//! the paths it left unmerged, and the three ways out (§14).
+//! the paths it left unmerged, and the three ways out.
 //!
 //! Everything here is local — `rebase --continue` talks to the object store,
 //! never to a socket — so it all runs on [`run_git`] and the ADR-008 budget.

@@ -16,7 +16,7 @@ export const DENSITIES = ["compact", "default", "comfortable"] as const;
 export type Density = (typeof DENSITIES)[number];
 
 /**
- * Row heights, in pixels, at each density — 22 / 26 / 30 (`plan-ui-ux.md` T3).
+ * Row heights in pixels at each density.
  *
  * Expressed as a ratio against the theme's own `rowH` rather than as three
  * literal values, so moving the default moves all three with it and the ladder

@@ -1,4 +1,4 @@
-//! Reading account usage from a provider (§16.2).
+//! Reading account usage from a provider.
 //!
 //! Every provider-specific fact stays in this crate (principle P2). A provider
 //! declares *where* its usage comes from with a [`UsageSource`]; nothing else in
@@ -33,7 +33,6 @@ use serde_json::Value;
 pub use analytics::collect as collect_analytics;
 pub use http::{HttpClient, UreqClient};
 
-/// One login a provider's usage can be read from (§13.4).
 ///
 /// A provider is not one allowance. The default account is what an unmodified
 /// CLI uses; a launch profile that moved the config directory is a second

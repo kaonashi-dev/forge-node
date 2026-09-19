@@ -1,4 +1,4 @@
-//! What to ask an agent for, on the way to a pull request (§16.8).
+//! Agent prompts for preparing a pull request.
 //!
 //! A task is a *template plus a mode*. The template is the wording; the mode is
 //! what the answer is for, and it is what decides who opens the pull request:

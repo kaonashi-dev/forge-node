@@ -5,7 +5,7 @@
 //! [`TerminalSnapshot`]; between polls it sends a [`TerminalDelta`] carrying
 //! only the rows the engine marked damaged, plus the cursor, modes, and how
 //! many lines scrolled into history. The GUI keeps a passive cell replica and
-//! applies these (§10.5, §11.4). This module turns "engine + damage since the
+//! applies these. This module turns "engine + damage since the
 //! last poll" into those two messages.
 
 use domain::{CellPatch, Damage, Row, TerminalDelta, TerminalSnapshot};
@@ -35,7 +35,7 @@ impl DeltaBuilder {
 
     /// Produce a full snapshot (visible grid + `scrollback_tail` trailing
     /// scrollback rows) and (re)set the delta baseline. Use on attach and on
-    /// resync (§11.4).
+    /// resync.
     pub fn snapshot<E: TerminalEngine + ?Sized>(
         &mut self,
         engine: &E,
@@ -391,7 +391,7 @@ mod tests {
     }
 
     /// A snapshot re-establishes the baseline, so the rows it already carried
-    /// are not reported again as freshly scrolled by the next delta (§11.4).
+    /// are not reported again as freshly scrolled by the next delta.
     #[test]
     fn a_snapshot_resets_the_delta_baseline() {
         let mut engine = FakeEngine::new(2).scrolled_to(40);

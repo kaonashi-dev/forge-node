@@ -1,5 +1,3 @@
-//! Workspace domain type (§7.2).
-
 use crate::ids::{ProjectId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -16,7 +14,7 @@ pub enum WorkspaceKind {
     // FutureRemote is added when remote workspaces exist.
 }
 
-/// What `git status` last said about a workspace's working tree (§14.1).
+/// Last observed `git status`, not a live reading.
 ///
 /// **Runtime state, never a column** — the same rule as `Session::terminal_id`
 /// and `Session::last_activity_at`. It is recomputed by
@@ -74,7 +72,7 @@ pub struct Workspace {
     /// snapshot written before this field existed decodable.
     #[serde(default)]
     pub display_name: Option<String>,
-    /// `true` only for worktrees created by Forge itself (§14.4 safety).
+    /// `true` only for worktrees created by Forge itself.
     pub managed_by_app: bool,
     pub created_at: Timestamp,
     /// Last known working-tree status. Runtime-only; see [`WorkspaceStatus`].

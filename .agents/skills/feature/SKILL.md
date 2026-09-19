@@ -82,8 +82,10 @@ and report it**: nothing is orchestrated on top of a harness that does not
 validate its own state. `scripts/harness status` summarises the features and the
 next action.
 
-Also check there is no feature already in `in_progress` or `in_review`. If there
-is, stop: one at a time.
+Check the target checkout's active slot using the statuses in
+`harness/src/harness.ts`. Stop if that slot is occupied; an active feature in a
+different checkout does not block registration. Features without a
+`workspace_id` share the unattached slot.
 
 ### 2. Register the feature
 

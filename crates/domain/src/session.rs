@@ -1,5 +1,3 @@
-//! Session domain type, state machine, roles and title rules (§7.3, ADR-010).
-
 use crate::ids::{AgentProfileId, AgentProviderId, SessionId, TerminalId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -15,15 +13,11 @@ pub const MAX_GRAPH_DEPTH: u32 = 8;
 pub enum SessionKind {
     Shell,
     Agent,
-    /// `forge-editor` under the daemon's PTY (feature 19, H1). It is an
-    /// ordinary session with an ordinary terminal; what it adds is the
-    /// control channel that opens the buffer and reports [`EditorState`].
+    /// `forge-editor` in a PTY, with a control channel reporting [`EditorState`].
     Editor,
 }
 
-/// Unified session state machine (§7.3). This is the single source of truth;
-/// `SessionState::Exited` also carries the exit code/signal so there is one
-/// update path (`SessionUpdated`), never a separate `SessionExited` event.
+/// Exit status travels through `SessionUpdated`, not a separate exit event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum SessionState {
@@ -38,7 +32,7 @@ pub enum SessionState {
     },
     /// Spawn failed (binary missing, cwd invalid, ...).
     Failed { reason: String },
-    /// Was `Running` when the daemon restarted; the PTY did not survive (§3.3).
+    /// Was `Running` when the daemon restarted; the PTY did not survive.
     Orphaned,
 }
 
@@ -60,13 +54,6 @@ impl SessionState {
         matches!(self, SessionState::Starting | SessionState::Running)
     }
 
-    /// Validates the transitions of §7.3:
-    ///
-    /// ```text
-    /// Starting → Running | Failed
-    /// Running  → Exited | Orphaned
-    /// Exited | Failed | Orphaned → Starting   (via RestartSession)
-    /// ```
     #[must_use]
     pub fn can_transition_to(&self, next: &SessionState) -> bool {
         use SessionState::{Exited, Failed, Orphaned, Running, Starting};
@@ -83,7 +70,6 @@ impl SessionState {
     }
 }
 
-/// Role tags used by the (future) orchestrator; free-form `Custom` for the rest.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum SessionRole {
@@ -98,8 +84,6 @@ pub enum SessionRole {
     Custom(String),
 }
 
-/// Title of a session (§7.3). The user title takes precedence over the
-/// terminal-reported (OSC 0/2) title.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionTitle {
     /// Set via `RenameSession`; has precedence.
@@ -109,11 +93,7 @@ pub struct SessionTitle {
 }
 
 impl SessionTitle {
-    /// OSC 0/2 payload as stored on the session: empty or whitespace is a reset.
-    ///
-    /// `Some("")` would otherwise beat the fallback in [`Self::resolve`] and
-    /// leave a rail row with no name — the leftover check-and-dot after an
-    /// agent exits and clears its title.
+    /// Empty or whitespace OSC 0/2 payloads reset the title to allow a fallback.
     #[must_use]
     pub fn from_osc(raw: Option<&str>) -> Option<String> {
         raw.map(str::trim)
@@ -121,9 +101,7 @@ impl SessionTitle {
             .map(str::to_owned)
     }
 
-    /// Title rule (§7.3): show `user`, else `terminal`, else the caller-provided
-    /// fallback (`"{provider}"` or `"Shell"`). Empty or whitespace counts as
-    /// unset, so an OSC reset cannot blank the row.
+    /// Prefer user, then terminal, then fallback; whitespace-only titles are unset.
     #[must_use]
     pub fn resolve<'a>(&'a self, fallback: &'a str) -> &'a str {
         present_title(self.user.as_deref())
@@ -210,7 +188,7 @@ pub struct Session {
     pub parent_session_id: Option<SessionId>,
     /// Equals `id` for roots (ADR-010).
     pub root_session_id: SessionId,
-    /// `None` in `Failed`/`Orphaned` or while a restart is pending (§7.3).
+    /// `None` in `Failed`/`Orphaned` or while a restart is pending.
     pub terminal_id: Option<TerminalId>,
     /// Buffer metadata for an `Editor` session, `None` for every other kind.
     ///
@@ -219,9 +197,7 @@ pub struct Session {
     /// GUI reads it off the snapshot rather than parsing ANSI.
     pub editor: Option<EditorState>,
     pub agent_provider_id: Option<AgentProviderId>,
-    /// The launch profile this session ran with, when it was started from one
-    /// (§13.4). Kept even after the profile is deleted: the row is history, and
-    /// the UI falls back to the provider's own name.
+    /// Retained after profile deletion; the UI falls back to the provider name.
     pub agent_profile_id: Option<AgentProfileId>,
     pub title: SessionTitle,
     pub state: SessionState,
@@ -231,15 +207,8 @@ pub struct Session {
     /// `None` is a fresh shell; agent sessions never set it, since they
     /// relaunch from their provider and profile instead.
     pub launch_command: Option<String>,
-    /// Last moment this session's PTY produced output or received input.
-    ///
-    /// Runtime state like `terminal_id`: it is never a column, and a session
-    /// loaded from SQLite starts at `ended_at` or `created_at`. Persisting it
-    /// would mean a row write per second of terminal traffic to describe a PTY
-    /// that cannot outlive the daemon anyway (§3.3, §15.2).
-    ///
-    /// The daemon bumps it in memory (coalesced to at most once per second per
-    /// terminal) and the idle policy reads it; see [`Session::idle_for`].
+    /// Latest PTY input/output, coalesced to once per second for idle checks.
+    /// Runtime-only; reconstructed from `ended_at` or `created_at` on load.
     pub last_activity_at: Timestamp,
     pub ended_at: Option<Timestamp>,
     /// The commit this session started from, for reading back what it changed.

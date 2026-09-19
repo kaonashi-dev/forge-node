@@ -23,13 +23,12 @@ pub enum ErrorCode {
     Conflict,
     /// A precondition was not met, e.g. `CloseSession` on a `Running` session.
     PreconditionFailed,
-    /// A `git` CLI invocation failed (§ADR-008).
+    /// A `git` CLI invocation failed.
     GitError,
     /// Spawning a PTY/process failed (binary missing, cwd invalid, ...).
     SpawnError,
     /// An underlying I/O operation failed.
     IoError,
-    /// The requested agent provider is not installed (§13.1).
     ProviderNotInstalled,
     /// The peer violated the protocol (bad sequence, unexpected message).
     ProtocolViolation,

@@ -1,8 +1,8 @@
-//! Provider executable overrides repository (§13.2, §15.2).
+//! Provider executable overrides repository.
 //!
 //! Maps an [`AgentProviderId`] to a user-chosen executable path. `set(_, None)`
 //! deletes the override — mirroring the protocol's `SetProviderExecutable`
-//! request where `None` removes the override (§10.2).
+//! request where `None` removes the override.
 
 use std::path::PathBuf;
 

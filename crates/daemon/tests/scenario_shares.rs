@@ -1,4 +1,4 @@
-//! Files shared between the workspaces of one project, end to end (§14.2).
+//! Files shared between the workspaces of one project, end to end.
 //!
 //! What these cover that `shares::plan`'s unit tests cannot: the *daemon's*
 //! behaviour around the rules — that a rule set survives the protocol, that a

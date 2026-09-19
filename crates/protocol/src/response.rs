@@ -1,4 +1,4 @@
-//! Successful responses to client requests (§10.2/§10.1).
+//! Successful responses to client requests.
 //!
 //! A [`Response`] travels inside
 //! [`crate::DaemonMessage::Response`]`{ request_id, body: Ok(..) }`; failures
@@ -18,7 +18,7 @@ use domain::{
 };
 use serde::{Deserialize, Serialize};
 
-/// An agent provider and its current detection result (§7.5, §13.1). Bundled in
+/// An agent provider and its current detection result. Bundled in
 /// [`Response::Snapshot`] and [`Response::Providers`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderInfo {
@@ -28,7 +28,7 @@ pub struct ProviderInfo {
     pub detection: DetectionResult,
 }
 
-/// Session counts grouped by [`domain::SessionState`] (§22).
+/// Session counts grouped by [`domain::SessionState`].
 ///
 /// Fixed fields rather than a map keyed on the enum: `SessionState` is
 /// `#[non_exhaustive]`, and wire consumers only need the known buckets.
@@ -46,7 +46,7 @@ pub struct SessionsByState {
     pub orphaned: u64,
 }
 
-/// Runtime statistics answering [`crate::request::Request::GetStats`] (§22).
+/// Runtime statistics answering [`crate::request::Request::GetStats`].
 ///
 /// Wire-only: never persisted, never a SQLite column.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,7 +62,6 @@ pub struct DaemonStats {
     pub connected_clients: u64,
 }
 
-/// A successful response body (§10.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Response {
@@ -103,7 +102,7 @@ pub enum Response {
     /// A session was created and its PTY spawned, answering `CreateShellSession`
     /// / `CreateAgentSession` / `CreateChildSession`. Carries the ids the daemon
     /// just minted so the caller can `AttachTerminal` immediately instead of
-    /// reloading the whole snapshot to guess which session is new (§10.2, L3).
+    /// reloading the whole snapshot to guess which session is new.
     /// The matching `SessionCreated`/`SessionUpdated` broadcasts still keep every
     /// other client in sync.
     SessionCreated {
@@ -112,7 +111,7 @@ pub enum Response {
         /// The terminal its PTY was spawned on, ready to attach.
         terminal_id: TerminalId,
     },
-    /// Full initial state, answering `GetSnapshot` (§10.2).
+    /// Full initial state, answering `GetSnapshot`.
     Snapshot {
         /// All known organizational project groups.
         project_groups: Vec<ProjectGroup>,
@@ -124,17 +123,16 @@ pub enum Response {
         sessions: Vec<Session>,
         /// Agent providers with detection state.
         providers: Vec<ProviderInfo>,
-        /// Saved launch profiles, in provider then name order (§13.4).
+        /// In provider then name order.
         agent_profiles: Vec<AgentProfile>,
-        /// Every project's sharing rules (§14.2), in application order. The
+        /// Every project's sharing rules, in application order. The
         /// rows are small and the settings section needs them without a round
         /// trip, exactly like `agent_profiles`.
         worktree_shares: Vec<ShareRule>,
-        /// Every project's worktree-ignore rules (§14.4). Same reasoning as
+        /// Every project's worktree-ignore rules. Same reasoning as
         /// `worktree_shares`: the GUI edits them and must show the truth after
         /// a rescan collects a tombstone without a round trip.
         worktree_ignores: Vec<WorktreeIgnore>,
-        /// Opaque app-state key/value pairs (§15.2).
         app_state: Vec<(String, String)>,
         /// Agent sessions discovered on disk that the daemon did not launch
         /// (e.g. Claude Code transcripts). Read-only history.
@@ -146,7 +144,7 @@ pub enum Response {
         /// reconnecting client sees what happened while it was away. Empty
         /// after a daemon restart: a job is a process, and none survive it.
         jobs: Vec<Job>,
-        /// The last per-provider account usage the daemon read (§16.2), served
+        /// The last per-provider account usage the daemon read, served
         /// straight from its cache. Producing a snapshot performs **no** network
         /// I/O — a background sweeper keeps this current — so a client learns the
         /// usage without a probe on its load path. Empty until the first sweep.
@@ -154,7 +152,7 @@ pub enum Response {
     },
     /// A project's workspaces, answering `ListWorkspaces`.
     Workspaces(Vec<Workspace>),
-    /// A project's branches, answering `ListBranches` (§14.3).
+    /// Answers `ListBranches`.
     Branches {
         /// Local and remote-tracking branches, newest commit first.
         branches: Vec<BranchRef>,
@@ -190,7 +188,6 @@ pub enum Response {
         entries: Vec<ShareStatusEntry>,
     },
     /// A project's worktree-ignore rules, answering `ListWorktreeIgnores`
-    /// (§14.4).
     WorktreeIgnores(Vec<WorktreeIgnore>),
     /// Agent providers with detection state, answering `ListAgentProviders`.
     Providers(Vec<ProviderInfo>),
@@ -200,14 +197,13 @@ pub enum Response {
         value: Option<String>,
     },
     /// Terminal snapshot at the attach sequence, answering `AttachTerminal`
-    /// (§10.5).
     AttachAck {
         /// The current grid snapshot.
         snapshot: TerminalSnapshot,
     },
-    /// A block of scrollback rows, answering `FetchScrollback` (§10.2).
+    /// Answers `FetchScrollback`.
     ScrollbackRows(ScrollbackRows),
-    /// Per-provider account usage, answering `ListProviderUsage` (§16.2).
+    /// Answers `ListProviderUsage`.
     ProviderUsage(Vec<ProviderUsage>),
     /// Working-tree change context, answering `GetChangeContext`.
     ChangeContext(ChangeContext),
@@ -231,7 +227,7 @@ pub enum Response {
     /// A discovered run's conversation, answering `GetExternalTranscript`.
     ExternalTranscript(ExternalTranscript),
     /// One checkout's stopped rebase/merge state, answering `GetRebaseState`,
-    /// `ContinueRebase` and `MarkConflictResolved` (§14).
+    /// `ContinueRebase` and `MarkConflictResolved`.
     RebaseState(RebaseState),
     /// Files under a workspace, answering `ListFiles` (ADR-012).
     FileTree(FileTree),
@@ -243,10 +239,10 @@ pub enum Response {
     /// Search hits, answering `SearchFiles` (ADR-012).
     SearchResults(SearchResults),
     /// Aggregated transcript analytics, answering `GetUsageAnalytics`
-    /// (§16.2). Boxed: it is by far the largest variant here, and an
+    /// Boxed: it is by far the largest variant here, and an
     /// unboxed one would grow every `Response` on the wire path.
     UsageAnalytics(Box<UsageAnalytics>),
-    /// Runtime statistics, answering `GetStats` (§22).
+    /// Answers `GetStats`.
     DaemonStats(DaemonStats),
     /// Harness features, answering `ListHarnessFeatures`.
     HarnessFeatureList(HarnessFeatureList),

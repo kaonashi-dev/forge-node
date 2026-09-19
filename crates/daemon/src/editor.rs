@@ -1,4 +1,4 @@
-//! Supervisor for one integrated editor session (feature 19).
+//! Supervisor for one integrated editor session.
 //!
 //! The daemon binds a private Unix socket **before** it spawns
 //! `forge-editor`; the editor connects after spawn (`portable-pty` closes
@@ -226,30 +226,14 @@ pub struct Busy;
 /// floor flushes held-back terminal damage.
 const STATE_BROADCAST_COOLDOWN: Duration = Duration::from_millis(250);
 
-/// One socket per editor session, under the daemon's runtime dir.
-///
-/// The full session UUID usually fits; when the runtime dir is long (macOS
-/// `$TMPDIR`), the hex is truncated just enough to stay under
-/// [`crate::paths::MAX_SOCKET_PATH_LEN`]. A stale file is unlinked before
-/// binding, like the daemon's own socket.
+/// Uses a shorter runtime directory when needed, preserving the full session id.
 pub fn control_socket_path(session_id: SessionId) -> io::Result<PathBuf> {
-    let dir = crate::paths::resolve_runtime_dir().map_err(|e| io::Error::other(e.to_string()))?;
+    // UUID v7 prefixes can coincide for sessions created in the same millisecond.
+    let name = format!("editor-{}.sock", session_id.as_uuid().simple());
+    let dir = crate::paths::resolve_runtime_dir_for_name(&name)
+        .map_err(|e| io::Error::other(e.to_string()))?;
     crate::paths::ensure_private_dir(&dir).map_err(|e| io::Error::other(e.to_string()))?;
-    let hex: String = session_id
-        .to_string()
-        .chars()
-        .filter(|c| *c != '-')
-        .collect();
-    for keep in [hex.len(), 16, 12] {
-        let suffix = &hex[..keep.min(hex.len())];
-        let path = dir.join(format!("editor-{suffix}.sock"));
-        if path.as_os_str().len() < crate::paths::MAX_SOCKET_PATH_LEN {
-            return Ok(path);
-        }
-    }
-    Err(io::Error::other(
-        "the control socket path does not fit sun_path in any runtime directory",
-    ))
+    Ok(dir.join(name))
 }
 
 /// Bind the editor's control socket with private permissions, replacing a
@@ -871,6 +855,20 @@ mod tests {
             language: "rust".into(),
             binary: false,
             too_large: false,
+        }
+    }
+
+    #[test]
+    fn same_millisecond_sessions_keep_distinct_control_socket_paths() {
+        let first: SessionId = "01990aab-1234-7000-8000-000000000001".parse().unwrap();
+        let second: SessionId = "01990aab-1234-7000-8000-000000000002".parse().unwrap();
+        let first_path = control_socket_path(first).unwrap();
+        let second_path = control_socket_path(second).unwrap();
+
+        assert_ne!(first_path, second_path);
+        for (id, path) in [(first, first_path), (second, second_path)] {
+            assert!(path.ends_with(format!("editor-{}.sock", id.as_uuid().simple())));
+            assert!(path.as_os_str().len() < crate::paths::MAX_SOCKET_PATH_LEN);
         }
     }
 

@@ -1,6 +1,6 @@
 import { Collapsible } from "@kobalte/core/collapsible";
 import type { JSX } from "solid-js";
-import { Icon } from "../theme/icons";
+import { Icon } from "../theme/icons/index";
 
 export type DisclosureProps = {
   /** The always-visible row. Rendered inside the trigger, so keep it flat. */

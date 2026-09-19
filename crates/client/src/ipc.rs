@@ -23,7 +23,7 @@ use protocol::{
 };
 
 /// Size of the reader thread's socket read buffer (matches the daemon PTY loop's
-/// 64 KiB reads, §11.2).
+/// 64 KiB reads).
 const READ_BUF: usize = 64 * 1024;
 
 /// Errors raised by the GUI protocol client.
@@ -40,7 +40,7 @@ pub enum ClientError {
         /// Human-readable reason.
         reason: String,
     },
-    /// The client and daemon speak different protocol versions (§9.2). Also the
+    /// The client and daemon speak different protocol versions. Also the
     /// mapping for a `HelloReject`.
     #[error("protocol version mismatch: client speaks {expected}, daemon requires {got}")]
     VersionMismatch {
@@ -52,7 +52,7 @@ pub enum ClientError {
     /// The connection to the daemon is closed.
     #[error("the connection to the daemon is closed")]
     Disconnected,
-    /// The daemon returned a structured error for the request (§10.1).
+    /// The daemon returned a structured error for the request.
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
     /// Framing or (de)serialization of a message failed locally.
@@ -78,14 +78,14 @@ pub enum SendContextResult {
     },
 }
 
-/// The daemon instance a [`Client`] is connected to (from the §9.2 `HelloAck`).
+/// The connected daemon's identity, read from `HelloAck`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaemonInfo {
     /// The protocol version the daemon speaks.
     pub protocol_version: u32,
     /// The daemon's build version, informational.
     pub daemon_version: String,
-    /// The daemon instance identifier from `daemon.lock` (§9.2).
+    /// The daemon instance identifier from `daemon.lock`.
     pub instance_id: String,
     /// When this daemon instance started.
     pub started_at: domain::Timestamp,
@@ -149,7 +149,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connect to the daemon at `socket_path`, perform the §9.2 handshake as a
+    /// Connect to the daemon at `socket_path`, perform the handshake as a
     /// [`ClientKind::Gui`] client, and spawn the reader thread.
     ///
     /// # Errors
@@ -310,7 +310,7 @@ impl Client {
         }
     }
 
-    /// A fresh receiver for the daemon's unsolicited events (§10.3). The GUI
+    /// A fresh receiver for the daemon's unsolicited events. The GUI
     /// drains this to update its [`crate::Store`]. The channel closes when the
     /// connection drops.
     #[must_use]
@@ -318,7 +318,6 @@ impl Client {
         self.shared.events_rx.clone()
     }
 
-    /// The handshake info of the connected daemon (§9.2).
     #[must_use]
     pub fn daemon_info(&self) -> &DaemonInfo {
         &self.shared.daemon
@@ -411,7 +410,6 @@ impl Client {
         self.expect_ack(Request::RemoveProjectGroup { project_group_id })
     }
 
-    /// Remove a project subject to `policy` (§10.2).
     ///
     /// No policy deletes a branch. `KeepEverything` is refused while the
     /// project has running sessions — that refusal is the daemon telling the
@@ -446,7 +444,6 @@ impl Client {
         self.expect_ack(Request::SetProjectIcon { project_id, icon })
     }
 
-    /// Create a managed git worktree for `project_id` (§14.3).
     ///
     /// `base` is the start point for a branch that does not exist yet; pass
     /// `origin/<branch>` to start from a remote-tracking branch, which is what
@@ -467,7 +464,7 @@ impl Client {
         })
     }
 
-    /// Remove a worktree (§14.4). Never deletes a branch.
+    /// Never deletes a branch.
     ///
     /// Without `force` the daemon refuses while the tree is dirty, a merge is
     /// in progress, or sessions are running, and says which — that message is
@@ -503,12 +500,12 @@ impl Client {
         self.expect_ack(Request::RefreshWorkspaceStatus { workspace_id })
     }
 
-    /// Re-detect a project's git root, branches and worktrees (§10.2).
+    /// Re-detect a project's git root, branches and worktrees.
     pub fn refresh_project(&self, project_id: domain::ProjectId) -> Result<(), ClientError> {
         self.expect_ack(Request::RefreshProject { project_id })
     }
 
-    /// Every branch of a project, with its remotes and default branch (§14.3).
+    /// Includes remotes and the default branch.
     ///
     /// Reads refs from disk — it never opens a socket, so it is safe to call
     /// on the same thread that carries keystrokes. Use
@@ -530,7 +527,7 @@ impl Client {
         }
     }
 
-    /// Read one checkout's uncommitted changes, a patch per file (§16.7).
+    /// Read uncommitted changes, a patch per file.
     ///
     /// Local and synchronous: git runs on the daemon, so this blocks like
     /// every other `request` and belongs on the runtime thread, never on the
@@ -555,7 +552,7 @@ impl Client {
         }
     }
 
-    /// One session's changes since its baseline (§16.7).
+    /// Changes since the session's baseline.
     ///
     /// # Errors
     /// [`ClientError`] on a transport failure or a refusal from the daemon.
@@ -571,7 +568,7 @@ impl Client {
         }
     }
 
-    /// One checkout's changes since its sessions began (§16.7).
+    /// Changes since the checkout's sessions began.
     ///
     /// # Errors
     /// [`ClientError`] on a transport failure or a refusal from the daemon.
@@ -667,7 +664,7 @@ impl Client {
         }
     }
 
-    /// Read one checkout's stopped rebase/merge/cherry-pick state (§14).
+    /// Read stopped rebase/merge/cherry-pick state.
     ///
     /// Local and synchronous like [`Client::workspace_diff`]: belongs on the
     /// runtime thread, never the render one.
@@ -902,7 +899,6 @@ impl Client {
         }
     }
 
-    /// Read aggregated agent token analytics (§16.2).
     ///
     /// Local and synchronous like [`Client::workspace_diff`]: the daemon reads
     /// the transcript stores on disk, so this blocks like every other `request`
@@ -924,7 +920,6 @@ impl Client {
         }
     }
 
-    /// Read runtime statistics from a live daemon (§22).
     ///
     /// Synchronous like [`Client::usage_analytics`]: counts under the daemon
     /// core lock plus the client registry. Suitable for the CLI; the GUI
@@ -942,7 +937,7 @@ impl Client {
         }
     }
 
-    /// Start a background fetch (§14.1).
+    /// Start a background fetch.
     ///
     /// Returns as soon as the daemon has *started* the fetch, not when it
     /// finishes: the result arrives as `DaemonEvent::RemoteRefsUpdated`. This
@@ -1027,7 +1022,7 @@ impl Client {
     }
 
     /// Create a shell in `workspace_id`, returning the ids the daemon minted so
-    /// the caller can attach without reloading the snapshot (§10.2, L3).
+    /// the caller can attach without reloading the snapshot.
     pub fn create_shell_session(
         &self,
         workspace_id: WorkspaceId,
@@ -1040,9 +1035,7 @@ impl Client {
     }
 
     /// Create an agent TUI in `workspace_id`, optionally through a launch
-    /// profile (§13.4), optionally re-entering one of the provider's own
-    /// earlier sessions (§13.5), and optionally handing it a prompt to start
-    /// from rather than an empty one (§16.8).
+    /// profile, optionally resuming a provider session or supplying an initial prompt.
     ///
     /// # Errors
     /// [`ClientError`] when the daemon refuses the launch — an uninstalled
@@ -1068,7 +1061,7 @@ impl Client {
     }
 
     /// Like [`Self::create_agent_session`] but sets graph role and optional
-    /// parent, and can ask for the provider's own read-only mode (§16.9).
+    /// parent, and can ask for the provider's own read-only mode.
     #[allow(clippy::too_many_arguments)]
     pub fn create_agent_session_with_role(
         &self,
@@ -1093,7 +1086,7 @@ impl Client {
         })
     }
 
-    /// Open a file in a daemon-supervised `forge-editor` process (feature 19),
+    /// Open a file in a daemon-supervised `forge-editor` process,
     /// returning the ids the daemon minted.
     ///
     /// # Errors
@@ -1216,7 +1209,7 @@ impl Client {
         })
     }
 
-    /// Persist and deliver a context envelope (§8.3).
+    /// Persist and deliver a context envelope.
     #[allow(clippy::too_many_arguments)]
     pub fn send_context(
         &self,
@@ -1251,7 +1244,7 @@ impl Client {
         }
     }
 
-    /// Envelopes where the session is source or target (§8.3).
+    /// Envelopes where the session is source or target.
     pub fn list_context_envelopes(
         &self,
         session_id: SessionId,
@@ -1418,7 +1411,6 @@ impl Client {
         }
     }
 
-    /// Start a headless run of one provider (§ jobs).
     ///
     /// Answers as soon as the job is *accepted*: it may still be queued behind
     /// the daemon's concurrency limit. Follow `JobUpdated` for the rest.
@@ -1468,17 +1460,16 @@ impl Client {
         }
     }
 
-    /// Create or replace a launch profile (§13.4).
+    /// Replaces a profile with the same id.
     pub fn save_agent_profile(&self, profile: AgentProfile) -> Result<(), ClientError> {
         self.expect_ack(Request::SaveAgentProfile { profile })
     }
 
-    /// Delete a launch profile (§13.4).
     pub fn remove_agent_profile(&self, profile_id: AgentProfileId) -> Result<(), ClientError> {
         self.expect_ack(Request::RemoveAgentProfile { profile_id })
     }
 
-    /// Ignored paths a project could share between its workspaces (§14.2).
+    /// Ignored paths eligible for sharing between workspaces.
     ///
     /// # Errors
     /// Returns [`ClientError`] when the daemon refuses or the answer is not
@@ -1499,7 +1490,7 @@ impl Client {
         }
     }
 
-    /// Replace a project's whole rule set (§14.2).
+    /// Replaces the whole rule set.
     ///
     /// # Errors
     /// Returns [`ClientError`] when the daemon refuses the set.
@@ -1511,7 +1502,7 @@ impl Client {
         self.expect_ack(Request::SetProjectShares { project_id, rules })
     }
 
-    /// Drop one rule, saying what happens to what it already wrote (§14.2).
+    /// Cleanup policy applies to paths already injected by the rule.
     ///
     /// # Errors
     /// Returns [`ClientError`] when the daemon refuses or answers with
@@ -1534,7 +1525,7 @@ impl Client {
         }
     }
 
-    /// What applying a project's rules to a workspace would do (§14.2).
+    /// Preview only; does not apply rules.
     ///
     /// # Errors
     /// Returns [`ClientError`] when the daemon refuses or the answer is not
@@ -1551,7 +1542,6 @@ impl Client {
         }
     }
 
-    /// Per-rule state of one workspace (§14.2).
     ///
     /// # Errors
     /// Returns [`ClientError`] when the daemon refuses or the answer is not
@@ -1568,7 +1558,7 @@ impl Client {
         }
     }
 
-    /// Start provisioning a workspace (§14.2). The ack means *started*: the
+    /// Start provisioning a workspace. The ack means *started*: the
     /// outcome arrives as `SharesApplied`.
     ///
     /// # Errors
@@ -1581,7 +1571,7 @@ impl Client {
         self.expect_ack(Request::ApplyShares { workspace_id, only })
     }
 
-    /// Move a real file into the project's shared store, leaving a link (§14.2).
+    /// Moves the file into the shared store, leaving a link.
     ///
     /// # Errors
     /// Returns [`ClientError`] when the daemon refuses the path.
@@ -1593,7 +1583,7 @@ impl Client {
         self.expect_ack(Request::AdoptIntoShareStore { project_id, path })
     }
 
-    /// Copy a store file back into a workspace as a real file (§14.2).
+    /// Copies the store file into the workspace as a real file.
     ///
     /// # Errors
     /// Returns [`ClientError`] when the daemon refuses the path.
@@ -1610,7 +1600,6 @@ impl Client {
         })
     }
 
-    /// A project's worktree-ignore rules (§14.4).
     pub fn list_worktree_ignores(
         &self,
         project_id: ProjectId,
@@ -1623,7 +1612,7 @@ impl Client {
         }
     }
 
-    /// Replace a project's whole worktree-ignore set (§14.4). The rescan of
+    /// Replace a project's whole worktree-ignore set. The rescan of
     /// the project follows on the daemon before it acks.
     pub fn set_worktree_ignores(
         &self,
@@ -1676,18 +1665,18 @@ impl Client {
     }
 
     /// Remove a session from the tree. The daemon rejects this while the
-    /// session is still active, so kill it first (§7.3).
+    /// session is still active, so kill it first.
     pub fn close_session(&self, session_id: SessionId) -> Result<(), ClientError> {
         self.expect_ack(Request::CloseSession { session_id })
     }
 
-    /// Bring an exited or orphaned session back with a fresh PTY (§7.3).
+    /// Restarts with a fresh PTY.
     pub fn restart_session(&self, session_id: SessionId) -> Result<(), ClientError> {
         self.expect_ack(Request::RestartSession { session_id })
     }
 
     /// Set the user title, or clear it with `None` so the terminal-reported
-    /// one takes over again (§7.3).
+    /// one takes over again.
     pub fn rename_session(
         &self,
         session_id: SessionId,
@@ -1696,7 +1685,6 @@ impl Client {
         self.expect_ack(Request::RenameSession { session_id, title })
     }
 
-    /// Read every installed provider's account usage (§16.2).
     ///
     /// The daemon re-probes rather than serving a cache, so this is a request
     /// the UI makes deliberately — on connect and on demand — not per frame.
@@ -1709,7 +1697,7 @@ impl Client {
         }
     }
 
-    /// Re-probe the agent CLIs. `None` refreshes every provider (§13.1).
+    /// `None` refreshes every provider.
     pub fn refresh_detection(
         &self,
         provider_id: Option<AgentProviderId>,
@@ -1733,7 +1721,6 @@ impl Client {
         })
     }
 
-    /// Persist an opaque GUI preference (`Request::SetAppState`, §15.2).
     pub fn set_app_state(&self, key: &str, value: &str) -> Result<(), ClientError> {
         self.expect_ack(Request::SetAppState {
             key: key.to_string(),
@@ -1741,7 +1728,7 @@ impl Client {
         })
     }
 
-    /// Read one persisted GUI preference (`Request::GetAppState`, §15.2);
+    /// Read one persisted GUI preference (`Request::GetAppState`);
     /// `None` when the key was never written.
     pub fn get_app_state(&self, key: &str) -> Result<Option<String>, ClientError> {
         match self.request(Request::GetAppState {
@@ -1789,7 +1776,7 @@ impl Client {
     }
 
     /// Send a session-creating request and return the `(SessionId, TerminalId)`
-    /// the daemon minted (§10.2, L3).
+    /// the daemon minted.
     fn expect_session_created(
         &self,
         request: Request,

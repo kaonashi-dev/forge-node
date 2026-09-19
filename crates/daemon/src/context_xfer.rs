@@ -1,4 +1,4 @@
-//! Format and clamp context envelopes for SendContext (§8.3).
+//! Format and clamp context envelopes for SendContext.
 //!
 //! Keeps the framed paste / initial_prompt shape out of `core.rs`. Budgets are
 //! applied before allocation so a wire string cannot balloon under the lock.

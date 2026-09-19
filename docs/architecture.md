@@ -94,7 +94,9 @@ reconnects and attaches a fresh authoritative snapshot.
 The Tauri host also has a *workbench worker* sharing the same `Client`. The command
 channel carries keystrokes, and the local reads that answer inline — `git diff`, a
 file tree, a search, the harness's own files — are seconds of subprocess, so
-running them there would freeze typing.
+running them there would freeze typing. Its bounded queue and dispatcher live in
+`apps/tauri/src-tauri/src/runtime/workbench/mod.rs`; sibling modules group command
+definitions and capability handlers within that same worker.
 
 The file surface splits presentation from IO the same way. The windowed explorer
 lives in `apps/tauri/packages/file-workbench`, which has no Solid, Tauri or
@@ -125,13 +127,26 @@ for reconciliation, never automatically repeats the write. Watch acknowledgments
 carry the exact generation of installed interests so stale ACKs cannot arm a
 new subscription.
 
-`workbench/fileDrag.ts` owns the explorer's pointer gesture and file-reference
-menu listener. The portable explorer only exposes row metadata and expansion;
-`TerminalPane` registers its live session/terminal identity. Tree drops reuse
+`apps/tauri/src/features/files/explorer/fileDrag.ts` owns the explorer's pointer
+gesture and file-reference menu listener. The portable explorer only exposes row
+metadata and expansion; `TerminalPane` registers its live session/terminal identity. Tree drops reuse
 the confirmed-result rename API. Terminal drops send a host-local targeted paste
 with both identities and the connection generation, validated again before
 `encode_paste` writes to the existing PTY. No file contents or filesystem access
 are involved in constructing the quoted absolute reference.
+
+### Frontend ownership
+
+Within `apps/tauri/src/`, `app/` composes the window and cross-feature workflows,
+`features/` groups capability-specific UI, commands and state, and `shared/`
+holds reusable rendering and pure/browser helpers. `contracts/`, `runtime/`,
+`state/` and `navigation/` separate wire mirrors, transport, shared state and view
+navigation. `ui/` and `theme/` remain the visual foundation.
+
+The detailed map, current import-check coverage and remaining state/lifecycle
+gaps live in [frontend-architecture.md](./frontend-architecture.md). That page
+also maps editor surfaces to `features/editor/` and their shared passive renderer
+to `shared/cell-grid/`.
 
 ## Authoritative terminal (ADR-011)
 

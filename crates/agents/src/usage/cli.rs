@@ -1,4 +1,4 @@
-//! The CLI usage source (§16.2): run a provider CLI that prints one documented
+//! The CLI usage source: run a provider CLI that prints one documented
 //! JSON document on stdout. Forge deliberately does not scrape human output — a
 //! usage meter is only worth showing if the number behind it came from something
 //! that promised to be a number.

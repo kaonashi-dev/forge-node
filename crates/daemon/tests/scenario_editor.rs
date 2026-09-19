@@ -1,4 +1,4 @@
-//! Feature 19: a daemon-supervised `forge-editor` under a real PTY.
+//! A daemon-supervised `forge-editor` under a real PTY.
 //!
 //! The harness PATH is a single directory. These tests write a small Python
 //! stand-in that speaks the control protocol, so the suite does not depend on
@@ -484,18 +484,17 @@ fn editor_state_survives_a_client_reconnect() {
     let events = client.events();
     let workspace = common::add_main_workspace(&client, repo.path());
     let (session_id, _terminal) = create_editor(&client, &events, workspace, "a.rs", Some(1));
-    assert!(
-        common::poll_until(common::DEADLINE, || {
-            common::session(&client, session_id)
-                .and_then(|s| s.editor)
-                .is_some()
-        }),
-        "state should land on the session after the handshake"
-    );
-    let before = common::session(&client, session_id)
-        .unwrap()
-        .editor
-        .unwrap();
+    // Running still carries version 0 until the fake editor's State arrives.
+    let update = common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::SessionUpdated(session)
+            if session.id == session_id
+                && session.editor.as_ref().is_some_and(|state| state.document_version == 1))
+    })
+    .expect("the editor must publish its state before reconnecting");
+    let DaemonEvent::SessionUpdated(session) = update else {
+        unreachable!();
+    };
+    let before = session.editor.unwrap();
     assert_eq!(before.path, "a.rs");
     assert!(before.read_only);
 
@@ -504,8 +503,7 @@ fn editor_state_survives_a_client_reconnect() {
     let after = common::session(&again, session_id)
         .and_then(|s| s.editor)
         .expect("snapshot recovers editor state");
-    assert_eq!(after.path, before.path);
-    assert_eq!(after.document_version, before.document_version);
+    assert_eq!(after, before);
 }
 
 #[test]
@@ -1199,13 +1197,8 @@ fn the_dom_surface_carries_input_down_and_windows_back_up() {
         })
         .expect("SendEditorInput");
 
-    assert!(
-        common::poll_until(common::DEADLINE, || repo
-            .path()
-            .join(".forge-editor-surface")
-            .exists()),
-        "the headless editor never received the surface traffic"
-    );
+    // The fake closes its receipt before publishing the response frame.
+    let answer = wait_for_frame(&events, session_id, 2);
     let seen = fs::read_to_string(repo.path().join(".forge-editor-surface")).unwrap();
     assert!(
         seen.contains("view 0 88"),
@@ -1220,7 +1213,6 @@ fn the_dom_surface_carries_input_down_and_windows_back_up() {
     let argv = fs::read_to_string(repo.path().join(".forge-editor-argv")).unwrap();
     assert!(argv.contains("--headless"), "argv was {argv:?}");
 
-    let answer = wait_for_frame(&events, session_id, 2);
     assert_eq!(answer.rows[0].text(), "Xfn main");
     assert_eq!(answer.caret.column, 1);
 }

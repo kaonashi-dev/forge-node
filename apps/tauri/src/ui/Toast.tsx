@@ -1,8 +1,8 @@
 import { Toast as Kobalte, toaster } from "@kobalte/core/toast";
 import { Portal } from "solid-js/web";
 import { Show } from "solid-js";
-import { Icon } from "../theme/icons";
-import type { ForgeIconName } from "../theme/icons";
+import { Icon } from "../theme/icons/index";
+import type { ForgeIconName } from "../theme/icons/index";
 
 export type ToastTone = "info" | "success" | "danger";
 
@@ -31,14 +31,7 @@ const TONE_ICON: Record<ToastTone, ForgeIconName> = {
  */
 const DEFAULT_MS = 4_000;
 
-/**
- * Say that something finished (§4.2 U16).
- *
- * For *background outcomes* — a file saved, a worktree created, a PR opened,
- * an agent done. Not for anything that needs an answer, which is a dialog, and
- * not for a session that wants attention, which is the AttentionBar: a toast
- * that must be acted on is a toast that will be missed.
- */
+/** Background outcomes only; requests requiring an answer belong in a dialog. */
 export function toast(request: ToastRequest): void {
   const tone = request.tone ?? "info";
   toaster.show((props) => (

@@ -14,14 +14,6 @@ export type SwitchProps = {
   class?: string;
 };
 
-/**
- * A boolean setting (§5.3).
- *
- * One answer for a question that had three in `settings/`: a pill button that
- * looked pressed, a checkbox, and a pair of radio chips reading "on"/"off".
- * A switch is the right one because the change takes effect immediately —
- * a checkbox promises a form to submit, and these settings have none.
- */
 export function Switch(props: SwitchProps) {
   return (
     <Kobalte

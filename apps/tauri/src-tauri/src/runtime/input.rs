@@ -2,7 +2,7 @@
 //!
 //! The mapping itself is not reimplemented here: `terminal-input` is the one
 //! place a key becomes bytes, and `client` re-exports it so a GUI never depends
-//! on `protocol` or on a VT engine (§17, ADR-011). This module only translates
+//! on `protocol` or on a VT engine (ADR-011). This module only translates
 //! the WebView's vocabulary — DOM `KeyboardEvent.key` names — into that crate's [`Key`].
 //!
 //! Nothing here decides *whether* a key belongs to the terminal. The WebView

@@ -1,4 +1,4 @@
-//! Shell environment resolution (§12).
+//! Shell environment resolution.
 //!
 //! A GUI launched from Finder/a launcher does not inherit an interactive
 //! shell's `PATH`. We resolve the login-shell environment once by running
@@ -19,7 +19,7 @@ const BEGIN: &str = "__FORGE_ENV_BEGIN__";
 const END: &str = "__FORGE_ENV_END__";
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Well-known bin directories used to widen `PATH` in the fallback path (§12).
+/// Well-known bin directories used to widen `PATH` in the fallback path.
 const FALLBACK_PATH_DIRS: &[&str] = &[
     "/usr/local/bin",
     "/opt/homebrew/bin",
@@ -29,10 +29,9 @@ const FALLBACK_PATH_DIRS: &[&str] = &[
     "/sbin",
 ];
 
-/// Home-relative bin directories added to the fallback `PATH` (§12).
+/// Home-relative bin directories added to the fallback `PATH`.
 const FALLBACK_HOME_DIRS: &[&str] = &[".local/bin", ".cargo/bin", ".bun/bin", ".npm-global/bin"];
 
-/// Resolves and caches the login-shell environment (§12).
 pub struct ShellEnvironmentService {
     shell_override: Option<String>,
     cached: Option<ResolvedEnvironment>,
@@ -40,7 +39,7 @@ pub struct ShellEnvironmentService {
 
 impl ShellEnvironmentService {
     /// Create the service. `shell_override` comes from `[sessions].shell`; empty
-    /// means use `$SHELL` (§15.4).
+    /// means use `$SHELL`.
     #[must_use]
     pub fn new(shell_override: Option<String>) -> Self {
         Self {
@@ -74,7 +73,7 @@ impl ShellEnvironmentService {
     }
 
     /// Resolve the shell to invoke: override, else `$SHELL`, else the passwd
-    /// entry, else `/bin/sh` (§12).
+    /// entry, else `/bin/sh`.
     fn resolve_shell(&self) -> PathBuf {
         if let Some(s) = &self.shell_override {
             return PathBuf::from(s);
@@ -91,10 +90,10 @@ impl ShellEnvironmentService {
     }
 
     /// Resolve the environment, using the login shell and falling back to the
-    /// process environment on any failure (§12).
+    /// process environment on any failure.
     fn resolve(&self) -> ResolvedEnvironment {
         // Only the shell path and the *count* of variables are ever recorded:
-        // environment values never reach the log (§22, §23).
+        // environment values never reach the log.
         let _span = tracing::info_span!("env.resolve").entered();
         let shell = self.resolve_shell();
         match self.resolve_via_login_shell(&shell) {
@@ -191,7 +190,7 @@ impl ShellEnvironmentService {
         }
     }
 
-    /// Process environment plus a widened `PATH` (§12).
+    /// Process environment plus a widened `PATH`.
     fn fallback(&self, shell: PathBuf) -> ResolvedEnvironment {
         let mut vars: Vec<(String, String)> = std::env::vars().collect();
 

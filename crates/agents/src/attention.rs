@@ -17,7 +17,7 @@ pub const CLAUDE_SETTINGS_FILENAME: &str = "forge-claude-attention.json";
 
 const OPENCODE_CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
 const FORGE_HOOK_MARKER: &str = "forge-ring-bell.sh";
-/// Grok's opt-out of the Cursor hook compatibility scan (§13.3 is unaffected:
+/// Grok's opt-out of the Cursor hook compatibility scan (PTY hints are unaffected:
 /// this is a launch detail, not a terminal-contract variable).
 const GROK_CURSOR_HOOKS_ENABLED: &str = "GROK_CURSOR_HOOKS_ENABLED";
 

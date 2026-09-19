@@ -1,8 +1,8 @@
 //! Transport-agnostic wire protocol: framing (ADR-004), handshake, and the
 //! request/response/event vocabulary.
 //!
-//! Depends only on `domain`. No tokio, no sockets. Both the daemon's blocking
-//! accept loop and the client's reader thread use these types.
+//! Depends only on `domain`. No tokio, no sockets. The daemon's async server
+//! and the client's blocking reader thread use these types.
 //!
 //! Enums are `#[non_exhaustive]`; closed-set unit enums also carry
 //! `#[serde(other)] Unknown` so a newer peer's variant still decodes.
@@ -35,11 +35,9 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
 pub const PROTOCOL_VERSION: u32 = 25;
 
-/// A message sent by a client to the daemon (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ClientMessage {
-    /// The opening handshake (§9.2).
     Hello(Hello),
     /// A request correlated by `request_id` with its future response.
     Request {
@@ -50,13 +48,11 @@ pub enum ClientMessage {
     },
 }
 
-/// A message sent by the daemon to a client (§10.1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum DaemonMessage {
-    /// Handshake accepted (§9.2).
     HelloAck(HelloAck),
-    /// Handshake rejected on version mismatch (§9.2).
+    /// Rejected on version mismatch.
     HelloReject(HelloReject),
     /// The response to a client request, correlated by `request_id`.
     Response {
@@ -65,7 +61,7 @@ pub enum DaemonMessage {
         /// `Ok` on success, `Err` with a [`ProtocolError`] on failure.
         body: Result<Response, ProtocolError>,
     },
-    /// An unsolicited event (§10.3).
+    /// Unsolicited; has no request id.
     Event(DaemonEvent),
 }
 
@@ -433,7 +429,7 @@ mod tests {
 
     #[test]
     fn unknown_struct_fields_from_a_newer_peer_are_ignored() {
-        // §10.1 forward compatibility: messages are MessagePack *maps* keyed by
+        // Forward compatibility requires MessagePack maps keyed by
         // field name, so an older peer skips a field it does not know instead of
         // misreading a positional array.
         let future = FutureHello {
@@ -454,7 +450,7 @@ mod tests {
     fn unknown_enum_variants_decode_over_the_real_wire_format() {
         // The `#[serde(other)] Unknown` arms must hold over MessagePack, not just
         // JSON: a newer daemon's error code arrives inside a full frame and the
-        // whole message still decodes (§10.1).
+        // whole message still decodes.
         #[derive(Serialize)]
         struct FutureProtocolError {
             code: &'static str,

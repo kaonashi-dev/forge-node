@@ -1,10 +1,10 @@
-//! Live terminal runtime and the per-terminal PTY read loop (§11.2, §11.4).
+//! Live terminal runtime and the per-terminal PTY read loop.
 //!
 //! One [`TerminalRuntime`] exists per live PTY, owned by the daemon core behind
 //! its lock. A dedicated OS thread ([`pty_loop`]) reads 64 KiB buffers from the
 //! master, feeds the authoritative engine under the lock, writes any device
 //! replies back to the PTY, and emits a coalesced [`TerminalDelta`] to
-//! subscribers at most every [`FRAME`] (≤125/s, §10.5). On EOF the child has
+//! subscribers at most every [`FRAME`] (≤125/s). On EOF the child has
 //! exited and the loop notifies the core.
 
 use std::io::Write;
@@ -16,12 +16,11 @@ use terminal_core::{AlacrittyEngine, DeltaBuilder, PtyHandle, PtyReader, Termina
 
 use crate::core::Daemon;
 
-/// Minimum interval between emitted deltas (§10.5 coalescing: ~8 ms ⇒ ≤125/s).
+/// Emit floor, not PTY read cadence: ~8 ms ⇒ ≤125/s.
 pub const FRAME: Duration = Duration::from_millis(8);
 const READ_BATCH_BUDGET: Duration = Duration::from_millis(2);
-/// PTY read buffer size (§11.2).
 const READ_BUF: usize = 64 * 1024;
-/// Minimum interval between two activity notes for the same terminal (§10.4).
+/// Minimum interval between two activity notes for the same terminal.
 ///
 /// One note does two things: it sends `TerminalActivity` to non-subscribers for
 /// their unread badge, and it advances the session's `last_activity_at` for the
@@ -41,7 +40,7 @@ pub const ACTIVITY_BROADCAST: Duration = Duration::from_secs(30);
 /// reading its stdin is enough. Holding the daemon's single `Mutex<Inner>`
 /// across that write stalls every other client and every PTY thread, so the
 /// writer lives behind its own lock: the core clones this handle, releases the
-/// core lock, and only then writes (§9.3).
+/// core lock, and only then writes.
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// Write `bytes` to a PTY and flush, without holding the core lock.
@@ -53,9 +52,8 @@ pub fn write_pty(writer: &SharedWriter, bytes: &[u8]) -> std::io::Result<()> {
     writer.flush()
 }
 
-/// A live PTY child plus its authoritative engine (§7.4, §11.4).
 pub struct TerminalRuntime {
-    /// Reserved for diagnostics/stats (§22); the map key is the id at runtime.
+    /// Reserved for diagnostics/stats; the map key is the id at runtime.
     #[allow(dead_code)]
     pub id: TerminalId,
     pub session_id: SessionId,
@@ -65,13 +63,13 @@ pub struct TerminalRuntime {
     pub engine: AlacrittyEngine,
     pub delta_builder: DeltaBuilder,
     /// Per-terminal wire sequence, incremented once per *emitted* delta so
-    /// deltas are consecutive for the client's `seq` gap check (§10.5) even
+    /// deltas are consecutive for the client's `seq` gap check even
     /// though the engine feeds many byte-chunks between emissions.
     pub emit_seq: u64,
     pub last_emit: Option<Instant>,
     pub pending_damage: bool,
     pub size: PtySize,
-    /// Reserved for diagnostics/stats (§22); killing uses `process_group`.
+    /// Reserved for diagnostics/stats; killing uses `process_group`.
     #[allow(dead_code)]
     pub child_pid: u32,
     pub process_group: i32,

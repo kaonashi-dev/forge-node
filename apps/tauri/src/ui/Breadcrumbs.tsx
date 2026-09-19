@@ -14,13 +14,6 @@ export type BreadcrumbsProps = {
   class?: string;
 };
 
-/**
- * A path, one clickable segment per level (§5.3).
- *
- * The last crumb is the thing itself and is not a link: clicking where you
- * already are is the one interaction a breadcrumb must not offer. `aria-current`
- * is what says so to a screen reader.
- */
 export function Breadcrumbs(props: BreadcrumbsProps) {
   const last = () => props.crumbs.length - 1;
   return (
