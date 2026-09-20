@@ -1,4 +1,5 @@
 import { type JSX, createSignal, onCleanup, onMount } from "solid-js";
+import { applyDensity, isDensity } from "./density";
 import {
   applyTheme,
   baseIsLight,
@@ -6,6 +7,7 @@ import {
   registerCustomPalette,
   type ThemeBaseId,
 } from "./tokens";
+import { applyUiFont } from "./uiFont";
 
 import { parseCustomTheme } from "./customTheme";
 
@@ -52,8 +54,19 @@ export function applyThemeBase(next: ThemePreference = DEFAULT_BASE): void {
   // Native controls and scrollbars need the same mode as the CSS tokens.
   document.documentElement.style.colorScheme = baseIsLight(resolved) ? "light" : "dark";
   applyTheme(palettes[resolved]);
+  // `applyTheme` rewrites every `--forge-*` metric, including the ones density
+  // and UI font overlay. Put those back from `dataset` so a theme switch does
+  // not snap the chrome to the defaults.
+  restoreChromeOverlays();
   setPreference(resolved === DEFAULT_BASE && next !== SYSTEM_BASE ? DEFAULT_BASE : next);
   setBase(resolved);
+}
+
+function restoreChromeOverlays(): void {
+  const { dataset } = document.documentElement;
+  if (isDensity(dataset.density)) applyDensity(dataset.density);
+  const font = Number.parseInt(dataset.uiFont ?? "", 10);
+  if (Number.isFinite(font)) applyUiFont(font);
 }
 
 export function ThemeProvider(props: { children: JSX.Element; base?: ThemePreference }) {

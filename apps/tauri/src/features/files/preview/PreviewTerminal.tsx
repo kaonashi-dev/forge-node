@@ -4,6 +4,7 @@ import { Button } from "../../../ui/index";
 import { previewCellsChannel } from "../../../runtime/bus";
 import { harnessStore, setHarnessStore } from "../../harness/harnessStore";
 import { metrics as tokens } from "../../../theme/tokens";
+import { TERMINAL_ZOOM_KEY, TERMINAL_ZOOM_RANGE, readScale } from "../../../state/preferences";
 import { measureCell, gridSize, type CellMetrics } from "../../../shared/cell-grid/metrics";
 import { readPalette } from "../../../shared/cell-grid/palette";
 import { TerminalRenderer } from "../../../shared/cell-grid/renderer";
@@ -39,6 +40,25 @@ export function PreviewTerminal() {
   const viewport = new Viewport();
   let renderer: TerminalRenderer | null = null;
   let cell: CellMetrics = measureCell(tokens.monoSize, tokens.mono, tokens.monoLineHeight);
+
+  createEffect(() => {
+    const zoom = readScale(
+      TERMINAL_ZOOM_KEY,
+      TERMINAL_ZOOM_RANGE.min,
+      TERMINAL_ZOOM_RANGE.max,
+      TERMINAL_ZOOM_RANGE.fallback,
+    );
+    cell = measureCell(
+      Math.max(6, Math.round(tokens.monoSize * zoom)),
+      tokens.mono,
+      tokens.monoLineHeight,
+    );
+    if (renderer) {
+      renderer.metrics = cell;
+      renderer.invalidateFonts();
+      fit();
+    }
+  });
   let frame = 0;
   const dirty = new Set<number>();
   let repaintAll = true;

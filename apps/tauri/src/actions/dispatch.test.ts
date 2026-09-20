@@ -10,7 +10,7 @@ import {
   resolve,
   selectAllIn,
 } from "./dispatch";
-import { isSelectAll, parseChord } from "./keys";
+import { isSelectAll, isWebZoomChord, parseChord } from "./keys";
 
 function event(key: string, code: string, meta = true): KeyboardEvent {
   return {
@@ -236,6 +236,76 @@ describe("isSelectAll", () => {
       }
     },
   );
+});
+
+describe("isWebZoomChord", () => {
+  it("matches the plus, minus and zero chords on either modifier", () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel", userAgent: "" });
+    try {
+      expect(
+        isWebZoomChord({
+          key: "=",
+          code: "Equal",
+          metaKey: true,
+          ctrlKey: false,
+          altKey: false,
+          shiftKey: false,
+        } as KeyboardEvent),
+      ).toBe(true);
+      expect(
+        isWebZoomChord({
+          key: "+",
+          code: "Equal",
+          metaKey: true,
+          ctrlKey: false,
+          altKey: false,
+          shiftKey: true,
+        } as KeyboardEvent),
+      ).toBe(true);
+      expect(
+        isWebZoomChord({
+          key: "-",
+          code: "Minus",
+          metaKey: true,
+          ctrlKey: false,
+          altKey: false,
+          shiftKey: false,
+        } as KeyboardEvent),
+      ).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("page-zoom swallow", () => {
+  it("prevents the WebView zooming the shell when no content zoom is bound", () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel", userAgent: "" });
+    let listener: ((event: KeyboardEvent) => void) | undefined;
+    vi.stubGlobal("window", {
+      addEventListener: (_name: string, handler: (event: KeyboardEvent) => void) => {
+        listener = handler;
+      },
+      removeEventListener: () => undefined,
+    });
+    const leave = enterContext(APP);
+    const stop = installKeymap(() => []);
+    try {
+      const preventDefault = vi.fn();
+      const stopPropagation = vi.fn();
+      listener?.({
+        ...event("=", "Equal"),
+        preventDefault,
+        stopPropagation,
+      } as unknown as KeyboardEvent);
+      expect(preventDefault).toHaveBeenCalled();
+      expect(stopPropagation).toHaveBeenCalled();
+    } finally {
+      stop();
+      leave();
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("clipboard in file search modals", () => {

@@ -1,4 +1,6 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { EDITOR } from "../../../actions/actions";
+import { enterContext } from "../../../actions/dispatch";
 import { editorChrome } from "../editorChrome";
 import { editorAnnouncement, editorAria } from "../editorAria";
 import {
@@ -213,7 +215,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
       EDITOR_FONT_SIZE_KEY,
       EDITOR_FONT_SIZE_RANGE.min,
       EDITOR_FONT_SIZE_RANGE.max,
-      tokens.monoSize,
+      EDITOR_FONT_SIZE_RANGE.fallback,
     );
     const spacing = readScale(
       EDITOR_LINE_HEIGHT_KEY,
@@ -263,6 +265,8 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     // A drag that leaves the pane still belongs to it.
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
+    onCleanup(enterContext(EDITOR));
+    keys.focus({ preventScroll: true });
     onCleanup(() => {
       unsubscribe();
       observer.disconnect();

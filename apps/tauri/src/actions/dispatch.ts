@@ -14,7 +14,7 @@ import {
   type ContextId,
 } from "./actions";
 import { bindings as mergedBindings } from "./bindings";
-import { isMac, isSelectAll, matches, type Chord } from "./keys";
+import { isMac, isSelectAll, isWebZoomChord, matches, type Chord } from "./keys";
 
 export type ActionHandler = (argument?: number) => void;
 
@@ -209,7 +209,15 @@ export function installKeymap(table: () => Binding[] = mergedBindings): () => vo
       actionIsBound,
       isTypingTarget(event.target),
     );
-    if (!binding) return;
+    if (!binding) {
+      // No editor or terminal to zoom: still eat the chord so the WebView
+      // cannot scale chrome, which is a separate Settings control.
+      if (isWebZoomChord(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     // Held keys repeat, and a view chord re-firing would remount a panel per

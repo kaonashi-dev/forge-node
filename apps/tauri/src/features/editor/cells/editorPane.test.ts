@@ -102,6 +102,10 @@ describe("the terminal editor pane", () => {
    * The pane translates them through `editorChords`; without that, `Cmd-S`
    * saves nothing and closing loses the draft.
    */
+  it("enters the editor keymap for as long as the pane is on screen", () => {
+    expect(pane()).toContain("enterContext(EDITOR)");
+  });
+
   it("the_editor_pane_delivers_the_platform_chords", () => {
     expect(pane()).toContain("editorKeyForMeta");
     expect(pane()).toContain("event.metaKey");

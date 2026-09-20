@@ -30,6 +30,20 @@ describe("theme selection", () => {
       expect(themePreference()).toBe("gruvbox-hard");
     }
   });
+  it("reapplies density and UI font after a theme switch", () => {
+    document.documentElement.dataset.density = "comfortable";
+    document.documentElement.dataset.uiFont = "14";
+    applyThemeBase("ocean");
+    expect(document.documentElement.style.setProperty).toHaveBeenCalledWith(
+      "--forge-row-h",
+      "30px",
+    );
+    expect(document.documentElement.style.setProperty).toHaveBeenCalledWith(
+      "--forge-text-sm",
+      "14px",
+    );
+  });
+
   it("restores custom colors and refreshes consumers when replacing a custom palette", () => {
     createRoot((dispose) => {
       const observed: string[] = [];

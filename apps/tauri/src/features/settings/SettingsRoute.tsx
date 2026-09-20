@@ -64,6 +64,7 @@ import { connectionStore } from "../../state/connection";
 import { terminalStore } from "../terminal/terminalStore";
 import { ThemeSettings } from "./ThemeSettings";
 import { DENSITIES, applyDensity, type Density } from "../../theme/density";
+import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
 import {
   AUTOSAVE_KEY,
   DENSITY_KEY,
@@ -71,6 +72,10 @@ import {
   EDITOR_FONT_SIZE_RANGE,
   EDITOR_LINE_HEIGHT_KEY,
   EDITOR_LINE_HEIGHT_RANGE,
+  TERMINAL_ZOOM_KEY,
+  TERMINAL_ZOOM_RANGE,
+  TERMINAL_ZOOM_STEP,
+  UI_FONT_SIZE_KEY,
   readChoice,
   readFlag,
   readScale,
@@ -83,9 +88,40 @@ import {
  *
  * Whole pixels only: the gutter, the overlay and the textarea are positioned
  * against the same line box, and a fractional size rounds differently in the
- * three of them.
+ * three of them. Shortcuts can land on any pixel in the range, so the list
+ * is the range rather than a curated subset that would blank the control.
  */
-const FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20] as const;
+function sizeOptions(range: {
+  min: number;
+  max: number;
+  fallback: number;
+}): { value: string; label: string }[] {
+  const options: { value: string; label: string }[] = [];
+  for (let size = range.min; size <= range.max; size += 1) {
+    options.push({
+      value: String(size),
+      label: size === range.fallback ? `${size} px · Default` : `${size} px`,
+    });
+  }
+  return options;
+}
+
+function zoomOptions(): { value: string; label: string }[] {
+  const options: { value: string; label: string }[] = [];
+  for (
+    let zoom = TERMINAL_ZOOM_RANGE.min;
+    zoom <= TERMINAL_ZOOM_RANGE.max + 1e-9;
+    zoom += TERMINAL_ZOOM_STEP
+  ) {
+    const value = Number(zoom.toFixed(1));
+    options.push({
+      value: String(value),
+      label:
+        value === TERMINAL_ZOOM_RANGE.fallback ? "100% · Default" : `${Math.round(value * 100)}%`,
+    });
+  }
+  return options;
+}
 
 /** Line spacing, named rather than numbered — nobody wants to pick `1.35`. */
 const LINE_HEIGHTS = [
@@ -505,15 +541,47 @@ function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent })
 
 function Personalization() {
   const density = () => readChoice(DENSITY_KEY, DENSITIES, "default");
+  const uiFont = () =>
+    readScale(
+      UI_FONT_SIZE_KEY,
+      UI_FONT_SIZE_RANGE.min,
+      UI_FONT_SIZE_RANGE.max,
+      UI_FONT_SIZE_RANGE.fallback,
+    );
 
   function chooseDensity(next: Density): void {
     applyDensity(next);
     writeChoice(DENSITY_KEY, next);
   }
 
+  function chooseUiFont(next: string): void {
+    const size = Number.parseInt(next, 10);
+    if (!Number.isFinite(size)) return;
+    applyUiFont(size);
+    writeChoice(UI_FONT_SIZE_KEY, String(size));
+  }
+
   return (
     <Page title="Personalization" summary="How the shell looks.">
       <ThemeSettings />
+
+      <Group
+        title="Interface size"
+        description="The chrome's type scale — tabs, sidebars, settings. The editor and the terminal keep the sizes they own."
+      >
+        <Row
+          label="UI font size"
+          description="How large the shell draws its labels. One step larger is a little more of everything except the editor and the terminal."
+          control={
+            <Select
+              aria-label="UI font size"
+              value={String(uiFont())}
+              onChange={chooseUiFont}
+              options={sizeOptions(UI_FONT_SIZE_RANGE)}
+            />
+          }
+        />
+      </Group>
 
       <Group
         title="Editor"
@@ -536,7 +604,7 @@ function Personalization() {
             read for hours moves. */}
         <Row
           label="Font size"
-          description="The editor's type size, in pixels. The gutter, the syntax overlay and the text share it, so they stay on one line box."
+          description="The open file's type size, in pixels. The zoom chords while Code is up write this preference. Terminals keep their own zoom."
           control={
             <Select
               aria-label="Font size"
@@ -549,10 +617,7 @@ function Personalization() {
                 ),
               )}
               onChange={(next) => writeChoice(EDITOR_FONT_SIZE_KEY, next)}
-              options={FONT_SIZES.map((value) => ({
-                value: String(value),
-                label: `${value} px`,
-              }))}
+              options={sizeOptions(EDITOR_FONT_SIZE_RANGE)}
             />
           }
         />
@@ -575,6 +640,31 @@ function Personalization() {
                 value: String(value),
                 label,
               }))}
+            />
+          }
+        />
+      </Group>
+
+      <Group
+        title="Terminals & agents"
+        description="One zoom for every shell and agent in this window. Zooming a terminal never changes the editor, and the reverse."
+      >
+        <Row
+          label="Terminal zoom"
+          description="How large the cell grid draws. The zoom chords while a terminal or agent is on screen write this preference."
+          control={
+            <Select
+              aria-label="Terminal zoom"
+              value={String(
+                readScale(
+                  TERMINAL_ZOOM_KEY,
+                  TERMINAL_ZOOM_RANGE.min,
+                  TERMINAL_ZOOM_RANGE.max,
+                  TERMINAL_ZOOM_RANGE.fallback,
+                ),
+              )}
+              onChange={(next) => writeChoice(TERMINAL_ZOOM_KEY, next)}
+              options={zoomOptions()}
             />
           }
         />

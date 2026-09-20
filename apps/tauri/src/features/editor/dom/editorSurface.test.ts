@@ -30,6 +30,15 @@ describe("the DOM editor surface", () => {
   /* Both panes serve one `editor-terminal` view; `[editor] surface` picks
      between them, and it arrives on the handshake because the Code region has
      to know which to build before an editor session exists. */
+  it("enters the editor keymap for as long as the surface is on screen", () => {
+    expect(view()).toContain("enterContext(EDITOR)");
+  });
+
+  it("reads the editor font preference rather than the chrome type scale", () => {
+    expect(view()).toContain("EDITOR_FONT_SIZE_KEY");
+    expect(view()).toContain("--ed-font-size");
+  });
+
   it("is the other half of the editor view, chosen by the daemon", () => {
     expect(centerStack()).toContain("<EditorView");
     expect(centerStack()).toContain("<EditorTerminalPane");

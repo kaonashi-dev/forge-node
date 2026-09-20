@@ -55,6 +55,33 @@ export const PASTE_CHORD: string | null = isMac() ? null : "ctrl-shift-v";
  * than `code` so a Latin layout's physical `KeyQ` that types `a` still
  * selects — that is the character the OS binds, not the US keycap.
  */
+/**
+ * Whether this is the platform's page-zoom chord (⌘=/⌘-/⌘0 and the plus
+ * variants).
+ *
+ * Matched on `code` so a Latin layout still counts, and used to *swallow*
+ * the chord when no content-zoom action is bound: otherwise WKWebView
+ * scales the whole shell, which is not a preference we persist.
+ */
+export function isWebZoomChord(event: KeyboardEvent): boolean {
+  if (event.altKey) return false;
+  const modified = isMac() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!modified) return false;
+  const code = event.code;
+  if (
+    code === "Equal" ||
+    code === "Minus" ||
+    code === "Digit0" ||
+    code === "NumpadAdd" ||
+    code === "NumpadSubtract" ||
+    code === "Numpad0"
+  ) {
+    return true;
+  }
+  const key = event.key;
+  return key === "+" || key === "=" || key === "-" || key === "0";
+}
+
 export function isSelectAll(event: KeyboardEvent): boolean {
   if (event.altKey || event.shiftKey) return false;
   if (event.key.toLowerCase() !== "a") return false;

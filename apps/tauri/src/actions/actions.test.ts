@@ -200,8 +200,34 @@ describe("firesOnRepeat", () => {
 
   // Scrolling or zooming while holding the key is the gesture, not a burst.
   it("lets scroll, zoom and tab stepping repeat", () => {
-    for (const action of ["scroll_up", "terminal_zoom_in", "next_session"] as const) {
+    for (const action of [
+      "scroll_up",
+      "terminal_zoom_in",
+      "editor_zoom_in",
+      "next_session",
+    ] as const) {
       expect(firesOnRepeat(action), action).toBe(true);
     }
+  });
+});
+
+describe("content zoom chords", () => {
+  it("zooms the editor in Editor, and the terminal while the grid holds the keyboard", () => {
+    const zoomIn = defaultBindings().filter(
+      (binding) => binding.chord.key === "=" && !binding.chord.shift,
+    );
+    expect(zoomIn.map((binding) => [binding.action, binding.context])).toEqual([
+      ["editor_zoom_in", "Editor"],
+      ["terminal_zoom_in", "Terminal"],
+    ]);
+  });
+
+  it("also answers Command-+, not only the unshifted equals key", () => {
+    const zoomIn = defaultBindings().filter((binding) => binding.action === "editor_zoom_in");
+    expect(zoomIn.map((binding) => [binding.chord.key, binding.chord.shift])).toEqual([
+      ["=", false],
+      ["=", true],
+      ["+", false],
+    ]);
   });
 });

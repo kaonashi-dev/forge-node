@@ -51,11 +51,17 @@ import {
 import { openEditor } from "../../features/editor/open";
 import {
   DENSITY_KEY,
+  EDITOR_FONT_SIZE_KEY,
+  EDITOR_FONT_SIZE_RANGE,
   SIDEBAR_RANGE,
   SIDEBAR_WIDTH_KEY,
   THEME_BASE_KEY,
+  UI_FONT_SIZE_KEY,
+  bumpScale,
   readChoice,
+  readScale,
   readWidth,
+  resetScale,
   writeWidth,
 } from "../../state/preferences";
 import { CenterStack } from "./CenterStack";
@@ -64,6 +70,7 @@ import { ESC_AGAIN_MS, isSecondEsc } from "../../features/settings/escAgain";
 import { defaultAgentFrom, resolveDefaultAgent } from "../../features/settings/defaultAgent";
 import { applyThemeBase, type ThemePreference } from "../../theme/ThemeProvider";
 import { DENSITIES, applyDensity } from "../../theme/density";
+import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
 import { ResizeHandle } from "./ResizeHandle";
 import { Sidebar } from "./Sidebar";
 import { TitleBar } from "./TitleBar";
@@ -148,6 +155,14 @@ export function AppShell() {
     // re-applied whenever the stored preference lands — the same round trip
     // the theme takes.
     applyDensity(readChoice(DENSITY_KEY, DENSITIES, "default"));
+    applyUiFont(
+      readScale(
+        UI_FONT_SIZE_KEY,
+        UI_FONT_SIZE_RANGE.min,
+        UI_FONT_SIZE_RANGE.max,
+        UI_FONT_SIZE_RANGE.fallback,
+      ),
+    );
   });
 
   /*
@@ -507,6 +522,15 @@ export function AppShell() {
       }),
       registerAction("scroll_up", () => void scrollTerminal(pageLines()).catch(() => undefined)),
       registerAction("scroll_down", () => void scrollTerminal(-pageLines()).catch(() => undefined)),
+      registerAction("editor_zoom_in", () =>
+        bumpScale(EDITOR_FONT_SIZE_KEY, 1, EDITOR_FONT_SIZE_RANGE),
+      ),
+      registerAction("editor_zoom_out", () =>
+        bumpScale(EDITOR_FONT_SIZE_KEY, -1, EDITOR_FONT_SIZE_RANGE),
+      ),
+      registerAction("editor_zoom_reset", () =>
+        resetScale(EDITOR_FONT_SIZE_KEY, EDITOR_FONT_SIZE_RANGE),
+      ),
     ];
     onCleanup(() => {
       for (const unbind of bound) unbind();
