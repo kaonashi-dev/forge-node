@@ -7,7 +7,7 @@
 import { createEffect } from "solid-js";
 
 import { sendRuntimeCommand } from "../runtime/host";
-import { forgeStore } from "./forgeStore";
+import { forgeStore, setForgeStore } from "./forgeStore";
 
 /** Keys, in `ui.*` — the namespace `apps/tauri already uses. */
 export const SIDEBAR_OPEN_KEY = "ui.sidebar.open";
@@ -25,8 +25,25 @@ export const DIFF_SPLIT_KEY = "ui.diff.split";
 export const SESSION_SPLIT_OPEN_KEY = "ui.session_split.open";
 export const SESSION_SPLIT_WIDTH_KEY = "ui.session_split.width";
 export const DENSITY_KEY = "ui.density";
-/** Multiplier on the theme's mono size. */
+/**
+ * Chrome type size, as the `sm` rung in pixels.
+ *
+ * Apart from the editor and the terminal on purpose: those two are content,
+ * and a person who wants larger tabs is not asking to reflow a cell grid.
+ * Applied as an overlay on `--forge-text-*`, the same way density overlays
+ * the row height.
+ */
+export const UI_FONT_SIZE_KEY = "ui.font_size";
+/**
+ * Multiplier on the theme's mono size, shared by every terminal and agent.
+ *
+ * One preference for the whole window: switching sessions must not change
+ * how large the grid draws, and zooming a shell is the same ask as zooming
+ * an agent.
+ */
 export const TERMINAL_ZOOM_KEY = "ui.terminal.zoom";
+export const TERMINAL_ZOOM_RANGE = { min: 0.5, max: 2, fallback: 1 };
+export const TERMINAL_ZOOM_STEP = 0.1;
 /** Write on blur and after a pause; off by default. */
 export const AUTOSAVE_KEY = "ui.editor.autosave";
 /**
@@ -102,15 +119,11 @@ export function readWidth(
 }
 
 export function writeFlag(key: string, value: boolean): void {
-  void sendRuntimeCommand({ type: "set_app_state", key, value: value ? "true" : "false" }).catch(
-    () => undefined,
-  );
+  writeChoice(key, value ? "true" : "false");
 }
 
 export function writeWidth(key: string, value: number): void {
-  void sendRuntimeCommand({ type: "set_app_state", key, value: String(Math.round(value)) }).catch(
-    () => undefined,
-  );
+  writeChoice(key, String(Math.round(value)));
 }
 
 /** Read one of a fixed set of strings, falling back when the stored one is not. */
@@ -120,6 +133,15 @@ export function readChoice<T extends string>(key: string, allowed: readonly T[],
 }
 
 export function writeChoice(key: string, value: string): void {
+  // The host publishes after the daemon acks, which is too slow for a held
+  // zoom chord: each repeat would re-read the size before the last write
+  // landed and stall on the first step. Skip the local write while
+  // `app_state` is still empty — `seedFromAppState` treats any key as "the
+  // snapshot has landed", and a zoom written first would seed the rail from
+  // fallbacks.
+  if (Object.keys(forgeStore.app_state).length > 0) {
+    setForgeStore("app_state", key, value);
+  }
   void sendRuntimeCommand({ type: "set_app_state", key, value }).catch(() => undefined);
 }
 
@@ -128,4 +150,29 @@ export function readScale(key: string, min: number, max: number, fallback: numbe
   const raw = Number.parseFloat(forgeStore.app_state[key] ?? "");
   if (!Number.isFinite(raw)) return fallback;
   return Math.min(Math.max(raw, min), max);
+}
+
+/**
+ * Step a stored size by whole pixels and persist it.
+ *
+ * No-ops at either end so a held chord does not keep writing the same bound.
+ */
+export function bumpScale(
+  key: string,
+  delta: number,
+  range: { min: number; max: number; fallback: number },
+): number {
+  const current = readScale(key, range.min, range.max, range.fallback);
+  const next = Math.min(range.max, Math.max(range.min, Math.round(current) + delta));
+  if (next !== current) writeChoice(key, String(next));
+  return next;
+}
+
+export function resetScale(
+  key: string,
+  range: { min: number; max: number; fallback: number },
+): number {
+  const current = readScale(key, range.min, range.max, range.fallback);
+  if (current !== range.fallback) writeChoice(key, String(range.fallback));
+  return range.fallback;
 }

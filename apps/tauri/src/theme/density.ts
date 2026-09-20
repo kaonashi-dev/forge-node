@@ -15,6 +15,10 @@ import { metrics } from "./tokens";
 export const DENSITIES = ["compact", "default", "comfortable"] as const;
 export type Density = (typeof DENSITIES)[number];
 
+export function isDensity(value: string | undefined): value is Density {
+  return value !== undefined && (DENSITIES as readonly string[]).includes(value);
+}
+
 /**
  * Row heights in pixels at each density.
  *

@@ -1,4 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { EDITOR } from "../../../actions/actions";
+import { enterContext } from "../../../actions/dispatch";
 import { editorChrome } from "../editorChrome";
 import { editorAnnouncement, editorAria } from "../editorAria";
 import { sendEditorSurfaceInput, setEditorSurfaceView } from "../commands";
@@ -11,6 +13,13 @@ import { CompareView } from "../conflict/CompareView";
 import { Button } from "../../../ui/index";
 import { editorFrameChannel } from "../../../runtime/bus";
 import { forgeStore } from "../../../state/forgeStore";
+import {
+  EDITOR_FONT_SIZE_KEY,
+  EDITOR_FONT_SIZE_RANGE,
+  EDITOR_LINE_HEIGHT_KEY,
+  EDITOR_LINE_HEIGHT_RANGE,
+  readScale,
+} from "../../../state/preferences";
 import { metrics as tokens } from "../../../theme/tokens";
 import { measureCell } from "../../../shared/cell-grid/metrics";
 import { clipboardPaste } from "../../../shared/input/clipboard";
@@ -142,8 +151,25 @@ export function EditorView(props: EditorViewProps) {
   let keys!: HTMLTextAreaElement;
   let rowLayer!: HTMLDivElement;
 
-  const cell = measureCell(tokens.monoSize, tokens.mono, tokens.monoLineHeight);
-  const lineHeight = Math.max(1, Math.round(cell.height));
+  const cell = createMemo(() =>
+    measureCell(
+      readScale(
+        EDITOR_FONT_SIZE_KEY,
+        EDITOR_FONT_SIZE_RANGE.min,
+        EDITOR_FONT_SIZE_RANGE.max,
+        EDITOR_FONT_SIZE_RANGE.fallback,
+      ),
+      tokens.mono,
+      readScale(
+        EDITOR_LINE_HEIGHT_KEY,
+        EDITOR_LINE_HEIGHT_RANGE.min,
+        EDITOR_LINE_HEIGHT_RANGE.max,
+        EDITOR_LINE_HEIGHT_RANGE.fallback,
+      ),
+    ),
+  );
+  const lineHeight = createMemo(() => Math.max(1, Math.round(cell().height)));
+  const fontSize = createMemo(() => cell().fontSize);
 
   const [frame, setFrame] = createSignal<EditorFrame | null>(null);
   const [focused, setFocused] = createSignal(false);
@@ -191,10 +217,11 @@ export function EditorView(props: EditorViewProps) {
 
   /** Ask the host for the window this scroll position needs. */
   function publishView(): void {
+    if (!scroller) return;
     const view = windowFor(
       scroller.scrollTop,
       scroller.clientHeight,
-      lineHeight,
+      lineHeight(),
       frame()?.total_lines ?? 0,
     );
     if (sameWindow(lastWindow, view)) return;
@@ -224,6 +251,8 @@ export function EditorView(props: EditorViewProps) {
       setFrame(payload.frame);
     });
     onCleanup(unsubscribe);
+    onCleanup(enterContext(EDITOR));
+    keys.focus({ preventScroll: true });
     publishView();
     const observer = new ResizeObserver(() => publishView());
     observer.observe(scroller);
@@ -232,6 +261,15 @@ export function EditorView(props: EditorViewProps) {
       if (viewFrame !== 0) cancelAnimationFrame(viewFrame);
       if (flushTimer !== undefined) window.clearTimeout(flushTimer);
     });
+  });
+
+  createEffect((previous?: number) => {
+    const height = lineHeight();
+    if (previous !== undefined && previous !== height) {
+      lastWindow = null;
+      publishView();
+    }
+    return height;
   });
 
   /* A conflict that resolves takes its comparison with it. */
@@ -246,12 +284,13 @@ export function EditorView(props: EditorViewProps) {
      person is not looking, and measure where it landed. */
   createEffect(() => {
     const current = frame();
+    const height = lineHeight();
     if (current === null) return;
     const wanted = scrollToShow(
       current.caret.line,
       scroller.scrollTop,
       scroller.clientHeight,
-      lineHeight,
+      height,
     );
     if (wanted !== null) scroller.scrollTop = wanted;
     setCaretAt(measurePlace(current.caret));
@@ -290,9 +329,9 @@ export function EditorView(props: EditorViewProps) {
       const end =
         line === range.to.line
           ? measurePlace(range.to)
-          : { x: text.getBoundingClientRect().right - origin + cell.width, y: 0 };
+          : { x: text.getBoundingClientRect().right - origin + cell().width, y: 0 };
       if (start === null || end === null) continue;
-      rects.push({ x: start.x, y: line * lineHeight, width: Math.max(1, end.x - start.x) });
+      rects.push({ x: start.x, y: line * lineHeight(), width: Math.max(1, end.x - start.x) });
     }
     return rects;
   }
@@ -376,7 +415,7 @@ export function EditorView(props: EditorViewProps) {
     // Measured against the row, not the text node, so the gutter's width is
     // already in the number and the caret needs no second copy of it.
     const origin = row.getBoundingClientRect().left;
-    const y = place.line * lineHeight;
+    const y = place.line * lineHeight();
     let remaining = place.column;
     for (const node of text.childNodes) {
       const run = node.textContent ?? "";
@@ -428,10 +467,10 @@ export function EditorView(props: EditorViewProps) {
     if (next) startEditorConflictLoad(props.session);
   }
 
-  const totalHeight = createMemo(() => (frame()?.total_lines ?? 1) * lineHeight);
+  const totalHeight = createMemo(() => (frame()?.total_lines ?? 1) * lineHeight());
   const gutterWidth = createMemo(() => {
     const digits = String(Math.max(1, frame()?.total_lines ?? 1)).length;
-    return Math.ceil(digits * cell.width) + 16;
+    return Math.ceil(digits * cell().width) + 16;
   });
 
   return (
@@ -501,7 +540,11 @@ export function EditorView(props: EditorViewProps) {
         onMouseMove={onRowPointerMove}
         onMouseUp={onRowPointerUp}
         onMouseLeave={onRowPointerUp}
-        style={{ "--ed-line-height": `${lineHeight}px`, "--ed-gutter": `${gutterWidth()}px` }}
+        style={{
+          "--ed-line-height": `${lineHeight()}px`,
+          "--ed-gutter": `${gutterWidth()}px`,
+          "--ed-font-size": `${fontSize()}px`,
+        }}
       >
         <div class="editor-view-content" style={{ height: `${totalHeight()}px` }}>
           {/* Under the rows, never over them: a band drawn on top would grey
@@ -514,7 +557,7 @@ export function EditorView(props: EditorViewProps) {
                   style={{
                     transform: `translate(${rect.x}px, ${rect.y}px)`,
                     width: `${rect.width}px`,
-                    height: `${lineHeight}px`,
+                    height: `${lineHeight()}px`,
                   }}
                 />
               )}
@@ -529,7 +572,7 @@ export function EditorView(props: EditorViewProps) {
                       style={{
                         transform: `translate(${rect.x}px, ${rect.y}px)`,
                         width: `${rect.width}px`,
-                        height: `${lineHeight}px`,
+                        height: `${lineHeight()}px`,
                       }}
                     />
                   )}
@@ -544,7 +587,7 @@ export function EditorView(props: EditorViewProps) {
                   class="ed-row"
                   classList={{ "ed-row-active": row.line === frame()?.caret.line }}
                   data-line={row.line}
-                  style={{ top: `${row.line * lineHeight}px` }}
+                  style={{ top: `${row.line * lineHeight()}px` }}
                 >
                   <span class="ed-number" aria-hidden="true">
                     {row.line + 1}
@@ -595,7 +638,7 @@ export function EditorView(props: EditorViewProps) {
                 aria-hidden="true"
                 style={{
                   transform: `translate(${at.x}px, ${at.y}px)`,
-                  height: `${lineHeight}px`,
+                  height: `${lineHeight()}px`,
                 }}
               />
             )}
@@ -608,7 +651,7 @@ export function EditorView(props: EditorViewProps) {
                 aria-hidden="true"
                 style={{
                   transform: `translate(${at().x}px, ${at().y}px)`,
-                  height: `${lineHeight}px`,
+                  height: `${lineHeight()}px`,
                 }}
               />
             )}

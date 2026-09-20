@@ -98,6 +98,13 @@ Chords resolve through `actions/` → dispatch. Settings → Keyboard and the
 command palette surface the same bindings. Terminal input mapping for the PTY
 stays in `terminal-input` / the host bridge, not in Solid.
 
+`Cmd+=` / `Cmd+-` / `Cmd+0` (`Ctrl` on Linux) zoom whichever content is on
+screen, as two independent preferences: the open file (`ui.editor.font_size`)
+while Code is up, every terminal and agent (`ui.terminal.zoom`) while a
+session is up. Chrome type size is Settings → Personalization → Interface
+size (`ui.font_size`) and does not follow those chords. Unmatched, the same
+chords are swallowed so WKWebView cannot scale the whole window.
+
 `Cmd+Shift+F` (`Ctrl+Shift+F` on Linux) opens or focuses the Search tab in Code.
 Results are grouped by file with line numbers, highlighted matches and three
 lines of context on each side; overlapping excerpts merge. Click a line to

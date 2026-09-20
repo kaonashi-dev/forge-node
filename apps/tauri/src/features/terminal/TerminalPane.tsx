@@ -16,8 +16,9 @@ import { setTerminalStore, terminalStore } from "./terminalStore";
 import { metrics as tokens } from "../../theme/tokens";
 import {
   TERMINAL_ZOOM_KEY,
+  TERMINAL_ZOOM_RANGE,
+  TERMINAL_ZOOM_STEP,
   readScale,
-  seedFromAppState,
   writeChoice,
 } from "../../state/preferences";
 import { LatencyProbe, PaintProbe, PAINT_BUDGET_MS } from "../../shared/cell-grid/latency";
@@ -82,12 +83,13 @@ function debugEnabled(): boolean {
  * because below half the box-drawing glyphs stop resolving and above double a
  * standard window is under forty columns, which most TUIs will not lay out.
  */
-const ZOOM_STEP = 0.1;
-const ZOOM_MIN = 0.5;
-const ZOOM_MAX = 2;
-
 function readZoom(): number {
-  return readScale(TERMINAL_ZOOM_KEY, ZOOM_MIN, ZOOM_MAX, 1);
+  return readScale(
+    TERMINAL_ZOOM_KEY,
+    TERMINAL_ZOOM_RANGE.min,
+    TERMINAL_ZOOM_RANGE.max,
+    TERMINAL_ZOOM_RANGE.fallback,
+  );
 }
 
 function writeZoom(value: number): void {
@@ -99,7 +101,7 @@ function scaledSize(zoom: number): number {
   return Math.max(6, Math.round(tokens.monoSize * zoom));
 }
 
-export function TerminalPane() {
+export function TerminalPane(props: { active?: boolean }) {
   let host!: HTMLDivElement;
   let canvas!: HTMLCanvasElement;
   let keys!: HTMLTextAreaElement;
@@ -130,7 +132,7 @@ export function TerminalPane() {
    * `setZoom` and not `applyZoom`: this is reading the stored value back, not
    * choosing one, and writing it again would be a round trip per launch.
    */
-  seedFromAppState(() => {
+  createEffect(() => {
     const stored = readZoom();
     if (stored === zoom()) return;
     setZoom(stored);
@@ -175,6 +177,15 @@ export function TerminalPane() {
     renderer.cursorVisible = visible;
     dirty.add(viewport.cursor.line);
     schedule();
+  });
+
+  createEffect(() => {
+    if (props.active !== false) return;
+    leaveContext?.();
+    leaveContext = undefined;
+    focused = false;
+    keys?.blur();
+    blink.run(false);
   });
 
   // --- painting -------------------------------------------------------------
@@ -630,7 +641,10 @@ export function TerminalPane() {
   // --- lifecycle ------------------------------------------------------------
 
   function applyZoom(next: number): void {
-    const clamped = Math.min(Math.max(Number(next.toFixed(2)), ZOOM_MIN), ZOOM_MAX);
+    const clamped = Math.min(
+      Math.max(Number(next.toFixed(2)), TERMINAL_ZOOM_RANGE.min),
+      TERMINAL_ZOOM_RANGE.max,
+    );
     if (clamped === zoom()) return;
     setZoom(clamped);
     writeZoom(clamped);
@@ -714,8 +728,8 @@ export function TerminalPane() {
       // Zoom re-measures the cell, which re-derives the grid and resizes the
       // PTY: a larger glyph is fewer columns, and a program drawing a box has
       // to be told so.
-      registerAction("terminal_zoom_in", () => applyZoom(zoom() + ZOOM_STEP)),
-      registerAction("terminal_zoom_out", () => applyZoom(zoom() - ZOOM_STEP)),
+      registerAction("terminal_zoom_in", () => applyZoom(zoom() + TERMINAL_ZOOM_STEP)),
+      registerAction("terminal_zoom_out", () => applyZoom(zoom() - TERMINAL_ZOOM_STEP)),
       registerAction("terminal_zoom_reset", () => applyZoom(1)),
     ];
     onCleanup(() => {
@@ -779,6 +793,10 @@ export function TerminalPane() {
         onInput={onInput}
         onCompositionEnd={onCompositionEnd}
         onFocus={() => {
+          if (props.active === false) {
+            keys.blur();
+            return;
+          }
           focused = true;
           // The grid holds the keyboard, so its own chords outbid the shell's.
           leaveContext = enterContext(TERMINAL);

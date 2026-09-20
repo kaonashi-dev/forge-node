@@ -261,6 +261,11 @@ a short single-line selection underlines its *other* occurrences
 (`highlightSelectionMatches`), and that lookup stays literal even when find is
 in regex mode: a selected `a.c` means `a.c`.
 
+**Type size is a shell preference, not an editor key.** ⌘=/⌘-/⌘0 (Ctrl on
+Linux) step `ui.editor.font_size` while Code is up; they never reach the TUI
+as keys. The same chords zoom terminals and agents (`ui.terminal.zoom`) only
+while a session is on screen — the two sizes do not move together.
+
 **On a Mac the platform chords reach the editor.** `editorChords.ts` maps ⌘S/C/X,
 ⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys. ⌘G is
 find-next and not "go to line" — a Mac user pressing it after a search wants the

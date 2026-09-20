@@ -333,7 +333,7 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
         style={{ "--session-split-w": `${splitWidth()}px` }}
       >
         <div class="terminal-slot">
-          <TerminalPane />
+          <TerminalPane active={!props.settings && centerMode() === "session"} />
           <SessionActionBar />
         </div>
         <Show when={splitSession()}>

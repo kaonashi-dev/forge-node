@@ -100,6 +100,9 @@ export type ActionId =
   | "terminal_zoom_in"
   | "terminal_zoom_out"
   | "terminal_zoom_reset"
+  | "editor_zoom_in"
+  | "editor_zoom_out"
+  | "editor_zoom_reset"
   | "reopen_closed_tab"
   | "toggle_git"
   | "toggle_history"
@@ -299,7 +302,7 @@ export const ACTIONS: Action[] = [
   {
     id: "terminal_zoom_in",
     label: "Terminal: Zoom In",
-    detail: "One step larger, for this window",
+    detail: "One step larger, for every terminal and agent",
     palette: true,
   },
   {
@@ -311,6 +314,24 @@ export const ACTIONS: Action[] = [
   {
     id: "terminal_zoom_reset",
     label: "Terminal: Actual Size",
+    detail: "Back to the theme's own font size",
+    palette: true,
+  },
+  {
+    id: "editor_zoom_in",
+    label: "Editor: Larger Text",
+    detail: "One pixel larger in the open file, not the terminal",
+    palette: true,
+  },
+  {
+    id: "editor_zoom_out",
+    label: "Editor: Smaller Text",
+    detail: "One pixel smaller, for this window",
+    palette: true,
+  },
+  {
+    id: "editor_zoom_reset",
+    label: "Editor: Default Text Size",
     detail: "Back to the theme's own font size",
     palette: true,
   },
@@ -638,8 +659,21 @@ export function defaultBindings(): Binding[] {
      * Find-in-terminal is not here yet — it needs a search over the
      * scrollback and a highlight in the cell renderer.
      */
-    bind(`${MOD}-=`, "terminal_zoom_in", TERMINAL),
+    /*
+     * Content zoom, not chrome zoom. Two independent sizes: the editor's
+     * while Code is up, the terminal's (every shell and agent) while that
+     * grid holds the keyboard. `=` is the unshifted plus; `shift-=` and `+`
+     * cover the keycap people read as Command-+ and a numpad plus.
+     * Unmatched, the same chords are swallowed in `installKeymap` so they
+     * cannot become WKWebView page zoom.
+     */
+    ...(["=", "shift-=", "+"] as const).flatMap((key) => [
+      bind(`${MOD}-${key}`, "editor_zoom_in", EDITOR),
+      bind(`${MOD}-${key}`, "terminal_zoom_in", TERMINAL),
+    ]),
+    bind(`${MOD}--`, "editor_zoom_out", EDITOR),
     bind(`${MOD}--`, "terminal_zoom_out", TERMINAL),
+    bind(`${MOD}-0`, "editor_zoom_reset", EDITOR),
     bind(`${MOD}-0`, "terminal_zoom_reset", TERMINAL),
     bind(`${MOD}-shift-t`, "reopen_closed_tab", APP),
     bind(`${MOD}-shift-g`, "toggle_git", APP),

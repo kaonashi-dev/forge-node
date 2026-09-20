@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DENSITIES, densityOffset, densityTokens } from "./density";
+import { DENSITIES, densityOffset, densityTokens, isDensity } from "./density";
 import { metrics } from "./tokens";
 
 const px = (value: string) => Number.parseInt(value, 10);
@@ -52,5 +52,11 @@ describe("density", () => {
     expect(densityOffset("compact")).toBe(-4);
     expect(densityOffset("default")).toBe(0);
     expect(densityOffset("comfortable")).toBe(4);
+  });
+
+  it("accepts only the three density ids", () => {
+    expect(isDensity("comfortable")).toBe(true);
+    expect(isDensity("cozy")).toBe(false);
+    expect(isDensity(undefined)).toBe(false);
   });
 });

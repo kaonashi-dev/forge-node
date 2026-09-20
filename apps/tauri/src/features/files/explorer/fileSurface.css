@@ -12,7 +12,7 @@
   --fw-modified: var(--forge-git-modified);
   --fw-deleted: var(--forge-git-deleted);
   --fw-font: var(--font-mono);
-  --fw-font-size: var(--forge-mono-size);
+  --fw-font-size: var(--text-md);
   --fw-editor-ground: var(--forge-editor);
   /* Soft active-line wash; same idea as editorTheme.activeLine. */
   --fw-active-line: color-mix(in srgb, var(--fg-default) 5%, var(--forge-editor));
