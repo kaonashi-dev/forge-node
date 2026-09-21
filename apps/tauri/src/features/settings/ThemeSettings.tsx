@@ -25,6 +25,9 @@ import {
   type ThemeBaseId,
 } from "../../theme/tokens";
 import { Button, Disclosure, Select, TextArea } from "../../ui/index";
+// Not through `ui/index`: the barrel is in the initial chunk, and the colour
+// primitives belong with Settings, which is loaded when it is first opened.
+import { ColorPicker } from "../../ui/ColorPicker";
 import { Group } from "./SettingsLayout";
 import { ThemePreview } from "./ThemePreview";
 
@@ -208,17 +211,17 @@ export function ThemeSettings() {
                     color: hex(on(parseHex(colors()[key]), 0, 0xffffff)),
                   }}
                 >
-                  <input
-                    class="theme-color-picker"
-                    type="color"
-                    aria-label={`${label} color picker`}
+                  <ColorPicker
+                    label={label}
                     value={colors()[key]}
                     disabled={busy()}
-                    onInput={(event) => {
+                    swatches={colors().ansi}
+                    onInput={(value) => {
                       colorOrigin ??= colors();
-                      preview(key, event.currentTarget.value, contrast(), colorOrigin);
+                      preview(key, value, contrast(), colorOrigin);
                     }}
-                    onChange={() => {
+                    onCommit={(value) => {
+                      preview(key, value, contrast(), colorOrigin ?? colors());
                       colorOrigin = undefined;
                       commit();
                     }}

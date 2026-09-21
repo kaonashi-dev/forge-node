@@ -400,30 +400,6 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
 }
-.theme-color-picker {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 22px;
-  height: 22px;
-  flex: none;
-  padding: 0;
-  background: transparent;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  overflow: hidden;
-  cursor: pointer;
-}
-.theme-color-picker::-webkit-color-swatch-wrapper {
-  padding: 0;
-}
-.theme-color-picker::-webkit-color-swatch {
-  border: 0;
-  border-radius: 50%;
-}
-.theme-color-picker::-moz-color-swatch {
-  border: 0;
-  border-radius: 50%;
-}
 .theme-color-hex {
   width: 100%;
   min-width: 0;
@@ -498,6 +474,9 @@
   color: var(--fg-default);
   overflow: hidden;
   min-width: 0;
+}
+.theme-preview-diff + .theme-preview-toolbar {
+  border-top: 1px solid var(--border-subtle);
 }
 .theme-preview-toolbar {
   display: flex;
