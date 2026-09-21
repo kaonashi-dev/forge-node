@@ -6,9 +6,8 @@
 //! here (principle P2): nothing else in the workspace branches on provider id.
 
 use domain::{
-    AcpPermissionPolicy, AcpSpec, AgentCapabilities, AgentDescriptor, AgentProviderId,
-    ConfigDirSpec, HeadlessSpec, PromptStyle, ResumeStyle, ReviewStyle, SchemaStyle, UsageSource,
-    VersionProbe,
+    AcpSpec, AgentCapabilities, AgentDescriptor, AgentProviderId, ConfigDirSpec, PromptStyle,
+    ResumeStyle, ReviewStyle, UsageSource, VersionProbe,
 };
 
 /// `claude --resume <session-id>`: the id its transcripts record, resumed from
@@ -35,98 +34,12 @@ fn opencode_resume() -> Option<ResumeStyle> {
     })
 }
 
-/// `claude -p`, streaming its events as JSON Lines.
-///
-/// `--verbose` is not optional decoration: `--output-format stream-json`
-/// refuses to run in print mode without it. `--bare` is deliberately absent —
-/// it would make the run skip the OAuth credentials and demand an API key,
-/// which is the one thing this must not do.
-fn claude_headless() -> Option<HeadlessSpec> {
-    Some(HeadlessSpec {
-        mode_args: vec!["-p".to_owned()],
-        // A headless Spec/Implement must Write harness artefacts with nobody
-        // to click Allow. `acceptEdits` is the CLI stand-in for the ACP
-        // permission policy for the ACP transport.
-        permission_args: vec!["--permission-mode".to_owned(), "acceptEdits".to_owned()],
-        stream_args: vec![
-            "--output-format".to_owned(),
-            "stream-json".to_owned(),
-            "--verbose".to_owned(),
-        ],
-        resume: claude_resume(),
-        prompt: PromptStyle::Positional,
-        // Takes the schema document itself on the command line.
-        schema: Some(SchemaStyle::Inline {
-            flag: "--json-schema".to_owned(),
-        }),
-        session_id_fields: vec!["session_id".to_owned()],
-        // Claude does not sandbox file writes to its cwd.
-        extra_writable_dir_flag: None,
-    })
-}
-
-/// `codex exec --json`, and `codex exec resume <id>` to continue one.
-///
-/// The resume spelling is the same subcommand the interactive CLI uses, but it
-/// belongs *after* `exec`, which is exactly what
-/// [`HeadlessSpec::command_args`] does with it.
-///
-/// `model_reasoning_summary=detailed` is the second half of `--json` and not a
-/// preference: without it the stream carries the agent's *actions* but not one
-/// word of why, even on a turn that spent a thousand reasoning tokens
-/// (`turn.completed` says so). With it, Codex emits `reasoning` items and a
-/// person watching a step can follow the thinking rather than guess at it. It
-/// changes what is reported, never what the model does, and it applies only to
-/// harness runs — an interactive Codex still reads the user's own config.
-fn codex_headless() -> Option<HeadlessSpec> {
-    Some(HeadlessSpec {
-        mode_args: vec!["exec".to_owned()],
-        permission_args: Vec::new(),
-        stream_args: vec![
-            "--json".to_owned(),
-            "-c".to_owned(),
-            "model_reasoning_summary=detailed".to_owned(),
-        ],
-        resume: codex_resume(),
-        prompt: PromptStyle::Positional,
-        // Takes a *path* to the schema, not the schema.
-        schema: Some(SchemaStyle::File {
-            flag: "--output-schema".to_owned(),
-        }),
-        // Codex names it in its session events; `session_id` is the spelling
-        // both CLIs share, `id` the one its older lines use.
-        session_id_fields: vec!["session_id".to_owned(), "conversation_id".to_owned()],
-        // Its sandbox holds file writes inside the cwd, which for a harness
-        // step is a worktree — while the artefacts belong to the repository's
-        // shared harness state outside it.
-        extra_writable_dir_flag: Some("--add-dir".to_owned()),
-    })
-}
-
-/// `opencode run <message>` — non-interactive, but it streams plain text
-/// rather than events, so nothing can be read back out of it beyond the exit
-/// code. Declared anyway: an exit code is already more than a PTY gives.
-fn opencode_headless() -> Option<HeadlessSpec> {
-    Some(HeadlessSpec {
-        mode_args: vec!["run".to_owned()],
-        permission_args: Vec::new(),
-        stream_args: Vec::new(),
-        resume: opencode_resume(),
-        prompt: PromptStyle::Positional,
-        schema: None,
-        session_id_fields: Vec::new(),
-        // Plain-text runner with no sandbox to widen.
-        extra_writable_dir_flag: None,
-    })
-}
-
-/// Claude Code as an ACP agent (adapter). Spawned when harness prefers ACP.
+/// Claude Code as an ACP agent. Grok's usage path is the one that spawns an
+/// ACP entry today; Claude's is declared the same way so the subcommand lives
+/// in one place.
 fn claude_acp() -> Option<AcpSpec> {
     Some(AcpSpec {
-        // `claude acp` is the adapter entry; empty args fall back to the
-        // provider's documented ACP mode when the binary grows one.
         args: vec!["acp".to_owned()],
-        permissions: AcpPermissionPolicy::default(),
     })
 }
 
@@ -150,52 +63,11 @@ fn grok_resume() -> Option<ResumeStyle> {
     })
 }
 
-/// `grok -p <prompt>`, streaming the Anthropic Messages wire format.
-///
-/// Grok offers two NDJSON dialects and the choice is the whole point of this
-/// function. `streaming-json` is its own native one (an ACP session update per
-/// line); `streaming-messages-json` is the shape Claude already speaks —
-/// `{"type":"assistant","message":{"content":[…]}}` with `text` / `thinking` /
-/// `tool_use` blocks, a terminal `{"type":"result","result":…}`, and
-/// `session_id` on every line. Picking the second is what lets
-/// [`crate::summarize_stream_line`] and the harness's verdict reader take a
-/// Grok job unchanged, instead of the daemon learning a third dialect (P2).
-///
-/// `--json-schema` documents itself as *implying* `--output-format json`; it
-/// does not override an explicit one, and the structured answer arrives on the
-/// terminal `result` line either way.
-fn grok_headless() -> Option<HeadlessSpec> {
-    Some(HeadlessSpec {
-        // `-p` is both the mode selector and the prompt flag, so unlike
-        // `claude -p` / `codex exec` it arrives at the *end* with its value
-        // rather than leading the command line.
-        mode_args: Vec::new(),
-        permission_args: vec!["--permission-mode".to_owned(), "acceptEdits".to_owned()],
-        stream_args: vec![
-            "--output-format".to_owned(),
-            "streaming-messages-json".to_owned(),
-        ],
-        resume: grok_resume(),
-        prompt: PromptStyle::Flag {
-            flag: "-p".to_owned(),
-        },
-        // Takes the schema document itself on the command line, as Claude does.
-        schema: Some(SchemaStyle::Inline {
-            flag: "--json-schema".to_owned(),
-        }),
-        session_id_fields: vec!["session_id".to_owned()],
-        // `--sandbox` is opt-in: a run that names no profile writes where it
-        // likes, so there is no cwd jail to widen.
-        extra_writable_dir_flag: None,
-    })
-}
-
-/// Grok as an ACP agent: `grok agent stdio` answers `initialize` with
-/// `protocolVersion: 1` and `loadSession`.
+/// Grok as an ACP agent: `grok agent stdio`. Usage reads billing over this
+/// entry rather than spelling the subcommand again.
 fn grok_acp() -> Option<AcpSpec> {
     Some(AcpSpec {
         args: vec!["agent".to_owned(), "stdio".to_owned()],
-        permissions: AcpPermissionPolicy::default(),
     })
 }
 
@@ -224,7 +96,6 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             claude_resume(),
             // `claude [options] [command] [prompt]` — its own usage line.
             Some(PromptStyle::Positional),
-            claude_headless(),
             claude_acp(),
             // `--permission-mode plan`: reads and runs read-only tools, and
             // asks before anything that would write.
@@ -241,7 +112,6 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             // `codex [OPTIONS] [PROMPT]`, forwarded to the interactive CLI
             // when no subcommand is given.
             Some(PromptStyle::Positional),
-            codex_headless(),
             None,
             // `-s read-only` is the sandbox policy applied to every command
             // the model runs, not a prompt it can talk its way past.
@@ -261,7 +131,6 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             Some(PromptStyle::Flag {
                 flag: "--prompt".to_owned(),
             }),
-            opencode_headless(),
             None,
             // OpenCode ships a `plan` agent whose tools cannot write; naming
             // it is how a launch asks for one.
@@ -286,10 +155,6 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             // `agent [options] [command] [prompt...]`, documented as "Initial
             // prompt for the agent".
             Some(PromptStyle::Positional),
-            // Its non-interactive form takes `--print`, but nothing here has
-            // read its event stream, and guessing one is how a job hangs
-            // waiting for a session id that never arrives.
-            None,
             None,
             // `--mode ask` is its own Q&A posture: explanations, no edits.
             review("ask mode", &["--mode", "ask"]),
@@ -308,7 +173,6 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             grok_config_dir(),
             grok_resume(),
             Some(PromptStyle::Positional),
-            grok_headless(),
             grok_acp(),
             review("plan mode", &["--permission-mode", "plan"]),
         ),
@@ -371,13 +235,11 @@ fn descriptor(
     config_dir: Option<ConfigDirSpec>,
     resume: Option<ResumeStyle>,
     prompt: Option<PromptStyle>,
-    headless: Option<HeadlessSpec>,
     acp: Option<AcpSpec>,
     review: Option<ReviewStyle>,
 ) -> AgentDescriptor {
     let supports_resume = resume.is_some();
     let supports_initial_prompt = prompt.is_some();
-    let supports_headless = headless.is_some();
     let supports_review = review.is_some();
     AgentDescriptor {
         id: AgentProviderId::new(id),
@@ -393,7 +255,6 @@ fn descriptor(
         config_dir,
         resume,
         prompt,
-        headless,
         acp,
         review,
         capabilities: AgentCapabilities {
@@ -403,7 +264,6 @@ fn descriptor(
             interactive_tui: true,
             supports_initial_prompt,
             supports_resume,
-            supports_headless,
             supports_review,
         },
     }
@@ -488,247 +348,20 @@ mod tests {
         }
     }
 
-    /// The exact command line a headless job runs, fresh and resumed.
-    ///
-    /// Written out in full because the order is the part that breaks: `codex`
-    /// takes its resume as a subcommand *after* `exec`, `claude` as a flag,
-    /// and both take the prompt last.
     #[test]
-    fn each_provider_runs_a_job_the_way_its_cli_spells_it() {
-        let headless = |id: &str| builtin(id).unwrap().headless;
-
-        let claude = headless("claude").unwrap();
+    fn claude_and_grok_declare_their_acp_entry() {
         assert_eq!(
-            claude.command_args("do the thing", None),
-            [
-                "-p",
-                "--permission-mode",
-                "acceptEdits",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "do the thing"
-            ]
-        );
-        assert_eq!(
-            claude.command_args("and then this", Some("sess-1")),
-            [
-                "-p",
-                "--resume",
-                "sess-1",
-                "--permission-mode",
-                "acceptEdits",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "and then this"
-            ]
-        );
-
-        let codex = headless("codex").unwrap();
-        assert_eq!(
-            codex.command_args("do the thing", None),
-            [
-                "exec",
-                "--json",
-                "-c",
-                "model_reasoning_summary=detailed",
-                "do the thing"
-            ]
-        );
-        assert_eq!(
-            codex.command_args("and then this", Some("sess-2")),
-            [
-                "exec",
-                "resume",
-                "sess-2",
-                "--json",
-                "-c",
-                "model_reasoning_summary=detailed",
-                "and then this"
-            ]
-        );
-
-        // A schema turns a verdict into a value rather than a line to grep.
-        assert_eq!(
-            claude.command_args_with("review it", None, Some(r#"{"type":"object"}"#)),
-            [
-                "-p",
-                "--permission-mode",
-                "acceptEdits",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--json-schema",
-                r#"{"type":"object"}"#,
-                "review it"
-            ]
-        );
-        assert_eq!(
-            codex.command_args_with("review it", None, Some("/tmp/verdict.json")),
-            [
-                "exec",
-                "--json",
-                "-c",
-                "model_reasoning_summary=detailed",
-                "--output-schema",
-                "/tmp/verdict.json",
-                "review it"
-            ]
-        );
-        // Declared for none of them: an API key. A job is the same binary,
-        // started the same way, on the same subscription login.
-        for descriptor in builtins() {
-            for arg in descriptor
-                .headless
-                .iter()
-                .flat_map(|h| h.command_args("p", None))
-            {
-                assert_ne!(arg, "--bare", "{} must keep its OAuth login", descriptor.id);
-            }
-        }
-    }
-
-    /// Only the provider that sandboxes writes out of its cwd names an extra
-    /// directory flag, and it lands before the positional prompt.
-    #[test]
-    fn only_a_sandboxed_provider_takes_an_extra_writable_dir() {
-        use std::path::PathBuf;
-
-        let dirs = vec![PathBuf::from("/repo/harness")];
-        let codex = builtin("codex").unwrap().headless.unwrap();
-        assert_eq!(
-            codex.command_args_with_dirs("do the thing", None, None, &dirs),
-            [
-                "exec",
-                "--json",
-                "-c",
-                "model_reasoning_summary=detailed",
-                "--add-dir",
-                "/repo/harness",
-                "do the thing"
-            ]
-        );
-
-        let claude = builtin("claude").unwrap().headless.unwrap();
-        assert_eq!(
-            claude.command_args_with_dirs("do the thing", None, None, &dirs),
-            [
-                "-p",
-                "--permission-mode",
-                "acceptEdits",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "do the thing"
-            ]
-        );
-    }
-
-    /// The capability flag restates the spelling, as it does for prompt and
-    /// resume — never a second source of truth.
-    #[test]
-    fn the_headless_capability_matches_the_declared_spelling() {
-        for d in builtins() {
-            assert_eq!(
-                d.capabilities.supports_headless,
-                d.headless.is_some(),
-                "{} disagrees with itself about headless runs",
-                d.id
-            );
-        }
-        assert!(builtin("cursor").unwrap().headless.is_none());
-    }
-
-    /// Grok's command line, written out for the same reason Claude's and
-    /// Codex's are: the order is the part that breaks. `-p` carries the prompt
-    /// as its *value*, so it lands at the end rather than leading the line.
-    #[test]
-    fn grok_runs_a_job_with_the_prompt_on_its_mode_flag() {
-        let grok = builtin("grok").unwrap().headless.unwrap();
-        assert_eq!(
-            grok.command_args("do the thing", None),
-            [
-                "--permission-mode",
-                "acceptEdits",
-                "--output-format",
-                "streaming-messages-json",
-                "-p",
-                "do the thing"
-            ]
-        );
-        assert_eq!(
-            grok.command_args("and then this", Some("sess-3")),
-            [
-                "--resume",
-                "sess-3",
-                "--permission-mode",
-                "acceptEdits",
-                "--output-format",
-                "streaming-messages-json",
-                "-p",
-                "and then this"
-            ]
-        );
-        assert_eq!(
-            grok.command_args_with("review it", None, Some(r#"{"type":"object"}"#)),
-            [
-                "--permission-mode",
-                "acceptEdits",
-                "--output-format",
-                "streaming-messages-json",
-                "--json-schema",
-                r#"{"type":"object"}"#,
-                "-p",
-                "review it"
-            ]
-        );
-    }
-
-    /// Grok speaks two NDJSON dialects; the descriptor picks the one the daemon
-    /// already parses. Reading `session_id` out of a stream that spelled it
-    /// `sessionId` would leave every follow-up job starting a fresh
-    /// conversation, silently.
-    #[test]
-    fn grok_streams_the_dialect_the_daemon_already_reads() {
-        let grok = builtin("grok").unwrap().headless.unwrap();
-        assert!(grok
-            .stream_args
-            .contains(&"streaming-messages-json".to_owned()));
-        assert!(!grok.stream_args.contains(&"streaming-json".to_owned()));
-        assert_eq!(grok.session_id_fields, ["session_id"]);
-        // The same spelling Claude's stream uses, which is the point.
-        assert_eq!(
-            grok.session_id_fields,
             builtin("claude")
                 .unwrap()
-                .headless
-                .unwrap()
-                .session_id_fields
+                .acp
+                .expect("claude speaks ACP")
+                .args,
+            ["acp"]
         );
-    }
-
-    #[test]
-    fn claude_declares_an_acp_spec_with_harness_write_policy() {
-        let acp = builtin("claude").unwrap().acp.expect("claude speaks ACP");
-        assert_eq!(acp.args, ["acp"]);
-        assert!(acp.permissions.allow_write_under_cwd);
-        assert!(acp.permissions.allow_write_under_extra);
-        assert!(!acp.permissions.allow_network);
-    }
-
-    /// The two providers with a documented ACP entry answer `initialize` the
-    /// same way, so they carry the same harness write policy and differ only in
-    /// how the binary is asked for that wire.
-    #[test]
-    fn grok_declares_the_same_acp_policy_on_its_own_subcommand() {
-        let grok = builtin("grok").unwrap().acp.expect("grok speaks ACP");
-        assert_eq!(grok.args, ["agent", "stdio"]);
         assert_eq!(
-            grok.permissions,
-            builtin("claude").unwrap().acp.unwrap().permissions
+            builtin("grok").unwrap().acp.expect("grok speaks ACP").args,
+            ["agent", "stdio"]
         );
-        // Everything else is CLI-only for now.
         for id in ["codex", "opencode", "cursor"] {
             assert!(builtin(id).unwrap().acp.is_none(), "{id}");
         }

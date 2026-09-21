@@ -5,7 +5,6 @@ import shell from "../styles/shell.css?raw";
 import workbench from "../styles/workbench.css?raw";
 import panels from "../styles/panels.css?raw";
 import settings from "../styles/settings.css?raw";
-import harness from "../styles/harness.css?raw";
 import late from "../styles/late.css?raw";
 import components from "../ui/ui.css?raw";
 
@@ -29,7 +28,6 @@ const SHEETS: ReadonlyArray<readonly [name: string, source: string]> = [
   ["styles/workbench.css", workbench],
   ["styles/panels.css", panels],
   ["styles/settings.css", settings],
-  ["styles/harness.css", harness],
   ["styles/late.css", late],
   ["ui/ui.css", components],
 ];

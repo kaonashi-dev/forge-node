@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use client::{CellGrid, Client, DaemonEvent, EventOutcome, Store};
 use domain::{
-    AgentProfileId, AgentProviderId, JobId, MouseMode, ProjectId, PtySize, SessionId, TerminalId,
+    AgentProfileId, AgentProviderId, MouseMode, ProjectId, PtySize, SessionId, TerminalId,
     Timestamp, WorkspaceId,
 };
 use serde::Serialize;
@@ -76,16 +76,6 @@ const DEFAULT_SIZE: PtySize = PtySize {
     pixel_height: 576,
 };
 
-/// The harness preview is a *window onto* a session, not the place it is
-/// driven from, so it is sized for reading the last dozen lines rather than
-/// for working. The feature tab overrides it once it has measured.
-const PREVIEW_SIZE: PtySize = PtySize {
-    cols: 100,
-    rows: 12,
-    pixel_width: 800,
-    pixel_height: 216,
-};
-
 enum Selected {
     Event(Box<DaemonEvent>),
     Command(RuntimeCommand),
@@ -96,19 +86,6 @@ enum Selected {
 #[derive(Clone, Debug, Serialize)]
 struct ClipboardPayload {
     text: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct JobLogPayload {
-    job_id: JobId,
-    lines: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct JobOutputPayload {
-    job_id: JobId,
-    from_line: u64,
-    lines: Vec<String>,
 }
 
 pub struct Runtime {
@@ -191,18 +168,6 @@ struct Attached {
     scroll_offset: u64,
 }
 
-/// Secondary terminal attachment for the harness preview.
-///
-/// One at a time. Attaching replaces whatever the preview held — which is what
-/// makes clicking through a feature's sessions cheap — and it is deliberately
-/// *not* the main attachment: leaving the feature tab must not move the
-/// session the shell is on.
-struct Preview {
-    session: SessionId,
-    terminal: TerminalId,
-    size: PtySize,
-}
-
 /// A Code-region editor terminal. Not the main attachment.
 ///
 /// Keyed by `SessionId` in the `editors` map, so the session is the key and
@@ -268,23 +233,6 @@ impl Emitter<'_> {
         let _ = self.app.emit(
             "runtime:cells",
             cells::frame(at.terminal, grid, at.scroll_offset, damage, bell, echo_id),
-        );
-    }
-
-    /// Publish one preview frame.
-    ///
-    /// Its own event, not `runtime:cells`: the main canvas must not repaint
-    /// because a watched harness session printed a line, and the preview must
-    /// not repaint because the user is typing.
-    fn preview_cells(&self, store: &mut Store, preview: &Preview, damage: &Damage) {
-        // The preview never rings: a bell belongs to the session the user is
-        // working in, and taking it here would swallow it for the tab.
-        let Some(grid) = store.terminal(&preview.terminal) else {
-            return;
-        };
-        let _ = self.app.emit(
-            "runtime:preview_cells",
-            cells::frame(preview.terminal, grid, 0, damage, false, 0),
         );
     }
 
@@ -373,9 +321,6 @@ fn runtime_loop(
             terminal,
             scroll_offset: 0,
         };
-        // Bound to this connection like the workbench worker: a reconnect
-        // starts with no preview rather than one pointing at a dead terminal.
-        let mut preview: Option<Preview> = None;
         let mut editors: HashMap<SessionId, EditorAttachment> = HashMap::new();
         // A worker per connection: dropping the previous sender ends the one
         // bound to the client that just died.
@@ -434,7 +379,6 @@ fn runtime_loop(
                     &client,
                     &mut store,
                     &mut at,
-                    &mut preview,
                     &mut editors,
                     &mut size,
                     &mut pending_echo,
@@ -462,17 +406,6 @@ fn runtime_loop(
                         }
                         if let Some(text) = effect.clipboard {
                             let _ = app.emit("runtime:clipboard", ClipboardPayload { text });
-                        }
-                        if let Some((job_id, lines)) = effect.job_log {
-                            let _ = app.emit("runtime:job_log", JobLogPayload { job_id, lines });
-                        }
-                        if let Some(damage) = effect.preview_damage {
-                            if let Some(open) = preview.as_ref() {
-                                emitter.preview_cells(&mut store, open, &damage);
-                            }
-                        }
-                        if effect.preview_detached {
-                            let _ = app.emit("runtime:preview_detached", ());
                         }
                         if let Some((terminal, damage)) = effect.editor_damage {
                             emitter.editor_cells(&mut store, terminal, &damage);
@@ -579,17 +512,10 @@ fn runtime_loop(
 
             if let Some(event) = event {
                 let mut batch = Batch::default();
-                batch.absorb(&event, &store, &at, preview.as_ref());
-                emit_job_event(&app, &event);
+                batch.absorb(&event, &store, &at);
+                emit_side_event(&app, &event);
                 emit_clipboard_event(&app, &event, &at, &editors);
-                batch.apply(
-                    &event,
-                    &mut store,
-                    &client,
-                    size,
-                    at.terminal,
-                    preview.as_ref(),
-                );
+                batch.apply(&event, &mut store, &client, size, at.terminal);
                 let batch_end = Instant::now() + EVENT_BATCH_BUDGET;
                 for _ in 1..EVENT_BATCH_LIMIT {
                     if Instant::now() >= batch_end {
@@ -598,26 +524,12 @@ fn runtime_loop(
                     let Ok(more) = events.try_recv() else {
                         break;
                     };
-                    batch.absorb(&more, &store, &at, preview.as_ref());
-                    emit_job_event(&app, &more);
+                    batch.absorb(&more, &store, &at);
+                    emit_side_event(&app, &more);
                     emit_clipboard_event(&app, &more, &at, &editors);
-                    batch.apply(
-                        &more,
-                        &mut store,
-                        &client,
-                        size,
-                        at.terminal,
-                        preview.as_ref(),
-                    );
+                    batch.apply(&more, &mut store, &client, size, at.terminal);
                 }
 
-                // A previewed session that exits leaves a terminal the daemon
-                // has already dropped; holding the attachment would leak it
-                // until the tab closed.
-                if batch.preview_session_removed {
-                    preview = None;
-                    let _ = app.emit("runtime:preview_detached", ());
-                }
                 for id in &batch.editor_sessions_removed {
                     editors.remove(id);
                     let _ = app.emit("runtime:editor_detached", *id);
@@ -646,15 +558,6 @@ fn runtime_loop(
 
                 if batch.shell {
                     emitter.shell(&store, &at);
-                }
-                // Not held back by the cell floor: the preview is 12 rows of a
-                // job's output, so its frames are small and rare next to the
-                // main canvas's, and delaying them would make a watched
-                // session look stalled.
-                if let Some(damage) = batch.preview_damage {
-                    if let Some(open) = preview.as_ref() {
-                        emitter.preview_cells(&mut store, open, &damage);
-                    }
                 }
                 for (terminal, damage) in batch.editor_damage {
                     emitter.editor_cells(&mut store, terminal, &damage);
@@ -692,9 +595,6 @@ fn runtime_loop(
         // dead socket is an error the panel would have to interpret, and it
         // already knows the connection dropped.
         *lock(&workbench) = None;
-        if preview.take().is_some() {
-            let _ = app.emit("runtime:preview_detached", ());
-        }
         emit_disconnected(
             &app,
             &latest,
@@ -808,27 +708,10 @@ fn clipboard_is_allowed(
     terminal_id == at.terminal || editors.values().any(|open| open.terminal == terminal_id)
 }
 
-fn emit_job_event(app: &AppHandle, event: &DaemonEvent) {
+fn emit_side_event(app: &AppHandle, event: &DaemonEvent) {
     match event {
         DaemonEvent::FileChanged { workspace_id, path } => {
             let _ = app.emit("workbench:file_changed", &(*workspace_id, path));
-        }
-        DaemonEvent::JobUpdated(job) => {
-            let _ = app.emit("runtime:job_updated", job.as_ref());
-        }
-        DaemonEvent::JobOutput {
-            job_id,
-            from_line,
-            lines,
-        } => {
-            let _ = app.emit(
-                "runtime:job_output",
-                JobOutputPayload {
-                    job_id: *job_id,
-                    from_line: *from_line,
-                    lines: lines.clone(),
-                },
-            );
         }
         // Provisioning acks when it starts, so this is where the GUI learns
         // what a worktree actually got. It is not shell state — the
@@ -896,12 +779,6 @@ struct Effect {
     damage: Option<Damage>,
     /// Text to hand the WebView for the clipboard.
     clipboard: Option<String>,
-    /// Existing output read for a job that was opened after it started.
-    job_log: Option<(JobId, Vec<String>)>,
-    /// The preview terminal has to repaint.
-    preview_damage: Option<Damage>,
-    /// The preview was let go; the tab clears its canvas.
-    preview_detached: bool,
     /// A side editor terminal has to repaint.
     editor_damage: Option<(TerminalId, Damage)>,
     /// A new editor session was spawned; the WebView opens its Code view.
@@ -1020,7 +897,7 @@ fn flush_pending_closes(pending: &mut HashSet<SessionId>, store: &Store, client:
 /// Run one command. `Err` means the connection is gone and the loop reconnects.
 ///
 /// The arguments are the whole of one connection's mutable state — the main
-/// attachment, the two side attachments, the viewport size and the echo
+/// attachment, the editor attachments, the viewport size and the echo
 /// watermark. Bundling them into a struct would only move the same fields
 /// behind a name and make every borrow in the loop go through it.
 #[allow(clippy::too_many_arguments)]
@@ -1029,7 +906,6 @@ fn run_command(
     client: &Client,
     store: &mut Store,
     at: &mut Attached,
-    preview: &mut Option<Preview>,
     editors: &mut HashMap<SessionId, EditorAttachment>,
     size: &mut PtySize,
     pending_echo: &mut u64,
@@ -1257,13 +1133,6 @@ fn run_command(
                 }
             }
         }
-        RuntimeCommand::ReadJobLog { job_id } => match client.read_job_log(job_id, 0) {
-            Ok((lines, _)) => Ok(Effect {
-                job_log: Some((job_id, lines)),
-                ..Effect::nothing()
-            }),
-            Err(error) => Err(CommandError::from_client(error)),
-        },
         RuntimeCommand::Resize { size: requested } => {
             let requested = requested.sanitized();
             if requested == *size {
@@ -1534,70 +1403,6 @@ fn run_command(
             Ok(Effect::nothing())
         }
 
-        // ------------------------------------------------------- harness ---
-        RuntimeCommand::LinkHarnessSession {
-            project,
-            feature,
-            session_id,
-        } => {
-            client
-                .link_harness_session(project, feature, session_id)
-                .map_err(CommandError::from_client)?;
-            Ok(Effect::nothing())
-        }
-        RuntimeCommand::CancelJob { job_id } => {
-            client
-                .cancel_job(job_id)
-                .map_err(CommandError::from_client)?;
-            // The daemon publishes the job's new state; nothing to echo.
-            Ok(Effect::nothing())
-        }
-        RuntimeCommand::AttachHarnessPreview { session_id, size } => {
-            let requested = size.unwrap_or(PREVIEW_SIZE).sanitized();
-            attach_preview(client, store, preview, at.terminal, session_id, requested)
-        }
-        RuntimeCommand::DetachHarnessPreview => Ok(detach_preview(client, preview, at.terminal)),
-        RuntimeCommand::ResizeHarnessPreview { size: requested } => {
-            let requested = requested.sanitized();
-            let Some(open) = preview.as_mut() else {
-                return Ok(Effect::nothing());
-            };
-            if open.size == requested {
-                return Ok(Effect::nothing());
-            }
-            open.size = requested;
-            // Re-attach rather than `ResizeTerminal`: the daemon adopts an
-            // attach's size only while the terminal is *unshared*, so a
-            // session somebody else is also watching keeps the geometry that
-            // viewer negotiated instead of being pulled down to 12 rows. The
-            // snapshot that comes back is the new viewport either way, which
-            // is what the full repaint below paints.
-            let snapshot = client
-                .attach_terminal(open.terminal, requested)
-                .map_err(CommandError::from_client)?;
-            store.attach_terminal(open.terminal, &snapshot);
-            Ok(Effect {
-                preview_damage: Some(Damage::Full),
-                ..Effect::nothing()
-            })
-        }
-        // Typed into the preview, which is a real terminal: a feature waiting
-        // on a prompt can be answered without leaving the tab. Never bracketed
-        // and never echoed — the preview has no latency sample to close.
-        RuntimeCommand::InputPreview { key } => {
-            let Some(open) = preview.as_ref() else {
-                return Ok(Effect::nothing());
-            };
-            let modes = store.terminal(&open.terminal).map(|grid| grid.modes);
-            let Some(bytes) = input::encode(&key, &modes.unwrap_or_default()) else {
-                return Ok(Effect::nothing());
-            };
-            client
-                .write_terminal_input(open.terminal, bytes)
-                .map_err(CommandError::from_client)?;
-            Ok(Effect::nothing())
-        }
-
         RuntimeCommand::OpenEditor {
             workspace,
             path,
@@ -1816,81 +1621,6 @@ fn save_agent_profile_effect(
             }),
             error => Err(error),
         },
-    }
-}
-
-/// Point the preview at `session_id`, letting go of whatever it held.
-///
-/// Attaching to the session the main canvas is already on is refused rather
-/// than done twice: the daemon would send its deltas under one terminal id and
-/// both surfaces would paint them, but detaching the preview later would then
-/// detach the terminal the user is working in.
-fn attach_preview(
-    client: &Client,
-    store: &mut Store,
-    preview: &mut Option<Preview>,
-    main: TerminalId,
-    session_id: SessionId,
-    size: PtySize,
-) -> Result<Effect, CommandError> {
-    let Some(terminal) = store
-        .sessions
-        .iter()
-        .find(|session| session.id == session_id)
-        .and_then(|session| session.terminal_id)
-    else {
-        return Err(CommandError::refused(
-            "that session has no terminal to preview",
-        ));
-    };
-    if terminal == main {
-        return Err(CommandError::refused(
-            "that session is already open in the terminal pane",
-        ));
-    }
-
-    if let Some(open) = preview.as_ref() {
-        if open.terminal == terminal {
-            return Ok(Effect::nothing());
-        }
-    }
-    // Let the old one go first, so two previews are never attached at once.
-    let detached = detach_preview(client, preview, main);
-
-    let snapshot = client
-        .attach_terminal(terminal, size)
-        .map_err(CommandError::from_client)?;
-    store.attach_terminal(terminal, &snapshot);
-    *preview = Some(Preview {
-        session: session_id,
-        terminal,
-        size,
-    });
-    Ok(Effect {
-        preview_damage: Some(Damage::Full),
-        // The detach that just happened is not news to the tab: the frame
-        // below replaces its canvas anyway.
-        preview_detached: false,
-        ..detached
-    })
-}
-
-/// Let the preview go, if it holds anything.
-///
-/// The terminal is only detached when the main canvas is not also on it —
-/// otherwise closing a feature tab would blank the terminal the user is in.
-fn detach_preview(client: &Client, preview: &mut Option<Preview>, main: TerminalId) -> Effect {
-    let Some(open) = preview.take() else {
-        return Effect::nothing();
-    };
-    if open.terminal != main {
-        if let Err(error) = client.detach_terminal(open.terminal) {
-            tracing::warn!(%error, "failed to detach the harness preview");
-        }
-    }
-    Effect {
-        preview_detached: true,
-        ..Effect::nothing()
     }
 }
 
@@ -2233,15 +1963,10 @@ fn request_scrollback(client: &Client, store: &mut Store, at: &Attached) {
 struct Batch {
     shell: bool,
     damage: Option<Damage>,
-    /// Rows the *preview* has to repaint, tracked apart from `damage` so a
-    /// watched session printing a line never repaints the main canvas.
-    preview_damage: Option<Damage>,
     active_session_removed: bool,
     /// Where the session that just went was, read while the store still had
     /// the row: `successor_session` needs its checkout to stay in it.
     departing: Option<Departing>,
-    /// The previewed session went away; the tab clears its canvas.
-    preview_session_removed: bool,
     /// Side editor terminals that have to repaint, keyed so two editors
     /// in the Code strip do not merge their damage.
     editor_damage: HashMap<TerminalId, Damage>,
@@ -2271,16 +1996,9 @@ impl Batch {
     /// Read what an event means for the shell and the viewport, *before* it is
     /// applied: a delta names the rows it damages, and the store does not keep
     /// them.
-    fn absorb(
-        &mut self,
-        event: &DaemonEvent,
-        store: &Store,
-        at: &Attached,
-        preview: Option<&Preview>,
-    ) {
+    fn absorb(&mut self, event: &DaemonEvent, store: &Store, at: &Attached) {
         if matches!(event, DaemonEvent::FactoryReset) {
             self.active_session_removed = true;
-            self.preview_session_removed = preview.is_some();
         }
         if let DaemonEvent::SessionRemoved { session_id } = event {
             if *session_id == at.session {
@@ -2295,9 +2013,6 @@ impl Batch {
                         key: tab_key(session),
                     });
             }
-            if preview.is_some_and(|open| open.session == *session_id) {
-                self.preview_session_removed = true;
-            }
             if store.sessions.iter().any(|session| {
                 session.id == *session_id && session.kind == domain::SessionKind::Editor
             }) {
@@ -2309,27 +2024,6 @@ impl Batch {
             // scales with the window and they ship behind an `Arc`.
             self.editor_frames.insert(*session_id, frame.clone());
         }
-        if let Some(open) = preview {
-            let preview_damage = match event {
-                DaemonEvent::TerminalDelta { terminal_id, delta }
-                    if *terminal_id == open.terminal =>
-                {
-                    Some(delta_damage(delta))
-                }
-                DaemonEvent::TerminalResync { terminal_id, .. }
-                    if *terminal_id == open.terminal =>
-                {
-                    Some(Damage::Full)
-                }
-                _ => None,
-            };
-            if let Some(damage) = preview_damage {
-                self.preview_damage = Some(match self.preview_damage.take() {
-                    Some(existing) => existing.merge(damage),
-                    None => damage,
-                });
-            }
-        }
         let damage = match event {
             DaemonEvent::TerminalDelta { terminal_id, delta } if *terminal_id == at.terminal => {
                 Some(delta_damage(delta))
@@ -2337,9 +2031,7 @@ impl Batch {
             DaemonEvent::TerminalResync { terminal_id, .. } if *terminal_id == at.terminal => {
                 Some(Damage::Full)
             }
-            DaemonEvent::TerminalDelta { terminal_id, delta }
-                if preview.is_none_or(|open| open.terminal != *terminal_id) =>
-            {
+            DaemonEvent::TerminalDelta { terminal_id, delta } => {
                 let d = editor_delta_damage(delta);
                 let merged = match self.editor_damage.remove(terminal_id) {
                     Some(existing) => existing.merge(d),
@@ -2348,9 +2040,7 @@ impl Batch {
                 self.editor_damage.insert(*terminal_id, merged);
                 None
             }
-            DaemonEvent::TerminalResync { terminal_id, .. }
-                if preview.is_none_or(|open| open.terminal != *terminal_id) =>
-            {
+            DaemonEvent::TerminalResync { terminal_id, .. } => {
                 self.editor_damage.insert(*terminal_id, Damage::Full);
                 None
             }
@@ -2370,9 +2060,8 @@ impl Batch {
 
     /// Apply the event to the replica, re-attaching when the sequence gapped.
     ///
-    /// `watched` is every terminal a surface is painting — the main canvas and
-    /// the harness preview — because a resync is only worth the round trip for
-    /// a terminal somebody is looking at.
+    /// A resync is only worth the round trip for the terminal the main canvas
+    /// is painting.
     fn apply(
         &mut self,
         event: &DaemonEvent,
@@ -2380,18 +2069,12 @@ impl Batch {
         client: &Client,
         size: PtySize,
         active_terminal: TerminalId,
-        preview: Option<&Preview>,
     ) {
         if let EventOutcome::NeedsResync { terminal_id } = store.apply_event(event) {
             if terminal_id == active_terminal {
                 if let Ok(snapshot) = client.attach_terminal(terminal_id, size) {
                     store.attach_terminal(terminal_id, &snapshot);
                     self.damage = Some(Damage::Full);
-                }
-            } else if let Some(open) = preview.filter(|open| open.terminal == terminal_id) {
-                if let Ok(snapshot) = client.attach_terminal(terminal_id, open.size) {
-                    store.attach_terminal(terminal_id, &snapshot);
-                    self.preview_damage = Some(Damage::Full);
                 }
             }
         }
@@ -2418,17 +2101,10 @@ fn changes_shell(event: &DaemonEvent, store: &Store) -> bool {
         DaemonEvent::SharesApplied { .. } => false,
         // A draft is a read with its own event, for the same reason.
         DaemonEvent::JuvaDraftReady { .. } => false,
-        // Terminal output is not shell state. The *attached* terminal's frames
-        // never get here — they became `damage` above — but the preview's do,
-        // and publishing the whole session tree for each of them put
-        // `ShellSnapshot::from_store` on the delta rung: a watched harness
-        // session printing steadily republished the shell up to 62 times a
-        // second, which is exactly what `preview_cells` having its own event
-        // exists to prevent.
+        // Terminal output is not shell state. Attached frames became `damage`
+        // above; an unattached terminal's frames must not republish the
+        // snapshot on the delta rung either.
         DaemonEvent::TerminalDelta { .. } | DaemonEvent::TerminalResync { .. } => false,
-        // Job output has its own event path. Treating it as shell state would
-        // serialize and send the whole snapshot for every streamed batch.
-        DaemonEvent::JobUpdated(_) | DaemonEvent::JobOutput { .. } => false,
         // Both of these flip a badge in `session_attention`, and both are
         // *edges*: the set already holds the terminal after the first note, so
         // every one after it changes nothing a client could see. The daemon
@@ -2445,7 +2121,7 @@ fn changes_shell(event: &DaemonEvent, store: &Store) -> bool {
     }
 }
 
-/// What one delta damages for a shell or preview attachment.
+/// What one delta damages for the attached terminal.
 ///
 /// A scroll moves every row, and the rows the delta names are only the ones
 /// that *also* changed content — so a scrolled delta is a full repaint however
@@ -2801,7 +2477,7 @@ mod tests {
         let at = attached(TerminalId::new(), SessionId::new(), 0);
         let store = Store::new();
         let mut batch = Batch::default();
-        batch.absorb(&delta(at.terminal, vec![3, 1], 0), &store, &at, None);
+        batch.absorb(&delta(at.terminal, vec![3, 1], 0), &store, &at);
         assert_eq!(batch.damage, Some(Damage::Rows(vec![3, 1])));
         assert!(!batch.shell, "terminal output is not shell state");
     }
@@ -2813,20 +2489,19 @@ mod tests {
         let at = attached(TerminalId::new(), SessionId::new(), 0);
         let store = Store::new();
         let mut batch = Batch::default();
-        batch.absorb(&delta(at.terminal, vec![0], 2), &store, &at, None);
+        batch.absorb(&delta(at.terminal, vec![0], 2), &store, &at);
         assert_eq!(batch.damage, Some(Damage::Full));
     }
 
-    /// The only terminal that is not the attached one and still sends deltas is
-    /// the harness preview, and its output is not shell state either.
-    /// Publishing the session tree for each of its frames is what put
+    /// A delta for a terminal this window is not attached to is not shell
+    /// state. Publishing the session tree for each of those frames would put
     /// `ShellSnapshot::from_store` on the delta rung.
     #[test]
     fn a_delta_for_another_terminal_is_not_shell_state() {
         let at = attached(TerminalId::new(), SessionId::new(), 0);
         let store = Store::new();
         let mut batch = Batch::default();
-        batch.absorb(&delta(TerminalId::new(), vec![0], 0), &store, &at, None);
+        batch.absorb(&delta(TerminalId::new(), vec![0], 0), &store, &at);
         assert_eq!(batch.damage, None);
         assert!(!batch.shell);
     }
@@ -2837,7 +2512,7 @@ mod tests {
         let editor = TerminalId::new();
         let store = Store::new();
         let mut batch = Batch::default();
-        batch.absorb(&delta(editor, vec![1], 0), &store, &at, None);
+        batch.absorb(&delta(editor, vec![1], 0), &store, &at);
         assert_eq!(batch.damage, None);
         assert_eq!(
             batch.editor_damage.get(&editor).cloned(),
@@ -2854,7 +2529,7 @@ mod tests {
         let editor = TerminalId::new();
         let store = Store::new();
         let mut batch = Batch::default();
-        batch.absorb(&delta(editor, vec![0, 2, 4], 3), &store, &at, None);
+        batch.absorb(&delta(editor, vec![0, 2, 4], 3), &store, &at);
         assert_eq!(
             batch.editor_damage.get(&editor).cloned(),
             Some(Damage::Rows(vec![0, 2, 4]))
@@ -2919,25 +2594,6 @@ mod tests {
         assert_eq!(editor_resize_target(&mut editors, session, wider), None);
     }
 
-    #[test]
-    fn a_preview_delta_repaints_the_preview_and_nothing_else() {
-        let at = attached(TerminalId::new(), SessionId::new(), 0);
-        let open = Preview {
-            session: SessionId::new(),
-            terminal: TerminalId::new(),
-            size: PREVIEW_SIZE,
-        };
-        let store = Store::new();
-        let mut batch = Batch::default();
-        batch.absorb(&delta(open.terminal, vec![2], 0), &store, &at, Some(&open));
-        assert_eq!(batch.preview_damage, Some(Damage::Rows(vec![2])));
-        assert_eq!(batch.damage, None);
-        assert!(
-            !batch.shell,
-            "a watched session printing a line must not republish the shell"
-        );
-    }
-
     /// The first note flips the unread badge, so it is news. The daemon sends
     /// one per second per busy terminal, and the rest say what the store
     /// already knows.
@@ -2951,12 +2607,12 @@ mod tests {
         };
 
         let mut first = Batch::default();
-        first.absorb(&event, &store, &at, None);
+        first.absorb(&event, &store, &at);
         assert!(first.shell, "the badge went from off to on");
 
         let _ = store.apply_event(&event);
         let mut second = Batch::default();
-        second.absorb(&event, &store, &at, None);
+        second.absorb(&event, &store, &at);
         assert!(!second.shell, "the badge was already on");
     }
 
@@ -2999,32 +2655,13 @@ mod tests {
         };
 
         let mut first = Batch::default();
-        first.absorb(&event, &store, &at, None);
+        first.absorb(&event, &store, &at);
         assert!(first.shell);
 
         let _ = store.apply_event(&event);
         let mut second = Batch::default();
-        second.absorb(&event, &store, &at, None);
+        second.absorb(&event, &store, &at);
         assert!(!second.shell);
-    }
-
-    #[test]
-    fn job_output_has_its_own_stream_and_does_not_send_a_shell_snapshot() {
-        let at = attached(TerminalId::new(), SessionId::new(), 0);
-        let store = Store::new();
-        let mut batch = Batch::default();
-        batch.absorb(
-            &DaemonEvent::JobOutput {
-                job_id: JobId::new(),
-                from_line: 0,
-                lines: vec!["assistant  the answer".to_string()],
-            },
-            &store,
-            &at,
-            None,
-        );
-        assert_eq!(batch.damage, None);
-        assert!(!batch.shell);
     }
 
     #[test]
@@ -3032,8 +2669,8 @@ mod tests {
         let at = attached(TerminalId::new(), SessionId::new(), 0);
         let store = Store::new();
         let mut batch = Batch::default();
-        batch.absorb(&delta(at.terminal, vec![1], 0), &store, &at, None);
-        batch.absorb(&delta(at.terminal, vec![2], 0), &store, &at, None);
+        batch.absorb(&delta(at.terminal, vec![1], 0), &store, &at);
+        batch.absorb(&delta(at.terminal, vec![2], 0), &store, &at);
         assert_eq!(batch.damage, Some(Damage::Rows(vec![1, 2])));
     }
 
@@ -3042,7 +2679,7 @@ mod tests {
         let at = attached(TerminalId::new(), SessionId::new(), 0);
         let store = Store::new();
         let mut batch = Batch::default();
-        batch.absorb(&delta(at.terminal, vec![1], 0), &store, &at, None);
+        batch.absorb(&delta(at.terminal, vec![1], 0), &store, &at);
         batch.absorb(
             &DaemonEvent::TerminalResync {
                 terminal_id: at.terminal,
@@ -3060,7 +2697,6 @@ mod tests {
             },
             &store,
             &at,
-            None,
         );
         assert_eq!(batch.damage, Some(Damage::Full));
     }
@@ -3076,7 +2712,6 @@ mod tests {
             },
             &store,
             &at,
-            None,
         );
         assert!(batch.active_session_removed);
         assert!(batch.shell);
@@ -3220,7 +2855,6 @@ mod tests {
             },
             &before,
             &at,
-            None,
         );
 
         let after = store_of(
@@ -3277,7 +2911,6 @@ mod tests {
             },
             &store,
             &at,
-            None,
         );
 
         assert_eq!(batch.departing.map(|gone| gone.workspace), Some(here.id));
@@ -3294,7 +2927,6 @@ mod tests {
             },
             &store,
             &at,
-            None,
         );
         assert!(!batch.active_session_removed);
         assert!(batch.shell);

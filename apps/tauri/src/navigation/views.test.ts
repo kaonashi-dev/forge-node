@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  FEATURE_COMPOSE_VIEW,
   TERMINAL_VIEW,
   closeOthers,
   closeToRight,
@@ -50,16 +49,6 @@ describe("parked views", () => {
     const views = openView(openView(openView(emptyViews(), diff), lib), diff);
     expect(views.open.map(viewKey)).toEqual(["diff", "editor-terminal:s-lib"]);
     expect(views.active).toEqual(diff);
-  });
-
-  // A draft and the feature it becomes are two tabs, not one: `#3` is a number
-  // the daemon has not minted while the draft is open.
-  it("keeps the feature draft apart from a numbered feature", () => {
-    const numbered = { kind: "feature", id: 3 } as const;
-    expect(viewKey(FEATURE_COMPOSE_VIEW)).toBe("feature_compose");
-    expect(viewKey(numbered)).toBe("feature:3");
-    expect(viewLabel(FEATURE_COMPOSE_VIEW)).toBe("New Feature");
-    expect(strip(openView(openView(emptyViews(), FEATURE_COMPOSE_VIEW), numbered))).toHaveLength(2);
   });
 
   it("names an editor after its file, not its path", () => {

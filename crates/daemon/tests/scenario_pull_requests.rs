@@ -115,7 +115,7 @@ fn refresh_coalesces_reuses_cache_and_snapshot_never_invokes_gh() {
     else {
         panic!("expected snapshot");
     };
-    assert_eq!(pull_requests, PullRequestState::default());
+    assert_eq!(*pull_requests, PullRequestState::default());
     assert_eq!(invocation_count(&counter), 0, "snapshot must not invoke gh");
 
     assert_eq!(
@@ -165,7 +165,7 @@ fn refresh_coalesces_reuses_cache_and_snapshot_never_invokes_gh() {
     else {
         panic!("expected snapshot");
     };
-    assert_eq!(pull_requests, state);
+    assert_eq!(*pull_requests, state);
     assert_eq!(invocation_count(&counter), 1, "snapshot remains clone-only");
 }
 

@@ -90,7 +90,6 @@ kbd {
   .forge-chip,
   .forge-checkbox-box,
   .forge-radio-dot,
-  /* `.forge-row` covers the tree, file, job and empty-centre rows at once. */
   .forge-row,
   /* A `div`, so the shared row transition above never reaches its hover fill. */
   .ws-card,
@@ -110,24 +109,9 @@ kbd {
       transform var(--motion-fast) var(--ease);
   }
 
-  /*
-   * The two strips that arrive rather than appear.
-   *
-   * Both are rendered by a `Show`, so the animation fires on mount and never
-   * again. The notice keeps its centring translate in both keyframes: written
-   * as `translateY` alone it would jump to the left edge for the duration.
-   */
-  .attention-bar {
-    animation: forge-strip-in var(--motion-slow) var(--ease);
-  }
+  /* Keep the notice's centring translate in both keyframes to avoid a horizontal jump. */
   .notice {
     animation: forge-notice-in var(--motion-slow) var(--ease);
-  }
-}
-@keyframes forge-strip-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
   }
 }
 @keyframes forge-notice-in {

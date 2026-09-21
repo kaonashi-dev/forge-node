@@ -1,5 +1,4 @@
 import { createMemo, type JSX } from "solid-js";
-import { FeaturesPanel } from "../../features/harness/FeaturesPanel";
 import { FileTreePanel } from "../../features/files/explorer/FileTreePanel";
 import { GitPanel } from "../../features/git/GitPanel";
 import { HistoryPanel } from "../../features/sessions/HistoryPanel";
@@ -32,7 +31,6 @@ export function Sidebar() {
     Files: () => <FileTreePanel />,
     History: () => <HistoryPanel />,
     PR: () => <PullRequestPanel />,
-    Features: () => <FeaturesPanel />,
     Git: () => <GitPanel />,
   };
 

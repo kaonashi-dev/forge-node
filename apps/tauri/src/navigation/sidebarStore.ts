@@ -9,7 +9,7 @@ import {
 } from "../state/preferences";
 
 /** Stored verbatim under `ui.sidebar.view`: renaming one sends everyone back to Projects. */
-export const SIDEBAR_VIEWS = ["Projects", "Files", "History", "PR", "Features", "Git"] as const;
+export const SIDEBAR_VIEWS = ["Projects", "Files", "History", "PR", "Git"] as const;
 
 export type SidebarView = (typeof SIDEBAR_VIEWS)[number];
 

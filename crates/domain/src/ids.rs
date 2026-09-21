@@ -93,12 +93,6 @@ uuid_id!(
 uuid_id!(ContextId);
 uuid_id!(AgentProfileId);
 uuid_id!(ShareRuleId);
-uuid_id!(
-    /// Identifies one headless agent run (`crate::job::Job`). Runtime-only,
-    /// like [`TerminalId`]: a job is a process, and no process outlives the
-    /// daemon that started it.
-    JobId
-);
 
 /// Stable provider slug, such as `"claude"`, rather than a generated UUID.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

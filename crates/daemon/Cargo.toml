@@ -18,7 +18,6 @@ editor-control.workspace = true
 terminal-core.workspace = true
 agents.workspace = true
 git-service.workspace = true
-harness-service.workspace = true
 fs-service.workspace = true
 persistence.workspace = true
 client.workspace = true

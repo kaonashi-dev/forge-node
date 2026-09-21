@@ -214,9 +214,6 @@ pub struct VersionProbe {
 pub struct AgentCapabilities {
     pub interactive_tui: bool,
     pub supports_initial_prompt: bool,
-    /// Whether the provider can run a task without a terminal and exit.
-    #[serde(default)]
-    pub supports_headless: bool,
     pub supports_resume: bool,
     #[serde(default)]
     pub supports_review: bool,
@@ -274,289 +271,16 @@ impl ResumeStyle {
     }
 }
 
-/// How a provider is told to answer in a given JSON shape.
-///
-/// The two spellings are the two the CLIs use, and the difference is not
-/// cosmetic: one takes the schema itself on the command line, the other takes
-/// a path to a file holding it, so the caller has to write that file first.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum SchemaStyle {
-    /// The schema follows the flag: `claude --json-schema '<json>'`.
-    Inline { flag: String },
-    /// A file holding the schema follows the flag:
-    /// `codex --output-schema <path>`.
-    File { flag: String },
-}
-
-/// How a provider runs one task without a terminal and then exits.
-///
-/// The interactive spelling (`prompt`, `resume`) says how to *open* a session;
-/// this says how to run one and get an answer back. Both CLIs support it
-/// today and both spell it differently — `claude -p --output-format
-/// stream-json --verbose <prompt>` against `codex exec --json <prompt>` — so
-/// the difference lives here as data and the daemon spawns them identically.
-///
-/// Deliberately **not** part of this: anything about credentials. A headless
-/// run is the same binary started the same way as an interactive one and
-/// reads the same subscription login from the provider's own config. (For
-/// Claude Code specifically, that is why `--bare` must never appear in
-/// `args`: bare mode skips the OAuth credentials and demands an API key.)
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HeadlessSpec {
-    /// The arguments that select non-interactive mode, first on the command
-    /// line: `["-p"]`, `["exec"]`.
-    pub mode_args: Vec<String>,
-    /// The arguments that make it emit machine-readable events on stdout, one
-    /// JSON object per line.
-    pub stream_args: Vec<String>,
-    /// How it re-enters one of its own headless runs. `None` means every job
-    /// starts a fresh conversation.
-    pub resume: Option<ResumeStyle>,
-    /// How the task itself is passed.
-    pub prompt: PromptStyle,
-    /// How it is asked to answer in a given JSON shape, when it can be.
-    ///
-    /// What turns a reviewer's verdict from a line of prose somebody greps for
-    /// into a value: `{"verdict":"APPROVED"}` either parses or it does not.
-    /// `None` means the provider offers no such flag and the caller has to
-    /// read the answer out of whatever the agent wrote on disk.
-    pub schema: Option<SchemaStyle>,
-    /// The field names that may carry the provider's *own* session id in the
-    /// event stream, tried in order. Read once, so a follow-up job can resume
-    /// the conversation this one started.
-    ///
-    /// Names only: parsing the stream is the daemon's job, because this crate
-    /// depends on `serde` alone and knows nothing of JSON documents.
-    pub session_id_fields: Vec<String>,
-    /// Flag granting one more writable directory on the headless command
-    /// line, for providers that sandbox file writes to their cwd.
-    ///
-    /// Data, not a branch: the daemon appends the flag once per directory and
-    /// a provider without one ignores the directories. Codex spells it
-    /// `--add-dir`; a step running in a worktree reaches the repository's
-    /// shared harness state through it.
-    pub extra_writable_dir_flag: Option<String>,
-    /// Non-interactive permission posture, before the stream args.
-    ///
-    /// A headless job has no human to click "Allow" on Write/Edit. Claude's
-    /// `--permission-mode acceptEdits` is the CLI answer; ACP answers the same
-    /// question through [`AcpPermissionPolicy`]. Empty for providers that do
-    /// not prompt.
-    #[serde(default)]
-    pub permission_args: Vec<String>,
-}
-
-impl HeadlessSpec {
-    /// The whole command line after the executable.
-    ///
-    /// Order is fixed by the CLIs, not by taste: the mode selector leads
-    /// (`codex exec`), a resume follows it as its own subcommand or flag
-    /// (`codex exec resume <id>`, `claude -p --resume <id>`), and the prompt
-    /// is last because both spell it positionally.
-    #[must_use]
-    pub fn command_args(&self, prompt: &str, resume_from: Option<&str>) -> Vec<String> {
-        self.command_args_with(prompt, resume_from, None)
-    }
-
-    /// The command line including the schema argument, when one is asked for.
-    ///
-    /// `schema` is the value the flag takes: the schema document itself for
-    /// [`SchemaStyle::Inline`], the path of a file holding it for
-    /// [`SchemaStyle::File`]. A schema asked of a provider that declares none
-    /// is dropped rather than guessed at — the answer is then prose, which is
-    /// what it would have been anyway.
-    #[must_use]
-    pub fn command_args_with(
-        &self,
-        prompt: &str,
-        resume_from: Option<&str>,
-        schema: Option<&str>,
-    ) -> Vec<String> {
-        self.command_args_with_dirs(prompt, resume_from, schema, &[])
-    }
-
-    /// The command line granting `writable_dirs` as extra writable
-    /// directories, for providers that declare
-    /// [`HeadlessSpec::extra_writable_dir_flag`].
-    ///
-    /// Placed with the other options, before the positional prompt: anything
-    /// appended after it would be read as part of the prompt.
-    #[must_use]
-    pub fn command_args_with_dirs(
-        &self,
-        prompt: &str,
-        resume_from: Option<&str>,
-        schema: Option<&str>,
-        writable_dirs: &[std::path::PathBuf],
-    ) -> Vec<String> {
-        let mut args = self.mode_args.clone();
-        if let (Some(style), Some(id)) = (self.resume.as_ref(), resume_from) {
-            args.extend(style.args(id));
-        }
-        args.extend(self.permission_args.iter().cloned());
-        args.extend(self.stream_args.iter().cloned());
-        if let Some(flag) = self.extra_writable_dir_flag.as_ref() {
-            for dir in writable_dirs {
-                args.push(flag.clone());
-                args.push(dir.display().to_string());
-            }
-        }
-        if let (Some(style), Some(schema)) = (self.schema.as_ref(), schema) {
-            let flag = match style {
-                SchemaStyle::Inline { flag } | SchemaStyle::File { flag } => flag,
-            };
-            args.push(flag.clone());
-            args.push(schema.to_owned());
-        }
-        args.extend(self.prompt.args(prompt));
-        args
-    }
-}
-
 /// How a provider speaks [Agent Client Protocol](https://agentclientprotocol.com)
 /// over stdio.
 ///
-/// The sibling of [`HeadlessSpec`]: same job row, same log, same envelope; a
-/// different wire. `None` on a descriptor means CLI-only for now.
+/// `None` on a descriptor means the provider has no ACP entry. Grok's usage
+/// reading spawns `args` rather than spelling the subcommand a second time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcpSpec {
     /// Extra args after the executable when spawning as an ACP agent.
     #[serde(default)]
     pub args: Vec<String>,
-    /// What the daemon answers when the agent asks `session/request_permission`.
-    pub permissions: AcpPermissionPolicy,
-}
-
-/// Auto-answers for ACP tool permission requests on harness jobs.
-///
-/// The daemon is the Client: a headless worker must not wait on a click that
-/// never comes. Writes under the worktree cwd and under explicit extra roots
-/// (the harness state directory) are allowed; everything else is denied or
-/// escalated to a human gate depending on [`AcpPermissionPolicy::ask_outside`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcpPermissionPolicy {
-    /// Allow read tools unconditionally.
-    #[serde(default = "default_true")]
-    pub allow_read: bool,
-    /// Allow edit/write tools whose paths sit under the session cwd.
-    #[serde(default = "default_true")]
-    pub allow_write_under_cwd: bool,
-    /// Allow edit/write under directories passed as extra roots (harness root).
-    #[serde(default = "default_true")]
-    pub allow_write_under_extra: bool,
-    /// Allow network / fetch tools.
-    #[serde(default)]
-    pub allow_network: bool,
-    /// When a write falls outside cwd and extra roots: ask the human (true)
-    /// or deny (false). Harness defaults to deny so a job still ends.
-    #[serde(default)]
-    pub ask_outside: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for AcpPermissionPolicy {
-    fn default() -> Self {
-        Self {
-            allow_read: true,
-            allow_write_under_cwd: true,
-            allow_write_under_extra: true,
-            allow_network: false,
-            ask_outside: false,
-        }
-    }
-}
-
-/// Kind of tool call an ACP agent is asking permission for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AcpToolKind {
-    Read,
-    Edit,
-    Execute,
-    Fetch,
-    Other,
-}
-
-/// What the daemon decides for one ACP permission request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AcpPermissionDecision {
-    Allow,
-    Deny,
-    /// Surface as a harness gate; the job stays alive only on a real ACP session.
-    Ask,
-}
-
-impl AcpPermissionPolicy {
-    /// Decide from tool kind and optional absolute path the tool would touch.
-    #[must_use]
-    pub fn decide(
-        &self,
-        kind: AcpToolKind,
-        path: Option<&std::path::Path>,
-        cwd: &std::path::Path,
-        extra_roots: &[std::path::PathBuf],
-    ) -> AcpPermissionDecision {
-        match kind {
-            AcpToolKind::Read => {
-                if self.allow_read {
-                    AcpPermissionDecision::Allow
-                } else {
-                    AcpPermissionDecision::Deny
-                }
-            }
-            AcpToolKind::Fetch => {
-                if self.allow_network {
-                    AcpPermissionDecision::Allow
-                } else {
-                    AcpPermissionDecision::Deny
-                }
-            }
-            AcpToolKind::Execute | AcpToolKind::Other => AcpPermissionDecision::Ask,
-            AcpToolKind::Edit => {
-                let Some(path) = path else {
-                    return if self.ask_outside {
-                        AcpPermissionDecision::Ask
-                    } else {
-                        AcpPermissionDecision::Deny
-                    };
-                };
-                if self.allow_write_under_cwd && path.starts_with(cwd) {
-                    return AcpPermissionDecision::Allow;
-                }
-                if self.allow_write_under_extra
-                    && extra_roots.iter().any(|root| path.starts_with(root))
-                {
-                    return AcpPermissionDecision::Allow;
-                }
-                if self.ask_outside {
-                    AcpPermissionDecision::Ask
-                } else {
-                    AcpPermissionDecision::Deny
-                }
-            }
-        }
-    }
-}
-
-/// Job launch currently supports only [`WorkerTransport::Cli`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum WorkerTransport {
-    Cli,
-    Acp,
-}
-
-impl WorkerTransport {
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Cli => "cli",
-            Self::Acp => "acp",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -574,10 +298,7 @@ pub struct AgentDescriptor {
     /// How the provider takes a prompt at launch. `None` means it only
     /// takes one typed into its TUI, so nothing may be launched *for* it.
     pub prompt: Option<PromptStyle>,
-    /// How the provider runs a task headless. `None` means it has no such
-    /// mode, so it can only ever be driven through a terminal.
-    pub headless: Option<HeadlessSpec>,
-    /// How the provider speaks ACP over stdio. `None` means CLI-only for now.
+    /// How the provider speaks ACP over stdio. `None` means it has no ACP entry.
     #[serde(default)]
     pub acp: Option<AcpSpec>,
     /// How the provider is put in a read-only posture. `None` means it
@@ -760,48 +481,5 @@ mod tests {
             pixel_height: 0,
         };
         assert_eq!(ok.sanitized(), ok);
-    }
-
-    #[test]
-    fn acp_policy_allows_worktree_and_harness_writes() {
-        let policy = AcpPermissionPolicy::default();
-        let cwd = PathBuf::from("/repo/worktrees/feat");
-        let harness = PathBuf::from("/repo/harness");
-        let extras = [harness.clone()];
-        assert_eq!(
-            policy.decide(AcpToolKind::Read, None, &cwd, &extras),
-            AcpPermissionDecision::Allow
-        );
-        assert_eq!(
-            policy.decide(
-                AcpToolKind::Edit,
-                Some(&cwd.join("src/a.rs")),
-                &cwd,
-                &extras
-            ),
-            AcpPermissionDecision::Allow
-        );
-        assert_eq!(
-            policy.decide(
-                AcpToolKind::Edit,
-                Some(&harness.join("progress/gate_12.md")),
-                &cwd,
-                &extras
-            ),
-            AcpPermissionDecision::Allow
-        );
-        assert_eq!(
-            policy.decide(
-                AcpToolKind::Edit,
-                Some(&PathBuf::from("/etc/passwd")),
-                &cwd,
-                &extras
-            ),
-            AcpPermissionDecision::Deny
-        );
-        assert_eq!(
-            policy.decide(AcpToolKind::Execute, None, &cwd, &extras),
-            AcpPermissionDecision::Ask
-        );
     }
 }

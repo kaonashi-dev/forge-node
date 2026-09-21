@@ -2,9 +2,6 @@ import { For, Show, createEffect, createSignal, lazy, onCleanup } from "solid-js
 import type { Section } from "../../features/settings/SettingsRoute";
 import { centerMode, codeOpen, currentViews, focus } from "../../navigation/viewsStore";
 import { close, closeCode, closeOtherViews, closeViewsToRight } from "../../features/editor/tabs";
-import { FeatureView } from "../../features/harness/FeatureView";
-import { FeatureComposeView } from "../../features/harness/FeatureComposeView";
-import { AttentionBar } from "./AttentionBar";
 import { EmptyCenter } from "./EmptyCenter";
 import { forgeStore } from "../../state/forgeStore";
 import { reconnect } from "../../runtime/host";
@@ -232,12 +229,6 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
 
   return (
     <div class="center-stack">
-      {/* Above the strip and above whatever is on screen: a gate that stopped
-          the machine is the one thing worth interrupting any view for. Not in
-          settings, which is the one place the user is deliberately elsewhere. */}
-      <Show when={!props.settings}>
-        <AttentionBar />
-      </Show>
       <Show when={onCode() && strip(views()).length > 0}>
         <div class="workbench-strip" role="tablist" aria-label="Open files">
           <For each={strip(views())}>
@@ -428,16 +419,6 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
       <Show when={onCode() && active().kind === "pr_compose"}>
         <div class="center-view">
           <PrComposeView />
-        </div>
-      </Show>
-      <Show when={onCode() && active().kind === "feature_compose"}>
-        <div class="center-view">
-          <FeatureComposeView />
-        </div>
-      </Show>
-      <Show when={onCode() && active().kind === "feature"}>
-        <div class="center-view">
-          <FeatureView id={(active() as { id: number }).id} />
         </div>
       </Show>
 

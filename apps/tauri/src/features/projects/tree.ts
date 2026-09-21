@@ -14,14 +14,13 @@ export type SessionNode = {
   /** Same as `session.id`, so `reconcile({ key: "id" })` can key this row. */
   id: string;
   session: Session;
-  /** The label the row shows, with its harness role when it has one. */
+  /** The label the row shows, with its role when it has one. */
   label: string;
   /**
    * How deep under its parent this session sits; `0` is a root.
    *
-   * The harness starts an orchestrator and hangs its steps off it. Side by
-   * side those rows read as five unrelated agents rather than one piece of
-   * work, which is the question the rail exists to answer.
+   * A child sits under the session that started it. Side by side those rows
+   * read as unrelated agents rather than one piece of work.
    */
   depth: number;
   wantsYou: boolean;

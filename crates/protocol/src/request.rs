@@ -5,9 +5,8 @@
 
 use domain::{
     AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy, ContextEnvelope,
-    EditorInputEvent, HarnessAdvanceAction, HarnessArtifactKind, HarnessStep, JobId, JobRequest,
-    JuvaKind, ProjectGroupId, ProjectId, PtySize, SessionId, SessionKind, SessionRole,
-    ShareCleanup, ShareRule, ShareRuleId, TerminalId, WorkspaceId, WorktreeIgnore,
+    EditorInputEvent, JuvaKind, ProjectGroupId, ProjectId, PtySize, SessionId, SessionKind,
+    SessionRole, ShareCleanup, ShareRule, ShareRuleId, TerminalId, WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -90,9 +89,9 @@ pub enum Request {
     /// Restore Forge-owned state to its defaults → `Ack`;
     /// [`crate::event::DaemonEvent::FactoryReset`] when complete.
     ///
-    /// Kills sessions and jobs, removes worktrees created by Forge, and clears
-    /// the metadata database. Repository contents, branches, commits,
-    /// `config.toml`, logs, and repository-owned `harness/` files are retained.
+    /// Kills sessions, removes worktrees created by Forge, and clears the
+    /// metadata database. Repository contents, branches, commits,
+    /// `config.toml` and logs are retained.
     FactoryReset,
     /// Read an opaque app-state key →
     /// [`crate::response::Response::AppState`].
@@ -119,115 +118,6 @@ pub enum Request {
     /// Synchronous and local like [`Request::GetWorkspaceDiff`]: counts under
     /// the core lock plus the client registry, no network and no broadcast.
     GetStats,
-
-    // ----- Harness (subagent feature workflow) -----
-    /// List features from `harness/features.json` at the project root.
-    ListHarnessFeatures { project_id: ProjectId },
-    /// One feature row from `harness/features.json`.
-    GetHarnessFeature {
-        project_id: ProjectId,
-        feature_id: u32,
-    },
-    /// Parse `harness/progress/events_<id>.jsonl`.
-    GetHarnessTimeline {
-        project_id: ProjectId,
-        feature_id: u32,
-    },
-    /// Read a harness markdown artefact.
-    ReadHarnessArtifact {
-        project_id: ProjectId,
-        feature_id: u32,
-        artifact: HarnessArtifactKind,
-    },
-    /// Register a new harness feature (`pending`).
-    ///
-    /// `workspace_id` is the checkout the feature will be implemented in. The
-    /// state file itself is one per repository, so this is what lets two
-    /// features run in two worktrees of the same project — and what the
-    /// daemon checks to refuse a second open feature in a checkout that
-    /// already has one (`Conflict`). `None` leaves the feature unattached,
-    /// like one registered from the harness CLI.
-    RegisterHarnessFeature {
-        project_id: ProjectId,
-        workspace_id: Option<WorkspaceId>,
-        spec_raw: String,
-        title: Option<String>,
-    },
-    /// Register from a GitHub issue via `gh`. `workspace_id` as above.
-    RegisterHarnessFromIssue {
-        project_id: ProjectId,
-        workspace_id: Option<WorkspaceId>,
-        issue_number: u32,
-    },
-    /// Human gate or phase transition on disk.
-    ///
-    /// `revision` is the row's `revision` as the client last saw it. A decision
-    /// taken against a view the machine has since moved past is a no-op that
-    /// answers with the current row — the same idempotence Orca gets from
-    /// `--retry-request`, and what stops a replayed *Approve* from launching a
-    /// second implementer in the same worktree. `None` means "apply regardless",
-    /// which only a caller with no view of its own should send.
-    HarnessAdvance {
-        project_id: ProjectId,
-        feature_id: u32,
-        #[serde(default)]
-        revision: Option<u64>,
-        action: HarnessAdvanceAction,
-    },
-    /// Persist the orchestrator session on the feature row.
-    LinkHarnessSession {
-        project_id: ProjectId,
-        feature_id: u32,
-        session_id: SessionId,
-    },
-    /// Run `bun harness/src/validate.ts` in the project root.
-    ValidateHarness { project_id: ProjectId },
-
-    /// Run one step of the harness cycle as a job → `Response::Job`.
-    ///
-    /// The daemon writes the step's `*_started` event, sets the feature's
-    /// status and starts the agent; when that job exits it records the outcome
-    /// and starts whatever comes next, stopping at the human gate. So a client
-    /// asks for this once, at the beginning, and after an approval — the rest
-    /// arrives as `JobUpdated` and `HarnessFeatureChanged`.
-    ///
-    /// `InvalidRequest` when the feature names no checkout, or when no
-    /// headless-capable agent is configured for that step.
-    /// `Conflict` when a step is already running for that feature, and
-    /// `InvalidRequest` when the transition table has no row for this step from
-    /// the feature's current status — which is what makes the human gate
-    /// unskippable rather than merely conventional.
-    RunHarnessStep {
-        project_id: ProjectId,
-        feature_id: u32,
-        step: HarnessStep,
-        /// Run the step anyway, and record a `gate_bypassed` event. The GUI
-        /// never sets it; it exists for an operator unsticking a state by hand.
-        #[serde(default)]
-        force: bool,
-    },
-    // ----- Jobs (headless agent runs) -----
-    /// Start a headless run of one provider → `Response::Job`.
-    ///
-    /// Unlike `CreateAgentSession` this opens no terminal and holds nothing:
-    /// the process runs to completion and its result is the exit code plus the
-    /// event stream it wrote. Answers as soon as the job is *accepted*, which
-    /// may be before it starts — jobs queue behind a concurrency limit so a
-    /// fan-out cannot drain the account's rate limit in one go — and the run
-    /// itself reports through `JobUpdated` / `JobOutput`.
-    ///
-    /// `InvalidRequest` when the provider declares no headless mode.
-    StartJob { request: JobRequest },
-    /// Kill a running job → `Ack`. A queued one is dropped, a finished one is
-    /// left alone.
-    CancelJob { job_id: JobId },
-    /// Every job this daemon has run since it started → `Response::Jobs`.
-    ListJobs,
-    /// Read one job's event stream from disk → `Response::JobLog`.
-    ///
-    /// `from_line` skips lines a client already has, so a reconnecting client
-    /// catches up without re-reading a long run.
-    ReadJobLog { job_id: JobId, from_line: u64 },
 
     // ----- Projects -----
     /// Add a project directory → `Ack`; `ProjectAdded` broadcast.
@@ -766,7 +656,7 @@ pub enum Request {
         role: SessionRole,
         /// Where the child should run relative to its parent.
         workspace_policy: ChildWorkspacePolicy,
-        /// Optional prompt for agent children (harness implementer/reviewer).
+        /// Optional prompt for an agent child.
         initial_prompt: Option<String>,
     },
     /// Kill a session's process (SIGKILL semantics) → `Ack`; `SessionUpdated`.

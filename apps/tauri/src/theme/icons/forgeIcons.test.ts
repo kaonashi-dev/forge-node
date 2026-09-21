@@ -35,7 +35,6 @@ const NAMES: ForgeIconName[] = [
   "columns-2",
   "list-checks",
   "history",
-  "layout-grid",
   "layers",
   "maximize",
   "more-horizontal",

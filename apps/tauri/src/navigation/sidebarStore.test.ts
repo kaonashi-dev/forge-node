@@ -73,7 +73,7 @@ it("keeps Projects, Files and History as the first three views", () => {
 
 describe("CYCLED_VIEWS", () => {
   it("is exactly the views without a number chord", () => {
-    expect(CYCLED_VIEWS).toEqual(["History", "PR", "Features", "Git"]);
+    expect(CYCLED_VIEWS).toEqual(["History", "PR", "Git"]);
   });
 });
 
@@ -88,8 +88,7 @@ describe("cycleTarget", () => {
 
   it("walks the cycle in strip order and wraps", () => {
     expect(cycleTarget("History", true)).toBe("PR");
-    expect(cycleTarget("PR", true)).toBe("Features");
-    expect(cycleTarget("Features", true)).toBe("Git");
+    expect(cycleTarget("PR", true)).toBe("Git");
     expect(cycleTarget("Git", true)).toBe("History");
   });
 });
@@ -104,7 +103,7 @@ describe("cycleSidebarView", () => {
   });
 
   it("starts over at History after MOD-1, MOD-2, even from deep in the cycle", () => {
-    showView("Features");
+    showView("Git");
     toggleView("Projects");
     toggleView("Files");
     cycleSidebarView();

@@ -19,15 +19,14 @@ use std::path::{Path, PathBuf};
 use domain::{
     AgentCapabilities, AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId, Cell,
     CellFlags, Color, Cursor, CursorShape, DetectionResult, DetectionStatus, DiffFile, DiffStatus,
-    FileContents, FileEntry, FileKind, FileTree, IgnoreScope, Job, JobId, JobState, MouseMode,
-    Project, ProjectGroup, ProjectGroupId, ProjectId, ProviderUsage, PtySize, PullRequest,
-    PullRequestLabel, PullRequestRelations, PullRequestSource, PullRequestSourceStatus,
-    PullRequestState, PullRequestViewer, ReviewDecision, Row, ScrollbackRows, Session, SessionId,
-    SessionKind, SessionRole, SessionState, SessionTitle, ShareAction, ShareCandidate, ShareClass,
-    ShareCleanup, ShareRule, ShareRuleId, ShareState, ShareStatusEntry, ShareStrategy,
-    ShareTrigger, ShareVerb, TermModes, TerminalDelta, TerminalId, TerminalSnapshot, Timestamp,
-    UsageWindow, VersionProbe, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceKind,
-    WorkspaceStatus, WorktreeIgnore,
+    FileContents, FileEntry, FileKind, FileTree, IgnoreScope, MouseMode, Project, ProjectGroup,
+    ProjectGroupId, ProjectId, ProviderUsage, PtySize, PullRequest, PullRequestLabel,
+    PullRequestRelations, PullRequestSource, PullRequestSourceStatus, PullRequestState,
+    PullRequestViewer, ReviewDecision, Row, ScrollbackRows, Session, SessionId, SessionKind,
+    SessionRole, SessionState, SessionTitle, ShareAction, ShareCandidate, ShareClass, ShareCleanup,
+    ShareRule, ShareRuleId, ShareState, ShareStatusEntry, ShareStrategy, ShareTrigger, ShareVerb,
+    TermModes, TerminalDelta, TerminalId, TerminalSnapshot, Timestamp, UsageWindow, VersionProbe,
+    Workspace, WorkspaceDiff, WorkspaceId, WorkspaceKind, WorkspaceStatus, WorktreeIgnore,
 };
 use protocol::{
     ClientKind, ClientMessage, DaemonEvent, DaemonMessage, ErrorCode, Hello, HelloAck, HelloReject,
@@ -67,9 +66,6 @@ fn terminal_id() -> TerminalId {
 }
 fn agent_profile_id() -> AgentProfileId {
     id("06")
-}
-fn job_id() -> JobId {
-    id("07")
 }
 
 fn sample_project() -> Project {
@@ -333,7 +329,6 @@ fn sample_provider() -> ProviderInfo {
                 flag: "--resume".to_string(),
             }),
             prompt: None,
-            headless: None,
             acp: None,
             review: Some(domain::ReviewStyle {
                 args: vec!["--permission-mode".to_string(), "plan".to_string()],
@@ -342,7 +337,6 @@ fn sample_provider() -> ProviderInfo {
             capabilities: AgentCapabilities {
                 interactive_tui: true,
                 supports_initial_prompt: true,
-                supports_headless: false,
                 supports_resume: true,
                 supports_review: true,
             },
@@ -441,29 +435,6 @@ fn sample_provider_usage() -> ProviderUsage {
             resets_at: Some(ts()),
         }],
         collected_at: ts(),
-    }
-}
-
-fn sample_job() -> Job {
-    Job {
-        id: job_id(),
-        provider_id: AgentProviderId::new("claude"),
-        workspace_id: workspace_id(),
-        role: SessionRole::Executor,
-        feature_id: Some(7),
-        parent_session_id: Some(session_id()),
-        state: JobState::Running,
-        summary: "implement the spec".to_string(),
-        prompt: "implement the spec for feature 7".to_string(),
-        provider_session_id: Some("prov-1".to_string()),
-        exit_code: None,
-        last_line: Some("editing apps/tauri/src/App.tsx".to_string()),
-        // Fixed like every other timestamp: `now()` made re-running the
-        // exporter rewrite the job fixtures on every invocation.
-        last_output_at: Some(ts()),
-        started_at: ts(),
-        finished_at: None,
-        log_path: PathBuf::from("/tmp/forge/jobs/7.jsonl"),
     }
 }
 
@@ -584,7 +555,7 @@ fn main() {
     write(
         &out,
         "session_role_custom",
-        &SessionRole::Custom("harness".to_string()),
+        &SessionRole::Custom("custom".to_string()),
     );
     write(
         &out,
@@ -980,15 +951,6 @@ fn main() {
     );
     write(
         &out,
-        "event_job_output",
-        &DaemonEvent::JobOutput {
-            job_id: job_id(),
-            from_line: 12,
-            lines: vec!["reading apps/tauri/src/App.tsx".to_string()],
-        },
-    );
-    write(
-        &out,
         "event_daemon_notice",
         &DaemonEvent::DaemonNotice {
             level: NoticeLevel::Warning,
@@ -1043,11 +1005,6 @@ fn main() {
         &DaemonEvent::ProviderUsageChanged {
             usage: vec![sample_provider_usage()],
         },
-    );
-    write(
-        &out,
-        "event_job_updated",
-        &DaemonEvent::JobUpdated(Box::new(sample_job())),
     );
     write(
         &out,
@@ -1108,7 +1065,7 @@ fn main() {
     println!("wrote fixtures to {}", out.display());
 }
 
-/// A `Response::Snapshot` whose heavy provider/profile/job/usage arrays are
+/// A `Response::Snapshot` whose heavy provider/profile/usage arrays are
 /// empty: the probe needs the project/workspace/session lists to decode, and
 /// the frontend models those collections as empty.
 fn sample_snapshot_response() -> Response {
@@ -1123,15 +1080,14 @@ fn sample_snapshot_response() -> Response {
         worktree_ignores: vec![],
         app_state: vec![("sidebar_width".to_string(), "280".to_string())],
         external_agents: vec![],
-        pull_requests: PullRequestState::default(),
-        jobs: vec![],
+        pull_requests: Box::new(PullRequestState::default()),
         usage: vec![],
     }
 }
 
 /// A `Response::Snapshot` with **every** collection populated — the shape a
-/// daemon that has detected a provider, saved a profile, run a job and
-/// refreshed pull requests actually sends on `GetSnapshot`.
+/// daemon that has detected a provider, saved a profile and refreshed pull
+/// requests actually sends on `GetSnapshot`.
 ///
 /// The empty-collection snapshot above says nothing about whether a client can
 /// decode the real thing; a client that models `providers` as an opaque record
@@ -1148,8 +1104,7 @@ fn populated_snapshot_response() -> Response {
         worktree_ignores: vec![sample_worktree_ignore()],
         app_state: vec![("ui.theme_base".to_string(), "gruvbox".to_string())],
         external_agents: vec![],
-        pull_requests: sample_pull_request_state(),
-        jobs: vec![sample_job()],
+        pull_requests: Box::new(sample_pull_request_state()),
         usage: vec![sample_provider_usage()],
     }
 }

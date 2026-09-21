@@ -1,6 +1,6 @@
 ---
 name: invariant-c7
-description: Resource cost checklist for harness reviewer (CHECKPOINTS C7). Use when the diff touches terminal-core, delta path, Tauri render/store code, core lock, or Command handlers.
+description: Resource cost checklist (C7). Use when the diff touches terminal-core, delta path, Tauri render/store code, core lock, or Command handlers.
 ---
 
 # Invariant C7 — resource cost

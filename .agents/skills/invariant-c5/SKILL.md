@@ -1,6 +1,6 @@
 ---
 name: invariant-c5
-description: Runtime invariant checklist for harness reviewer (CHECKPOINTS C5). Use when the diff touches daemon core, persistence, PTY, or protocol handlers.
+description: Runtime invariant checklist (C5). Use when the diff touches daemon core, persistence, PTY, or protocol handlers.
 ---
 
 # Invariant C5 — runtime

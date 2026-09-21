@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sessionFixture } from "../../contracts/sessions.fixture";
 import type { Session } from "../../contracts/runtime";
-import {
-  harnessFeatureAgents,
-  harnessIsolationNote,
-  orderSessionsTree,
-  sessionDisplayTitle,
-} from "./sessionTree";
+import { orderSessionsTree, sessionDisplayTitle } from "./sessionTree";
 
 function session(id: string, extra: Partial<Session> = {}): Session {
   return sessionFixture({
@@ -65,7 +60,7 @@ describe("orderSessionsTree", () => {
 });
 
 describe("sessionDisplayTitle", () => {
-  it("prefixes a harness role", () => {
+  it("prefixes a non-generic role", () => {
     const row = sessionFixture({ role: "Orchestrator", title: { user: "spec", terminal: null } });
     expect(sessionDisplayTitle(row)).toBe("Orchestrator · spec");
   });
@@ -78,60 +73,5 @@ describe("sessionDisplayTitle", () => {
   it("calls a custom role an agent", () => {
     const row = sessionFixture({ role: { Custom: "juva" }, title: { user: "x", terminal: null } });
     expect(sessionDisplayTitle(row)).toBe("Agent · x");
-  });
-});
-
-describe("harnessFeatureAgents", () => {
-  const sessions = [
-    session("orch", { role: "Orchestrator" }),
-    session("kid", { parent_session_id: "orch", role: "Executor" }),
-    session("unrelated"),
-  ];
-
-  it("is the orchestrator plus its direct children", () => {
-    expect(harnessFeatureAgents(sessions, "orch").map((row) => row.session.id)).toEqual([
-      "orch",
-      "kid",
-    ]);
-  });
-
-  it("is empty when the feature has no orchestrator yet", () => {
-    expect(harnessFeatureAgents(sessions, null)).toEqual([]);
-  });
-
-  // The orchestrator may have exited and been reaped while the feature row
-  // still names it; an empty list is the honest answer.
-  it("is empty when the named orchestrator is gone", () => {
-    expect(harnessFeatureAgents(sessions, "vanished")).toEqual([]);
-  });
-});
-
-describe("harnessIsolationNote", () => {
-  const workspaces = [
-    { id: "main", kind: "Main", branch: "main", display_name: null },
-    { id: "tree", kind: "GitWorktree", branch: "feat", display_name: "feat-tree" },
-  ];
-
-  it("names the worktree the executor is implementing in", () => {
-    const sessions = [
-      session("orch", { role: "Orchestrator" }),
-      session("exec", { parent_session_id: "orch", role: "Executor", workspace_id: "tree" }),
-    ];
-    expect(harnessIsolationNote(sessions, workspaces, "orch")).toBe(
-      "Implementing in worktree · feat-tree",
-    );
-  });
-
-  it("names the branch when the executor is in the main checkout", () => {
-    const sessions = [
-      session("orch", { role: "Orchestrator" }),
-      session("exec", { parent_session_id: "orch", role: "Executor", workspace_id: "main" }),
-    ];
-    expect(harnessIsolationNote(sessions, workspaces, "orch")).toBe("Implementing in main");
-  });
-
-  it("is silent when nothing is implementing", () => {
-    const sessions = [session("orch", { role: "Orchestrator" })];
-    expect(harnessIsolationNote(sessions, workspaces, "orch")).toBeNull();
   });
 });

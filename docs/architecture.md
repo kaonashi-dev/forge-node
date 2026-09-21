@@ -59,7 +59,6 @@ agents           provider registry, verified detection, five built-ins
                  (claude, codex, opencode, cursor, grok)
 git-service      git CLI wrapper (LC_ALL=C, 30s local timeout), repo + worktree ops
 fs-service       workspace list/read/write/search; paths stay inside the checkout
-harness-service  read/write of `<repo>/harness/` (one state machine per repository)
 persistence      SQLite (WAL + FK), migrations, repositories, orphan reconciliation
 client           sync UDS client + passive CellGrid replica (no tokio)
 daemon           the runtime: core dispatcher, server, registry, terminal loop,
@@ -77,8 +76,8 @@ terminal-input} → domain`).
 
 Dependency direction is one-way: `forge-tauri → client → {protocol,
 terminal-input} → domain` and
-`daemon → {agents, git-service, fs-service, harness-service, persistence,
-terminal-core} → domain`. The GUI renders `domain::terminal` wire types, it does
+`daemon → {agents, git-service, fs-service, persistence, terminal-core} → domain`.
+The GUI renders `domain::terminal` wire types, it does
 not emulate. ADR numbers cited in code are indexed in [decisions.md](./decisions.md).
 
 The Tauri host runs blocking `client::Client` calls on a dedicated runtime thread. A
@@ -93,7 +92,7 @@ reconnects and attaches a fresh authoritative snapshot.
 
 The Tauri host also has a *workbench worker* sharing the same `Client`. The command
 channel carries keystrokes, and the local reads that answer inline — `git diff`, a
-file tree, a search, the harness's own files — are seconds of subprocess, so
+file tree, a search — are seconds of subprocess, so
 running them there would freeze typing. Its bounded queue and dispatcher live in
 `apps/tauri/src-tauri/src/runtime/workbench/mod.rs`; sibling modules group command
 definitions and capability handlers within that same worker.

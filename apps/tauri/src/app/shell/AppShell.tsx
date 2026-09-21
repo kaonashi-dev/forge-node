@@ -36,7 +36,6 @@ import {
   codeOpen,
   currentViews,
   focus as focusCodeView,
-  openFeatureCompose,
   reopenClosed,
   requestFindInFiles,
   showCode,
@@ -122,7 +121,6 @@ import { closeTarget } from "./tabs/closeTarget";
 import {
   cycleSidebarView,
   restoreSidebar,
-  showView,
   sidebarOpen,
   toggleSidebar,
   toggleView,
@@ -489,7 +487,6 @@ export function AppShell() {
       registerAction("toggle_files", () => toggleView("Files")),
       registerAction("find_in_project", () => requestFindInFiles()),
       registerAction("toggle_pull_requests", () => toggleView("PR")),
-      registerAction("toggle_features", () => toggleView("Features")),
       registerAction("toggle_git", () => toggleView("Git")),
       registerAction("toggle_history", () => toggleView("History")),
       registerAction("cycle_sidebar_views", cycleSidebarView),
@@ -508,15 +505,6 @@ export function AppShell() {
       registerAction("close_views_to_right", closeViewsToRight),
       registerAction("previous_code_view", () => stepCodeView(-1)),
       registerAction("next_code_view", () => stepCodeView(1)),
-      // Registering a feature is the harness's entry point, so it is reachable
-      // from the palette as well as the `+` menu and the Features panel.
-      registerAction("new_feature", () => {
-        // The settings layer covers the centre, so a draft opened from
-        // Settings → Harness would land underneath it.
-        setSettings(false);
-        showView("Features");
-        openFeatureCompose();
-      }),
       registerAction("open_settings", () => {
         setSettingsSection(undefined);
         setSettings((open) => !open);

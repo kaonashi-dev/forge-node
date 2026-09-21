@@ -2,12 +2,12 @@
 //! [`Store`] consumes snapshots/events; [`CellGrid::apply_delta`] enforces
 //! sequencing and returns [`DeltaOutcome`] when the caller must reattach.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use domain::{
-    AgentProfile, Cursor, ExternalAgentSession, Job, JobId, Project, ProjectGroup, ProviderUsage,
-    PtySize, PullRequestState, Row, ScrollbackRows, Session, ShareRule, TermModes, TerminalDelta,
+    AgentProfile, Cursor, ExternalAgentSession, Project, ProjectGroup, ProviderUsage, PtySize,
+    PullRequestState, Row, ScrollbackRows, Session, ShareRule, TermModes, TerminalDelta,
     TerminalId, TerminalSnapshot, Workspace, WorktreeIgnore,
 };
 use protocol::{DaemonEvent, ProviderInfo, Response};
@@ -40,8 +40,6 @@ pub enum EventOutcome {
     Ignored,
 }
 
-const JOB_TAIL_LINES: usize = 400;
-
 #[derive(Clone, Debug, Default)]
 pub struct Store {
     /// Organizational groups shown above projects in the sidebar.
@@ -65,10 +63,6 @@ pub struct Store {
     pub usage: Vec<ProviderUsage>,
     /// Complete cached pull-request state from the daemon.
     pub pull_requests: PullRequestState,
-    /// Bounded tail, newest last; full transcripts are read through `ReadJobLog`.
-    pub job_output: HashMap<JobId, VecDeque<String>>,
-    /// Oldest first; output is stored separately.
-    pub jobs: Vec<Job>,
     /// Cell replicas for the terminals the GUI is attached to, keyed by id.
     pub terminals: HashMap<TerminalId, CellGrid>,
     /// Kept outside `CellGrid` so unattached terminals can retain attention flags.
@@ -81,25 +75,6 @@ impl Store {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Seed an empty tail from the log; events omit output produced before subscription.
-    pub fn seed_job_output(&mut self, job_id: JobId, lines: Vec<String>) {
-        let tail = self.job_output.entry(job_id).or_default();
-        if !tail.is_empty() {
-            return;
-        }
-        let start = lines.len().saturating_sub(JOB_TAIL_LINES);
-        tail.extend(lines.into_iter().skip(start));
-    }
-
-    /// The tail of one job's stream, oldest first.
-    #[must_use]
-    pub fn job_output(&self, job_id: JobId) -> Vec<String> {
-        self.job_output
-            .get(&job_id)
-            .map(|tail| tail.iter().cloned().collect())
-            .unwrap_or_default()
     }
 
     pub fn apply_snapshot(&mut self, response: Response) {
@@ -116,7 +91,6 @@ impl Store {
                 app_state,
                 external_agents,
                 pull_requests,
-                jobs,
                 usage,
             } => {
                 self.project_groups = project_groups;
@@ -129,8 +103,7 @@ impl Store {
                 self.worktree_ignores = worktree_ignores;
                 self.app_state = app_state;
                 self.external_agents = external_agents;
-                self.pull_requests = pull_requests;
-                self.jobs = jobs;
+                self.pull_requests = *pull_requests;
                 // Usage rides in the snapshot from the daemon's cache (L1); a
                 // later `ProviderUsageChanged` refreshes it in place.
                 self.usage = usage;
@@ -178,8 +151,6 @@ impl Store {
                 self.app_state.clear();
                 self.usage.clear();
                 self.pull_requests = PullRequestState::default();
-                self.job_output.clear();
-                self.jobs.clear();
                 self.terminals.clear();
                 self.pending_bell.clear();
                 self.pending_activity.clear();
@@ -313,29 +284,6 @@ impl Store {
             DaemonEvent::SharesApplied { .. } => EventOutcome::Applied,
             DaemonEvent::PullRequestsUpdated { state } => {
                 self.pull_requests = state.clone();
-                EventOutcome::Applied
-            }
-            // Harness rows are not replicated in the store — the Feature tab
-            // asks for the one it shows — so this is `Ignored` here and
-            // handled by whoever is watching that feature.
-            DaemonEvent::HarnessFeatureChanged { .. } => EventOutcome::Applied,
-            DaemonEvent::JobUpdated(job) => {
-                match self.jobs.iter_mut().find(|row| row.id == job.id) {
-                    Some(row) => *row = (**job).clone(),
-                    None => self.jobs.push((**job).clone()),
-                }
-                EventOutcome::Applied
-            }
-            DaemonEvent::JobOutput { job_id, lines, .. } => {
-                let tail = self.job_output.entry(*job_id).or_default();
-                for line in lines {
-                    tail.push_back(line.clone());
-                }
-                // A stream can run to megabytes; only the recent past is worth
-                // holding in a replica, and the file has the rest.
-                while tail.len() > JOB_TAIL_LINES {
-                    tail.pop_front();
-                }
                 EventOutcome::Applied
             }
             DaemonEvent::AgentDetectionChanged { results } => {
@@ -809,8 +757,7 @@ mod tests {
             worktree_ignores: vec![],
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
-            pull_requests: pull_requests.clone(),
-            jobs: vec![],
+            pull_requests: Box::new(pull_requests.clone()),
             usage: vec![sample_usage("claude", 40)],
         };
         store.apply_snapshot(response);
@@ -840,8 +787,7 @@ mod tests {
                 ("theme".to_string(), "dark".to_string()),
             ],
             external_agents: vec![],
-            pull_requests: PullRequestState::default(),
-            jobs: vec![],
+            pull_requests: Box::new(PullRequestState::default()),
             usage: vec![],
         });
 

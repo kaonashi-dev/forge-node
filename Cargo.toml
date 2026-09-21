@@ -8,7 +8,6 @@ members = [
     "crates/agents",
     "crates/git-service",
     "crates/fs-service",
-    "crates/harness-service",
     "crates/persistence",
     "crates/test-support",
     "crates/editor-core",
@@ -36,7 +35,6 @@ terminal-core = { path = "crates/terminal-core" }
 agents = { path = "crates/agents" }
 git-service = { path = "crates/git-service" }
 fs-service = { path = "crates/fs-service" }
-harness-service = { path = "crates/harness-service" }
 persistence = { path = "crates/persistence" }
 test-support = { path = "crates/test-support" }
 editor-core = { path = "crates/editor-core" }

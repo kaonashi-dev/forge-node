@@ -85,7 +85,6 @@
             }
           },
           "prompt": null,
-          "headless": null,
           "acp": null,
           "review": {
             "args": [
@@ -97,7 +96,6 @@
           "capabilities": {
             "interactive_tui": true,
             "supports_initial_prompt": true,
-            "supports_headless": false,
             "supports_resume": true,
             "supports_review": true
           },
@@ -216,26 +214,6 @@
       "error": null,
       "refreshed_at": "2026-08-30T12:00:00Z"
     },
-    "jobs": [
-      {
-        "id": "00000000-0000-7000-8000-000000000007",
-        "provider_id": "claude",
-        "workspace_id": "00000000-0000-7000-8000-000000000003",
-        "role": "Executor",
-        "feature_id": 7,
-        "parent_session_id": "00000000-0000-7000-8000-000000000004",
-        "state": "Running",
-        "summary": "implement the spec",
-        "prompt": "implement the spec for feature 7",
-        "provider_session_id": "prov-1",
-        "exit_code": null,
-        "last_line": "editing apps/tauri/src/App.tsx",
-        "last_output_at": "2026-08-30T12:00:00Z",
-        "started_at": "2026-08-30T12:00:00Z",
-        "finished_at": null,
-        "log_path": "/tmp/forge/jobs/7.jsonl"
-      }
-    ],
     "usage": [
       {
         "provider_id": "claude",

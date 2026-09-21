@@ -38,7 +38,7 @@ src/
 `features/` today: `terminal`, `editor` (`cells/`, `dom/`, `conflict/`),
 `files` (`explorer/`, `directories/`, `index/`, `watches/`, `operations/`,
 `search/`, `preview/`, `references/`), `git`, `pull-requests`, `sessions`,
-`projects`, `harness`, `settings`. Commands and answer state belong with their
+`projects`, `settings`. Commands and answer state belong with their
 capability; names include `commands.ts`, `state.ts` and feature-specific stores.
 There is no required `components/` + `services/` split inside a feature.
 
@@ -67,15 +67,14 @@ The table describes the current checker's allowances for direct imports within
 
 Peer feature allowances are enumerated in
 [`scripts/boundaries.ts`](../apps/tauri/scripts/boundaries.ts) (`PEER_EDGES`): `editor → files`;
-`files → editor, git, harness, settings, terminal`; `git → editor, files,
-pull-requests, sessions, settings`; `harness → editor, files, sessions`;
+`files → editor, git, settings, terminal`; `git → editor, files,
+pull-requests, sessions, settings`;
 `projects → git, pull-requests, sessions, settings`; `pull-requests → editor,
-files, git, harness, sessions, settings`; `sessions → editor, git, settings,
-terminal`; `settings → harness, projects, sessions, terminal`; `terminal →
+files, git, sessions, settings`; `sessions → editor, git, settings,
+terminal`; `settings → projects, sessions, terminal`; `terminal →
 files`. Several allowances are reciprocal. They currently permit every module
 in the target feature, including its internal stores; the checker does not
-enforce public entry points. For example, `features/files/preview/PreviewTerminal.tsx`
-reads and writes harness state and is imported by `features/harness/FeatureView.tsx`.
+enforce public entry points.
 These broad allowances are remaining coupling to narrow, not permission to add
 arbitrary peer imports. Review each new dependency against a named public API.
 
@@ -112,7 +111,6 @@ the gate alongside this check.
 | `features/files/state.ts` | tree, file, search, name-search answers and staleness |
 | `features/git/state.ts` | diff, review, rebase, branches, Juva draft |
 | `features/settings/state.ts` | usage analytics |
-| `features/harness/harnessStore.ts` | feature list/detail, gate, job output |
 | `features/projects/dialogs.ts`, `features/sessions/dialogs.ts`, `state/dialogs.ts` | dialog request slots by owner |
 | `navigation/viewsStore.ts` | parked centre views, centre mode, reveals; passive only |
 | `navigation/sidebarStore.ts`, `navigation/tabOrder.ts`, `navigation/tabMru.ts`, `navigation/tabSwitcher.ts` | sidebar view choice, strip order, focus ring over every pane (Code views and sessions), switcher gesture |
@@ -127,7 +125,7 @@ but the whole transition is not: a reactive observer can see the new workspace
 with the previous workspace's answers. Making that transition atomic remains open.
 
 Terminal frames never enter a store: `runtime/bus.ts` has dedicated
-`cellsChannel`, `editorCellsChannel`, `editorFrameChannel` and `previewCellsChannel`
+`cellsChannel`, `editorCellsChannel` and `editorFrameChannel`
 channels, and panes subscribe to the one they paint. Clipboard and file-change
 notifications use separate channels in the same module.
 
@@ -199,8 +197,6 @@ input queue. Workspace filesystem and Git effects remain daemon-owned.
 | pull request list/detail/compose/review | `features/pull-requests/` |
 | session launch, menus, context, history, attention | `features/sessions/` |
 | projects, worktrees, ignores, share rules | `features/projects/` |
-| harness list/detail/gate/jobs | `features/harness/` |
-| harness terminal preview | `features/files/preview/PreviewTerminal.tsx` (currently coupled to harness state) |
 | settings sections, profiles, usage | `features/settings/` |
 | window composition, tabs, palette, dialogs | `app/shell/`, `app/palette/` |
 | workspace transitions and confirmed path retargeting | `state/workspace.ts`, `app/integrations/workspaceFocus.ts`, `app/integrations/retarget.ts` |

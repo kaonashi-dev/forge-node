@@ -1,9 +1,9 @@
 //! Domain events are broadcast; terminal deltas go only to attached subscribers.
 
 use domain::{
-    AgentProfile, DetectionResult, EditorFrame, Job, JobId, JuvaDraft, Project, ProjectGroup,
-    ProjectGroupId, ProjectId, ProviderUsage, PullRequestState, Session, SessionId, ShareAction,
-    ShareRule, ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot, Workspace, WorkspaceId,
+    AgentProfile, DetectionResult, EditorFrame, JuvaDraft, Project, ProjectGroup, ProjectGroupId,
+    ProjectId, ProviderUsage, PullRequestState, Session, SessionId, ShareAction, ShareRule,
+    ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot, Workspace, WorkspaceId,
     WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ pub enum DaemonEvent {
     /// Every Forge-owned metadata row was cleared by `FactoryReset`.
     ///
     /// Clients must discard their replica and bootstrap again. Repository
-    /// contents and harness files were not removed.
+    /// contents were not removed.
     FactoryReset,
     /// An organizational project group was created.
     ProjectGroupCreated(ProjectGroup),
@@ -207,43 +207,6 @@ pub enum DaemonEvent {
         workspace_id: WorkspaceId,
         /// Workspace-relative path; empty means reconcile after lost watcher events.
         path: String,
-    },
-    /// A headless run was accepted, started, or reached its end; carries its
-    /// full state, like `SessionUpdated`.
-    ///
-    /// This is the event a harness step waits on: a job in a final state has
-    /// finished, with an exit code that says how, and nobody had to read a
-    /// terminal to find out.
-    JobUpdated(Box<Job>),
-    /// Lines a running job wrote, coalesced and summarised for reading.
-    ///
-    /// Broadcast to every client, like `TerminalActivity` and unlike
-    /// `TerminalDelta`: a job has no subscription because it has no grid to
-    /// keep in sync, and its output is text a client either follows live or
-    /// reads later with `ReadJobLog`.
-    ///
-    /// Summarised, not verbatim: this event exists to be *watched*, and a raw
-    /// `stream-json` line is not something a person reads. The provider's own
-    /// words stay in the file at `Job::log_path`.
-    JobOutput {
-        /// The job that produced them.
-        job_id: JobId,
-        /// Index of the first line in this batch, counting from 0.
-        from_line: u64,
-        /// The lines, verbatim.
-        lines: Vec<String>,
-    },
-    /// A harness feature row changed on disk because a step finished.
-    ///
-    /// The daemon advances the cycle by itself now that a step is a job that
-    /// exits (`harness_runner`), so a client that is not the one who started
-    /// it still learns that a spec is ready for its gate, or that a feature is
-    /// done. Carries the whole row, like `SessionUpdated`.
-    HarnessFeatureChanged {
-        /// The project whose `harness/features.json` changed.
-        project_id: ProjectId,
-        /// The row after the change.
-        feature: Box<domain::HarnessFeature>,
     },
     DaemonNotice {
         /// The severity of the notice.

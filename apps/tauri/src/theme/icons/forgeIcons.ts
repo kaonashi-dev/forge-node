@@ -33,7 +33,6 @@ import {
   ImageIcon,
   ImageOffIcon,
   Layers,
-  LayoutGrid,
   Maximize2,
   ListChecks,
   Loader2,
@@ -87,7 +86,6 @@ export type ForgeIconName =
   | "columns-2"
   | "list-checks"
   | "history"
-  | "layout-grid"
   | "layers"
   | "maximize"
   | "more-horizontal"
@@ -127,7 +125,6 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "columns-2": Columns2,
   "list-checks": ListChecks,
   history: History,
-  "layout-grid": LayoutGrid,
   layers: Layers,
   maximize: Maximize2,
   "more-horizontal": MoreHorizontal,

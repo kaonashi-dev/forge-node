@@ -32,9 +32,8 @@ Cargo.lock.orig
 # Per-developer AI-agent tool settings (AGENTS.md itself is committed)
 .claude/settings.local.json
 
-# Harness TS (bun): dependencies of the harness CLI. bun.lock IS committed.
+# Local feature-workflow dependencies and state retained after tooling removal
 harness/node_modules
-# Harness state is one developer's runs, not source: never committed.
 harness/features.json
 harness/features.json.lock
 harness/features.json.tmp

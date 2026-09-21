@@ -5,8 +5,7 @@
 - Rust 1.89 (pinned in `rust-toolchain.toml`; `rustup show` installs it).
 - `git` and a C toolchain (bundled SQLite compiles from source).
 - [Bun](https://bun.sh) **1.4.1** (pinned in [`.bun-version`](../.bun-version)
-  and `apps/tauri` `engines`). Runs the frontend gate and the subagent harness
-  CLI (`scripts/harness`, `./init.sh` step 3). No other JS runtime is needed.
+  and `apps/tauri` `engines`). Runs the frontend gate. No other JS runtime is needed.
 - macOS or Linux. The code uses Unix sockets, PTYs and signals directly;
   Windows is not a target.
 - On macOS, `xcrun --show-sdk-path` can point at an SDK newer than the
@@ -161,7 +160,6 @@ restart (no hot reload). See [`config.example.toml`](./config.example.toml).
 | a provider, detection, launch args | `crates/agents` only → [agents.md](./agents.md) |
 | git behavior, worktree safety | `crates/git-service`, `core.rs` workspace handlers → [worktrees.md](./worktrees.md) |
 | workspace files (list/read/write/search) | `crates/fs-service` → [protocol.md](./protocol.md) |
-| harness files and transitions | `crates/harness-service` → [harness.md](./harness.md) |
 | pull requests / `gh` | `crates/git-service/src/github.rs`, `crates/daemon/src/pull_requests.rs` |
 | Juva drafts | `crates/daemon/src/juva.rs` |
 | idle policy | `crates/daemon/src/idle.rs` |
@@ -176,7 +174,7 @@ restart (no hot reload). See [`config.example.toml`](./config.example.toml).
 
 Dependency direction is one-way and enforced by `Cargo.toml`:
 `forge-tauri → client → {protocol, terminal-input} → domain` and
-`daemon → {agents, git-service, fs-service, harness-service, persistence, terminal-core} → domain`.
+`daemon → {agents, git-service, fs-service, persistence, terminal-core} → domain`.
 
 ## Testing notes
 

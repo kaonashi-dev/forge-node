@@ -1,6 +1,6 @@
 ---
 name: invariant-c4
-description: Crate boundary checklist for harness reviewer (CHECKPOINTS C4). Use when the diff touches crate dependencies or cross-crate imports.
+description: Crate boundary checklist (C4). Use when the diff touches crate dependencies or cross-crate imports.
 ---
 
 # Invariant C4 — crate boundaries

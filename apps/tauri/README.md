@@ -75,7 +75,7 @@ apps/tauri/
     navigation/        parked views, tab order/MRU, sidebar state
     actions/           chord → action dispatch
     features/          terminal, editor, files, git, pull-requests, sessions,
-                       projects, harness, settings
+                       projects, settings
     shared/            cell-grid, input, markdown, paths
     theme/             tokens, theme primitives, icons
     ui/                shared control kit

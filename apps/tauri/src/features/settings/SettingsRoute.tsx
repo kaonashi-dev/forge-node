@@ -14,7 +14,6 @@ import {
   Keyboard as KeyboardIcon,
   Palette,
   Settings as SettingsIcon,
-  Workflow,
 } from "lucide-solid";
 import {
   Badge,
@@ -37,7 +36,6 @@ import {
 } from "./commands";
 import { SessionGlyph } from "../sessions/SessionGlyph";
 import { AgentProfiles } from "./AgentProfiles";
-import { HarnessSection } from "./HarnessSection";
 import { SharedFiles } from "../projects/SharedFiles";
 import { KeyboardSection } from "./KeyboardSection";
 import { StatsSection } from "./StatsSection";
@@ -137,7 +135,6 @@ const SECTIONS = [
   "Agents",
   "Keyboard",
   "Shared files",
-  "Harness",
   "Stats & Usage",
   "Personalization",
 ] as const;
@@ -148,7 +145,6 @@ const SECTION_ICONS: Record<Section, typeof SettingsIcon> = {
   Agents: Bot,
   Keyboard: KeyboardIcon,
   "Shared files": FolderSymlink,
-  Harness: Workflow,
   "Stats & Usage": BarChart3,
   Personalization: Palette,
 };
@@ -173,7 +169,6 @@ export function SettingsRoute(props: SettingsRouteProps) {
     Agents: () => <Agents />,
     Keyboard: () => <KeyboardSection />,
     "Shared files": () => <SharedFiles />,
-    Harness: () => <HarnessSection />,
     "Stats & Usage": () => <StatsSection />,
     Personalization: () => <Personalization />,
   };
@@ -339,7 +334,7 @@ function General() {
       >
         <Row
           label="Reset to factory defaults"
-          description="Stops every session and job, forgets all projects and preferences, and force-removes worktrees created by Forge Node. Branches, commits, config.toml, logs, and repository harness files stay in place."
+          description="Stops every session, forgets all projects and preferences, and force-removes worktrees created by Forge Node. Branches, commits, config.toml and logs stay in place."
           control={
             <Button variant="danger" onClick={confirmFactoryReset}>
               Reset Forge Node

@@ -123,8 +123,6 @@ starts a Forge session with a prompt, but there is no `parent_session_id`.
   requests later.
 - Not ACP peer routing — ACP (when wired) remains one client session per
   agent process.
-- Not the harness Spec→Implement→Review bus — that stays headless jobs on
-  `harness/`; see [harness.md](./harness.md).
 
 ## Related
 

@@ -38,7 +38,6 @@ describe("activeEditorPath", () => {
     expect(activeEditorPath({ kind: "terminal" })).toBeNull();
     expect(activeEditorPath({ kind: "review", workspace: "w1" })).toBeNull();
     expect(activeEditorPath({ kind: "pr_review", key: "12" })).toBeNull();
-    expect(activeEditorPath({ kind: "feature", id: 3 })).toBeNull();
   });
 });
 
