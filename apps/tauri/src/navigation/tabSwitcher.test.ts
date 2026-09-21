@@ -5,6 +5,7 @@ import {
   chooseTabSwitcher,
   pinTabSwitcher,
   recordTabFocus,
+  releaseTabSwitcher,
   resetTabSwitcher,
   stepTabSwitcher,
   tabSwitcherView,
@@ -56,7 +57,6 @@ beforeEach(() => {
 });
 
 describe("tabSwitcher", () => {
-  it("returns to the file that was on screen before the terminal", () => {
   it("records reactive focus without subscribing the effect to history", () => {
     const [focused, setFocused] = createSignal("session:t1");
     let runs = 0;
@@ -81,6 +81,7 @@ describe("tabSwitcher", () => {
     }
   });
 
+  it("returns to the file that was on screen before the terminal", () => {
     // Three panes, and the one to come back to is *second* in the strip: with
     // two, "the other pane" is the right answer for the wrong reason, and a
     // ring that had forgotten the file would still look correct here.
@@ -128,6 +129,19 @@ describe("tabSwitcher", () => {
     expect(tabSwitcherView()).not.toBeNull();
 
     chooseTabSwitcher(1);
+    expect(committed).toEqual(FILE);
+    expect(tabSwitcherView()).toBeNull();
+  });
+
+  it("gives the release back to the keyboard when the pointer leaves", () => {
+    // Pinning is not a latch: a cursor that merely crossed the card must not
+    // take Control-up with it for the rest of the gesture.
+    recordTabFocus("session:t1");
+    stepTabSwitcher(1, local, "session:t1", ["t1"]);
+    pinTabSwitcher();
+    releaseTabSwitcher();
+
+    release("Control");
     expect(committed).toEqual(FILE);
     expect(tabSwitcherView()).toBeNull();
   });

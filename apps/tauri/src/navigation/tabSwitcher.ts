@@ -131,12 +131,19 @@ export function hoverTabSwitcher(index: number): void {
  *
  * Without this the list is unclickable: reaching for the mouse means letting
  * go of Control, which is also what closes the list on the row being aimed at.
+ * Paired with `releaseTabSwitcher`, so a cursor that merely passed over the
+ * card does not silently take the release with it.
  */
 export function pinTabSwitcher(): void {
   if (!gesture || pinned) return;
   pinned = true;
   reveal();
   publish();
+}
+
+/** The pointer left: Control-up commits again. */
+export function releaseTabSwitcher(): void {
+  pinned = false;
 }
 
 /** Arrow keys while the list holds focus. */

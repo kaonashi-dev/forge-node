@@ -14,6 +14,7 @@ import {
   hoverTabSwitcher,
   nudgeTabSwitcher,
   pinTabSwitcher,
+  releaseTabSwitcher,
   type TabSwitcherView,
 } from "../../../navigation/tabSwitcher";
 import { ViewGlyph } from "./ViewGlyph";
@@ -31,8 +32,9 @@ export type TabSwitcherProps = {
  * Hold-Control tab list. No query field: Tab / Shift+Tab move the cursor while
  * Control is down, and releasing Control focuses the highlighted row.
  *
- * Moving the pointer over the list hands it to the mouse instead — Control can
- * then be released and a row clicked.
+ * Moving the pointer over the card hands it to the mouse instead — Control can
+ * then be released and a row clicked; taking the pointer back off it returns
+ * the release to the keyboard.
  */
 export function TabSwitcher(props: TabSwitcherProps) {
   let list: HTMLDivElement | undefined;
@@ -46,6 +48,17 @@ export function TabSwitcher(props: TabSwitcherProps) {
   onMount(() => {
     onCleanup(enterContext(COMMAND_PALETTE));
     list?.focus();
+    // The whole card, not the rows: a hand reaching for the mouse crosses the
+    // title and the padding too, and which pixel it crossed must not decide
+    // whether letting go of Control commits or leaves the list up.
+    const card = list?.closest(".forge-dialog-card");
+    if (!card) return;
+    card.addEventListener("pointermove", pinTabSwitcher);
+    card.addEventListener("pointerleave", releaseTabSwitcher);
+    onCleanup(() => {
+      card.removeEventListener("pointermove", pinTabSwitcher);
+      card.removeEventListener("pointerleave", releaseTabSwitcher);
+    });
   });
 
   return (
@@ -64,7 +77,6 @@ export function TabSwitcher(props: TabSwitcherProps) {
         tabindex={0}
         aria-label="Switch Tab"
         style={{ "--palette-rows": VISIBLE_ROWS }}
-        onPointerMove={pinTabSwitcher}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
