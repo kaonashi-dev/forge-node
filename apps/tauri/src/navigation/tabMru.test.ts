@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   initialIndex,
   liveIdsByActivity,
-  mruIds,
+  mruKeys,
   stepIndex,
-  switcherIds,
+  switcherKeys,
   touchMru,
 } from "./tabMru";
 
@@ -16,33 +16,49 @@ describe("tabMru", () => {
   });
 
   it("lists the active tab first, then the ring, then strip leftovers", () => {
-    expect(mruIds(["c", "a", "b"], ["a", "b", "c", "d"], "b")).toEqual(["b", "c", "a", "d"]);
-    expect(mruIds(["z"], ["a", "b"], null)).toEqual(["a", "b"]);
-    expect(mruIds(["b", "a"], ["a", "b"], "a")).toEqual(["a", "b"]);
+    expect(mruKeys(["c", "a", "b"], ["a", "b", "c", "d"], "b")).toEqual(["b", "c", "a", "d"]);
+    expect(mruKeys(["z"], ["a", "b"], null)).toEqual(["a", "b"]);
+    expect(mruKeys(["b", "a"], ["a", "b"], "a")).toEqual(["a", "b"]);
   });
 
   it("drops history ids that are no longer open", () => {
-    expect(mruIds(["gone", "b"], ["a", "b"], "a")).toEqual(["a", "b"]);
+    expect(mruKeys(["gone", "b"], ["a", "b"], "a")).toEqual(["a", "b"]);
   });
 
   it("appends up to three recent sessions from other checkouts", () => {
     expect(
-      switcherIds(
+      switcherKeys(
         ["local-a", "other-1", "other-2", "other-3", "other-4"],
         ["local-a", "local-b"],
         "local-a",
         ["local-a", "local-b", "other-1", "other-2", "other-3", "other-4"],
       ),
     ).toEqual({
-      ids: ["local-a", "local-b", "other-1", "other-2", "other-3"],
+      keys: ["local-a", "local-b", "other-1", "other-2", "other-3"],
       foreignAt: 2,
     });
   });
 
   it("fills foreign rows from live order when history has none", () => {
-    expect(switcherIds([], ["a"], "a", ["a", "x", "y", "z"], 2)).toEqual({
-      ids: ["a", "x", "y"],
+    expect(switcherKeys([], ["a"], "a", ["a", "x", "y", "z"], 2)).toEqual({
+      keys: ["a", "x", "y"],
       foreignAt: 1,
+    });
+  });
+
+  it("drops the parked views of other checkouts from the ring", () => {
+    // Only sessions are ever live, so a view key survives the ring exactly as
+    // long as its own checkout is the one on screen.
+    expect(
+      switcherKeys(
+        ["view:other:preview:a.md", "session:t2"],
+        ["session:t1", "view:here:diff"],
+        "session:t1",
+        ["session:t1", "session:t2"],
+      ),
+    ).toEqual({
+      keys: ["session:t1", "view:here:diff", "session:t2"],
+      foreignAt: 2,
     });
   });
 

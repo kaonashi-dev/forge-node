@@ -18,7 +18,6 @@ import { focusTerminal } from "../terminal/focus";
 import type { ExternalAgentSession, Session, Workspace } from "../../contracts/runtime";
 import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "../../state/preferences";
 import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
-import { recordTabFocus } from "../../navigation/tabSwitcher";
 import { draftWithJuva, loadWorkspaceReview } from "../git/commands";
 import { loadExternalTranscript, loadSessionTranscript } from "./commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
@@ -80,9 +79,6 @@ export function focusSession(session: string): void {
     return;
   }
   showSession();
-  // The focus ring Ctrl+Tab walks. Every user-driven focus goes through here,
-  // which is what makes "the tab you just left" mean anything.
-  recordTabFocus(session);
   if (row?.workspace_id) focusWorkspace(row.workspace_id);
   void selectSession(session).catch(() => undefined);
   focusTerminal();

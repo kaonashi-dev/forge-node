@@ -35,6 +35,7 @@ import {
   centerMode,
   codeOpen,
   currentViews,
+  focus as focusCodeView,
   openFeatureCompose,
   reopenClosed,
   requestFindInFiles,
@@ -85,8 +86,11 @@ import { SendContextDialog } from "../../features/sessions/SendContextDialog";
 import { SpawnChildDialog } from "../../features/sessions/SpawnChildDialog";
 import { TabSwitcher } from "./tabs/SwitchTab";
 import { liveIdsByActivity } from "../../navigation/tabMru";
+import type { SwitchTarget } from "../../navigation/tabTargets";
+import { activeSwitcherKey, switcherTargets } from "../../navigation/switcherRing";
 import {
   bindTabSwitcherCommit,
+  recordTabFocus,
   stepTabSwitcher,
   tabSwitcherView,
 } from "../../navigation/tabSwitcher";
@@ -194,6 +198,18 @@ export function AppShell() {
     ),
   );
 
+  /*
+   * The focus ring Ctrl+Tab walks, fed by whatever the centre column ends up
+   * showing. An effect rather than a call inside each way in: a file opened
+   * from the tree, a Code tab clicked, a session raised from the palette and a
+   * checkout switch are all "where I was", and the pane on screen is the only
+   * thing they have in common.
+   */
+  createEffect(() => {
+    const key = activeSwitcherKey();
+    if (key) recordTabFocus(key);
+  });
+
   /** How many files, diffs and PRs are parked in the Code tab. */
   const openViewCount = createMemo(() => currentViews().open.length);
 
@@ -281,10 +297,17 @@ export function AppShell() {
   function stepSwitcher(delta: number): void {
     stepTabSwitcher(
       delta,
-      openSessions().map((session) => session.id),
-      connectionStore.activeSession,
+      switcherTargets(openSessions().map((session) => session.id)),
+      activeSwitcherKey(),
       liveIdsByActivity(forgeStore.sessions),
     );
+  }
+
+  /** Commit a row: a terminal is a session, a file is a tab inside Code. */
+  function focusSwitcherTarget(target: SwitchTarget): void {
+    if (target.kind === "session") focusSession(target.id);
+    else if (target.kind === "code") showCode();
+    else focusCodeView(target.view);
   }
 
   function windowTabs() {
@@ -439,7 +462,7 @@ export function AppShell() {
     onCleanup(startCheckoutWatch());
     // Releasing Control commits, from the module's own key listener rather
     // than from a chord: there is no keymap entry for "let go".
-    onCleanup(bindTabSwitcherCommit(focusSession));
+    onCleanup(bindTabSwitcherCommit(focusSwitcherTarget));
 
     const bound = [
       registerAction("toggle_sidebar", toggleSidebar),

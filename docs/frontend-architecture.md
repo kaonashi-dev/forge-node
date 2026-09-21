@@ -115,7 +115,7 @@ the gate alongside this check.
 | `features/harness/harnessStore.ts` | feature list/detail, gate, job output |
 | `features/projects/dialogs.ts`, `features/sessions/dialogs.ts`, `state/dialogs.ts` | dialog request slots by owner |
 | `navigation/viewsStore.ts` | parked centre views, centre mode, reveals; passive only |
-| `navigation/sidebarStore.ts`, `navigation/tabOrder.ts`, `navigation/tabMru.ts`, `navigation/tabSwitcher.ts` | sidebar view choice, strip order, focus ring, switcher gesture |
+| `navigation/sidebarStore.ts`, `navigation/tabOrder.ts`, `navigation/tabMru.ts`, `navigation/tabTargets.ts`, `navigation/tabSwitcher.ts` | sidebar view choice, strip order, focus ring over every pane (Code views and sessions), switcher gesture |
 | `features/terminal/terminalStore.ts` | terminal pane state |
 | `features/editor/conflict/editorConflictStore.ts`, `features/git/sessionChangesStore.ts`, `features/pull-requests/{prComposeStore,prReviewStore}.ts` | feature answers |
 

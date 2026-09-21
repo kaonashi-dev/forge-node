@@ -6,13 +6,17 @@ import type { Project, Session, Workspace } from "../../../contracts/runtime";
 import { SessionGlyph } from "../../../features/sessions/SessionGlyph";
 import { Icon } from "../../../theme/icons/index";
 import { Dialog } from "../../../ui/index";
+import { viewLabel, type WorkbenchView } from "../../../navigation/views";
 import {
   cancelTabSwitcher,
   chooseTabSwitcher,
+  commitTabSwitcher,
   hoverTabSwitcher,
   nudgeTabSwitcher,
+  pinTabSwitcher,
   type TabSwitcherView,
 } from "../../../navigation/tabSwitcher";
+import { ViewGlyph } from "./ViewGlyph";
 
 const VISIBLE_ROWS = 10;
 
@@ -26,6 +30,9 @@ export type TabSwitcherProps = {
 /**
  * Hold-Control tab list. No query field: Tab / Shift+Tab move the cursor while
  * Control is down, and releasing Control focuses the highlighted row.
+ *
+ * Moving the pointer over the list hands it to the mouse instead — Control can
+ * then be released and a row clicked.
  */
 export function TabSwitcher(props: TabSwitcherProps) {
   let list: HTMLDivElement | undefined;
@@ -57,6 +64,7 @@ export function TabSwitcher(props: TabSwitcherProps) {
         tabindex={0}
         aria-label="Switch Tab"
         style={{ "--palette-rows": VISIBLE_ROWS }}
+        onPointerMove={pinTabSwitcher}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
@@ -66,36 +74,20 @@ export function TabSwitcher(props: TabSwitcherProps) {
             nudgeTabSwitcher(-1);
           } else if (event.key === "Enter") {
             event.preventDefault();
-            const id = props.view.ids[props.view.index];
-            if (id) chooseTabSwitcher(id);
+            commitTabSwitcher();
           }
         }}
       >
-        <For each={props.view.ids}>
-          {(id, index) => {
-            const session = () => props.sessions.find((item) => item.id === id);
+        <For each={props.view.targets}>
+          {(target, index) => {
             const selected = () => index() === props.view.index;
             const foreign = () => index() >= props.view.foreignAt;
-            const peers = () => {
-              const row = session();
-              if (!row) return [] as Session[];
-              return props.sessions.filter((item) => item.workspace_id === row.workspace_id);
-            };
-            const label = () => {
-              const row = session();
-              return row ? sessionTabLabel(row, peers()) : id;
-            };
-            const note = () => {
-              const row = session();
-              if (!row || !foreign()) return null;
-              return foreignNote(row, props.workspaces, props.projects);
-            };
-            const provider = () => session()?.agent_provider_id ?? null;
             return (
               <>
                 <Show
                   when={
-                    index() === props.view.foreignAt && props.view.foreignAt < props.view.ids.length
+                    index() === props.view.foreignAt &&
+                    props.view.foreignAt < props.view.targets.length
                   }
                 >
                   <div class="palette-group">Recent</div>
@@ -107,18 +99,22 @@ export function TabSwitcher(props: TabSwitcherProps) {
                   class="palette-row"
                   classList={{ selected: selected() }}
                   aria-selected={selected()}
-                  onClick={() => chooseTabSwitcher(id)}
+                  onClick={() => chooseTabSwitcher(index())}
                   onMouseEnter={() => hoverTabSwitcher(index())}
                 >
-                  {provider() ? (
-                    <span class="palette-glyph">
-                      <SessionGlyph providerId={provider()!} emphasis="dim" size={14} />
-                    </span>
+                  {target.kind === "code" ? (
+                    <CodeRow />
+                  ) : target.kind === "view" ? (
+                    <ViewRow view={target.view} />
                   ) : (
-                    <Icon name="square-terminal" class="forge-icon-faint palette-glyph" size={14} />
+                    <SessionRow
+                      id={target.id}
+                      foreign={foreign()}
+                      sessions={props.sessions}
+                      workspaces={props.workspaces}
+                      projects={props.projects}
+                    />
                   )}
-                  <span class="palette-label">{label()}</span>
-                  <Show when={note()}>{(text) => <span class="palette-note">{text()}</span>}</Show>
                 </button>
               </>
             );
@@ -126,6 +122,73 @@ export function TabSwitcher(props: TabSwitcherProps) {
         </For>
       </div>
     </Dialog>
+  );
+}
+
+/** The Code tab itself, the way the strip shows it while nothing is parked in it. */
+function CodeRow() {
+  return (
+    <>
+      <Icon name="folder-open" class="forge-icon-muted palette-glyph" size={14} />
+      <span class="palette-label">Code</span>
+    </>
+  );
+}
+
+/** A file, diff or pull request parked in Code. */
+function ViewRow(props: { view: WorkbenchView }) {
+  const note = () => {
+    const view = props.view;
+    if (view.kind !== "editor-terminal" && view.kind !== "preview") return null;
+    const cut = view.path.lastIndexOf("/");
+    return cut > 0 ? view.path.slice(0, cut) : null;
+  };
+  return (
+    <>
+      <span class="palette-glyph">
+        <ViewGlyph view={props.view} size={14} />
+      </span>
+      <span class="palette-label">{viewLabel(props.view)}</span>
+      <Show when={note()}>{(text) => <span class="palette-note">{text()}</span>}</Show>
+    </>
+  );
+}
+
+function SessionRow(props: {
+  id: string;
+  foreign: boolean;
+  sessions: readonly Session[];
+  workspaces: readonly Workspace[];
+  projects: readonly Project[];
+}) {
+  const session = () => props.sessions.find((item) => item.id === props.id);
+  const peers = () => {
+    const row = session();
+    if (!row) return [] as Session[];
+    return props.sessions.filter((item) => item.workspace_id === row.workspace_id);
+  };
+  const label = () => {
+    const row = session();
+    return row ? sessionTabLabel(row, peers()) : props.id;
+  };
+  const note = () => {
+    const row = session();
+    if (!row || !props.foreign) return null;
+    return foreignNote(row, props.workspaces, props.projects);
+  };
+  const provider = () => session()?.agent_provider_id ?? null;
+  return (
+    <>
+      {provider() ? (
+        <span class="palette-glyph">
+          <SessionGlyph providerId={provider()!} emphasis="dim" size={14} />
+        </span>
+      ) : (
+        <Icon name="square-terminal" class="forge-icon-faint palette-glyph" size={14} />
+      )}
+      <span class="palette-label">{label()}</span>
+      <Show when={note()}>{(text) => <span class="palette-note">{text()}</span>}</Show>
+    </>
   );
 }
 
