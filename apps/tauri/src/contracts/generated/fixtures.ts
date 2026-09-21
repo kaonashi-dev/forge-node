@@ -18,7 +18,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   Hello: {
-    protocol_version: 25,
+    protocol_version: 26,
     client_version: "0.1.0",
     client_kind: "Gui",
   },
@@ -83,7 +83,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   HelloAck: {
-    protocol_version: 25,
+    protocol_version: 26,
     daemon_version: "0.1.0",
     instance_id: "forge-daemon-0001",
     started_at: "2026-08-30T12:00:00Z",
@@ -93,7 +93,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   HelloReject: {
-    daemon_protocol_version: 25,
+    daemon_protocol_version: 26,
     reason: "protocol version mismatch",
   },
 } as const;
@@ -174,35 +174,6 @@ export const event_file_changed = {
   FileChanged: {
     workspace_id: "00000000-0000-7000-8000-000000000003",
     path: "src/main.rs",
-  },
-} as const;
-
-export const event_job_output = {
-  JobOutput: {
-    job_id: "00000000-0000-7000-8000-000000000007",
-    from_line: 12,
-    lines: ["reading apps/tauri/src/App.tsx"],
-  },
-} as const;
-
-export const event_job_updated = {
-  JobUpdated: {
-    id: "00000000-0000-7000-8000-000000000007",
-    provider_id: "claude",
-    workspace_id: "00000000-0000-7000-8000-000000000003",
-    role: "Executor",
-    feature_id: 7,
-    parent_session_id: "00000000-0000-7000-8000-000000000004",
-    state: "Running",
-    summary: "implement the spec",
-    prompt: "implement the spec for feature 7",
-    provider_session_id: "prov-1",
-    exit_code: null,
-    last_line: "editing apps/tauri/src/App.tsx",
-    last_output_at: "2026-08-30T12:00:00Z",
-    started_at: "2026-08-30T12:00:00Z",
-    finished_at: null,
-    log_path: "/tmp/forge/jobs/7.jsonl",
   },
 } as const;
 
@@ -686,13 +657,13 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  protocol_version: 25,
+  protocol_version: 26,
   client_version: "0.1.0",
   client_kind: "Gui",
 } as const;
 
 export const hello_ack = {
-  protocol_version: 25,
+  protocol_version: 26,
   daemon_version: "0.1.0",
   instance_id: "forge-daemon-0001",
   started_at: "2026-08-30T12:00:00Z",
@@ -700,7 +671,7 @@ export const hello_ack = {
 } as const;
 
 export const hello_reject = {
-  daemon_protocol_version: 25,
+  daemon_protocol_version: 26,
   reason: "protocol version mismatch",
 } as const;
 
@@ -1234,7 +1205,6 @@ export const response_snapshot = {
       error: null,
       refreshed_at: null,
     },
-    jobs: [],
     usage: [],
   },
 } as const;
@@ -1322,7 +1292,6 @@ export const response_snapshot_populated = {
             },
           },
           prompt: null,
-          headless: null,
           acp: null,
           review: {
             args: ["--permission-mode", "plan"],
@@ -1331,7 +1300,6 @@ export const response_snapshot_populated = {
           capabilities: {
             interactive_tui: true,
             supports_initial_prompt: true,
-            supports_headless: false,
             supports_resume: true,
             supports_review: true,
           },
@@ -1438,26 +1406,6 @@ export const response_snapshot_populated = {
       error: null,
       refreshed_at: "2026-08-30T12:00:00Z",
     },
-    jobs: [
-      {
-        id: "00000000-0000-7000-8000-000000000007",
-        provider_id: "claude",
-        workspace_id: "00000000-0000-7000-8000-000000000003",
-        role: "Executor",
-        feature_id: 7,
-        parent_session_id: "00000000-0000-7000-8000-000000000004",
-        state: "Running",
-        summary: "implement the spec",
-        prompt: "implement the spec for feature 7",
-        provider_session_id: "prov-1",
-        exit_code: null,
-        last_line: "editing apps/tauri/src/App.tsx",
-        last_output_at: "2026-08-30T12:00:00Z",
-        started_at: "2026-08-30T12:00:00Z",
-        finished_at: null,
-        log_path: "/tmp/forge/jobs/7.jsonl",
-      },
-    ],
     usage: [
       {
         provider_id: "claude",
@@ -1656,7 +1604,7 @@ export const session_editor = {
 } as const;
 
 export const session_role_custom = {
-  Custom: "harness",
+  Custom: "custom",
 } as const;
 
 export const session_state_exited = {
@@ -2284,8 +2232,6 @@ export const FIXTURE_NAMES = [
   "event_daemon_shutting_down.json",
   "event_factory_reset.json",
   "event_file_changed.json",
-  "event_job_output.json",
-  "event_job_updated.json",
   "event_project_added.json",
   "event_project_group_created.json",
   "event_project_group_removed.json",

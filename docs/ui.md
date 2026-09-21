@@ -11,8 +11,8 @@ Day-to-day layout and behaviour details live next to the code:
 |------|--------|
 | Shell (title, sidebar container, tabs) | `apps/tauri/src/app/shell/` |
 | Projects view and worktree workflows | `apps/tauri/src/features/projects/` |
-| Other sidebar views (files, git, history, PR, harness) | `apps/tauri/src/features/` |
-| Workbench (diff, feature, PR, previews) | `apps/tauri/src/features/{git,pull-requests,harness,files}/` |
+| Other sidebar views (files, git, history, PR) | `apps/tauri/src/features/` |
+| Workbench (diff, PR, previews) | `apps/tauri/src/features/{git,pull-requests,files}/` |
 | Editor surfaces (cells and DOM) | `apps/tauri/src/features/editor/{cells,dom}/` |
 | Reusable explorer package (no Solid or Tauri) | `apps/tauri/packages/file-workbench/` |
 | Terminal Canvas | `apps/tauri/src/shared/cell-grid/` |
@@ -34,7 +34,7 @@ Day-to-day layout and behaviour details live next to the code:
 ```
 
 One left sidebar holds a strip of view icons above a single visible view, in the
-order Projects, Files, History, PR, Features, Git. Projects stays
+order Projects, Files, History, PR, Git. Projects stays
 mounted while another view is up. Whether it is open, its width and the active
 view live in `ui.sidebar.open` / `ui.sidebar.width` / `ui.sidebar.view`; theme metrics
 (`TITLE_H`, the sidebar default, control ladder) come from `theme/tokens.ts`,

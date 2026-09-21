@@ -12,9 +12,6 @@ description: >
 You are executing a review of **this** repository. Implement justified fixes
 and verify them. Do not stop at a plan or a findings list.
 
-This is not the harness cycle (`/feature`, `/feature-go`). Do not change
-`harness/features.json` or feature status.
-
 ## Ground truth (read, do not copy)
 
 | Topic | Source |
@@ -25,7 +22,7 @@ This is not the harness cycle (`/feature`, `/feature-go`). Do not change
 | Cost rungs | `docs/performance.md` — **required** before delta, render, core lock, or process work |
 | ADR numbers in code | `docs/decisions.md` |
 | Commands / "where to change X" | `docs/development.md`, `scripts/dev` |
-| Reviewer checkboxes if an invariant changes | `harness/CHECKPOINTS.md` |
+| Reviewer checkboxes if an invariant changes | `.agents/skills/invariant-c4/SKILL.md`, `.agents/skills/invariant-c5/SKILL.md`, `.agents/skills/invariant-c7/SKILL.md` |
 | GUI | Tauri 2 + **Solid** (not React). Bun 1.4.1. Tokens: `apps/tauri/src/theme/tokens.ts` |
 
 `Cargo.toml`, crate `//!` docs, `scripts/dev`, and current source beat `plan/`.
@@ -54,7 +51,7 @@ Read `CONTEXT.md` and `docs/architecture.md`. Split work by **owned paths** (no 
 |-------|------|
 | Docs / AGENTS / agent-nav | `AGENTS.md`, `CONTEXT.md`, `docs/**`, `.agents/**`, crate `lib.rs` headers, `scripts/dev`, `Makefile` |
 | Daemon runtime | `crates/daemon/src/**`, `crates/terminal-core/**` |
-| Crate seams | `domain`, `protocol`, `client`, `git-service`, `fs-service`, `harness-service`, `persistence`, `terminal-input`, `apps/tauri/src-tauri/Cargo.toml` |
+| Crate seams | `domain`, `protocol`, `client`, `git-service`, `fs-service`, `persistence`, `terminal-input`, `apps/tauri/src-tauri/Cargo.toml` |
 | Solid frontend | `apps/tauri/src/**` (Solid: `createSignal` / `createMemo` / `createEffect` / `onCleanup`) |
 | Comments | module `//!` / file headers only — no repo-wide comment sweep |
 
@@ -87,7 +84,7 @@ Do not treat this as a closed checklist. It is where previous passes found real 
 
 **Frontend (Solid)**
 
-- `createEffect` load loops: empty success (`features.length > 0`) or uncleared error treated as "not loaded".
+- `createEffect` load loops: empty success (`items.length > 0`) or uncleared error treated as "not loaded".
 - Per-frame style/layout work that is derivable from store/metrics.
 - Host `kind: String` (and similar) that silently defaults.
 
@@ -108,7 +105,7 @@ Targeted tests per batch. Then:
 
 - `scripts/dev check` (fmt, clippy `-D warnings`, `cargo test --workspace`)
 - If `apps/tauri` changed: `bun run --cwd apps/tauri check`
-- If an invariant in `AGENTS.md` changed: the matching box in `harness/CHECKPOINTS.md`
+- If an invariant in `AGENTS.md` changed: the matching `invariant-c4`, `invariant-c5` or `invariant-c7` skill
 
 Do not claim a test ran if you only read the code. Tests passing do **not** prove cost rungs.
 
@@ -120,6 +117,6 @@ Final chat: short. User's language. What broke and was fixed, architecture/docs/
 
 ## Subagents
 
-Explore is read-only. Parent implements. Do not use harness `implementer` / `reviewer` / `spec-author` unless the user already tied this to a feature.
+Explore is read-only. Parent implements.
 
 If explore cannot write `plan/`, it pastes the report in its return and the parent saves it.

@@ -17,25 +17,25 @@ Status for the Tauri + Solid shell.
 
 ## Summary
 
-| Metric                 | Value                                                     |
-| ---------------------- | --------------------------------------------------------- |
-| **Current phase**      | 6 (polish)                                                |
-| **Phases complete**    | 0–5: scaffold, wire, terminal, chrome, workbench, harness |
-| **Phases in progress** | 6 (polish), 7 (ship)                                      |
-| **GUI**                | **Tauri** (`make run`, `make run-tauri`)                  |
+| Metric                 | Value                                            |
+| ---------------------- | ------------------------------------------------ |
+| **Current phase**      | 6 (polish)                                       |
+| **Phases complete**    | 0–5: scaffold, wire, terminal, chrome, workbench |
+| **Phases in progress** | 6 (polish), 7 (ship)                             |
+| **GUI**                | **Tauri** (`make run`, `make run-tauri`)         |
 
 ## Phase status
 
-| Phase | Name                     | Status | Gate / notes                                                                                                              |
-| ----- | ------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------- |
-| **0** | Scaffold & design system | ✅     | Themed 3-column window; tokens + mix(); CI builds and typechecks                                                          |
-| **1** | Wire layer               | ✅     | Runtime thread + probe; `runtime:cells` split off `runtime:state`                                                         |
-| **2** | Terminal                 | ✅     | Canvas renderer, input, resize, scrollback, selection; p95 10.5 ms                                                        |
-| **3** | Navigation chrome        | ✅     | Actions + palette + rail tree + settings route + native menus                                                             |
-| **4** | Workbench                | ✅     | Diff/editor/rebase/PR compose; projects, groups, agent profiles                                                           |
-| **5** | Harness                  | ✅     | Features panel, feature tab, job stream, gate bar, preview terminal                                                       |
-| **6** | Polish                   | 🚧     | Mouse reporting, control states, ARIA tree, disconnect banner, token parity checked in CI; the paint number is unrecorded |
-| **7** | Ship                     | 🚧     | macOS + Linux bundles and the two-GUI docs; `externalBin` deliberately not used                                           |
+| Phase | Name                     | Status  | Gate / notes                                                                                                              |
+| ----- | ------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **0** | Scaffold & design system | ✅      | Themed 3-column window; tokens + mix(); CI builds and typechecks                                                          |
+| **1** | Wire layer               | ✅      | Runtime thread + probe; `runtime:cells` split off `runtime:state`                                                         |
+| **2** | Terminal                 | ✅      | Canvas renderer, input, resize, scrollback, selection; p95 10.5 ms                                                        |
+| **3** | Navigation chrome        | ✅      | Actions + palette + rail tree + settings route + native menus                                                             |
+| **4** | Workbench                | ✅      | Diff/editor/rebase/PR compose; projects, groups, agent profiles                                                           |
+| **5** | Harness                  | removed | The sidebar, feature tabs, approval bar and headless job runner were deleted                                              |
+| **6** | Polish                   | 🚧      | Mouse reporting, control states, ARIA tree, disconnect banner, token parity checked in CI; the paint number is unrecorded |
+| **7** | Ship                     | 🚧      | macOS + Linux bundles and the two-GUI docs; `externalBin` deliberately not used                                           |
 
 ## Gates
 

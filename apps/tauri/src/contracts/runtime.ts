@@ -44,9 +44,7 @@ export type SessionTitle = {
 /**
  * Mirrors `domain::SessionRole`.
  *
- * The harness cares: an orchestrator owns a feature and the children under it
- * do its steps, which is what the rail indents them by. `Custom` serializes as
- * an externally tagged variant, so it arrives as an object.
+ * `Custom` serializes as an externally tagged variant, so it arrives as an object.
  */
 export type SessionRole =
   | "Generic"
@@ -289,26 +287,6 @@ export type AgentProfile = {
   config_dir: string | null;
   args: string[];
   created_at: string;
-};
-
-export type JobState = "Queued" | "Running" | "Succeeded" | "Failed" | "Cancelled" | string;
-
-export type Job = {
-  id: string;
-  provider_id: string;
-  workspace_id: string;
-  role: string;
-  feature_id: number | null;
-  parent_session_id: string | null;
-  state: JobState;
-  summary: string;
-  prompt: string;
-  provider_session_id: string | null;
-  exit_code: number | null;
-  last_line: string | null;
-  started_at: string;
-  finished_at: string | null;
-  log_path: string;
 };
 
 export type SessionAttentionFlags = {
@@ -656,12 +634,8 @@ export function sessionIsRoot(session: Session): boolean {
   return session.parent_session_id === null && session.root_session_id === session.id;
 }
 
-export function sessionIsOrchestrator(session: Session): boolean {
-  return session.role === "Orchestrator";
-}
-
 /**
- * Short label for a harness role, or `null` when it is the generic one.
+ * Short label for a session role, or `null` when it is the generic one.
  *
  * `Generic` gets nothing: prefixing every plain shell with "Generic" would say
  * nothing about six rows out of seven.
@@ -681,15 +655,6 @@ export function rolePrefix(role: SessionRole): string | null {
     default:
       return "Agent";
   }
-}
-
-/** A job that has stopped, whatever the outcome. */
-export function jobIsFinal(state: JobState): boolean {
-  return state === "Succeeded" || state === "Failed" || state === "Cancelled";
-}
-
-export function jobIsRunning(state: JobState): boolean {
-  return state === "Queued" || state === "Running";
 }
 
 /**

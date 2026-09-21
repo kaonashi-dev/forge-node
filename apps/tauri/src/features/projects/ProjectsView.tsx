@@ -27,7 +27,7 @@ import { sessionAttention } from "../sessions/attention";
 import { setAppState } from "../settings/commands";
 import { refreshWorkspaceStatus } from "../sessions/commands";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
-import { centerMode, openFeatureCompose, showCode } from "../../navigation/viewsStore";
+import { centerMode, showCode } from "../../navigation/viewsStore";
 import { focusSession, launchAgent, launchShell } from "../sessions/sessionActions";
 import { Button, ContextMenu, Dialog, IconButton, Tooltip, type MenuItem } from "../../ui/index";
 import {
@@ -153,19 +153,7 @@ export function ProjectsView() {
               ),
       });
     }
-    return [
-      ...shells,
-      {
-        kind: "item",
-        label: "New Feature…",
-        glyph: <Icon name="agent" class="forge-icon-accent" size={14} />,
-        run: () => {
-          focusWorkspace(workspace);
-          openFeatureCompose();
-        },
-      },
-      ...(agents.length ? [{ kind: "rule" } as const, ...agents] : []),
-    ];
+    return [...shells, ...(agents.length ? [{ kind: "rule" } as const, ...agents] : [])];
   }
 
   /**
@@ -1273,7 +1261,7 @@ function SessionRow(props: {
       // lift of rows out of it — so those rows carry no tree role: an orphan
       // `treeitem` is worse for a screen reader than a plain button.
       role={props.inTree ? "treeitem" : undefined}
-      // A harness step is a step of the row above it, and the indent says so;
+      // A child sits under the session that started it, and the indent says so;
       // `level` places that same nesting under the card for a screen reader.
       aria-level={props.inTree ? (props.level ?? 1) + props.depth : undefined}
       aria-selected={props.inTree ? (props.cursor ?? active()) : undefined}

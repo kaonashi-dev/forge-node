@@ -1,12 +1,11 @@
 import { createMemo } from "solid-js";
 import { forgeStore } from "../../state/forgeStore";
-import { openFeatureCompose } from "../../navigation/viewsStore";
 import { SessionGlyph } from "./SessionGlyph";
 import { Icon } from "../../theme/icons/index";
 import { Menu, type MenuItem } from "../../ui/index";
 import { currentWorkspace, launchAgent, launchShell } from "./sessionActions";
 
-/** The `+` button in the tab strip: start a terminal, an agent, or a feature. */
+/** The `+` button in the tab strip: start a terminal or an agent. */
 export function SessionMenu() {
   const agents = createMemo(() => forgeStore.launchables.filter((item) => item.kind === "agent"));
 
@@ -19,12 +18,6 @@ export function SessionMenu() {
         // Named, not left to the daemon: this menu hangs off the strip,
         // and the strip is one checkout.
         run: () => void launchShell(currentWorkspace()).catch(() => undefined),
-      },
-      {
-        kind: "item",
-        label: "New Feature…",
-        glyph: <Icon name="agent" class="forge-icon-accent" size={14} />,
-        run: openFeatureCompose,
       },
       { kind: "rule" },
     ];

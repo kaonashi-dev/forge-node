@@ -1,5 +1,5 @@
 import { For, Show, createMemo } from "solid-js";
-import { relativeAge } from "../harness/featureRows";
+import { relativeAge } from "./relativeAge";
 import { openUrl } from "../../runtime/host";
 import { PathText } from "../files/references/PathText";
 import { forgeStore } from "../../state/forgeStore";

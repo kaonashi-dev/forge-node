@@ -12,9 +12,7 @@ pub mod diff;
 pub mod editor_frame;
 pub mod external;
 pub mod file;
-pub mod harness;
 pub mod ids;
-pub mod job;
 pub mod pr_review;
 pub mod pr_task;
 pub mod project;
@@ -29,11 +27,10 @@ pub mod worktree_ignore;
 
 // Re-export the most commonly used types at the crate root.
 pub use agent::{
-    AcpPermissionDecision, AcpPermissionPolicy, AcpSpec, AcpToolKind, AgentCapabilities,
-    AgentDescriptor, AgentProfile, ChildWorkspacePolicy, ConfigDirSpec, DetectionResult,
-    DetectionStatus, EnvSource, HeadlessSpec, LaunchAgentRequest, PromptStyle, ProviderUsage,
-    PtySize, ResolvedEnvironment, ResumeStyle, ReviewStyle, SchemaStyle, SpawnSpec, UsageProbe,
-    UsageSource, UsageWindow, VersionProbe, WorkerTransport, RESERVED_PROFILE_VARS,
+    AcpSpec, AgentCapabilities, AgentDescriptor, AgentProfile, ChildWorkspacePolicy, ConfigDirSpec,
+    DetectionResult, DetectionStatus, EnvSource, LaunchAgentRequest, PromptStyle, ProviderUsage,
+    PtySize, ResolvedEnvironment, ResumeStyle, ReviewStyle, SpawnSpec, UsageProbe, UsageSource,
+    UsageWindow, VersionProbe, RESERVED_PROFILE_VARS,
 };
 pub use branch::{BranchRef, RefScope, Remote};
 pub use change::{ChangeContext, ChangeFile, JuvaDraft, JuvaKind};
@@ -52,15 +49,10 @@ pub use file::{
     DirectoryListing, FileContents, FileEntry, FileKind, FileTree, ImageContents, SearchKind,
     SearchMatch, SearchResults, SymlinkTarget,
 };
-pub use harness::{
-    HarnessAdvanceAction, HarnessArtifactKind, HarnessAttempt, HarnessEvent, HarnessFeature,
-    HarnessFeatureList, HarnessStep,
-};
 pub use ids::{
-    AgentProfileId, AgentProviderId, ClientId, ContextId, JobId, ProjectGroupId, ProjectId,
-    SessionId, ShareRuleId, TerminalId, Timestamp, WorkspaceId,
+    AgentProfileId, AgentProviderId, ClientId, ContextId, ProjectGroupId, ProjectId, SessionId,
+    ShareRuleId, TerminalId, Timestamp, WorkspaceId,
 };
-pub use job::{Job, JobRequest, JobState};
 pub use pr_review::{
     builtin_recipes, compose_review_prompt, recipe_or_default, ReviewRecipe, CUSTOM_RECIPE,
 };

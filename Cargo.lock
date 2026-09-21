@@ -748,7 +748,6 @@ dependencies = [
  "flume",
  "fs-service",
  "git-service",
- "harness-service",
  "nix 0.31.3",
  "notify",
  "persistence",
@@ -1712,21 +1711,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "harness-service"
-version = "0.1.3"
-dependencies = [
- "domain",
- "git-service",
- "nix 0.31.3",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "time",
- "tracing",
 ]
 
 [[package]]

@@ -58,5 +58,3 @@ EOF
 - Do not commit or push unless the human asked.
 - Never `--no-verify` unless the human explicitly asked.
 - Never stage secrets (`.env`, credentials, keys).
-- Harness `/feature-commit` still requires `APPROVED` review; the message must
-  still match this checklist.

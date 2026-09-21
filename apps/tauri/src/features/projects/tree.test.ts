@@ -247,8 +247,8 @@ describe("waiting", () => {
 });
 
 describe("buildTree session nesting", () => {
-  // The harness starts an orchestrator and hangs its steps off it. Flat, those
-  // rows read as unrelated agents rather than one piece of work.
+  // A child belongs under the session that started it. Flat, those rows read
+  // as unrelated agents rather than one piece of work.
   it("indents a session under its parent", () => {
     const snap = snapshot();
     snap.sessions = [

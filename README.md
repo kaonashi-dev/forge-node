@@ -120,7 +120,6 @@ crates/
   agents/         provider registry, detection, built-ins
   git-service/    git CLI wrapper, repository + worktree ops
   fs-service/     workspace list/read/write/search (ADR-012)
-  harness-service/ repository harness files and status transitions
   persistence/    SQLite schema, migrations, repositories
   editor-core/    document, transactions, search and syntax; no I/O
   editor-control/ daemon–editor control wire
@@ -132,7 +131,7 @@ apps/tauri/       Tauri 2 + Solid shell; the Rust host is under `src-tauri/`
 ```
 
 Dependency direction: `forge-tauri → client → {protocol, terminal-input} → domain`
-and `daemon → {agents, git-service, fs-service, harness-service, persistence, terminal-core} → domain`.
+and `daemon → {agents, git-service, fs-service, persistence, terminal-core} → domain`.
 
 Rust · Tauri 2 + Solid/Vite · Unix domain socket + MessagePack · Git CLI ·
 SQLite · `alacritty_terminal`.
@@ -194,7 +193,7 @@ are tested, but nothing here is settled. The backend is implemented and covered 
 `domain`, `protocol` (see [`docs/protocol.md`](docs/protocol.md)),
 `terminal-core` (PTY, alacritty engine, deltas), `terminal-input`, `agents`
 (registry, verified detection, five built-ins), `git-service`, `fs-service`,
-`harness-service`, `persistence` (SQLite, migrations, orphan reconciliation),
+`persistence` (SQLite, migrations, orphan reconciliation),
 `client` and `daemon` — including end-to-end tests that drive a real daemon
 over a real socket with a real shell.
 

@@ -27,15 +27,6 @@ function channel<T>() {
 
 export const cellsChannel = channel<CellsPayload>();
 /**
- * The harness preview's frames.
- *
- * Its own channel, not a second subscriber on `cellsChannel`: the two
- * surfaces paint different terminals, and a canvas that had to check every
- * frame's terminal id before drawing it would do that check 62 times a second
- * for the one it does not want.
- */
-export const previewCellsChannel = channel<CellsPayload>();
-/**
  * Frames for a daemon-supervised editor in the Code region.
  *
  * Its own channel so the hidden main pane never has to filter terminal ids

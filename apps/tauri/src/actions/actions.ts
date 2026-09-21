@@ -63,7 +63,6 @@ export type ActionId =
   | "new_terminal"
   | "new_agent"
   | "new_worktree"
-  | "new_feature"
   | "open_settings"
   | "close_session"
   | "next_session"
@@ -75,7 +74,6 @@ export type ActionId =
   | "toggle_projects"
   | "toggle_pull_requests"
   | "toggle_files"
-  | "toggle_features"
   | "cycle_sidebar_views"
   | "add_project"
   | "open_file_palette"
@@ -220,24 +218,11 @@ export const ACTIONS: Action[] = [
     repeats: false,
   },
   {
-    id: "toggle_features",
-    label: "Features",
-    detail: "Show the harness features in the sidebar",
-    palette: true,
-    repeats: false,
-  },
-  {
     id: "cycle_sidebar_views",
     label: "Next Sidebar View",
-    detail: "Walk History, PR, Features and Git in turn",
+    detail: "Walk History, PR and Git in turn",
     palette: true,
     repeats: false,
-  },
-  {
-    id: "new_feature",
-    label: "New Feature…",
-    detail: "Draft a spec and register it with the harness",
-    palette: true,
   },
   {
     id: "add_project",
@@ -606,9 +591,6 @@ export function defaultBindings(): Binding[] {
     bind(`${MOD}-3`, "cycle_sidebar_views", APP),
     bind(`${MOD}-shift-r`, "toggle_pull_requests", APP),
     bind(`${MOD}-shift-f`, "find_in_project", APP),
-    // `shift-h` for the harness: `${MOD}-h` alone is macOS's hide-application,
-    // and on Linux `ctrl-h` is a terminal's backspace.
-    bind(`${MOD}-shift-h`, "toggle_features", APP),
     bind(`${MOD}-p`, "open_file_palette", APP),
     ...(isMac() ? [bind("cmd-o", "open_file_palette", APP)] : []),
     // Scoped to the editor, not to the app: on Linux `MOD` is `ctrl`, and

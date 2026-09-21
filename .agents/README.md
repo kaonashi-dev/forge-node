@@ -10,7 +10,7 @@ matching page under [`docs/`](../docs/).
 
 Skills live in `skills/<name>/SKILL.md`. `.claude/skills` and `.cursor/skills`
 are relative symlinks to this shared directory, not separate copies. The
-harness skills (`feature`, `feature-go`, `feature-status`, `feature-commit`,
-`invariant-c4/c5/c7`) follow [docs/harness.md](../docs/harness.md).
+`invariant-c4`, `invariant-c5` and `invariant-c7` skills provide review checklists
+for crate boundaries, runtime invariants and resource costs.
 
 Invariants and crate boundaries live in [`AGENTS.md`](../AGENTS.md), not here.

@@ -183,10 +183,6 @@ pub enum RuntimeCommand {
         #[serde(default)]
         branch_hint: Option<String>,
     },
-    /// Seed a job viewer with the lines already written before it was opened.
-    ReadJobLog {
-        job_id: domain::JobId,
-    },
     Resize {
         size: PtySize,
     },
@@ -444,39 +440,6 @@ pub enum RuntimeCommand {
         provider: AgentProviderId,
         #[serde(default)]
         path: Option<String>,
-    },
-
-    // ----------------------------------------------------------- harness ---
-    LinkHarnessSession {
-        project: ProjectId,
-        feature: u32,
-        session_id: SessionId,
-    },
-    /// Kill a running job, or drop a queued one.
-    CancelJob {
-        job_id: domain::JobId,
-    },
-    /// Attach a second, small terminal to watch a harness session without
-    /// leaving the feature tab.
-    ///
-    /// One at a time: attaching replaces whatever the preview held, which is
-    /// what makes clicking through a feature's sessions cheap.
-    AttachHarnessPreview {
-        session_id: SessionId,
-        #[serde(default)]
-        size: Option<PtySize>,
-    },
-    DetachHarnessPreview,
-    /// Re-size the preview's PTY to what its canvas can paint.
-    ///
-    /// Dropped while nothing is attached: the pane sends this from a
-    /// `ResizeObserver`, which can fire before the attach it belongs to.
-    ResizeHarnessPreview {
-        size: PtySize,
-    },
-    /// A key press for the preview terminal.
-    InputPreview {
-        key: KeyPress,
     },
 
     /// Ask the daemon to stop. `kill_sessions` takes the running PTYs with it.

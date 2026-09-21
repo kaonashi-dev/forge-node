@@ -33,7 +33,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// every new request with an undecodable frame and no `Response` — the caller
 /// waits on a reply that never comes. Equality at connect turns that stall
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -297,7 +297,6 @@ mod tests {
                     flag: "--resume".to_string(),
                 }),
                 prompt: None,
-                headless: None,
                 acp: None,
                 review: Some(domain::ReviewStyle {
                     args: vec!["--permission-mode".to_string(), "plan".to_string()],
@@ -306,7 +305,6 @@ mod tests {
                 capabilities: AgentCapabilities {
                     interactive_tui: true,
                     supports_initial_prompt: true,
-                    supports_headless: false,
                     supports_resume: true,
                     supports_review: true,
                 },
@@ -338,8 +336,7 @@ mod tests {
             worktree_ignores: vec![],
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
-            pull_requests: sample_pull_request_state(),
-            jobs: vec![],
+            pull_requests: Box::new(sample_pull_request_state()),
             usage: vec![],
         };
         let msg = DaemonMessage::Response {

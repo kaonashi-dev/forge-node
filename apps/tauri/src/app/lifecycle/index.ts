@@ -7,7 +7,6 @@ import { bindEditorEvents } from "./events/editor";
 import { bindFilesEvents } from "./events/files";
 import { bindGitEvents } from "./events/git";
 import { bindProjectsEvents } from "./events/projects";
-import { bindHarnessEvents } from "./events/harness";
 import { bindSettingsEvents } from "./events/settings";
 import { bindAll } from "./bind";
 import { applyConnected } from "./connection";
@@ -29,7 +28,6 @@ export async function startAppRuntime(options: StartAppRuntimeOptions = {}): Pro
       bindFilesEvents,
       bindGitEvents,
       bindProjectsEvents,
-      bindHarnessEvents,
       bindSettingsEvents,
     ]);
     for (const start of [

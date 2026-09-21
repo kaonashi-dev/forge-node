@@ -1,7 +1,4 @@
-use domain::{
-    AgentProfileId, HarnessAdvanceAction, HarnessArtifactKind, HarnessStep, JuvaKind, ProjectId,
-    SessionId, ShareRuleId, WorkspaceId,
-};
+use domain::{AgentProfileId, JuvaKind, ProjectId, SessionId, ShareRuleId, WorkspaceId};
 use serde::Deserialize;
 
 /// A workbench read or write, from the WebView.
@@ -178,69 +175,6 @@ pub enum WorkbenchCommand {
         title: String,
         body: String,
     },
-
-    // ----------------------------------------------------------- harness ---
-    //
-    // The harness reads answer *inline* — `features.json` and the markdown
-    // under `harness/` are files the daemon parses on the spot — so they are
-    // exactly the shape this worker exists for. Running them where
-    // keystrokes run would put a spec parse in front of typing.
-    LoadHarnessFeatures {
-        project: ProjectId,
-    },
-    /// The feature and its timeline together: the tab shows both, and asking
-    /// twice is two round trips for one open.
-    LoadHarnessDetail {
-        project: ProjectId,
-        feature: u32,
-    },
-    LoadHarnessArtifact {
-        project: ProjectId,
-        feature: u32,
-        artifact: HarnessArtifactKind,
-    },
-    /// Approve / revise / block / start a step. Answers with the feature's new
-    /// state, which is what the tab redraws from.
-    HarnessAdvance {
-        project: ProjectId,
-        feature: u32,
-        /// The row's `revision` as the tab last saw it, so a decision taken
-        /// against a view the machine has moved past is a no-op rather than a
-        /// second approval.
-        #[serde(default)]
-        revision: Option<u64>,
-        action: HarnessAdvanceAction,
-    },
-    /// Start one step of the cycle as a headless job.
-    RunHarnessStep {
-        project: ProjectId,
-        feature: u32,
-        step: HarnessStep,
-    },
-    RegisterHarnessFeature {
-        project: ProjectId,
-        #[serde(default)]
-        workspace: Option<WorkspaceId>,
-        spec_raw: String,
-        #[serde(default)]
-        title: Option<String>,
-    },
-    RegisterHarnessFromIssue {
-        project: ProjectId,
-        #[serde(default)]
-        workspace: Option<WorkspaceId>,
-        issue: u32,
-    },
-    /// Run the harness's own checks and hand back their output verbatim.
-    ValidateHarness {
-        project: ProjectId,
-    },
-    /// Every headless run the daemon still knows of.
-    ///
-    /// Jobs live in the daemon's memory, so this is empty after a restart even
-    /// though the transcripts are still on disk — which is why a feature's
-    /// timeline carries the job id and this list is only ever a convenience.
-    ListJobs,
 }
 
 #[cfg(test)]

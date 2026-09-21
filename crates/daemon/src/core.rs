@@ -99,11 +99,6 @@ pub(crate) struct Inner {
     /// Coalesces `ApplyShares` per workspace. A second request rides
     /// the first one's run rather than queueing a second copy of it.
     provisioning: HashSet<WorkspaceId>,
-    /// Runtime-only: a job is a process and none survive a restart.
-    pub(crate) jobs: HashMap<domain::JobId, domain::Job>,
-    pub(crate) job_queue: std::collections::VecDeque<crate::jobs::PendingJob>,
-    pub(crate) job_processes: HashMap<domain::JobId, crate::jobs::JobProcess>,
-    pub(crate) max_concurrent_jobs: usize,
     /// Last `git status` per workspace (ADR-008 throttle).
     status_checks: HashMap<WorkspaceId, Instant>,
     /// Last usage reading per *account* — one provider can report several
@@ -201,20 +196,6 @@ impl Daemon {
         {
             let d = daemon.clone();
             std::thread::spawn(move || d.run_usage_sweeper());
-        }
-
-        // Before anything can be started, settle what the previous daemon left
-        // running: a feature whose attempt has no process is stuck otherwise.
-        daemon.recover_harness_after_restart();
-
-        {
-            let d = daemon.clone();
-            if let Err(error) = std::thread::Builder::new()
-                .name("forge-harness-watchdog".into())
-                .spawn(move || d.run_harness_watchdog())
-            {
-                tracing::warn!(%error, "could not start the harness watchdog");
-            }
         }
 
         if daemon.config.idle_policy().is_enabled() {
@@ -347,10 +328,6 @@ impl Daemon {
             drafting: HashSet::new(),
             pr_refreshing: false,
             provisioning: HashSet::new(),
-            jobs: HashMap::new(),
-            job_queue: std::collections::VecDeque::new(),
-            job_processes: HashMap::new(),
-            max_concurrent_jobs: crate::jobs::DEFAULT_MAX_CONCURRENT_JOBS,
             status_checks: HashMap::new(),
             usage: Vec::new(),
             env_fallback_noticed: false,
@@ -716,53 +693,6 @@ impl Daemon {
             Request::SetAppState { key, value } => self.set_app_state(&key, &value),
             Request::RefreshPullRequests => self.refresh_pull_requests(),
             Request::GetStats => Ok(Response::DaemonStats(self.collect_stats())),
-            Request::ListHarnessFeatures { project_id } => self.list_harness_features(project_id),
-            Request::GetHarnessFeature {
-                project_id,
-                feature_id,
-            } => self.get_harness_feature(project_id, feature_id),
-            Request::GetHarnessTimeline {
-                project_id,
-                feature_id,
-            } => self.get_harness_timeline(project_id, feature_id),
-            Request::ReadHarnessArtifact {
-                project_id,
-                feature_id,
-                artifact,
-            } => self.read_harness_artifact(project_id, feature_id, artifact),
-            Request::RegisterHarnessFeature {
-                project_id,
-                workspace_id,
-                spec_raw,
-                title,
-            } => self.register_harness_feature(project_id, workspace_id, spec_raw, title),
-            Request::RegisterHarnessFromIssue {
-                project_id,
-                workspace_id,
-                issue_number,
-            } => self.register_harness_from_issue(project_id, workspace_id, issue_number),
-            Request::HarnessAdvance {
-                project_id,
-                feature_id,
-                revision,
-                action,
-            } => self.harness_advance(project_id, feature_id, revision, action),
-            Request::LinkHarnessSession {
-                project_id,
-                feature_id,
-                session_id,
-            } => self.link_harness_session(project_id, feature_id, session_id),
-            Request::ValidateHarness { project_id } => self.validate_harness(project_id),
-            Request::RunHarnessStep {
-                project_id,
-                feature_id,
-                step,
-                force,
-            } => self.run_harness_step_forced(project_id, feature_id, step, force),
-            Request::StartJob { request } => self.start_job(request),
-            Request::CancelJob { job_id } => self.cancel_job(job_id),
-            Request::ListJobs => Ok(self.list_jobs()),
-            Request::ReadJobLog { job_id, from_line } => self.read_job_log(job_id, from_line),
 
             Request::AddProject { path } => self.add_project(&path),
             Request::AddProjectToGroup {
@@ -1171,37 +1101,6 @@ impl Daemon {
         })
     }
 
-    /// Path of a checkout that belongs to `project_id`. A workspace from another
-    /// project is refused, not silently resolved.
-    pub(crate) fn workspace_path_in(
-        &self,
-        project_id: ProjectId,
-        workspace_id: domain::WorkspaceId,
-    ) -> Result<PathBuf, ProtocolError> {
-        let inner = self.lock();
-        let workspace = inner
-            .workspaces
-            .get(&workspace_id)
-            .ok_or_else(|| ProtocolError::not_found("workspace"))?;
-        if workspace.project_id != project_id {
-            return Err(ProtocolError::new(
-                ErrorCode::InvalidRequest,
-                "workspace belongs to another project",
-            ));
-        }
-        Ok(workspace.path.clone())
-    }
-
-    /// Where this project's `harness/` lives. See [`harness_root_of`].
-    pub(crate) fn harness_root_for(&self, project_id: ProjectId) -> Result<PathBuf, ProtocolError> {
-        let inner = self.lock();
-        inner
-            .projects
-            .get(&project_id)
-            .map(harness_root_of)
-            .ok_or_else(|| ProtocolError::not_found("project"))
-    }
-
     // --- Global ---
 
     fn snapshot(&self) -> Response {
@@ -1255,12 +1154,6 @@ impl Daemon {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .snapshot();
-        let jobs = {
-            let inner = self.lock();
-            let mut jobs: Vec<domain::Job> = inner.jobs.values().cloned().collect();
-            jobs.sort_by_key(|job| job.id.as_uuid());
-            jobs
-        };
         let response = Response::Snapshot {
             project_groups,
             projects,
@@ -1272,8 +1165,7 @@ impl Daemon {
             worktree_ignores,
             app_state,
             external_agents,
-            pull_requests,
-            jobs,
+            pull_requests: Box::new(pull_requests),
             usage,
         };
         for event in self.take_pending_notices() {
@@ -1335,7 +1227,6 @@ impl Daemon {
             (session_ids, managed_worktrees)
         };
 
-        self.cancel_all_jobs();
         self.kill_groups_blocking(&self.kill_targets(&session_ids));
 
         {
@@ -4217,8 +4108,8 @@ impl Daemon {
             role,
             None,
             initial_prompt,
-            // A harness child writes code; only a pull-request review asks for
-            // the provider's read-only mode.
+            // A child writes code; only a pull-request review asks for the
+            // provider's read-only mode.
             false,
         )
     }
@@ -5097,10 +4988,6 @@ impl Daemon {
         };
         upsert_var(&mut spec.env, "FORGE_SESSION_ID", &session_id.to_string());
         upsert_var(&mut spec.env, "FORGE_WORKSPACE", &cwd.to_string_lossy());
-        // Harness state lives at the repository root, not the worktree cwd.
-        if let Some(root) = harness_root_in(inner, cwd) {
-            upsert_var(&mut spec.env, "FORGE_HARNESS_ROOT", &root.to_string_lossy());
-        }
         // Agents call `forge-daemon session|context …` with FORGE_SESSION_ID;
         // the daemon binary's directory must be on PATH inside the PTY.
         prepend_daemon_bin_to_path(&mut spec.env);
@@ -6804,86 +6691,6 @@ fn first_kill_signal(kind: SessionKind) -> nix::sys::signal::Signal {
 /// `kill(-pgid, 0)`.
 fn group_alive(pgid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pgid), None).is_ok()
-}
-
-impl Daemon {
-    /// Opaque GUI key. The harness step's agent lives here, not a second store.
-    pub(crate) fn app_state_value(&self, key: &str) -> Option<String> {
-        let inner = self.lock();
-        inner.db.app_state().get(key).ok().flatten()
-    }
-
-    /// First installed provider that can run a job (picker order).
-    pub(crate) fn first_headless_provider(&self) -> Option<AgentProviderId> {
-        let inner = self.lock();
-        inner
-            .agents
-            .descriptors()
-            .into_iter()
-            .find(|descriptor| {
-                descriptor.headless.is_some()
-                    && inner
-                        .detections
-                        .get(&descriptor.id)
-                        .is_some_and(|detection| detection.status.is_installed())
-            })
-            .map(|descriptor| descriptor.id.clone())
-    }
-
-    /// Under the daemon log dir, not the project: removing a worktree must not drop the transcript.
-    pub(crate) fn job_log_path(&self, id: domain::JobId) -> Result<PathBuf, ProtocolError> {
-        let dir = crate::paths::logs_dir()
-            .map_err(|e| ProtocolError::new(ErrorCode::IoError, e.to_string()))?
-            .join("jobs");
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| ProtocolError::new(ErrorCode::IoError, e.to_string()))?;
-        Ok(dir.join(format!("{id}.jsonl")))
-    }
-
-    /// Same env as an interactive launch.
-    pub(crate) fn job_environment(&self, cwd: &Path) -> (Vec<(String, String)>, Option<PathBuf>) {
-        let mut inner = self.lock();
-        let harness_root = harness_root_in(&inner, cwd);
-        let env = self.resolved_env(&mut inner);
-        (env.vars, harness_root)
-    }
-}
-
-/// The repository root that owns `harness/`, for one project.
-///
-/// `git_root`, not `root_path`: a project is registered at whatever directory
-/// the user picked, and that is routinely a subdirectory of the repository —
-/// `apps/tauri/src-tauri` is one you would plausibly open on its own. But
-/// `harness/` is metadata of the *repository*, like `.git`, so a `root_path`
-/// one level down names a directory that has no `harness/` in it at all.
-///
-/// The agent side resolves the same root from `--git-common-dir`
-/// (`harness/src/harness.ts`), and the two ends have to agree: this value is
-/// exported as `FORGE_HARNESS_ROOT`, which wins there over any resolution of
-/// its own. Disagreeing means the GUI reads a different `features.json` than
-/// the agent writes, and — through the sandbox's writable dirs in `jobs.rs` —
-/// that the agent is handed write access to a directory the harness never
-/// touches while being denied the one it does.
-///
-/// A project outside a repository has no `git_root`; `root_path` is then the
-/// only root it has, and the fallback keeps that case working.
-pub(crate) fn harness_root_of(project: &Project) -> PathBuf {
-    project
-        .git_root
-        .clone()
-        .unwrap_or_else(|| project.root_path.clone())
-}
-
-/// Same root, reached from the checkout at `cwd` rather than a project id.
-///
-/// Runs under the core lock, so it stays a lookup: git is never spawned here.
-pub(crate) fn harness_root_in(inner: &Inner, cwd: &Path) -> Option<PathBuf> {
-    inner
-        .workspaces
-        .values()
-        .find(|workspace| workspace.path == cwd)
-        .and_then(|workspace| inner.projects.get(&workspace.project_id))
-        .map(harness_root_of)
 }
 
 /// Negative pid: a single-pid kill orphans grandchildren.
@@ -9895,7 +9702,6 @@ mod tests {
             sessions,
             agent_profiles,
             app_state,
-            jobs,
             ..
         } = daemon.snapshot()
         else {
@@ -9907,7 +9713,6 @@ mod tests {
         assert!(sessions.is_empty());
         assert!(agent_profiles.is_empty());
         assert!(app_state.is_empty());
-        assert!(jobs.is_empty());
         assert!(matches!(
             events.try_recv(),
             Ok(DaemonMessage::Event(DaemonEvent::FactoryReset))

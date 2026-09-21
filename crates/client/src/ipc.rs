@@ -1186,7 +1186,7 @@ impl Client {
         self.expect_ack(Request::OverwriteEditorBuffer { session_id })
     }
 
-    /// Spawn a child agent/shell under a parent session (harness workflow).
+    /// Spawn a child agent or shell under a parent session.
     #[allow(clippy::too_many_arguments)]
     pub fn create_child_session(
         &self,
@@ -1253,209 +1253,6 @@ impl Client {
             Response::ContextEnvelopes(list) => Ok(list),
             _ => Err(ClientError::UnexpectedResponse {
                 expected: "ContextEnvelopes",
-            }),
-        }
-    }
-
-    pub fn list_harness_features(
-        &self,
-        project_id: domain::ProjectId,
-    ) -> Result<domain::HarnessFeatureList, ClientError> {
-        match self.request(Request::ListHarnessFeatures { project_id })? {
-            Response::HarnessFeatureList(list) => Ok(list),
-            _ => Err(ClientError::UnexpectedResponse {
-                expected: "HarnessFeatureList",
-            }),
-        }
-    }
-
-    pub fn get_harness_feature(
-        &self,
-        project_id: domain::ProjectId,
-        feature_id: u32,
-    ) -> Result<domain::HarnessFeature, ClientError> {
-        match self.request(Request::GetHarnessFeature {
-            project_id,
-            feature_id,
-        })? {
-            Response::HarnessFeature(feature) => Ok(feature),
-            _ => Err(ClientError::UnexpectedResponse {
-                expected: "HarnessFeature",
-            }),
-        }
-    }
-
-    pub fn get_harness_timeline(
-        &self,
-        project_id: domain::ProjectId,
-        feature_id: u32,
-    ) -> Result<Vec<domain::HarnessEvent>, ClientError> {
-        match self.request(Request::GetHarnessTimeline {
-            project_id,
-            feature_id,
-        })? {
-            Response::HarnessTimeline(events) => Ok(events),
-            _ => Err(ClientError::UnexpectedResponse {
-                expected: "HarnessTimeline",
-            }),
-        }
-    }
-
-    pub fn read_harness_artifact(
-        &self,
-        project_id: domain::ProjectId,
-        feature_id: u32,
-        artifact: domain::HarnessArtifactKind,
-    ) -> Result<String, ClientError> {
-        match self.request(Request::ReadHarnessArtifact {
-            project_id,
-            feature_id,
-            artifact,
-        })? {
-            Response::HarnessArtifact { text } => Ok(text),
-            _ => Err(ClientError::UnexpectedResponse {
-                expected: "HarnessArtifact",
-            }),
-        }
-    }
-
-    pub fn register_harness_feature(
-        &self,
-        project_id: domain::ProjectId,
-        workspace_id: Option<domain::WorkspaceId>,
-        spec_raw: String,
-        title: Option<String>,
-    ) -> Result<domain::HarnessFeature, ClientError> {
-        match self.request(Request::RegisterHarnessFeature {
-            project_id,
-            workspace_id,
-            spec_raw,
-            title,
-        })? {
-            Response::HarnessFeature(feature) => Ok(feature),
-            _ => Err(ClientError::UnexpectedResponse {
-                expected: "HarnessFeature",
-            }),
-        }
-    }
-
-    pub fn register_harness_from_issue(
-        &self,
-        project_id: domain::ProjectId,
-        workspace_id: Option<domain::WorkspaceId>,
-        issue_number: u32,
-    ) -> Result<domain::HarnessFeature, ClientError> {
-        match self.request(Request::RegisterHarnessFromIssue {
-            project_id,
-            workspace_id,
-            issue_number,
-        })? {
-            Response::HarnessFeature(feature) => Ok(feature),
-            _ => Err(ClientError::UnexpectedResponse {
-                expected: "HarnessFeature",
-            }),
-        }
-    }
-
-    pub fn harness_advance(
-        &self,
-        project_id: domain::ProjectId,
-        feature_id: u32,
-        revision: Option<u64>,
-        action: domain::HarnessAdvanceAction,
-    ) -> Result<domain::HarnessFeature, ClientError> {
-        match self.request(Request::HarnessAdvance {
-            project_id,
-            feature_id,
-            revision,
-            action,
-        })? {
-            Response::HarnessFeature(feature) => Ok(feature),
-            _ => Err(ClientError::UnexpectedResponse {
-                expected: "HarnessFeature",
-            }),
-        }
-    }
-
-    pub fn link_harness_session(
-        &self,
-        project_id: domain::ProjectId,
-        feature_id: u32,
-        session_id: SessionId,
-    ) -> Result<(), ClientError> {
-        self.expect_ack(Request::LinkHarnessSession {
-            project_id,
-            feature_id,
-            session_id,
-        })
-    }
-
-    /// Run one step of the harness cycle as a job.
-    ///
-    /// The daemon takes it from there: when the job exits it records the
-    /// outcome and starts the next step, stopping at the human gate.
-    pub fn run_harness_step(
-        &self,
-        project_id: domain::ProjectId,
-        feature_id: u32,
-        step: domain::HarnessStep,
-    ) -> Result<domain::Job, ClientError> {
-        match self.request(Request::RunHarnessStep {
-            project_id,
-            feature_id,
-            step,
-            force: false,
-        })? {
-            Response::Job(job) => Ok(*job),
-            _ => Err(ClientError::UnexpectedResponse { expected: "Job" }),
-        }
-    }
-
-    ///
-    /// Answers as soon as the job is *accepted*: it may still be queued behind
-    /// the daemon's concurrency limit. Follow `JobUpdated` for the rest.
-    pub fn start_job(&self, request: domain::JobRequest) -> Result<domain::Job, ClientError> {
-        match self.request(Request::StartJob { request })? {
-            Response::Job(job) => Ok(*job),
-            _ => Err(ClientError::UnexpectedResponse { expected: "Job" }),
-        }
-    }
-
-    /// Kill a running job, or drop a queued one.
-    pub fn cancel_job(&self, job_id: domain::JobId) -> Result<(), ClientError> {
-        self.expect_ack(Request::CancelJob { job_id })
-    }
-
-    /// Every headless run the daemon knows of, oldest first.
-    pub fn list_jobs(&self) -> Result<Vec<domain::Job>, ClientError> {
-        match self.request(Request::ListJobs)? {
-            Response::Jobs(jobs) => Ok(jobs),
-            _ => Err(ClientError::UnexpectedResponse { expected: "Jobs" }),
-        }
-    }
-
-    /// One job's event stream from `from_line`, and whether it has finished.
-    pub fn read_job_log(
-        &self,
-        job_id: domain::JobId,
-        from_line: u64,
-    ) -> Result<(Vec<String>, bool), ClientError> {
-        match self.request(Request::ReadJobLog { job_id, from_line })? {
-            Response::JobLog {
-                lines, finished, ..
-            } => Ok((lines, finished)),
-            _ => Err(ClientError::UnexpectedResponse { expected: "JobLog" }),
-        }
-    }
-
-    pub fn validate_harness(
-        &self,
-        project_id: domain::ProjectId,
-    ) -> Result<(bool, String), ClientError> {
-        match self.request(Request::ValidateHarness { project_id })? {
-            Response::HarnessValidate { ok, output } => Ok((ok, output)),
-            _ => Err(ClientError::UnexpectedResponse {
-                expected: "HarnessValidate",
             }),
         }
     }
@@ -2047,8 +1844,7 @@ mod tests {
             worktree_ignores: vec![],
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
-            pull_requests: domain::PullRequestState::default(),
-            jobs: vec![],
+            pull_requests: Box::new(domain::PullRequestState::default()),
             usage: vec![],
         };
         let server_expected = expected.clone();

@@ -47,23 +47,6 @@ export type WorkbenchView =
    */
   | { kind: "review"; workspace: string }
   /**
-   * The draft a feature starts as: a spec with no number yet.
-   *
-   * Its own kind rather than a `feature` with `id: null`, because everything
-   * the feature tab does — the gate, the steps, the documents — is keyed on a
-   * number the daemon has not minted yet.
-   */
-  | { kind: "feature_compose" }
-  /**
-   * One harness feature: its gate, its steps, its agents and its documents.
-   *
-   * Identified by the feature *number*, which is what `features.json` keys on.
-   * That number is only unique inside a repository — but so is this strip,
-   * which is parked per checkout, so two projects can each have a `#3` open
-   * without either finding the other's.
-   */
-  | { kind: "feature"; id: number }
-  /**
    * The Files sidebar's content search, with room to read it: every hit in its
    * surrounding lines, file by file.
    *
@@ -73,7 +56,6 @@ export type WorkbenchView =
   | { kind: "search" };
 
 export const PR_COMPOSE_VIEW: WorkbenchView = { kind: "pr_compose" };
-export const FEATURE_COMPOSE_VIEW: WorkbenchView = { kind: "feature_compose" };
 
 export type ParkedViews = {
   /** Open views, in the order they were opened, terminal excluded. */
@@ -115,8 +97,6 @@ export function viewKey(view: WorkbenchView): string {
   if (view.kind === "pr_review") return `pr-review:${view.key}`;
   if (view.kind === "review") return `review:${view.workspace}`;
   if (view.kind === "pr_compose") return "pr_compose";
-  if (view.kind === "feature_compose") return "feature_compose";
-  if (view.kind === "feature") return `feature:${view.id}`;
   return view.kind;
 }
 
@@ -142,10 +122,6 @@ export function viewLabel(view: WorkbenchView): string {
       return "Review";
     case "pr_compose":
       return "Open PR";
-    case "feature_compose":
-      return "New Feature";
-    case "feature":
-      return `Feature #${view.id}`;
     case "search":
       return "Search";
   }

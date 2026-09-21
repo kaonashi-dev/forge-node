@@ -87,8 +87,6 @@ Rules for the test plan:
   wrapping and blank lines survive.
 - Never `--no-verify` unless the human explicitly asks.
 - Do not commit until asked. Do not push unless asked.
-- Harness feature commits still go through the `committer` agent after an
-  `APPROVED` review; their subject/body must still satisfy this page.
 
 ## See also
 

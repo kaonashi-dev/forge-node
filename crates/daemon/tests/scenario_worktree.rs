@@ -297,15 +297,15 @@ fn a_forgotten_worktree_stays_gone_across_a_daemon_restart() {
 }
 
 #[test]
-fn factory_reset_removes_managed_state_but_keeps_repository_harness_files() {
+fn factory_reset_removes_managed_state_but_keeps_repository_files() {
     const BRANCH: &str = "feature/factory-reset";
 
     let harness = common::Harness::new();
     let repo = test_support::init_repo().expect("git repo (git must be installed)");
-    let harness_dir = repo.path().join("harness");
-    std::fs::create_dir(&harness_dir).expect("create repository harness directory");
-    let marker = harness_dir.join("keep-me.txt");
-    std::fs::write(&marker, "repository-owned\n").expect("write harness marker");
+    let notes = repo.path().join("notes");
+    std::fs::create_dir(&notes).expect("create repository notes directory");
+    let marker = notes.join("keep-me.txt");
+    std::fs::write(&marker, "repository-owned\n").expect("write repository marker");
 
     let daemon = harness.boot();
     let client = daemon.connect("factory-reset");
@@ -354,7 +354,6 @@ fn factory_reset_removes_managed_state_but_keeps_repository_harness_files() {
         sessions,
         agent_profiles,
         app_state,
-        jobs,
         ..
     } = client.request(Request::GetSnapshot).expect("GetSnapshot")
     else {
@@ -366,14 +365,13 @@ fn factory_reset_removes_managed_state_but_keeps_repository_harness_files() {
     assert!(sessions.is_empty());
     assert!(agent_profiles.is_empty());
     assert!(app_state.is_empty());
-    assert!(jobs.is_empty());
     assert!(
         !worktree.path.exists(),
         "a dirty worktree created by Forge is force-removed"
     );
-    assert!(marker.is_file(), "repository harness state is retained");
+    assert!(marker.is_file(), "repository files are retained");
     assert_eq!(
-        std::fs::read_to_string(marker).expect("read harness marker"),
+        std::fs::read_to_string(marker).expect("read repository marker"),
         "repository-owned\n"
     );
 

@@ -6,7 +6,6 @@ mod commands;
 mod editor;
 mod files;
 mod git;
-mod harness;
 mod projects;
 mod sessions;
 mod usage;
@@ -197,44 +196,6 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             title,
             body,
         } => git::apply_juva_draft(app, client, workspace, kind, title, body),
-
-        WorkbenchCommand::LoadHarnessFeatures { project } => {
-            harness::load_harness_features(app, client, project)
-        }
-        WorkbenchCommand::LoadHarnessDetail { project, feature } => {
-            harness::load_harness_detail(app, client, project, feature)
-        }
-        WorkbenchCommand::LoadHarnessArtifact {
-            project,
-            feature,
-            artifact,
-        } => harness::load_harness_artifact(app, client, project, feature, artifact),
-        WorkbenchCommand::HarnessAdvance {
-            project,
-            feature,
-            revision,
-            action,
-        } => harness::harness_advance(app, client, project, feature, revision, action),
-        WorkbenchCommand::RunHarnessStep {
-            project,
-            feature,
-            step,
-        } => harness::run_harness_step(app, client, project, feature, step),
-        WorkbenchCommand::RegisterHarnessFeature {
-            project,
-            workspace,
-            spec_raw,
-            title,
-        } => harness::register_harness_feature(app, client, project, workspace, spec_raw, title),
-        WorkbenchCommand::RegisterHarnessFromIssue {
-            project,
-            workspace,
-            issue,
-        } => harness::register_harness_from_issue(app, client, project, workspace, issue),
-        WorkbenchCommand::ValidateHarness { project } => {
-            harness::validate_harness(app, client, project)
-        }
-        WorkbenchCommand::ListJobs => harness::list_jobs(app, client),
     }
 }
 

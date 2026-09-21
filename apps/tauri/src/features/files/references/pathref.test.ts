@@ -62,8 +62,8 @@ describe("findPathRefs", () => {
   });
 
   it("needs an extension only where the shape is a guess", () => {
-    expect(paths("harness/progress")).toEqual([]);
-    expect(paths("./harness/progress")).toEqual(["harness/progress"]);
+    expect(paths("notes/draft")).toEqual([]);
+    expect(paths("./notes/draft")).toEqual(["notes/draft"]);
     expect(paths("AGENTS.md")).toEqual(["AGENTS.md"]);
   });
 

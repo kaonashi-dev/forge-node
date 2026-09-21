@@ -11,7 +11,6 @@ import {
   retargetViewPath,
   retargetViews,
   stepView,
-  FEATURE_COMPOSE_VIEW,
   PR_COMPOSE_VIEW,
   TERMINAL_VIEW,
   type ParkedViews,
@@ -123,14 +122,6 @@ export function openPrCompose(): void {
 
 export function openReview(workspace: string): void {
   open({ kind: "review", workspace });
-}
-
-export function openFeatureView(id: number): void {
-  open({ kind: "feature", id });
-}
-
-export function openFeatureCompose(): void {
-  open(FEATURE_COMPOSE_VIEW);
 }
 
 export function focus(view: WorkbenchView): void {

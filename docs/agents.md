@@ -25,34 +25,12 @@ spelling. OpenCode is the one that names its prompt: `opencode [project]`
 reads its positional as a *directory*, so a prompt put there would launch it
 in a folder named after the prompt.
 
-## Headless runs and ACP
+## ACP entry
 
-`AgentDescriptor.headless` is the same descriptor read for a job with no PTY
-and nobody to click Allow; `acp` is the sibling for the same job on a different
-wire. Both are data, so `crates/daemon/src/jobs.rs` spawns four providers with
-one code path.
-
-| id | Mode | Stream | Prompt | Schema | Session id | ACP entry |
-|----|------|--------|--------|--------|-----------|-----------|
-| `claude` | `-p` | `--output-format stream-json --verbose` | positional | `--json-schema <doc>` | `session_id` | `claude acp` |
-| `codex` | `exec` | `--json -c model_reasoning_summary=detailed` | positional | `--output-schema <path>` | `session_id`, `conversation_id` | — |
-| `opencode` | `run` | — (plain text) | positional | — | — | — |
-| `grok` | — | `--output-format streaming-messages-json` | `-p <text>` | `--json-schema <doc>` | `session_id` | `grok agent stdio` |
-| `cursor` | — | — | — | — | — | — |
-
-Grok is the one whose prompt flag **is** its mode selector, so `-p` arrives at
-the end of the line carrying the prompt rather than leading it. It also ships
-two NDJSON dialects, and the descriptor picks the second on purpose:
-`streaming-json` is its own (one ACP session update per line) while
-`streaming-messages-json` is the Anthropic Messages wire format Claude already
-emits — same `{"type":"assistant","message":{"content":[…]}}` blocks, same
-terminal `{"type":"result","result":…}`, same snake_case `session_id`. Choosing
-it is what lets `summarize_stream_line` and the harness's verdict reader take a
-Grok job unchanged instead of the daemon learning a third dialect (P2).
-
-Cursor declares neither: its non-interactive form takes `--print`, but nothing
-here has read its event stream, and guessing one is how a job hangs waiting for
-a session id that never arrives.
+Grok publishes no usage URL. `usage::grok` asks the account meter over the ACP
+entry declared on `AgentDescriptor.acp` (`grok agent stdio`) rather than spelling
+that subcommand a second time. Claude declares the same kind of entry (`claude acp`);
+the other built-ins do not.
 
 ## Read-only mode (§16.9)
 

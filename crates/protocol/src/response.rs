@@ -9,12 +9,11 @@
 
 use domain::{
     AgentDescriptor, AgentProfile, BranchRef, ChangeContext, ContextEnvelope, DetectionResult,
-    ExternalAgentSession, ExternalTranscript, FileContents, FileTree, HarnessEvent, HarnessFeature,
-    HarnessFeatureList, ImageContents, Job, JuvaDraft, Project, ProjectGroup, ProjectId,
-    ProviderUsage, PullRequestState, RebaseState, Remote, ScrollbackRows, SearchResults, Session,
-    SessionChanges, SessionId, SessionTranscript, ShareAction, ShareCandidate, ShareRule,
-    ShareStatusEntry, TerminalId, TerminalSnapshot, UsageAnalytics, Workspace, WorkspaceDiff,
-    WorkspaceId, WorkspaceReview, WorktreeIgnore,
+    ExternalAgentSession, ExternalTranscript, FileContents, FileTree, ImageContents, JuvaDraft,
+    Project, ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState, Remote,
+    ScrollbackRows, SearchResults, Session, SessionChanges, SessionId, SessionTranscript,
+    ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TerminalId, TerminalSnapshot,
+    UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceReview, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -81,24 +80,6 @@ pub enum Response {
         /// The draft the editor asked to write.
         mine: String,
     },
-    /// One headless run, after `StartJob` or a state change.
-    Job(Box<Job>),
-    /// Every headless run this daemon knows of, oldest first.
-    Jobs(Vec<Job>),
-    /// A slice of one job's event stream, in the readable form.
-    ///
-    /// The same summarised lines the live `JobOutput` event carries, so a step
-    /// opened after it started reads as one stream rather than two. The
-    /// **verbatim** record is the file at `Job::log_path`, which the daemon
-    /// never edits.
-    JobLog {
-        /// Index of the first line returned, counting from 0.
-        from_line: u64,
-        /// The lines, one per line of the provider's stream.
-        lines: Vec<String>,
-        /// Whether the job has since finished, so a follower knows to stop.
-        finished: bool,
-    },
     /// A session was created and its PTY spawned, answering `CreateShellSession`
     /// / `CreateAgentSession` / `CreateChildSession`. Carries the ids the daemon
     /// just minted so the caller can `AttachTerminal` immediately instead of
@@ -139,11 +120,9 @@ pub enum Response {
         external_agents: Vec<ExternalAgentSession>,
         /// Cached remote pull-request state. Producing a snapshot does not
         /// perform network I/O.
-        pull_requests: PullRequestState,
-        /// Headless runs this daemon has started, finished ones included, so a
-        /// reconnecting client sees what happened while it was away. Empty
-        /// after a daemon restart: a job is a process, and none survive it.
-        jobs: Vec<Job>,
+        ///
+        /// Boxed so this variant does not dwarf the rest of `Response`.
+        pull_requests: Box<PullRequestState>,
         /// The last per-provider account usage the daemon read, served
         /// straight from its cache. Producing a snapshot performs **no** network
         /// I/O — a background sweeper keeps this current — so a client learns the
@@ -244,24 +223,6 @@ pub enum Response {
     UsageAnalytics(Box<UsageAnalytics>),
     /// Answers `GetStats`.
     DaemonStats(DaemonStats),
-    /// Harness features, answering `ListHarnessFeatures`.
-    HarnessFeatureList(HarnessFeatureList),
-    /// One harness feature, answering `GetHarnessFeature`.
-    HarnessFeature(HarnessFeature),
-    /// Event log, answering `GetHarnessTimeline`.
-    HarnessTimeline(Vec<HarnessEvent>),
-    /// Markdown artefact text, answering `ReadHarnessArtifact`.
-    HarnessArtifact {
-        /// File contents, empty when missing.
-        text: String,
-    },
-    /// Result of `ValidateHarness`.
-    HarnessValidate {
-        /// Whether validate.ts exited 0.
-        ok: bool,
-        /// Combined stdout/stderr.
-        output: String,
-    },
 }
 
 #[cfg(test)]

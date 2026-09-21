@@ -66,12 +66,12 @@ test("a listed peer feature edge is allowed and an unlisted one is not", () => {
   ).toEqual([]);
   const violations = violationsOf(
     files({
-      "features/harness/FeatureView.tsx": `import { x } from "../terminal/TerminalPane";`,
+      "features/git/GitPanel.tsx": `import { x } from "../terminal/TerminalPane";`,
       "features/terminal/TerminalPane.tsx": "export const x = 1;",
     }),
   );
   expect(violations).toHaveLength(1);
-  expect(violations[0]).toContain("harness may not import features/terminal");
+  expect(violations[0]).toContain("git may not import features/terminal");
 });
 
 test("a literal dynamic import resolves and is checked", () => {
