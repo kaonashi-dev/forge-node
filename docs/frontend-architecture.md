@@ -105,7 +105,7 @@ the gate alongside this check.
 | Store | Owns |
 |-------|------|
 | `state/forgeStore.ts` | the snapshot replica; `applyShellSnapshot` reconciles by id |
-| `state/connection.ts` | connection kind, generation, active session/terminal, notice |
+| `state/connection.ts` | connection kind, generation, active session/terminal, notice, the pending session selection the focus ring waits on |
 | `state/loading.ts` | per-surface in-flight flags |
 | `state/workspace.ts` | active checkout identity and `focusWorkspace`; feature resets register through `onWorkspaceChange` |
 | `state/preferences.ts` | `ui.*` keys, ranges, read/write helpers, one-shot seeding |
@@ -115,7 +115,8 @@ the gate alongside this check.
 | `features/harness/harnessStore.ts` | feature list/detail, gate, job output |
 | `features/projects/dialogs.ts`, `features/sessions/dialogs.ts`, `state/dialogs.ts` | dialog request slots by owner |
 | `navigation/viewsStore.ts` | parked centre views, centre mode, reveals; passive only |
-| `navigation/sidebarStore.ts`, `navigation/tabOrder.ts`, `navigation/tabMru.ts`, `navigation/tabTargets.ts`, `navigation/tabSwitcher.ts` | sidebar view choice, strip order, focus ring over every pane (Code views and sessions), switcher gesture |
+| `navigation/sidebarStore.ts`, `navigation/tabOrder.ts`, `navigation/tabMru.ts`, `navigation/tabSwitcher.ts` | sidebar view choice, strip order, focus ring over every pane (Code views and sessions), switcher gesture |
+| `navigation/switcherRing.ts` | reads the three stores above the ring and installs the focus-tracking effect; `navigation/tabTargets.ts` beside it is pure and owns nothing |
 | `features/terminal/terminalStore.ts` | terminal pane state |
 | `features/editor/conflict/editorConflictStore.ts`, `features/git/sessionChangesStore.ts`, `features/pull-requests/{prComposeStore,prReviewStore}.ts` | feature answers |
 

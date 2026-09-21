@@ -7,7 +7,7 @@
 // reports.
 
 import { forgeStore } from "../../state/forgeStore";
-import { connectionStore } from "../../state/connection";
+import { beginSessionLaunch, connectionStore } from "../../state/connection";
 import { requestHandoff, requestSendContext, requestSpawnChild } from "./dialogs";
 import { setSplitOpen, splitOpen } from "../git/sessionChangesStore";
 import { openReview, showSession } from "../../navigation/viewsStore";
@@ -78,9 +78,12 @@ export function focusSession(session: string): void {
     void reopenTerminalEditor(row.id).catch(() => undefined);
     return;
   }
+  // Before `showSession`: raising the centre column wakes the focus-ring
+  // effect, and the pending selection is what stops it recording the terminal
+  // this call is leaving.
+  void selectSession(session).catch(() => undefined);
   showSession();
   if (row?.workspace_id) focusWorkspace(row.workspace_id);
-  void selectSession(session).catch(() => undefined);
   focusTerminal();
 }
 
@@ -94,16 +97,26 @@ export function focusSession(session: string): void {
  *
  * A launch that belongs to another surface — a PR review, a compose draft, a
  * conflict resolver — calls `features/sessions/commands` directly, because that
- * surface is where its output is meant to be read.
+ * surface is where its output is meant to be read. Those need no launch guard:
+ * nothing raises the centre column ahead of the daemon's answer, so the focus
+ * ring first hears about the session when it is genuinely the active one.
  */
 export function launchShell(workspace: string | null = null): Promise<void> {
+  const cancel = beginSessionLaunch();
   showSession();
-  return newShell(workspace);
+  return newShell(workspace).catch((error: unknown) => {
+    cancel();
+    throw error;
+  });
 }
 
 export function launchAgent(...args: Parameters<typeof newAgent>): Promise<void> {
+  const cancel = beginSessionLaunch();
   showSession();
-  return newAgent(...args);
+  return newAgent(...args).catch((error: unknown) => {
+    cancel();
+    throw error;
+  });
 }
 
 /** Whether the split is showing for the session on screen. */

@@ -87,10 +87,9 @@ import { SpawnChildDialog } from "../../features/sessions/SpawnChildDialog";
 import { TabSwitcher } from "./tabs/SwitchTab";
 import { liveIdsByActivity } from "../../navigation/tabMru";
 import type { SwitchTarget } from "../../navigation/tabTargets";
-import { activeSwitcherKey, switcherTargets } from "../../navigation/switcherRing";
+import { activeSwitcherKey, switcherTargets, trackTabFocus } from "../../navigation/switcherRing";
 import {
   bindTabSwitcherCommit,
-  recordTabFocus,
   stepTabSwitcher,
   tabSwitcherView,
 } from "../../navigation/tabSwitcher";
@@ -198,17 +197,7 @@ export function AppShell() {
     ),
   );
 
-  /*
-   * The focus ring Ctrl+Tab walks, fed by whatever the centre column ends up
-   * showing. An effect rather than a call inside each way in: a file opened
-   * from the tree, a Code tab clicked, a session raised from the palette and a
-   * checkout switch are all "where I was", and the pane on screen is the only
-   * thing they have in common.
-   */
-  createEffect(() => {
-    const key = activeSwitcherKey();
-    if (key) recordTabFocus(key);
-  });
+  trackTabFocus();
 
   /** How many files, diffs and PRs are parked in the Code tab. */
   const openViewCount = createMemo(() => currentViews().open.length);

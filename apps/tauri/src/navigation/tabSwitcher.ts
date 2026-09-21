@@ -41,7 +41,7 @@ export const tabSwitcherView = view;
 /** Remember the pane on screen so the next Ctrl+Tab can return here. */
 export function recordTabFocus(key: string): void {
   if (gesture) return;
-  setHistory(touchMru(history(), key));
+  setHistory((previous) => touchMru(previous, key));
 }
 
 /**
@@ -187,7 +187,9 @@ function finish(target: SwitchTarget | null): void {
   acceptTab = true;
   setView(null);
   if (target) {
-    setHistory(touchMru(history(), targetKey(target)));
+    // After `gesture = null` above: `recordTabFocus` ignores writes made while
+    // a gesture is in flight, which is every other call on this path.
+    recordTabFocus(targetKey(target));
     onCommit?.(target);
   }
 }

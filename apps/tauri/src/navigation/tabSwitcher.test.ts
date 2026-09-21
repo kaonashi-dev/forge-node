@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createEffect, createRoot, createSignal } from "solid-js";
 import {
   bindTabSwitcherCommit,
   chooseTabSwitcher,
@@ -56,6 +57,30 @@ beforeEach(() => {
 
 describe("tabSwitcher", () => {
   it("returns to the file that was on screen before the terminal", () => {
+  it("records reactive focus without subscribing the effect to history", () => {
+    const [focused, setFocused] = createSignal("session:t1");
+    let runs = 0;
+    let dispose = () => {};
+    try {
+      createRoot((cleanup) => {
+        dispose = cleanup;
+        createEffect(() => {
+          const key = focused();
+          if (++runs > 10) throw new Error("Focus history retriggered its own effect");
+          recordTabFocus(key);
+        });
+      });
+      expect(runs).toBe(1);
+
+      setFocused("view:w1:editor-terminal:e1");
+      expect(runs).toBe(2);
+      recordTabFocus("view:w1:editor-terminal:e2");
+      expect(runs).toBe(2);
+    } finally {
+      dispose();
+    }
+  });
+
     // Three panes, and the one to come back to is *second* in the strip: with
     // two, "the other pane" is the right answer for the wrong reason, and a
     // ring that had forgotten the file would still look correct here.
