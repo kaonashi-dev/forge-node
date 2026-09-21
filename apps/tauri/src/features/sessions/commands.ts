@@ -1,8 +1,15 @@
 import { sendRuntimeCommand } from "../../runtime/host";
 import { sendWorkbenchCommand } from "../../runtime/workbench";
+import { beginSessionSelection } from "../../state/connection";
 
 export async function selectSession(sessionId: string): Promise<void> {
-  await sendRuntimeCommand({ type: "select_session", session_id: sessionId });
+  const cancel = beginSessionSelection(sessionId);
+  try {
+    await sendRuntimeCommand({ type: "select_session", session_id: sessionId });
+  } catch (error) {
+    cancel();
+    throw error;
+  }
 }
 
 export async function newShell(workspace: string | null = null): Promise<void> {

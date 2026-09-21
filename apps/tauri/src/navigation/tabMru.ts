@@ -1,79 +1,98 @@
 /**
- * Most-recently-used order for the Ctrl+Tab session switcher.
+ * Most-recently-used order for the Ctrl+Tab switcher.
  *
- * Strip order (`tabOrder`) is drag order. This ring is focus order: the tab
- * you just left sits at index 1, so a single Ctrl+Tab returns there the way a
- * browser does.
+ * Strip order (`tabOrder`) is drag order. This ring is focus order over pane
+ * keys (`tabTargets`): the pane you just left sits at index 1, so a single
+ * Ctrl+Tab returns there the way a browser does — whether it was a terminal
+ * or a file open in Code.
  */
 
-/** Other-checkout rows appended under the local strip in the hold list. */
+/** Other-checkout rows appended under the local panes in the hold list. */
 export const FOREIGN_RECENT = 3;
 
-/** Move `id` to the front; drop duplicates. */
-export function touchMru(history: readonly string[], id: string): string[] {
-  return [id, ...history.filter((item) => item !== id)];
+/**
+ * How deep the ring remembers.
+ *
+ * Keys are panes, not sessions, so every file ever opened in every checkout
+ * would otherwise leave a permanent entry — and `touchMru` copies the list on
+ * each focus change. The list only ever feeds one checkout's strip order plus
+ * `FOREIGN_RECENT` rows, so anything past this depth can never be read.
+ */
+const MRU_DEPTH = 64;
+
+/** Move `key` to the front; drop duplicates, and anything past `MRU_DEPTH`. */
+export function touchMru(history: readonly string[], key: string): string[] {
+  const next = [key];
+  for (const item of history) {
+    if (next.length >= MRU_DEPTH) break;
+    if (item !== key) next.push(item);
+  }
+  return next;
 }
 
 /**
- * Open sessions in MRU order: the active tab first, then the focus ring, then
- * any leftover strip order so a brand-new tab is still reachable.
+ * Open panes in MRU order: the active one first, then the focus ring, then any
+ * leftover strip order so a brand-new tab is still reachable.
  */
-export function mruIds(
+export function mruKeys(
   history: readonly string[],
-  openIds: readonly string[],
-  activeId: string | null,
+  openKeys: readonly string[],
+  activeKey: string | null,
 ): string[] {
-  const remaining = new Set(openIds);
+  const remaining = new Set(openKeys);
   const out: string[] = [];
-  if (activeId && remaining.delete(activeId)) out.push(activeId);
-  for (const id of history) {
-    if (remaining.delete(id)) out.push(id);
+  if (activeKey && remaining.delete(activeKey)) out.push(activeKey);
+  for (const key of history) {
+    if (remaining.delete(key)) out.push(key);
   }
-  for (const id of openIds) {
-    if (remaining.delete(id)) out.push(id);
+  for (const key of openKeys) {
+    if (remaining.delete(key)) out.push(key);
   }
   return out;
 }
 
 /**
- * Local strip (MRU) plus up to `foreignLimit` live sessions from other
- * checkouts, newest-focus first so the hold list can jump projects without
- * leaving the current strip behind.
+ * This checkout's panes (MRU) plus up to `foreignLimit` live sessions from
+ * other checkouts, newest-focus first so the hold list can jump projects
+ * without leaving the current strip behind.
+ *
+ * A foreign row has to be live, which is also what drops the parked views of
+ * every other checkout out of the history: only sessions are ever live keys.
  */
-export function switcherIds(
+export function switcherKeys(
   history: readonly string[],
-  localOpenIds: readonly string[],
-  activeId: string | null,
-  /** Every live terminal id; order is the fallback when history is thin. */
-  liveIds: readonly string[],
+  localKeys: readonly string[],
+  activeKey: string | null,
+  /** Every live terminal's key; order is the fallback when history is thin. */
+  liveKeys: readonly string[],
   foreignLimit = FOREIGN_RECENT,
-): { ids: string[]; foreignAt: number } {
-  const local = mruIds(history, localOpenIds, activeId);
-  const localOpen = new Set(localOpenIds);
-  const live = new Set(liveIds);
+): { keys: string[]; foreignAt: number } {
+  const local = mruKeys(history, localKeys, activeKey);
+  const localOpen = new Set(localKeys);
+  const live = new Set(liveKeys);
   const foreign: string[] = [];
 
-  for (const id of history) {
+  for (const key of history) {
     if (foreign.length >= foreignLimit) break;
-    if (localOpen.has(id) || !live.has(id)) continue;
-    foreign.push(id);
+    if (localOpen.has(key) || !live.has(key)) continue;
+    foreign.push(key);
   }
   if (foreign.length < foreignLimit) {
-    for (const id of liveIds) {
+    for (const key of liveKeys) {
       if (foreign.length >= foreignLimit) break;
-      if (localOpen.has(id) || foreign.includes(id)) continue;
-      foreign.push(id);
+      if (localOpen.has(key) || foreign.includes(key)) continue;
+      foreign.push(key);
     }
   }
 
-  return { ids: [...local, ...foreign], foreignAt: local.length };
+  return { keys: [...local, ...foreign], foreignAt: local.length };
 }
 
 /**
  * Live terminals, newest activity first — fallback order for foreign rows.
  *
- * Editors are excluded: an open file belongs to the Code strip, not the
- * Ctrl+Tab ring, so it must not surface as a recent session from a checkout.
+ * Editors are excluded: an open file belongs to the Code strip, where it is
+ * already a row of its own, not to the recent sessions of a checkout.
  */
 export function liveIdsByActivity(
   sessions: readonly {
@@ -95,7 +114,7 @@ export function liveIdsByActivity(
     .map((session) => session.id);
 }
 
-/** First step lands on the previous tab (or the last, when walking backward). */
+/** First step lands on the previous pane (or the last, when walking backward). */
 export function initialIndex(length: number, delta: number): number {
   if (length < 2) return 0;
   return delta >= 0 ? 1 : length - 1;

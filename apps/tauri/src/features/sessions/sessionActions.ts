@@ -7,7 +7,7 @@
 // reports.
 
 import { forgeStore } from "../../state/forgeStore";
-import { connectionStore } from "../../state/connection";
+import { beginSessionLaunch, connectionStore } from "../../state/connection";
 import { requestHandoff, requestSendContext, requestSpawnChild } from "./dialogs";
 import { setSplitOpen, splitOpen } from "../git/sessionChangesStore";
 import { openReview, showSession } from "../../navigation/viewsStore";
@@ -18,7 +18,6 @@ import { focusTerminal } from "../terminal/focus";
 import type { ExternalAgentSession, Session, Workspace } from "../../contracts/runtime";
 import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "../../state/preferences";
 import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
-import { recordTabFocus } from "../../navigation/tabSwitcher";
 import { draftWithJuva, loadWorkspaceReview } from "../git/commands";
 import { loadExternalTranscript, loadSessionTranscript } from "./commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
@@ -79,12 +78,12 @@ export function focusSession(session: string): void {
     void reopenTerminalEditor(row.id).catch(() => undefined);
     return;
   }
-  showSession();
-  // The focus ring Ctrl+Tab walks. Every user-driven focus goes through here,
-  // which is what makes "the tab you just left" mean anything.
-  recordTabFocus(session);
-  if (row?.workspace_id) focusWorkspace(row.workspace_id);
+  // Before `showSession`: raising the centre column wakes the focus-ring
+  // effect, and the pending selection is what stops it recording the terminal
+  // this call is leaving.
   void selectSession(session).catch(() => undefined);
+  showSession();
+  if (row?.workspace_id) focusWorkspace(row.workspace_id);
   focusTerminal();
 }
 
@@ -98,16 +97,26 @@ export function focusSession(session: string): void {
  *
  * A launch that belongs to another surface — a PR review, a compose draft, a
  * conflict resolver — calls `features/sessions/commands` directly, because that
- * surface is where its output is meant to be read.
+ * surface is where its output is meant to be read. Those need no launch guard:
+ * nothing raises the centre column ahead of the daemon's answer, so the focus
+ * ring first hears about the session when it is genuinely the active one.
  */
 export function launchShell(workspace: string | null = null): Promise<void> {
+  const cancel = beginSessionLaunch();
   showSession();
-  return newShell(workspace);
+  return newShell(workspace).catch((error: unknown) => {
+    cancel();
+    throw error;
+  });
 }
 
 export function launchAgent(...args: Parameters<typeof newAgent>): Promise<void> {
+  const cancel = beginSessionLaunch();
   showSession();
-  return newAgent(...args);
+  return newAgent(...args).catch((error: unknown) => {
+    cancel();
+    throw error;
+  });
 }
 
 /** Whether the split is showing for the session on screen. */

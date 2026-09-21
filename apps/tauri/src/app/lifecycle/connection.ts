@@ -3,7 +3,11 @@ import { reconcile } from "solid-js/store";
 import { applyShellSnapshot, forgeStore } from "../../state/forgeStore";
 import { adoptPendingCompose } from "../../features/pull-requests/prComposeStore";
 import { adoptPendingReviews } from "../../features/pull-requests/prReviewStore";
-import { setConnectionStore } from "../../state/connection";
+import {
+  clearSessionSelection,
+  setConnectionStore,
+  settleSessionSelection,
+} from "../../state/connection";
 import { invalidateFileIndex, setFilesStore } from "../../features/files/state";
 import { syncEditorViewPaths } from "../integrations/editorTabs";
 import { createEditorAutosaveSync } from "../../features/editor/editorAutosave";
@@ -20,6 +24,7 @@ import type { ConnectedPayload, StatePayload } from "../../contracts/runtime";
 const syncEditorAutosave = createEditorAutosaveSync(setEditorAutosave);
 
 export function applyConnected(payload: ConnectedPayload): void {
+  clearSessionSelection();
   applyShellSnapshot(payload.store);
   syncEditorViewPaths(forgeStore.sessions);
   syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false), true);
@@ -72,6 +77,9 @@ export function applyStatePayload(payload: StatePayload): void {
   syncEditorViewPaths(forgeStore.sessions);
   syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false));
   adoptPendingLaunches();
-  setConnectionStore("activeSession", payload.active_session);
-  setConnectionStore("activeTerminal", payload.active_terminal);
+  batch(() => {
+    setConnectionStore("activeSession", payload.active_session);
+    setConnectionStore("activeTerminal", payload.active_terminal);
+    settleSessionSelection(payload.active_session);
+  });
 }

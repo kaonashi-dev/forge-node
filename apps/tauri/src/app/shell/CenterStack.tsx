@@ -12,7 +12,7 @@ import { connectionStore } from "../../state/connection";
 import { activeWorkspaceId, sessionsInWorkspace } from "../../features/sessions/sessionScope";
 import { PrDetailView } from "../../features/pull-requests/PrDetailView";
 import { PrComposeView } from "../../features/pull-requests/PrComposeView";
-import { Icon, LangIcon } from "../../theme/icons/index";
+import { Icon } from "../../theme/icons/index";
 import {
   Button,
   ContextMenu,
@@ -32,6 +32,7 @@ import {
 } from "../../navigation/views";
 import { TerminalPane } from "../../features/terminal/TerminalPane";
 import { ResizeHandle } from "./ResizeHandle";
+import { ViewGlyph } from "./tabs/ViewGlyph";
 import { SessionActionBar } from "../../features/sessions/SessionActionBar";
 import { SessionChangesPanel } from "../../features/git/SessionChangesPanel";
 import {
@@ -444,42 +445,6 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
         <SettingsRoute section={props.settingsSection} />
       </Show>
     </div>
-  );
-}
-
-/** The mark on a Code tab — by name for a file, by kind for the rest. */
-function ViewGlyph(props: { view: WorkbenchView }) {
-  const glyph = () => {
-    const view = props.view;
-    switch (view.kind) {
-      case "diff":
-        return { icon: "git-branch", tone: "forge-icon-amber" } as const;
-      case "review":
-        return { icon: "list-checks", tone: "forge-icon-accent" } as const;
-      case "pr_detail":
-      case "pr_compose":
-        return { icon: "git-pull-request", tone: "forge-icon-accent" } as const;
-      case "pr_review":
-        return { icon: "list-checks", tone: "forge-icon-amber" } as const;
-      case "feature":
-      case "feature_compose":
-        return { icon: "agent", tone: "forge-icon-accent" } as const;
-      case "editor-terminal":
-        return { icon: "file-code", tone: "forge-icon-accent" } as const;
-      case "search":
-        return { icon: "search", tone: "forge-icon-amber" } as const;
-      default:
-        return { icon: "square-terminal", tone: "forge-icon-faint" } as const;
-    }
-  };
-
-  return (
-    <Show
-      when={props.view.kind === "editor-terminal"}
-      fallback={<Icon name={glyph().icon} class={glyph().tone} size={13} />}
-    >
-      <LangIcon path={viewLabel(props.view)} size={13} />
-    </Show>
   );
 }
 
