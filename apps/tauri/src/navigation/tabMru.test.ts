@@ -15,6 +15,14 @@ describe("tabMru", () => {
     expect(touchMru([], "x")).toEqual(["x"]);
   });
 
+  it("forgets the panes past the depth the ring can read", () => {
+    const deep = Array.from({ length: 80 }, (_, index) => `view:w:${index}`);
+    const next = touchMru(deep, "session:t1");
+    expect(next).toHaveLength(64);
+    expect(next[0]).toBe("session:t1");
+    expect(next.at(-1)).toBe("view:w:62");
+  });
+
   it("lists the active tab first, then the ring, then strip leftovers", () => {
     expect(mruKeys(["c", "a", "b"], ["a", "b", "c", "d"], "b")).toEqual(["b", "c", "a", "d"]);
     expect(mruKeys(["z"], ["a", "b"], null)).toEqual(["a", "b"]);

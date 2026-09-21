@@ -10,9 +10,24 @@
 /** Other-checkout rows appended under the local panes in the hold list. */
 export const FOREIGN_RECENT = 3;
 
-/** Move `key` to the front; drop duplicates. */
+/**
+ * How deep the ring remembers.
+ *
+ * Keys are panes, not sessions, so every file ever opened in every checkout
+ * would otherwise leave a permanent entry — and `touchMru` copies the list on
+ * each focus change. The list only ever feeds one checkout's strip order plus
+ * `FOREIGN_RECENT` rows, so anything past this depth can never be read.
+ */
+const MRU_DEPTH = 64;
+
+/** Move `key` to the front; drop duplicates, and anything past `MRU_DEPTH`. */
 export function touchMru(history: readonly string[], key: string): string[] {
-  return [key, ...history.filter((item) => item !== key)];
+  const next = [key];
+  for (const item of history) {
+    if (next.length >= MRU_DEPTH) break;
+    if (item !== key) next.push(item);
+  }
+  return next;
 }
 
 /**
