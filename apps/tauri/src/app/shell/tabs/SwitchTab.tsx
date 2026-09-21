@@ -7,6 +7,7 @@ import { SessionGlyph } from "../../../features/sessions/SessionGlyph";
 import { Icon } from "../../../theme/icons/index";
 import { Dialog } from "../../../ui/index";
 import { viewLabel, type WorkbenchView } from "../../../navigation/views";
+import { parentPath } from "../../../shared/paths";
 import {
   cancelTabSwitcher,
   chooseTabSwitcher,
@@ -152,8 +153,7 @@ function ViewRow(props: { view: WorkbenchView }) {
   const note = () => {
     const view = props.view;
     if (view.kind !== "editor-terminal" && view.kind !== "preview") return null;
-    const cut = view.path.lastIndexOf("/");
-    return cut > 0 ? view.path.slice(0, cut) : null;
+    return parentPath(view.path) || null;
   };
   return (
     <>
