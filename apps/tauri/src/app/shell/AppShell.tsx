@@ -294,8 +294,15 @@ export function AppShell() {
 
   /** Commit a row: a terminal is a session, a file is a tab inside Code. */
   function focusSwitcherTarget(target: SwitchTarget): void {
-    if (target.kind === "session") focusSession(target.id);
-    else if (target.kind === "code") showCode();
+    if (target.kind === "session") {
+      focusSession(target.id);
+      return;
+    }
+    // The checkout the row was built for, not whichever one the window drifted
+    // to while Control was held: the views are parked per checkout, and
+    // focusing one into another checkout's strip finds nothing to raise.
+    focusWorkspace(target.workspace);
+    if (target.kind === "code") showCode();
     else focusCodeView(target.view);
   }
 
