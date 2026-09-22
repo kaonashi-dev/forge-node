@@ -3,6 +3,8 @@ import { Show, type JSX } from "solid-js";
 export type ListCardProps = {
   /** The mark at the start of the header row — a glyph, a state marker. */
   glyph?: JSX.Element;
+  /** A short identifier chip (`#42`); it fills in when the card is selected. */
+  ident?: string;
   title: JSX.Element;
   /** Sits at the far end of the header — a status badge, a count. */
   aside?: JSX.Element;
@@ -15,17 +17,23 @@ export type ListCardProps = {
   onOpen?: () => void;
   /** Required when `onOpen` is set: what activating the card does. */
   openLabel?: string;
+  /** Draws the card selection: accent edge, outer halo, filled identifier. */
+  selected?: boolean;
   class?: string;
 };
 
 export function ListCard(props: ListCardProps) {
   return (
-    <article class={`list-card ${props.class ?? ""}`}>
+    <article
+      class={`list-card ${props.class ?? ""}`}
+      data-selected={props.selected ? "" : undefined}
+    >
       <Show
         when={props.onOpen}
         fallback={
           <header class="list-card-head">
             <Show when={props.glyph}>{(glyph) => glyph()}</Show>
+            <Show when={props.ident}>{(ident) => <span class="list-card-id">{ident()}</span>}</Show>
             <span class="list-card-title">{props.title}</span>
             <Show when={props.aside}>{(aside) => aside()}</Show>
           </header>
@@ -39,6 +47,7 @@ export function ListCard(props: ListCardProps) {
             onClick={() => open()()}
           >
             <Show when={props.glyph}>{(glyph) => glyph()}</Show>
+            <Show when={props.ident}>{(ident) => <span class="list-card-id">{ident()}</span>}</Show>
             <span class="list-card-title">{props.title}</span>
             <Show when={props.aside}>{(aside) => aside()}</Show>
           </button>

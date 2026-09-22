@@ -5,19 +5,24 @@ import type { ForgeIconName } from "../theme/icons/index";
 export type ControlSize = "xs" | "sm" | "md" | "lg";
 
 /**
- * Button vocabulary, named by intent and now backed by a real hierarchy:
+ * Button vocabulary, named by intent:
  *
- * - `primary` — the one confirming action, a solid accent fill with the
- *   foreground `on()` picks. There used to be two names for this (`primary`
- *   drew only a border, `filled` did the fill); they are one variant now.
- * - `secondary` — an elevated surface with no border. The ordinary button.
- * - `ghost` — chromeless and transparent, for toolbars and icon buttons. The
- *   old `quiet` was the same thing under a second name and is folded in.
- * - `danger` — a solid red destructive action, foreground `on()` picks.
- * - `danger-ghost` — the quiet destructive: red text, a red wash on hover, for
- *   a destructive choice that sits inline or in a menu rather than as the CTA.
+ * - `primary` — the one confirming action: a solid accent fill.
+ * - `secondary` — a raised surface with a hairline edge. The ordinary button.
+ * - `ghost` — chromeless, for toolbars and icon buttons.
+ * - `danger` — a solid red destructive action, for the confirm in a dialog.
+ * - `danger-ghost` — a red-tinted destructive action that is not the dialog's
+ *   confirm: removing a worktree from a panel, a destructive choice inline.
+ * - `attention` — ember. Only for answering a session that is waiting on the
+ *   user or resolving a conflict; nothing else may use it.
  */
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "danger-ghost";
+export type ButtonVariant =
+  | "primary"
+  | "secondary"
+  | "ghost"
+  | "danger"
+  | "danger-ghost"
+  | "attention";
 
 /**
  * One entry in a menu, as data.

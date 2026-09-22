@@ -5,6 +5,7 @@ import { Icon, LangIcon } from "../../theme/icons/index";
 import { EmptyState, IconButton, Skeleton, Tooltip } from "../../ui/index";
 import { baseNote, summaryTotals } from "../../contracts/workbench";
 import { loadSessionChanges } from "./commands";
+import { statusLetter, statusWord } from "./gitView";
 
 // `sessionChangesStore` schedules quiet-period refreshes to avoid polling git.
 export function SessionChangesPanel(props: { session: string }) {
@@ -112,8 +113,12 @@ export function SessionChangesPanel(props: { session: string }) {
                       onClick={() => open(file.path)}
                     >
                       <LangIcon path={file.path} size={13} />
-                      <span class="git-status" data-status={file.status}>
-                        {file.status.slice(0, 1)}
+                      <span
+                        class="git-status"
+                        data-status={file.status}
+                        title={statusWord(file.status)}
+                      >
+                        {statusLetter(file.status)}
                       </span>
                       <span class="tree-label">{file.path}</span>
                       <span class="git-counts">

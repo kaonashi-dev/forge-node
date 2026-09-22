@@ -74,7 +74,7 @@ export function SessionGlyph(props: SessionGlyphProps) {
       <Match when={face() === "working"}>
         <Icon
           name="loader"
-          class={`forge-icon-spin ${work() === "starting" ? "forge-icon-amber" : "forge-icon-blue"}`}
+          class={`forge-icon-spin ${work() === "starting" ? "forge-icon-amber" : "forge-icon-accent"}`}
           size={props.size}
           title={work() === "starting" ? "Starting" : "Working"}
         />

@@ -149,7 +149,9 @@ export function HistoryPanel() {
             aside={<span class="history-provider">{session.provider}</span>}
             meta={
               <>
-                <Show when={session.branch}>{(branch) => <span>{branch()}</span>}</Show>
+                <Show when={session.branch}>
+                  {(branch) => <span class="history-branch">{branch()}</span>}
+                </Show>
                 <Show when={account(session)}>
                   {(profile) => <span class="history-account">{profile().name}</span>}
                 </Show>
@@ -163,7 +165,6 @@ export function HistoryPanel() {
               <>
                 <Tooltip label={blockedReason(session) ?? "Re-enter this conversation"}>
                   <Button
-                    variant="secondary"
                     size="xs"
                     disabled={Boolean(blockedReason(session))}
                     onClick={() => resume(session)}

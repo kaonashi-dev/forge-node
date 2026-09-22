@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UNKNOWN_MARK, editorChrome } from "./editorChrome";
+import { UNKNOWN_MARK, editorChrome, languageLabel, pathCrumbs } from "./editorChrome";
 import type { EditorState } from "../../contracts/runtime";
 
 const state = (partial: Partial<EditorState> = {}): EditorState => ({
@@ -26,11 +26,12 @@ describe("the terminal editor chrome", () => {
     // The control state's path, not the one the view was opened with: the
     // daemon resolved it, and that is what the editor has open.
     expect(chrome.path).toBe("src/main.rs");
-    expect(chrome.position).toBe("12:4");
-    expect(chrome.mark).toBe("dirty");
+    expect(chrome.position).toBe("Ln 12, Col 4");
+    expect(chrome.mark).toBe("unsaved");
+    expect(chrome.details).toEqual(["120 lines", "RS"]);
 
     expect(editorChrome(state(), "opened/with.rs").mark).toBe("read-only");
-    expect(editorChrome(state({ dirty: true }), "opened/with.rs").mark).toBe("dirty · read-only");
+    expect(editorChrome(state({ dirty: true }), "opened/with.rs").mark).toBe("unsaved · read-only");
     expect(editorChrome(state({ read_only: false }), "opened/with.rs").mark).toBe("clean");
   });
 
@@ -63,5 +64,27 @@ describe("the terminal editor chrome", () => {
       editorChrome(state({ top_line: 1, visible_lines: 0, total_lines: 0 }), "x").scroll,
     ).toBeNull();
     expect(editorChrome(null, "x").scroll).toBeNull();
+  });
+});
+
+describe("the editor status facts", () => {
+  it("lists only what the editor reported", () => {
+    const chrome = editorChrome(
+      state({ cursor_count: 3, selection_length: 12, total_lines: 1 }),
+      "x",
+    );
+    expect(chrome.details).toEqual(["1 line", "3 cursors", "12 selected", "RS"]);
+  });
+
+  it("reads the language label off the name alone", () => {
+    expect(languageLabel("apps/tauri/src/App.tsx")).toBe("TSX");
+    expect(languageLabel("Makefile")).toBeNull();
+    expect(languageLabel(".gitignore")).toBeNull();
+    expect(languageLabel("notes.")).toBeNull();
+  });
+
+  it("splits a path into folders and the file", () => {
+    expect(pathCrumbs("a/b/c.ts")).toEqual({ parents: ["a", "b"], name: "c.ts" });
+    expect(pathCrumbs("c.ts")).toEqual({ parents: [], name: "c.ts" });
   });
 });

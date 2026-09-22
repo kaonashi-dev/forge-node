@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DENSITIES, densityOffset, densityTokens, isDensity } from "./density";
+import { DENSITIES, densityOffset, densityTokens, isDensity, readDensity } from "./density";
 import { metrics } from "./tokens";
 
 const px = (value: string) => Number.parseInt(value, 10);
@@ -7,13 +7,13 @@ const px = (value: string) => Number.parseInt(value, 10);
 describe("density", () => {
   it("leaves the default exactly where the scale put it", () => {
     // The point of a default is that choosing it changes nothing.
-    const tokens = densityTokens("default");
+    const tokens = densityTokens("compact");
     expect(px(tokens["--forge-row-h"])).toBe(metrics.rowH);
     expect(px(tokens["--forge-control-md"])).toBe(metrics.controlMD);
   });
 
-  it("moves the row height to 22 / 26 / 30", () => {
-    expect(DENSITIES.map((d) => px(densityTokens(d)["--forge-row-h"]))).toEqual([22, 26, 30]);
+  it("moves the row height to 26 / 32", () => {
+    expect(DENSITIES.map((d) => px(densityTokens(d)["--forge-row-h"]))).toEqual([26, 32]);
   });
 
   it("keeps the control ladder ascending at every density", () => {
@@ -33,8 +33,6 @@ describe("density", () => {
   });
 
   it("keeps the rungs the same distance apart, which a ratio would not", () => {
-    // A ratio takes the 20px `xs` control below a usable target at compact and
-    // out of proportion to its own icon at comfortable.
     const gap = (density: (typeof DENSITIES)[number]) => {
       const t = densityTokens(density);
       return px(t["--forge-control-lg"]) - px(t["--forge-control-xs"]);
@@ -48,15 +46,21 @@ describe("density", () => {
     }
   });
 
-  it("offsets from the default in both directions", () => {
-    expect(densityOffset("compact")).toBe(-4);
-    expect(densityOffset("default")).toBe(0);
-    expect(densityOffset("comfortable")).toBe(4);
+  it("offsets cozy up from compact", () => {
+    expect(densityOffset("compact")).toBe(0);
+    expect(densityOffset("cozy")).toBe(6);
   });
 
-  it("accepts only the three density ids", () => {
-    expect(isDensity("comfortable")).toBe(true);
-    expect(isDensity("cozy")).toBe(false);
+  it("accepts only the two density ids", () => {
+    expect(isDensity("cozy")).toBe(true);
+    expect(isDensity("comfortable")).toBe(false);
     expect(isDensity(undefined)).toBe(false);
+  });
+
+  it("maps the retired three-step ids onto the two that remain", () => {
+    expect(readDensity("default")).toBe("compact");
+    expect(readDensity("comfortable")).toBe("cozy");
+    expect(readDensity("cozy")).toBe("cozy");
+    expect(readDensity("bogus")).toBe("compact");
   });
 });

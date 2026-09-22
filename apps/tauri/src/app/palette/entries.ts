@@ -26,7 +26,7 @@ import {
  */
 export const CREATE = "Create";
 export const SESSIONS = "Sessions";
-export const BRANCHES = "Branches";
+export const BRANCHES = "Worktrees";
 export const FILES = "Files";
 export const COMMANDS = "Commands";
 
@@ -45,7 +45,14 @@ export type PaletteGroup =
  * which one you have. When you do know, a list holding the other half is
  * noise: "main" is a branch, a session title and a substring of two commands.
  */
-export type PaletteScope = "everything" | "places" | "commands" | "launch" | "files";
+export type PaletteScope =
+  | "everything"
+  | "places"
+  | "commands"
+  | "launch"
+  | "files"
+  | "sessions"
+  | "symbols";
 
 /**
  * The order groups appear in, and the order a filtered list is rebuilt in.
@@ -88,19 +95,59 @@ export function admits(scope: PaletteScope, group: string): boolean {
       // session, a checkout, a path — is not something you want to have to
       // decide before you start typing.
       return group === SESSIONS || group === BRANCHES || group === FILES;
+    case "sessions":
+      return group === SESSIONS || group === BRANCHES;
+    case "symbols":
+      return false;
     case "commands":
       return group !== SESSIONS && group !== BRANCHES && group !== CREATE && group !== FILES;
   }
 }
 
-export function scopeLabel(scope: PaletteScope): string | null {
-  return {
-    everything: null,
-    places: "Go to",
-    commands: "Command",
-    launch: "New",
-    files: "File",
-  }[scope];
+/** The chip at the start of the query: the mode's typed prefix, when it has one, and its name. */
+export type ScopeChip = { prefix: string | null; label: string };
+
+export function scopeChip(scope: PaletteScope): ScopeChip | null {
+  switch (scope) {
+    case "everything":
+      return null;
+    case "commands":
+      return { prefix: ">", label: "Command" };
+    case "files":
+      return { prefix: "/", label: "File" };
+    case "places":
+      return { prefix: "@", label: "Go to" };
+    case "sessions":
+      return { prefix: "@", label: "Sessions" };
+    case "symbols":
+      return { prefix: "#", label: "Symbol" };
+    case "launch":
+      return { prefix: null, label: "New" };
+  }
+}
+
+/** The four modes a leading character switches to, whatever shortcut opened the palette. */
+export const MODE_PREFIXES: ReadonlyArray<{ prefix: string; scope: PaletteScope }> = [
+  { prefix: ">", scope: "commands" },
+  { prefix: "/", scope: "files" },
+  { prefix: "@", scope: "sessions" },
+  { prefix: "#", scope: "symbols" },
+];
+
+/**
+ * The scope a typed query asks for, and the text left to search once its mode
+ * prefix is read off.
+ *
+ * The prefix stays in the field rather than being consumed into state, so
+ * deleting it is how the palette returns to the scope it was opened on.
+ */
+export function parseQuery(
+  opened: PaletteScope,
+  raw: string,
+): { scope: PaletteScope; text: string } {
+  const mode = MODE_PREFIXES.find((item) => raw.startsWith(item.prefix));
+  if (!mode) return { scope: opened, text: raw };
+  return { scope: mode.scope, text: raw.slice(mode.prefix.length).trimStart() };
 }
 
 export function scopePlaceholder(scope: PaletteScope): string {
@@ -110,6 +157,8 @@ export function scopePlaceholder(scope: PaletteScope): string {
     commands: "Run a command…",
     launch: "Start a terminal or an agent…",
     files: "Open a file in this workspace…",
+    sessions: "Go to a session or a worktree…",
+    symbols: "Go to a symbol in this file…",
   }[scope];
 }
 
@@ -141,6 +190,8 @@ export type PaletteEntry = {
    * meant.
    */
   search?: string;
+  /** A session the daemon flagged as waiting on the person. */
+  waiting?: boolean;
   choice: PaletteChoice;
 };
 
@@ -173,14 +224,17 @@ export function paletteEntries(store: ShellSnapshot, activeSession: string | nul
 
   // A session already on screen is not somewhere to go.
   //
-  // Running ones first: several sessions in one checkout share a title — five
+  // A session waiting on the person leads, because it is the one row here that
+  // is asking for something. Then running ones: several sessions in one checkout share a title — five
   // rows reading `~/d/forge-node  main` is what the list looks like by lunch —
   // and the one still running is almost always the one meant. The sort is
   // stable, so within each half the store's order survives.
   const reachable = store.sessions.filter((session) => session.id !== activeSession);
+  const waiting = (session: Session) => store.session_attention[session.id]?.wants_you === true;
   const sessions = [
-    ...reachable.filter((session) => sessionIsActive(session.state)),
-    ...reachable.filter((session) => !sessionIsActive(session.state)),
+    ...reachable.filter(waiting),
+    ...reachable.filter((session) => !waiting(session) && sessionIsActive(session.state)),
+    ...reachable.filter((session) => !waiting(session) && !sessionIsActive(session.state)),
   ];
   for (const session of sessions) {
     const workspace = store.workspaces.find((item) => item.id === session.workspace_id);
@@ -194,6 +248,7 @@ export function paletteEntries(store: ShellSnapshot, activeSession: string | nul
       // The branch is the half of the row that tells two identical titles
       // apart, so it has to be typeable.
       search: note ? `${sessionTitle(session)} ${note}` : sessionTitle(session),
+      waiting: waiting(session),
       choice: { kind: "focus_session", session: session.id },
     });
   }

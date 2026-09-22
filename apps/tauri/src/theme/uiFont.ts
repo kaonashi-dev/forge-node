@@ -11,18 +11,20 @@ import { metrics } from "./tokens";
 /**
  * Bounds on the chrome's `sm` rung, which is the size the shell is written in.
  *
- * Whole pixels, and a short ladder: past 16px the 26px default row starts
- * clipping labels, and below 11px metadata (`xs`) drops under 10.
+ * Half-pixel steps: the scale's own row label is 12.5. Past 16px the 26px row
+ * clips labels, and below 12px a caption (`xs`) would fall under 11.
  */
-export const UI_FONT_SIZE_RANGE = { min: 11, max: 16, fallback: metrics.textSM };
+export const UI_FONT_SIZE_RANGE = { min: 12, max: 16, step: 0.5, fallback: metrics.textSM };
+
+const half = (value: number) => Math.round(value * 2) / 2;
 
 /** The variables a UI font size writes. Pure, so a test can read them. */
 export function uiFontTokens(sm: number): Record<string, string> {
   const ratio = sm / metrics.textSM;
-  const xs = Math.min(Math.round(metrics.textXS * ratio), sm - 1);
-  const md = Math.max(Math.round(metrics.textMD * ratio), sm + 1);
-  const lg = Math.max(Math.round(metrics.textLG * ratio), md + 1);
-  const xl = Math.max(Math.round(metrics.textXL * ratio), lg + 1);
+  const xs = Math.max(11, Math.min(half(metrics.textXS * ratio), sm - 0.5));
+  const md = Math.max(half(metrics.textMD * ratio), sm + 0.5);
+  const lg = Math.max(half(metrics.textLG * ratio), md + 1);
+  const xl = Math.max(half(metrics.textXL * ratio), lg + 1);
   return {
     "--forge-text-xs": `${xs}px`,
     "--forge-text-sm": `${sm}px`,
@@ -33,10 +35,7 @@ export function uiFontTokens(sm: number): Record<string, string> {
 }
 
 export function applyUiFont(sm: number): void {
-  const clamped = Math.min(
-    Math.max(Math.round(sm), UI_FONT_SIZE_RANGE.min),
-    UI_FONT_SIZE_RANGE.max,
-  );
+  const clamped = Math.min(Math.max(half(sm), UI_FONT_SIZE_RANGE.min), UI_FONT_SIZE_RANGE.max);
   const root = document.documentElement;
   for (const [name, value] of Object.entries(uiFontTokens(clamped))) {
     root.style.setProperty(name, value);

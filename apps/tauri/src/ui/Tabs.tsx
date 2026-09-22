@@ -23,7 +23,7 @@ export type TabDef = {
    * An accessor, not a value: a badge read eagerly would put a reactive read
    * inside the tab array and remount every panel whenever it changed.
    */
-  badge?: () => { count: number; label: string } | null;
+  badge?: () => { count: number; label: string; tone?: "neutral" | "attention" } | null;
   /** Appended to `TabsProps.contentClass` for this panel only. */
   contentClass?: string;
 };
@@ -35,6 +35,7 @@ export type TabsProps = {
   orientation?: "horizontal" | "vertical";
   class?: string;
   listClass?: string;
+  /** Omit for the kit's underlined trigger. */
   triggerClass?: string;
   contentClass?: string;
   /** Rendered after the triggers, inside the list's container. */
@@ -50,6 +51,7 @@ export type TabsProps = {
  * which panel each one reveals.
  */
 export function Tabs(props: TabsProps) {
+  const triggerClass = () => props.triggerClass ?? "forge-tab";
   return (
     <Kobalte
       class={props.class}
@@ -59,7 +61,10 @@ export function Tabs(props: TabsProps) {
       onChange={props.onChange}
     >
       <div class={props.listClass}>
-        <Kobalte.List class="forge-tab-list">
+        <Kobalte.List
+          class="forge-tab-list"
+          classList={{ "forge-tab-list-underline": props.triggerClass === undefined }}
+        >
           <For each={props.tabs}>
             {(tab) => {
               const badge = () => tab.badge?.() ?? null;
@@ -71,7 +76,7 @@ export function Tabs(props: TabsProps) {
                 <Show
                   when={tab.icon}
                   fallback={
-                    <Kobalte.Trigger value={tab.value} class={props.triggerClass}>
+                    <Kobalte.Trigger value={tab.value} class={triggerClass()}>
                       {tab.label}
                     </Kobalte.Trigger>
                   }
@@ -84,13 +89,17 @@ export function Tabs(props: TabsProps) {
                     <Tooltip label={name()} contents>
                       <Kobalte.Trigger
                         value={tab.value}
-                        class={`${props.triggerClass ?? ""} forge-tab-icon`}
+                        class={`${triggerClass()} forge-tab-icon`}
                         aria-label={name()}
                       >
                         <Icon name={icon()} size={16} />
                         <Show when={badge()}>
                           {(current) => (
-                            <span class="forge-tab-badge" aria-hidden="true">
+                            <span
+                              class="forge-tab-badge"
+                              data-tone={current().tone ?? "neutral"}
+                              aria-hidden="true"
+                            >
                               {current().count}
                             </span>
                           )}

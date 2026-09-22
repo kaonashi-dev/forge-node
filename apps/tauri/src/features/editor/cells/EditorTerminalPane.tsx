@@ -2,6 +2,7 @@ import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from
 import { EDITOR } from "../../../actions/actions";
 import { enterContext } from "../../../actions/dispatch";
 import { editorChrome } from "../editorChrome";
+import { EditorBreadcrumbs, EditorConflictNote, EditorStatusBar } from "../EditorChromeBars";
 import { editorAnnouncement, editorAria } from "../editorAria";
 import {
   repaintEditor,
@@ -400,23 +401,16 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
 
   return (
     <div class="editor-terminal-pane">
-      <header class="editor-terminal-chrome">
-        <span class="editor-terminal-path">{chrome().path}</span>
-        <Show when={chrome().position}>
-          {(position) => <span class="panel-note">{position()}</span>}
-        </Show>
-        <span class="panel-note">{chrome().mark}</span>
-        <span class="history-spacer" />
+      <EditorBreadcrumbs path={chrome().path}>
         <Show when={failed()}>{(reason) => <span class="panel-note">{reason()}</span>}</Show>
         <SourceSwitch path={props.path} surface="editor" />
-      </header>
+      </EditorBreadcrumbs>
 
       {/* The same three answers the DOM editor offers, for the same reason:
           the draft and the other write both still exist, so throwing one away
           is a choice rather than the only way forward. */}
       <Show when={conflict()}>
-        <div class="editor-conflict">
-          <span>This file changed on disk while you were editing it.</span>
+        <EditorConflictNote>
           <Button
             variant="secondary"
             size="xs"
@@ -434,7 +428,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
           <Button variant="secondary" size="xs" selected={comparing()} onClick={toggleCompare}>
             Compare
           </Button>
-        </div>
+        </EditorConflictNote>
       </Show>
       <Show when={comparing()}>
         <Show when={sides().error}>
@@ -528,6 +522,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
           }}
         />
       </div>
+      <EditorStatusBar chrome={chrome()} />
     </div>
   );
 }

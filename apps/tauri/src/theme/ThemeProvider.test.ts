@@ -7,7 +7,7 @@ beforeEach(() => {
   vi.stubGlobal("document", { documentElement: { dataset: {}, style: { setProperty: vi.fn() } } });
 });
 afterEach(() => {
-  applyThemeBase("gruvbox-hard");
+  applyThemeBase("forge-dark");
   vi.unstubAllGlobals();
 });
 
@@ -21,22 +21,22 @@ describe("theme selection", () => {
     vi.stubGlobal("window", { matchMedia: () => ({ matches: true }) });
     applyThemeBase("system");
     expect(themePreference()).toBe("system");
-    expect(themeBase()).toBe("gruvbox-light");
+    expect(themeBase()).toBe("forge-light");
   });
   it("falls back with a matching active option for invalid saved preferences", () => {
     for (const value of ["unknown", "toString", "{bad json"]) {
       applyThemeBase(value as ThemePreference);
-      expect(themeBase()).toBe("gruvbox-hard");
-      expect(themePreference()).toBe("gruvbox-hard");
+      expect(themeBase()).toBe("forge-dark");
+      expect(themePreference()).toBe("forge-dark");
     }
   });
   it("reapplies density and UI font after a theme switch", () => {
-    document.documentElement.dataset.density = "comfortable";
+    document.documentElement.dataset.density = "cozy";
     document.documentElement.dataset.uiFont = "14";
     applyThemeBase("ocean");
     expect(document.documentElement.style.setProperty).toHaveBeenCalledWith(
       "--forge-row-h",
-      "30px",
+      "32px",
     );
     expect(document.documentElement.style.setProperty).toHaveBeenCalledWith(
       "--forge-text-sm",

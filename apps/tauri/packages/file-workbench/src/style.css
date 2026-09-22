@@ -135,7 +135,6 @@
   gap: 0.7ch;
   height: calc(var(--fw-row-height) * 1px);
   padding-inline-end: 1ch;
-  border-inline-start: 2px solid transparent;
   cursor: pointer;
   white-space: nowrap;
   width: 100%;
@@ -147,7 +146,15 @@
   background: var(--fw-selection, Highlight);
 }
 .fw-tree:focus .fw-tree-row[aria-selected="true"] {
-  border-inline-start-color: var(--fw-accent, HighlightText);
+  box-shadow: inset 0 0 0 1px var(--fw-accent, HighlightText);
+}
+/* Measured for the row height, so a host that sizes `.fw-tree-row` in its own
+   units is honoured without restating the number in `--fw-row-height`. */
+.fw-tree-probe {
+  position: absolute;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 .fw-tree-label {
   flex: 1;
@@ -232,16 +239,20 @@
 .fw-tree-row[data-ignored="true"] {
   color: var(--fw-muted, GrayText);
 }
-.fw-tree-row[data-tone="added"],
-.fw-tree-row[data-tone="untracked"] {
+.fw-tree-row[data-tone="added"] {
   color: var(--fw-added, inherit);
+}
+.fw-tree-row[data-tone="untracked"] {
+  color: var(--fw-untracked, var(--fw-added, inherit));
 }
 .fw-tree-row[data-tone="modified"] {
   color: var(--fw-modified, inherit);
 }
-.fw-tree-row[data-tone="deleted"],
-.fw-tree-row[data-tone="conflict"] {
+.fw-tree-row[data-tone="deleted"] {
   color: var(--fw-deleted, inherit);
+}
+.fw-tree-row[data-tone="conflict"] {
+  color: var(--fw-conflict, var(--fw-deleted, inherit));
 }
 .fw-empty {
   padding: 1ch;
@@ -522,7 +533,7 @@
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--fw-border, GrayText);
-  border-inline-start: 3px solid var(--fw-modified, Highlight);
+  border-block-start: 2px solid var(--fw-modified, Highlight);
   background: var(--fw-editor-ground, var(--fw-background, Canvas));
   color: var(--fw-foreground, CanvasText);
   font: inherit;
@@ -530,10 +541,10 @@
   box-shadow: 0 5px 14px color-mix(in srgb, var(--fw-foreground, CanvasText) 12%, transparent);
 }
 .fw-change[data-kind="added"] {
-  border-inline-start-color: var(--fw-added, Highlight);
+  border-block-start-color: var(--fw-added, Highlight);
 }
 .fw-change[data-kind="deleted"] {
-  border-inline-start-color: var(--fw-deleted, Highlight);
+  border-block-start-color: var(--fw-deleted, Highlight);
 }
 .fw-change:focus-visible {
   outline: 1px solid var(--fw-accent, Highlight);

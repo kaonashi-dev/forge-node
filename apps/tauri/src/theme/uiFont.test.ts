@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { UI_FONT_SIZE_RANGE, uiFontTokens } from "./uiFont";
 import { metrics } from "./tokens";
 
-const px = (value: string) => Number.parseInt(value, 10);
+const px = (value: string) => Number.parseFloat(value);
 
 function ladder(sm: number): number[] {
   const tokens = uiFontTokens(sm);
@@ -26,7 +26,11 @@ describe("ui font scale", () => {
   });
 
   it("keeps the type scale ascending at every offered size", () => {
-    for (let size = UI_FONT_SIZE_RANGE.min; size <= UI_FONT_SIZE_RANGE.max; size += 1) {
+    for (
+      let size = UI_FONT_SIZE_RANGE.min;
+      size <= UI_FONT_SIZE_RANGE.max;
+      size += UI_FONT_SIZE_RANGE.step
+    ) {
       const rungs = ladder(size);
       expect(
         rungs.every((value, index) => index === 0 || value > rungs[index - 1]),
@@ -36,7 +40,11 @@ describe("ui font scale", () => {
   });
 
   it("writes the size the person picked as the chrome default", () => {
-    for (let size = UI_FONT_SIZE_RANGE.min; size <= UI_FONT_SIZE_RANGE.max; size += 1) {
+    for (
+      let size = UI_FONT_SIZE_RANGE.min;
+      size <= UI_FONT_SIZE_RANGE.max;
+      size += UI_FONT_SIZE_RANGE.step
+    ) {
       expect(px(uiFontTokens(size)["--forge-text-sm"])).toBe(size);
     }
   });

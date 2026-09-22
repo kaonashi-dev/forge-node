@@ -3,12 +3,17 @@ import type { JSX } from "solid-js";
 
 export type CardProps = {
   children: JSX.Element;
+  /** Draws the card selection: an accent edge and an outer halo. */
+  selected?: boolean;
   class?: string;
 };
 
-/** A bordered surface. */
 export function Card(props: CardProps) {
-  return <div class={`forge-card ${props.class ?? ""}`}>{props.children}</div>;
+  return (
+    <div class={`forge-card ${props.class ?? ""}`} data-selected={props.selected ? "" : undefined}>
+      {props.children}
+    </div>
+  );
 }
 
 export type SeparatorProps = {
@@ -16,7 +21,6 @@ export type SeparatorProps = {
   class?: string;
 };
 
-/** A rule between groups. */
 export function Separator(props: SeparatorProps) {
   return (
     <Kobalte

@@ -25,6 +25,7 @@ import {
   type ThemeBaseId,
 } from "../../theme/tokens";
 import { Button, Disclosure, Select, TextArea } from "../../ui/index";
+import { Icon } from "../../theme/icons/index";
 // Not through `ui/index`: the barrel is in the initial chunk, and the colour
 // primitives belong with Settings, which is loaded when it is first opened.
 import { ColorPicker } from "../../ui/ColorPicker";
@@ -166,6 +167,20 @@ export function ThemeSettings() {
 
   return (
     <div class="theme-editor">
+      <Group title="Theme">
+        <div class="theme-cards">
+          <For each={bases}>
+            {(id) => (
+              <ThemeCard
+                id={id}
+                selected={selected() === id}
+                disabled={busy()}
+                onChoose={() => void choose(id)}
+              />
+            )}
+          </For>
+        </div>
+      </Group>
       <ThemePreview contrast={contrast()} />
       <Group class="theme-controls">
         <div class="theme-control-row theme-selector-row">
@@ -323,5 +338,42 @@ export function ThemeSettings() {
         </div>
       </Disclosure>
     </div>
+  );
+}
+
+function ThemeCard(props: {
+  id: ThemeBaseId;
+  selected: boolean;
+  disabled: boolean;
+  onChoose: () => void;
+}) {
+  const colors = () => palettes[props.id];
+  return (
+    <button
+      type="button"
+      class="theme-card"
+      classList={{ "forge-card-selected": props.selected }}
+      aria-pressed={props.selected}
+      disabled={props.disabled}
+      onClick={props.onChoose}
+    >
+      <span class="theme-card-preview" style={{ background: colors().bg }} aria-hidden="true">
+        <span class="theme-card-bar" style={{ background: colors().surface }} />
+        <span class="theme-card-chips">
+          <span class="theme-card-chip" style={{ background: colors().accent, width: "22px" }} />
+          <span class="theme-card-chip" style={{ background: colors().surfaceHi, width: "30px" }} />
+          <span class="theme-card-chip" style={{ background: colors().muted, width: "14px" }} />
+        </span>
+        <span class="theme-card-ansi">
+          <For each={colors().ansi}>{(color) => <span style={{ background: color }} />}</For>
+        </span>
+      </span>
+      <span class="theme-card-foot">
+        <span class="theme-card-name">{THEME_LABELS[props.id]}</span>
+        <Show when={props.selected}>
+          <Icon name="check" class="forge-icon-accent" size={13} />
+        </Show>
+      </span>
+    </button>
   );
 }

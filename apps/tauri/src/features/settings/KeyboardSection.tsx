@@ -9,6 +9,7 @@ import {
 } from "../../actions/actions";
 import {
   bindingConflicts,
+  boundChord,
   bindings,
   isOverridden,
   rebind,
@@ -17,6 +18,18 @@ import {
 import { describeChord, specFromEvent, type Chord } from "../../actions/keys";
 import { Button, FilterHeader, Kbd } from "../../ui/index";
 import { Group, Page } from "./SettingsLayout";
+
+/** The chords worth learning first, read from the live table so a rebinding shows here too. */
+const ESSENTIALS: ReadonlyArray<{ action: ActionId; label: string }> = [
+  { action: "open_command_palette", label: "Palette · everything" },
+  { action: "find_command", label: "Palette · commands" },
+  { action: "open_file_palette", label: "Palette · files in the checkout" },
+  { action: "go_to", label: "Palette · sessions, worktrees and files" },
+  { action: "switch_tab_next", label: "Switch pane, by last use" },
+  { action: "toggle_projects", label: "Projects rail" },
+  { action: "toggle_files", label: "File tree" },
+  { action: "cycle_sidebar_views", label: "Cycle history · PR · git" },
+];
 
 export function KeyboardSection() {
   const [query, setQuery] = createSignal("");
@@ -108,6 +121,30 @@ export function KeyboardSection() {
         </Group>
       </Show>
 
+      <Group title="The chords that matter">
+        <dl class="keymap-essentials">
+          <For each={ESSENTIALS}>
+            {(item) => (
+              <>
+                <dt>
+                  <Show
+                    when={boundChord(item.action)}
+                    fallback={<span class="keymap-unbound">Not bound</span>}
+                  >
+                    {(chord) => <Kbd chord={chord()} class="keymap-essential-chord" />}
+                  </Show>
+                </dt>
+                <dd>{item.label}</dd>
+              </>
+            )}
+          </For>
+          <dt>
+            <kbd class="forge-kbd keymap-essential-chord">esc esc</kbd>
+          </dt>
+          <dd>Leave settings, keep the session</dd>
+        </dl>
+      </Group>
+
       <Group title="Shortcuts">
         <FilterHeader
           label="Filter shortcuts"
@@ -134,13 +171,12 @@ export function KeyboardSection() {
                 const listening = () => capturing() === id();
                 const label = actionLabel(row.action, row.argument);
                 return (
-                  <tr
-                    classList={{
-                      overridden: isOverridden(row.action, row.context, row.argument),
-                    }}
-                  >
+                  <tr>
                     <th scope="row" class="keymap-action">
                       {label}
+                      <Show when={isOverridden(row.action, row.context, row.argument)}>
+                        <span class="keymap-changed">changed</span>
+                      </Show>
                     </th>
                     <td class="keymap-context">{row.context}</td>
                     <td>

@@ -6,7 +6,7 @@ import "./styles/index.css";
 import "@forge-node/file-workbench/style.css";
 import "./features/files/explorer/fileSurface.css";
 
-applyThemeBase("gruvbox-hard");
+applyThemeBase("forge-dark");
 
 const isMac =
   /mac/i.test(navigator.platform) ||

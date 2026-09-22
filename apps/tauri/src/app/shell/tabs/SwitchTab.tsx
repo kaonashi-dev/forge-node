@@ -19,6 +19,7 @@ import {
   type TabSwitcherView,
 } from "../../../navigation/tabSwitcher";
 import { ViewGlyph } from "./ViewGlyph";
+import { sessionKindWord, viewKindWord } from "./switchKind";
 
 const VISIBLE_ROWS = 10;
 
@@ -50,7 +51,7 @@ export function TabSwitcher(props: TabSwitcherProps) {
     onCleanup(enterContext(COMMAND_PALETTE));
     list?.focus();
     // The whole card, not the rows: a hand reaching for the mouse crosses the
-    // title and the padding too, and which pixel it crossed must not decide
+    // footer and the padding too, and which pixel it crossed must not decide
     // whether letting go of Control commits or leaves the list up.
     const card = list?.closest(".forge-dialog-card");
     if (!card) return;
@@ -65,6 +66,7 @@ export function TabSwitcher(props: TabSwitcherProps) {
   return (
     <Dialog
       title="Switch Tab"
+      hideTitle
       flush
       size="sm"
       align="top"
@@ -134,6 +136,10 @@ export function TabSwitcher(props: TabSwitcherProps) {
           }}
         </For>
       </div>
+      <footer class="tab-switcher-footer">
+        <span>hold ctrl · tab steps · release commits</span>
+        <span class="tab-switcher-order">most recent first</span>
+      </footer>
     </Dialog>
   );
 }
@@ -144,6 +150,7 @@ function CodeRow() {
     <>
       <Icon name="folder-open" class="forge-icon-muted palette-glyph" size={14} />
       <span class="palette-label">Code</span>
+      <span class="tab-switcher-kind">code</span>
     </>
   );
 }
@@ -162,6 +169,7 @@ function ViewRow(props: { view: WorkbenchView }) {
       </span>
       <span class="palette-label">{viewLabel(props.view)}</span>
       <Show when={note()}>{(text) => <span class="palette-note">{text()}</span>}</Show>
+      <span class="tab-switcher-kind">{viewKindWord(props.view)}</span>
     </>
   );
 }
@@ -200,6 +208,7 @@ function SessionRow(props: {
       )}
       <span class="palette-label">{label()}</span>
       <Show when={note()}>{(text) => <span class="palette-note">{text()}</span>}</Show>
+      <span class="tab-switcher-kind">{sessionKindWord(provider() !== null)}</span>
     </>
   );
 }

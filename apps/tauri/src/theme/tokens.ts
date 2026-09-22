@@ -1,6 +1,8 @@
 import { contrast, derivedTokens, hex, mix, on, parseHex, pct, readableColor } from "./mix";
 
 export type ThemeBaseId =
+  | "forge-dark"
+  | "forge-light"
   | "gruvbox-hard"
   | "gruvbox"
   | "neutral"
@@ -12,6 +14,7 @@ export type ThemeBaseId =
 
 /** Which bases are light, for `prefers-color-scheme` and `color-scheme`. */
 export const LIGHT_BASES: ReadonlySet<ThemeBaseId> = new Set<ThemeBaseId>([
+  "forge-light",
   "gruvbox-light",
   "neutral-light",
 ]);
@@ -54,6 +57,100 @@ export type Palette = {
 const palette = (values: Omit<Palette, "ansi">, ansi: string[]): Palette => ({ ...values, ansi });
 
 export const palettes = {
+  "forge-dark": palette(
+    {
+      bg: "#1a1918",
+      rail: "#121211",
+      sidebar: "#1a1918",
+      surface: "#211f1d",
+      surfaceHi: "#2a2725",
+      editor: "#1a1918",
+      step: "#34302d",
+      text: "#ede5d6",
+      muted: "#aea69a",
+      faint: "#8d857a",
+      accent: "#4fa39b",
+      needsYou: "#f08a3c",
+      needsYouDeep: "#b55a1c",
+      green: "#9cbf57",
+      red: "#e2645a",
+      amber: "#e0b341",
+      blue: "#7fa9cc",
+      termBg: "#161514",
+      termFg: "#cfc6b8",
+      gitAdded: "#9cbf57",
+      gitModified: "#e0b341",
+      gitDeleted: "#e2645a",
+      gitUntracked: "#b98bc9",
+      gitConflict: "#f08a3c",
+      gitIgnored: "#6e6760",
+    },
+    [
+      "#1a1918",
+      "#e2645a",
+      "#9cbf57",
+      "#e0b341",
+      "#7fa9cc",
+      "#b98bc9",
+      "#4fa39b",
+      "#aea69a",
+      "#5e574f",
+      "#ee8177",
+      "#b0ce73",
+      "#edc65f",
+      "#9cbfdc",
+      "#c9a4d6",
+      "#6fbbb3",
+      "#ede5d6",
+    ],
+  ),
+  "forge-light": palette(
+    {
+      bg: "#faf8f3",
+      rail: "#f1ece3",
+      sidebar: "#f1ece3",
+      surface: "#ffffff",
+      surfaceHi: "#e7e0d4",
+      editor: "#ffffff",
+      step: "#dfd8cb",
+      text: "#26231f",
+      muted: "#6b6459",
+      faint: "#8c857a",
+      accent: "#29766f",
+      needsYou: "#9e5615",
+      needsYouDeep: "#7a410f",
+      green: "#5c7a21",
+      red: "#b03a31",
+      amber: "#9a7314",
+      blue: "#2f6187",
+      termBg: "#faf8f3",
+      termFg: "#26231f",
+      gitAdded: "#5c7a21",
+      gitModified: "#9a7314",
+      gitDeleted: "#b03a31",
+      gitUntracked: "#7a4a8c",
+      gitConflict: "#9e5615",
+      gitIgnored: "#8c857a",
+    },
+    [
+      "#26231f",
+      "#b03a31",
+      "#5c7a21",
+      "#9a7314",
+      "#2f6187",
+      "#7a4a8c",
+      "#29766f",
+      "#6b6459",
+      "#8c857a",
+      "#c9524a",
+      "#6b8246",
+      "#98751f",
+      "#4a7ca6",
+      "#96689f",
+      "#35867f",
+      "#14120f",
+    ],
+  ),
   "gruvbox-hard": palette(
     {
       bg: "#282828",
@@ -292,6 +389,8 @@ export const palettes = {
 } as Record<ThemeBaseId, Palette>;
 
 export const THEME_LABELS: Record<ThemeBaseId, string> = {
+  "forge-dark": "Forge Dark",
+  "forge-light": "Forge Light",
   "gruvbox-hard": "Gruvbox",
   gruvbox: "Gruvbox Dark",
   neutral: "Neutral Dark",
@@ -346,51 +445,35 @@ export function registerCustomPalette(value: Palette, light: boolean): void {
 }
 
 export const metrics = {
-  titleH: 36,
+  titleH: 40,
   tabH: 34,
   sidebarW: 300,
   handleW: 4,
-  /*
-   * Denser than the ladder the GUI handed over (28 rows, 24–36 controls,
-   * 6–26 radii). The reference is Linear and Zed: a 26px list row, controls that
-   * start at 20 and top out at 32, and hairline radii — 4/6/8/10 — with one full
-   * pill at the top of the scale. `ui.test.ts` only asks that each ladder stays
-   * monotone, so the numbers move without a test pinning them to the old shell.
-   */
+  // Density moves `rowH` and the control ladder; this is the compact default.
   rowH: 26,
   controlXS: 20,
   controlSM: 24,
   controlMD: 28,
   controlLG: 32,
-  radiusXS: 4,
-  radiusSM: 6,
-  radiusMD: 8,
-  radiusLG: 10,
+  // Badge/kbd, button/row, card, panel, pill. The palette's 14px lives in `scale`.
+  radiusXS: 5,
+  radiusSM: 7,
+  radiusMD: 9,
+  radiusLG: 12,
   radiusXL: 999,
   // Prefer a system Nerd Font install for prompt icons; bundled JetBrains Mono is the fallback (docs/theming.md).
   mono: "JetBrainsMono Nerd Font Mono, JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
   monoSize: 13,
   monoLineHeight: 1.35,
-  /*
-   * The chrome's own face.
-   *
-   * Nothing is bundled for it on purpose: `-apple-system` is SF Pro on macOS
-   * and `Segoe UI`/`Inter` cover the other two, which is the face the rest of
-   * each platform is already drawing. Mono stays where mono is the content —
-   * the grid, the editor, a diff, a path, a branch, a chord.
-   */
-  sans: '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "Noto Sans", "Helvetica Neue", Arial, sans-serif',
-  /*
-   * Five steps, and the reason there are only five: a scale with twelve sizes
-   * in it is not a scale, and this file had twelve. `sm` is the default the
-   * chrome is written in; `xs` is metadata; `md` is a body line; `lg`/`xl`
-   * are the only two headings a panel is allowed.
-   */
-  textXS: 11,
-  textSM: 12,
+  sans: '"IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+  // Documentation headings only (settings section titles), never chrome.
+  display: 'Fraunces, Georgia, "Times New Roman", serif',
+  // Caption, row label, body, card/dialog heading, panel heading. `sm` is the chrome's base.
+  textXS: 11.5,
+  textSM: 12.5,
   textMD: 13,
   textLG: 15,
-  textXL: 18,
+  textXL: 20,
 } as const;
 
 /**
@@ -403,8 +486,12 @@ export const metrics = {
  */
 export const scale = {
   /** Pixel-valued names permit new steps without renumbering existing tokens. */
-  space: [1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32],
+  space: [1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 20, 22, 24, 28, 32, 44],
   radius2XS: 3,
+  radiusPalette: 14,
+  /** Section title and the mono section label; outside the chrome-size multiplier. */
+  text2XL: 28,
+  textLabel: 10,
   /** Values below 40 stack within panes; 40 and above order global overlays. */
   z: {
     raised: 1,
@@ -421,18 +508,15 @@ export const scale = {
   },
   /** Elevation, moved out of the stylesheet so a surface reads it as a token. */
   shadow: {
-    sm: "0 8px 24px rgb(0 0 0 / 35%)",
-    md: "0 12px 32px rgb(0 0 0 / 40%)",
-    lg: "0 24px 64px rgb(0 0 0 / 45%)",
+    sm: "0 8px 20px rgb(0 0 0 / 40%)",
+    md: "0 16px 34px rgb(0 0 0 / 40%)",
+    lg: "0 24px 54px rgb(0 0 0 / 55%)",
   },
-  /*
-   * One duration pair and two easings. `enter` decelerates into place and
-   * `exit` accelerates away, which is the asymmetry that keeps a dialog from
-   * looking like it is being pulled off screen at the same speed it arrived.
-   */
+  // Hover/focus/selection, menus/tooltips/toasts, sidebar and panel resize. Output repaints never animate.
   motion: {
-    fast: "110ms",
-    slow: "180ms",
+    fast: "90ms",
+    menu: "120ms",
+    slow: "160ms",
     ease: "cubic-bezier(0.2, 0, 0, 1)",
     enter: "cubic-bezier(0, 0, 0.2, 1)",
     exit: "cubic-bezier(0.4, 0, 1, 1)",
@@ -482,6 +566,40 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--text-xl": "var(--forge-text-xl)",
   "--font-mono": "var(--forge-mono)",
   "--font-sans": "var(--forge-sans)",
+  "--font-display": "var(--forge-display)",
+  /* The redesign's surface names; the artboards spell components in these. */
+  "--bg-window": "var(--forge-rail)",
+  "--bg-terminal": "var(--forge-term-bg)",
+  "--bg-panel": "var(--forge-bg)",
+  "--bg-sidebar": "var(--forge-sidebar)",
+  "--surface": "var(--forge-surface)",
+  "--surface-hi": "var(--forge-surface-hi)",
+  "--line": "var(--forge-step)",
+  "--fg": "var(--fg-default)",
+  "--fg-caption": "var(--fg-subtle)",
+  "--accent": "var(--forge-accent)",
+  "--attention": "var(--forge-needs-you)",
+  "--radius-badge": "var(--forge-radius-xs)",
+  "--radius-control": "var(--forge-radius-sm)",
+  "--radius-card": "var(--forge-radius-md)",
+  "--radius-panel": "var(--forge-radius-lg)",
+  "--radius-pill": "var(--forge-radius-xl)",
+  /*
+   * Selection never draws a bar down an edge: a chosen row changes its own
+   * ground and carries a hairline ring *inside* its box, so nothing shifts.
+   * Tabs are the exception and keep their underline on the shared edge.
+   */
+  "--select-bg": "color-mix(in srgb, var(--accent) 13%, transparent)",
+  "--select-ring": "inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent)",
+  "--attention-bg": "color-mix(in srgb, var(--attention) 13%, transparent)",
+  "--attention-ring": "inset 0 0 0 1px color-mix(in srgb, var(--attention) 36%, transparent)",
+  "--attention-halo": "0 0 0 3px color-mix(in srgb, var(--attention) 18%, transparent)",
+  "--card-select-border": "color-mix(in srgb, var(--accent) 50%, transparent)",
+  "--card-select-halo": "0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent)",
+  "--focus-ring-width": "2px",
+  "--focus-ring-offset": "2px",
+  /* For a focusable thing whose container clips an outside outline. */
+  "--focus-ring-shadow": "0 0 0 2px var(--bg-panel), 0 0 0 4px var(--ring)",
 };
 
 function semanticColors(
@@ -512,6 +630,12 @@ function semanticColors(
       .filter(([name]) => !name.includes("border"))
       .map(([, value]) => parseHex(value)),
     ...Object.values(roles).map(soft),
+    // `--select-bg` and `--attention-bg` are 13% tints laid over whichever panel holds the row.
+    ...[active.bg, active.sidebar, active.surface, active.surfaceHi].flatMap((ground) =>
+      [active.accent, active.needsYou].map((tint) =>
+        mix(parseHex(ground), parseHex(tint), pct(13)),
+      ),
+    ),
   ];
   const foreground = (fill: number) => {
     const candidate = on(fill, bg, text);
@@ -561,6 +685,9 @@ export function staticTokens(): Record<string, string> {
     out[`--space-${value}`] = `${value}px`;
   }
   out["--radius-2xs"] = `${scale.radius2XS}px`;
+  out["--radius-palette"] = `${scale.radiusPalette}px`;
+  out["--text-2xl"] = `${scale.text2XL}px`;
+  out["--text-label"] = `${scale.textLabel}px`;
   for (const [name, value] of Object.entries(scale.z)) {
     out[`--z-${name}`] = String(value);
   }
@@ -568,8 +695,14 @@ export function staticTokens(): Record<string, string> {
     out[`--shadow-${name}`] = value;
     out[`--forge-shadow-${name}`] = `var(--shadow-${name})`;
   }
+  out["--motion-0"] = "0ms";
   out["--motion-fast"] = scale.motion.fast;
+  out["--motion-menu"] = scale.motion.menu;
   out["--motion-slow"] = scale.motion.slow;
+  out["--depth-0"] = "none";
+  out["--depth-1"] = "none";
+  out["--depth-2"] = "var(--shadow-sm)";
+  out["--depth-3"] = "var(--shadow-lg)";
   out["--ease"] = scale.motion.ease;
   out["--motion-enter"] = scale.motion.enter;
   out["--motion-exit"] = scale.motion.exit;

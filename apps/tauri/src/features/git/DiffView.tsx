@@ -3,8 +3,11 @@ import { openEditorAt } from "../editor/open";
 import { DIFF_SPLIT_KEY, readFlag, writeFlag } from "../../state/preferences";
 import { Button, EmptyState, Skeleton } from "../../ui/index";
 import { DiffFiles } from "./diff/DiffFiles";
-import { diffTotals } from "../../contracts/workbench";
+import { diffTotals, rebaseInProgress, readyToContinue } from "../../contracts/workbench";
 import { openFile } from "../files/commands";
+import { ConflictView } from "./ConflictView";
+import { operationName } from "./gitView";
+import { continueReplay } from "./rebaseActions";
 import { gitStore } from "./state";
 import { loading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
@@ -33,6 +36,18 @@ export function DiffView() {
   return (
     <div class="diff-view">
       <Show when={gitStore.diffError}>{(error) => <p class="panel-error">{error()}</p>}</Show>
+      <Show when={(gitStore.rebase?.conflicts.length ?? 0) > 0}>
+        <ConflictView />
+      </Show>
+      <Show when={rebaseInProgress(gitStore.rebase) && readyToContinue(gitStore.rebase)}>
+        <div class="git-ready">
+          <span>Every conflict is staged.</span>
+          <span class="history-spacer" />
+          <Button variant="primary" size="sm" onClick={continueReplay}>
+            Continue {operationName(gitStore.rebase?.operation).toLowerCase()}
+          </Button>
+        </div>
+      </Show>
       <Show
         when={gitStore.diff && gitStore.diff.files.length > 0}
         fallback={

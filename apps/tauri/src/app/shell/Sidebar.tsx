@@ -13,7 +13,7 @@ import {
 } from "../../navigation/sidebarStore";
 import { Tabs, type TabDef } from "../../ui/index";
 import { ProjectsView } from "../../features/projects/ProjectsView";
-import { waiting } from "../../features/projects/tree";
+import { waitingSessions } from "../../features/sessions/waiting";
 
 /**
  * The one sidebar: a strip of icons above the selected view.
@@ -24,7 +24,7 @@ import { waiting } from "../../features/projects/tree";
  * the prop into a getter and remount every panel on each badge change.
  */
 export function Sidebar() {
-  const waitingCount = createMemo(() => waiting(forgeStore).length);
+  const waitingCount = createMemo(() => waitingSessions().length);
 
   const VIEWS: Record<SidebarView, () => JSX.Element> = {
     Projects: () => <ProjectsView />,
@@ -45,7 +45,9 @@ export function Sidebar() {
           contentClass: "projects-body",
           badge: () => {
             const count = waitingCount();
-            return count > 0 ? { count, label: `${count} waiting on you` } : null;
+            return count > 0
+              ? { count, label: `${count} waiting on you`, tone: "attention" as const }
+              : null;
           },
         }
       : item === "Files"

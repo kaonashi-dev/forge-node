@@ -51,6 +51,7 @@ import {
 import { openEditor } from "../../features/editor/open";
 import {
   DENSITY_KEY,
+  REDUCE_MOTION_KEY,
   EDITOR_FONT_SIZE_KEY,
   EDITOR_FONT_SIZE_RANGE,
   SIDEBAR_RANGE,
@@ -69,7 +70,8 @@ import type { Section } from "../../features/settings/SettingsRoute";
 import { ESC_AGAIN_MS, isSecondEsc } from "../../features/settings/escAgain";
 import { defaultAgentFrom, resolveDefaultAgent } from "../../features/settings/defaultAgent";
 import { applyThemeBase, type ThemePreference } from "../../theme/ThemeProvider";
-import { DENSITIES, applyDensity } from "../../theme/density";
+import { applyDensity, readDensity } from "../../theme/density";
+import { applyReduceMotion } from "../../theme/motion";
 import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
 import { ResizeHandle } from "./ResizeHandle";
 import { Sidebar } from "./Sidebar";
@@ -85,6 +87,7 @@ import { HandoffProgressDialog } from "../../features/sessions/HandoffProgressDi
 import { SendContextDialog } from "../../features/sessions/SendContextDialog";
 import { SpawnChildDialog } from "../../features/sessions/SpawnChildDialog";
 import { TabSwitcher } from "./tabs/SwitchTab";
+import { trackQuestions } from "../../features/sessions/waiting";
 import { liveIdsByActivity } from "../../navigation/tabMru";
 import type { SwitchTarget } from "../../navigation/tabTargets";
 import { activeSwitcherKey, switcherTargets, trackTabFocus } from "../../navigation/switcherRing";
@@ -156,7 +159,8 @@ export function AppShell() {
     // Density is written over `tokens.css` as an inline style, so it has to be
     // re-applied whenever the stored preference lands — the same round trip
     // the theme takes.
-    applyDensity(readChoice(DENSITY_KEY, DENSITIES, "default"));
+    applyDensity(readDensity(forgeStore.app_state[DENSITY_KEY]));
+    applyReduceMotion(forgeStore.app_state[REDUCE_MOTION_KEY] === "true");
     applyUiFont(
       readScale(
         UI_FONT_SIZE_KEY,
@@ -197,6 +201,7 @@ export function AppShell() {
   );
 
   trackTabFocus();
+  trackQuestions();
 
   /** How many files, diffs and PRs are parked in the Code tab. */
   const openViewCount = createMemo(() => currentViews().open.length);

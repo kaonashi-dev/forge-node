@@ -10,9 +10,11 @@ import type { EditorState } from "../../contracts/runtime";
  */
 export type EditorChrome = {
   path: string;
-  /** `line:column`, or `null` while no state has arrived. */
+  /** `Ln 12, Col 4`, or `null` while no state has arrived. */
   position: string | null;
-  /** The dirty/read-only mark, or what to say instead of stale values. */
+  /** Further status-bar facts the editor reported, in reading order. */
+  details: string[];
+  /** The unsaved/read-only mark, or what to say instead of stale values. */
   mark: string;
   /**
    * Where the scrollbar thumb sits, as two fractions of the buffer, or `null`
@@ -39,6 +41,37 @@ function scrollThumb(state: EditorState): EditorChrome["scroll"] {
 /** Said instead of a position or a mark before the first state arrives. */
 export const UNKNOWN_MARK = "state unknown";
 
+/** The path's folders, outermost first, then the file's own name. */
+export function pathCrumbs(path: string): { parents: string[]; name: string } {
+  const parts = path.split("/").filter(Boolean);
+  return { parents: parts.slice(0, -1), name: parts.at(-1) ?? path };
+}
+
+/**
+ * The file's extension as a label, or `null` when the name has none.
+ *
+ * Read off the name only: the editor reports no language, and naming one from
+ * a guess at the contents would be a fact nobody stated.
+ */
+export function languageLabel(path: string): string | null {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  // A leading dot is a dotfile's name, not an extension.
+  if (dot <= 0 || dot === name.length - 1) return null;
+  return name.slice(dot + 1).toUpperCase();
+}
+
+function details(state: EditorState, path: string): string[] {
+  const facts: string[] = [];
+  if (state.total_lines > 0)
+    facts.push(`${state.total_lines} ${state.total_lines === 1 ? "line" : "lines"}`);
+  if (state.cursor_count > 1) facts.push(`${state.cursor_count} cursors`);
+  if (state.selection_length > 0) facts.push(`${state.selection_length} selected`);
+  const language = languageLabel(path);
+  if (language) facts.push(language);
+  return facts;
+}
+
 /**
  * Derive the header from the control state, falling back to what the view was
  * opened with.
@@ -53,14 +86,22 @@ export function editorChrome(
   openedPath: string,
 ): EditorChrome {
   if (!state) {
-    return { path: openedPath, position: null, mark: UNKNOWN_MARK, scroll: null };
+    const language = languageLabel(openedPath);
+    return {
+      path: openedPath,
+      position: null,
+      details: language ? [language] : [],
+      mark: UNKNOWN_MARK,
+      scroll: null,
+    };
   }
-  const flags = [state.dirty ? "dirty" : null, state.read_only ? "read-only" : null].filter(
+  const flags = [state.dirty ? "unsaved" : null, state.read_only ? "read-only" : null].filter(
     (flag): flag is string => flag !== null,
   );
   return {
     path: state.path,
-    position: `${state.line}:${state.column}`,
+    position: `Ln ${state.line}, Col ${state.column}`,
+    details: details(state, state.path),
     mark: flags.join(" · ") || "clean",
     scroll: scrollThumb(state),
   };

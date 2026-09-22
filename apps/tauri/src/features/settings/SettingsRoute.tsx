@@ -12,7 +12,9 @@ import {
   Bot,
   FolderSymlink,
   Keyboard as KeyboardIcon,
+  Minus,
   Palette,
+  Plus,
   Settings as SettingsIcon,
 } from "lucide-solid";
 import {
@@ -63,8 +65,16 @@ import { requestConfirm } from "../../state/dialogs";
 import { connectionStore } from "../../state/connection";
 import { terminalStore } from "../terminal/terminalStore";
 import { ThemeSettings } from "./ThemeSettings";
-import { DENSITIES, applyDensity, type Density } from "../../theme/density";
+import {
+  DENSITIES,
+  DENSITY_LABELS,
+  applyDensity,
+  readDensity,
+  type Density,
+} from "../../theme/density";
 import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
+import { applyReduceMotion } from "../../theme/motion";
+import { DENSITY_NOTES, canStep, stepValue, type StepRange } from "./typeSteps";
 import {
   AUTOSAVE_KEY,
   DENSITY_KEY,
@@ -72,56 +82,16 @@ import {
   EDITOR_FONT_SIZE_RANGE,
   EDITOR_LINE_HEIGHT_KEY,
   EDITOR_LINE_HEIGHT_RANGE,
+  REDUCE_MOTION_KEY,
   TERMINAL_ZOOM_KEY,
   TERMINAL_ZOOM_RANGE,
   TERMINAL_ZOOM_STEP,
   UI_FONT_SIZE_KEY,
-  readChoice,
   readFlag,
   readScale,
   writeChoice,
   writeFlag,
 } from "../../state/preferences";
-
-/**
- * The sizes offered, rather than a free number.
- *
- * Whole pixels only: the gutter, the overlay and the textarea are positioned
- * against the same line box, and a fractional size rounds differently in the
- * three of them. Shortcuts can land on any pixel in the range, so the list
- * is the range rather than a curated subset that would blank the control.
- */
-function sizeOptions(range: {
-  min: number;
-  max: number;
-  fallback: number;
-}): { value: string; label: string }[] {
-  const options: { value: string; label: string }[] = [];
-  for (let size = range.min; size <= range.max; size += 1) {
-    options.push({
-      value: String(size),
-      label: size === range.fallback ? `${size} px · Default` : `${size} px`,
-    });
-  }
-  return options;
-}
-
-function zoomOptions(): { value: string; label: string }[] {
-  const options: { value: string; label: string }[] = [];
-  for (
-    let zoom = TERMINAL_ZOOM_RANGE.min;
-    zoom <= TERMINAL_ZOOM_RANGE.max + 1e-9;
-    zoom += TERMINAL_ZOOM_STEP
-  ) {
-    const value = Number(zoom.toFixed(1));
-    options.push({
-      value: String(value),
-      label:
-        value === TERMINAL_ZOOM_RANGE.fallback ? "100% · Default" : `${Math.round(value * 100)}%`,
-    });
-  }
-  return options;
-}
 
 /** Line spacing, named rather than numbered — nobody wants to pick `1.35`. */
 const LINE_HEIGHTS = [
@@ -138,7 +108,7 @@ const SECTIONS = [
   "Keyboard",
   "Shared files",
   "Stats & Usage",
-  "Personalization",
+  "Appearance",
 ] as const;
 export type Section = (typeof SECTIONS)[number];
 
@@ -148,7 +118,7 @@ const SECTION_ICONS: Record<Section, typeof SettingsIcon> = {
   Keyboard: KeyboardIcon,
   "Shared files": FolderSymlink,
   "Stats & Usage": BarChart3,
-  Personalization: Palette,
+  Appearance: Palette,
 };
 
 export type SettingsRouteProps = {
@@ -161,7 +131,7 @@ export function SettingsRoute(props: SettingsRouteProps) {
 
   // Opening settings *at* a section is a different act from opening settings:
   // "About Forge Node" has to land on General even when the screen was last left on
-  // Personalization.
+  // Appearance.
   createEffect(() => {
     if (props.section) setSection(props.section);
   });
@@ -172,7 +142,7 @@ export function SettingsRoute(props: SettingsRouteProps) {
     Keyboard: () => <KeyboardSection />,
     "Shared files": () => <SharedFiles />,
     "Stats & Usage": () => <StatsSection />,
-    Personalization: () => <Personalization />,
+    Appearance: () => <Appearance />,
   };
 
   return (
@@ -594,53 +564,121 @@ function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent })
   );
 }
 
-function Personalization() {
-  const density = () => readChoice(DENSITY_KEY, DENSITIES, "default");
-  const uiFont = () =>
-    readScale(
-      UI_FONT_SIZE_KEY,
-      UI_FONT_SIZE_RANGE.min,
-      UI_FONT_SIZE_RANGE.max,
-      UI_FONT_SIZE_RANGE.fallback,
-    );
+function Appearance() {
+  const density = () => readDensity(forgeStore.app_state[DENSITY_KEY]);
+  const reduceMotion = () => readFlag(REDUCE_MOTION_KEY, false);
 
   function chooseDensity(next: Density): void {
     applyDensity(next);
     writeChoice(DENSITY_KEY, next);
   }
 
-  function chooseUiFont(next: string): void {
-    const size = Number.parseInt(next, 10);
-    if (!Number.isFinite(size)) return;
-    applyUiFont(size);
-    writeChoice(UI_FONT_SIZE_KEY, String(size));
+  function toggleReduceMotion(): void {
+    const next = !reduceMotion();
+    applyReduceMotion(next);
+    writeFlag(REDUCE_MOTION_KEY, next);
   }
 
   return (
-    <Page title="Personalization" summary="How the shell looks.">
+    <Page
+      title="Appearance"
+      summary="The theme sets every surface at once, including the terminal's sixteen ANSI colours. Type sizes stay independent: the editor, the terminal and the chrome each keep their own."
+    >
       <ThemeSettings />
 
-      <Group
-        title="Interface size"
-        description="The chrome's type scale — tabs, sidebars, settings. The editor and the terminal keep the sizes they own."
-      >
-        <Row
-          label="UI font size"
-          description="How large the shell draws its labels. One step larger is a little more of everything except the editor and the terminal."
-          control={
-            <Select
-              aria-label="UI font size"
-              value={String(uiFont())}
-              onChange={chooseUiFont}
-              options={sizeOptions(UI_FONT_SIZE_RANGE)}
-            />
-          }
-        />
+      <Group title="Density">
+        <div class="settings-density">
+          <div class="settings-segmented" role="group" aria-label="Row density">
+            <For each={DENSITIES}>
+              {(value) => (
+                <button
+                  type="button"
+                  class="settings-segment"
+                  aria-pressed={density() === value}
+                  onClick={() => chooseDensity(value)}
+                >
+                  {DENSITY_LABELS[value]}
+                </button>
+              )}
+            </For>
+          </div>
+          <span class="settings-density-note">{DENSITY_NOTES[density()]}</span>
+        </div>
+      </Group>
+
+      <Group title="Type size">
+        <div class="settings-steppers">
+          <TypeStepper
+            label="Chrome"
+            noun="chrome text"
+            range={UI_FONT_SIZE_RANGE}
+            value={readScale(
+              UI_FONT_SIZE_KEY,
+              UI_FONT_SIZE_RANGE.min,
+              UI_FONT_SIZE_RANGE.max,
+              UI_FONT_SIZE_RANGE.fallback,
+            )}
+            format={(value) => `${value}px`}
+            onChange={(next) => {
+              applyUiFont(next);
+              writeChoice(UI_FONT_SIZE_KEY, String(next));
+            }}
+          />
+          <TypeStepper
+            label="Editor"
+            noun="editor text"
+            range={{ ...EDITOR_FONT_SIZE_RANGE, step: 1 }}
+            value={readScale(
+              EDITOR_FONT_SIZE_KEY,
+              EDITOR_FONT_SIZE_RANGE.min,
+              EDITOR_FONT_SIZE_RANGE.max,
+              EDITOR_FONT_SIZE_RANGE.fallback,
+            )}
+            format={(value) => `${value}px`}
+            onChange={(next) => writeChoice(EDITOR_FONT_SIZE_KEY, String(next))}
+          />
+          <TypeStepper
+            label="Terminal"
+            noun="terminal text"
+            range={{ ...TERMINAL_ZOOM_RANGE, step: TERMINAL_ZOOM_STEP }}
+            value={readScale(
+              TERMINAL_ZOOM_KEY,
+              TERMINAL_ZOOM_RANGE.min,
+              TERMINAL_ZOOM_RANGE.max,
+              TERMINAL_ZOOM_RANGE.fallback,
+            )}
+            format={(value) => `${Math.round(value * 100)}%`}
+            onChange={(next) => writeChoice(TERMINAL_ZOOM_KEY, String(next))}
+          />
+        </div>
+      </Group>
+
+      <Group>
+        <div class="settings-motion">
+          <div class="settings-item-text">
+            <span class="settings-item-label" id="settings-reduce-motion-label">
+              Reduce motion
+            </span>
+            <span class="settings-item-description">
+              Panels and menus appear without easing, on top of the system setting.
+            </span>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            class="settings-switch"
+            aria-checked={reduceMotion()}
+            aria-labelledby="settings-reduce-motion-label"
+            onClick={toggleReduceMotion}
+          >
+            <span class="settings-switch-knob" aria-hidden="true" />
+          </button>
+        </div>
       </Group>
 
       <Group
         title="Editor"
-        description="How the editor behaves. Autosave is off the beaten path by default: no writing without being asked."
+        description="How the editor behaves. Autosave is off by default: no writing without being asked."
       >
         <Row
           label="Autosave"
@@ -651,28 +689,6 @@ function Personalization() {
               hideLabel
               checked={readFlag(AUTOSAVE_KEY, false)}
               onChange={(on) => writeFlag(AUTOSAVE_KEY, on)}
-            />
-          }
-        />
-        {/* Kept apart from the theme's mono scale on purpose: the terminal and
-            the panels stay where the theme put them, and only the surface being
-            read for hours moves. */}
-        <Row
-          label="Font size"
-          description="The open file's type size, in pixels. The zoom chords while Code is up write this preference. Terminals keep their own zoom."
-          control={
-            <Select
-              aria-label="Font size"
-              value={String(
-                readScale(
-                  EDITOR_FONT_SIZE_KEY,
-                  EDITOR_FONT_SIZE_RANGE.min,
-                  EDITOR_FONT_SIZE_RANGE.max,
-                  EDITOR_FONT_SIZE_RANGE.fallback,
-                ),
-              )}
-              onChange={(next) => writeChoice(EDITOR_FONT_SIZE_KEY, next)}
-              options={sizeOptions(EDITOR_FONT_SIZE_RANGE)}
             />
           }
         />
@@ -699,46 +715,50 @@ function Personalization() {
           }
         />
       </Group>
-
-      <Group
-        title="Terminals & agents"
-        description="One zoom for every shell and agent in this window. Zooming a terminal never changes the editor, and the reverse."
-      >
-        <Row
-          label="Terminal zoom"
-          description="How large the cell grid draws. The zoom chords while a terminal or agent is on screen write this preference."
-          control={
-            <Select
-              aria-label="Terminal zoom"
-              value={String(
-                readScale(
-                  TERMINAL_ZOOM_KEY,
-                  TERMINAL_ZOOM_RANGE.min,
-                  TERMINAL_ZOOM_RANGE.max,
-                  TERMINAL_ZOOM_RANGE.fallback,
-                ),
-              )}
-              onChange={(next) => writeChoice(TERMINAL_ZOOM_KEY, next)}
-              options={zoomOptions()}
-            />
-          }
-        />
-      </Group>
-
-      <Group
-        title="Density"
-        description="One multiplier on the row height and the control ladder. Nothing else moves: the type scale and the spacing grid are the same at every density, so a compact window is the same layout drawn tighter."
-      >
-        <RadioGroup
-          label="Density"
-          class="theme-choices"
-          orientation="horizontal"
-          itemClass="forge-chip"
-          value={density()}
-          onChange={(next) => chooseDensity(next as Density)}
-          options={DENSITIES.map((value) => ({ value, label: value, render: () => value }))}
-        />
-      </Group>
     </Page>
+  );
+}
+
+function TypeStepper(props: {
+  label: string;
+  /** Completes "Smaller …" and "Larger …" for the buttons' accessible names. */
+  noun: string;
+  range: StepRange;
+  value: number;
+  format: (value: number) => string;
+  onChange: (next: number) => void;
+}) {
+  const step = (direction: 1 | -1) => {
+    if (canStep(props.value, direction, props.range)) {
+      props.onChange(stepValue(props.value, direction, props.range));
+    }
+  };
+  return (
+    <div class="settings-stepper">
+      <span class="settings-stepper-label">{props.label}</span>
+      <div class="settings-stepper-controls">
+        <button
+          type="button"
+          class="settings-stepper-button"
+          aria-label={`Smaller ${props.noun}`}
+          disabled={!canStep(props.value, -1, props.range)}
+          onClick={() => step(-1)}
+        >
+          <Minus size={12} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+        <output class="settings-stepper-value" aria-live="polite">
+          {props.format(props.value)}
+        </output>
+        <button
+          type="button"
+          class="settings-stepper-button"
+          aria-label={`Larger ${props.noun}`}
+          disabled={!canStep(props.value, 1, props.range)}
+          onClick={() => step(1)}
+        >
+          <Plus size={12} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
   );
 }

@@ -11,13 +11,13 @@ import { applyUiFont } from "./uiFont";
 
 import { parseCustomTheme } from "./customTheme";
 
-const DEFAULT_BASE: ThemeBaseId = "gruvbox-hard";
+const DEFAULT_BASE: ThemeBaseId = "forge-dark";
 
 export const SYSTEM_BASE = "system" as const;
 export type ThemePreference = ThemeBaseId | typeof SYSTEM_BASE | `{${string}`;
 
-const SYSTEM_DARK: ThemeBaseId = "gruvbox-hard";
-const SYSTEM_LIGHT: ThemeBaseId = "gruvbox-light";
+const SYSTEM_DARK: ThemeBaseId = "forge-dark";
+const SYSTEM_LIGHT: ThemeBaseId = "forge-light";
 
 const [base, setBase] = createSignal<ThemeBaseId>(DEFAULT_BASE, { equals: false });
 const [preference, setPreference] = createSignal<ThemePreference>(DEFAULT_BASE);
@@ -65,7 +65,7 @@ export function applyThemeBase(next: ThemePreference = DEFAULT_BASE): void {
 function restoreChromeOverlays(): void {
   const { dataset } = document.documentElement;
   if (isDensity(dataset.density)) applyDensity(dataset.density);
-  const font = Number.parseInt(dataset.uiFont ?? "", 10);
+  const font = Number.parseFloat(dataset.uiFont ?? "");
   if (Number.isFinite(font)) applyUiFont(font);
 }
 

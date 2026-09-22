@@ -13,6 +13,7 @@ import { openUrl } from "../../../runtime/host";
 import { PathText } from "../references/PathText";
 import { previewKindFor } from "./previewRoute";
 import { SourceSwitch } from "./SourceSwitch";
+import { EditorBreadcrumbs } from "../../editor/EditorChromeBars";
 import { svgDataUrl } from "./previewImages";
 import {
   beginWorkbenchRequest,
@@ -82,11 +83,9 @@ export function PreviewView(props: { workspace: string; path: string }) {
 
   return (
     <div class="preview-view">
-      <header class="preview-chrome">
-        <span class="preview-path">{props.path}</span>
-        <span class="history-spacer" />
+      <EditorBreadcrumbs path={props.path}>
         <SourceSwitch path={props.path} surface="preview" />
-      </header>
+      </EditorBreadcrumbs>
       <div class="preview-body" classList={{ "preview-document": kind() === "markdown" }}>
         <Show when={filesStore.fileError}>
           {(error) => <p class="panel-error">Could not read the file: {error()}</p>}
