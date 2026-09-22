@@ -4,8 +4,8 @@
 //! its lock. A dedicated OS thread ([`pty_loop`]) reads 64 KiB buffers from the
 //! master, feeds the authoritative engine under the lock, writes any device
 //! replies back to the PTY, and emits a coalesced [`TerminalDelta`] to
-//! subscribers at most every [`FRAME`] (≤125/s). On EOF the child has
-//! exited and the loop notifies the core.
+//! subscribers at most every [`FRAME`] (≤125/s). EOF notifies the core to reap
+//! outside its lock; EOF does not establish that the child has exited.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};

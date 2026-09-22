@@ -637,10 +637,8 @@ mod tests {
         assert_eq!(spec.args[1], "abc");
     }
 
-    /// Asking a provider that cannot resume is refused rather than silently
-    /// starting a fresh conversation the user did not ask for.
     #[test]
-    fn resuming_a_provider_that_cannot_is_an_error() {
+    fn cursor_resumes_an_explicit_chat_before_profile_flags() {
         let dir = tempfile::tempdir().unwrap();
         write_script(dir.path(), "cursor-agent", &echo_script("cursor 1.0"));
         let env = env_with_path(vec![dir.path().to_path_buf()]);
@@ -649,7 +647,14 @@ mod tests {
         req.provider_id = AgentProviderId::new("cursor");
         req.resume_session_id = Some("chat-1".to_owned());
 
-        let err = build_launch(&builtins::builtin("cursor").unwrap(), &req, &env).unwrap_err();
+        req.extra_args = vec!["--model".to_owned(), "auto".to_owned()];
+        let descriptor = builtins::builtin("cursor").unwrap();
+        let spec = build_launch(&descriptor, &req, &env).unwrap();
+        assert_eq!(spec.args, ["--resume", "chat-1", "--model", "auto"]);
+
+        let mut unsupported = descriptor;
+        unsupported.resume = None;
+        let err = build_launch(&unsupported, &req, &env).unwrap_err();
         assert!(matches!(err, AgentError::ResumeUnsupported(_)));
     }
 

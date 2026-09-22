@@ -127,24 +127,19 @@ export function rowColumns(line: WireRow | null, cols: number): string[] {
   if (!line) return out;
   let start = 0;
   for (const [text, runCols] of line.r) {
+    if (start >= out.length) break;
+    const codepoints = [...text];
     for (let offset = 0; offset < runCols && start + offset < out.length; offset += 1) {
-      out[start + offset] = glyphAt(text, runCols, offset);
+      out[start + offset] = glyphAt(text, runCols, offset, codepoints);
     }
     start += runCols;
   }
   return out;
 }
 
-/**
- * The glyph a run paints in one of its columns.
- *
- * A run of ordinary cells holds one grapheme per column. A run that does not —
- * a wide grapheme, which spans two — paints in its first column and leaves the
- * continuation blank, the way `WIDE_SPACER` does on the wire.
- */
-function glyphAt(text: string, cols: number, offset: number): string {
-  const graphemes = [...text];
-  if (graphemes.length === cols) return graphemes[offset] ?? " ";
+// A run whose code-point count differs from its width stays whole in its leading cell.
+function glyphAt(text: string, cols: number, offset: number, codepoints = [...text]): string {
+  if (codepoints.length === cols) return codepoints[offset] ?? " ";
   return offset === 0 ? text : "";
 }
 

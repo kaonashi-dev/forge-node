@@ -59,6 +59,14 @@ pub enum RuntimeCommand {
         #[serde(default)]
         id: u64,
     },
+    MoveCursor {
+        terminal_id: TerminalId,
+        seq: u64,
+        row: u16,
+        col: u16,
+        #[serde(default)]
+        id: u64,
+    },
     /// Text from the clipboard, bracketed when the terminal asked for it.
     Paste {
         text: String,

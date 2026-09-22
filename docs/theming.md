@@ -46,8 +46,25 @@ so existing preferences continue to select it. Git colors follow the default
 `groups` mapping in
 [motaz-shokry/gruvbox.nvim](https://gitlab.com/motaz-shokry/gruvbox.nvim/-/blob/main/lua/gruvbox/config.lua)
 (`gitConflict` uses `git_merge`). Forge derives its own interaction and syntax
-styles. Accent button labels fall back to black or white when the palette's
-background and text cannot reach 4.5:1 contrast against the accent fill.
+styles. Filled controls use a foreground chosen for their fill, falling back to
+black or white when necessary to reach 4.5:1, including hover and pressed states.
+
+### Semantic foregrounds
+
+- `--*-solid` names a fill; `--*-fg` is the text **on that fill**.
+- `--accent-text`, `--danger-text`, `--success-text`, `--warning-text`,
+  `--attention-text` and `--info-text` are readable foregrounds on UI surfaces.
+- `--git-*-text` serves Git labels and file decorations; raw `--forge-git-*`
+  colours remain the inputs for diff washes and gutter marks.
+- `--fg-default`, `--fg-muted` and `--fg-subtle` are derived from the palette,
+  with a 4.5:1 floor across panels, overlays and interaction backgrounds.
+- `--ring` is opaque and held to 3:1 against those same backgrounds.
+
+These adjustments run when applying a theme. Raw palette values and terminal
+ANSI colours stay available for export and terminal rendering. Tests cover all
+seven bases at every integer contrast setting from 0 to 100. Custom palettes
+use the same derivation, but a palette mixing incompatible dark and light
+surfaces cannot guarantee one foreground readable on all of them.
 
 ## Fonts
 
@@ -71,7 +88,11 @@ agent shares `ui.terminal.zoom`. A theme switch reapplies both overlays from
 
 Control heights and radii come from the same token module (`CONTROL_XS`…`LG`).
 Component look lives in `apps/tauri/src/ui/ui.css`, keyed off those CSS
-variables. Icons tint with `currentColor` against token-driven text colors —
+variables. `styles/index.css` loads global defaults, then the control kit, then
+feature layouts. Use control sizes and variants instead of redefining their
+paint or focus states in a feature stylesheet.
+
+Icons tint with `currentColor` against token-driven text colors —
 with one deliberate exception, the language marks on file rows (`LangIcon`),
 which are JetBrains' file-type icons and carry their own fills. They are
 vendored in a dark and a light set under `apps/tauri/public/icons/lang`, chosen

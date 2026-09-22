@@ -21,7 +21,6 @@ git-service.workspace = true
 fs-service.workspace = true
 persistence.workspace = true
 client.workspace = true
-rusqlite.workspace = true
 tokio.workspace = true
 flume.workspace = true
 tracing.workspace = true

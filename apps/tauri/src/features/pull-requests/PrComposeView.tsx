@@ -2,6 +2,7 @@ import { Show, createMemo, createSignal, onMount } from "solid-js";
 import { newAgent, selectSession } from "../sessions/commands";
 import { sessionStateLabel, sessionTitle, type PullRequest } from "../../contracts/runtime";
 import { defaultAgentFrom } from "../settings/defaultAgent";
+import { agentVisible } from "../../state/agentVisibility";
 import { forgeStore } from "../../state/forgeStore";
 import { beginCompose, clearCompose, composeRun } from "./prComposeStore";
 import { setNotice } from "../../state/connection";
@@ -250,6 +251,7 @@ function promptCapableProvider(): string | null {
   const installed = (status: unknown): boolean =>
     typeof status === "object" && status !== null && "Installed" in status;
   const qualifies = (provider: (typeof forgeStore.providers)[number]) =>
+    agentVisible(forgeStore.app_state, provider.descriptor?.id ?? "") &&
     installed(provider.detection?.status) &&
     (provider.descriptor?.capabilities?.supports_initial_prompt === true ||
       provider.descriptor?.prompt != null);

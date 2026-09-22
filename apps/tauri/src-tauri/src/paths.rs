@@ -7,14 +7,12 @@
 //! because they read the same `config.toml`:
 //!
 //! ```text
-//! config: ~/Library/Application Support/Forge/config.toml | $XDG_CONFIG_HOME/Forge/config.toml
-//! data:   ~/Library/Application Support/Forge/            | $XDG_DATA_HOME/Forge/
+//! config: ~/Library/Application Support/Forge/config.toml | $XDG_CONFIG_HOME/forge/config.toml
+//! data:   ~/Library/Application Support/Forge/            | $XDG_DATA_HOME/forge/
 //!         └── logs/  (app.log, daemon.log)
 //! ```
 //!
-//! The host never depends on a second GUI crate (ADR-002),
-//! so the resolution is duplicated here rather than imported — exactly as the
-//! daemon already duplicates it.
+//! The host resolves these paths without depending on the daemon crate.
 
 use directories::ProjectDirs;
 use std::path::PathBuf;

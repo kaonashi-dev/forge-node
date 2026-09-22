@@ -3,7 +3,89 @@ use domain::{AgentProfileId, SessionId};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter as _};
 
+use super::commands::AgentLaunchRequest;
 use super::{emit, fail_session};
+
+#[derive(Debug, Serialize)]
+struct AgentLaunchResult {
+    request_id: String,
+    session: Option<SessionId>,
+    error: Option<String>,
+    uncertain: bool,
+}
+
+impl AgentLaunchResult {
+    fn new(
+        request_id: String,
+        result: Result<(SessionId, domain::TerminalId), client::ClientError>,
+    ) -> Self {
+        match result {
+            Ok((session, _)) => Self {
+                request_id,
+                session: Some(session),
+                error: None,
+                uncertain: false,
+            },
+            Err(error) => Self {
+                request_id,
+                session: None,
+                uncertain: !matches!(error, client::ClientError::Protocol(_)),
+                error: Some(error.to_string()),
+            },
+        }
+    }
+}
+
+pub(super) fn launch_agent(app: &AppHandle, client: &Client, request: AgentLaunchRequest) {
+    let result = client.create_agent_session_with_role(
+        request.workspace,
+        request.provider,
+        request.profile,
+        request.parent,
+        if request.read_only {
+            domain::SessionRole::Reviewer
+        } else {
+            domain::SessionRole::Generic
+        },
+        None,
+        Some(request.prompt),
+        request.read_only,
+    );
+    emit(
+        app,
+        "workbench:agent_launched",
+        &AgentLaunchResult::new(request.request_id, result),
+    );
+}
+
+#[derive(Serialize)]
+struct HandoffProgress {
+    request_id: String,
+    transcript: Option<domain::SessionTranscript>,
+    error: Option<String>,
+}
+
+pub(super) fn load_handoff_progress(
+    app: &AppHandle,
+    client: &Client,
+    request_id: String,
+    session: SessionId,
+) {
+    let result = client.session_transcript(session, None, None);
+    let (transcript, error) = match result {
+        Ok(transcript) => (Some(transcript), None),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    emit(
+        app,
+        "workbench:handoff_progress",
+        &HandoffProgress {
+            request_id,
+            transcript,
+            error,
+        },
+    );
+}
 
 pub(super) fn load_session_transcript(
     app: &AppHandle,
@@ -70,4 +152,38 @@ fn fail_external(app: &AppHandle, event: &str, session: String, error: &client::
             error: error.to_string(),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentLaunchResult;
+    use client::{ClientError, ProtocolError};
+    use domain::{SessionId, TerminalId};
+
+    #[test]
+    fn launch_result_keeps_the_created_id_and_request_identity() {
+        let session = SessionId::new();
+        let result = AgentLaunchResult::new("launch-42".into(), Ok((session, TerminalId::new())));
+        assert_eq!(result.request_id, "launch-42");
+        assert_eq!(result.session, Some(session));
+        assert!(result.error.is_none());
+        assert!(!result.uncertain);
+    }
+
+    #[test]
+    fn only_a_structured_refusal_allows_retrying_a_failed_launch() {
+        let refused = AgentLaunchResult::new(
+            "refused".into(),
+            Err(ClientError::Protocol(ProtocolError::not_found("profile"))),
+        );
+        assert!(refused.session.is_none());
+        assert!(refused.error.is_some());
+        assert!(!refused.uncertain);
+        for error in [ClientError::Disconnected, ClientError::Timeout] {
+            let lost = AgentLaunchResult::new("unknown".into(), Err(error));
+            assert!(lost.session.is_none());
+            assert!(lost.error.is_some());
+            assert!(lost.uncertain);
+        }
+    }
 }

@@ -8,6 +8,7 @@ pub mod attention;
 pub mod builtins;
 pub mod descriptor;
 pub mod detection;
+pub mod history;
 pub mod registry;
 pub mod usage;
 

@@ -295,9 +295,9 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
 
       {/*
         The connection is gone, over the grid it belonged to.
-        Not a toast and not only the title-bar pill: the grid keeps painting
-        the last frame it received, so a dead terminal looks exactly like an
-        idle one, and typing into it is silently lost.
+        Not a toast: the grid keeps painting the last frame it received, so a
+        dead terminal looks exactly like an idle one, and typing into it is
+        silently lost.
       */}
       <Show when={connectionStore.connection.kind === "disconnected"}>
         <div class="disconnected-banner" role="alert">

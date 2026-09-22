@@ -1,6 +1,3 @@
-// Port of `theme tokens::{mix, pct, luminance, contrast, on}`.
-// Derived interaction colors must match tokens.ts, not CSS `color-mix`.
-
 export function mix(base: number, over: number, amount: number): number {
   const overWeight = amount & 0xff;
   const baseWeight = 255 - overWeight;
@@ -39,6 +36,29 @@ export function on(fill: number, bg: number, text: number): number {
   return contrast(text, fill) >= contrast(bg, fill) ? text : bg;
 }
 
+/** Preserve the hue where possible; incompatible custom grounds get the best endpoint. */
+export function readableColor(
+  color: number,
+  grounds: readonly number[],
+  toward: number,
+  floor = 4.5,
+): number {
+  const score = (candidate: number) =>
+    Math.min(...grounds.map((ground) => contrast(candidate, ground)));
+  if (score(color) >= floor) return color;
+  let target = toward;
+  if (score(target) < floor) {
+    for (const candidate of [0, 0xffffff]) {
+      if (score(candidate) > score(target)) target = candidate;
+    }
+  }
+  for (let step = 1; step <= 25; step += 1) {
+    const candidate = mix(color, target, pct(step * 4));
+    if (score(candidate) >= floor) return candidate;
+  }
+  return score(target) > score(color) ? target : color;
+}
+
 export function hex(color: number): string {
   return `#${color.toString(16).padStart(6, "0")}`;
 }
@@ -51,36 +71,18 @@ export function parseHex(value: string): number {
   return Number.parseInt(raw, 16);
 }
 
-/**
- * Alpha of the focus halo (`theme::RING_ALPHA`).
- *
- * The ring is `accent` at partial strength so it reads as a wash around a
- * control rather than as a second control. It is the one derived token that
- * stays translucent: an outline is painted over whatever the control sits on,
- * and a colour mixed against one ground would be wrong on every other.
- */
-const RING_ALPHA = 0.35;
-
-/**
- * Every interaction colour, derived the way `tokens.ts` derives them.
- *
- * The formulas are copied, not approximated — including *which ground* each
- * one mixes into. The two diff washes go into `editor` and not `bg` because
- * the patch pane is an editor surface, and a wash mixed into the wrong ground
- * reads as a seam down the middle of the file.
- */
+// Diff washes use the editor ground so they do not introduce seams in a patch.
 export function derivedTokens(args: {
   bg: number;
   text: number;
   sidebar: number;
   editor: number;
-  accent: number;
   amber: number;
   needsYou: number;
   gitAdded: number;
   gitDeleted: number;
 }): Record<string, string> {
-  const { bg, text, sidebar, editor, accent, amber, needsYou, gitAdded, gitDeleted } = args;
+  const { bg, text, sidebar, editor, amber, needsYou, gitAdded, gitDeleted } = args;
   return {
     "--forge-border": hex(mix(bg, text, pct(7))),
     "--forge-border-hi": hex(mix(bg, text, pct(15))),
@@ -93,12 +95,5 @@ export function derivedTokens(args: {
     "--forge-diff-removed-bg": hex(mix(editor, gitDeleted, pct(14))),
     "--forge-needs-you-tint": hex(mix(bg, needsYou, pct(14))),
     "--forge-activity-tint": hex(mix(bg, amber, pct(12))),
-    "--forge-focus-ring": rgba(accent, RING_ALPHA),
   };
-}
-
-/** `0x6cacbd`, 0.35 → `rgb(108 172 189 / 0.35)`. */
-export function rgba(color: number, alpha: number): string {
-  const channel = (shift: number) => (color >> shift) & 0xff;
-  return `rgb(${channel(16)} ${channel(8)} ${channel(0)} / ${alpha})`;
 }

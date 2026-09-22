@@ -1,7 +1,7 @@
 import { createComputed, createRoot } from "solid-js";
 import { describe, expect, it } from "vitest";
 import { sessionFixture } from "../contracts/sessions.fixture";
-import type { ShellSnapshot } from "../contracts/runtime";
+import type { Launchable, ShellSnapshot } from "../contracts/runtime";
 import { applyShellSnapshot, emptySnapshot, forgeStore } from "./forgeStore";
 
 /**
@@ -19,7 +19,81 @@ const snapshot = (sessions: ReturnType<typeof sessionFixture>[]): ShellSnapshot 
 const first = () => sessionFixture({ id: "a" });
 const second = () => sessionFixture({ id: "b" });
 
+const launchables: Launchable[] = [
+  {
+    kind: "shell",
+    label: "New Terminal",
+    detail: null,
+    provider: null,
+    profile: null,
+    enabled: true,
+    key: "shell",
+    supports_initial_prompt: false,
+  },
+  {
+    kind: "agent",
+    label: "OpenCode",
+    detail: null,
+    provider: "opencode",
+    profile: null,
+    enabled: true,
+    key: "opencode",
+    supports_initial_prompt: true,
+  },
+  {
+    kind: "agent",
+    label: "Custom model",
+    detail: null,
+    provider: "opencode",
+    profile: "custom-model",
+    enabled: true,
+    key: "profile:custom-model",
+    supports_initial_prompt: true,
+  },
+];
+
 describe("applyShellSnapshot", () => {
+  it("hides a disabled provider from selectors while retaining its profiles and sessions", () => {
+    const input: ShellSnapshot = {
+      ...snapshot([sessionFixture({ agent_provider_id: "opencode" })]),
+      providers: [{ descriptor: { id: "opencode", display_name: "OpenCode" } }],
+      launchables,
+      app_state: { "ui.agent_visible.opencode": "false" },
+    };
+
+    applyShellSnapshot(input);
+
+    expect(forgeStore.launchables.map((item) => item.key)).toEqual([
+      "shell",
+      "profile:custom-model",
+    ]);
+    expect(forgeStore.providers).toEqual(input.providers);
+    expect(forgeStore.sessions).toEqual(input.sessions);
+    expect(input.launchables).toHaveLength(3);
+
+    applyShellSnapshot({ ...input, app_state: { "ui.agent_visible.opencode": "true" } });
+    expect(forgeStore.launchables).toEqual(launchables);
+  });
+
+  it("hides profiles independently and keeps a terminal when every agent is disabled", () => {
+    applyShellSnapshot({
+      ...emptySnapshot(),
+      launchables,
+      app_state: { "ui.agent_visible.profile:custom-model": "false" },
+    });
+    expect(forgeStore.launchables.map((item) => item.key)).toEqual(["shell", "opencode"]);
+
+    applyShellSnapshot({
+      ...emptySnapshot(),
+      launchables,
+      app_state: {
+        "ui.agent_visible.opencode": "false",
+        "ui.agent_visible.profile:custom-model": "false",
+      },
+    });
+    expect(forgeStore.launchables.map((item) => item.key)).toEqual(["shell"]);
+  });
+
   it("keeps the identity of a row that did not change", () => {
     applyShellSnapshot(snapshot([first(), second()]));
     const before = forgeStore.sessions[0];

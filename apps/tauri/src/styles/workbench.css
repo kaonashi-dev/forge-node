@@ -85,7 +85,7 @@
   padding: var(--space-2) var(--space-3);
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 .session-changes-branch {
   color: var(--fg-default);
@@ -168,6 +168,30 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
 }
+.handoff-raw {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.handoff-raw input {
+  margin-top: 0.2em;
+}
+.handoff-progress-body {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  margin: 0;
+  max-height: min(50vh, 28rem);
+  overflow: auto;
+  padding: var(--space-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .workbench-strip {
   align-items: stretch;
   background: var(--bg-base);
@@ -232,20 +256,15 @@
 .workbench-tab.dirty .workbench-tab-close:hover .workbench-tab-close-icon {
   display: block;
 }
-/* The label is a `.forge-row`, the close an `IconButton`; both already carry
-   the reset, so what is left is the tint they take from the tab. */
-.workbench-tab-label,
-.workbench-tab-close {
-  color: inherit;
-  font-size: inherit;
-  padding: var(--space-4) 0;
-}
 /* A tab is one line. Left to wrap, a long name doubles the strip's height and
    pushes the editor down by a row that is not there a moment later. */
 .workbench-tab-label {
+  color: inherit;
+  font-size: inherit;
   gap: var(--space-6);
   min-width: 0;
   overflow: hidden;
+  padding: var(--space-4) 0;
 }
 .workbench-tab-text {
   overflow: hidden;
@@ -253,10 +272,11 @@
   white-space: nowrap;
 }
 .workbench-tab-close {
-  align-items: center;
   color: var(--fg-subtle);
-  display: flex;
   flex: none;
+  font-size: inherit;
+  height: auto;
+  min-width: 0;
   padding: 0 var(--space-4);
 }
 .workbench-tab-close:hover {
@@ -392,7 +412,7 @@
 }
 /* Patch rows are plain DOM; washes and gutters live here. */
 .diff-patch {
-  font-family: var(--forge-mono);
+  font-family: var(--font-mono);
   font-size: var(--forge-mono-size);
   line-height: var(--forge-mono-lh);
   overflow: auto;
@@ -444,7 +464,7 @@
 }
 .diff-split {
   display: grid;
-  gap: 1px;
+  gap: var(--space-1);
   /* Two equal columns whose contents may both overflow: `minmax(0, 1fr)` and
      not `1fr`, or a long line in either pane widens the whole grid. */
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -455,7 +475,7 @@
   min-width: 0;
   overflow: auto;
   max-height: 60vh;
-  font-family: var(--forge-mono);
+  font-family: var(--font-mono);
   font-size: var(--forge-mono-size);
   line-height: var(--forge-mono-lh);
 }
@@ -473,7 +493,7 @@
   height: 100%;
 }
 .editor-dirty {
-  color: var(--warning-solid);
+  color: var(--warning-text);
 }
 /* Code / Preview for a Markdown file: one control in two halves, so it reads
    as a choice between views rather than as two commands beside Save. Square
@@ -629,7 +649,7 @@
   width: 10px;
 }
 .editor-ruler-tick {
-  border-radius: 1px;
+  border-radius: var(--radius-2xs);
   left: 3px;
   position: absolute;
   width: 4px;
@@ -848,10 +868,10 @@
   width: var(--space-8);
 }
 .pr-added {
-  color: var(--forge-git-added);
+  color: var(--git-added-text);
 }
 .pr-removed {
-  color: var(--forge-git-deleted);
+  color: var(--git-deleted-text);
 }
 .pr-detail-actions {
   display: flex;
@@ -911,7 +931,7 @@
 }
 .pr-task-row[data-checked] {
   border-color: var(--accent-solid);
-  background: var(--forge-accent-tint, var(--bg-hover));
+  background: var(--accent-soft);
 }
 .pr-task-name {
   font-weight: 600;
@@ -1101,6 +1121,10 @@
   color: var(--fg-muted);
   font-size: var(--text-md);
 }
+.forge-md-heading[data-align="center"],
+.forge-md-p[data-align="center"] {
+  text-align: center;
+}
 /* A newline left here is a hard break. Soft breaks were folded into spaces,
    so the paragraph reflows to the column instead of keeping the file's wrap. */
 .forge-md-p {
@@ -1137,7 +1161,7 @@
   background: var(--bg-base);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-2xs);
-  color: var(--accent-solid);
+  color: var(--accent-text);
   display: inline-flex;
   flex: none;
   height: var(--space-14);
@@ -1179,13 +1203,21 @@ button.forge-md-box {
   margin: 0 0 var(--space-12);
   padding-left: var(--space-12);
 }
+.forge-md-quote[data-alert] {
+  border-color: var(--accent-solid);
+}
+.forge-md-alert-title {
+  color: var(--accent-text);
+  display: block;
+  margin-bottom: var(--space-6);
+}
 .forge-md-rule {
   border: 0;
   border-top: 1px solid var(--border-subtle);
   margin: var(--space-20) 0;
 }
 .forge-md-link {
-  color: var(--accent-solid);
+  color: var(--accent-text);
   text-decoration: none;
 }
 .forge-md-link:hover {
@@ -1205,7 +1237,7 @@ button.forge-md-box {
   text-underline-offset: 2px;
 }
 .path-link:hover {
-  color: var(--accent-solid);
+  color: var(--accent-text);
   text-decoration-color: currentcolor;
 }
 /* A table is the one block that can be wider than the column, so it scrolls
@@ -1261,6 +1293,9 @@ button.forge-md-box {
 .forge-md-img-placeholder[data-state="failed"] {
   border-style: solid;
 }
+.forge-md-img-placeholder[data-state="blocked"] {
+  border-style: solid;
+}
 .forge-md-diagram {
   margin: 0 0 var(--space-12);
 }
@@ -1281,7 +1316,7 @@ button.forge-md-box {
   max-width: 100%;
 }
 .forge-md-diagram-error {
-  color: var(--danger-solid);
+  color: var(--danger-text);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   margin-top: calc(-1 * var(--space-6));
@@ -1327,7 +1362,7 @@ button.forge-md-box {
   padding: var(--space-8) var(--space-12);
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: var(--z-over);
 }
 .project-search-field {
   flex: 1;

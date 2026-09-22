@@ -5,8 +5,8 @@
 # The GUI is the Tauri app in `apps/tauri` (Rust host crate `forge-tauri`); the
 # runtime is the Rust `forge-daemon`.
 #
-# This script is NEVER run automatically — not by `scripts/dev`, not by CI.
-# Run it by hand when you want a bundle:
+# Outside `scripts/dev check`; the tag-triggered macOS release workflow invokes it.
+# For a local bundle:
 #
 #   scripts/package-macos                 # host-arch bundle in dist/macos/Forge Node.app
 #   scripts/package-macos --universal     # arm64 + x86_64 merged with lipo

@@ -4,11 +4,7 @@ import { enterContext } from "../../../actions/dispatch";
 import { editorChrome } from "../editorChrome";
 import { editorAnnouncement, editorAria } from "../editorAria";
 import { sendEditorSurfaceInput, setEditorSurfaceView } from "../commands";
-import {
-  clearEditorConflict,
-  editorConflictFor,
-  startEditorConflictLoad,
-} from "../conflict/editorConflictStore";
+import { clearEditorConflict, editorConflictFor } from "../conflict/editorConflictStore";
 import { CompareView } from "../conflict/CompareView";
 import { Button } from "../../../ui/index";
 import { SourceSwitch } from "../../files/preview/SourceSwitch";
@@ -25,8 +21,8 @@ import { metrics as tokens } from "../../../theme/tokens";
 import { measureCell } from "../../../shared/cell-grid/metrics";
 import { clipboardPaste } from "../../../shared/input/clipboard";
 import { inputFor, modifiersOf, textInput } from "./editorKeys";
-import type { EditorInputEvent } from "../../../contracts/editor";
-import { sameWindow, scrollToShow, windowFor, type EditorWindow } from "./editorWindow";
+import { editorInputBatch } from "./editorInputBatch";
+import { sameWindow, scrollForCaret, windowFor, type EditorWindow } from "./editorWindow";
 import type {
   EditorFrame,
   EditorMark,
@@ -36,7 +32,11 @@ import type {
   EditorScope,
   EditorSeverity,
 } from "../../../contracts/terminal";
-import { overwriteEditorBuffer, reloadEditorBuffer } from "../conflict/commands";
+import {
+  loadEditorConflict,
+  overwriteEditorBuffer,
+  reloadEditorBuffer,
+} from "../conflict/commands";
 
 type EditorViewProps = {
   session: string;
@@ -115,14 +115,6 @@ function caretOffsetAt(x: number, y: number): { node: Node; offset: number } | n
   return null;
 }
 
-/**
- * How long input is collected before it is sent as one batch.
- *
- * Zero would be a call per key, which is a round trip per key; one animation
- * frame is the rate the surface can show an answer at anyway.
- */
-const INPUT_BATCH_MS = 8;
-
 /** The theme colour each scope reads in, as the TUI already maps them. */
 const SCOPE_TOKEN: Readonly<Record<EditorScope, string>> = {
   Plain: "var(--forge-term-fg)",
@@ -148,6 +140,14 @@ const SCOPE_TOKEN: Readonly<Record<EditorScope, string>> = {
  * text and this paints the window it publishes.
  */
 export function EditorView(props: EditorViewProps) {
+  return (
+    <Show when={props.session} keyed>
+      {(session) => <EditorSessionView session={session} path={props.path} />}
+    </Show>
+  );
+}
+
+function EditorSessionView(props: EditorViewProps) {
   let scroller!: HTMLDivElement;
   let keys!: HTMLTextAreaElement;
   let rowLayer!: HTMLDivElement;
@@ -191,9 +191,7 @@ export function EditorView(props: EditorViewProps) {
   const conflict = createMemo(() => session()?.editor?.conflict === true);
   const sides = createMemo(() => editorConflictFor(props.session));
 
-  /** Pending input, flushed as one batch. */
-  let outbox: EditorInputEvent[] = [];
-  let flushTimer: number | undefined;
+  const { push, flush } = editorInputBatch(props.session, sendEditorSurfaceInput);
   /** The last window asked for, so an idle scroll sends nothing. */
   let lastWindow: EditorWindow | null = null;
   /** Whether a drag reported to the host is in progress. */
@@ -201,20 +199,6 @@ export function EditorView(props: EditorViewProps) {
   let viewFrame = 0;
   /** The version on screen; an older frame is a reorder, not an update. */
   let shownVersion = -1;
-
-  function flush(): void {
-    flushTimer = undefined;
-    if (outbox.length === 0) return;
-    const batch = outbox;
-    outbox = [];
-    void sendEditorSurfaceInput(props.session, batch).catch(() => undefined);
-  }
-
-  function push(event: EditorInputEvent): void {
-    outbox.push(event);
-    if (flushTimer !== undefined) return;
-    flushTimer = window.setTimeout(flush, INPUT_BATCH_MS);
-  }
 
   /** Ask the host for the window this scroll position needs. */
   function publishView(): void {
@@ -260,7 +244,7 @@ export function EditorView(props: EditorViewProps) {
     onCleanup(() => observer.disconnect());
     onCleanup(() => {
       if (viewFrame !== 0) cancelAnimationFrame(viewFrame);
-      if (flushTimer !== undefined) window.clearTimeout(flushTimer);
+      flush();
     });
   });
 
@@ -281,14 +265,13 @@ export function EditorView(props: EditorViewProps) {
     }
   });
 
-  /* The caret moved: bring it into view if the host put it somewhere the
-     person is not looking, and measure where it landed. */
-  createEffect(() => {
+  createEffect((previous?: EditorPlace) => {
     const current = frame();
     const height = lineHeight();
     if (current === null) return;
-    const wanted = scrollToShow(
-      current.caret.line,
+    const wanted = scrollForCaret(
+      current.caret,
+      previous,
       scroller.scrollTop,
       scroller.clientHeight,
       height,
@@ -305,6 +288,7 @@ export function EditorView(props: EditorViewProps) {
         rects: measureRange(decoration.range),
       })),
     );
+    return current.caret;
   });
 
   /**
@@ -316,7 +300,8 @@ export function EditorView(props: EditorViewProps) {
    */
   function measureRange(range: EditorRange): Rect[] {
     const rects: Rect[] = [];
-    for (let line = range.from.line; line <= range.to.line; line += 1) {
+    for (const { line } of frame()?.rows ?? []) {
+      if (line < range.from.line || line > range.to.line) continue;
       const row = rowLayer?.querySelector<HTMLElement>(`[data-line="${line}"]`);
       const text = row?.querySelector<HTMLElement>(".ed-text");
       if (!row || !text) continue;
@@ -465,7 +450,7 @@ export function EditorView(props: EditorViewProps) {
   function toggleCompare(): void {
     const next = !comparing();
     setComparing(next);
-    if (next) startEditorConflictLoad(props.session);
+    if (next) void loadEditorConflict(props.session).catch(() => undefined);
   }
 
   const totalHeight = createMemo(() => (frame()?.total_lines ?? 1) * lineHeight());

@@ -2,10 +2,10 @@
 //! the daemon's view of the buffer honest.
 //!
 //! One connection per editor. The daemon creates the socket before spawn and
-//! the editor joins it after; the PTY carries keys and pixels while this
-//! carries the buffer and its metadata, so state is never parsed out of ANSI.
+//! the editor joins it after. This channel carries buffer metadata and, for
+//! the headless surface, structured input and bounded line windows.
 //!
-//! The wait is blocking on both the tty and this channel (the main loop's
+//! The cells loop blocks on both the tty and this channel (the main loop's
 //! `flume::Selector`); a reader thread owns the socket because the main thread
 //! also writes to it.
 

@@ -1900,7 +1900,7 @@ impl App {
             self.syntax = Syntax::default();
             return;
         }
-        self.syntax = self.syntax.edited(
+        self.syntax = std::mem::take(&mut self.syntax).edited(
             self.document.as_str(),
             self.grammar,
             applied.first_line,

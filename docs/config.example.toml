@@ -45,6 +45,8 @@ long_running_warn_after_secs = 0  # report a session this old once, however busy
 
 [worktrees]
 root = ""                       # empty = <data-dir>/worktrees
+ignore = []                     # subtree exclusions from adoption; relative to
+                                # each project root, or absolute paths
 
 # A managed worktree lives under `root`, not next to your repository, so it
 # starts without the untracked files a project needs to actually run. Without

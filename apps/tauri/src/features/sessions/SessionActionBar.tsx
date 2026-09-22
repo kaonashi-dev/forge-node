@@ -9,22 +9,42 @@ import {
   startHandoff,
   toggleSessionChanges,
 } from "./sessionActions";
+import { handoffJob, setHandoffProgressOpen } from "./handoffJobStore";
 
 export function SessionActionBar() {
   /** All three need a checkout: a folder workspace has no diff and no branch. */
   const ready = () => activeCheckout() !== null;
+  const job = () => {
+    const current = handoffJob();
+    const session = activeSession();
+    if (!current || !session) return null;
+    return current.returnSession === session.id ? current : null;
+  };
 
   return (
     <Show when={activeSession()}>
       <div class="session-actions" role="toolbar" aria-label="Session actions">
-        <IconButton
-          label="Continue in a new session…"
-          size="sm"
-          onClick={startHandoff}
-          disabled={!ready()}
+        <Show
+          when={job()}
+          fallback={
+            <IconButton
+              label="Continue in a new session…"
+              size="sm"
+              onClick={startHandoff}
+              disabled={!ready()}
+            >
+              <Icon name="message-square-plus" class="forge-icon-muted" size={14} />
+            </IconButton>
+          }
         >
-          <Icon name="message-square-plus" class="forge-icon-muted" size={14} />
-        </IconButton>
+          <IconButton
+            label="Open session handoff"
+            size="sm"
+            onClick={() => setHandoffProgressOpen(true)}
+          >
+            <Icon name="loader" class="forge-icon-muted forge-icon-spin" size={14} />
+          </IconButton>
+        </Show>
         <IconButton
           label={sessionChangesOpen() ? "Hide session changes" : "Show session changes"}
           size="sm"

@@ -1,3 +1,4 @@
+import { providerId, providerName, type ProviderInfo } from "../../contracts/runtime";
 import type {
   DailyUsage,
   ProviderAnalytics,
@@ -9,15 +10,30 @@ import { tokenTotal } from "../../contracts/workbench";
 /** One dollar, in the micro-dollar unit costs are counted in. */
 export const MICROS_PER_USD = 1_000_000;
 
-/**
- * The stats page, as numbers.
- *
- * Everything here is a pure function of what `GetUsageAnalytics` answered, so
- * the view can be read as layout and the arithmetic can be read as arithmetic.
- * Nothing invents a figure the scan did not produce: there is no "agents
- * spawned" and no "pull requests opened" here, because a transcript scan does
- * not know either one.
- */
+export type StatsProvider = {
+  id: string;
+  name: string;
+  analytics: ProviderAnalytics | null;
+};
+
+export function statsProviders(
+  analytics: UsageAnalytics,
+  providers: ProviderInfo[],
+): StatsProvider[] {
+  const names = new Map(
+    providers.map((provider) => [providerId(provider), providerName(provider)]),
+  );
+  const rows: StatsProvider[] = analytics.providers.map((provider) => ({
+    id: provider.provider_id,
+    name: names.get(provider.provider_id) ?? provider.provider_id,
+    analytics: provider,
+  }));
+  const included = new Set(rows.map((row) => row.id));
+  for (const [id, name] of names) {
+    if (id && !included.has(id)) rows.push({ id, name, analytics: null });
+  }
+  return rows;
+}
 
 export type Overview = {
   tokens: number;

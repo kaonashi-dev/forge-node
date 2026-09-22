@@ -226,9 +226,8 @@ pub fn mark_resolved(path: &Path, paths: &[String]) -> Result<(), GitError> {
         validate_relative(candidate)?;
     }
 
-    // `--` closes the option list; the validation above is what keeps a path
-    // from climbing out of the checkout in the first place.
-    let mut args: Vec<&str> = vec!["add", "--"];
+    // `--` alone still permits globbing and pathspec magic in a filename.
+    let mut args: Vec<&str> = vec!["--literal-pathspecs", "add", "--"];
     args.extend(paths.iter().map(String::as_str));
     run_git(Some(path), &args)?.ok(&args)?;
     tracing::debug!(target: "git", count = paths.len(), "rebase.mark_resolved");
@@ -527,6 +526,30 @@ mod tests {
 
         assert!(continue_sequencer(repo).is_err());
         assert!(abort(repo).is_err());
+    }
+
+    #[test]
+    fn resolving_a_literal_filename_does_not_stage_matching_paths() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init", "-b", "main"]);
+        git(repo, &["config", "user.email", "t@example.com"]);
+        git(repo, &["config", "user.name", "t"]);
+        let names = ["[a].txt", "a.txt", "*.txt", "?.txt", ":(glob)**"];
+        for name in names {
+            std::fs::write(repo.join(name), "base\n").unwrap();
+        }
+        git(repo, &["add", "--all"]);
+        git(repo, &["commit", "-m", "base"]);
+        for name in names {
+            std::fs::write(repo.join(name), "edited\n").unwrap();
+        }
+        for name in ["[a].txt", "*.txt", "?.txt", ":(glob)**"] {
+            git(repo, &["reset", "--quiet"]);
+            mark_resolved(repo, &[name.to_owned()]).unwrap();
+            let staged = run_git(Some(repo), &["diff", "--cached", "--name-only", "-z"]).unwrap();
+            assert_eq!(staged.stdout, format!("{name}\0"));
+        }
     }
 
     #[test]

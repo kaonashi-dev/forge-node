@@ -10,9 +10,14 @@
  * logo is a brand, drawn from its own SVG by `BrandIcon`. A session's state —
  * running, starting, exited, failed, needs-you — is the app's own vocabulary,
  * not an icon, and is a geometric `StateMarker`. Everything else is lucide.
+ *
+ * `bell` is the one glyph that also answers for a state: it takes the identity
+ * slot of a session whose agent stopped to ask, the way `loader` takes it for
+ * one that is working. The marker beside it still says which state.
  */
 import {
   ArrowLeft,
+  BellRing,
   Bot,
   ChartColumn,
   Check,
@@ -62,6 +67,7 @@ export type ForgeIconName =
   | "stats"
   | "check"
   | "loader"
+  | "bell"
   | "filter"
   | "refresh"
   | "copy"
@@ -101,6 +107,7 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   stats: ChartColumn,
   check: Check,
   loader: Loader2,
+  bell: BellRing,
   filter: Filter,
   refresh: RefreshCw,
   copy: Copy,

@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { ProviderUsage } from "../../contracts/runtime";
 import { forgeStore } from "../../state/forgeStore";
 import { Button } from "../../ui/index";
@@ -20,11 +20,13 @@ import {
   overview,
   providerShare,
   shortDay,
+  statsProviders,
   tokenMix,
   totals,
   trackingSince,
   workedLabel,
   type HeatCell,
+  type StatsProvider,
 } from "./usageStats";
 import { loadUsageAnalytics } from "./commands";
 import { settingsStore } from "./state";
@@ -77,6 +79,7 @@ export function StatsSection() {
 }
 
 function StatsBody(props: { analytics: UsageAnalytics }) {
+  const providers = createMemo(() => statsProviders(props.analytics, forgeStore.providers));
   const summary = () => overview(props.analytics);
   const mix = () => tokenMix(totals(props.analytics));
   const cells = () => heatmap(props.analytics.daily, props.analytics.window_days, new Date());
@@ -85,7 +88,6 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
 
   return (
     <div class="stats-body">
-      {/* What the scan is a scan *of*, before any number about it. */}
       <div class="stats-headline">
         <StatTile
           label="Agent runs"
@@ -177,15 +179,20 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
       <section class="stats-panel">
         <header class="stats-panel-head">
           <h4>Providers</h4>
-          <span class="stats-badge">{props.analytics.providers.length} with data</span>
+          <span class="stats-badge">
+            {props.analytics.providers.length} of {providers().length} with data
+          </span>
         </header>
         <div class="stats-providers">
           <For
-            each={props.analytics.providers}
+            each={providers()}
             fallback={<p class="empty-copy">No transcript in the window carried a usage record.</p>}
           >
             {(provider) => (
-              <ProviderCard provider={provider} share={providerShare(provider, props.analytics)} />
+              <ProviderCard
+                provider={provider}
+                share={provider.analytics ? providerShare(provider.analytics, props.analytics) : 0}
+              />
             )}
           </For>
         </div>
@@ -265,19 +272,37 @@ function StatTile(props: { label: string; value: string; note?: string }) {
   );
 }
 
-function ProviderCard(props: { provider: ProviderAnalytics; share: number }) {
-  const tokens = () => tokenTotal(props.provider.tokens);
+function ProviderCard(props: { provider: StatsProvider; share: number }) {
   return (
     <article class="stats-provider">
       <header class="stats-provider-head">
-        <span class="stats-provider-name">{props.provider.provider_id}</span>
-        <span class="stats-badge">{props.share}%</span>
+        <span class="stats-provider-name">{props.provider.name}</span>
+        <span class="stats-badge">
+          {props.provider.analytics ? `${props.share}%` : "No token data"}
+        </span>
       </header>
+      <Show
+        when={props.provider.analytics}
+        fallback={
+          <p class="settings-hint stats-provider-model">
+            Token analytics are unavailable for this provider in the current scan.
+          </p>
+        }
+      >
+        {(analytics) => <ProviderMetrics provider={analytics()} share={props.share} />}
+      </Show>
+    </article>
+  );
+}
+
+function ProviderMetrics(props: { provider: ProviderAnalytics; share: number }) {
+  return (
+    <>
       <p class="settings-hint stats-provider-model">
         {props.provider.top_model ?? "no model recorded"}
       </p>
       <div class="stats-provider-facts">
-        <span>{compactTokens(tokens())} tokens</span>
+        <span>{compactTokens(tokenTotal(props.provider.tokens))} tokens</span>
         <span>
           {props.provider.sessions} runs · {props.provider.turns} turns
         </span>
@@ -289,7 +314,7 @@ function ProviderCard(props: { provider: ProviderAnalytics; share: number }) {
       <span class="stats-provider-bar">
         <span class="stats-provider-fill" style={{ width: `${props.share}%` }} />
       </span>
-    </article>
+    </>
   );
 }
 

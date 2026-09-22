@@ -5,7 +5,7 @@
 //! next to it — `<data>/opencode/opencode.db` — and stop updating that tree, so
 //! a scanner that only reads files reports a history frozen at the upgrade:
 //! present, plausible, and months out of date. This module is the other half of
-//! [`crate::external_agents`]'s opencode support, reading the same facts out of
+//! [`super`]'s opencode support, reading the same facts out of
 //! the database.
 //!
 //! Two rules hold throughout. The database belongs to another program, so it is

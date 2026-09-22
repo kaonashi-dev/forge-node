@@ -60,6 +60,11 @@ pub fn start(app: AppHandle, client: Arc<Client>) -> WorkbenchSender {
 
 fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
     match command {
+        WorkbenchCommand::LaunchAgent { request } => sessions::launch_agent(app, client, request),
+        WorkbenchCommand::LoadHandoffProgress {
+            request_id,
+            session,
+        } => sessions::load_handoff_progress(app, client, request_id, session),
         WorkbenchCommand::LoadDiff {
             workspace,
             context_lines,

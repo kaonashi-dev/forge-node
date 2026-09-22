@@ -11,6 +11,7 @@ const NAMES: ForgeIconName[] = [
   "stats",
   "check",
   "loader",
+  "bell",
   "filter",
   "refresh",
   "copy",

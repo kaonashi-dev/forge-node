@@ -5,12 +5,12 @@
   --fw-foreground: var(--fg-default);
   --fw-muted: var(--fg-subtle);
   --fw-border: var(--border-subtle);
-  --fw-accent: var(--accent-solid);
+  --fw-accent: var(--accent-text);
   --fw-hover: var(--bg-hover);
   --fw-selection: var(--accent-soft);
-  --fw-added: var(--forge-git-added);
-  --fw-modified: var(--forge-git-modified);
-  --fw-deleted: var(--forge-git-deleted);
+  --fw-added: var(--git-added-text);
+  --fw-modified: var(--git-modified-text);
+  --fw-deleted: var(--git-deleted-text);
   --fw-font: var(--font-mono);
   --fw-font-size: var(--text-md);
   --fw-editor-ground: var(--forge-editor);
@@ -55,9 +55,6 @@
 }
 .fw-document .editor-crumb {
   font: inherit;
-  border-radius: 0;
-}
-.fw-document .fw-document-head .forge-button {
   border-radius: 0;
 }
 .fw-document-foot {
@@ -108,7 +105,7 @@
 .file-drag-label {
   position: fixed;
   pointer-events: none;
-  z-index: 1000;
+  z-index: var(--z-tooltip);
   max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;

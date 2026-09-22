@@ -28,10 +28,10 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
 
 - **Append only.** Add a new `M::up(...)` to `migrations()`; never edit or
   reorder an existing one, or already-migrated databases will diverge.
-- Ten migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
+- Eleven migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
   `PROJECT_GROUPS`, `AGENT_PROFILES`, `PROJECT_ICONS`,
   `WORKSPACE_DISPLAY_NAMES`, `SESSION_LAUNCH_COMMAND`, `WORKTREE_SHARES`,
-  `SESSION_BASE_COMMIT` and `PROFILE_CONFIG_DIR`.
+  `SESSION_BASE_COMMIT`, `PROFILE_CONFIG_DIR` and `WORKTREE_IGNORES`.
 - `PROJECT_ICONS` adds a nullable `projects.icon`, and null is what every
   existing project keeps: no icon means the UI draws initials, which is what it
   drew before the column existed. The column carries no `CHECK` — what makes a
@@ -40,6 +40,13 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
 - `WORKSPACE_DISPLAY_NAMES` adds a nullable `workspaces.display_name` for the
   human label independent of the git branch; null keeps every existing row
   leading with its branch.
+
+## Worktree ignore policy (v11 — `WORKTREE_IGNORES`)
+
+`worktree_ignores` stores `project_id`, `path`, `scope` and `created_at`, keyed
+by `(project_id, path)`. Deleting a project cascades to its rules. `Exact`
+rules are collected once the worktree vanishes; `Subtree` rules remain user
+policy. See [worktrees.md](./worktrees.md) for adoption and removal semantics.
 
 ## Schema (v1 — `INITIAL_SCHEMA`)
 

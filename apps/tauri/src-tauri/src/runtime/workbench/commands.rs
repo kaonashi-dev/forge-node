@@ -1,10 +1,32 @@
-use domain::{AgentProfileId, JuvaKind, ProjectId, SessionId, ShareRuleId, WorkspaceId};
+use domain::{
+    AgentProfileId, AgentProviderId, JuvaKind, ProjectId, SessionId, ShareRuleId, WorkspaceId,
+};
 use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub struct AgentLaunchRequest {
+    pub request_id: String,
+    pub workspace: WorkspaceId,
+    pub provider: AgentProviderId,
+    pub profile: Option<AgentProfileId>,
+    pub prompt: String,
+    pub parent: Option<SessionId>,
+    pub read_only: bool,
+}
 
 /// A workbench read or write, from the WebView.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkbenchCommand {
+    /// Creates in the background; the correlated result carries the actual session id.
+    LaunchAgent {
+        #[serde(flatten)]
+        request: AgentLaunchRequest,
+    },
+    LoadHandoffProgress {
+        request_id: String,
+        session: SessionId,
+    },
     LoadDiff {
         workspace: WorkspaceId,
         context_lines: Option<u32>,
@@ -202,5 +224,24 @@ mod tests {
             };
             assert_eq!(operation_id, "operation-1");
         }
+    }
+
+    #[test]
+    fn background_launch_requires_identity_and_preserves_read_only() {
+        let mut command = json!({
+            "type": "launch_agent", "workspace": WorkspaceId::new(),
+            "provider": "claude", "profile": null, "parent": null,
+            "prompt": "summarize", "read_only": true
+        });
+        assert!(serde_json::from_value::<WorkbenchCommand>(command.clone()).is_err());
+        command["request_id"] = json!("handoff-1");
+        let WorkbenchCommand::LaunchAgent { request } =
+            serde_json::from_value::<WorkbenchCommand>(command).unwrap()
+        else {
+            panic!("expected an agent launch");
+        };
+        assert_eq!(request.request_id, "handoff-1");
+        assert!(request.read_only);
+        assert_eq!(request.prompt, "summarize");
     }
 }

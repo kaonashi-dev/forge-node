@@ -145,27 +145,35 @@ select {
   font: inherit;
 }
 /*
+ * Lists in the chrome are layout, not prose.
+ *
+ * Every list this app writes itself already says `list-style: none; margin: 0;
+ * padding: 0` — twelve copies of the same three declarations. The one list it
+ * does *not* write is the `<ul>` Kobalte renders inside a `Select`, and that
+ * one kept the UA sheet's `padding-inline-start: 40px` and its `1em` block
+ * margins: the agent picker's options sat indented a tab stop inside their own
+ * popup, under and over a band of dead space, and no rule in the kit was
+ * wrong. A reset belongs here, where the rest of the reset is.
+ *
+ * Zero specificity, so every rule that follows still outranks it, and
+ * `.forge-md-list` — the one list in the app that *is* prose — keeps the
+ * markers that tell a reader it is a list.
+ */
+:where(ul, ol):where(:not(.forge-md-list)) {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/*
  * 2px, drawn inside the control rather than around it.
  *
  * A 3px halo with a positive offset is four pixels of ring on a 28px row: it
  * collided with its neighbours in every dense list here, and on the palette's
  * own input it read as an unstyled web form rather than as a focused field.
  */
-button:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
-select:focus-visible,
-[tabindex]:focus-visible {
+:where(button, input, textarea, select, [tabindex]):focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: -1px;
-}
-/*
- * The third rung of `controls.rs`: hover is defined per surface, but *press*
- * and *disabled* are the same everywhere, and a control that looks identical
- * held down and released is one you cannot tell you clicked.
- */
-button:not(:disabled):active {
-  background: var(--bg-pressed);
 }
 /*
  * One rule for what the pointer says.
@@ -213,19 +221,11 @@ button:disabled,
   cursor: default;
 }
 
-/*
- * Disabled is a colour, not a veil.
- *
- * `opacity: .45` on a dark ground takes a muted label to roughly 2:1 against
- * its own background — "Reveal config folder" and "Open patch" were legible
- * as shapes and not as words. Dropping to the faint token holds them at the
- * contrast the rest of the muted text already has.
- */
+/* Filled controls own their disabled foreground and opacity in ui.css. */
 button:disabled,
 input:disabled,
 textarea:disabled {
   color: var(--fg-subtle);
-  opacity: 0.7;
 }
 
 .app-shell {
@@ -295,9 +295,7 @@ html[data-platform="macos"] .title-bar-inset {
 .title-bar button,
 .title-bar .tab-strip-host,
 .title-bar .session-tab-wrap,
-.title-bar .session-menu,
-.title-bar .open-split,
-.title-bar .connection-pill {
+.title-bar .session-menu {
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
@@ -319,70 +317,12 @@ html[data-platform="macos"] .title-bar-inset {
   user-select: none;
   white-space: nowrap;
 }
-.title-bar-end {
-  align-items: center;
-  display: flex;
-  flex-shrink: 0;
-  gap: var(--space-8);
-  margin-left: auto;
-}
-
-/* One control split in two: the label runs the remembered target, the chevron
-   picks a different one. The hairline between them is a border on the second
-   half, so the two hit areas stay adjacent with no gap to fall through. */
-.open-split {
-  align-items: stretch;
-  background: var(--bg-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  display: flex;
-  overflow: hidden;
-}
-.open-split .open-split-main,
-.open-split .open-split-more {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-}
-.open-split .open-split-main {
-  padding-inline: var(--space-8) var(--space-6);
-}
-.open-split .open-split-more {
-  align-items: center;
-  border-left: 1px solid var(--border-subtle);
-  display: inline-flex;
-  flex: none;
-  justify-content: center;
-  min-width: var(--control-sm);
-  padding: 0;
-  width: var(--control-sm);
-}
-
-.connection-pill {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--fg-muted);
-  display: flex;
-  font-size: var(--text-xs);
-  gap: var(--space-8);
-  max-width: 280px;
-  min-width: 0;
-  overflow: hidden;
-}
-/* `text-overflow` is ignored on the flex container itself, so a disconnect
-   reason has to ellipsize on its own child or it just gets clipped mid-glyph. */
-.connection-pill-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .status-dot {
   background: var(--fg-subtle);
   border-radius: 50%;
   display: inline-block;
+  flex-shrink: 0;
   height: 6px;
   width: 6px;
 }
@@ -455,9 +395,9 @@ html[data-platform="macos"] .title-bar-inset {
 
 .needs-you {
   align-items: center;
-  background: color-mix(in srgb, var(--attention-solid) 12%, transparent);
+  background: var(--attention-soft);
   border-radius: var(--radius-xs);
-  color: var(--attention-solid);
+  color: var(--attention-text);
   display: flex;
   justify-content: space-between;
   margin-bottom: var(--space-8);
@@ -572,10 +512,10 @@ html[data-platform="macos"] .title-bar-inset {
   flex-shrink: 0;
 }
 .forge-icon-accent {
-  color: var(--accent-solid);
+  color: var(--accent-text);
 }
 .forge-icon-blue {
-  color: var(--forge-blue);
+  color: var(--info-text);
 }
 .forge-icon-muted {
   color: var(--fg-muted);
@@ -584,16 +524,16 @@ html[data-platform="macos"] .title-bar-inset {
   color: var(--fg-subtle);
 }
 .forge-icon-green {
-  color: var(--success-solid);
+  color: var(--success-text);
 }
 .forge-icon-amber {
-  color: var(--warning-solid);
+  color: var(--warning-text);
 }
 .forge-icon-red {
-  color: var(--danger-solid);
+  color: var(--danger-text);
 }
 .forge-icon-needs-you {
-  color: var(--attention-solid);
+  color: var(--attention-text);
 }
 
 /* Session state as geometry rather than an icon. The colour class above says
@@ -603,7 +543,6 @@ html[data-platform="macos"] .title-bar-inset {
 .forge-state-marker {
   --marker-size: 8px;
   align-items: center;
-  color: var(--fg-muted);
   display: inline-flex;
   flex: none;
   height: 14px;
@@ -643,8 +582,12 @@ html[data-platform="macos"] .title-bar-inset {
   }
 }
 
-.attention-pulse {
-  animation: attention-breathe 2.4s ease-in-out infinite;
+/* The bell a session waiting on a person shows in its glyph slot, next to the
+   spin `.forge-icon-spin` gives one that is still working. */
+@media (prefers-reduced-motion: no-preference) {
+  .attention-pulse {
+    animation: attention-breathe 2.4s ease-in-out infinite;
+  }
 }
 @keyframes attention-breathe {
   0%,
@@ -685,9 +628,9 @@ html[data-platform="macos"] .title-bar-inset {
   font-size: var(--text-sm);
 }
 .panel-error {
-  background: var(--forge-diff-removed-bg);
+  background: var(--danger-soft);
   border-radius: var(--radius-xs);
-  color: var(--danger-solid);
+  color: var(--danger-text);
   font-size: var(--text-xs);
   line-height: 1.6;
   margin: 0;
@@ -697,5 +640,28 @@ html[data-platform="macos"] .title-bar-inset {
   color: var(--fg-muted);
 }
 .tone-error {
-  color: var(--danger-solid);
+  color: var(--danger-text);
+}
+
+.disconnected-banner {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-12);
+  border-bottom: 1px solid var(--danger-solid);
+  background: var(--danger-soft);
+  font-size: var(--text-sm);
+}
+.disconnected-reason {
+  color: var(--fg-default);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tree:focus-visible,
+.projects-view [role="tree"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
 }

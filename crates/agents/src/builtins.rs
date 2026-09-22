@@ -63,6 +63,12 @@ fn grok_resume() -> Option<ResumeStyle> {
     })
 }
 
+fn cursor_resume() -> Option<ResumeStyle> {
+    Some(ResumeStyle::Flag {
+        flag: "--resume".to_owned(),
+    })
+}
+
 /// Grok as an ACP agent: `grok agent stdio`. Usage reads billing over this
 /// entry rather than spelling the subcommand again.
 fn grok_acp() -> Option<AcpSpec> {
@@ -147,11 +153,7 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             // Cursor CLI documents no directory of its own, so a profile for it
             // can change the binary and the arguments and nothing else.
             None,
-            // `--resume` takes an *optional* chat id, so a following argument
-            // is ambiguous to its parser. Nothing discovers Cursor history
-            // either (`external_agents` reads Claude and opencode), so there is
-            // no id to hand it and no reason to guess at the spelling.
-            None,
+            cursor_resume(),
             // `agent [options] [command] [prompt...]`, documented as "Initial
             // prompt for the agent".
             Some(PromptStyle::Positional),
@@ -367,8 +369,6 @@ mod tests {
         }
     }
 
-    /// The exact command line each provider re-enters a session with; these are
-    /// the four facts this file exists to hold.
     #[test]
     fn each_provider_resumes_the_way_its_cli_spells_it() {
         let args = |id: &str| builtin(id).unwrap().resume.map(|r| r.args("s-1"));
@@ -384,7 +384,12 @@ mod tests {
             args("opencode"),
             Some(vec!["--session".to_owned(), "s-1".to_owned()])
         );
-        assert_eq!(args("cursor"), None);
+        for id in ["cursor", "grok"] {
+            assert_eq!(
+                args(id),
+                Some(vec!["--resume".to_owned(), "s-1".to_owned()])
+            );
+        }
     }
 
     #[test]

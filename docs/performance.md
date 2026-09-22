@@ -41,6 +41,37 @@ on overflow. `Daemon::pump_terminal` still persists title changes under the
 core lock. Column patches cover mid-screen edits; a line feed can still force
 a whole-grid delta because Alacritty reports `TermDamage::Full`.
 
+## Cross-project review: 2026-09-22
+
+The current implementation removes these additional costs:
+
+| Path | Change | Cost reduced |
+|---|---|---|
+| `editor-core::syntax`, `editor-cli::App::rescan_edited` | Consume and splice the previous syntax cache; grow scanner storage only as lines are visited. | Untouched span vectors are retained rather than cloned; incremental scans no longer count and preallocate the entire suffix. |
+| `editor-core::complete` | Retain the best twelve borrowed candidates during scanning. | At most twelve owned candidate strings, with no full-result sort. |
+| `fs-service::name_search` | Partition to the best K hits, then sort those hits. | O(N + K log K) ranking instead of O(N log N), with K capped at 200. Scoring still visits the index. |
+| `agents::usage::analytics` | Keep the newest 500 transcript candidates in a bounded heap. | O(500) retained candidates instead of O(N); directory enumeration still visits all candidates. |
+| `shared/cell-grid/viewport.ts` | Decode each text run once when constructing row columns. | A 200-column run creates one code-point array instead of 200, visiting 200 code points instead of 40,000. |
+| Portable file explorer | Cache filter-independent directory interests against listing/fold changes. | Subsequent filter keystrokes do not reconstruct the unfiltered tree for watches. |
+| Git decorations | Clear pending timers and queued refresh debt on disposal. | No stale diff request after teardown. |
+| `daemon::environment` | Cap shell capture at 1 MiB and apply the deadline through process exit, with group kill on failure. | Oversized shell output cannot grow capture without bound; closing stdout cannot bypass the timeout. |
+| `Daemon::remove_project` | Release session side caches and workspace status clocks. | Removed projects no longer retain idle, resume, read-only or status-check entries. |
+
+A release-mode microbenchmark of 1,000 single-line edits midway through a
+20,000-line Rust document measured **667.446 ms before, 66.548 ms after**
+(about 10× faster for incremental highlighting). Reproduce the current path with:
+
+```sh
+cargo test -p editor-core --release incremental_syntax_timing -- --ignored --nocapture
+```
+
+A standalone optimized benchmark of ranking 10,000 synthetic hits down to 200
+measured **361.4 ms before, 43.8 ms after** over 2,000 iterations; comparisons
+dropped from 134,599 to 24,078 per iteration. This isolates selection and sorting,
+not fuzzy matching or IPC. Neither benchmark establishes end-to-end UI latency.
+Regression tests cover ranking equivalence, syntax-cache reuse, transcript
+retention bounds, Unicode decoding and teardown behavior.
+
 ## Why this page exists
 
 Forge is a terminal multiplexer with a Tauri front end. That combination has a
@@ -462,7 +493,13 @@ Carry these forward; they are real, verified, and not yet fixed.
 |---|---|---|
 | Whole-grid delta on a line feed | `DeltaBuilder::delta` | Mid-screen edits now travel as column patches. A line feed can still report `TermDamage::Full` (see Alacritty `Term::damage()`), so that path still repaints the viewport. |
 | WAL write under the core lock | `Daemon::pump_terminal` | fsync is gone (`synchronous = NORMAL`) but the write still holds the global mutex on the delta rung. |
-| `resolved_env` under the core lock | `Daemon::resolved_env` | 796 ms measured, 5 s worst case, taken while the socket is being bound. |
+| `resolved_env` under the core lock | `Daemon::resolved_env` | 796 ms measured; the 5 s capture deadline and up to 500 ms reap grace can still stall the core while the socket is being bound. |
+| Unbounded process-output capture | `git-service::diff`, `fs-service` content/definition search | Response limits are applied after complete subprocess output has been captured. |
+| Unbounded analytics records and enumeration | `agents::usage::analytics` | Candidate retention is bounded, but `BufReader::lines()` allocates a complete record and directory enumeration has no entry budget. |
+| Full fold rescanning and undo-string copying | `editor-cli::App::rescan_edited`, `editor-core::history` | Edits still rebuild fold regions; coalesced typing clones growing undo strings. |
+| Eager diff rows | `DiffFiles.tsx`, `PatchView.tsx`, `SplitPatchView.tsx` | Files start expanded and all patch rows mount without viewport windowing. |
+| Git work before PR cache lookup | `Daemon::refresh_pull_requests` | Remote resolution still spawns Git per project before consulting the cache. |
+| Removed workspace file indexes | `daemon::file_index::Cache` | Project/workspace removal has no eviction path for retained listings. |
 
 The original Rust-GUI observations about `ui::runtime` cloning the whole `Store`
 and one `impl Render` repainting the window are historical, not descriptions of

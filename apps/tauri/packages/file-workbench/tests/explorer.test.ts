@@ -353,6 +353,79 @@ describe("lazy navigation", () => {
 });
 
 describe("stable interaction surface", () => {
+  it("filters a large listing without rebuilding unrelated paths for unchanged watches", () => {
+    let excludedReads = 0;
+    const interests: string[][] = [];
+    const { explorer, host } = mount({
+      onDirectoriesChange: (paths) => interests.push(paths),
+    });
+    const entries = Array.from({ length: 2000 }, (_, i): FileEntry => ({
+      get path() {
+        excludedReads++;
+        return `other/file-${i}`;
+      },
+      kind: "File",
+      ignored: false,
+    }));
+    explorer.setState({
+      tree: tree([...entries, entry("src/target.ts", "File")], ["", "other", "src"]),
+    });
+    explorer.reveal("src/target.ts");
+    explorer.setFilter("tar");
+    const watched = interests.at(-1);
+    const updates = interests.length;
+    excludedReads = 0;
+    explorer.setFilter("target");
+    paint();
+    expect(excludedReads).toBe(entries.length);
+    expect(interests).toHaveLength(updates);
+    expect(watched).toEqual(["", "src"]);
+    expect(
+      host
+        .all()
+        .filter((node) => node.className === "fw-tree-row")
+        .map((node) => node.dataset.path),
+    ).toEqual(["src", "src/target.ts"]);
+  });
+
+  it("refreshes filtered watch interests after folds, listings and workspace reset", () => {
+    const interests: string[][] = [];
+    const reads: string[] = [];
+    const { explorer } = mount({
+      onDirectoriesChange: (paths) => interests.push(paths),
+      onExpandDirectory: (path) => reads.push(path),
+    });
+    const loaded = tree([entry("src"), entry("src/target.ts", "File")], ["", "src"]);
+    explorer.setState({ tree: loaded });
+    explorer.reveal("src/target.ts");
+    explorer.setFilter("target");
+    expect(interests.at(-1)).toEqual(["", "src"]);
+
+    explorer.collapseAll();
+    expect(interests.at(-1)).toEqual([""]);
+    explorer.setFilter("targ");
+    expect(interests.at(-1)).toEqual([""]);
+    explorer.setFilter("");
+    explorer.expand("src");
+    explorer.setState({ tree: { ...loaded } });
+    explorer.setFilter("target");
+    expect(interests.at(-1)).toEqual(["", "src"]);
+
+    reads.length = 0;
+    explorer.setState({ tree: tree([entry("src"), entry("src/target.ts", "File")]) });
+    expect(reads).toEqual(["src"]);
+    explorer.setState({ tree: tree([]) });
+    expect(interests.at(-1)).toEqual([""]);
+
+    explorer.reset();
+    explorer.setState({
+      tree: tree([entry("new"), entry("new/target.ts", "File")], ["", "new"]),
+    });
+    explorer.reveal("new/target.ts");
+    explorer.setFilter("target");
+    expect(interests.at(-1)).toEqual(["", "new"]);
+  });
+
   it("dispatches real-row pointers from the stable root and excludes the edit field", () => {
     const received: string[] = [];
     const { explorer, host, field } = mount({

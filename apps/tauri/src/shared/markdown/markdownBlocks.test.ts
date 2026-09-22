@@ -101,6 +101,44 @@ describe("parseMarkdown", () => {
     ]);
   });
 
+  it("renders a README header, badge links, and a GitHub note as document blocks", () => {
+    const blocks = parseMarkdown(
+      [
+        '<h1 align="center">Forge Node</h1>',
+        "",
+        '<p align="center">',
+        "  Run <b>agents side by side</b> in a worktree.",
+        "</p>",
+        "",
+        '<p align="center">',
+        '  <a href="https://example.com/release"><img alt="Release" src="https://example.com/badge.svg"></a>',
+        "</p>",
+        "",
+        "> [!NOTE]",
+        "> **Experimental.** Use with care.",
+      ].join("\n"),
+    );
+
+    expect(blocks).toMatchObject([
+      { kind: "heading", level: 1, align: "center", spans: [{ kind: "text", text: "Forge Node" }] },
+      {
+        kind: "paragraph",
+        align: "center",
+        spans: [
+          { kind: "text", text: "Run " },
+          { kind: "text", text: "agents side by side", strong: true },
+          { kind: "text", text: " in a worktree." },
+        ],
+      },
+      {
+        kind: "paragraph",
+        align: "center",
+        spans: [{ kind: "image", alt: "Release", href: "https://example.com/release" }],
+      },
+      { kind: "quote", alert: "note", blocks: [{ kind: "paragraph" }] },
+    ]);
+  });
+
   it("hides comments, on one line or across several", () => {
     const blocks = parseMarkdown(
       "<!-- a note -->\nkept <!-- inline --> here\n\n<!--\nhidden\n-->\nafter",
@@ -226,6 +264,15 @@ describe("inlineSpans", () => {
     expect(inlineSpans(`one<br>two <img alt='the "logo"' src=a.svg width="50%" />`)).toEqual([
       { kind: "text", text: "one\ntwo ", strong: false, em: false },
       { kind: "image", alt: 'the "logo"', src: "a.svg", href: null, width: "50%" },
+    ]);
+  });
+
+  it("keeps the link and weight of an HTML download callout", () => {
+    expect(inlineSpans('<b><a href="https://example.com/download">Download</a></b>')).toEqual([
+      { kind: "link", text: "Download", href: "https://example.com/download", strong: true },
+    ]);
+    expect(inlineSpans('<a href="javascript:alert(1)">Unsafe</a>')).toEqual([
+      { kind: "text", text: "Unsafe", strong: false, em: false },
     ]);
   });
 

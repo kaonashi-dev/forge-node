@@ -24,7 +24,7 @@ export function SessionMenu() {
     if (agents().length === 0) {
       list.push({
         kind: "item",
-        label: "No agent providers in this snapshot.",
+        label: "No enabled agents. Enable one in Settings → Agents.",
         disabled: true,
         run: () => undefined,
       });

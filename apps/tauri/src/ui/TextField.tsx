@@ -147,6 +147,7 @@ export function SearchField(props: SearchFieldProps) {
             type="button"
             class="forge-field-clear"
             aria-label="Clear search"
+            disabled={props.disabled}
             onClick={() => own.onClear?.()}
           >
             <Icon name="close" size={12} />

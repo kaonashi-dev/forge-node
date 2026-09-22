@@ -3,9 +3,7 @@
 //! The two structured fields — `artifacts` and `git_context` — are stored as
 //! JSON TEXT via `serde_json` (ADR-009 keeps them out of dedicated columns). The
 //! `artifacts_json` column is NOT NULL and holds `"[]"` for an empty list;
-//! `git_context_json` is NULL when there is no Git context. In the MVP only
-//! `summary`/`instructions` are populated, but the full schema is stored
-//! faithfully so the type is ready before orchestration.
+//! `git_context_json` is NULL when there is no Git context.
 
 use domain::{ContextArtifactRef, ContextEnvelope, ContextId, GitContextRef, SessionId};
 use rusqlite::{params, Connection, Row};

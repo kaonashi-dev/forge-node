@@ -6,6 +6,19 @@
 
 export type DiffStatus = "Added" | "Modified" | "Deleted" | "Renamed" | "Untracked" | string;
 
+export type AgentLaunchResult = {
+  request_id: string;
+  session: string | null;
+  error: string | null;
+  uncertain: boolean;
+};
+
+export type HandoffProgress = {
+  request_id: string;
+  transcript: SessionTranscript | null;
+  error: string | null;
+};
+
 export type DiffFile = {
   path: string;
   status: DiffStatus;

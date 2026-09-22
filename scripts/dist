@@ -39,8 +39,7 @@
 #   FORGE_DIST_OUT_DIR  where the transferable archives land
 #                       (default: <repo>/dist/release)
 #
-# Like the package-* scripts this is NEVER run automatically — not by
-# `scripts/dev`, not by CI.
+# This distribution helper is manual; release CI invokes package-macos directly.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"

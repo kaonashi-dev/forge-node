@@ -93,16 +93,14 @@ export function PreviewView(props: { workspace: string; path: string }) {
         </Show>
         <Switch>
           <Match when={kind() === "markdown"}>
-            <Show when={text()} fallback={<p class="panel-note">Reading…</p>}>
-              {(body) => (
-                <Markdown
-                  class="forge-md-doc"
-                  text={body()}
-                  images={loader}
-                  onOpenUrl={(href) => void openUrl(href).catch(() => undefined)}
-                  renderPath={(text) => <PathText text={text} />}
-                />
-              )}
+            <Show when={text() !== null} fallback={<p class="panel-note">Reading…</p>}>
+              <Markdown
+                class="forge-md-doc"
+                text={text() ?? ""}
+                images={loader}
+                onOpenUrl={(href) => void openUrl(href).catch(() => undefined)}
+                renderPath={(text) => <PathText text={text} />}
+              />
             </Show>
           </Match>
           <Match when={kind() === "svg"}>

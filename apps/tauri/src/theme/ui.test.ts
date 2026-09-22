@@ -1,14 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { contrast, on, parseHex } from "./mix";
-import {
-  metrics,
-  palettes,
-  scale,
-  staticTokens,
-  toCssVariables,
-  type Palette,
-  type ThemeBaseId,
-} from "./tokens";
+import { contrast, parseHex } from "./mix";
+import { withThemeContrast } from "./themeVariants";
+import { metrics, palettes, scale, staticTokens, toCssVariables, type ThemeBaseId } from "./tokens";
 
 /**
  * Internal coherence of the design scale.
@@ -56,18 +49,7 @@ describe("scale coherence", () => {
 
 describe("AA contrast", () => {
   const AA = 4.5;
-  /**
-   * A label sitting on a saturated status fill (danger, attention) is closer to
-   * the large-text rung than to body: the fill is a button or a pill, never a
-   * paragraph, and a fully saturated red on a dark ground cannot reach 4.5
-   * against *either* candidate foreground without going pink. 4.0 is the floor
-   * that keeps `on()` honest there.
-   */
-  const AA_STATUS = 4.0;
-
   const c = (a: string, b: string) => contrast(parseHex(a), parseHex(b));
-  const onFill = (fill: string, p: Palette) =>
-    contrast(on(parseHex(fill), parseHex(p.bg), parseHex(p.text)), parseHex(fill));
 
   it("holds primary text at AA on every surface, in every theme", () => {
     for (const base of bases) {
@@ -78,26 +60,61 @@ describe("AA contrast", () => {
     }
   });
 
-  it("holds muted text at AA on the two grounds it reads on", () => {
-    for (const base of bases) {
-      const p = palettes[base];
-      expect(c(p.muted, p.bg), `${base}: muted on bg`).toBeGreaterThanOrEqual(AA);
-      expect(c(p.muted, p.surface), `${base}: muted on surface`).toBeGreaterThanOrEqual(AA);
-    }
-  });
-
-  it("keeps the derived accent foreground at AA against its fill", () => {
-    for (const base of bases) {
-      const p = palettes[base];
-      expect(c(toCssVariables(p)["--accent-fg"], p.accent), base).toBeGreaterThanOrEqual(AA);
-    }
-  });
-
-  it("keeps derived status foregrounds at the large-text floor against their fills", () => {
-    for (const base of bases) {
-      const p = palettes[base];
-      for (const fill of [p.red, p.needsYou, p.green, p.amber]) {
-        expect(onFill(fill, p), `${base}: on(${fill})`).toBeGreaterThanOrEqual(AA_STATUS);
+  it.each(bases)("keeps %s readable across every contrast setting", (base) => {
+    for (let level = 0; level <= 100; level += 1) {
+      const p = withThemeContrast(palettes[base], level);
+      const v = toCssVariables(p);
+      const grounds = [
+        p.bg,
+        p.surface,
+        p.surfaceHi,
+        p.sidebar,
+        p.rail,
+        p.editor,
+        ...["hover", "selected", "pressed", "sidebar-hi", "sidebar-pressed", "needs-you-tint"].map(
+          (name) => v[`--forge-${name}`],
+        ),
+        v["--accent-soft"],
+        v["--danger-soft"],
+      ];
+      for (const token of [
+        "--fg-default",
+        "--fg-muted",
+        "--fg-subtle",
+        "--accent-text",
+        "--danger-text",
+        "--success-text",
+        "--warning-text",
+        "--attention-text",
+        "--info-text",
+        "--git-added-text",
+        "--git-modified-text",
+        "--git-deleted-text",
+        "--git-untracked-text",
+        "--git-conflict-text",
+        "--git-ignored-text",
+        "--forge-focus-ring",
+      ]) {
+        const minimum = Math.min(...grounds.map((ground) => c(v[token], ground)));
+        expect(minimum, `${base} contrast ${level}: ${token}`).toBeGreaterThanOrEqual(
+          token === "--forge-focus-ring" ? 3 : AA,
+        );
+      }
+      for (const [role, fill] of Object.entries({
+        accent: p.accent,
+        danger: p.red,
+        attention: p.needsYou,
+        success: p.green,
+        warning: p.amber,
+        info: p.blue,
+      })) {
+        expect(c(v[`--${role}-fg`], fill), `${base}: ${role} fill`).toBeGreaterThanOrEqual(AA);
+      }
+      for (const role of ["accent", "danger"]) {
+        expect(
+          c(v[`--${role}-hover-fg`], v[`--${role}-solid-hover`]),
+          `${base}: ${role} hover`,
+        ).toBeGreaterThanOrEqual(AA);
       }
     }
   });
@@ -149,9 +166,6 @@ describe("semantic layer", () => {
         ["--bg-subtle", p.sidebar],
         ["--bg-raised", p.surface],
         ["--bg-overlay", p.surfaceHi],
-        ["--fg-default", p.text],
-        ["--fg-muted", p.muted],
-        ["--fg-subtle", p.faint],
         ["--accent-solid", p.accent],
         ["--danger-solid", p.red],
         ["--success-solid", p.green],

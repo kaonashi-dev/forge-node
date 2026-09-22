@@ -13,6 +13,15 @@ import { activeWorkspace } from "../../state/workspace";
 
 type Scope = "checkout" | "project" | "everywhere";
 
+/* Hoisted: the three scopes never change, and an array built inside the JSX is
+   a new array on every render — which is a new set of chips for the strip to
+   diff each time one of them is clicked. */
+const SCOPES: ReadonlyArray<{ value: Scope }> = [
+  { value: "checkout" },
+  { value: "project" },
+  { value: "everywhere" },
+];
+
 export function HistoryPanel() {
   const [scope, setScope] = createSignal<Scope>("checkout");
   const [query, setQuery] = createSignal("");
@@ -127,7 +136,7 @@ export function HistoryPanel() {
             label: "Scope",
             value: scope(),
             onChange: (value) => setScope(value as Scope),
-            options: (["checkout", "project", "everywhere"] as Scope[]).map((value) => ({ value })),
+            options: SCOPES,
           },
         ]}
       />

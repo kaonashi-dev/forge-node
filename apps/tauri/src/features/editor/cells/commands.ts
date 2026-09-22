@@ -1,5 +1,6 @@
 import type { KeyPress } from "../../../contracts/terminal";
 import { sendRuntimeCommand } from "../../../runtime/host";
+import { connectionStore } from "../../../state/connection";
 
 export async function openTerminalEditor(
   workspace: string,
@@ -24,6 +25,17 @@ export async function sendEditorText(session: string, text: string, id: number):
 
 export async function sendEditorPaste(session: string, text: string, id: number): Promise<void> {
   await sendRuntimeCommand({ type: "paste_editor", session_id: session, text, id });
+}
+
+export async function pasteEditorClipboard(
+  session: string,
+  read: () => Promise<string>,
+  id: () => number,
+): Promise<void> {
+  const generation = connectionStore.connectionGeneration;
+  const text = await read();
+  if (!text || generation !== connectionStore.connectionGeneration) return;
+  await sendEditorPaste(session, text, id());
 }
 
 /**

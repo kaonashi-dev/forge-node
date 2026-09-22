@@ -78,18 +78,8 @@
 }
 
 .tab-step {
-  align-items: center;
-  background: transparent;
-  border: 0;
   border-radius: var(--radius-xs);
-  display: inline-flex;
   flex-shrink: 0;
-  height: var(--control-sm);
-  justify-content: center;
-  width: var(--control-sm);
-}
-.tab-step:hover {
-  background: var(--bg-hover);
 }
 
 .tab-divider {
@@ -201,11 +191,8 @@
 }
 .session-tab-close {
   border-radius: var(--radius-xs);
-  cursor: pointer;
   flex-shrink: 0;
-  height: 20px;
   opacity: 1;
-  width: 20px;
 }
 
 .tab-empty {
@@ -233,7 +220,7 @@
   padding: var(--space-8) var(--space-12);
 }
 .editor-terminal-path {
-  color: var(--fg-primary);
+  color: var(--fg-default);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   min-width: 0;
@@ -274,7 +261,7 @@
 }
 .editor-terminal-thumb {
   background: var(--fg-muted);
-  border-radius: 2px;
+  border-radius: var(--radius-full);
   opacity: 0.4;
   position: absolute;
   width: 100%;
@@ -292,8 +279,8 @@
   min-width: 0;
 }
 .editor-view-prompt {
-  background: var(--bg-surface);
-  color: var(--fg-primary);
+  background: var(--bg-raised);
+  color: var(--fg-default);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   overflow: hidden;
@@ -332,7 +319,7 @@
   position: absolute;
 }
 .ed-selection {
-  background: var(--forge-accent);
+  background: var(--accent-solid);
   left: 0;
   opacity: 0.25;
   position: absolute;
@@ -346,14 +333,14 @@
   top: 0;
 }
 .ed-decoration-match {
-  border-bottom: 1px solid var(--forge-amber);
+  border-bottom: 1px solid var(--warning-solid);
 }
 .ed-decoration-activematch {
-  background: var(--forge-amber);
+  background: var(--warning-solid);
   opacity: 0.3;
 }
 .ed-decoration-bracket {
-  border-bottom: 1px solid var(--fg-primary);
+  border-bottom: 1px solid var(--fg-default);
 }
 .ed-row {
   align-items: center;
@@ -368,7 +355,7 @@
   white-space: pre;
 }
 .ed-number {
-  color: var(--fg-faint);
+  color: var(--fg-subtle);
   flex: none;
   padding-right: var(--space-8);
   text-align: right;
@@ -376,7 +363,7 @@
   width: var(--ed-gutter);
 }
 .ed-row-active .ed-number {
-  color: var(--fg-primary);
+  color: var(--fg-default);
 }
 .ed-mark,
 .ed-fold {
@@ -386,7 +373,7 @@
   width: 1ch;
 }
 .ed-fold {
-  color: var(--fg-faint);
+  color: var(--fg-subtle);
 }
 .ed-fold-toggle {
   cursor: pointer;
@@ -396,16 +383,16 @@
   padding-left: var(--space-4);
 }
 .ed-folded {
-  color: var(--fg-faint);
+  color: var(--fg-subtle);
 }
 .ed-truncated {
-  color: var(--fg-faint);
+  color: var(--fg-subtle);
 }
 /* One element, moved by a transform. Not a background on the row and not a
    repaint: a caret that cleared its row every blink was the flicker the cell
    surface never quite lost. */
 .ed-caret {
-  background: var(--fg-primary);
+  background: var(--fg-default);
   left: 0;
   pointer-events: none;
   position: absolute;
@@ -421,7 +408,7 @@
    the primary is the one whose position a person is tracking. */
 .ed-caret-extra {
   animation: none;
-  background: var(--forge-accent);
+  background: var(--accent-solid);
   opacity: 1;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -456,7 +443,7 @@
   padding: var(--space-8) var(--space-12);
 }
 .preview-path {
-  color: var(--fg-primary);
+  color: var(--fg-default);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   min-width: 0;
@@ -582,10 +569,10 @@
   z-index: var(--z-notice);
 }
 .notice-close {
-  background: none;
-  border: 0;
   color: var(--fg-subtle);
   font-size: var(--text-md);
+  height: auto;
+  min-width: 0;
   padding: 0 var(--space-2);
 }
 .notice-close:hover {
@@ -647,7 +634,7 @@
 /* A folded row carries what is under it: collapsing a checkout must never be
    able to hide a pending question. */
 .tree-row.wants-you {
-  color: var(--attention-solid);
+  color: var(--attention-text);
 }
 .tree-row.unread .tree-label {
   color: var(--fg-default);
@@ -670,10 +657,10 @@
   transform: rotate(90deg);
 }
 .tree-add {
-  background: none;
-  border: 0;
   color: var(--fg-subtle);
   flex: none;
+  height: auto;
+  min-width: 0;
   opacity: 1;
   padding: 0 var(--space-2);
 }
@@ -747,7 +734,7 @@
   flex: 0 1 auto;
 }
 .ws-card.wants-you .ws-head {
-  color: var(--attention-solid);
+  color: var(--attention-text);
 }
 .ws-badge {
   background: var(--bg-raised);
@@ -798,7 +785,7 @@
   margin-left: auto;
 }
 .ws-dirty {
-  color: var(--forge-git-modified);
+  color: var(--git-modified-text);
   font-size: var(--text-xs);
 }
 .ws-sync {
@@ -887,7 +874,7 @@
 .palette-scope {
   background: var(--bg-selected);
   border-radius: var(--radius-xs);
-  color: var(--accent-solid);
+  color: var(--accent-text);
   flex: none;
   font-size: var(--text-xs);
   padding: var(--space-2) var(--space-8);

@@ -315,6 +315,9 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   let revision = 0;
   let folds = 0;
   let built = "";
+  let filteredInterests:
+    | { revision: number; folds: number; paths: string[]; unloaded: string[] }
+    | undefined;
   /* One node per visible slot, reused across paints. Rebuilding the window
      from scratch on every store touch — a loading flag, a re-listing that
      changed nothing, a keystroke in the filter — drops and recreates the row
@@ -605,9 +608,19 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       );
       files = 0;
       for (const row of rows) if (row.isFile) files += 1;
-      // A filter reveals matches, not additional directory interests.
-      const watchedRows = filtered ? treeRows(state.tree, collapsed, openedIgnored) : rows;
-      const paths = watchDirectories(watchedRows);
+      // Filter keystrokes do not change watches; retain paths, not a second full row list.
+      let interests = filtered ? filteredInterests : undefined;
+      if (!interests || interests.revision !== revision || interests.folds !== folds) {
+        const watchedRows = filtered ? treeRows(state.tree, collapsed, openedIgnored) : rows;
+        interests = {
+          revision,
+          folds,
+          paths: watchDirectories(watchedRows),
+          unloaded: unloadedDirectories(state.tree, watchedRows, openedIgnored),
+        };
+        if (filtered) filteredInterests = interests;
+      }
+      const paths = [...interests.paths];
       // A partial parent listing may omit the requested path; walk its known ancestors anyway.
       if (revealPath && options.onExpandDirectory) {
         const loaded = new Set(state.tree?.loadedDirectories);
@@ -628,7 +641,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
         directories = key;
         options.onDirectoriesChange?.(paths);
       }
-      for (const path of unloadedDirectories(state.tree, watchedRows, openedIgnored)) {
+      for (const path of interests.unloaded) {
         if (pendingDirectories.has(path)) continue;
         pendingDirectories.add(path);
         requestDirectory(path);
@@ -957,6 +970,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       listingEntries = undefined;
       loadedDirectories = undefined;
       listingTruncated = false;
+      filteredInterests = undefined;
       revision += 1;
       rebuild();
     },

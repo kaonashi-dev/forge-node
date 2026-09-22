@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { fenceFor, handoffPrompt, type HandoffSource } from "./handoffPrompt";
+import {
+  continueFromSummaryPrompt,
+  extractHandoffSummary,
+  fenceFor,
+  HANDOFF_MARK_END,
+  HANDOFF_MARK_START,
+  handoffPrompt,
+  summarizerPrompt,
+  type HandoffSource,
+} from "./handoffPrompt";
 
 const base: HandoffSource = {
   transcript: "did the thing",
@@ -24,6 +33,110 @@ describe("fenceFor", () => {
 
   it("does not widen for backticks separated by other characters", () => {
     expect(fenceFor("`a`b`c`")).toBe("```");
+  });
+});
+
+describe("extractHandoffSummary", () => {
+  it("is null without a complete pair", () => {
+    expect(extractHandoffSummary("no markers")).toBeNull();
+    expect(extractHandoffSummary(`${HANDOFF_MARK_START}\nonly start`)).toBeNull();
+    expect(extractHandoffSummary(`only end\n${HANDOFF_MARK_END}`)).toBeNull();
+  });
+
+  it("is null when the span is empty", () => {
+    expect(extractHandoffSummary(`${HANDOFF_MARK_START}\n\n${HANDOFF_MARK_END}`)).toBeNull();
+  });
+
+  it("returns the body between the markers", () => {
+    expect(
+      extractHandoffSummary(
+        `thinking…\n${HANDOFF_MARK_START}\nContinue the auth work.\n${HANDOFF_MARK_END}\n`,
+      ),
+    ).toBe("Continue the auth work.");
+  });
+
+  /* A draft of the markers mid-thinking must not win over the final block. */
+  it("keeps the last complete pair", () => {
+    const text = [
+      HANDOFF_MARK_START,
+      "draft",
+      HANDOFF_MARK_END,
+      "more thinking",
+      HANDOFF_MARK_START,
+      "final brief",
+      HANDOFF_MARK_END,
+    ].join("\n");
+    expect(extractHandoffSummary(text)).toBe("final brief");
+  });
+
+  it("does not treat an echoed prompt or its old placeholder as a brief", () => {
+    expect(extractHandoffSummary(summarizerPrompt(base, null)!)).toBeNull();
+    expect(
+      extractHandoffSummary(`${HANDOFF_MARK_START}\n<continuation context>\n${HANDOFF_MARK_END}`),
+    ).toBeNull();
+  });
+
+  it("ignores inline marker mentions and unmatched trailing markers", () => {
+    expect(extractHandoffSummary(`Use ${HANDOFF_MARK_START} then ${HANDOFF_MARK_END}`)).toBeNull();
+    const complete = `${HANDOFF_MARK_START}\nbrief\n${HANDOFF_MARK_END}`;
+    expect(extractHandoffSummary(`${complete}\nnoise\n${HANDOFF_MARK_END}`)).toBe("brief");
+    expect(extractHandoffSummary(`${complete}\n${HANDOFF_MARK_START}\nincomplete`)).toBe("brief");
+  });
+});
+
+describe("summarizerPrompt", () => {
+  it("is null when there is nothing worth carrying", () => {
+    expect(summarizerPrompt({ ...base, transcript: "" }, null)).toBeNull();
+  });
+
+  it("asks for delimited continuation context, not a chatty summary", () => {
+    const prompt = summarizerPrompt(base, null) ?? "";
+    expect(prompt).toContain(HANDOFF_MARK_START);
+    expect(prompt).toContain(HANDOFF_MARK_END);
+    expect(prompt).toContain("did the thing");
+    expect(prompt).toContain("Do not open with meta lines");
+    expect(prompt).toContain("continue the implementation");
+  });
+
+  it("biases toward a named focus", () => {
+    const prompt = summarizerPrompt(base, "the login form only") ?? "";
+    expect(prompt).toContain("the login form only");
+    expect(prompt).toContain("fork point");
+  });
+});
+
+describe("continueFromSummaryPrompt", () => {
+  it("is null when the summary is empty", () => {
+    expect(
+      continueFromSummaryPrompt(
+        {
+          sourceAgent: null,
+          sourceTitle: null,
+          workingDirectory: "/repo",
+          branch: null,
+        },
+        "  ",
+        null,
+      ),
+    ).toBeNull();
+  });
+
+  it("frames the summary as continuation context", () => {
+    const prompt =
+      continueFromSummaryPrompt(
+        {
+          sourceAgent: "claude",
+          sourceTitle: "auth",
+          workingDirectory: "/repo",
+          branch: "feat/auth",
+        },
+        "Finish the login form.",
+        "login form",
+      ) ?? "";
+    expect(prompt).toContain("Finish the login form.");
+    expect(prompt).toContain("Focus for this continuation:");
+    expect(prompt).toContain("login form");
+    expect(prompt).toContain("authoritative");
   });
 });
 

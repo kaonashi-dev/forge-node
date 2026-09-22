@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Launchable } from "../../contracts/runtime";
 import {
+  defaultAgentFrom,
   defaultAgentValue,
   parseDefaultAgent,
   resolveDefaultAgent,
@@ -24,8 +25,24 @@ function launchable(over: Partial<Launchable>): Launchable {
 }
 
 describe("the default-agent preference", () => {
-  // The wire form is shared with the shell (`apps/tauri so a
-  // value this shell writes has to survive that parser unchanged.
+  it.each([
+    ["provider:claude", "claude"],
+    [`profile:${PROFILE}`, `profile:${PROFILE}`],
+  ])("asks while the saved default %s is disabled", (value, key) => {
+    expect(
+      defaultAgentFrom({
+        "ui.default_agent": value,
+        [`ui.agent_visible.${key}`]: "false",
+      }),
+    ).toEqual({ kind: "ask" });
+    expect(
+      defaultAgentFrom({
+        "ui.default_agent": value,
+        [`ui.agent_visible.${key}`]: "true",
+      }),
+    ).toEqual(parseDefaultAgent(value));
+  });
+
   it("round-trips every form", () => {
     const cases: DefaultAgent[] = [
       { kind: "ask" },

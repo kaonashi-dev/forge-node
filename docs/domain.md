@@ -15,11 +15,11 @@ Source: `crates/domain/src/`.
 | **Project group** | A named organizational container shown as a "Workspace" in the sidebar. It groups projects but has no path and never runs sessions. |
 | **Project** | A directory the user added. May or may not be a Git repo. |
 | **Workspace** | A directory where sessions actually run: the main checkout *or* a Git worktree. The main checkout is never a special case. |
-| **Session** | A persistent unit of work — a shell or an agent CLI — and a node of the session graph. Survives daemon restarts as metadata. |
+| **Session** | A unit of work — a shell, agent CLI or editor — and a node of the session graph. Metadata survives daemon restarts only with `sessions.persist_history = true`; no live process survives. |
 | **Terminal** | The live PTY + VT engine behind a session. Runtime-only; a `TerminalId` is regenerated on every spawn/restart and never persisted. |
 | **Agent provider** | A coding-agent CLI (`claude`, `codex`, `opencode`, `cursor`, `grok`). Described declaratively by an `AgentDescriptor`. |
 | **Session graph** | Logical parent/child relationships between sessions (a session can spawn sessions). Independent of the OS process tree. |
-| **Context envelope** | An explicit, auditable hand-off of context from one session to another. Schema only in the MVP. |
+| **Context envelope** | An explicit, persisted hand-off of context, delivered to an existing session or used to seed a child. See [session-context.md](./session-context.md). |
 | **Managed worktree** | A worktree Forge created itself (`managed_by_app = true`). Only these are ever removed from disk. |
 
 ## Identifiers (`ids.rs`)
@@ -94,7 +94,7 @@ upstream by itself.
 
 | Field | Notes |
 |-------|-------|
-| `kind` | `Shell` or `Agent`. |
+| `kind` | `Shell`, `Agent` or `Editor`. Editors own unsaved buffers and are unconditionally exempt from idle stopping. |
 | `role` | `Generic` by default; `Orchestrator`, `Planner`, `Researcher`, `Executor`, `Reviewer`, `Tester`, `Custom(String)` are tags for the future orchestrator and carry no behavior today. |
 | `parent_session_id` / `root_session_id` | The graph. Roots have `parent = None` and `root == id`. |
 | `terminal_id` | `Some` only while a PTY exists. `None` in `Failed`/`Orphaned` and while a restart is pending. |
@@ -186,9 +186,10 @@ surface from a PTY: [session-context.md](./session-context.md).
 
 A read-only agent run **the daemon never launched**, recovered from the CLI's
 own transcript on disk. It is not a node of the session graph: no PTY, no
-lifecycle, no row in the database. The daemon recomputes the set from disk on
-every `GetSnapshot` (see [agents.md](./agents.md#discovered-history)), so it
-never persists and never goes stale in the replica.
+lifecycle, no row in the database. `GetSnapshot` serves discovery through a
+10-second cache keyed on the scanned roots and profile directories. Results
+can be stale until expiry or invalidation; see
+[agents.md](./agents.md#discovered-history).
 
 | Field | Meaning |
 |-------|---------|
@@ -333,8 +334,8 @@ fact and lives in `agents`, like every other one.
 ## Terminal wire types (`terminal.rs`, §11.4)
 
 These are the data the daemon's engine produces and the GUI renders. They live
-in `domain` rather than `terminal-core` precisely so that `ui`/`client` never
-depend on the emulator (§17).
+in `domain` rather than `terminal-core` so the Tauri host and `client` never
+depend on the emulator.
 
 | Type | Notes |
 |------|-------|
@@ -344,9 +345,10 @@ depend on the emulator (§17).
 | `Row` | `cells` + `wrapped` (soft wrap into the next row). |
 | `Cursor` | `line`, `col`, `shape` (`CursorShape`), `visible`. |
 | `TermModes` | `alt_screen`, `bracketed_paste`, `app_cursor_keys`, `app_keypad`, `mouse_mode` (`MouseMode`), `mouse_sgr`, `focus_events` — everything input mapping and rendering need. |
-| `TerminalSnapshot` | `seq`, `size`, `visible` rows, `scrollback_tail` (last `DEFAULT_SCROLLBACK_TAIL = 200` lines), `scrollback_len`, `cursor`, `modes`, `title`. Sent on attach and resync. |
-| `TerminalDelta` | `seq`, `rows: Vec<(u16, Row)>` (only damaged rows), `scrolled_lines`, `cursor`, `modes`. |
-| `ScrollbackRows` | `from_line` + `rows`, the answer to `FetchScrollback`. |
+| `CellPatch` | `line`, `first` (zero-based column), `row`: a damaged span and the row's wrap flag. |
+| `TerminalSnapshot` | `seq`, `size`, `visible` rows, `scrollback_tail` (last `DEFAULT_SCROLLBACK_TAIL = 200` lines), `scrollback_len`, `scrollback_generation`, `cursor`, `modes`, `title`. Sent on attach and resync. |
+| `TerminalDelta` | `seq`, `rows: Vec<(u16, Row)>` (damaged whole rows), `patches`, `scrolled_lines`, `scrollback_len`, `scrollback_generation`, `cursor`, `modes`. A generation change invalidates cached history even when its length stays the same. |
+| `ScrollbackRows` | `from_line`, `rows`, `generation`, and an optional authoritative `snapshot` for history-read reconciliation. Answers `FetchScrollback`. |
 
 The sequence/resync protocol built on `seq` is described in
 [terminal.md](./terminal.md).

@@ -3,6 +3,7 @@ import { reconcile } from "solid-js/store";
 import { applyShellSnapshot, forgeStore } from "../../state/forgeStore";
 import { adoptPendingCompose } from "../../features/pull-requests/prComposeStore";
 import { adoptPendingReviews } from "../../features/pull-requests/prReviewStore";
+import { syncHandoffSession } from "../../features/sessions/handoffJobStore";
 import {
   clearSessionSelection,
   setConnectionStore,
@@ -70,6 +71,7 @@ export function applyConnected(payload: ConnectedPayload): void {
 function adoptPendingLaunches(): void {
   adoptPendingReviews(forgeStore.sessions);
   adoptPendingCompose(forgeStore.sessions);
+  syncHandoffSession();
 }
 
 export function applyStatePayload(payload: StatePayload): void {
