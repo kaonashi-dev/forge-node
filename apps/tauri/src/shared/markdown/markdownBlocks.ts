@@ -247,7 +247,7 @@ function parseBlocks(lines: string[], loc: LineLoc): MdBlock[] {
       const raw: {
         depth: number;
         checked: boolean | null;
-        text: string;
+        lines: string[];
         from: number;
         toExclusive: number;
       }[] = [];
@@ -257,13 +257,20 @@ function parseBlocks(lines: string[], loc: LineLoc): MdBlock[] {
           // A bullet list under a numbered one is a second list, not a row of
           // this one: they are numbered differently and must not share a count.
           if ((item[3] !== undefined) !== ordered) break;
-          raw.push({ ...rawItem(item), from: index, toExclusive: index + 1 });
+          const parsed = rawItem(item);
+          raw.push({
+            depth: parsed.depth,
+            checked: parsed.checked,
+            lines: [parsed.text],
+            from: index,
+            toExclusive: index + 1,
+          });
           index += 1;
           continue;
         }
         const current = raw.at(-1);
         if (current === undefined || lines[index].trim() === "" || startsBlock(lines[index])) break;
-        current.text += `\n${lines[index].trim()}`;
+        current.lines.push(lines[index]);
         index += 1;
         current.toExclusive = index;
       }
@@ -273,7 +280,7 @@ function parseBlocks(lines: string[], loc: LineLoc): MdBlock[] {
         items: raw.map((entry) => ({
           depth: entry.depth,
           checked: entry.checked,
-          spans: inlineSpans(entry.text),
+          spans: inlineSpans(joinProse(entry.lines)),
           ...offsets(loc, entry.from, entry.toExclusive),
         })),
         ...offsets(loc, from, index),
@@ -281,24 +288,47 @@ function parseBlocks(lines: string[], loc: LineLoc): MdBlock[] {
       continue;
     }
 
-    // Soft breaks are kept as newlines rather than collapsed to spaces: a forge
-    // host renders them as breaks, and a wrapped checklist reads as one line
-    // per item there and must here too.
+    // A single newline is a soft break: the paragraph reflows, the way a forge
+    // host draws it. A hard break (two trailing spaces, a trailing `\`, or
+    // `<br>`) stays a newline. A blank line is what starts the next paragraph.
     const from = index;
-    const text = [line.trim()];
+    const prose = [line];
     index += 1;
     while (index < lines.length && lines[index].trim() !== "" && !startsBlock(lines[index])) {
-      text.push(lines[index].trim());
+      prose.push(lines[index]);
       index += 1;
     }
     // A line that was only a layout tag leaves nothing, and must leave no gap.
-    const spans = trimSpans(inlineSpans(text.join("\n")));
+    const spans = trimSpans(inlineSpans(joinProse(prose)));
     if (spans.length > 0) {
       blocks.push({ kind: "paragraph", spans, ...offsets(loc, from, index) });
     }
   }
 
   return blocks;
+}
+
+/**
+ * One paragraph's lines, joined the way CommonMark joins them.
+ *
+ * A soft break becomes a space, so a file wrapped at 80 columns fills the
+ * reading column. Two trailing spaces or a trailing `\` are a hard break and
+ * stay a newline; the marker itself is not text.
+ */
+function joinProse(lines: string[]): string {
+  let out = "";
+  let hard = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i] ?? "";
+    const spaces = / *$/.exec(raw)?.[0].length ?? 0;
+    let body = raw.slice(0, raw.length - spaces);
+    const escaped = body.endsWith("\\");
+    if (escaped) body = body.slice(0, -1);
+    if (i > 0) out += hard ? "\n" : " ";
+    out += body.trim();
+    hard = spaces >= 2 || escaped;
+  }
+  return out;
 }
 
 function startsBlock(line: string): boolean {

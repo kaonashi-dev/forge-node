@@ -12,6 +12,7 @@ import { Markdown } from "../../../shared/markdown/Markdown";
 import { openUrl } from "../../../runtime/host";
 import { PathText } from "../references/PathText";
 import { previewKindFor } from "./previewRoute";
+import { SourceSwitch } from "./SourceSwitch";
 import { svgDataUrl } from "./previewImages";
 import {
   beginWorkbenchRequest,
@@ -83,8 +84,10 @@ export function PreviewView(props: { workspace: string; path: string }) {
     <div class="preview-view">
       <header class="preview-chrome">
         <span class="preview-path">{props.path}</span>
+        <span class="history-spacer" />
+        <SourceSwitch path={props.path} surface="preview" />
       </header>
-      <div class="preview-body">
+      <div class="preview-body" classList={{ "preview-document": kind() === "markdown" }}>
         <Show when={filesStore.fileError}>
           {(error) => <p class="panel-error">Could not read the file: {error()}</p>}
         </Show>
@@ -93,6 +96,7 @@ export function PreviewView(props: { workspace: string; path: string }) {
             <Show when={text()} fallback={<p class="panel-note">Reading…</p>}>
               {(body) => (
                 <Markdown
+                  class="forge-md-doc"
                   text={body()}
                   images={loader}
                   onOpenUrl={(href) => void openUrl(href).catch(() => undefined)}

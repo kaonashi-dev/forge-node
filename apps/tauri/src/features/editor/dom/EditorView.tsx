@@ -11,6 +11,7 @@ import {
 } from "../conflict/editorConflictStore";
 import { CompareView } from "../conflict/CompareView";
 import { Button } from "../../../ui/index";
+import { SourceSwitch } from "../../files/preview/SourceSwitch";
 import { editorFrameChannel } from "../../../runtime/bus";
 import { forgeStore } from "../../../state/forgeStore";
 import {
@@ -482,6 +483,7 @@ export function EditorView(props: EditorViewProps) {
         </Show>
         <span class="panel-note">{chrome().mark}</span>
         <span class="history-spacer" />
+        <SourceSwitch path={props.path} surface="editor" />
       </header>
 
       {/* The host's open prompt — find, replace, go-to-line. A surface with no
