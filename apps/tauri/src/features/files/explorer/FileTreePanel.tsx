@@ -21,7 +21,8 @@ import {
 import { FILES } from "../../../actions/actions";
 import { enterContext, invokeAction, registerAction } from "../../../actions/dispatch";
 import { clearTreeReveal, currentViews, treeReveal } from "../../../navigation/viewsStore";
-import { openEditor } from "../../editor/open";
+import { openEditor, openEditorSource } from "../../editor/open";
+import { hasEditableSource } from "../preview/previewRoute";
 import { forgeStore } from "../../../state/forgeStore";
 import {
   directoryError,
@@ -308,7 +309,12 @@ export function FileTreePanel() {
         pending = null;
         explorer?.edit(null);
         explorer?.reveal(target);
-        if (request.kind === "create" && !request.directory) open(target);
+        if (request.kind === "create" && !request.directory) {
+          // An empty rendering is not a place to type, so a new text preview
+          // opens as source.
+          if (hasEditableSource(target)) openEditorSource(target);
+          else open(target);
+        }
       })
       .catch((error) => {
         if (disposed || pending !== attempt || activeWorkspace() !== workspace) return;
@@ -421,6 +427,16 @@ export function FileTreePanel() {
       ...(target.kind === "file"
         ? [
             { kind: "item" as const, label: "Open", icon: "file" as const, run: () => open(path) },
+            ...(hasEditableSource(path)
+              ? [
+                  {
+                    kind: "item" as const,
+                    label: "Edit",
+                    icon: "edit" as const,
+                    run: () => openEditorSource(path),
+                  },
+                ]
+              : []),
             {
               kind: "item" as const,
               label: "Insert reference in terminal",

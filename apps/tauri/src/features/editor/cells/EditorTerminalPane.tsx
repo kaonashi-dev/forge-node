@@ -18,6 +18,7 @@ import {
 } from "../conflict/editorConflictStore";
 import { CompareView } from "../conflict/CompareView";
 import { Button, ContextMenu, type MenuItem } from "../../../ui/index";
+import { SourceSwitch } from "../../files/preview/SourceSwitch";
 import { openDiff, revealInTree } from "../../../navigation/viewsStore";
 import { showView } from "../../../navigation/sidebarStore";
 import { editorCellsChannel } from "../../../runtime/bus";
@@ -413,6 +414,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
         <span class="panel-note">{chrome().mark}</span>
         <span class="history-spacer" />
         <Show when={failed()}>{(reason) => <span class="panel-note">{reason()}</span>}</Show>
+        <SourceSwitch path={props.path} surface="editor" />
       </header>
 
       {/* The same three answers the DOM editor offers, for the same reason:

@@ -236,6 +236,7 @@
   color: var(--fg-primary);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -458,6 +459,7 @@
   color: var(--fg-primary);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -467,6 +469,15 @@
   min-height: 0;
   overflow: auto;
   padding: var(--space-12);
+}
+/* A Markdown file is a document, not a full-bleed pane. The column is the
+   width a rendered README uses; an image stays on the full body. */
+.preview-document {
+  padding: var(--space-32) var(--space-24);
+}
+.preview-document > .forge-md {
+  margin-inline: auto;
+  max-width: 880px;
 }
 /* Contained rather than stretched: a screenshot at its own size next to a
    16-pixel icon is the comparison a preview is for. */

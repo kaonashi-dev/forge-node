@@ -28,7 +28,7 @@ describe("parseMarkdown", () => {
       { kind: "code", text: "NEQUI" },
       { kind: "text", text: " rail and ", strong: false, em: false },
       { kind: "text", text: "WOMPI", strong: true, em: false },
-      { kind: "text", text: " vendor\nincluding the fee segments", strong: false, em: false },
+      { kind: "text", text: " vendor including the fee segments", strong: false, em: false },
     ]);
 
     const plan = blocks[3];
@@ -128,6 +128,23 @@ describe("parseMarkdown", () => {
       "- [ ] one",
       "- [x] two",
     ]);
+  });
+
+  /* A file wrapped at the margin is one paragraph. Two spaces, or a trailing
+     backslash, are the breaks someone asked for. */
+  it("reflows a soft break and keeps a hard one", () => {
+    expect(parseMarkdown("Forge wraps\nthe line.")[0]).toMatchObject({
+      kind: "paragraph",
+      spans: [{ kind: "text", text: "Forge wraps the line.", strong: false, em: false }],
+    });
+    expect(parseMarkdown("Forge wraps  \nthe line.")[0]).toMatchObject({
+      kind: "paragraph",
+      spans: [{ kind: "text", text: "Forge wraps\nthe line.", strong: false, em: false }],
+    });
+    expect(parseMarkdown("Forge wraps\\\nthe line.")[0]).toMatchObject({
+      kind: "paragraph",
+      spans: [{ kind: "text", text: "Forge wraps\nthe line.", strong: false, em: false }],
+    });
   });
 
   it("keeps a quote's range on the prefixed source", () => {

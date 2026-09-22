@@ -1101,8 +1101,8 @@
   color: var(--fg-muted);
   font-size: var(--text-md);
 }
-/* A soft break is a break: a forge host renders one that way, and a checklist
-   written one item per line has to arrive as one item per line. */
+/* A newline left here is a hard break. Soft breaks were folded into spaces,
+   so the paragraph reflows to the column instead of keeping the file's wrap. */
 .forge-md-p {
   margin: 0 0 var(--space-12);
   white-space: pre-wrap;

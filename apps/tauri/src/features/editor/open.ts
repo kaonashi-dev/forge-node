@@ -2,7 +2,7 @@ import { open } from "../../navigation/viewsStore";
 import { AUTOSAVE_KEY, readFlag } from "../../state/preferences";
 import { activeWorkspace } from "../../state/workspace";
 import { noteFileOpened } from "../files/index/recentFiles";
-import { opensInEditor } from "../files/preview/previewRoute";
+import { hasEditableSource, openingSurface } from "../files/preview/previewRoute";
 import { openTerminalEditor } from "./cells/commands";
 
 /**
@@ -10,8 +10,8 @@ import { openTerminalEditor } from "./cells/commands";
  *
  * Text goes to the terminal editor: the daemon creates (or re-uses) the
  * session and the `EditorOpened` event opens the tab, so there is no view to
- * add here. What stays on the DOM side is the rendered kinds a TUI cannot
- * draw — Markdown, SVG, a raster image — which `editorRouteFor` decides.
+ * add here. A rendered kind — Markdown, SVG, a raster image — stays on the
+ * DOM unless the open is a line into text the editor can actually open.
  *
  * `line` rides along so the daemon can reveal it at creation; a jump into a
  * file that is already open becomes a `Reveal` on the live session rather than
@@ -29,12 +29,35 @@ export function openEditor(path: string, line?: number): void {
   // alone rather than opening an empty one. The autosave preference travels
   // with the open: the daemon holds no opinion about it and the editor process
   // is what acts on it.
-  // A rendered kind never reaches the daemon's editor: it is a read the DOM
-  // draws, so the tab is opened here rather than waiting for `EditorOpened`.
-  if (!opensInEditor(path)) {
+  // A rendering is a read the DOM draws, so that tab is opened here rather
+  // than waiting for `EditorOpened`. A line into Markdown or SVG is a caret,
+  // which only the editor has.
+  if (openingSurface(path, line) === "preview") {
     open({ kind: "preview", path });
     return;
   }
+  openInEditor(workspace, path, line);
+}
+
+/**
+ * Open the source of a rendered text file.
+ *
+ * The preview stays the default open. This is the other way in — the Edit
+ * control — and a raster has nothing for the editor to open, so it stays a
+ * preview rather than asking the daemon to edit a binary.
+ */
+export function openEditorSource(path: string): void {
+  noteFileOpened(activeWorkspace(), path);
+  const workspace = activeWorkspace();
+  if (!workspace) return;
+  if (!hasEditableSource(path)) {
+    open({ kind: "preview", path });
+    return;
+  }
+  openInEditor(workspace, path);
+}
+
+function openInEditor(workspace: string, path: string, line?: number): void {
   void openTerminalEditor(workspace, path, line, readFlag(AUTOSAVE_KEY, false)).catch(
     () => undefined,
   );

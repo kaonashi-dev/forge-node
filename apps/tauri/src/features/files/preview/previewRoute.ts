@@ -30,8 +30,8 @@ export function previewKindFor(path: string): PreviewKind | null {
   if (dot <= slash + 1) return null;
   const extension = name.slice(dot + 1).toLowerCase();
   if (MARKDOWN.has(extension)) return "markdown";
-  // An SVG is both a picture and a text file. It opens as a picture, because
-  // the editor is one keystroke away and a rendering is not.
+  // An SVG is both a picture and a text file. It opens as a picture; Edit
+  // opens the source, because a rendering is not the file.
   if (extension === "svg") return "svg";
   return imageMime(name) === null ? null : "image";
 }
@@ -44,4 +44,21 @@ export function previewKindFor(path: string): PreviewKind | null {
  */
 export function opensInEditor(path: string): boolean {
   return previewKindFor(path) === null;
+}
+
+/**
+ * Whether a preview is text the editor can open.
+ *
+ * A raster is not: the editor refuses a binary file. Markdown and SVG are,
+ * so the preview is a rendering of a file that still has a source.
+ */
+export function hasEditableSource(path: string): boolean {
+  const kind = previewKindFor(path);
+  return kind === "markdown" || kind === "svg";
+}
+
+/** Where an open lands. A line into editable source is a caret request. */
+export function openingSurface(path: string, line?: number): "editor" | "preview" {
+  if (opensInEditor(path) || (line !== undefined && hasEditableSource(path))) return "editor";
+  return "preview";
 }
