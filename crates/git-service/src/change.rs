@@ -152,7 +152,11 @@ fn collect_patch(repo: &Path) -> Result<(String, bool), GitError> {
             patch.push_str(&out.stdout);
         }
         if patch.len() > MAX_PATCH_BYTES {
-            patch.truncate(MAX_PATCH_BYTES);
+            let mut end = MAX_PATCH_BYTES;
+            while !patch.is_char_boundary(end) {
+                end -= 1;
+            }
+            patch.truncate(end);
             truncated = true;
             break;
         }
@@ -192,6 +196,39 @@ mod tests {
         assert!(snap.dirty);
         assert!(snap.files.iter().any(|(p, _)| p == "a.txt"));
         assert!(snap.patch.contains("two") || snap.patch.contains("a.txt"));
+    }
+
+    #[test]
+    fn patch_budget_can_end_inside_a_multibyte_character() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init"]);
+        git(repo, &["config", "user.email", "t@example.com"]);
+        git(repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-m", "base"]);
+
+        for staged in [false, true] {
+            for character in ['é', '界', '🦀'] {
+                git(repo, &["reset", "--quiet"]);
+                std::fs::write(repo.join("a.txt"), "MARKER\n").unwrap();
+                let patch = run_git(Some(repo), &["diff", "--"]).unwrap().stdout;
+                let prefix = patch.find("+MARKER").unwrap() + 1;
+                let text = format!(
+                    "{}{}\n",
+                    "a".repeat(MAX_PATCH_BYTES - prefix - 1),
+                    character
+                );
+                std::fs::write(repo.join("a.txt"), text).unwrap();
+                if staged {
+                    git(repo, &["add", "a.txt"]);
+                }
+                let (patch, truncated) = collect_patch(repo).unwrap();
+                assert!(truncated);
+                assert_eq!(patch.len(), MAX_PATCH_BYTES - 1);
+            }
+        }
     }
 
     #[test]

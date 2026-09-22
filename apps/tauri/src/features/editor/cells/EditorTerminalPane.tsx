@@ -10,12 +10,9 @@ import {
   sendEditorMouse,
   sendEditorPaste,
   sendEditorText,
+  pasteEditorClipboard,
 } from "./commands";
-import {
-  clearEditorConflict,
-  editorConflictFor,
-  startEditorConflictLoad,
-} from "../conflict/editorConflictStore";
+import { clearEditorConflict, editorConflictFor } from "../conflict/editorConflictStore";
 import { CompareView } from "../conflict/CompareView";
 import { Button, ContextMenu, type MenuItem } from "../../../ui/index";
 import { SourceSwitch } from "../../files/preview/SourceSwitch";
@@ -126,12 +123,11 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
         kind: "item",
         label: "Paste",
         run: () => {
-          void navigator.clipboard
-            .readText()
-            .then((text) => {
-              if (text) void sendEditorPaste(props.session, text, probe.send());
-            })
-            .catch(() => undefined);
+          void pasteEditorClipboard(
+            props.session,
+            () => navigator.clipboard.readText(),
+            () => probe.send(),
+          ).catch(() => undefined);
         },
       },
       { kind: "rule" },
@@ -157,8 +153,6 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
       return;
     }
     setComparing(true);
-    // Fetched on demand: the texts are never on `SessionUpdated`.
-    startEditorConflictLoad(props.session);
     void loadEditorConflict(props.session).catch(() => undefined);
   }
   const failed = createMemo(() => {

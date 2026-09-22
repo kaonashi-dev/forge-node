@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { staticTokens } from "./tokens";
+import { palettes, staticTokens, toCssVariables } from "./tokens";
+import generated from "./tokens.css?raw";
 import base from "../styles/base.css?raw";
 import shell from "../styles/shell.css?raw";
 import workbench from "../styles/workbench.css?raw";
 import panels from "../styles/panels.css?raw";
 import settings from "../styles/settings.css?raw";
-import late from "../styles/late.css?raw";
+import fileSurface from "../features/files/explorer/fileSurface.css?raw";
 import components from "../ui/ui.css?raw";
 
 /**
@@ -28,7 +29,7 @@ const SHEETS: ReadonlyArray<readonly [name: string, source: string]> = [
   ["styles/workbench.css", workbench],
   ["styles/panels.css", panels],
   ["styles/settings.css", settings],
-  ["styles/late.css", late],
+  ["features/files/explorer/fileSurface.css", fileSurface],
   ["ui/ui.css", components],
 ];
 
@@ -49,6 +50,14 @@ function scan(test: (line: string) => boolean): Offence[] {
 }
 
 describe("stylesheet token discipline", () => {
+  it("inspects real CSS instead of the test runner's empty style mocks", () => {
+    for (const [name, source] of SHEETS) expect(source, name).toContain("{");
+  });
+
+  it("includes every built-in theme before runtime initialization", () => {
+    for (const base of Object.keys(palettes)) expect(generated).toContain(`[data-theme="${base}"]`);
+  });
+
   it("spends no raw pixels on spacing", () => {
     expect(scan((line) => SPACING.test(line))).toEqual([]);
   });
@@ -70,11 +79,11 @@ describe("stylesheet token discipline", () => {
     // The survivors are `#000` in `mask-image` gradients and the striped
     // "in progress" fill, where the value is an alpha channel rather than a
     // colour and reading a theme token there would be a category error.
-    const masked = /mask-image|--stripe|linear-gradient\(\s*$|#000 (calc\()?\d/;
+    const masked = /mask-image|--stripe|linear-gradient\(\s*$|#000 (?:calc\(|var\(--space-|\d)/;
     expect(scan((line) => /#[0-9a-fA-F]{3,8}\b/.test(line) && !masked.test(line))).toEqual([]);
   });
 
-  it("names the semantic layer wherever one exists (§5.1 S3)", () => {
+  it("names the semantic layer wherever one exists", () => {
     // `--forge-*` is the generated layer the palettes and metrics emit, and it
     // is not going away: `theme/mix.ts` is a documented mix formula and
     // several of its names — `--forge-git-added`, `--forge-term-bg`,
@@ -98,5 +107,38 @@ describe("stylesheet token discipline", () => {
     const own =
       /var\(--(forge|space|text|radius|z|control|row|bg|fg|border|accent|danger|success|warning|attention|ring|shadow|motion|ease|font)[a-z0-9-]*, *[^)]*\d+px\)/;
     expect(scan((line) => own.test(line))).toEqual([]);
+  });
+
+  it("uses readable foregrounds instead of solid fills for text", () => {
+    expect(
+      scan((line) =>
+        /^\s*color: var\(--(?:accent|danger|success|warning|attention|info)-solid\)/.test(line),
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps button variants owned by the control kit", () => {
+    const overrides = SHEETS.filter(([name]) => name !== "ui/ui.css")
+      .filter(([, source]) => /\.forge-btn-(?:primary|secondary|danger|ghost)\b/.test(source))
+      .map(([name]) => name);
+    expect(overrides).toEqual([]);
+  });
+
+  it("references defined theme tokens", () => {
+    const defined = new Set(
+      Object.keys({ ...staticTokens(), ...toCssVariables(palettes["gruvbox-hard"]) }),
+    );
+    for (const [, source] of SHEETS) {
+      for (const match of source.matchAll(/(--[\w-]+)\s*:/g)) defined.add(match[1]);
+    }
+    expect(
+      scan((line) =>
+        [
+          ...line.matchAll(
+            /var\((--(?:bg|fg|accent|danger|success|warning|attention|info|border|radius|space|control|text|z|font|shadow|motion|forge)-[\w-]+)\)/g,
+          ),
+        ].some((match) => !defined.has(match[1])),
+      ),
+    ).toEqual([]);
   });
 });

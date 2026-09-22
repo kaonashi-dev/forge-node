@@ -3,9 +3,9 @@
 //! The daemon binds a private Unix socket **before** it spawns
 //! `forge-editor`; the editor connects after spawn (`portable-pty` closes
 //! every inherited fd over 2, so the path travels in the environment), performs
-//! a versioned handshake, and takes the buffer. The PTY carries the editing
-//! stream; this channel carries the buffer and its metadata, so the daemon's
-//! view of path, dirty and position is never parsed out of ANSI.
+//! a versioned handshake, and takes the buffer. Cells editing uses the PTY;
+//! headless editing uses structured input and bounded line windows on this
+//! channel. Buffer metadata is never parsed out of ANSI.
 //!
 //! Everything that can block — accept, handshake, socket IO — runs on this
 //! module's thread, never under the core lock. `Supervisor`'s `Drop` removes

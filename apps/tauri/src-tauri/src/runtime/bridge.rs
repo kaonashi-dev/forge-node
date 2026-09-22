@@ -198,7 +198,7 @@ impl Emitter<'_> {
     /// gets the previous snapshot and the event it is about to receive
     /// replaces it.
     fn shell(&self, store: &Store, at: &Attached) {
-        let snapshot = ShellSnapshot::from_store(store);
+        let snapshot = ShellSnapshot::from_store(store, Some(at.terminal));
         let _ = self.app.emit(
             "runtime:state",
             StatePayload {
@@ -333,7 +333,7 @@ fn runtime_loop(
             latest: &latest,
             daemon: DaemonInfoDto::from(client.daemon_info()),
         };
-        let snapshot = ShellSnapshot::from_store(&store);
+        let snapshot = ShellSnapshot::from_store(&store, Some(at.terminal));
         let payload = ConnectedPayload {
             connection_generation,
             session_count: snapshot.sessions.len(),
@@ -913,13 +913,39 @@ fn run_command(
     match command {
         RuntimeCommand::Input { key, id } => {
             let modes = store.terminal(&at.terminal).map(|grid| grid.modes);
-            let Some(bytes) = input::encode(&key, &modes.unwrap_or_default()) else {
+            let Some(bytes) = input::encode_terminal(&key, &modes.unwrap_or_default()) else {
                 return Ok(Effect::nothing());
             };
-            write_input(client, at, bytes, id, pending_echo)
+            write_input(client, store, at, bytes, id, pending_echo)
         }
-        RuntimeCommand::InputText { text, id } => {
-            write_input(client, at, input::encode_text(&text), id, pending_echo)
+        RuntimeCommand::InputText { text, id } => write_input(
+            client,
+            store,
+            at,
+            input::encode_text(&text),
+            id,
+            pending_echo,
+        ),
+        RuntimeCommand::MoveCursor {
+            terminal_id,
+            seq,
+            row,
+            col,
+            id,
+        } => {
+            if terminal_id != at.terminal || at.scroll_offset != 0 {
+                return Ok(Effect::nothing());
+            }
+            let Some(grid) = store
+                .terminal(&terminal_id)
+                .filter(|grid| grid.last_seq == seq)
+            else {
+                return Ok(Effect::nothing());
+            };
+            let Some(bytes) = input::encode_cursor_move(grid, row, col) else {
+                return Ok(Effect::nothing());
+            };
+            write_input(client, store, at, bytes, id, pending_echo)
         }
         RuntimeCommand::Paste { text, id } => {
             let modes = store
@@ -927,7 +953,7 @@ fn run_command(
                 .map(|grid| grid.modes)
                 .unwrap_or_default();
             let bytes = input::encode_paste(&text, &modes);
-            write_input(client, at, bytes, id, pending_echo)
+            write_input(client, store, at, bytes, id, pending_echo)
         }
         RuntimeCommand::PasteTarget {
             session_id,
@@ -946,7 +972,7 @@ fn run_command(
                 ));
             };
             let bytes = input::encode_paste(&text, &grid.modes);
-            write_input(client, at, bytes, 0, pending_echo)
+            write_input(client, store, at, bytes, 0, pending_echo)
         }
         // The pane only sends these while a program asked to read the mouse,
         // and the encoder refuses the events the *active* mode does not report
@@ -993,14 +1019,13 @@ fn run_command(
             head_line,
             head_col,
         } => {
-            let text = store.terminal(&at.terminal).map(|grid| {
-                cells::selection_text(
-                    grid,
-                    at.scroll_offset,
-                    (anchor_line, anchor_col),
-                    (head_line, head_col),
-                )
-            });
+            let text = store
+                .terminal(&at.terminal)
+                .map(|grid| {
+                    cells::selection_text(grid, (anchor_line, anchor_col), (head_line, head_col))
+                })
+                .transpose()
+                .map_err(CommandError::refused)?;
             Ok(Effect {
                 clipboard: text,
                 ..Effect::nothing()
@@ -1893,6 +1918,7 @@ fn detach_editor(
 /// somewhere the user cannot see is the worst outcome of a scrolled viewport.
 fn write_input(
     client: &Client,
+    store: &mut Store,
     at: &mut Attached,
     bytes: Vec<u8>,
     id: u64,
@@ -1905,6 +1931,13 @@ fn write_input(
         .write_terminal_input(at.terminal, bytes)
         .map_err(CommandError::from_client)?;
     *pending_echo = (*pending_echo).max(id);
+    // Typing is how a permission prompt gets answered, so it is what spends the
+    // attention mark. `answer_attention` reports the edge, and only the edge
+    // republishes the shell: a keystroke must never reach `from_store`.
+    if store.answer_attention(&at.terminal) {
+        at.scroll_offset = 0;
+        return Ok(Effect::shell());
+    }
     if at.scroll_offset != 0 {
         at.scroll_offset = 0;
         return Ok(Effect::repaint());
@@ -3082,7 +3115,7 @@ mod tests {
                 editor_surface: client::EditorSurface::Cells,
             },
             session_count: 0,
-            store: ShellSnapshot::from_store(&Store::new()),
+            store: ShellSnapshot::from_store(&Store::new(), None),
             active_session: Some(session),
             active_terminal: Some(terminal),
         };

@@ -190,10 +190,6 @@
   padding: var(--space-12);
   width: 100%;
 }
-.agent-choice:focus-within {
-  outline: 2px solid var(--accent-solid);
-  outline-offset: 2px;
-}
 .agent-choice[data-disabled] .forge-radio-custom {
   cursor: not-allowed;
 }
@@ -384,7 +380,7 @@
   width: 28px;
   height: 28px;
   background: var(--bg-base);
-  color: var(--accent-solid);
+  color: var(--accent-text);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   font-size: var(--text-md);
@@ -464,7 +460,7 @@
   display: none;
 }
 .theme-editor-error {
-  color: var(--danger-solid);
+  color: var(--danger-text);
   margin: 0;
 }
 .theme-preview {
@@ -574,10 +570,10 @@
   color: var(--forge-ansi-10);
 }
 .theme-terminal-modified {
-  color: var(--forge-git-modified);
+  color: var(--git-modified-text);
 }
 .theme-terminal-added {
-  color: var(--forge-git-added);
+  color: var(--git-added-text);
 }
 .theme-terminal-colors {
   display: flex;
@@ -766,7 +762,7 @@
 }
 .stats-mix-part.kind-output,
 .stats-swatch.kind-output {
-  background: var(--forge-blue);
+  background: var(--info-solid);
 }
 .stats-mix-part.kind-cache_read,
 .stats-swatch.kind-cache_read {
@@ -869,6 +865,33 @@
   gap: var(--space-8);
   align-items: center;
 }
+.daemon-status {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--space-10);
+  margin-bottom: var(--space-12);
+}
+.daemon-status .status-dot {
+  margin-top: var(--space-6);
+}
+.daemon-status-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.daemon-status-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.2;
+}
+.daemon-status-detail {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
 .settings-form {
   display: flex;
   flex-direction: column;
@@ -885,16 +908,6 @@
 .settings-field {
   font-size: var(--text-sm);
   gap: var(--space-4);
-}
-.settings-field .forge-field,
-.settings-field .forge-textarea {
-  background: var(--forge-editor);
-  border-color: var(--border-subtle);
-  height: auto;
-  padding: var(--space-4) var(--space-6);
-}
-.settings-field .forge-field {
-  font: inherit;
 }
 .profile-row {
   /* `--row-h` is a single-line chrome row; padding here is for a card. */
@@ -977,7 +990,7 @@
   box-shadow: 0 0 0 2px var(--ring);
 }
 .keymap-listening {
-  color: var(--accent-solid);
+  color: var(--accent-text);
 }
 .keymap-unbound {
   color: var(--fg-subtle);
@@ -1058,27 +1071,25 @@
   flex: 1;
 }
 
-.settings-body .forge-btn-secondary {
-  background: var(--bg-overlay);
-  border: 1px solid var(--border-default);
-}
-.settings-body .forge-btn-secondary:hover:not(:disabled) {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
-}
-.settings-body .forge-btn-danger {
-  background: var(--danger-soft);
-  border: 1px solid color-mix(in srgb, var(--danger-solid) 35%, var(--border-subtle));
-  color: var(--danger-solid);
-}
-.settings-body .forge-btn-danger:hover:not(:disabled) {
-  border-color: var(--danger-solid);
-}
 .settings-danger {
   border-color: color-mix(in srgb, var(--danger-solid) 25%, var(--border-subtle));
 }
 .settings-danger .settings-group-title {
-  color: var(--danger-solid);
+  color: var(--danger-text);
+}
+
+.keymap-conflict {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  padding: var(--space-4) 0;
+}
+.keymap-conflict-context {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.keymap-conflict-actions {
+  color: var(--fg-default);
 }
 @media (max-width: 760px) {
   .settings-route {

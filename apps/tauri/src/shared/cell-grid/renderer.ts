@@ -1,10 +1,7 @@
 // Canvas2D painter for the viewport.
 //
-// Repaints the rows a frame actually damaged, which is the whole point of the
-// run encoding upstream: a keystroke echo touches one row, and a full-screen
-// clear is the only thing that touches thirty-two. Adjacent cells that share a
-// style arrived merged, so the shaper kerns inside a run and the element count
-// of a full-screen TUI drops by about an order of magnitude.
+// Local edits may damage one row; scrolling output, resize, resync and scrolled
+// viewports can repaint every row. Adjacent cells arrive merged into style runs.
 //
 // The cursor and the selection are painted here rather than encoded upstream: a
 // drag fires dozens of events per crossed cell, and none of them should reach

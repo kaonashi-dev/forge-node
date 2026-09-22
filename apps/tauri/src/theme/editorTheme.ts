@@ -9,19 +9,10 @@
 // panes — and the reason both tables exist is that a cell grid has sixteen
 // slots and a stylesheet does not.
 
-import { contrast, hex, mix, parseHex, pct } from "./mix";
+import { hex, mix, parseHex, pct, readableColor } from "./mix";
 import { palettes, type Palette, type ThemeBaseId } from "./tokens";
 
-/**
- * The contrast floor every scope colour has to clear against the editor
- * ground.
- *
- * 4:1 rather than WCAG's 4.5:1 for body text, and deliberately: this is
- * 13px monospace at the weight `--forge-mono` renders, which WCAG counts as
- * large-ish, and holding syntax colour to the body-text ratio flattens a
- * palette into four greys. It is the same floor `theming.md` puts on the
- * chrome's own muted text.
- */
+// Syntax uses a 4:1 product floor, below WCAG AA's 4.5:1 for normal-sized text.
 export const SCOPE_CONTRAST_FLOOR = 4;
 
 /** Every colour the editor paints, by role rather than by CM6 class name. */
@@ -71,30 +62,13 @@ export type EditorScopes = {
   meta: string;
 };
 
-/**
- * Lift `color` off `ground` until it clears `floor`.
- *
- * Mixes toward `toward` — the theme's own foreground — in 4% steps rather than
- * lightening in HSL, so a colour that has to move stays recognisably itself
- * and lands somewhere the palette already contains. A colour that already
- * clears the floor is returned untouched, which is almost all of them: the
- * ANSI brights these are drawn from were chosen to be readable on this exact
- * ground in the terminal.
- */
 export function liftToFloor(
   color: number,
   ground: number,
   toward: number,
   floor: number = SCOPE_CONTRAST_FLOOR,
 ): number {
-  let current = color;
-  // 25 steps of 4% reaches `toward` exactly, and `toward` is the theme's text
-  // colour, which clears the floor by construction. So this always terminates
-  // with an answer rather than giving up on a stubborn hue.
-  for (let step = 0; step < 25 && contrast(current, ground) < floor; step += 1) {
-    current = mix(current, toward, pct(4));
-  }
-  return current;
+  return readableColor(color, [ground], toward, floor);
 }
 
 /**

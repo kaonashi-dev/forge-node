@@ -6,6 +6,7 @@ import { profilesStore, setProfilesStore } from "./profiles";
 import { formatArgs, newAgentProfile, normalizeArgs, parseArgs } from "./agentProfile";
 import { Button, TextArea, TextField } from "../../ui/index";
 import { Group } from "./SettingsLayout";
+import { AgentVisibilityButton } from "./AgentVisibilityButton";
 
 type EditingProfile = { profile: AgentProfile; isNew: boolean };
 
@@ -40,6 +41,7 @@ export function AgentProfiles() {
               </Show>
             </div>
             <div class="profile-row-actions">
+              <AgentVisibilityButton agentKey={`profile:${profile.id}`} label={profile.name} />
               <Button
                 variant="secondary"
                 size="xs"

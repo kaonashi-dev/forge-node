@@ -1,9 +1,14 @@
 import type { KeyPress } from "../../contracts/terminal";
 import { sendRuntimeCommand } from "../../runtime/host";
 import { connectionStore } from "../../state/connection";
+import type { CursorTarget } from "./cursorClick";
 
 export async function sendKey(key: KeyPress, id: number): Promise<void> {
   await sendRuntimeCommand({ type: "input", key, id });
+}
+
+export async function moveCursor(target: CursorTarget, id: number): Promise<void> {
+  await sendRuntimeCommand({ type: "move_cursor", ...target, id });
 }
 
 /** Text an input method committed: typed, so never bracketed. */
@@ -41,14 +46,23 @@ export async function sendTargetedPaste(
   session: string,
   terminal: string,
   text: string,
+  generation = connectionStore.connectionGeneration,
 ): Promise<void> {
   await sendRuntimeCommand({
     type: "paste_target",
     session_id: session,
     terminal_id: terminal,
     text,
-    connection_generation: connectionStore.connectionGeneration,
+    connection_generation: generation,
   });
+}
+
+export async function pasteClipboard(read: () => Promise<string | null>): Promise<void> {
+  const { activeSession, activeTerminal, connectionGeneration } = connectionStore;
+  if (!activeSession || !activeTerminal) return;
+  const text = await read();
+  if (!text || connectionGeneration !== connectionStore.connectionGeneration) return;
+  await sendTargetedPaste(activeSession, activeTerminal, text, connectionGeneration);
 }
 
 export async function resizeTerminal(

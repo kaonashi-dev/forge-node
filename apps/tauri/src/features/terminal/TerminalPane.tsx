@@ -1,8 +1,10 @@
-import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, on, onCleanup, onMount, Show } from "solid-js";
 import { TERMINAL } from "../../actions/actions";
 import { enterContext, registerAction } from "../../actions/dispatch";
 import {
   copySelection,
+  moveCursor,
+  pasteClipboard,
   repaintTerminal,
   resizeTerminal,
   scrollTerminal,
@@ -42,9 +44,11 @@ import { linkedRefs, openPathRef, warmPathIndex } from "../files/references/path
 import { refAt, type PathRef } from "../files/references/pathref";
 import { clipboardPaste } from "../../shared/input/clipboard";
 import { mayTakeCaret, registerTerminalFocus } from "./focus";
-import { connectionStore } from "../../state/connection";
+import { connectionStore, sessionSelectionPending } from "../../state/connection";
 import { centerMode } from "../../navigation/viewsStore";
 import { registerFileTerminal } from "../files/explorer/fileDrag";
+import { CursorClick } from "./cursorClick";
+import { SelectionDrag } from "./selectionDrag";
 
 /** Breathing room between the grid and the pane edges (`TERMINAL_PAD`). */
 const PAD = 8;
@@ -139,8 +143,16 @@ export function TerminalPane(props: { active?: boolean }) {
     remeasure();
   });
   let cell: CellMetrics = measureCell(scaledSize(zoom()), tokens.mono, tokens.monoLineHeight);
-  let selection: Selection | null = null;
-  let selecting = false;
+  const cursorClick = new CursorClick();
+  const selection = new SelectionDrag({
+    viewport,
+    geometry: () => {
+      const rect = canvas.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, cellWidth: cell.width, cellHeight: cell.height };
+    },
+    changed: (previous, next) => markSelection(previous, next),
+    scroll: scrollTerminal,
+  });
   let focused = false;
 
   const dirty = new Set<number>();
@@ -188,6 +200,20 @@ export function TerminalPane(props: { active?: boolean }) {
     blink.run(false);
   });
 
+  createEffect(
+    on(
+      [
+        () => props.active,
+        () => connectionStore.activeSession,
+        () => connectionStore.activeTerminal,
+        () => connectionStore.connectionGeneration,
+        () => connectionStore.connection.kind,
+        sessionSelectionPending,
+      ],
+      () => resetInteraction(),
+    ),
+  );
+
   // --- painting -------------------------------------------------------------
 
   function schedule(): void {
@@ -200,7 +226,7 @@ export function TerminalPane(props: { active?: boolean }) {
 
   function paint(): void {
     if (!renderer) return;
-    renderer.selection = selection;
+    renderer.selection = selection.range;
     renderer.focused = focused;
     renderer.link = hovered?.spans ?? [];
     placeCaret();
@@ -254,7 +280,16 @@ export function TerminalPane(props: { active?: boolean }) {
   }
 
   function onFrame(payload: CellsPayload): void {
+    if (
+      payload.terminal !== viewport.terminal ||
+      payload.modes.alt_screen !== viewport.modes.alt_screen ||
+      payload.modes.mouse_mode !== viewport.modes.mouse_mode
+    ) {
+      resetInteraction();
+    }
+    selection.syncTerminal(payload.terminal);
     const rows = viewport.apply(payload);
+    selection.refresh();
     if (payload.full) {
       repaintAll = true;
     } else {
@@ -439,6 +474,7 @@ export function TerminalPane(props: { active?: boolean }) {
   }
 
   function onWheel(event: WheelEvent): void {
+    if (!acceptsPointer()) return;
     // A program reading the mouse expects the wheel, so it goes there as a
     // report rather than scrolling our replica out from under it.
     if (reportsMouse(event)) {
@@ -470,6 +506,34 @@ export function TerminalPane(props: { active?: boolean }) {
 
   // --- selection ------------------------------------------------------------
 
+  function acceptsPointer(): boolean {
+    return (
+      props.active !== false &&
+      !sessionSelectionPending() &&
+      viewport.terminal !== null &&
+      viewport.rows.length > 0 &&
+      connectionStore.connection.kind === "connected" &&
+      connectionStore.activeTerminal === viewport.terminal
+    );
+  }
+
+  function stopDrag(): void {
+    selection.stop();
+    cursorClick.cancel();
+  }
+
+  function resetInteraction(): void {
+    selection.reset();
+    cursorClick.cancel();
+    reporting = null;
+    lastReported = { col: -1, row: -1 };
+    clearLink();
+    if (scrollFrame !== 0) cancelAnimationFrame(scrollFrame);
+    scrollFrame = 0;
+    scrollPending = 0;
+    wheelRemainder = 0;
+  }
+
   function pointAt(event: MouseEvent): CellPoint {
     const rect = canvas.getBoundingClientRect();
     return cellAtPoint(
@@ -487,15 +551,18 @@ export function TerminalPane(props: { active?: boolean }) {
     for (const current of selections) {
       if (!current) continue;
       const [start, end] = ends(current);
-      for (let line = start.line; line <= end.line; line += 1) {
-        const row = line + viewport.scrollOffset;
-        if (row >= 0 && row < viewport.rows.length) dirty.add(row);
+      const first = Math.max(0, start.line + viewport.scrollOffset);
+      const last = Math.min(viewport.rows.length - 1, end.line + viewport.scrollOffset);
+      for (let row = first; row <= last; row += 1) {
+        dirty.add(row);
       }
     }
     schedule();
   }
 
   function onMouseDown(event: MouseEvent): void {
+    if (!acceptsPointer()) return;
+    stopDrag();
     // Before mouse reporting: the modifier is the user overriding whatever the
     // program asked for, the same way `shift` overrides it for selection.
     if (event.button === 0 && hovered && openModifier(event)) {
@@ -524,28 +591,20 @@ export function TerminalPane(props: { active?: boolean }) {
     keys.focus({ preventScroll: true });
     const point = pointAt(event);
     const row = point.line + viewport.scrollOffset;
-    const previous = selection;
+    cursorClick.begin(event, point, viewport);
     const span = (from: number, to: number): Selection => ({
       anchor: { line: point.line, col: from },
       head: { line: point.line, col: to },
     });
 
-    // The platform's own click counting gives the two shortcuts every terminal
-    // has — a word, then a line — for the cost of a comparison. Neither leaves
-    // `selecting` set: the range is already chosen, and dragging on from it
-    // would fight the selection it just made.
     if (event.detail >= 3) {
-      selection = span(0, Math.max(viewport.cols - 1, 0));
-      selecting = false;
+      selection.set(span(0, Math.max(viewport.cols - 1, 0)));
     } else if (event.detail === 2) {
       const [from, to] = wordAt(viewport.columns(row), point.col);
-      selection = span(from, to);
-      selecting = false;
+      selection.set(span(from, to));
     } else {
-      selection = { anchor: point, head: point };
-      selecting = true;
+      selection.begin(event);
     }
-    markSelection(previous, selection);
   }
 
   /**
@@ -600,6 +659,9 @@ export function TerminalPane(props: { active?: boolean }) {
   }
 
   function onMouseMove(event: MouseEvent): void {
+    if (!acceptsPointer()) return;
+    if (selection.dragging && (event.buttons & 1) === 0) stopDrag();
+    cursorClick.move(event);
     trackLink(event);
     if (reporting !== null) {
       // Only on a cell boundary: a pointer crossing one cell fires dozens of
@@ -611,30 +673,29 @@ export function TerminalPane(props: { active?: boolean }) {
       report(event, reporting, "motion");
       return;
     }
-    if (!selecting || !selection) return;
-    const point = pointAt(event);
-    // A pointer crossing one cell fires dozens of moves, and each repaint is a
-    // row of the grid.
-    if (point.line === selection.head.line && point.col === selection.head.col) return;
-    const previous = selection;
-    selection = { anchor: selection.anchor, head: point };
-    markSelection(previous, selection);
+    selection.move(event);
   }
 
   function onMouseUp(event: MouseEvent): void {
+    if (!acceptsPointer()) {
+      stopDrag();
+      return;
+    }
+    const target = cursorClick.finish(event, pointAt(event), viewport);
     if (reporting !== null) {
       report(event, reporting, "release");
       reporting = null;
       return;
     }
-    if (!selecting) return;
-    selecting = false;
-    // A plain click clears whatever was selected: dismissing a selection by
-    // clicking is the gesture every terminal has.
-    if (selection && isEmpty(selection)) {
-      const previous = selection;
-      selection = null;
-      markSelection(previous);
+    if (!selection.dragging || event.button !== 0) return;
+    selection.move(event);
+    selection.stop();
+    if (selection.range && isEmpty(selection.range)) {
+      selection.set(null);
+      if (target) {
+        blink.wake();
+        void moveCursor(target, probe.send()).catch(() => undefined);
+      }
     }
   }
 
@@ -716,14 +777,13 @@ export function TerminalPane(props: { active?: boolean }) {
     // clipboard and scroll actions are answered here rather than in the shell.
     const bound = [
       registerAction("copy_terminal", () => {
-        if (selection && !isEmpty(selection)) {
-          void copySelection(selection.anchor, selection.head).catch(() => undefined);
+        const range = selection.range;
+        if (acceptsPointer() && range && !isEmpty(range)) {
+          void copySelection(range.anchor, range.head).catch(() => undefined);
         }
       }),
       registerAction("paste_terminal", () => {
-        void readClipboard().then((text) => {
-          if (text) void sendPaste(text, probe.send()).catch(() => undefined);
-        });
+        void pasteClipboard(readClipboard).catch(() => undefined);
       }),
       // Zoom re-measures the cell, which re-derives the grid and resizes the
       // PTY: a larger glyph is fewer columns, and a program drawing a box has
@@ -739,6 +799,7 @@ export function TerminalPane(props: { active?: boolean }) {
     // A drag that leaves the pane still belongs to the pane.
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("blur", stopDrag);
 
     // A theme change moves every color, and a base switch can move the font.
     const themes = new MutationObserver(remeasure);
@@ -754,6 +815,8 @@ export function TerminalPane(props: { active?: boolean }) {
       themes.disconnect();
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("blur", stopDrag);
+      stopDrag();
       window.clearTimeout(resizeTimer);
       blink.dispose();
       if (frame !== 0) cancelAnimationFrame(frame);
@@ -786,9 +849,10 @@ export function TerminalPane(props: { active?: boolean }) {
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         onCopy={(event) => {
-          if (!selection || isEmpty(selection)) return;
+          const range = selection.range;
+          if (!acceptsPointer() || !range || isEmpty(range)) return;
           event.preventDefault();
-          void copySelection(selection.anchor, selection.head).catch(() => undefined);
+          void copySelection(range.anchor, range.head).catch(() => undefined);
         }}
         onInput={onInput}
         onCompositionEnd={onCompositionEnd}
@@ -807,6 +871,7 @@ export function TerminalPane(props: { active?: boolean }) {
           schedule();
         }}
         onBlur={() => {
+          stopDrag();
           focused = false;
           leaveContext?.();
           leaveContext = undefined;

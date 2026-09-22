@@ -58,20 +58,29 @@ pub fn at(text: &Text, caret: usize) -> Option<Completions> {
         return None;
     }
     let window = window(text, caret);
-    let mut found: BTreeSet<&str> = BTreeSet::new();
+    let mut found: BTreeSet<(usize, &str)> = BTreeSet::new();
     for word in words(&text.as_str()[window.0..window.1]) {
         if word.len() > prefix.len() && word.starts_with(prefix) {
-            found.insert(word);
+            let candidate = (word.len(), word);
+            if found.len() == MAX_CANDIDATES {
+                if found.last().is_some_and(|last| candidate >= *last) {
+                    continue;
+                }
+                if found.insert(candidate) {
+                    found.pop_last();
+                }
+            } else {
+                found.insert(candidate);
+            }
         }
     }
     if found.is_empty() {
         return None;
     }
-    let mut words: Vec<String> = found.into_iter().map(str::to_string).collect();
-    // Shortest first: the nearest completion of a prefix is the likeliest, and
-    // alphabetical inside a length keeps the list stable as the buffer changes.
-    words.sort_by(|left, right| left.len().cmp(&right.len()).then_with(|| left.cmp(right)));
-    words.truncate(MAX_CANDIDATES);
+    let words = found
+        .into_iter()
+        .map(|(_, word)| word.to_string())
+        .collect();
     Some(Completions {
         from,
         to: caret,
@@ -151,5 +160,23 @@ mod tests {
         let found = at(&body, body.len()).expect("candidates");
         assert_eq!(found.words.len(), MAX_CANDIDATES);
         assert!(found.words.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn bounded_candidates_match_full_ranking_with_duplicates_and_late_winners() {
+        let mut body = String::new();
+        for n in (0..10_000).rev() {
+            body.push_str(&format!("value{n:04} value{n:04} "));
+        }
+        body.push_str("valué valα valz vala vala valbb valaa val");
+        let body = text(&body);
+        let found = at(&body, body.len()).expect("candidates");
+        let mut expected: Vec<_> = words(body.as_str())
+            .filter(|word| word.len() > 3 && word.starts_with("val"))
+            .collect();
+        expected.sort_unstable_by_key(|word| (word.len(), *word));
+        expected.dedup();
+        expected.truncate(MAX_CANDIDATES);
+        assert_eq!(found.words, expected);
     }
 }

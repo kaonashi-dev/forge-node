@@ -156,7 +156,6 @@ The current implementation still has these gaps:
 | Owner | Current limitation |
 |-------|--------------------|
 | `app/lifecycle/bind.ts` and `events/*` | `bindAll` cleans successful groups on failure, but a group's internal `Promise.all` loses successful listener disposers when another registration rejects. |
-| `features/git/decorations.ts` | The disposer removes the subscription and reactive root, but leaves its pending refresh timer and queued work alive. |
 | `app/shell/AppShell.tsx` | Runtime/menu/update registration resolves asynchronously; cleanup before resolution does not dispose the subsequently returned handles. |
 | `runtime/clock.ts` | Importing the module in a WebView starts a 15-second interval with no disposer. |
 | `features/files/directories/directoryState.ts` | `freshDirectoryTree` is a module-level reactive root whose disposer is not retained. |

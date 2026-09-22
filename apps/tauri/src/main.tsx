@@ -2,7 +2,6 @@ import { render } from "solid-js/web";
 import { App } from "./app/App";
 import { applyThemeBase } from "./theme/ThemeProvider";
 import "./theme/tokens.css";
-import "./ui/ui.css";
 import "./styles/index.css";
 import "@forge-node/file-workbench/style.css";
 import "./features/files/explorer/fileSurface.css";

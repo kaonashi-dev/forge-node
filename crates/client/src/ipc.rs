@@ -115,6 +115,8 @@ type Waiter = flume::Sender<Result<Response, ProtocolError>>;
 struct Shared {
     /// The socket's write half, serialized across request writers.
     write: Mutex<UnixStream>,
+    // Shutdown must wake a blocked writer without acquiring its mutex.
+    shutdown: UnixStream,
     /// Request waiters keyed by `request_id`.
     pending: Mutex<HashMap<u64, Waiter>>,
     /// Monotonic source of `request_id`s.
@@ -133,6 +135,7 @@ impl Shared {
     /// sender (their receivers then observe [`ClientError::Disconnected`]).
     fn disconnect(&self) {
         self.connected.store(false, Ordering::SeqCst);
+        let _ = self.shutdown.shutdown(std::net::Shutdown::Both);
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
         }
@@ -215,12 +218,14 @@ impl Client {
         // Split the socket so the reader thread and request writers use
         // independent halves (dups of the same underlying socket).
         let read_half = stream.try_clone()?;
+        let shutdown = stream.try_clone()?;
         let write_half = stream;
 
         // Overflow invalidates the connection; blocking this reader would also block request replies.
         let (events_tx, events_rx) = flume::bounded(64);
         let shared = Arc::new(Shared {
             write: Mutex::new(write_half),
+            shutdown,
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             connected: AtomicBool::new(true),
@@ -1608,9 +1613,6 @@ impl Drop for Client {
         // Wake the reader (blocked in `read`) by shutting the socket down, then
         // join it so no thread outlives the handle.
         self.shared.disconnect();
-        if let Ok(write) = self.shared.write.lock() {
-            let _ = write.shutdown(std::net::Shutdown::Both);
-        }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -1927,13 +1929,16 @@ mod tests {
                     body: Ok(Response::Ack),
                 },
             );
-            for _ in 0..80 {
+            for _ in 0..65 {
                 write_daemon_message(
                     &mut stream,
                     &DaemonMessage::Event(DaemonEvent::TerminalActivity { terminal_id }),
                 );
             }
-            let _ = stream.read(&mut buf);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            assert_eq!(stream.read(&mut buf).unwrap(), 0);
         });
 
         let client = Client::connect(&sock.path, "0.1.0").unwrap();
@@ -1946,8 +1951,8 @@ mod tests {
             !client.is_connected(),
             "the reader must drop a stalled event queue rather than block replies"
         );
-        drop(client);
         server.join().unwrap();
+        drop(client);
     }
 
     #[test]

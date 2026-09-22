@@ -8,6 +8,7 @@ import { bindFilesEvents } from "./events/files";
 import { bindGitEvents } from "./events/git";
 import { bindProjectsEvents } from "./events/projects";
 import { bindSettingsEvents } from "./events/settings";
+import { bindSessionEvents } from "./events/sessions";
 import { bindAll } from "./bind";
 import { applyConnected } from "./connection";
 import { startDecorationEffects, startPathMutationEffects } from "./effects";
@@ -29,6 +30,7 @@ export async function startAppRuntime(options: StartAppRuntimeOptions = {}): Pro
       bindGitEvents,
       bindProjectsEvents,
       bindSettingsEvents,
+      bindSessionEvents,
     ]);
     for (const start of [
       startDocumentWatch,

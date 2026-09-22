@@ -1,10 +1,9 @@
 //! The control channel between the daemon and one `forge-editor` process.
 //!
-//! The PTY carries keystrokes and ANSI output; this channel carries metadata:
-//! the buffer the daemon opened for the editor, reveal requests, and the
-//! editor's state. It deliberately has no dependency on `protocol`, `daemon` or
-//! `client`: the editor binary stays standalone, and the daemon decodes these
-//! frames itself.
+//! Carries buffer, reveal and state messages; the headless surface also sends
+//! structured input and bounded line windows here. Only the cells surface uses
+//! PTY keystrokes and ANSI output. The wire is independent of `protocol`,
+//! `daemon` and `client` so the editor binary stays standalone.
 //!
 //! Frames are a `u32` big-endian length plus a MessagePack payload, like the
 //! client wire but with their own smaller cap: the declared length is checked

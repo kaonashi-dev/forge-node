@@ -1,6 +1,6 @@
-/* Keep late.css after base.css; settings.css loads with its route. */
+/* Global defaults precede components; settings.css loads with its route. */
 @import "./base.css";
+@import "../ui/ui.css";
 @import "./shell.css";
 @import "./workbench.css";
 @import "./panels.css";
-@import "./late.css";

@@ -1,4 +1,4 @@
-import { Show } from "solid-js";
+import { Match, Switch } from "solid-js";
 import { sessionAttention } from "./attention";
 import { now } from "../../runtime/clock";
 import type { Session } from "../../contracts/runtime";
@@ -12,8 +12,9 @@ import { sessionGlyphFace } from "./glyphFace";
 type SessionGlyphProps = {
   providerId: string | null;
   /**
-   * When set, a busy session is a spinner and a finished one the user is not
-   * in is a check. Launch menus omit this and always paint identity.
+   * When set, a busy session is a spinner, one that stopped to ask is a bell,
+   * and a finished one the user is not in is a check. Launch menus omit this
+   * and always paint identity.
    */
   session?: Session;
   emphasis?: IconEmphasis;
@@ -30,7 +31,8 @@ type SessionGlyphProps = {
  *
  * No mark carries a fill of its own: each is tinted by whatever the row it sits
  * in is already using, which is what keeps four providers in one list reading
- * as four shapes rather than as four colours.
+ * as four shapes rather than as four colours. The bell is the exception — an
+ * agent waiting on a person owns the attention colour wherever it is drawn.
  */
 export function SessionGlyph(props: SessionGlyphProps) {
   const emphasis = () => props.emphasis ?? "full";
@@ -51,36 +53,41 @@ export function SessionGlyph(props: SessionGlyphProps) {
   };
 
   return (
-    <Show
-      when={face() === "working"}
+    <Switch
       fallback={
-        <Show
-          when={face() === "done"}
-          fallback={
-            <IdentityGlyph
-              providerId={props.providerId}
-              kind={props.session?.kind}
-              emphasis={emphasis()}
-              size={props.size}
-            />
-          }
-        >
-          <Icon
-            name="check"
-            class={work() === "idle" ? "forge-icon-green" : "forge-icon-muted"}
-            size={props.size}
-            title={work() === "idle" ? "Finished" : "Exited"}
-          />
-        </Show>
+        <IdentityGlyph
+          providerId={props.providerId}
+          kind={props.session?.kind}
+          emphasis={emphasis()}
+          size={props.size}
+        />
       }
     >
-      <Icon
-        name="loader"
-        class={`forge-icon-spin ${work() === "starting" ? "forge-icon-amber" : "forge-icon-blue"}`}
-        size={props.size}
-        title={work() === "starting" ? "Starting" : "Working"}
-      />
-    </Show>
+      <Match when={face() === "needs-you"}>
+        <Icon
+          name="bell"
+          class="forge-icon-needs-you attention-pulse"
+          size={props.size}
+          title="Needs you"
+        />
+      </Match>
+      <Match when={face() === "working"}>
+        <Icon
+          name="loader"
+          class={`forge-icon-spin ${work() === "starting" ? "forge-icon-amber" : "forge-icon-blue"}`}
+          size={props.size}
+          title={work() === "starting" ? "Starting" : "Working"}
+        />
+      </Match>
+      <Match when={face() === "done"}>
+        <Icon
+          name="check"
+          class={work() === "idle" ? "forge-icon-green" : "forge-icon-muted"}
+          size={props.size}
+          title={work() === "idle" ? "Finished" : "Exited"}
+        />
+      </Match>
+    </Switch>
   );
 }
 

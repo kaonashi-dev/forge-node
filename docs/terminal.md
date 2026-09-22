@@ -40,6 +40,27 @@ Plan references: §10.4, §10.5, §11. ADRs: 005 (PTY owned by the daemon),
   `client` re-exports it so the GUI uses the same mapping without pulling the
   engine or PTY dependencies.
 
+### Cursor navigation in the desktop terminal
+
+A plain left click without dragging moves the shell cursor along its current
+logical line, including visible soft-wrapped continuations. Dragging selects;
+double/triple clicks select a word/line. Shift-click remains selection-only.
+While dragging, holding the pointer at the top or bottom edge scrolls through
+history and extends the selection, even while the pointer stays still. The
+selection clears on a terminal/tab change; release or loss of focus stops the
+drag. Copy includes selected cached rows outside the viewport, with a 5,000-line
+and 8 MiB limit; unavailable history or oversized copies are refused whole.
+Alt/Option + Left/Right sends the shell's backward/forward-word bindings
+(`Esc b` / `Esc f`). Programs using the alternate screen or mouse reporting
+retain their ordinary keyboard and mouse input.
+
+The host translates a click into one bounded batch of horizontal arrow keys,
+using the passive grid to count wide glyphs once. It never sends up/down to
+reach another output line, since shells interpret those as history navigation.
+Clicks in scrollback and clicks whose terminal or frame changed are ignored.
+The shell still owns the editable buffer, its boundaries and its key bindings;
+there is no prompt-boundary metadata or local editor overlay.
+
 ### Wire types (`crates/domain/src/terminal.rs`)
 
 Both sides share the cell types so the client never links the engine (ADR-011):
@@ -129,9 +150,19 @@ One dedicated OS thread per live PTY:
 
 Title changes (OSC 0/2) become `SessionUpdated` (the `terminal` title); BEL
 becomes `TerminalBell`. The rail's `needs-you` marker is driven by that bell
-alone (`client::Store::pending_bell`, cleared on attach). Agents that do not
-emit BEL natively reach the same path through Forge-injected adapters; see
-[agents.md](./agents.md#attention-needs-you).
+alone (`client::Store::pending_bell`). A bell is a *question*, so the mark is
+recorded for every terminal — attached or not — and only
+`Store::answer_attention`, called from the GUI's terminal-input path, spends
+it: an agent that asks while the user is reading it is still waiting once they
+look elsewhere, and attaching alone would have thrown that away. The snapshot
+hides the mark for the terminal currently on screen (`session_wants_you`), not
+the store. Agents that do not emit BEL natively reach the same path through
+Forge-injected adapters; see [agents.md](./agents.md#attention-needs-you).
+
+An OSC string may be terminated by BEL, and Codex animates its terminal title
+about once a second while it waits — so the engine must keep consuming that
+byte as the OSC terminator rather than dispatching it (`terminal-core`'s
+`title_and_bell` golden), or `needs-you` would latch on permanently.
 
 ## Sequence numbers and resync (§10.5)
 

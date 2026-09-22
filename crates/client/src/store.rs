@@ -221,17 +221,19 @@ impl Store {
                 terminal_id,
                 snapshot,
             } => {
-                self.terminals
-                    .entry(*terminal_id)
-                    .and_modify(|g| g.apply_resync(snapshot))
-                    .or_insert_with(|| CellGrid::from_snapshot(snapshot));
+                let Some(grid) = self.terminals.get_mut(terminal_id) else {
+                    return EventOutcome::Ignored;
+                };
+                // A queued event may predate a synchronous reattach response.
+                if snapshot.seq < grid.last_seq {
+                    return EventOutcome::Ignored;
+                }
+                grid.apply_resync(snapshot);
                 EventOutcome::Applied
             }
-            // Both notes describe a terminal the user is *not* watching, so
-            // they are recorded beside the replicas rather than in one: the
-            // attached grid is the single terminal for which neither can mean
-            // anything. Setting the grid flag too keeps the field honest for a
-            // reader that already holds a `CellGrid`.
+            // Activity describes a terminal the user is *not* watching, so it
+            // is recorded beside the replicas rather than in one: the attached
+            // grid is the single terminal for which it cannot mean anything.
             DaemonEvent::TerminalActivity { terminal_id } => {
                 match self.terminals.get_mut(terminal_id) {
                     Some(grid) => grid.activity = true,
@@ -241,12 +243,16 @@ impl Store {
                 }
                 EventOutcome::Applied
             }
+            // A bell is a question, so it is recorded for every terminal and not
+            // only the unattached ones: an agent that asks while the user is
+            // reading it is still waiting once they look somewhere else, and
+            // routing the flag into the attached `CellGrid` alone lost it the
+            // moment that grid was dropped. The grid flag stays for the frame's
+            // own visual bell.
             DaemonEvent::TerminalBell { terminal_id } => {
-                match self.terminals.get_mut(terminal_id) {
-                    Some(grid) => grid.bell = true,
-                    None => {
-                        self.pending_bell.insert(*terminal_id);
-                    }
+                self.pending_bell.insert(*terminal_id);
+                if let Some(grid) = self.terminals.get_mut(terminal_id) {
+                    grid.bell = true;
                 }
                 EventOutcome::Applied
             }
@@ -307,24 +313,35 @@ impl Store {
     /// Insert (or replace) a [`CellGrid`] for a terminal from an `AttachAck`
     /// snapshot. Call this when a `Response::AttachAck` arrives.
     pub fn attach_terminal(&mut self, terminal_id: TerminalId, snapshot: &TerminalSnapshot) {
-        // Arriving *is* reading it: whatever the terminal rang or printed while
-        // the user was elsewhere has now been looked at, so the marks are spent
-        // here rather than waiting for something to clear them later.
-        self.pending_bell.remove(&terminal_id);
+        // Arriving *is* reading whatever printed while the user was elsewhere,
+        // so the unread mark is spent here. It is not answering: a permission
+        // prompt the user is now looking at is still unanswered, and only
+        // `answer_attention` spends that one.
         self.pending_activity.remove(&terminal_id);
         self.terminals
             .insert(terminal_id, CellGrid::from_snapshot(snapshot));
     }
 
-    /// Whether a terminal asked for the user while they were looking elsewhere.
+    /// Whether a terminal asked for the user and has not been answered.
     ///
-    /// Agent CLIs ring the bell when
-    /// they stop to ask a question, and the daemon broadcasts it for every
-    /// terminal. The attached terminal is never included — the user is already
-    /// looking at it.
+    /// Agent CLIs ring the bell when they stop to ask a question, and the
+    /// daemon broadcasts it for every terminal. The mark outlives a glance:
+    /// only [`Store::answer_attention`] spends it.
     #[must_use]
     pub fn wants_attention(&self, terminal_id: &TerminalId) -> bool {
         self.pending_bell.contains(terminal_id)
+    }
+
+    /// Spend the attention mark for a terminal the user just typed into.
+    ///
+    /// Answering is the only thing that ends the question the bell asked.
+    /// Returns whether a mark was actually spent, so a caller can republish on
+    /// that edge rather than on every keystroke.
+    pub fn answer_attention(&mut self, terminal_id: &TerminalId) -> bool {
+        if let Some(grid) = self.terminals.get_mut(terminal_id) {
+            grid.bell = false;
+        }
+        self.pending_bell.remove(terminal_id)
     }
 
     /// Whether a terminal produced output while the user was looking elsewhere.
@@ -955,17 +972,45 @@ mod tests {
         assert!(store.wants_attention(&elsewhere));
         assert!(store.has_unread(&elsewhere));
 
-        // The terminal on screen never asks: the user is already reading it.
+        // Arriving spends the unread mark and not the question.
+        store.attach_terminal(elsewhere, &snapshot(1, 4, 3, 0, 0));
+        assert!(!store.has_unread(&elsewhere));
+        assert!(store.wants_attention(&elsewhere));
+    }
+
+    /// An agent that asks while the user is reading it is still asking once
+    /// they move on, so the mark has to survive the grid it rang into: routing
+    /// it into the attached `CellGrid` alone dropped it on detach, and the
+    /// session that was waiting for an answer never reached the rail.
+    #[test]
+    fn a_question_asked_on_screen_outlives_the_grid_it_rang_into() {
+        let mut store = Store::new();
+        let watched = TerminalId::new();
+        store.attach_terminal(watched, &snapshot(5, 4, 3, 0, 0));
+
         let _ = store.apply_event(&DaemonEvent::TerminalBell {
             terminal_id: watched,
         });
-        assert!(!store.wants_attention(&watched));
+        assert!(store.wants_attention(&watched));
         assert!(store.terminal(&watched).is_some_and(|grid| grid.bell));
 
-        // Arriving spends both marks.
-        store.attach_terminal(elsewhere, &snapshot(1, 4, 3, 0, 0));
-        assert!(!store.wants_attention(&elsewhere));
-        assert!(!store.has_unread(&elsewhere));
+        store.detach_terminal(&watched);
+        assert!(store.wants_attention(&watched));
+    }
+
+    /// Typing is the answer, and it is an edge: the second keystroke has
+    /// nothing left to spend, so the shell is not republished per keypress.
+    #[test]
+    fn answering_spends_the_mark_once() {
+        let mut store = Store::new();
+        let terminal_id = TerminalId::new();
+        store.attach_terminal(terminal_id, &snapshot(5, 4, 3, 0, 0));
+
+        let _ = store.apply_event(&DaemonEvent::TerminalBell { terminal_id });
+        assert!(store.answer_attention(&terminal_id));
+        assert!(!store.wants_attention(&terminal_id));
+        assert!(store.terminal(&terminal_id).is_some_and(|grid| !grid.bell));
+        assert!(!store.answer_attention(&terminal_id));
     }
 
     /// A mark for a terminal no session names any more would keep the rail's
@@ -1013,6 +1058,31 @@ mod tests {
             delta: delta(1, vec![], 0),
         });
         assert_eq!(outcome, EventOutcome::Ignored);
+    }
+
+    #[test]
+    fn queued_resyncs_cannot_reattach_or_roll_back_a_terminal() {
+        let mut store = Store::new();
+        let terminal_id = TerminalId::new();
+        store.attach_terminal(terminal_id, &snapshot(20, 4, 3, 0, 0));
+        let stale = DaemonEvent::TerminalResync {
+            terminal_id,
+            snapshot: snapshot(10, 8, 6, 0, 0),
+        };
+        assert_eq!(store.apply_event(&stale), EventOutcome::Ignored);
+        assert_eq!(store.terminal(&terminal_id).unwrap().last_seq, 20);
+        assert_eq!(store.terminal(&terminal_id).unwrap().visible.len(), 3);
+
+        let resized = DaemonEvent::TerminalResync {
+            terminal_id,
+            snapshot: snapshot(20, 8, 6, 0, 0),
+        };
+        assert_eq!(store.apply_event(&resized), EventOutcome::Applied);
+        assert_eq!(store.terminal(&terminal_id).unwrap().visible.len(), 6);
+
+        store.detach_terminal(&terminal_id);
+        assert_eq!(store.apply_event(&resized), EventOutcome::Ignored);
+        assert!(store.terminal(&terminal_id).is_none());
     }
 
     #[test]

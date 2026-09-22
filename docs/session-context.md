@@ -26,12 +26,25 @@ an optional `ContextEnvelope` are Forge state.
 
 | Gesture | What it does | Graph | Envelope |
 |---------|--------------|-------|----------|
-| **Continue in a New Session…** | Capture this terminal's transcript; start a *new* agent (any provider) with that text as `initial_prompt` | Parent set when the source is a Forge session | No (prompt only) |
+| **Continue in a New Session…** | Capture this terminal's transcript; a *summarizer* agent (often a low-effort / flash profile) compresses it into an editable brief, optionally biased by a **Focus** line; after confirmation, a *destination* agent starts with that brief as `initial_prompt`. Raw paste of the capture remains an escape hatch in the dialog. | Parent set when the source is a Forge session | No (prompt only) |
 | **Spawn Child…** | Start a nested agent under this session with an optional typed prompt | Always a child | No (unless you use Send Context → spawn) |
 | **Send Context…** | Persist an auditable envelope; either paste it into a live peer or spawn a child that starts with it | Child when spawning | Always |
 
-Handoff leaves the original session running. Spawn/Send Context are the
-orchestration primitives; handoff is “continue this conversation elsewhere.”
+Handoff leaves the original session running and selected. The summarizer launches
+in the background; a correlated workbench result supplies its actual session id.
+Only one handoff runs per window, and cancelling a pending launch waits for its
+result before closing that exact session. After the destination's creation is
+confirmed, the summarizer is closed: its process is stopped and its session row
+is removed on exit, so it leaves no finished tab in the rail.
+
+The source action bar and a window-level handoff button reopen progress, including
+for external sources. Captures are polled every 1.5 seconds with at most one read
+pending; failures pause polling until retry. Markers `--- forge handoff ---` /
+`--- end forge handoff ---` populate an editable brief, but never launch an agent:
+terminal captures cannot distinguish a final assistant turn from a prompt echo or
+a draft. The person confirms the brief, or pastes one if the markers are missing.
+Manual edits survive subsequent captures. Spawn/Send Context are the orchestration
+primitives; handoff is “continue this conversation elsewhere” via a reviewed brief.
 
 ## What agents call
 

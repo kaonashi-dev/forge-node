@@ -26,7 +26,8 @@
 //! error. The one thing it will not do is under-report silently — a scan that
 //! hits its cap says how many transcripts it left unread.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
@@ -425,6 +426,40 @@ struct Transcripts {
     skipped: u32,
 }
 
+#[derive(Default)]
+struct TranscriptCandidates {
+    newest: BinaryHeap<Reverse<(SystemTime, PathBuf)>>,
+    skipped: u32,
+}
+
+impl TranscriptCandidates {
+    fn insert(&mut self, modified: SystemTime, path: PathBuf) {
+        let candidate = Reverse((modified, path));
+        if self.newest.len() < SCAN_LIMIT {
+            self.newest.push(candidate);
+            return;
+        }
+        self.skipped = self.skipped.saturating_add(1);
+        if let Some(mut oldest) = self.newest.peek_mut() {
+            if candidate < *oldest {
+                *oldest = candidate;
+            }
+        }
+    }
+
+    fn finish(self) -> Transcripts {
+        Transcripts {
+            paths: self
+                .newest
+                .into_sorted_vec()
+                .into_iter()
+                .map(|Reverse((_, path))| path)
+                .collect(),
+            skipped: self.skipped,
+        }
+    }
+}
+
 /// `$CLAUDE_CONFIG_DIR/projects` and every profile's, falling back to
 /// `$HOME/.claude/projects`.
 fn claude_transcripts(
@@ -498,20 +533,11 @@ fn stores(
 /// before the window opened cannot contain a turn inside it, and skipping it
 /// costs nothing. Records *inside* a kept file are still checked one by one.
 fn recent_transcripts(roots: &[PathBuf], cutoff: time::OffsetDateTime) -> Transcripts {
-    let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
+    let mut found = TranscriptCandidates::default();
     for root in roots {
         collect_jsonl(root, 0, cutoff, &mut found);
     }
-    found.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-    let skipped = u32::try_from(found.len().saturating_sub(SCAN_LIMIT)).unwrap_or(u32::MAX);
-    Transcripts {
-        paths: found
-            .into_iter()
-            .take(SCAN_LIMIT)
-            .map(|(_, path)| path)
-            .collect(),
-        skipped,
-    }
+    found.finish()
 }
 
 /// Depth-bounded walk. Claude nests two levels (`<slug>/<session>/subagents`)
@@ -521,7 +547,7 @@ fn collect_jsonl(
     dir: &Path,
     depth: usize,
     cutoff: time::OffsetDateTime,
-    found: &mut Vec<(SystemTime, PathBuf)>,
+    found: &mut TranscriptCandidates,
 ) {
     const MAX_DEPTH: usize = 4;
     let Ok(entries) = fs::read_dir(dir) else {
@@ -548,7 +574,7 @@ fn collect_jsonl(
         if modified_at < cutoff {
             continue;
         }
-        found.push((modified, path));
+        found.insert(modified, path);
     }
 }
 
@@ -581,6 +607,65 @@ mod tests {
     use std::io::Write;
 
     use domain::EnvSource;
+
+    #[test]
+    fn transcript_candidates_keep_only_the_newest_and_count_every_skip() {
+        let candidates: Vec<_> = (0..SCAN_LIMIT * 5)
+            .map(|i| {
+                (
+                    SystemTime::UNIX_EPOCH + std::time::Duration::from_secs((i % 701) as u64),
+                    PathBuf::from(format!("{i:04}.jsonl")),
+                )
+            })
+            .collect();
+        let mut expected = candidates.clone();
+        expected.sort_unstable_by(|a, b| b.cmp(a));
+        let expected: Vec<_> = expected
+            .into_iter()
+            .take(SCAN_LIMIT)
+            .map(|(_, path)| path)
+            .collect();
+
+        for reverse in [false, true] {
+            let mut found = TranscriptCandidates::default();
+            for i in 0..candidates.len() {
+                let index = if reverse { candidates.len() - i - 1 } else { i };
+                let (modified, path) = &candidates[index];
+                found.insert(*modified, path.clone());
+                assert!(found.newest.len() <= SCAN_LIMIT);
+            }
+            let found = found.finish();
+            assert_eq!(found.paths, expected);
+            assert_eq!(found.skipped as usize, candidates.len() - SCAN_LIMIT);
+        }
+    }
+
+    #[test]
+    fn transcript_limit_applies_across_roots_after_the_cutoff_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = [dir.path().join("one"), dir.path().join("two")];
+        for root in &roots {
+            fs::create_dir(root).unwrap();
+        }
+        let cutoff = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let mut expected = Vec::new();
+        for i in 0..SCAN_LIMIT + 5 {
+            let path = roots[i % roots.len()].join(format!("{i:04}.jsonl"));
+            let file = fs::File::create(&path).unwrap();
+            file.set_modified(cutoff + std::time::Duration::from_secs(i as u64))
+                .unwrap();
+            expected.push(path);
+        }
+        let old = fs::File::create(roots[0].join("old.jsonl")).unwrap();
+        old.set_modified(SystemTime::UNIX_EPOCH).unwrap();
+        fs::write(roots[1].join("ignored.txt"), "").unwrap();
+        expected.reverse();
+        expected.truncate(SCAN_LIMIT);
+
+        let found = recent_transcripts(&roots, cutoff.into());
+        assert_eq!(found.paths, expected);
+        assert_eq!(found.skipped, 5);
+    }
 
     fn env(home: &Path) -> ResolvedEnvironment {
         ResolvedEnvironment {

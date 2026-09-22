@@ -1,18 +1,9 @@
-/**
- * Markdown → blocks, for a pull request body or a document in the checkout.
- *
- * A parser rather than a dependency: this is the subset those actually use and
- * the bundle has a budget. It answers with data and never with HTML —
- * `Markdown.tsx` renders the blocks through JSX, so raw markup is text and
- * there is no sanitiser here to get wrong. The few tags a README leans on are
- * read as what they mean (`<img>`, `<br>`) or dropped as layout; none of them
- * is ever passed through.
- */
+/** Untrusted Markdown becomes data; known HTML tags never reach the DOM as markup. */
 
 export type MdSpan =
   | { kind: "text"; text: string; strong: boolean; em: boolean }
   | { kind: "code"; text: string }
-  | { kind: "link"; text: string; href: string }
+  | { kind: "link"; text: string; href: string; strong?: boolean; em?: boolean }
   | MdImage;
 
 /**
@@ -41,12 +32,21 @@ export type MdListItem = {
   end: number;
 };
 
+export type MdAlert = "note" | "tip" | "important" | "warning" | "caution";
+
 export type MdBlock =
-  | { kind: "heading"; level: number; spans: MdSpan[]; start: number; end: number }
-  | { kind: "paragraph"; spans: MdSpan[]; start: number; end: number }
+  | {
+      kind: "heading";
+      level: number;
+      spans: MdSpan[];
+      align?: "center";
+      start: number;
+      end: number;
+    }
+  | { kind: "paragraph"; spans: MdSpan[]; align?: "center"; start: number; end: number }
   | { kind: "list"; ordered: boolean; items: MdListItem[]; start: number; end: number }
   | { kind: "code"; lang: string | null; text: string; start: number; end: number }
-  | { kind: "quote"; blocks: MdBlock[]; start: number; end: number }
+  | { kind: "quote"; blocks: MdBlock[]; alert?: MdAlert; start: number; end: number }
   | { kind: "table"; head: MdSpan[][]; rows: MdSpan[][][]; start: number; end: number }
   | { kind: "rule"; start: number; end: number };
 
@@ -55,6 +55,9 @@ const MAX_DEPTH = 2;
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/;
 const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+const HTML_HEADING = /^ {0,3}<h([1-6])\b([^>]*)>(.*?)<\/h\1>\s*$/i;
+const HTML_PARAGRAPH = /^ {0,3}<p\b([^>]*)>/i;
+const ALERT = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*$/i;
 const RULE = /^ {0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$/;
 const QUOTE = /^ {0,3}> ?(.*)$/;
 const ITEM = /^([ \t]*)(?:([-*+])|(\d{1,9})[.)])\s+(.*)$/;
@@ -187,6 +190,22 @@ function parseBlocks(lines: string[], loc: LineLoc): MdBlock[] {
       continue;
     }
 
+    const htmlHeading = HTML_HEADING.exec(line);
+    if (htmlHeading) {
+      const from = index;
+      index += 1;
+      blocks.push({
+        kind: "heading",
+        level: Number(htmlHeading[1]),
+        spans: inlineSpans(htmlHeading[3] ?? ""),
+        ...(attribute(htmlHeading[2] ?? "", "align")?.toLowerCase() === "center"
+          ? { align: "center" as const }
+          : {}),
+        ...offsets(loc, from, index),
+      });
+      continue;
+    }
+
     const heading = HEADING.exec(line);
     if (heading) {
       const from = index;
@@ -215,11 +234,13 @@ function parseBlocks(lines: string[], loc: LineLoc): MdBlock[] {
         inner.push(QUOTE.exec(lines[index])?.[1] ?? "");
         index += 1;
       }
-      const innerText = inner.join("\n");
+      const marker = ALERT.exec(inner[0] ?? "");
+      const body = marker ? inner.slice(1) : inner;
       blocks.push({
         kind: "quote",
         // Inner offsets are in the un-prefixed body, not the original source.
-        blocks: parseBlocks(inner, locOf(inner, innerText.length)),
+        blocks: parseBlocks(body, locOf(body, body.join("\n").length)),
+        ...(marker ? { alert: marker[1].toLowerCase() as MdAlert } : {}),
         ...offsets(loc, from, index),
       });
       continue;
@@ -301,7 +322,14 @@ function parseBlocks(lines: string[], loc: LineLoc): MdBlock[] {
     // A line that was only a layout tag leaves nothing, and must leave no gap.
     const spans = trimSpans(inlineSpans(joinProse(prose)));
     if (spans.length > 0) {
-      blocks.push({ kind: "paragraph", spans, ...offsets(loc, from, index) });
+      blocks.push({
+        kind: "paragraph",
+        spans,
+        ...(attribute(HTML_PARAGRAPH.exec(line)?.[1] ?? "", "align")?.toLowerCase() === "center"
+          ? { align: "center" as const }
+          : {}),
+        ...offsets(loc, from, index),
+      });
     }
   }
 
@@ -335,6 +363,7 @@ function startsBlock(line: string): boolean {
   return (
     FENCE.test(line) ||
     HEADING.test(line) ||
+    HTML_HEADING.test(line) ||
     RULE.test(line) ||
     QUOTE.test(line) ||
     ITEM.test(line) ||
@@ -457,6 +486,47 @@ function spansWith(text: string, strong: boolean, em: boolean): MdSpan[] {
       }
       const tag = HTML_TAG.exec(rest);
       const name = tag?.[2]?.toLowerCase() ?? "";
+      if (tag !== null && tag[1] === "" && name === "a") {
+        const close = /<\/a\s*>/i.exec(text.slice(index + tag[0].length));
+        const href = safeHref(attribute(tag[3] ?? "", "href") ?? "");
+        if (close !== null && href !== null) {
+          flush();
+          const contentStart = index + tag[0].length;
+          const content = text.slice(contentStart, contentStart + close.index);
+          for (const span of spansWith(content, strong, em)) {
+            if (span.kind === "image") spans.push({ ...span, href });
+            else if (span.kind === "text") {
+              spans.push({
+                kind: "link",
+                text: span.text,
+                href,
+                ...(span.strong ? { strong: true } : {}),
+                ...(span.em ? { em: true } : {}),
+              });
+            } else spans.push(span);
+          }
+          index = contentStart + close.index + close[0].length;
+          continue;
+        }
+      }
+      if (tag !== null && tag[1] === "" && ["b", "strong", "em", "i"].includes(name)) {
+        const close = new RegExp(String.raw`<\/${name}\s*>`, "i").exec(
+          text.slice(index + tag[0].length),
+        );
+        if (close !== null) {
+          flush();
+          const contentStart = index + tag[0].length;
+          spans.push(
+            ...spansWith(
+              text.slice(contentStart, contentStart + close.index),
+              strong || name === "b" || name === "strong",
+              em || name === "em" || name === "i",
+            ),
+          );
+          index = contentStart + close.index + close[0].length;
+          continue;
+        }
+      }
       if (tag !== null && name === "img" && tag[1] === "") {
         const attrs = tag[3] ?? "";
         const src = attribute(attrs, "src");

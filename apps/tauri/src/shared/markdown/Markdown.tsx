@@ -28,6 +28,7 @@ import {
 } from "./markdownBlocks";
 
 type MdText = Extract<MdSpan, { kind: "text" }>;
+type MdLink = Extract<MdSpan, { kind: "link" }>;
 
 type Draft = { start: number; end: number; text: string };
 
@@ -310,6 +311,7 @@ function BlockView(props: { block: MdBlock }) {
             component={HEADING_TAG[heading().level - 1] ?? "h6"}
             class="forge-md-heading"
             data-level={heading().level}
+            data-align={heading().align}
           >
             <Spans spans={heading().spans} />
           </Dynamic>
@@ -317,7 +319,7 @@ function BlockView(props: { block: MdBlock }) {
       </Match>
       <Match when={asKind(props.block, "paragraph")}>
         {(paragraph) => (
-          <p class="forge-md-p">
+          <p class="forge-md-p" data-align={paragraph().align}>
             <Spans spans={paragraph().spans} />
           </p>
         )}
@@ -359,7 +361,14 @@ function BlockView(props: { block: MdBlock }) {
       </Match>
       <Match when={asKind(props.block, "quote")}>
         {(quote) => (
-          <blockquote class="forge-md-quote">
+          <blockquote class="forge-md-quote" data-alert={quote().alert}>
+            <Show when={quote().alert}>
+              {(alert) => (
+                <strong class="forge-md-alert-title">
+                  {alert()[0].toUpperCase() + alert().slice(1)}
+                </strong>
+              )}
+            </Show>
             <Blocks blocks={quote().blocks} nested />
           </blockquote>
         )}
@@ -507,13 +516,26 @@ function Spans(props: { spans: MdSpan[] }) {
             {(code) => <code class="forge-md-inline-code">{code().text}</code>}
           </Match>
           <Match when={span.kind === "link" && span}>
-            {(link) => <ExternalLink href={link().href}>{link().text}</ExternalLink>}
+            {(link) => (
+              <ExternalLink href={link().href}>
+                <LinkText span={link()} />
+              </ExternalLink>
+            )}
           </Match>
           <Match when={span.kind === "image" && span}>{(image) => <Image span={image()} />}</Match>
           <Match when={span.kind === "text" && span}>{(text) => <Emphasis span={text()} />}</Match>
         </Switch>
       )}
     </For>
+  );
+}
+
+function LinkText(props: { span: MdLink }) {
+  const inner = () => (props.span.em ? <em>{props.span.text}</em> : props.span.text);
+  return (
+    <Show when={props.span.strong} fallback={inner()}>
+      {<strong>{inner()}</strong>}
+    </Show>
   );
 }
 
@@ -537,6 +559,7 @@ function ExternalLink(props: { href: string; children: JSX.Element }) {
 type ImageState =
   | { kind: "loading" }
   | { kind: "ready"; url: string }
+  | { kind: "blocked" }
   | { kind: "failed"; reason: string };
 
 function Image(props: { span: MdImage }) {
@@ -548,7 +571,7 @@ function Image(props: { span: MdImage }) {
     if (!load) return;
     const read = load(props.span.src);
     if (read === null) {
-      setState({ kind: "failed", reason: "This image cannot be shown here." });
+      setState({ kind: "blocked" });
       return;
     }
     let live = true;
@@ -587,7 +610,9 @@ function Image(props: { span: MdImage }) {
         data-state={current.kind}
         title={current.kind === "failed" ? current.reason : undefined}
       >
-        <Icon name={current.kind === "failed" ? "image-off" : "image"} size={12} />
+        <Show when={current.kind !== "blocked"}>
+          <Icon name={current.kind === "failed" ? "image-off" : "image"} size={12} />
+        </Show>
         {label()}
       </span>
     );

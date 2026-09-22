@@ -11,14 +11,12 @@ mod diagnostics;
 pub mod editor;
 pub mod editor_wire;
 pub mod environment;
-pub mod external_agents;
 mod file_index;
 mod file_watch;
 pub mod idle;
 pub mod juva;
 pub mod lockfile;
 pub mod logging;
-mod opencode_db;
 pub mod paths;
 pub mod pull_requests;
 pub mod registry;
@@ -30,6 +28,7 @@ pub mod terminfo;
 pub mod usage_stats;
 pub mod worktrees;
 
+pub use agents::history as external_agents;
 pub use core::Daemon;
 
 use std::path::PathBuf;

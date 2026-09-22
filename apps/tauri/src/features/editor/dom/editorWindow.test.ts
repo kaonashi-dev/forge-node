@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { MAX_WINDOW, OVERSCAN, sameWindow, scrollToShow, windowFor } from "./editorWindow";
+import {
+  MAX_WINDOW,
+  OVERSCAN,
+  sameWindow,
+  scrollForCaret,
+  scrollToShow,
+  windowFor,
+} from "./editorWindow";
+
+it("preserves manual scrolling on viewport answers but follows a moved caret", () => {
+  const caret = { line: 0, column: 0 };
+  expect(scrollForCaret(caret, caret, 10_000, 400, 20)).toBeNull();
+  expect(scrollForCaret({ line: 1, column: 0 }, caret, 10_000, 400, 20)).toBe(20);
+  expect(scrollForCaret(caret, undefined, 10_000, 400, 20)).toBe(0);
+});
 
 describe("windowFor", () => {
   it("mounts what is visible plus an overscan on each side", () => {

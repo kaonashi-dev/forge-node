@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { Viewport } from "./viewport";
+import { describe, expect, it, vi } from "vitest";
+import { rowColumns, Viewport } from "./viewport";
+import { wordAt } from "./selection";
 import type { CellsPayload, WireRow } from "../../contracts/terminal";
-import { DEFAULT_MODES } from "../../contracts/terminal";
+import { DEFAULT_MODES, FLAG_WIDE_CHAR } from "../../contracts/terminal";
 
 function row(...runs: WireRow["r"]): WireRow {
   return { w: false, r: runs };
@@ -101,5 +102,88 @@ describe("Viewport", () => {
     const viewport = new Viewport();
     viewport.apply(frame([[0, row()]], { full: true }));
     expect(viewport.columns(0)).toEqual([" ", " ", " ", " "]);
+  });
+});
+
+describe("rowColumns", () => {
+  it.each([
+    { text: "éβ", cols: 2, flags: 0, expected: ["é", "β"] },
+    { text: "𝒜𝒷", cols: 2, flags: 0, expected: ["𝒜", "𝒷"] },
+    { text: "漢", cols: 2, flags: FLAG_WIDE_CHAR, expected: ["漢", ""] },
+    { text: "😀", cols: 2, flags: FLAG_WIDE_CHAR, expected: ["😀", ""] },
+    { text: "e\u0301", cols: 1, flags: 0, expected: ["e\u0301"] },
+    { text: "e\u0301x", cols: 2, flags: 0, expected: ["e\u0301x", ""] },
+    { text: "👩‍💻", cols: 2, flags: FLAG_WIDE_CHAR, expected: ["👩‍💻", ""] },
+  ])("keeps $text aligned with individual cell reads", ({ text, cols, flags, expected }) => {
+    const line = row(["<", 1, -1, -2, 0], [text, cols, 3, 4, flags], [">", 1, -1, -2, 0]);
+    const viewport = new Viewport();
+    viewport.apply(frame([[0, line]], { cols: cols + 2, full: true }));
+    expect(viewport.columns(0)).toEqual(["<", ...expected, ">"]);
+    for (let offset = 0; offset < cols; offset++) {
+      expect(viewport.cellAt(0, offset + 1)).toEqual({
+        text: expected[offset],
+        fg: 3,
+        bg: 4,
+        flags,
+      });
+    }
+  });
+
+  it("preserves word selection across styles, combining text and wide continuation cells", () => {
+    const columns = rowColumns(
+      row(
+        [" src/", 5, -1, -2, 0],
+        ["e\u0301", 1, 3, -2, 0],
+        [".ts ", 4, -1, -2, 0],
+        ["漢", 2, -1, -2, FLAG_WIDE_CHAR],
+        ["x", 1, -1, -2, 0],
+      ),
+      14,
+    );
+    expect(wordAt(columns, 5)).toEqual([1, 8]);
+    expect(columns.slice(1, 9).join("")).toBe("src/e\u0301.ts");
+    expect(wordAt(columns, 9)).toEqual([9, 9]);
+    expect(wordAt(columns, 10)).toEqual([10, 10]);
+    expect(wordAt(columns, 11)).toEqual([11, 11]);
+    expect(wordAt(columns, 12)).toEqual([12, 12]);
+    expect(columns.slice(10).join("")).toBe("漢x ");
+  });
+
+  it("clips by columns without splitting surrogate pairs or changing whole-run fallback", () => {
+    const ordinary = row(["a𝒜b", 3, -1, -2, 0], ["later", 5, -1, -2, 0]);
+    expect(rowColumns(ordinary, 2)).toEqual(["a", "𝒜"]);
+    expect(rowColumns(row(["漢", 2, -1, -2, FLAG_WIDE_CHAR]), 1)).toEqual(["漢"]);
+    expect(rowColumns(row(["e\u0301x", 2, -1, -2, 0]), 1)).toEqual(["e\u0301x"]);
+    expect(rowColumns(ordinary, 0)).toEqual([]);
+    expect(rowColumns(null, 3)).toEqual([" ", " ", " "]);
+  });
+
+  it("decodes a long run once and skips runs beyond the requested columns", () => {
+    const text = "𝒜".repeat(200);
+    const hidden = "not visible";
+    const line = row([text, 200, -1, -2, 0], [hidden, hidden.length, -1, -2, 0]);
+    const iterate = String.prototype[Symbol.iterator];
+    let decoded = 0;
+    let hiddenReads = 0;
+    const iterator = vi
+      .spyOn(String.prototype, Symbol.iterator)
+      .mockImplementation(function* (this: string) {
+        const observed = String(this);
+        if (observed === hidden) hiddenReads++;
+        for (const codepoint of iterate.call(this)) {
+          if (observed === text) decoded++;
+          yield codepoint;
+        }
+        return undefined;
+      });
+    let columns: string[];
+    try {
+      columns = rowColumns(line, 200);
+    } finally {
+      iterator.mockRestore();
+    }
+    expect(columns).toEqual(Array(200).fill("𝒜"));
+    expect(decoded).toBe(200);
+    expect(hiddenReads).toBe(0);
   });
 });

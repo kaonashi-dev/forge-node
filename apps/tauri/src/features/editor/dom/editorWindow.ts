@@ -1,11 +1,15 @@
-/**
- * Which lines a DOM editor surface mounts, and where each one sits.
- *
- * Pure arithmetic, in its own module so a test can have it without Solid: a
- * window one line off is invisible until a person scrolls to the seam. The
- * browser composites the scroll; nothing here ever asks the host to repaint
- * a line that only moved.
- */
+import type { EditorPlace } from "../../../contracts/terminal";
+
+export function scrollForCaret(
+  caret: EditorPlace,
+  previous: EditorPlace | undefined,
+  scrollTop: number,
+  height: number,
+  lineHeight: number,
+): number | null {
+  if (previous?.line === caret.line && previous.column === caret.column) return null;
+  return scrollToShow(caret.line, scrollTop, height, lineHeight);
+}
 
 /**
  * Lines kept mounted above and below what is visible.

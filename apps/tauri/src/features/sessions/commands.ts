@@ -71,6 +71,22 @@ export async function newAgent(
   });
 }
 
+export async function launchBackgroundAgent(request: {
+  request_id: string;
+  workspace: string;
+  provider: string;
+  profile: string | null;
+  prompt: string;
+  parent: string | null;
+  read_only: boolean;
+}): Promise<void> {
+  await sendWorkbenchCommand({ type: "launch_agent", ...request });
+}
+
+export async function loadHandoffProgress(requestId: string, session: string): Promise<void> {
+  await sendWorkbenchCommand({ type: "load_handoff_progress", request_id: requestId, session });
+}
+
 export async function createChildSession(args: {
   parent: string;
   provider: string;

@@ -1,6 +1,4 @@
-// Theme tokens for the Tauri shell.
-
-import { contrast, derivedTokens, hex, mix, on, parseHex, pct } from "./mix";
+import { contrast, derivedTokens, hex, mix, on, parseHex, pct, readableColor } from "./mix";
 
 export type ThemeBaseId =
   | "gruvbox-hard"
@@ -197,21 +195,6 @@ export const palettes = {
       "#c0caf5",
     ],
   ),
-  /*
-   * The two light bases.
-   *
-   * Built to the same rules as the dark three and checked by the same tests:
-   * `ui.test.ts` holds text at 4.5 on every surface and the derived status
-   * foregrounds at 4.0 against their fills, in *every* base, so a light palette
-   * that reads badly fails rather than ships. What changes is the direction the
-   * derived tokens travel — `mix(bg, text, …)` darkens here instead of
-   * lightening — and that falls out of the formulas rather than being a second
-   * set of them.
-   *
-   * The colours are gruvbox's own light variant and a neutral grey/violet pair
-   * matching the dark `neutral`, so switching bases changes the ground without
-   * changing which hue means "danger".
-   */
   "gruvbox-light": palette(
     {
       bg: "#fbf1c7",
@@ -456,27 +439,12 @@ export const scale = {
   },
 } as const;
 
-/**
- * The semantic layer, generated from the same palettes.
- *
- * Two kinds of token live here. Most are theme-independent *forwards* onto the
- * legacy `--forge-*` names — `--bg-raised: var(--forge-surface)` — so the whole
- * 3.3k-line shell stylesheet kept resolving unchanged while `src/ui/` was rewritten
- * against the semantic names above it. The forwards are what `staticTokens`
- * emits; the aliases are retired the day the last `--forge-*` reader is gone.
- *
- * The derived foregrounds and soft tints are the exception: `--accent-fg` is
- * `on(accent)`, which depends on the base, so it is computed per theme in
- * `toCssVariables` and written inline like every other colour.
- */
+// Raw palette colours remain available to terminal rendering and theme export.
 const SEMANTIC_FORWARDS: Record<string, string> = {
   "--bg-base": "var(--forge-bg)",
   "--bg-subtle": "var(--forge-sidebar)",
   "--bg-raised": "var(--forge-surface)",
   "--bg-overlay": "var(--forge-surface-hi)",
-  "--fg-default": "var(--forge-text)",
-  "--fg-muted": "var(--forge-muted)",
-  "--fg-subtle": "var(--forge-faint)",
   "--border-subtle": "var(--forge-border)",
   "--border-default": "var(--forge-border-hi)",
   /*
@@ -494,6 +462,7 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--warning-solid": "var(--forge-amber)",
   "--attention-solid": "var(--forge-needs-you)",
   "--attention-soft": "var(--forge-needs-you-tint)",
+  "--info-solid": "var(--forge-blue)",
   "--ring": "var(--forge-focus-ring)",
   "--radius-xs": "var(--forge-radius-xs)",
   "--radius-sm": "var(--forge-radius-sm)",
@@ -515,25 +484,69 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--font-sans": "var(--forge-sans)",
 };
 
-/** Per-theme semantic colours that have to be *computed*, not forwarded. */
-function semanticColors(active: Palette): Record<string, string> {
+function semanticColors(
+  active: Palette,
+  interaction: Record<string, string>,
+): Record<string, string> {
   const bg = parseHex(active.bg);
   const text = parseHex(active.text);
-  const accent = parseHex(active.accent);
-  const accentFg = on(accent, bg, text);
-  const fg = (fill: string) => hex(on(parseHex(fill), bg, text));
-  const soft = (fill: string) => hex(mix(bg, parseHex(fill), pct(14)));
-  return {
-    "--accent-fg": hex(contrast(accentFg, accent) >= 4.5 ? accentFg : on(accent, 0, 0xffffff)),
-    "--accent-soft": hex(mix(bg, accent, pct(14))),
-    "--accent-solid-hover": hex(mix(accent, text, pct(12))),
-    "--danger-fg": fg(active.red),
-    "--danger-soft": soft(active.red),
-    "--success-fg": fg(active.green),
-    "--warning-fg": fg(active.amber),
-    "--attention-fg": fg(active.needsYou),
+  const roles = {
+    accent: active.accent,
+    danger: active.red,
+    success: active.green,
+    warning: active.amber,
+    attention: active.needsYou,
+    info: active.blue,
+  };
+  const soft = (fill: string) => mix(bg, parseHex(fill), pct(14));
+  const grounds = [
+    ...[
+      active.bg,
+      active.rail,
+      active.sidebar,
+      active.surface,
+      active.surfaceHi,
+      active.editor,
+    ].map(parseHex),
+    ...Object.entries(interaction)
+      .filter(([name]) => !name.includes("border"))
+      .map(([, value]) => parseHex(value)),
+    ...Object.values(roles).map(soft),
+  ];
+  const foreground = (fill: number) => {
+    const candidate = on(fill, bg, text);
+    return hex(contrast(candidate, fill) >= 4.5 ? candidate : on(fill, 0, 0xffffff));
+  };
+  const colors: Record<string, string> = {
+    "--fg-default": hex(readableColor(text, grounds, text)),
+    "--fg-muted": hex(readableColor(parseHex(active.muted), grounds, text)),
+    "--fg-subtle": hex(readableColor(parseHex(active.faint), grounds, text)),
+    "--accent-soft": hex(soft(active.accent)),
+    "--danger-soft": hex(soft(active.red)),
+    "--forge-focus-ring": hex(readableColor(parseHex(active.accent), grounds, text, 3)),
     "--border-strong": hex(mix(bg, text, pct(25))),
   };
+  for (const [role, color] of Object.entries(roles)) {
+    const fill = parseHex(color);
+    colors[`--${role}-fg`] = foreground(fill);
+    colors[`--${role}-text`] = hex(readableColor(fill, grounds, text));
+    if (role === "accent" || role === "danger") {
+      const hover = mix(fill, text, pct(12));
+      colors[`--${role}-solid-hover`] = hex(hover);
+      colors[`--${role}-hover-fg`] = foreground(hover);
+    }
+  }
+  for (const [role, color] of Object.entries({
+    added: active.gitAdded,
+    modified: active.gitModified,
+    deleted: active.gitDeleted,
+    untracked: active.gitUntracked,
+    conflict: active.gitConflict,
+    ignored: active.gitIgnored,
+  })) {
+    colors[`--git-${role}-text`] = hex(readableColor(parseHex(color), grounds, text));
+  }
+  return colors;
 }
 
 /**
@@ -582,21 +595,17 @@ export function toCssVariables(active: Palette): Record<string, string> {
   variables["--forge-mono-size"] = `${metrics.monoSize}px`;
   variables["--forge-mono-lh"] = String(metrics.monoLineHeight);
   variables["--forge-mono-line-height"] = String(metrics.monoLineHeight);
-  Object.assign(
-    variables,
-    derivedTokens({
-      bg: parseHex(active.bg),
-      text: parseHex(active.text),
-      sidebar: parseHex(active.sidebar),
-      editor: parseHex(active.editor),
-      accent: parseHex(active.accent),
-      amber: parseHex(active.amber),
-      needsYou: parseHex(active.needsYou),
-      gitAdded: parseHex(active.gitAdded),
-      gitDeleted: parseHex(active.gitDeleted),
-    }),
-    semanticColors(active),
-  );
+  const interaction = derivedTokens({
+    bg: parseHex(active.bg),
+    text: parseHex(active.text),
+    sidebar: parseHex(active.sidebar),
+    editor: parseHex(active.editor),
+    amber: parseHex(active.amber),
+    needsYou: parseHex(active.needsYou),
+    gitAdded: parseHex(active.gitAdded),
+    gitDeleted: parseHex(active.gitDeleted),
+  });
+  Object.assign(variables, interaction, semanticColors(active, interaction));
   return variables;
 }
 

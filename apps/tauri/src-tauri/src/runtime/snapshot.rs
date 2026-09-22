@@ -111,12 +111,15 @@ pub struct SessionAttentionFlags {
     pub unread: bool,
 }
 
-fn session_wants_you(store: &Store, session: &Session) -> bool {
+/// The terminal on screen never asks: the user is already looking at whatever
+/// it wanted. `client::Store` keeps the mark until it is answered, so leaving
+/// the session without answering is what surfaces it here.
+fn session_wants_you(store: &Store, session: &Session, attached: Option<TerminalId>) -> bool {
     session.agent_provider_id.is_some()
         && session.state.is_active()
-        && session
-            .terminal_id
-            .is_some_and(|terminal_id| store.wants_attention(&terminal_id))
+        && session.terminal_id.is_some_and(|terminal_id| {
+            Some(terminal_id) != attached && store.wants_attention(&terminal_id)
+        })
 }
 
 fn session_unread(store: &Store, session: &Session) -> bool {
@@ -167,7 +170,7 @@ pub struct ShellSnapshot {
 }
 
 impl ShellSnapshot {
-    pub fn from_store(store: &Store) -> Self {
+    pub fn from_store(store: &Store, attached: Option<TerminalId>) -> Self {
         let live_sessions = store
             .sessions
             .iter()
@@ -185,7 +188,7 @@ impl ShellSnapshot {
                 (
                     session.id,
                     SessionAttentionFlags {
-                        wants_you: session_wants_you(store, session),
+                        wants_you: session_wants_you(store, session, attached),
                         unread: session_unread(store, session),
                     },
                 )
@@ -282,7 +285,7 @@ mod tests {
 
     #[test]
     fn empty_store_still_offers_a_terminal() {
-        let snapshot = ShellSnapshot::from_store(&Store::new());
+        let snapshot = ShellSnapshot::from_store(&Store::new(), None);
         assert_eq!(snapshot.launchables.len(), 1);
         assert_eq!(snapshot.launchables[0].kind, LaunchKind::Shell);
         assert!(snapshot.launchables[0].enabled);

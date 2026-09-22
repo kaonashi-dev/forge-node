@@ -97,7 +97,7 @@ export function Select<T>(props: SelectProps<T>) {
       </Kobalte.Trigger>
       <Kobalte.Portal>
         <Kobalte.Content class="context-menu forge-select-content">
-          <Kobalte.Listbox />
+          <Kobalte.Listbox class="forge-select-listbox" />
         </Kobalte.Content>
       </Kobalte.Portal>
     </Kobalte>

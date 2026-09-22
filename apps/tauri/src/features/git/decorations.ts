@@ -87,5 +87,8 @@ export function startDecorationEffects(): () => void {
   return () => {
     unsubscribe();
     disposeRoot();
+    clearTimeout(pending);
+    pending = undefined;
+    queued = undefined;
   };
 }

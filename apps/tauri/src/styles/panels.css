@@ -86,7 +86,7 @@
 .git-detached {
   background: color-mix(in srgb, var(--warning-solid) 16%, var(--bg-base));
   border-radius: var(--radius-xs);
-  color: var(--warning-solid);
+  color: var(--warning-text);
   flex: none;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -149,7 +149,7 @@
   justify-content: space-between;
 }
 .git-conflict-code {
-  color: var(--forge-git-conflict);
+  color: var(--git-conflict-text);
   font-size: var(--text-xs);
   min-width: 0;
   overflow: hidden;
@@ -168,7 +168,7 @@
   gap: var(--space-8);
 }
 .git-status {
-  color: var(--forge-git-modified);
+  color: var(--git-modified-text);
   flex: none;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -176,10 +176,10 @@
 }
 .git-status[data-status="Added"],
 .git-status[data-status="Untracked"] {
-  color: var(--forge-git-added);
+  color: var(--git-added-text);
 }
 .git-status[data-status="Deleted"] {
-  color: var(--forge-git-deleted);
+  color: var(--git-deleted-text);
 }
 .git-counts {
   display: flex;
@@ -189,10 +189,10 @@
   gap: var(--space-6);
 }
 .git-counts .added {
-  color: var(--forge-git-added);
+  color: var(--git-added-text);
 }
 .git-counts .deleted {
-  color: var(--forge-git-deleted);
+  color: var(--git-deleted-text);
 }
 
 .tree-git {
@@ -203,19 +203,19 @@
   text-align: center;
 }
 .tree-git-added {
-  color: var(--forge-git-added);
+  color: var(--git-added-text);
 }
 .tree-git-modified {
-  color: var(--forge-git-modified);
+  color: var(--git-modified-text);
 }
 .tree-git-deleted {
-  color: var(--forge-git-deleted);
+  color: var(--git-deleted-text);
 }
 .tree-git-untracked {
-  color: var(--forge-git-untracked);
+  color: var(--git-untracked-text);
 }
 .tree-git-conflict {
-  color: var(--forge-git-conflict);
+  color: var(--git-conflict-text);
 }
 /* A folded directory says how much is changed under it; without the roll-up a
    collapsed `src/` looks as clean as an untouched one. */
@@ -223,20 +223,20 @@
    The tone matches `.tree-git-*` exactly — one path cannot be one colour in
    its mark and another in its label. */
 .tree-label[data-git="added"] {
-  color: var(--forge-git-added);
+  color: var(--git-added-text);
 }
 .tree-label[data-git="modified"] {
-  color: var(--forge-git-modified);
+  color: var(--git-modified-text);
 }
 .tree-label[data-git="deleted"] {
-  color: var(--forge-git-deleted);
+  color: var(--git-deleted-text);
   text-decoration: line-through;
 }
 .tree-label[data-git="untracked"] {
-  color: var(--forge-git-untracked);
+  color: var(--git-untracked-text);
 }
 .tree-label[data-git="conflict"] {
-  color: var(--forge-git-conflict);
+  color: var(--git-conflict-text);
 }
 
 .tree-git-count {
@@ -266,7 +266,7 @@
 .file-search-group > ul {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--space-1);
   list-style: none;
   margin: 0;
   padding: 0;
@@ -321,19 +321,12 @@
 .filter-search .panel-search {
   flex: 1;
 }
-/* `.panel-search` and the other field classes name the wrapper `TextField`
-   renders, so what they set goes to the control inside it. */
 .panel-search {
   min-width: 0;
 }
-.panel-search .forge-field {
-  border-color: var(--border-subtle);
-  height: var(--control-sm);
-  padding: 0 var(--space-8);
-}
 .history-provider,
 .pr-number {
-  color: var(--accent-solid);
+  color: var(--accent-text);
   flex: none;
   font-size: var(--text-xs);
 }
@@ -351,9 +344,9 @@
   border-radius: var(--radius-xs);
   color: var(--fg-muted);
   display: inline-flex;
-  height: var(--forge-control-xs);
+  height: var(--control-xs);
   justify-content: center;
-  width: var(--forge-control-xs);
+  width: var(--control-xs);
 }
 .history-more:hover {
   background: var(--bg-hover);
@@ -381,13 +374,13 @@
   flex: 1;
 }
 .pr-decision {
-  color: var(--warning-solid);
+  color: var(--warning-text);
 }
 /* The editor's find colours — amber underline, amber wash — so a hit reads the
    same in the sidebar, the Search tab and the buffer it opens. */
 .search-hit {
-  background: color-mix(in srgb, var(--forge-amber) 28%, transparent);
+  background: color-mix(in srgb, var(--warning-solid) 28%, transparent);
   border-radius: var(--radius-2xs);
-  box-shadow: inset 0 -1px 0 var(--forge-amber);
+  box-shadow: inset 0 -1px 0 var(--warning-solid);
   color: inherit;
 }

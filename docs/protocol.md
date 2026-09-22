@@ -98,7 +98,7 @@ DaemonMessage::Event    (DaemonEvent)
 
 | Group | Request | Answer / side effect |
 |-------|---------|----------------------|
-| Global | `GetSnapshot` | `Response::Snapshot { project_groups, projects, workspaces, sessions, providers, agent_profiles, share_rules, worktree_ignores, app_state, external_agents, pull_requests, usage }` — the full initial state. `pull_requests` is served from the daemon's cache and is **never** a network read: a snapshot is the first thing a reconnecting GUI asks for, and it must not wait on GitHub. |
+| Global | `GetSnapshot` | `Response::Snapshot { project_groups, projects, workspaces, sessions, providers, agent_profiles, worktree_shares, worktree_ignores, app_state, external_agents, pull_requests, usage }` — the full initial state. `pull_requests` is served from the daemon's cache and is **never** a network read: a snapshot is the first thing a reconnecting GUI asks for, and it must not wait on GitHub. |
 | | `StopDaemon { kill_sessions }` | Refuses if sessions run and `kill_sessions = false`; else `DaemonShuttingDown` to all. |
 | | `FactoryReset` | Stops every session, transactionally clears the Forge metadata database, force-removes worktrees created by Forge, and broadcasts `FactoryReset` so clients bootstrap again. Repository files, branches, commits, `config.toml` and logs are retained. |
 | | `GetAppState { key }` / `SetAppState { key, value }` | Opaque key/value for GUI layout etc. `GetAppState` answers `Response::AppState { value }`. |
@@ -139,7 +139,7 @@ DaemonMessage::Event    (DaemonEvent)
 | | `OverwriteEditorBuffer { session_id }` | Keep mine: ask the editor to send its draft again → `Ack`. The daemon learned the disk's revision when it refused, so that write is the one that lands. |
 | | `SetEditorAutosave { session_id, autosave }` | Turn saving-on-a-pause on or off for a live editor session → `Ack`. The caller's own preference; the daemon carries it across and holds no opinion about it. |
 | | `RevealInEditorSession { session_id, line, column }` | Moves the caret in a live editor session → `Ack`. What a second jump into an already-open file does, instead of opening a rival session. `NotFound` when no editor holds that id, `PreconditionFailed` when its command queue is saturated — the caller retries rather than the request id being dropped. |
-| | `CreateChildSession { parent_session_id, kind, provider_id, profile_id, role, workspace_policy, initial_prompt }` | Child under a parent; workspace chosen by `ChildWorkspacePolicy`. `SameWorkspace` and `ExistingWorkspace` work; `NewManagedWorktree` is rejected with `InvalidRequest` (not wired yet). `initial_prompt` seeds an agent child. |
+| | `CreateChildSession { parent_session_id, kind, provider_id, profile_id, role, workspace_policy, initial_prompt }` | Child under a parent; workspace chosen by `ChildWorkspacePolicy`: `SameWorkspace`, `ExistingWorkspace`, or `NewManagedWorktree { branch_hint, base }`. The latter creates the workspace first and generates a branch when the hint is absent or blank. `initial_prompt` seeds an agent child. |
 | | `KillSession { session_id }` | Signals the process group; `SessionUpdated` → `Exited` when the PTY closes. |
 | | `CloseSession { session_id }` | Removes the session. **Rejected while active** (`PreconditionFailed`). Children re-parent to the grandparent (`SessionUpdated` for each), then `SessionRemoved { session_id }` is broadcast. |
 | | `RestartSession { session_id }` | Only from `Exited`/`Failed`/`Orphaned`; new `TerminalId`. |
@@ -173,6 +173,25 @@ DaemonMessage::Event    (DaemonEvent)
 | | `ListProviderUsage` | `Response::ProviderUsage(Vec<ProviderUsage>)` — each *account's* remaining allowance, read from its own endpoint or CLI (§16.2): the default login of every provider that declares a source, plus one reading per launch profile that moved the config directory, each stamped with its `profile_id`. Re-read rather than served from the cache, and also broadcast as `ProviderUsageChanged` so every client sees the same reading. A provider that declares no source is simply absent. |
 | | `GetUsageAnalytics { window_days }` | `Response::UsageAnalytics(Box<UsageAnalytics>)` — what the agents on this machine actually spent, counted off their own transcripts (§16.2). Local and **synchronous**, like `GetWorkspaceDiff`, and a read in the same sense: nothing is broadcast and nothing is stored. The daemon caches the scan for 60 s per window, because it is line-by-line IO over every recent transcript. `window_days: None` takes the reader's default (30) and an over-large value is clamped, never refused. |
 
+### Change workflows and headless editor
+
+| Request | Answer / side effect |
+|---------|----------------------|
+| `GetChangeContext { workspace_id }` | Synchronous `Response::ChangeContext`: status and patch context for drafting. |
+| `GetSessionChanges { session_id }` | Synchronous `Response::SessionChanges`: summary since the recorded baseline, without patches. |
+| `GetWorkspaceReview { workspace_id, context_lines }` | Synchronous `Response::WorkspaceReview`: one checkout diff against the common baseline of its sessions. |
+| `GetExternalTranscript { session_id, provider, profile_id, max_turns, max_bytes }` | Synchronous `Response::ExternalTranscript`; resolves a discovered run by identity rather than accepting an arbitrary path. |
+| `DeleteExternalSession { session_id, provider, profile_id }` | `Ack` after deleting that run's transcript/artifacts; refuses stores that cannot safely remove one run. |
+| `DraftWithJuva { workspace_id, kind }` | `Ack` on start, then `JuvaDraftReady`; coalesced per workspace. Remote drafting falls back to deterministic local text. |
+| `GetRebaseState { workspace_id }` | Synchronous `Response::RebaseState` read from Git's current sequencer/index state. |
+| `ContinueRebase { workspace_id }` | Synchronous `Response::RebaseState`, including a replay that stopped at its next conflict. |
+| `AbortRebase { workspace_id }` | Local mutation, `Ack`; refreshes workspace status. Discards resolutions made during the stopped operation. |
+| `MarkConflictResolved { workspace_id, paths }` | Stages literal checkout-relative paths, then answers `Response::RebaseState`. |
+| `CreateCommit { workspace_id, message }` | Stages all changes and creates a local commit, then `Ack` and workspace status refresh. Does not push. |
+| `CreatePullRequest { workspace_id, title, body, base }` | `Ack` on start, then `PullRequestOpened`; explicitly pushes before opening through `gh`, coalesced per workspace. |
+| `SendEditorInput { session_id, events }` | `Ack` after queueing bounded structured input for the DOM editor; `PreconditionFailed` on a saturated editor queue. |
+| `SetEditorView { session_id, first_line, line_count }` | `Ack` after queueing a bounded line-window request; rendered content arrives in `EditorFrame`. |
+
 Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 `Subscribe`/`Unsubscribe` (attach *is* the subscription).
 
@@ -188,6 +207,11 @@ Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 
 | Event | Notes |
 |-------|-------|
+| `FactoryReset` | Discard the metadata replica and bootstrap again. |
+| `ClipboardStore { terminal_id, text }` | A terminal's OSC 52 clipboard write; clipboard reads are not exposed to the child. |
+| `EditorFrame { session_id, frame }` | A bounded line window for the passive DOM editor surface. |
+| `ProviderUsageChanged { usage }` | Replaces all account allowance readings; never merge with the old set. |
+| `JuvaDraftReady { workspace_id, draft, fell_back }` | Completion of `DraftWithJuva`, with editable text and whether a configured remote endpoint fell back. |
 | `ProjectAdded` / `ProjectUpdated` / `ProjectRemoved { project_id }` | Full object on add/update. |
 | `ProjectGroupCreated` / `ProjectGroupUpdated` / `ProjectGroupRemoved { project_group_id }` | Organizational metadata only. |
 | `WorkspaceCreated` / `WorkspaceUpdated` / `WorkspaceRemoved { workspace_id }` | |

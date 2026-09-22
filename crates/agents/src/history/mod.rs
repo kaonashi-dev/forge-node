@@ -19,6 +19,15 @@ use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+mod bounded;
+mod codex;
+mod cursor;
+mod grok;
+mod opencode_db;
+
+#[cfg(test)]
+mod provider_tests;
+
 /// Provider slug reported on Claude Code sessions.
 const CLAUDE_PROVIDER: &str = "claude";
 /// Provider slug reported on opencode sessions.
@@ -118,23 +127,30 @@ impl Cache {
     }
 }
 
-/// A stable digest of the directories a scan covers — the ones it looks *for*
-/// and the accounts it looks *in*, so saving a profile shows its history at
-/// once rather than after the TTL.
 fn fingerprint(projects: &[Project], workspaces: &[Workspace], profiles: &[AgentProfile]) -> u64 {
-    // Sorted so the hash does not depend on `HashMap` iteration order, which
-    // varies run to run and would defeat the cache entirely.
-    let mut keys: Vec<&Path> = projects
-        .iter()
-        .map(|p| p.root_path.as_path())
-        .chain(workspaces.iter().map(|w| w.path.as_path()))
-        .chain(profiles.iter().filter_map(|p| p.config_dir.as_deref()))
-        .collect();
+    let mut keys: Vec<_> = projects.iter().map(|p| (p.id, &p.root_path)).collect();
     keys.sort_unstable();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    keys.len().hash(&mut hasher);
-    for key in keys {
-        key.hash(&mut hasher);
+    keys.hash(&mut hasher);
+    let mut keys: Vec<_> = workspaces
+        .iter()
+        .map(|w| (w.id, w.project_id, &w.path))
+        .collect();
+    keys.sort_unstable();
+    keys.hash(&mut hasher);
+    let mut keys: Vec<_> = profiles
+        .iter()
+        .map(|p| (p.id, p.provider_id.as_str(), &p.config_dir))
+        .collect();
+    keys.sort_unstable();
+    keys.hash(&mut hasher);
+    for variable in [
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "GROK_HOME",
+        "XDG_DATA_HOME",
+    ] {
+        std::env::var_os(variable).hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -162,35 +178,85 @@ pub fn discover(
     let Some(home) = home_dir() else {
         return Vec::new();
     };
-    // `CLAUDE_CONFIG_DIR` for Claude Code and `XDG_DATA_HOME` for opencode are
-    // what a profile moves, so each account is a store of its own.
-    let claude = accounts(&home.join(".claude"), CLAUDE_PROVIDER, profiles, &home, "");
+    discover_in(&home, projects, workspaces, profiles)
+}
+
+fn discover_in(
+    home: &Path,
+    projects: &[Project],
+    workspaces: &[Workspace],
+    profiles: &[AgentProfile],
+) -> Vec<ExternalAgentSession> {
+    let roots = roots(projects, workspaces);
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let claude = accounts(
+        &default_dir(home, "CLAUDE_CONFIG_DIR", ".claude"),
+        CLAUDE_PROVIDER,
+        profiles,
+        home,
+        "",
+    );
     let opencode = accounts(
-        &opencode_data_dir(&home),
+        &opencode_data_dir(home),
         OPENCODE_PROVIDER,
         profiles,
-        &home,
+        home,
         "opencode",
     );
 
     let mut out = Vec::new();
-    for root in roots(projects, workspaces) {
+    for root in &roots {
         for account in &claude {
             let found = out.len();
-            discover_claude(&account.dir, &root, &mut out);
+            discover_claude(&account.dir, root, &mut out);
             stamp_account(&mut out[found..], account);
         }
         for account in &opencode {
             let found = out.len();
-            discover_opencode(&account.dir, &root, &mut out);
+            discover_opencode(&account.dir, root, &mut out);
             stamp_account(&mut out[found..], account);
         }
     }
-    // The same session can only be found twice if two accounts resolve to one
-    // directory — a profile pointing at the default one. List it once.
+    for (provider, variable, fallback, scan) in [
+        (
+            "codex",
+            "CODEX_HOME",
+            ".codex",
+            codex::discover as fn(&Path, &[Root], &mut Vec<ExternalAgentSession>),
+        ),
+        ("grok", "GROK_HOME", ".grok", grok::discover),
+        ("cursor", "", ".cursor", cursor::discover),
+    ] {
+        for account in accounts(
+            &default_dir(home, variable, fallback),
+            provider,
+            profiles,
+            home,
+            "",
+        ) {
+            let found = out.len();
+            scan(&account.dir, &roots, &mut out);
+            stamp_account(&mut out[found..], &account);
+        }
+    }
     let mut seen = HashSet::new();
-    out.retain(|session| seen.insert((session.provider.clone(), session.session_id.clone())));
+    out.retain(|session| {
+        seen.insert((
+            session.provider.clone(),
+            session.profile_id,
+            session.session_id.clone(),
+        ))
+    });
     out
+}
+
+fn default_dir(home: &Path, variable: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(fallback))
 }
 
 /// One store of transcripts, and the login it belongs to.
@@ -560,8 +626,8 @@ fn discover_opencode_databases(
 ) -> HashSet<String> {
     let mut recorded = HashSet::new();
     let directories = path_spellings(&root.path);
-    for db in crate::opencode_db::databases(data) {
-        for session in crate::opencode_db::sessions(&db, &directories, SCAN_LIMIT) {
+    for db in opencode_db::databases(data) {
+        for session in opencode_db::sessions(&db, &directories, SCAN_LIMIT) {
             if !recorded.insert(session.id.clone()) {
                 continue;
             }
@@ -589,7 +655,7 @@ fn path_spellings(path: &Path) -> Vec<String> {
 /// Turn one database row into the card the panel draws.
 fn opencode_db_session(
     db: &Path,
-    session: crate::opencode_db::DbSession,
+    session: opencode_db::DbSession,
     root: &Root,
 ) -> ExternalAgentSession {
     let started_at = millis_to_ts(session.created_ms).unwrap_or_else(now);
@@ -860,12 +926,27 @@ pub fn read_transcript(
     max_turns: u32,
     max_bytes: usize,
 ) -> ExternalTranscript {
-    let limit = max_turns as usize;
+    let limit = max_turns.min(MAX_EXTERNAL_TURNS) as usize;
     // One more than the caller asked for: a reader that stops exactly at the
     // limit cannot tell a conversation that fit from one that was cut, and
     // `truncated` would always read false.
     let probe = limit.saturating_add(1);
+    let mut incomplete = false;
     let turns = match (session.provider.as_str(), session.store) {
+        ("codex", _) => {
+            let read = codex::turns(&session.transcript_path, probe);
+            incomplete = read.truncated;
+            read.turns
+        }
+        ("grok", _) => {
+            let read = grok::turns(&session.transcript_path, probe);
+            incomplete = read.truncated;
+            read.turns
+        }
+        ("cursor", _) => {
+            incomplete = true;
+            cursor::turns(&session.transcript_path, probe)
+        }
         (CLAUDE_PROVIDER, _) => claude_turns(&session.transcript_path, probe),
         (OPENCODE_PROVIDER, TranscriptStore::SharedDatabase) => {
             opencode_db_turns(&session.transcript_path, &session.session_id, probe)
@@ -879,28 +960,33 @@ pub fn read_transcript(
     let from = turns.len().saturating_sub(limit);
     let turns = &turns[from..];
 
-    let mut kept = 0usize;
+    let mut pieces = Vec::new();
     let mut size = 0usize;
     for turn in turns.iter().rev() {
-        let next = size + turn.speaker.len() + 2 + turn.text.len() + 2;
-        if kept > 0 && next > max_bytes {
+        let separator = if pieces.is_empty() { 0 } else { 2 };
+        let prefix = turn.speaker.len() + 2;
+        let available = max_bytes.saturating_sub(size + separator);
+        if prefix > available || (!pieces.is_empty() && prefix + turn.text.len() > available) {
+            incomplete = true;
             break;
         }
-        size = next;
-        kept += 1;
+        let mut end = turn.text.len().min(available - prefix);
+        while !turn.text.is_char_boundary(end) {
+            end -= 1;
+        }
+        incomplete |= end < turn.text.len();
+        pieces.push(format!("{}: {}", turn.speaker, &turn.text[..end]));
+        size += separator + prefix + end;
     }
-
-    let text = turns[turns.len() - kept..]
-        .iter()
-        .map(|turn| format!("{}: {}", turn.speaker, turn.text))
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let kept = pieces.len();
+    pieces.reverse();
+    let text = pieces.join("\n\n");
 
     ExternalTranscript {
         session_id: session.session_id.clone(),
         text,
         turns: u32::try_from(kept).unwrap_or(u32::MAX),
-        truncated: kept < turns.len() || from > 0,
+        truncated: incomplete || kept < turns.len() || from > 0,
     }
 }
 
@@ -981,7 +1067,7 @@ fn opencode_turns(transcript: &Path, session_id: &str) -> Vec<Turn> {
 /// Every readable turn recorded for a run in an opencode database, oldest
 /// first. Read-only, like every other query against that file.
 fn opencode_db_turns(db: &Path, session_id: &str, limit: usize) -> Vec<Turn> {
-    crate::opencode_db::conversation(db, session_id, limit)
+    opencode_db::conversation(db, session_id, limit)
         .into_iter()
         .map(|turn| Turn {
             speaker: if turn.role == "assistant" {
@@ -1011,7 +1097,7 @@ pub enum DeleteError {
 /// Remove a discovered run's transcript and the artifacts recorded beside it.
 ///
 /// Never the checkout, never a daemon session row, and never a shared store:
-/// [`crate::opencode_db`] opens opencode's database read-only and says why, so
+/// [`opencode_db`] opens opencode's database read-only and says why, so
 /// a run recorded there is refused rather than deleted one row at a time.
 ///
 /// Sibling artifacts are best effort — a run with no subagents has no directory
@@ -1023,8 +1109,11 @@ pub fn delete_transcript(session: &ExternalAgentSession) -> Result<(), DeleteErr
     }
     let path = &session.transcript_path;
     match session.provider.as_str() {
+        "cursor" | "grok" => return bounded::delete_session_directory(session),
+        "codex" => {}
         OPENCODE_PROVIDER => delete_opencode_siblings(path, &session.session_id),
-        _ => delete_claude_siblings(path, &session.session_id),
+        CLAUDE_PROVIDER => delete_claude_siblings(path, &session.session_id),
+        _ => return Err(DeleteError::Io("Unknown transcript provider".to_owned())),
     }
     std::fs::remove_file(path).map_err(|error| DeleteError::Io(error.to_string()))
 }

@@ -53,9 +53,14 @@ pub fn search_names(tree: &FileTree, query: &str, limit: usize) -> SearchResults
             ))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let rank =
+        |a: &(u32, u32, &FileEntry), b: &(u32, u32, &FileEntry)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
     let truncated = tree.truncated || scored.len() > limit;
-    scored.truncate(limit);
+    if scored.len() > limit {
+        scored.select_nth_unstable_by(limit, rank);
+        scored.truncate(limit);
+    }
+    scored.sort_unstable_by(rank);
     SearchResults {
         matches: scored
             .into_iter()
@@ -162,5 +167,35 @@ mod tests {
     fn an_empty_query_does_not_invent_hits() {
         let hits = search_names(&tree(&["a.rs"]), "  ", 10);
         assert!(hits.matches.is_empty());
+    }
+
+    #[test]
+    fn limited_results_preserve_full_ranking_and_tie_order() {
+        let paths: Vec<String> = (0..150)
+            .map(|i| match i % 3 {
+                0 => format!("src/{i:03}/entries.ts"),
+                1 => format!("src/entries/{i:03}.ts"),
+                _ => format!("entries/{i:03}/entries.test.ts"),
+            })
+            .collect();
+        let mut tree = tree(&paths.iter().map(String::as_str).collect::<Vec<_>>());
+        tree.entries[0].ignored = true;
+        tree.entries[1].kind = EntryKind::Directory;
+
+        for query in ["entries", "entries.ts", "src/entries", "missing"] {
+            let full = search_names(&tree, query, MAX_SEARCH_RESULTS);
+            assert!(!full.truncated);
+            for limit in [1, 2, 17, 100, 149, MAX_SEARCH_RESULTS] {
+                let limited = search_names(&tree, query, limit);
+                assert_eq!(
+                    limited.matches,
+                    full.matches[..limit.min(full.matches.len())],
+                    "{query}, limit={limit}"
+                );
+                assert_eq!(limited.truncated, full.matches.len() > limit);
+            }
+        }
+        tree.truncated = true;
+        assert!(search_names(&tree, "missing", MAX_SEARCH_RESULTS).truncated);
     }
 }

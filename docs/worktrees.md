@@ -107,8 +107,9 @@ application name there) and can be changed in
 `ListBranches { project_id }` → `Response::Branches { branches, remotes,
 default_branch }`. It is a **local read**: `for-each-ref` over `refs/heads` and
 `refs/remotes`, sorted `-committerdate`, plus `remote -v` and `origin/HEAD`. It
-never opens a socket, so it is safe to call from the GUI thread that also
-carries keystrokes.
+never opens a socket, but its Git subprocesses can still block. The GUI runs
+this synchronous read on the separate [workbench worker](./architecture.md),
+away from the thread carrying keystrokes.
 
 Each `BranchRef` carries `checked_out_in: Option<WorkspaceId>`, filled in by the
 daemon from its own workspace model. Git refuses to check the same branch out
@@ -124,10 +125,9 @@ standing for the remote's default branch, not a branch of its own.
 Acks **immediately** and reports through `DaemonEvent::RemoteRefsUpdated
 { project_id, remote, updated, error }`. The ack means *started*, not *done*.
 
-This is the only asynchronous request in the daemon, and the reason is on the
-client side: the GUI drains one command channel on one thread, and that channel
-also carries `RuntimeCommand::Input` — every keystroke. A synchronous fetch
-would freeze typing for as long as the network took.
+Like `CreatePullRequest`, `RefreshPullRequests` and `DraftWithJuva`, fetch uses
+the ack-on-start, event-on-completion model. Network work runs on a daemon
+worker so the initiating request does not wait for it.
 
 A fetch already in flight for the same project is **coalesced, not queued**
 (`Inner::fetching`): the second request acks and rides the first one's result.
@@ -157,9 +157,9 @@ provide:
 The result is that a failed fetch reaches the GUI as `Permission denied
 (publickey)`, not as `Timeout`.
 
-Nothing in `git-service` writes to a remote. `push` is not implemented, and that
-is a decision, not a gap: a daemon that can push is a daemon that can lose
-someone's work from a background thread.
+An explicit `CreatePullRequest` pushes the workspace branch through
+`git_service::run_git_network` before opening the PR with `gh`. Sweepers never
+push; committing alone remains local.
 
 ## Create (§14.3, `CreateWorktree { project_id, branch, base, name }`)
 
@@ -174,15 +174,13 @@ someone's work from a background thread.
 | exists, not checked out elsewhere | `git worktree add -- <path> <branch>` |
 | exists, checked out in another worktree | `GitError::Conflict` carrying that worktree's path → `ErrorCode::Conflict` |
 
-5. **Provision it** (see below).
-6. Persist the `Workspace { kind: GitWorktree, managed_by_app: true }` and
-   broadcast `WorkspaceCreated`.
+5. Persist the `Workspace { kind: GitWorktree, managed_by_app: true }` and
+    broadcast `WorkspaceCreated`.
+6. Start background provisioning (see below); its outcome is `SharesApplied`.
 
-The request is acked before that broadcast, so the GUI cannot open the new
-checkout on the reply: `app_shell` keeps the branch it asked for in
-`pending_worktree` and enters the workspace when it arrives with that branch on
-it ([ui.md](./ui.md#branches-are-workspaces-143)). Matching by branch is sound
-because the picker never offers one that is already checked out.
+The `Ack` does not contain the workspace or guarantee provisioning has finished.
+Clients discover the workspace through `WorkspaceCreated` and must not assume
+that the response arrives before that event.
 
 ### Checking out a remote branch needs no `--track`
 
@@ -265,11 +263,9 @@ refusing to hand it over because a script exited 1 would leave the user worse
 off than handing over a checkout that needs a second look. A rule that cannot
 be applied becomes a `Skip` with a note, and problems become `DaemonNotice`s.
 
-`ChildWorkspacePolicy::NewManagedWorktree` (§8.2) exists in the protocol but is
-**not implemented**: `CreateChildSession` rejects it with `InvalidRequest`
-("NewManagedWorktree child policy not wired in MVP UI path"). Only
-`SameWorkspace` and `ExistingWorkspace` work today; creating the worktree first
-with `CreateWorktree` and then the child in it is the available path.
+`CreateChildSession` also accepts `ChildWorkspacePolicy::NewManagedWorktree`:
+the daemon creates the workspace before the child, using `branch_hint` and
+`base` when supplied. A missing or blank branch hint gets a generated branch.
 
 ## Remove (§14.4, `RemoveWorktree { workspace_id, force }`)
 

@@ -112,6 +112,7 @@ export function KeyboardSection() {
         <FilterHeader
           label="Filter shortcuts"
           placeholder="Filter by name or chord…"
+          size="md"
           query={query()}
           onQuery={setQuery}
         />

@@ -116,9 +116,10 @@ impl Syntax {
     /// and stops on the first line boundary below it that both scans agree is
     /// top level: a span is a column pair inside its own line, so everything
     /// past that point is reusable exactly as it stands.
+    /// Consumes the previous scan to retain untouched span allocations.
     #[must_use]
     pub fn edited(
-        &self,
+        mut self,
         text: &str,
         grammar: Grammar,
         first_line: usize,
@@ -146,25 +147,19 @@ impl Syntax {
         });
         out.run(grammar);
 
-        let mut lines = self.lines[..from.min(self.lines.len())].to_vec();
-        let mut safe = self.safe[..from.min(self.safe.len())].to_vec();
         let scanned = from..out.stopped.unwrap_or(from + out.lines.len());
-        lines.extend(out.lines);
-        safe.extend(out.safe);
-        if let Some(stop) = out.stopped {
-            // The scanner emitted the stopping line itself; the tail below it
-            // is the previous scan's, shifted by the lines the edit moved.
-            let old = usize::try_from(stop as isize - line_delta).unwrap_or(0);
-            lines.truncate(stop);
-            safe.truncate(stop);
-            lines.extend_from_slice(self.lines.get(old..).unwrap_or_default());
-            safe.extend_from_slice(self.safe.get(old..).unwrap_or_default());
-        }
-        Self {
-            lines,
-            safe,
-            scanned,
-        }
+        let old_end = if let Some(stop) = out.stopped {
+            // The checkpoint row belongs to the reusable tail, not the replacement.
+            out.lines.truncate(stop - from);
+            out.safe.truncate(stop - from);
+            usize::try_from(stop as isize - line_delta).unwrap_or(0)
+        } else {
+            self.lines.len()
+        };
+        self.lines.splice(from..old_end, out.lines);
+        self.safe.splice(from..old_end, out.safe);
+        self.scanned = scanned;
+        self
     }
 
     /// Lines the last scan walked, for a cost assertion.
@@ -244,7 +239,6 @@ struct Scanner<'a> {
 
 impl<'a> Scanner<'a> {
     fn new(text: &'a str, line_base: usize) -> Self {
-        let rows = text.lines().count().max(1) + 1;
         Self {
             text,
             bytes: text.as_bytes(),
@@ -252,8 +246,8 @@ impl<'a> Scanner<'a> {
             line_start: 0,
             line: 0,
             line_base,
-            lines: vec![Vec::new(); rows],
-            safe: vec![false; rows],
+            lines: vec![Vec::new()],
+            safe: vec![false],
             resume: None,
             stopped: None,
         }
@@ -335,6 +329,8 @@ impl<'a> Scanner<'a> {
         if self.byte(self.at) == b'\n' {
             self.line += 1;
             self.line_start = self.at + 1;
+            self.lines.push(Vec::new());
+            self.safe.push(false);
         }
         self.at = (self.at + width).min(self.bytes.len());
     }
@@ -1204,6 +1200,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_edit_reuses_untouched_span_allocations() {
+        let mut text = "let value = 1;\n".repeat(20_000);
+        let syntax = Syntax::parse(&text, Grammar::Rust);
+        let before = syntax.line(0).as_ptr();
+        let after = syntax.line(19_999).as_ptr();
+        let at = line_offset(&text, 10_000);
+        text.insert_str(at, "let inserted = 2;\n");
+        let syntax = syntax.edited(&text, Grammar::Rust, 10_000, 10_000, 1);
+        assert_eq!(syntax.line(0).as_ptr(), before);
+        assert_eq!(syntax.line(20_000).as_ptr(), after);
+        assert_eq!(syntax.scanned_lines(), 10_000..10_001);
+        assert_eq!(
+            all_spans(&syntax, 20_002),
+            all_spans(&Syntax::parse(&text, Grammar::Rust), 20_002)
+        );
+    }
+
+    #[test]
+    fn a_resumed_scanner_allocates_only_for_visited_lines() {
+        let text = "let value = 1;\n".repeat(20_000);
+        let syntax = Syntax::parse(&text, Grammar::Rust);
+        let mut scanner = Scanner::new(&text, 0);
+        scanner.resume = Some(Resume {
+            after_line: 0,
+            old_safe: &syntax.safe,
+            line_delta: 0,
+        });
+        scanner.run(Grammar::Rust);
+        assert_eq!(scanner.stopped, Some(1));
+        assert!(scanner.lines.capacity() <= 4);
+        assert!(scanner.safe.capacity() <= 8);
+    }
+
+    #[test]
+    #[ignore = "manual release-mode timing"]
+    fn incremental_syntax_timing() {
+        let mut text = "let value = 1;\n".repeat(20_000);
+        let mut syntax = Syntax::parse(&text, Grammar::Rust);
+        let at = line_offset(&text, 10_000) + "let value = ".len();
+        let start = std::time::Instant::now();
+        for step in 0..1_000 {
+            text.replace_range(at..at + 1, if step % 2 == 0 { "2" } else { "1" });
+            syntax = syntax.edited(&text, Grammar::Rust, 10_000, 10_000, 0);
+            std::hint::black_box(&syntax);
+        }
+        eprintln!(
+            "1,000 incremental edits in 20,000 lines: {:?}",
+            start.elapsed()
+        );
+    }
+
     /// Every grammar's incremental scan agrees with its full one.
     #[test]
     fn an_incremental_scan_agrees_with_a_full_one_for_every_grammar() {
@@ -1219,7 +1267,7 @@ mod tests {
         for (grammar, text) in cases {
             let full = Syntax::parse(text, grammar);
             for line in 0..text.lines().count() {
-                let next = full.edited(text, grammar, line, line, 0);
+                let next = Syntax::parse(text, grammar).edited(text, grammar, line, line, 0);
                 assert_eq!(
                     all_spans(&next, 8),
                     all_spans(&full, 8),

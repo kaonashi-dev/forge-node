@@ -81,6 +81,7 @@ import { RemoveProjectDialog } from "../../features/projects/RemoveProjectDialog
 import { RemoveWorktreeDialog } from "../../features/projects/RemoveWorktreeDialog";
 import { TextInputDialog } from "./dialogs/TextInputDialog";
 import { HandoffDialog } from "../../features/sessions/HandoffDialog";
+import { HandoffProgressDialog } from "../../features/sessions/HandoffProgressDialog";
 import { SendContextDialog } from "../../features/sessions/SendContextDialog";
 import { SpawnChildDialog } from "../../features/sessions/SpawnChildDialog";
 import { TabSwitcher } from "./tabs/SwitchTab";
@@ -718,6 +719,7 @@ export function AppShell() {
           />
         )}
       </Show>
+      <HandoffProgressDialog />
       <Show when={sessionDialogsStore.spawnChild}>
         {(request) => (
           <SpawnChildDialog

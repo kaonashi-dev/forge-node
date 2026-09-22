@@ -1,8 +1,7 @@
 //! Gutter marks for one file: which lines the working tree changed.
 //!
-//! `--unified=0` and the hunk headers alone. The bodies are what a patch view
-//! needs; a gutter needs only *which lines*, and reading the headers keeps this
-//! flat in the size of the file rather than in the size of its diff.
+//! Marks derive from zero-context hunk ranges; the complete captured patch is
+//! still scanned. Hunk details are read on demand.
 
 use std::path::Path;
 
@@ -171,6 +170,13 @@ pub fn hunk_at(patch: &str, line: u32) -> Option<Hunk> {
         }
     };
     for row in patch.lines() {
+        if row.starts_with("diff --git ") {
+            close(&mut current, span, &mut found);
+            if found.is_some() {
+                break;
+            }
+            continue;
+        }
         if let Some(header) = row.strip_prefix("@@ ") {
             close(&mut current, span, &mut found);
             if found.is_some() {
@@ -194,11 +200,6 @@ pub fn hunk_at(patch: &str, line: u32) -> Option<Hunk> {
         let Some(hunk) = current.as_mut() else {
             continue;
         };
-        // `---`/`+++` are the file header and never a body line; a hunk body
-        // line is exactly one `-` or `+` followed by the content.
-        if row.starts_with("--- ") || row.starts_with("+++ ") {
-            continue;
-        }
         if let Some(text) = row.strip_prefix('-') {
             if hunk.before.len() < MAX_DETAIL_LINES {
                 hunk.before.push(text.to_string());
@@ -239,6 +240,17 @@ fn parse_range(spec: Option<&str>) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hunk_content_can_resemble_file_headers() {
+        let patch = "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n--- old\n+++ new\ndiff --git a/b b/b\n--- a/b\n+++ b/b\n@@ -2 +2 @@\n-before\n+after\n";
+        let first = hunk_at(patch, 1).unwrap();
+        assert_eq!(first.before, ["-- old"]);
+        assert_eq!(first.after, ["++ new"]);
+        let second = hunk_at(patch, 2).unwrap();
+        assert_eq!(second.before, ["before"]);
+        assert_eq!(second.after, ["after"]);
+    }
 
     #[test]
     fn an_added_run_marks_every_line_it_covers() {

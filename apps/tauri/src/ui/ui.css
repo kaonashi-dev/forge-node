@@ -1,13 +1,4 @@
-/* ------------------------------------------------------------------ base --
- *
- * The paint for `src/ui/`. Loaded before `src/styles/` so a feature stylesheet
- * can still override a primitive, but every default lives here.
- *
- * Kobalte exposes state as data attributes (`data-expanded`, `data-highlighted`,
- * `data-disabled`, `data-closed`), so the hover/active rules key off those
- * rather than off `:hover`, which is what makes a menu look the same whether
- * it is being driven by the mouse or by the arrow keys.
- */
+/* Control appearance and interaction states belong here; features own layout. */
 
 .forge-visually-hidden {
   border: 0;
@@ -27,19 +18,20 @@
   align-items: center;
   border-radius: var(--radius-sm);
   display: inline-flex;
+  height: var(--control-size);
   justify-content: center;
 }
 .forge-control-xs {
-  height: var(--control-xs);
+  --control-size: var(--control-xs);
 }
 .forge-control-sm {
-  height: var(--control-sm);
+  --control-size: var(--control-sm);
 }
 .forge-control-md {
-  height: var(--control-md);
+  --control-size: var(--control-md);
 }
 .forge-control-lg {
-  height: var(--control-lg);
+  --control-size: var(--control-lg);
 }
 
 .forge-btn {
@@ -62,9 +54,6 @@
   justify-content: center;
   line-height: 0;
 }
-/* The focus ring is the global one in `styles/base.css`; nothing here redefines it. */
-
-/* ghost — transparent, a wash on hover. Absorbs the old `quiet`. */
 .forge-btn-ghost:hover:not(:disabled) {
   background: var(--bg-hover);
 }
@@ -72,7 +61,6 @@
   background: var(--bg-selected);
 }
 
-/* secondary — an elevated surface, no border. The ordinary button. */
 .forge-btn-secondary {
   background: var(--bg-raised);
 }
@@ -82,49 +70,52 @@
 .forge-btn-secondary[aria-pressed="true"] {
   background: var(--bg-selected);
 }
+.forge-btn-ghost:active:not(:disabled),
+.forge-btn-secondary:active:not(:disabled) {
+  background: var(--bg-pressed);
+}
 
-/* primary — solid accent, foreground `on()` picks. */
 .forge-btn-primary {
   background: var(--accent-solid);
   color: var(--accent-fg);
 }
-.forge-btn-primary:hover:not(:disabled) {
+.forge-btn-primary:hover:not(:disabled),
+.forge-btn-primary:active:not(:disabled) {
   background: var(--accent-solid-hover);
+  color: var(--accent-hover-fg);
 }
 
-/* danger — a solid red destructive action. */
 .forge-btn-danger {
   background: var(--danger-solid);
   color: var(--danger-fg);
 }
-.forge-btn-danger:hover:not(:disabled) {
-  filter: brightness(1.08);
+.forge-btn-danger:hover:not(:disabled),
+.forge-btn-danger:active:not(:disabled) {
+  background: var(--danger-solid-hover);
+  color: var(--danger-hover-fg);
 }
 
-/* danger-ghost — the quiet destructive: red text, a red wash on hover. */
 .forge-btn-danger-ghost {
-  color: var(--danger-solid);
+  color: var(--danger-text);
 }
-.forge-btn-danger-ghost:hover:not(:disabled) {
+.forge-btn-danger-ghost:hover:not(:disabled),
+.forge-btn-danger-ghost:active:not(:disabled) {
   background: var(--danger-soft);
 }
 
-/* A filled button sits on its own colour, so the global `:active` press — a
-   dark `--forge-pressed` wash — would wrong it. Keep the fill, deepen it. */
-.forge-btn-primary:not(:disabled):active {
-  background: var(--accent-solid-hover);
-}
-.forge-btn-danger:not(:disabled):active {
-  background: var(--danger-solid);
-  filter: brightness(1.12);
-}
 .forge-btn-primary:disabled,
 .forge-btn-danger:disabled {
-  color: var(--accent-fg);
   opacity: 0.5;
+}
+.forge-btn-primary:disabled {
+  color: var(--accent-fg);
 }
 .forge-btn-danger:disabled {
   color: var(--danger-fg);
+}
+.forge-btn-primary:focus-visible,
+.forge-btn-danger:focus-visible {
+  outline-offset: 2px;
 }
 
 /* The spinner a `loading` button shows in place of its leading glyph. */
@@ -150,23 +141,9 @@
 }
 
 .forge-icon-button {
-  align-items: center;
-  justify-content: center;
-  min-width: var(--control-sm);
+  min-width: var(--control-size);
   padding: 0;
-  width: var(--control-sm);
-}
-.forge-icon-button.forge-control-xs {
-  min-width: var(--control-xs);
-  width: var(--control-xs);
-}
-.forge-icon-button.forge-control-md {
-  min-width: var(--control-md);
-  width: var(--control-md);
-}
-.forge-icon-button.forge-control-lg {
-  min-width: var(--control-lg);
-  width: var(--control-lg);
+  width: var(--control-size);
 }
 
 /* -------------------------------------------------------------- fields --- */
@@ -188,15 +165,6 @@
   margin: 0;
 }
 
-/*
- * `.forge-field` is the bordered box now, not the input.
- *
- * It holds an optional leading/trailing affix and the input between them, so a
- * search glyph, a clear button or a spinner sits *inside* the control instead
- * of beside it. `Select`'s trigger wears the same class — it is the one field
- * that is a single element — which is why the focus and disabled rules key off
- * `:focus-within` and a data attribute rather than off the input itself.
- */
 .forge-field {
   background: var(--bg-raised);
   border: 1px solid var(--border-default);
@@ -206,17 +174,39 @@
   padding: 0 var(--space-8);
   width: 100%;
 }
-.forge-field:focus-within {
-  border-color: var(--accent-solid);
-}
-.forge-field[data-invalid="true"] {
-  border-color: var(--danger-solid);
-}
-.forge-field-plain,
-.forge-field-plain:focus-within {
+.forge-field-plain {
   background: transparent;
   border-color: transparent;
   padding: 0;
+}
+/* The glyph a field carries needs room the base rung does not give it: `sm` is
+   a dense strip, where four pixels between the search mark and the first
+   character is correct, and `md` is a page-width box, where the same four
+   pixels read as one word. `FieldSize` stops at `md`, so there is no `lg` rule
+   here to go stale. */
+.forge-control-md.forge-field:where(:not(.forge-field-plain)) {
+  gap: var(--space-6);
+  padding: 0 var(--space-10);
+}
+/* The box answers the pointer before it answers the caret.
+   Every other control in the kit lights up under the cursor; a field — and a
+   select trigger, which is one — was the last surface that did not, so a
+   closed picker read as a caption until it was clicked. `plain` is left out:
+   it has no border to brighten, being the surface it sits on. The `:where()`
+   keeps this at the same specificity as the focus rule below, which is how a
+   focused field stays on the ring while the pointer rests on it. */
+.forge-field:hover:where(:not(.forge-field-plain)) {
+  border-color: var(--border-strong);
+}
+.forge-field:focus-within {
+  border-color: var(--ring);
+}
+.forge-field[data-invalid="true"] {
+  border-color: var(--danger-text);
+}
+.forge-field[data-invalid="true"]:focus-within {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
 }
 .forge-field-input {
   background: transparent;
@@ -268,7 +258,7 @@
   color: var(--fg-default);
 }
 .forge-error {
-  color: var(--danger-solid);
+  color: var(--danger-text);
   font-size: var(--text-xs);
   margin: 0;
 }
@@ -287,7 +277,7 @@
   width: 100%;
 }
 .forge-textarea:focus {
-  border-color: var(--accent-solid);
+  border-color: var(--ring);
 }
 .forge-textarea:disabled {
   color: var(--fg-subtle);
@@ -306,21 +296,30 @@
   background: var(--bg-raised);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-xs);
-  color: var(--accent-solid);
+  color: var(--accent-text);
   display: inline-flex;
   flex: none;
   height: 14px;
   justify-content: center;
   width: 14px;
 }
+/* A descendant selector is two classes deep before it says anything, which
+   would outrank the checked rule below and strip a ticked box of its accent
+   border under the pointer. `:where()` spends the parent's specificity down to
+   nothing, leaving this exactly as strong as the base rule it follows — and
+   weaker than `[data-checked]`. */
+:where(.forge-checkbox:hover:not([data-disabled])) .forge-checkbox-box {
+  border-color: var(--border-strong);
+}
 .forge-checkbox-box[data-checked] {
-  border-color: var(--accent-solid);
+  border-color: var(--accent-text);
 }
 .forge-checkbox[data-disabled] {
   color: var(--fg-subtle);
 }
-.forge-checkbox:focus-within .forge-checkbox-box {
-  border-color: var(--accent-solid);
+.forge-checkbox:has(input:focus-visible) .forge-checkbox-box {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 /* -------------------------------------------------------------- select --- */
@@ -349,23 +348,10 @@
 .forge-select-icon[data-expanded] {
   transform: rotate(180deg);
 }
-.context-menu.forge-select-content {
-  /* Above the dialog it may be opened from.
-     The ladder, low to high: context 40 → scrim 50 → dialog 51 → popup 55 →
-     tooltip 60. A select carried no z-index at all, so the dialog's own 51 won
-     and its list opened *behind* the card — two of three options invisible. */
-  z-index: var(--z-popup);
-  max-height: min(280px, var(--kb-popper-content-available-height, 100dvh));
-  min-width: min(
-    var(--kb-select-trigger-width, 160px),
-    var(--kb-popper-content-available-width, 100dvw)
-  );
-  overflow-y: auto;
-}
 .forge-select-check {
   display: inline-flex;
   margin-left: auto;
-  color: var(--accent-solid);
+  color: var(--accent-text);
 }
 
 /* --------------------------------------------------------------- menus --- */
@@ -391,6 +377,23 @@
   /* A capped flex column must scroll its rows instead of compressing them. */
   flex-shrink: 0;
 }
+.forge-select-content {
+  max-height: min(280px, var(--kb-popper-content-available-height, 100dvh));
+  min-width: min(
+    var(--kb-select-trigger-width, 160px),
+    var(--kb-popper-content-available-width, 100dvw)
+  );
+  overflow-y: auto;
+}
+/* Kobalte's listbox is a `<ul>`. The chrome list reset in `styles/base.css`
+   takes the UA indent off it; this gives it the popup's full width, so a row's
+   highlight reaches both edges of the padding instead of stopping at whatever
+   its label happens to be wide. */
+.forge-select-listbox {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
 .context-item {
   align-items: center;
   background: none;
@@ -408,14 +411,14 @@
   text-align: left;
   width: 100%;
 }
-.context-item:hover:not(:disabled) {
+.context-item:hover:not(:disabled, [data-disabled]),
+.context-item[data-highlighted],
+.context-item[data-expanded] {
   background: var(--bg-selected);
-}
-.context-item:disabled {
-  color: var(--fg-subtle);
+  outline: none;
 }
 .context-item.destructive {
-  color: var(--danger-solid);
+  color: var(--danger-text);
 }
 .context-item-main {
   align-items: center;
@@ -441,23 +444,13 @@
   margin: var(--space-4) var(--space-2);
 }
 
-/* Kobalte highlights the item the keyboard is on; without this only `:hover`
-   would show, so arrow keys would move an invisible cursor. */
-.context-item[data-highlighted] {
-  background: var(--bg-selected);
-  outline: none;
-}
+.context-item:disabled,
 .context-item[data-disabled] {
   color: var(--fg-subtle);
   pointer-events: none;
 }
-.context-item[data-expanded] {
-  background: var(--bg-selected);
-}
-/* The card takes focus when the menu opens, but the ring belongs on the item
-   the keyboard is on — `[data-highlighted]` above — not around the whole menu.
-   Doubled to beat the global `[tabindex]:focus-visible` ring. */
-.context-menu.context-menu:focus-visible {
+/* Keyboard focus is shown by the highlighted item, not the popup container. */
+.context-menu:focus-visible {
   outline: none;
 }
 
@@ -702,15 +695,16 @@
   width: 12px;
 }
 .forge-radio-dot[data-checked] {
-  border-color: var(--accent-solid);
+  border-color: var(--accent-text);
 }
 .forge-radio-dot[data-checked] > * {
-  background: var(--accent-solid);
+  background: var(--accent-text);
   border-radius: 50%;
   flex: 1;
 }
-.forge-radio:focus-within .forge-radio-dot {
-  border-color: var(--accent-solid);
+.forge-radio:has(input:focus-visible) {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 /* A rich choice supplies its own layout, so the label must not add a box. */
 .forge-radio-custom {
@@ -768,13 +762,13 @@
   white-space: nowrap;
 }
 .forge-badge[data-tone="good"] {
-  color: var(--success-solid);
+  color: var(--success-text);
 }
 .forge-badge[data-tone="warn"] {
-  color: var(--warning-solid);
+  color: var(--warning-text);
 }
 .forge-badge[data-tone="bad"] {
-  color: var(--danger-solid);
+  color: var(--danger-text);
 }
 
 /* The `Badge`'s selectable twin: a `RadioGroup` item drawn as a pill, for the
@@ -787,11 +781,41 @@
   color: var(--fg-muted);
   font-family: inherit;
   font-size: var(--text-xs);
-  padding: var(--space-2) var(--space-8);
+  /* Was padding alone, which left the pill's height to whatever the label's
+     line box happened to be. On the rung it matches the `xs` controls it sits
+     beside, and a strip of chips is one height whatever the density. */
+  min-height: var(--control-xs);
+  padding: 0 var(--space-10);
 }
+/*
+ * A chip is a button in everything but its role, and it was the one control in
+ * the kit with no pointer state at all: the strip answered a click and nothing
+ * else, so which pill was about to be hit was a guess. Hover names the target,
+ * the press confirms the hit.
+ */
+/* `--bg-overlay`, not `--bg-hover`: a hover fill is one step up from the
+   ground the control is *on*, and a chip's ground is `--bg-raised`, not the
+   window. `--bg-hover` is the lift off `--bg-base` — over a raised pill it is
+   a one-value change that nobody sees. This is the same pair
+   `.forge-btn-secondary` uses, for the same reason, and it still lands below
+   `--bg-selected` so hover and checked stay tellable apart. */
+.forge-chip:hover {
+  background: var(--bg-overlay);
+  border-color: var(--border-default);
+  color: var(--fg-default);
+}
+.forge-chip:active {
+  background: var(--bg-pressed);
+}
+/* After the hover rules, so the selected pill stays selected under the
+   pointer; its own hover is the next rung up rather than a different colour. */
 .forge-chip[data-checked] {
   background: var(--bg-selected);
+  border-color: var(--border-strong);
   color: var(--fg-default);
+}
+.forge-chip[data-checked]:hover {
+  background: var(--bg-pressed);
 }
 
 /* -------------------------------------------------------------- motion --- */
@@ -942,10 +966,16 @@
   align-items: center;
   background: none;
   border: 0;
+  border-radius: var(--radius-xs);
   cursor: default;
   display: inline-flex;
   flex: none;
   padding: var(--space-4);
+}
+/* The row's second trigger, and the only one with a box small enough to miss:
+   a fill under it is what says the chevron is the target and not decoration. */
+.forge-disclosure-chevron:hover {
+  background: var(--bg-hover);
 }
 .forge-disclosure-chevron[data-expanded] {
   transform: rotate(180deg);
@@ -1002,11 +1032,16 @@
   border-radius: var(--radius-full);
   flex: none;
   height: 18px;
-  padding: 1px;
+  padding: var(--space-1);
   transition:
     background-color var(--motion-fast) var(--ease),
     border-color var(--motion-fast) var(--ease);
   width: 32px;
+}
+/* Off only: a track already filled with the accent has said what it is, and
+   a second colour under the pointer would be noise. */
+.forge-switch:hover .forge-switch-track {
+  border-color: var(--border-strong);
 }
 .forge-switch[data-checked] .forge-switch-track {
   background: var(--accent-solid);
@@ -1191,13 +1226,13 @@
 }
 .forge-toast-icon {
   flex: none;
-  margin-top: 2px;
+  margin-top: var(--space-2);
 }
 .forge-toast-success .forge-toast-icon {
-  color: var(--success-solid);
+  color: var(--success-text);
 }
 .forge-toast-danger .forge-toast-icon {
-  color: var(--danger-solid);
+  color: var(--danger-text);
 }
 .forge-toast-text {
   display: flex;
@@ -1275,8 +1310,10 @@
   text-align: left;
   width: calc(100% + var(--space-4));
 }
+/* On `--bg-raised` — the card's own fill — so the lift comes off that rung
+   rather than off the window's. See the note on `.forge-chip:hover`. */
 .list-card-open:hover {
-  background: var(--bg-hover);
+  background: var(--bg-overlay);
 }
 .list-card-title {
   color: var(--fg-default);
@@ -1403,6 +1440,9 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-2xs);
   cursor: pointer;
+}
+.forge-color-swatch:hover {
+  border-color: var(--border-strong);
 }
 .forge-color-swatch[aria-pressed="true"] {
   outline: 2px solid var(--ring);

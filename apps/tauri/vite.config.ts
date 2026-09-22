@@ -14,6 +14,8 @@ export default defineConfig(({ mode }) => ({
   test: {
     include: ["src/**/*.test.{ts,tsx}", "tests/runtime.test.ts"],
     environment: "node",
+    // Vitest otherwise replaces even ?raw CSS imports with an empty string.
+    css: { include: [/\.css\?raw$/] },
     server: { deps: { inline: [/solid-js/] } },
   } satisfies InlineConfig,
   // Solid's server build does not exercise browser store reconciliation; production must keep its own conditions.

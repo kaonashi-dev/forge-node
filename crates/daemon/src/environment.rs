@@ -8,7 +8,8 @@
 //! environment with a widened `PATH` and flag it for a `DaemonNotice`.
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::os::unix::process::CommandExt as _;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -18,6 +19,8 @@ use domain::{EnvSource, ResolvedEnvironment, Timestamp};
 const BEGIN: &str = "__FORGE_ENV_BEGIN__";
 const END: &str = "__FORGE_ENV_END__";
 const TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_ENV_OUTPUT: u64 = 1024 * 1024;
+const REAP_GRACE: Duration = Duration::from_millis(500);
 
 /// Well-known bin directories used to widen `PATH` in the fallback path.
 const FALLBACK_PATH_DIRS: &[&str] = &[
@@ -109,39 +112,8 @@ impl ShellEnvironmentService {
     }
 
     /// Run the login shell and parse the variables between the sentinels.
-    fn resolve_via_login_shell(&self, shell: &PathBuf) -> Option<Vec<(String, String)>> {
-        let script = format!("printf '%s' '{BEGIN}'; env -0; printf '%s' '{END}'");
-        let mut child = Command::new(shell)
-            .arg("-l")
-            .arg("-c")
-            .arg(&script)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-
-        // Read stdout on a worker thread so a hung shell cannot block us.
-        let mut stdout = child.stdout.take()?;
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
-            let _ = tx.send(buf);
-        });
-
-        let out = match rx.recv_timeout(TIMEOUT) {
-            Ok(buf) => {
-                let _ = child.wait();
-                buf
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        };
-
+    fn resolve_via_login_shell(&self, shell: &Path) -> Option<Vec<(String, String)>> {
+        let out = capture_login_shell(shell, TIMEOUT)?;
         Self::parse_between_sentinels(&out)
     }
 
@@ -231,6 +203,61 @@ impl ShellEnvironmentService {
     }
 }
 
+fn capture_login_shell(shell: &Path, timeout: Duration) -> Option<Vec<u8>> {
+    let script = format!("printf '%s' '{BEGIN}'; env -0; printf '%s' '{END}'");
+    let mut child = Command::new(shell)
+        .args(["-l", "-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+    let (tx, rx) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let captured = child.stdout.take().is_some_and(|stdout| {
+            stdout
+                .take(MAX_ENV_OUTPUT + 1)
+                .read_to_end(&mut out)
+                .is_ok()
+                && out.len() as u64 <= MAX_ENV_OUTPUT
+        });
+        if !captured {
+            kill_shell_group(pid);
+        }
+        // EOF is not process exit; both must finish inside the caller's deadline.
+        let reaped = child.wait().is_ok();
+        let _ = tx.send((captured && reaped).then_some(out));
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(out) => out,
+        Err(_) => {
+            kill_shell_group(pid);
+            // The worker retains reap ownership if a killed process cannot exit yet.
+            let _ = rx.recv_timeout(REAP_GRACE);
+            None
+        }
+    }
+}
+
+fn kill_shell_group(pid: u32) {
+    let Ok(pid) = i32::try_from(pid) else {
+        return;
+    };
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(-pid),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+    // A shell can move itself out of the group before timing out.
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+}
+
 /// Find the first index of `needle` in `haystack`.
 fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
@@ -242,6 +269,59 @@ fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::time::Instant;
+
+    fn shell_fixture(body: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("shell");
+        std::fs::write(&shell, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, shell)
+    }
+
+    #[test]
+    fn environment_capture_rejects_oversized_output() {
+        let (_dir, shell) =
+            shell_fixture("exec /bin/dd if=/dev/zero bs=1024 count=1025 2>/dev/null");
+        assert!(capture_login_shell(&shell, Duration::from_secs(5)).is_none());
+    }
+
+    #[test]
+    fn environment_deadline_includes_exit_after_stdout_closes() {
+        let (_dir, shell) = shell_fixture(&format!(
+            "printf '%s' '{BEGIN}PATH=/bin{END}'\nexec 1>&-\nexec /bin/sleep 30"
+        ));
+        let started = Instant::now();
+        assert!(capture_login_shell(&shell, Duration::from_millis(100)).is_none());
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn environment_timeout_kills_descendants_holding_stdout() {
+        let (dir, shell) = shell_fixture("");
+        let survived = dir.path().join("survived");
+        std::fs::write(
+            &shell,
+            format!(
+                "#!/bin/sh\n(/bin/sleep 1; printf survived > '{}') &\nwait\n",
+                survived.display()
+            ),
+        )
+        .unwrap();
+        assert!(capture_login_shell(&shell, Duration::from_millis(100)).is_none());
+        // Wait past the descendant's write to distinguish group kill from direct-child kill.
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(!survived.exists());
+    }
+
+    #[test]
+    fn environment_capture_preserves_complete_output_at_the_limit() {
+        let (_dir, shell) =
+            shell_fixture("exec /bin/dd if=/dev/zero bs=1024 count=1024 2>/dev/null");
+        let out = capture_login_shell(&shell, Duration::from_secs(5)).unwrap();
+        assert_eq!(out.len() as u64, MAX_ENV_OUTPUT);
+    }
 
     #[test]
     fn parses_env0_between_sentinels_with_multiline_values() {

@@ -35,6 +35,14 @@ export function PullRequestPanel() {
 
   const counts = createMemo(() => scopeCounts(state().pull_requests));
 
+  /* Depends on the counts and nothing else. Built inside the `rows` array it
+     was rebuilt whenever the *scope* changed too — the scope is in the same
+     array — which handed the chip strip a fresh set of options on every click
+     of it. */
+  const scopeOptions = createMemo(() =>
+    PR_SCOPES.map((value) => ({ value, label: `${scopeLabel(value)} ${counts()[value]}` })),
+  );
+
   const grouped = createMemo(() => {
     const workspace = forgeStore.workspaces.find((item) => item.id === activeWorkspace());
     return filterPullRequests(
@@ -68,10 +76,7 @@ export function PullRequestPanel() {
             label: "Which pull requests",
             value: scope(),
             onChange: pickScope,
-            options: PR_SCOPES.map((value) => ({
-              value,
-              label: `${scopeLabel(value)} ${counts()[value]}`,
-            })),
+            options: scopeOptions(),
           },
         ]}
       />

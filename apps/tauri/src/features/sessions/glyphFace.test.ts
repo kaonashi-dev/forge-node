@@ -32,8 +32,15 @@ describe("sessionGlyphFace", () => {
     expect(sessionGlyphFace("running", ctx({ active: true, isAgent: false }))).toBe("identity");
   });
 
-  it("leaves needs-you and failed on identity so the marker can speak", () => {
-    expect(sessionGlyphFace("needs-you", ctx({ unread: true }))).toBe("identity");
+  it("rings for an agent that stopped to ask, over any work it was doing", () => {
+    expect(sessionGlyphFace("needs-you", ctx({ unread: true }))).toBe("needs-you");
+  });
+
+  it("does not ring for the session the user is already in", () => {
+    expect(sessionGlyphFace("needs-you", ctx({ active: true }))).toBe("identity");
+  });
+
+  it("leaves failed on identity so the marker can speak", () => {
     expect(sessionGlyphFace("failed", ctx())).toBe("identity");
   });
 

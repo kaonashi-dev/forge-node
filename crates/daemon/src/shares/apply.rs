@@ -254,6 +254,19 @@ fn perform(ctx: &ShareContext, rule: &ShareRule, mut action: ShareAction) -> Sha
 
 /// Copy or clone `source` onto `target`, backing up whatever is in the way.
 fn write_into(ctx: &ShareContext, source: &Path, target: &Path, cloning: bool) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let source_meta = std::fs::symlink_metadata(source)?;
+    match std::fs::symlink_metadata(target) {
+        Ok(target_meta)
+            if source_meta.dev() == target_meta.dev() && source_meta.ino() == target_meta.ino() =>
+        {
+            return Err(io::Error::other("source and target are the same entry"));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -767,6 +780,53 @@ mod tests {
             },
             explicit: true,
         }
+    }
+
+    #[test]
+    fn explicit_copy_and_clone_preserve_the_source_checkout() {
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = context(dir.path());
+        ctx.caps.supports_clone = true;
+        let source = ctx.source.join(".env");
+        std::fs::write(&source, "secret").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&ctx.source, &alias).unwrap();
+        for target in [ctx.source.clone(), alias] {
+            ctx.target = target;
+            for strategy in [ShareStrategy::Copy, ShareStrategy::Clone] {
+                let rule = ShareRule {
+                    id: domain::ShareRuleId::new(),
+                    project_id: domain::ProjectId::new(),
+                    path: ".env".into(),
+                    strategy,
+                    enabled: true,
+                    position: 0,
+                    created_at: domain::Timestamp::now(),
+                };
+                let actions = apply_rules(&ctx, &[rule]);
+                assert_eq!(actions[0].verb, ShareVerb::Skip);
+                assert_eq!(std::fs::read(&source).unwrap(), b"secret");
+                assert_eq!(
+                    std::fs::metadata(&source).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+                assert!(!ctx.backups.as_ref().unwrap().exists());
+            }
+        }
+    }
+
+    #[test]
+    fn copying_a_broken_symlink_preserves_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = context(dir.path());
+        let source = ctx.source.join("link");
+        let target = ctx.target.join("link");
+        symlink(Path::new("missing"), &source).unwrap();
+        write_into(&ctx, &source, &target, false).unwrap();
+        assert_eq!(std::fs::read_link(target).unwrap(), Path::new("missing"));
     }
 
     #[test]

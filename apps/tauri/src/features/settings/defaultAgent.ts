@@ -6,6 +6,7 @@
 // preference forgetting itself.
 
 import type { Launchable } from "../../contracts/runtime";
+import { agentVisible } from "../../state/agentVisibility";
 
 /** `app_state` key holding the serialized preference. */
 export const DEFAULT_AGENT_KEY = "ui.default_agent";
@@ -101,5 +102,7 @@ export function resolveDefaultAgent(
 
 /** The preference as it stands in the last snapshot. */
 export function defaultAgentFrom(appState: Record<string, string>): DefaultAgent {
-  return parseDefaultAgent(appState[DEFAULT_AGENT_KEY]);
+  const agent = parseDefaultAgent(appState[DEFAULT_AGENT_KEY]);
+  const key = launchableKey(agent);
+  return key && !agentVisible(appState, key) ? { kind: "ask" } : agent;
 }

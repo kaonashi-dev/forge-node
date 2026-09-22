@@ -127,6 +127,32 @@ describe("Git decoration refresh", () => {
     expect(reads).toEqual([]);
   });
 
+  it("cancels a queued read on disposal without needing a workspace change", async () => {
+    changed();
+    stopDecorations();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(reads).toEqual([]);
+    expect(loading.diff).toBeFalsy();
+
+    stopDecorations = startDecorationEffects();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(reads).toEqual([]);
+    changed();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(reads).toEqual(["w1"]);
+  });
+
+  it("discards refresh debt held behind an active read on disposal", async () => {
+    ensureDiff();
+    changed();
+    refreshDiff();
+    stopDecorations();
+    setLoading("diff", false);
+    stopDecorations = startDecorationEffects();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(reads).toEqual(["w1"]);
+  });
+
   it("coalesces explicit and external changes during a read without starting another one", async () => {
     ensureDiff();
     refreshDiff();

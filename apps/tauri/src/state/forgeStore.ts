@@ -1,5 +1,6 @@
 import { createStore, reconcile } from "solid-js/store";
 import type { ShellSnapshot } from "../contracts/runtime";
+import { agentVisible } from "./agentVisibility";
 
 export const emptySnapshot = (): ShellSnapshot => ({
   project_groups: [],
@@ -46,5 +47,15 @@ export const [forgeStore, setForgeStore] = createStore<ShellSnapshot>(emptySnaps
  * and in a stable order.
  */
 export function applyShellSnapshot(snapshot: ShellSnapshot): void {
-  setForgeStore(reconcile(snapshot, { key: "id" }));
+  setForgeStore(
+    reconcile(
+      {
+        ...snapshot,
+        launchables: snapshot.launchables.filter(
+          (item) => item.kind === "shell" || agentVisible(snapshot.app_state, item.key),
+        ),
+      },
+      { key: "id" },
+    ),
+  );
 }

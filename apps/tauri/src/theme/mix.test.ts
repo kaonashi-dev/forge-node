@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contrast, derivedTokens, hex, mix, parseHex, pct, rgba } from "./mix";
+import { contrast, derivedTokens, hex, mix, parseHex, pct, readableColor } from "./mix";
 import { palettes } from "./tokens";
 
 describe("theme mix", () => {
@@ -39,9 +39,11 @@ describe("theme mix", () => {
     expect(hex(selected)).toBe("#373737");
   });
 
-  it("measures contrast symmetrically", () => {
-    expect(contrast(0x000000, 0xffffff)).toBeCloseTo(21, 5);
-    expect(contrast(0xffffff, 0x000000)).toBeCloseTo(21, 5);
+  it("reaches the contrast floor even when the preferred text is too close to the ground", () => {
+    for (const ground of [0, 0xffffff]) {
+      const result = readableColor(ground, [ground], ground);
+      expect(contrast(result, ground)).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
   it("measures contrast symmetrically", () => {
@@ -67,7 +69,6 @@ describe("derived tokens", () => {
     text: parseHex(base.text),
     sidebar: parseHex(base.sidebar),
     editor: parseHex(base.editor),
-    accent: parseHex(base.accent),
     amber: parseHex(base.amber),
     needsYou: parseHex(base.needsYou),
     gitAdded: parseHex(base.gitAdded),
@@ -101,14 +102,6 @@ describe("derived tokens", () => {
     expect(tokens["--forge-activity-tint"]).toBe(hex(mix(args.bg, args.amber, pct(12))));
   });
 
-  // The one derived token that stays translucent: an outline is painted over
-  // whatever the control sits on, so a colour mixed against one ground would
-  // be wrong on every other.
-  it("keeps the focus ring translucent accent", () => {
-    expect(tokens["--forge-focus-ring"]).toBe(rgba(args.accent, 0.35));
-    expect(tokens["--forge-focus-ring"]).toBe("rgb(69 133 136 / 0.35)");
-  });
-
   it("derives a full set for every base", () => {
     const names = Object.keys(tokens);
     for (const [id, palette] of Object.entries(palettes)) {
@@ -117,7 +110,6 @@ describe("derived tokens", () => {
         text: parseHex(palette.text),
         sidebar: parseHex(palette.sidebar),
         editor: parseHex(palette.editor),
-        accent: parseHex(palette.accent),
         amber: parseHex(palette.amber),
         needsYou: parseHex(palette.needsYou),
         gitAdded: parseHex(palette.gitAdded),

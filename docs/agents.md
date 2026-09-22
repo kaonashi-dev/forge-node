@@ -14,7 +14,7 @@ ADR-007 (declarative provider registry).
 | `claude` | Claude Code | `claude` | `--version`, 3 s | — | `CLAUDE_CONFIG_DIR` | `--resume <id>` | positional | `--permission-mode plan` |
 | `codex` | Codex CLI | `codex` | `--version`, 3 s | — | `CODEX_HOME` | `resume <id>` (subcommand) | positional | `-s read-only` |
 | `opencode` | OpenCode | `opencode`, `opencode2` | `--version`, 3 s | — | `OPENCODE_CONFIG_DIR` + `XDG_DATA_HOME` | `--session <id>` | `--prompt <text>` | `--agent plan` |
-| `cursor` | Cursor CLI | `agent`, `cursor-agent` | `--version`, 3 s | output or unambiguous basename must contain `cursor` | — | — | positional | `--mode ask` |
+| `cursor` | Cursor CLI | `agent`, `cursor-agent` | `--version`, 3 s | output or unambiguous basename must contain `cursor` | — | `--resume <id>` | positional | `--mode ask` |
 | `grok` | Grok | `grok` | `--version`, 3 s | output must contain `grok` | `GROK_HOME` | `--resume <id>` | positional | `--permission-mode plan` |
 
 All five are interactive TUIs and take no `default_args`. Each capability flag
@@ -57,7 +57,7 @@ session wearing the same name.
 ## Resume (§13.5)
 
 `AgentDescriptor.resume` is how a provider re-enters one of its own earlier
-sessions, as data rather than behavior: `ResumeStyle::Flag` for the two that
+sessions, as data rather than behavior: `ResumeStyle::Flag` for providers that
 spell it as a flag, `ResumeStyle::Subcommand` for Codex, whose `resume` has to
 lead the command line. `build_launch` puts those arguments after
 `default_args` and *before* a profile's own — a subcommand after a flag would
@@ -65,9 +65,8 @@ not parse — and refuses with `AgentError::ResumeUnsupported` when a resume is
 asked of a provider that declares none, rather than silently starting a fresh
 conversation.
 
-Cursor declares no spelling on purpose: its `--resume` takes an *optional* chat
-id, so a following argument is ambiguous to its parser, and nothing discovers
-Cursor history to hand it an id (`external_agents` reads Claude and opencode).
+Cursor's `--resume` takes an optional chat id; Forge always supplies the explicit
+id discovered from its chat directory, before any profile flags.
 
 The id is the provider's own — the one its transcript records — and every CLI
 resolves it relative to its working directory, so a resumed session is launched
@@ -94,10 +93,11 @@ is only a number.
 
 ### Adding a provider
 
-1. Add one `descriptor(id, display, &[candidates], expect)` line to
-   `builtins()` in `crates/agents/src/builtins.rs`, keeping picker order. Give
-   it an `expect_substring` whenever a candidate name is generic enough to
-   belong to something else.
+1. Add an entry to `builtins()` in `crates/agents/src/builtins.rs`, following
+   the current `descriptor` helper and keeping picker order. Declare usage,
+   config-directory, resume, prompt, ACP and read-only capabilities from the
+   CLI's contract, using `None` for unsupported capabilities. Set
+   `expect_substring` whenever a candidate name can belong to another program.
 2. Nothing else changes: `AgentRegistry::new()` seeds itself from `builtins()`,
    the daemon exposes it through `ListAgentProviders`/`GetSnapshot`, and no
    other crate branches on provider id (P2).
@@ -179,11 +179,14 @@ directories reads all of them.** Moving the config directory moves the
 transcripts with it, so both scans take the profile list and walk one store per
 account, dropping duplicates by canonical path:
 
-- `external_agents::discover` (the history panel) scans `<config dir>/projects`
-  for Claude Code and `<config dir>/opencode` for OpenCode — the latter because
-  the directory *is* `XDG_DATA_HOME` for the launch — alongside `~/.claude` and
-  `~/.local/share/opencode`. Its cache fingerprint includes the profile
-  directories, so a saved profile shows its history at once.
+- `agents::history::discover` (the history panel) scans `<config dir>/projects`
+  for Claude Code, `<config dir>/sessions` for Codex and Grok, and
+  `<config dir>/opencode` for OpenCode — the latter because the directory *is*
+  `XDG_DATA_HOME` for the launch — alongside each provider's default store.
+  Default stores honor `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME` and
+  `XDG_DATA_HOME`. Cursor reads `~/.cursor/chats`. The cache fingerprint includes
+  account identities, providers and directories, so changing a profile refreshes
+  attribution immediately; identical session ids in distinct accounts stay distinct.
 - `agents::collect_analytics` (the usage page) sums `<config dir>/projects` for
   Claude and `<config dir>/sessions` for Codex with the default account's. The
   page is what the machine spent, not what one login did, so the totals are the
@@ -350,6 +353,12 @@ emit BEL on a permission / question prompt get a Forge-owned adapter at launch
 (`crates/agents/src/attention.rs`). Assets live under
 `<data_dir>/agent-plugins/` (idempotent, content-hashed).
 
+The mark is a *question*, not a notification: `client::Store` keeps it for
+every terminal and spends it only when the user types into that terminal
+(`Store::answer_attention`). Leaving a prompt unanswered is what surfaces it —
+the snapshot hides it for the terminal on screen, so it appears the moment the
+user looks somewhere else. See [terminal.md](./terminal.md#the-pty-loop-daemonsrcterminalrs).
+
 | Provider | Injection | Signal |
 |----------|-----------|--------|
 | `opencode` | `OPENCODE_CONFIG_CONTENT` → `forge-attention.js` | `permission.asked` / `question.asked` → BEL |
@@ -367,6 +376,11 @@ the Cursor row above already put `forge-ring-bell.sh`. Without
 Forge would ring BEL on *every* Grok tool call, leaving `needs-you` lit instead
 of marking the permission prompts it means. A launch that sets the variable
 itself keeps its own value.
+
+Cursor is the only best-effort row, and it fails in both directions: it has no
+permission-prompt hook, so a shell call rings even in a mode that never asks,
+and a mode that asks about something other than a shell or an MCP call does not
+ring at all.
 
 `forge-ring-bell.sh` is a no-op without `FORGE_SESSION_ID`, drains stdin, and
 never fails the agent. Editing OpenCode's `attention` config or Claude's
@@ -425,8 +439,9 @@ passes ten minutes — ambient information, well below the notice threshold.
 
 Agent CLIs keep their own transcripts, and a run started in a plain shell — or
 before the project was added to Forge — is still a run the user remembers.
-`crates/daemon/src/external_agents.rs` reads them into
-`domain::ExternalAgentSession` values that ride along on every `GetSnapshot`.
+`crates/agents/src/history` reads them into `domain::ExternalAgentSession` values
+that ride along on every `GetSnapshot`. The daemon re-exports this module as
+`external_agents` and holds its cache behind a separate mutex.
 
 Discovery is per **directory**, not per project: each project root *and* each of
 its worktrees is scanned, which is what attributes a run to the worktree it
@@ -435,8 +450,21 @@ actually happened in.
 | Provider | On disk | Read from it |
 |----------|---------|--------------|
 | Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl`, `<slug>` = the directory with `/` and `.` collapsed to `-`; subagents in `<sessionId>/subagents/*.jsonl` | recorded `cwd`/`gitBranch`, min/max `timestamp`, latest `aiTitle`, turn count, the last assistant `text` block and its `message.model` |
-| opencode ≥ 1.17 | `~/.local/share/opencode/opencode.db` (and any `opencode-<suffix>.db` beside it), read by `crates/daemon/src/opencode_db.rs` | `session` rows whose `directory` is the scanned one: `id`, `title`, `time_created`/`time_updated`, turns from `message`, the newest non-synthetic `text` part of the last assistant message, and that message's `modelID`. `parent_id` marks a subagent run — counted against its parent, never listed — and `time_archived` hides one the user put away |
+| opencode ≥ 1.17 | `~/.local/share/opencode/opencode.db` (and any `opencode-<suffix>.db` beside it), read by `crates/agents/src/history/opencode_db.rs` | `session` rows whose `directory` is the scanned one: `id`, `title`, `time_created`/`time_updated`, turns from `message`, the newest non-synthetic `text` part of the last assistant message, and that message's `modelID`. `parent_id` marks a subagent run — counted against its parent, never listed — and `time_archived` hides one the user put away |
 | opencode < 1.17 (legacy tree) | `~/.local/share/opencode/storage` (XDG on every platform): `project/<hash>.json` → `worktree`, sessions in `session/<hash>/`, conversation in `message/<sessionID>/` and `part/<messageID>/` | `id`, `title`, `directory`, `time.created`/`updated`, turn count, the last assistant message's text parts and its `modelID`. A session with a `parentID` is a subagent run, counted against its parent rather than listed |
+| Codex | `$CODEX_HOME/sessions/YYYY/MM/DD/*.jsonl` (default `~/.codex`) | `session_meta.payload` supplies the resume id, `cwd`, branch and start time; `turn_context` supplies the model. Only `response_item` user/assistant prose counts, avoiding duplicate `event_msg` records and injected context. Explicit subagent sources are not listed |
+| Cursor CLI | `~/.cursor/chats/<workspace-hash>/<chat-id>/meta.json` | Recorded `cwd`, title, `createdAtMs`/`updatedAtMs`, and `hasConversation`; the directory name is the resume id. Readable prompts come from newest-first `prompt_history.json`. Conversation blobs are encrypted, so the count covers readable prompts, there is no assistant preview, and transcript reads report `truncated: true` |
+| Grok | `$GROK_HOME/sessions/<encoded-or-hashed-cwd>/<session-id>/summary.json` (default `~/.grok`) | `info.id`/`info.cwd`, title, branch, model and timestamps; prose comes from `chat_history.jsonl`, excluding synthetic context, reasoning and tools. Subagent sessions are omitted from cards and sibling `subagents/*/meta.json` entries are counted |
+
+The three additional readers enumerate each account once and match recorded
+directories to the known checkouts, including canonical path aliases. Candidate
+enumeration stops at 20,000 directory entries and retains at most 4,096 recent
+files per account, with 60 cards per checkout. JSON records are limited to 1 MiB
+before parsing; JSONL reads use at most the final 16 MiB, discard incomplete or
+oversized records, and report partial transcript reads as truncated. Discovery
+limits are logged at debug level. Cursor and Grok deletion removes the named
+session directory, including its metadata, so a removed card cannot be rediscovered
+from surviving metadata.
 
 Four rules keep it honest and cheap:
 

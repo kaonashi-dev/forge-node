@@ -5,9 +5,9 @@
 //! and disk access in `disk` — running this must never require the daemon, the
 //! GUI, a network or Node.
 //!
-//! `--control <socket>` is the one integrated route: the daemon owns the
-//! document, hands the buffer over that socket, and the local disk adapter
-//! stays off. See `control.rs`. Adding `--headless` to it swaps the sink: the
+//! With `--control <socket>`, the daemon owns checkout I/O and supplies the
+//! initial text; the editor owns the live document and requests saves over
+//! that socket. Adding `--headless` swaps the sink: the
 //! same `App` publishes a window of lines instead of painting cells, so the
 //! GUI's DOM surface and the terminal are one editor with two outputs.
 

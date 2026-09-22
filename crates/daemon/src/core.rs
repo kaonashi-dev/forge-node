@@ -1664,10 +1664,11 @@ impl Daemon {
         inner.db.projects().delete(project_id).map_err(db_err)?;
 
         for id in &session_ids {
-            inner.sessions.remove(id);
+            Self::remove_session_cache(&mut inner, *id);
         }
         for id in &ws_ids {
             inner.workspaces.remove(id);
+            inner.status_checks.remove(id);
         }
         inner.projects.remove(&project_id);
         // The rows cascade in SQLite; the cache is not a table.
@@ -4581,12 +4582,16 @@ impl Daemon {
             let _ = inner.db.sessions().upsert(s);
         }
         inner.db.sessions().delete(session_id).map_err(db_err)?;
+        Self::remove_session_cache(inner, session_id);
+        Ok(updated)
+    }
+
+    fn remove_session_cache(inner: &mut Inner, session_id: SessionId) {
         inner.sessions.remove(&session_id);
         inner.idle_warned.remove(&session_id);
         inner.resumed_from.remove(&session_id);
         inner.read_only.remove(&session_id);
         // Runtime is reaped on PTY EOF. Dropping it here races that and leaks a zombie (P1).
-        Ok(updated)
     }
 
     /// Iterative: a corrupted DB row must not hang the daemon.
@@ -7834,11 +7839,9 @@ mod tests {
         assert_eq!(respawn.args[..2], ["--resume", "39c2ae5c-4fe3"]);
     }
 
-    /// A provider that declares no resume spelling is refused rather than
-    /// started on a fresh conversation the caller did not ask for.
     #[test]
-    fn resuming_a_provider_that_cannot_is_refused() {
-        let (daemon, tmp, _backend) = test_daemon_with_pty(FakePtyBackend::empty());
+    fn cursor_history_resumes_the_requested_chat() {
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
         let workspace = seeded_workspace(&daemon, tmp.path());
         let provider = AgentProviderId::new("cursor");
         let executable = test_support::write_fake_agent(tmp.path(), "cursor-agent", "cursor 1.0");
@@ -7857,7 +7860,7 @@ mod tests {
             );
         }
 
-        let error = daemon
+        daemon
             .create_session(
                 workspace,
                 SessionKind::Agent,
@@ -7869,8 +7872,10 @@ mod tests {
                 None,
                 false,
             )
-            .expect_err("cursor cannot resume");
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
+            .expect("resume cursor chat");
+        let spec = backend.last_spawn().expect("a spawn happened");
+        assert_eq!(spec.program.file_name().unwrap(), "cursor-agent");
+        assert_eq!(spec.args, ["--resume", "chat-1"]);
     }
 
     /// A pull-request review starts in a checkout the user is working in, so
@@ -8932,6 +8937,47 @@ mod tests {
         assert!(inner.workspaces.is_empty());
         assert!(inner.sessions.is_empty());
         assert!(inner.db.sessions().get(session).expect("query").is_none());
+    }
+
+    #[test]
+    fn removing_a_project_releases_only_its_session_and_status_caches() {
+        let (daemon, _tmp) = test_daemon();
+        let removed_project = add_project_row(&daemon, "removed", None);
+        let kept_project = add_project_row(&daemon, "kept", None);
+        let removed_workspace = add_workspace_row(&daemon, removed_project, false);
+        let kept_workspace = add_workspace_row(&daemon, kept_project, false);
+        let removed_session =
+            add_session_row(&daemon, removed_workspace, None, SessionState::Orphaned);
+        let kept_session = add_session_row(&daemon, kept_workspace, None, SessionState::Orphaned);
+        {
+            let mut inner = daemon.lock();
+            for session in [removed_session, kept_session] {
+                inner.idle_warned.insert(session);
+                inner
+                    .resumed_from
+                    .insert(session, "provider-session".into());
+                inner.read_only.insert(session);
+            }
+            for workspace in [removed_workspace, kept_workspace] {
+                inner.status_checks.insert(workspace, Instant::now());
+            }
+        }
+
+        daemon
+            .remove_project(removed_project, RemoveProjectPolicy::KeepEverything)
+            .unwrap();
+
+        let inner = daemon.lock();
+        assert_eq!(inner.idle_warned, HashSet::from([kept_session]));
+        assert_eq!(inner.read_only, HashSet::from([kept_session]));
+        assert_eq!(
+            inner.resumed_from,
+            HashMap::from([(kept_session, "provider-session".into())])
+        );
+        assert_eq!(inner.status_checks.len(), 1);
+        assert!(inner.status_checks.contains_key(&kept_workspace));
+        assert!(inner.sessions.contains_key(&kept_session));
+        assert!(!inner.sessions.contains_key(&removed_session));
     }
 
     #[test]

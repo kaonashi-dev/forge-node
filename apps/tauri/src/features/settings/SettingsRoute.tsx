@@ -26,7 +26,7 @@ import {
   TextField,
 } from "../../ui/index";
 import { Icon } from "../../theme/icons/index";
-import { configPaths, openInFileManager, refreshSnapshot } from "../../runtime/host";
+import { configPaths, openInFileManager, reconnect, refreshSnapshot } from "../../runtime/host";
 import {
   factoryReset,
   refreshDetection,
@@ -36,6 +36,7 @@ import {
 } from "./commands";
 import { SessionGlyph } from "../sessions/SessionGlyph";
 import { AgentProfiles } from "./AgentProfiles";
+import { AgentVisibilityButton } from "./AgentVisibilityButton";
 import { SharedFiles } from "../projects/SharedFiles";
 import { KeyboardSection } from "./KeyboardSection";
 import { StatsSection } from "./StatsSection";
@@ -46,6 +47,7 @@ import {
   type DefaultAgent,
 } from "./defaultAgent";
 import { forgeStore } from "../../state/forgeStore";
+import { agentVisible } from "../../state/agentVisibility";
 import {
   providerDetectionLabel,
   providerExecutable,
@@ -222,18 +224,62 @@ function General() {
     });
   }
 
+  function confirmReconnect(): void {
+    requestConfirm({
+      title: "Reconnect to the daemon?",
+      description:
+        "Closes the current connection and opens a new one. Live sessions keep running on the daemon.",
+      confirmLabel: "Reconnect",
+      onConfirm: () => void reconnect().catch(() => undefined),
+    });
+  }
+
+  const daemonTone = () => {
+    switch (connection().kind) {
+      case "connected":
+        return "online";
+      case "connecting":
+        return "idle";
+      case "disconnected":
+        return "error";
+      default:
+        return "idle";
+    }
+  };
+
+  const daemonTitle = () => {
+    switch (connection().kind) {
+      case "connected":
+        return "Connected";
+      case "connecting":
+        return "Connecting…";
+      case "disconnected":
+        return "Disconnected";
+      default:
+        return "Offline";
+    }
+  };
+
+  const daemonDetail = () => {
+    const state = connection();
+    switch (state.kind) {
+      case "connected":
+        return `v${state.version} · instance ${state.instanceId.slice(0, 8)}`;
+      case "disconnected":
+        return state.reason;
+      case "connecting":
+        return "Looking for a running daemon";
+      default:
+        return "No connection yet";
+    }
+  };
+
   return (
     <Page title="General" summary="Application details, configuration files, and daemon controls.">
       <Group title="Overview">
         <dl class="settings-facts">
           <dt>Version</dt>
           <dd>{paths()?.app_version ? `v${paths()?.app_version}` : "—"}</dd>
-          <dt>Daemon</dt>
-          <dd>
-            {connection().kind === "connected"
-              ? `${(connection() as { version: string }).version} · ${(connection() as { instanceId: string }).instanceId.slice(0, 8)}`
-              : connection().kind}
-          </dd>
           <dt>Sessions</dt>
           <dd>
             {forgeStore.live_sessions} live of {forgeStore.sessions.length}
@@ -311,7 +357,17 @@ function General() {
         title="Daemon"
         description="The daemon owns every PTY, so stopping it takes all running sessions with it."
       >
+        <div class="daemon-status" role="status">
+          <span class={`status-dot ${daemonTone()}`} />
+          <div class="daemon-status-copy">
+            <span class="daemon-status-title">{daemonTitle()}</span>
+            <span class="daemon-status-detail">{daemonDetail()}</span>
+          </div>
+        </div>
         <div class="settings-actions">
+          <Button variant="secondary" onClick={confirmReconnect}>
+            Reconnect
+          </Button>
           <Button variant="secondary" onClick={() => void refreshSnapshot().catch(() => undefined)}>
             Reload from the daemon
           </Button>
@@ -348,9 +404,6 @@ function General() {
 
 function Agents() {
   const preferred = () => defaultAgentFrom(forgeStore.app_state);
-  // Every launchable is a candidate, not just the bare providers: the + menu offers
-  // the blank terminal and each launch profile here too, and they share one
-  // key space with `ui.agent_visible.*`.
   const choices = createMemo<
     {
       value: DefaultAgent;
@@ -425,7 +478,7 @@ function Agents() {
 
       <Group
         title="Available providers"
-        description="Expand a provider to configure its executable and view launch arguments."
+        description="Disable a provider to hide it from agent selectors. Launch profiles can be disabled separately. Expand a provider to configure its executable."
         aside={
           <>
             <Badge label={`${installed()} of ${forgeStore.providers.length} detected`}>
@@ -459,6 +512,7 @@ function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent })
   const [path, setPath] = createSignal("");
   const id = () => providerId(props.provider);
   const executable = () => providerExecutable(props.provider);
+  const visible = () => agentVisible(forgeStore.app_state, id());
   const isDefault = () =>
     defaultAgentValue(props.preferred) === defaultAgentValue({ kind: "provider", id: id() });
 
@@ -475,22 +529,28 @@ function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent })
           <Badge tone={providerInstalled(props.provider) ? "good" : "warn"}>
             {providerDetectionLabel(props.provider)}
           </Badge>
+          <Show when={!visible()}>
+            <Badge>Disabled</Badge>
+          </Show>
         </>
       }
       actions={
-        <Button
-          variant="secondary"
-          size="xs"
-          disabled={isDefault() || !providerInstalled(props.provider)}
-          onClick={() =>
-            void setAppState(
-              DEFAULT_AGENT_KEY,
-              defaultAgentValue({ kind: "provider", id: id() }),
-            ).catch(() => undefined)
-          }
-        >
-          {isDefault() ? "Default" : "Set default"}
-        </Button>
+        <>
+          <Button
+            variant="secondary"
+            size="xs"
+            disabled={isDefault() || !visible() || !providerInstalled(props.provider)}
+            onClick={() =>
+              void setAppState(
+                DEFAULT_AGENT_KEY,
+                defaultAgentValue({ kind: "provider", id: id() }),
+              ).catch(() => undefined)
+            }
+          >
+            {isDefault() ? "Default" : "Set default"}
+          </Button>
+          <AgentVisibilityButton agentKey={id()} label={providerName(props.provider)} />
+        </>
       }
     >
       <Row

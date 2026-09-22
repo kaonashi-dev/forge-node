@@ -242,47 +242,67 @@ pub fn frame(
     }
 }
 
-/// The text of a selection, ready for the clipboard.
-///
-/// Trailing blanks are trimmed per line, the way every terminal copies: the
-/// cells past the end of a line hold spaces the shell never wrote, and pasting
-/// them back would turn a copied command into a command plus padding.
-#[must_use]
+const MAX_SELECTION_ROWS: i64 = 5_000;
+const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
+
+/// Trim trailing blanks per line; refuse uncached history or an oversized selection whole.
 pub fn selection_text(
     grid: &CellGrid,
-    scroll_offset: u64,
     anchor: (i64, usize),
     head: (i64, usize),
-) -> String {
+) -> Result<String, &'static str> {
     let (start, end) = if anchor <= head {
         (anchor, head)
     } else {
         (head, anchor)
     };
-    let mut lines: Vec<String> = Vec::new();
-    for index in 0..grid.visible.len() {
-        let line = index as i64 - scroll_offset as i64;
-        let Some(row) = viewport_row(grid, scroll_offset, index) else {
-            continue;
-        };
-        if line < start.0 || line > end.0 {
-            continue;
+    let history = i64::try_from(grid.scrollback_len).unwrap_or(i64::MAX);
+    let first = start.0.max(-history);
+    let last = end.0.min(grid.visible.len() as i64 - 1);
+    if last < first {
+        return Ok(String::new());
+    }
+    if last
+        .checked_sub(first)
+        .is_none_or(|distance| distance >= MAX_SELECTION_ROWS)
+    {
+        return Err("Selection is too large to copy. Select at most 5000 lines.");
+    }
+    let mut text = String::new();
+    let mut has_line = false;
+    for line in first..=last {
+        let row = if line < 0 {
+            grid.scrollback_row(line)
+        } else {
+            grid.visible.get(line as usize)
         }
+        .ok_or("Some selected history is no longer cached. Select a smaller range.")?;
         let last = row.cells.len().saturating_sub(1);
         let from = if line == start.0 { start.1 } else { 0 };
         let to = if line == end.0 { end.1.min(last) } else { last };
         if from > to || from >= row.cells.len() {
             continue;
         }
-        let mut text = String::new();
+        if has_line {
+            if text.len() == MAX_SELECTION_BYTES {
+                return Err("Selection is too large to copy (8 MiB limit).");
+            }
+            text.push('\n');
+        }
+        let row_start = text.len();
         for cell in &row.cells[from..=to] {
             if !cell.flags.contains(CellFlags::WIDE_SPACER) {
+                if cell.text.len() > MAX_SELECTION_BYTES - text.len() {
+                    return Err("Selection is too large to copy (8 MiB limit).");
+                }
                 text.push_str(&cell.text);
             }
         }
-        lines.push(text.trim_end().to_string());
+        let trimmed = text[row_start..].trim_end().len();
+        text.truncate(row_start + trimmed);
+        has_line = true;
     }
-    lines.join("\n")
+    Ok(text)
 }
 
 /// Accumulates cells into runs, breaking on a style change and on either side
@@ -637,16 +657,70 @@ mod tests {
     #[test]
     fn a_selection_copies_without_the_padding_after_the_line() {
         let grid = grid(vec![plain("ls -la    "), plain("done      ")], Vec::new());
-        let text = selection_text(&grid, 0, (0, 0), (1, 9));
+        let text = selection_text(&grid, (0, 0), (1, 9)).unwrap();
         assert_eq!(text, "ls -la\ndone");
+    }
+
+    #[test]
+    fn a_selection_copies_history_and_live_rows_outside_the_scrolled_viewport() {
+        let grid = grid(
+            vec![plain("live0"), plain("live1")],
+            vec![plain("hist0"), plain("hist1"), plain("hist2")],
+        );
+        assert_eq!(
+            selection_text(&grid, (-3, 1), (1, 3)),
+            Ok("ist0\nhist1\nhist2\nlive0\nlive".into())
+        );
+        assert_eq!(
+            selection_text(&grid, (1, 3), (-3, 1)),
+            selection_text(&grid, (-3, 1), (1, 3))
+        );
+        assert_eq!(selection_text(&grid, (-2, 1), (-2, 3)), Ok("ist".into()));
+    }
+
+    #[test]
+    fn a_selection_refuses_missing_history_instead_of_silently_skipping_it() {
+        let mut grid = grid(vec![plain("live")], vec![plain("hist")]);
+        grid.scrollback_len = 3;
+        assert!(selection_text(&grid, (-3, 0), (0, 3)).is_err());
+    }
+
+    #[test]
+    fn selections_clamp_coordinates_and_refuse_oversized_ranges_and_text() {
+        let mut grid = grid(vec![plain("live")], vec![plain("hist")]);
+        assert_eq!(
+            selection_text(&grid, (i64::MIN, 0), (i64::MAX, usize::MAX)),
+            Ok("hist\nlive".into())
+        );
+        assert_eq!(
+            selection_text(&grid, (0, usize::MAX), (0, usize::MAX)),
+            Ok(String::new())
+        );
+        grid.scrollback_len = u64::MAX;
+        assert!(selection_text(&grid, (i64::MIN, 0), (i64::MAX, 0)).is_err());
+
+        let grid = grid_for_oversized_selection();
+        assert!(selection_text(&grid, (0, 0), (0, 0)).is_err());
+    }
+
+    fn grid_for_oversized_selection() -> CellGrid {
+        grid(
+            vec![row(vec![cell(
+                &"x".repeat(MAX_SELECTION_BYTES + 1),
+                Color::Default,
+                Color::Default,
+                CellFlags::empty(),
+            )])],
+            Vec::new(),
+        )
     }
 
     #[test]
     fn a_selection_reads_the_same_either_way_round() {
         let grid = grid(vec![plain("ab"), plain("cd")], Vec::new());
         assert_eq!(
-            selection_text(&grid, 0, (1, 1), (0, 0)),
-            selection_text(&grid, 0, (0, 0), (1, 1))
+            selection_text(&grid, (1, 1), (0, 0)),
+            selection_text(&grid, (0, 0), (1, 1))
         );
     }
 
@@ -659,7 +733,7 @@ mod tests {
             ])],
             Vec::new(),
         );
-        assert_eq!(selection_text(&grid, 0, (0, 0), (0, 1)), "漢");
+        assert_eq!(selection_text(&grid, (0, 0), (0, 1)), Ok("漢".into()));
     }
 
     #[test]

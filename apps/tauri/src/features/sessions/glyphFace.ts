@@ -1,6 +1,6 @@
 import type { SessionWork } from "./work";
 
-export type SessionGlyphFace = "identity" | "working" | "done";
+export type SessionGlyphFace = "identity" | "working" | "done" | "needs-you";
 
 export type SessionGlyphContext = {
   active: boolean;
@@ -16,15 +16,17 @@ export type SessionGlyphContext = {
  * treats any output inside a minute as "working", and attaching a session
  * bumps that clock, so a Codex sitting at a prompt would spin the whole time
  * it was being read. A spinner is only for work the user is not looking at:
- * still starting, or producing unseen output. A check is a finished agent
- * elsewhere. Shells never finish a task, so an exited terminal stays the
- * terminal mark.
+ * still starting, or producing unseen output. A bell is an agent that stopped
+ * to ask and outranks both, because it is the one state a person has to act
+ * on. A check is a finished agent elsewhere. Shells never finish a task, so an
+ * exited terminal stays the terminal mark.
  */
 export function sessionGlyphFace(
   work: SessionWork | undefined,
   ctx: SessionGlyphContext,
 ): SessionGlyphFace {
   if (ctx.active) return "identity";
+  if (work === "needs-you") return "needs-you";
   if (work === "starting" || (work === "working" && ctx.unread)) return "working";
   if (work === "idle") return "done";
   if (ctx.isAgent && work === "exited") return "done";
