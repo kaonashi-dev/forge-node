@@ -1,10 +1,13 @@
-import { Show } from "solid-js";
+import { Show, createMemo } from "solid-js";
 import { connectionStore } from "../../state/connection";
 import { Icon } from "../../theme/icons/index";
 import { IconButton } from "../../ui/index";
 import type { Session } from "../../contracts/runtime";
 import { SessionTabs } from "./SessionTabs";
 import { HandoffStatusButton } from "../../features/sessions/HandoffStatusButton";
+import { waitingSessions } from "../../features/sessions/waiting";
+import { focusSession } from "../../features/sessions/sessionActions";
+import { invokeAction } from "../../actions/dispatch";
 
 type TitleBarProps = {
   /**
@@ -32,6 +35,14 @@ type TitleBarProps = {
 };
 
 export function TitleBar(props: TitleBarProps) {
+  const waiting = createMemo(() => waitingSessions());
+
+  function answerNext(): void {
+    const list = waiting();
+    const next = list.find((session) => session.id !== connectionStore.activeSession) ?? list[0];
+    if (next) focusSession(next.id);
+  }
+
   return (
     <header class="title-bar" data-tauri-drag-region>
       <div class="title-bar-inset" aria-hidden="true" data-tauri-drag-region />
@@ -70,7 +81,20 @@ export function TitleBar(props: TitleBarProps) {
           onCloseCode={props.onCloseCode}
         />
       </Show>
-      <HandoffStatusButton />
+      <div class="title-bar-trailing">
+        <Show when={!props.settingsOpen && waiting().length > 0}>
+          <button type="button" class="waiting-chip" onClick={answerNext}>
+            <span class="forge-attention-dot" aria-hidden="true" />
+            {waiting().length} waiting on you
+          </button>
+        </Show>
+        <HandoffStatusButton />
+        <Show when={!props.settingsOpen}>
+          <IconButton label="Command palette" onClick={() => invokeAction("open_command_palette")}>
+            <Icon name="search" class="forge-icon-muted" />
+          </IconButton>
+        </Show>
+      </div>
     </header>
   );
 }

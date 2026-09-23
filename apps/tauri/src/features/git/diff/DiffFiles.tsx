@@ -4,9 +4,10 @@ import { Tooltip } from "../../../ui/index";
 import { PatchView } from "./PatchView";
 import { SplitPatchView } from "./SplitPatchView";
 import type { DiffFile } from "../../../contracts/workbench";
+import { statusLetter, statusWord } from "../gitView";
 
 /**
- * A list of files, each with its patch under a header that stays put (D3).
+ * A list of files, each with its patch under a header that stays put.
  *
  * Shared by the Diff tab and the Review tab rather than copied into both: the
  * collapsible section, the budget notes and the double-click-to-open are the
@@ -46,8 +47,8 @@ export function DiffFiles(props: {
                 ›
               </span>
               <LangIcon path={file.path} size={13} />
-              <span class="git-status" data-status={file.status}>
-                {file.status.slice(0, 1)}
+              <span class="git-status" data-status={file.status} title={statusWord(file.status)}>
+                {statusLetter(file.status)}
               </span>
               <span class="tree-label">{file.path}</span>
               <span class="git-counts">

@@ -7,6 +7,7 @@ import { Icon } from "../../theme/icons/index";
 import { AttentionMarker, StateMarker } from "../../features/sessions/markers";
 import { ContextMenu, IconButton, type MenuItem } from "../../ui/index";
 import { SessionMenu } from "../../features/sessions/SessionMenu";
+import { hasQuestion } from "../../features/sessions/waiting";
 import { closeSessionFromUi, sessionMenuItems } from "../../features/sessions/sessionMenuItems";
 import {
   clampGapToKind,
@@ -205,43 +206,45 @@ export function SessionTabs(props: SessionTabsProps) {
           <div class="tab-strip" role="tablist" aria-label="Sessions">
             {/* Code leads so Option+1 reaches the files. Sessions follow it. */}
             <Show when={props.codeOpen}>
-              <div class="session-tab-wrap code-tab-wrap">
-                <div
+              <div
+                class="session-tab-wrap code-tab-wrap"
+                classList={{ active: props.codeActive }}
+                style={{ "min-width": `${CODE_TAB_MIN_W}px`, "max-width": "200px" }}
+              >
+                <button
+                  type="button"
                   role="tab"
-                  class={`session-tab ${props.codeActive ? "ground-current" : "ground-quiet"}`}
+                  class="session-tab"
                   aria-selected={props.codeActive}
-                  aria-label={`Code — ${props.codeCount} open`}
-                  style={{ "min-width": `${CODE_TAB_MIN_W}px`, "max-width": "200px" }}
+                  aria-label={`Code, ${props.codeCount} open`}
                   onClick={props.onSelectCode}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      props.onSelectCode();
-                    }
-                  }}
                 >
                   <Icon
-                    name="folder-open"
+                    name="file-code"
                     class={props.codeActive ? "forge-icon-accent" : "forge-icon-muted"}
                     size={14}
                   />
                   <span class="session-tab-label">Code</span>
                   <Show when={props.codeCount > 0}>
-                    <span class="code-tab-count">{props.codeCount}</span>
-                    <IconButton
-                      label="Close every open file"
-                      hideTooltip
-                      size="xs"
-                      class="session-tab-close"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        props.onCloseCode();
-                      }}
-                    >
-                      <Icon name="close" class="forge-icon-faint" size={14} />
-                    </IconButton>
+                    <span class="code-tab-count" aria-hidden="true">
+                      {props.codeCount}
+                    </span>
                   </Show>
-                </div>
+                </button>
+                <Show when={props.codeCount > 0}>
+                  <IconButton
+                    label="Close every open file"
+                    hideTooltip
+                    size="xs"
+                    class="session-tab-close"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      props.onCloseCode();
+                    }}
+                  >
+                    <Icon name="close" class="forge-icon-faint" size={14} />
+                  </IconButton>
+                </Show>
               </div>
             </Show>
             <For
@@ -254,19 +257,15 @@ export function SessionTabs(props: SessionTabsProps) {
             >
               {(session, index) => {
                 const ground = () => groundOf(session);
-                const prev = () => {
-                  const list = tabs();
-                  const i = index();
-                  return i > 0 ? groundOf(list[i - 1]) : null;
-                };
-                const showDivider = () => prev() === "quiet" && ground() === "quiet" && index() > 0;
                 const label = () => sessionTabLabel(session, tabs());
                 const emphasis = () =>
-                  ground() === "current" || ground() === "needs-you" ? "full" : "dim";
+                  ground() === "current" || ground() === "needs-you" || hasQuestion(session.id)
+                    ? "full"
+                    : "dim";
 
                 return (
                   <>
-                    <Show when={showDivider()}>
+                    <Show when={index() === 0 && props.codeOpen}>
                       <span class="tab-divider" aria-hidden="true" />
                     </Show>
                     <SessionTab
@@ -275,6 +274,7 @@ export function SessionTabs(props: SessionTabsProps) {
                       label={label()}
                       emphasis={emphasis()}
                       active={!props.codeActive && session.id === props.activeId}
+                      waiting={ground() === "needs-you" || hasQuestion(session.id)}
                       dragging={dragging() === session.id}
                       dropBefore={dropTarget()?.id === session.id && !dropTarget()?.after}
                       dropAfter={dropTarget()?.id === session.id && dropTarget()?.after === true}
@@ -343,6 +343,8 @@ type SessionTabProps = {
   label: string;
   emphasis: "full" | "dim";
   active: boolean;
+  /** An open question, including one on the tab on screen. */
+  waiting: boolean;
   dragging: boolean;
   dropBefore: boolean;
   dropAfter: boolean;
@@ -360,46 +362,37 @@ function SessionTab(props: SessionTabProps) {
 
   return (
     <div
-      class="session-tab-wrap"
+      class={`session-tab-wrap ground-${props.ground}`}
       classList={{
+        active: props.active,
+        waiting: props.waiting,
         "hides-close": hidesClose(),
         dragging: props.dragging,
         "drop-before": props.dropBefore,
         "drop-after": props.dropAfter,
       }}
+      style={{ "min-width": `${TAB_MIN_W}px`, "max-width": "200px" }}
       data-tauri-drag-region="false"
       onPointerDown={props.onPointerDown}
       onPointerMove={props.onPointerMove}
       onPointerUp={props.onPointerUp}
       onPointerCancel={props.onPointerCancel}
       onClick={(event) => {
-        // The only click handler of the tab: pointer capture retargets `click`
-        // onto this wrap, and a click that is not retargeted bubbles here from
-        // the inner tab anyway. The close button stops the bubble itself.
+        // Pointer capture retargets `click` onto this wrap, so the selection is
+        // handled here; a keyboard press on the tab bubbles here the same way.
         if (event.target instanceof Element && event.target.closest(".session-tab-close")) return;
         props.onSelect();
       }}
       onContextMenu={props.onMenu}
     >
-      <div
+      <button
+        type="button"
         role="tab"
-        class={`session-tab ground-${props.ground}`}
+        class="session-tab"
         aria-selected={props.active}
-        style={{
-          "min-width": `${TAB_MIN_W}px`,
-          "max-width": "200px",
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            props.onSelect();
-          }
-        }}
+        aria-label={props.waiting ? `${props.label}, waiting on you` : props.label}
       >
-        <Show
-          when={props.ground === "needs-you"}
-          fallback={<StateMarker session={props.session} />}
-        >
+        <Show when={props.waiting} fallback={<StateMarker session={props.session} />}>
           <AttentionMarker />
         </Show>
         <SessionGlyph
@@ -408,18 +401,19 @@ function SessionTab(props: SessionTabProps) {
           emphasis={props.emphasis}
         />
         <span class="session-tab-label">{props.label}</span>
-        <IconButton
-          label="Close session"
-          hideTooltip
-          class="session-tab-close"
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onClose();
-          }}
-        >
-          <Icon name="close" class="forge-icon-faint" size={14} />
-        </IconButton>
-      </div>
+      </button>
+      <IconButton
+        label={`Close ${props.label}`}
+        hideTooltip
+        size="xs"
+        class="session-tab-close"
+        onClick={(event) => {
+          event.stopPropagation();
+          props.onClose();
+        }}
+      >
+        <Icon name="close" class="forge-icon-faint" size={14} />
+      </IconButton>
     </div>
   );
 }

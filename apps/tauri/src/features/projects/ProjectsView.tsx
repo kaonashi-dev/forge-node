@@ -23,7 +23,6 @@ import { connectionStore, setNotice } from "../../state/connection";
 import { projectDialogsStore, setProjectDialogsStore } from "./dialogs";
 import { now } from "../../runtime/clock";
 import { sessionWork } from "../sessions/work";
-import { sessionAttention } from "../sessions/attention";
 import { setAppState } from "../settings/commands";
 import { refreshWorkspaceStatus } from "../sessions/commands";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
@@ -35,13 +34,11 @@ import {
   railCollapseTarget,
   railExpandTarget,
   railRows,
-  waiting,
   type GroupNode,
   type ProjectNode,
-  type SessionNode,
   type WorkspaceNode,
 } from "./tree";
-import { chipGroups, prLabel, prTone, rollupWork, syncLabel, type PrTone } from "./workspaceCard";
+import { prLabel, prTone, rollupWork, syncLabel, type PrTone } from "./workspaceCard";
 import { workspaceBranchMeta } from "./workspaceLabel";
 import { seedFromAppState } from "../../state/preferences";
 import { foldsPayload, parseFolds, toggleFold } from "./railFolds";
@@ -59,6 +56,8 @@ function railRowId(id: string): string {
 import { sessionDisplayTitle } from "../sessions/sessionTree";
 import { sidebarView } from "../../navigation/sidebarStore";
 import { waitedFor } from "../sessions/attention";
+import { hasQuestion, waitingSessions } from "../sessions/waiting";
+import { gitStore } from "../git/state";
 import { BrandIcon, Icon } from "../../theme/icons/index";
 import { AttentionMarker, StateMarker, WorkMarker } from "../sessions/markers";
 import { SessionGlyph } from "../sessions/SessionGlyph";
@@ -522,7 +521,7 @@ export function ProjectsView() {
     }
     toggle(row.target);
   }
-  const needsYou = createMemo(() => waiting(forgeStore));
+  const needsYou = createMemo(() => waitingSessions());
 
   function toggle(id: string): void {
     folded = true;
@@ -628,15 +627,41 @@ export function ProjectsView() {
         if (sidebarView() === "Projects") keptScroll = event.currentTarget.scrollTop;
       }}
     >
+      {/* A question that has been waiting is the one thing that must not need
+          scrolling to find, so it is lifted out of the tree and above it. */}
+      <Show when={needsYou().length > 0}>
+        <section id="needs-you" class="needs-you-block" aria-labelledby="needs-you-label">
+          <div class="needs-you-head">
+            <span id="needs-you-label" class="needs-you-label">
+              Needs you
+            </span>
+            <span class="needs-you-count">{needsYou().length}</span>
+            <span class="needs-you-hint">↵ to answer</span>
+          </div>
+          <For each={needsYou()}>
+            {(session) => (
+              <SessionRow
+                session={session}
+                label={sessionDisplayTitle(session)}
+                wantsYou
+                unread={false}
+                depth={0}
+                lifted
+              />
+            )}
+          </For>
+        </section>
+      </Show>
+
       <div class="rail-head">
-        <span class="section-label">Projects</span>
+        <span class="rail-head-label">Projects</span>
         <IconButton
           label="Add a project"
           size="xs"
           class="tree-add"
           onClick={() => void addProjectFromPicker(null).catch(() => undefined)}
         >
-          +
+          <Icon name="plus" size={13} />
         </IconButton>
         <IconButton
           label="New group"
@@ -653,32 +678,9 @@ export function ProjectsView() {
             })
           }
         >
-          ⊞
+          <Icon name="folder" size={13} />
         </IconButton>
       </div>
-
-      {/* A question that has been waiting is the one thing that must not need
-          scrolling to find, so it is lifted out of the tree entirely. */}
-      <Show when={needsYou().length > 0}>
-        <div class="needs-you-block">
-          <div class="needs-you">
-            <span class="section-label">Needs you</span>
-            <span class="needs-you-count">{needsYou().length}</span>
-          </div>
-          <For each={needsYou()}>
-            {(session) => (
-              <SessionRow
-                session={session}
-                label={sessionDisplayTitle(session)}
-                wantsYou
-                unread={false}
-                depth={1}
-                showDuration
-              />
-            )}
-          </For>
-        </div>
-      </Show>
 
       <Show when={sharedFiles()}>
         {(target) => (
@@ -760,7 +762,6 @@ export function ProjectsView() {
                     aria-expanded={isOpen(group.id ?? "")}
                     aria-selected={selected() === `group:${group.id}`}
                     classList={{
-                      "wants-you": group.wantsYou && !isOpen(group.id ?? ""),
                       cursor: selected() === `group:${group.id}`,
                     }}
                     onClick={() => {
@@ -776,6 +777,9 @@ export function ProjectsView() {
                       class="forge-icon-faint"
                     />
                     <span class="tree-label">{name()}</span>
+                    <Show when={group.wantsYou && !isOpen(group.id ?? "")}>
+                      <FoldedQuestion />
+                    </Show>
                   </button>
                 )}
               </Show>
@@ -797,7 +801,6 @@ export function ProjectsView() {
                           aria-expanded={isOpen(project.id)}
                           aria-selected={selected() === `project:${project.id}`}
                           classList={{
-                            "wants-you": project.wantsYou && !isOpen(project.id),
                             cursor: selected() === `project:${project.id}`,
                           }}
                           onClick={() => {
@@ -813,6 +816,9 @@ export function ProjectsView() {
                           <span class="tree-label">{project.name}</span>
                           {/* Folded, the count is the only thing left saying the
                             project has more than one checkout. */}
+                          <Show when={project.wantsYou && !isOpen(project.id)}>
+                            <FoldedQuestion />
+                          </Show>
                           <Show when={!isOpen(project.id) && project.workspaces.length > 0}>
                             <span class="tree-note">{project.workspaces.length}</span>
                           </Show>
@@ -988,12 +994,8 @@ function WorkspaceList(props: {
 }
 
 /**
- * One checkout, drawn as a card rather than a row.
- *
- * A rail of identical rows could say a worktree existed and nothing else. The
- * card answers the three questions that actually decide where the user clicks:
- * is anything running here (the marker and, when folded, the chips), is the tree
- * clean and pushed (the meta line), and is there a pull request open on it.
+ * One checkout as a tree row: branch, marks and, folded, the loudest state
+ * under it — a folded row must never be able to hide a question.
  */
 function WorkspaceCard(props: {
   workspace: WorkspaceNode;
@@ -1015,24 +1017,27 @@ function WorkspaceCard(props: {
   onHandlePointerUp: (event: PointerEvent) => void;
   onHandlePointerCancel: () => void;
 }) {
-  const chips = createMemo(() => chipGroups(props.workspace.sessions));
-  // One marker for what can be five sessions: the loudest state wins, so a
-  // folded card can never hide a question.
   const work = createMemo(() =>
     rollupWork(
       props.workspace.sessions.map((node) =>
-        sessionWork(node.session, sessionAttention(node.session.id), now()),
+        sessionWork(
+          node.session,
+          { wants_you: node.wantsYou || hasQuestion(node.session.id) },
+          now(),
+        ),
       ),
     ),
   );
   const codeActive = () => centerMode() === "code" && activeWorkspace() === props.workspace.id;
-  const active = createMemo(
+  const current = createMemo(
     () =>
       codeActive() ||
       (centerMode() === "session" &&
         props.workspace.sessions.some((node) => node.session.id === connectionStore.activeSession)),
   );
   const sync = createMemo(() => syncLabel(props.workspace.ahead, props.workspace.behind));
+  const changed = () =>
+    gitStore.diff?.workspace_id === props.workspace.id ? gitStore.diff.files.length : null;
 
   return (
     <div
@@ -1044,9 +1049,8 @@ function WorkspaceCard(props: {
       aria-selected={props.cursor}
       aria-label={props.workspace.label}
       classList={{
-        active: active(),
+        current: current(),
         open: props.open,
-        "wants-you": props.workspace.wantsYou,
         cursor: props.cursor,
         dragging: props.dragging,
         "drop-before": props.dropBefore,
@@ -1054,40 +1058,52 @@ function WorkspaceCard(props: {
       }}
       onContextMenu={props.onMenu}
     >
-      <button
-        type="button"
-        class="forge-row ws-head"
-        onClick={props.onToggle}
-        onPointerDown={props.onHandlePointerDown}
-        onPointerMove={props.onHandlePointerMove}
-        onPointerUp={props.onHandlePointerUp}
-        onPointerCancel={props.onHandlePointerCancel}
-      >
-        <Show when={work()} fallback={<span class="ws-quiet-dot" aria-hidden="true" />}>
-          {(state) => <WorkMarker work={state()} />}
-        </Show>
-        <span class="tree-label">{props.workspace.label}</span>
-        <Show when={!props.workspace.worktree}>
-          <span class="ws-badge">primary</span>
-        </Show>
-        {/* Provisioning acks when it starts, so a checkout can be open
-            before its shared files have landed. */}
-        <Show when={sharesStore.applying.includes(props.workspace.id)}>
-          <span class="ws-badge">setting up…</span>
-        </Show>
-      </button>
-
-      <div class="ws-meta">
-        <Tooltip label={props.workspace.path} contents>
-          <span class="ws-branch">{workspaceBranchMeta(props.workspace)}</span>
-        </Tooltip>
+      <div class="ws-row">
+        <button
+          type="button"
+          class="forge-row ws-head"
+          aria-label={`${props.workspace.label}, ${props.open ? "collapse" : "expand"}`}
+          onClick={props.onToggle}
+          onPointerDown={props.onHandlePointerDown}
+          onPointerMove={props.onHandlePointerMove}
+          onPointerUp={props.onHandlePointerUp}
+          onPointerCancel={props.onHandlePointerCancel}
+        >
+          <Twisty open={props.open} />
+          <Icon
+            name="git-branch"
+            size={12}
+            class={current() ? "forge-icon-accent" : "forge-icon-muted"}
+          />
+          <Tooltip
+            label={`${workspaceBranchMeta(props.workspace)} · ${props.workspace.path}`}
+            contents
+          >
+            <span class="tree-label ws-label">{props.workspace.label}</span>
+          </Tooltip>
+          <Show when={!props.workspace.worktree}>
+            <span class="ws-badge">primary</span>
+          </Show>
+          {/* Provisioning acks when it starts, so a checkout can be open
+              before its shared files have landed. */}
+          <Show when={sharesStore.applying.includes(props.workspace.id)}>
+            <span class="ws-badge">setting up…</span>
+          </Show>
+        </button>
         <span class="ws-marks">
+          <Show when={!props.open && work()}>{(state) => <WorkMarker work={state()} />}</Show>
           {/* `measured_at: None` means "not measured", which is not the same as
               clean — so an unmeasured checkout shows no mark at all. */}
           <Show when={props.workspace.measured && props.workspace.dirty}>
             <Tooltip label="Uncommitted changes" contents>
-              <span class="ws-dirty" role="img" aria-label="Uncommitted changes">
-                ●
+              <span
+                class="ws-dirty"
+                role="img"
+                aria-label={
+                  changed() !== null ? `${changed()} uncommitted changes` : "Uncommitted changes"
+                }
+              >
+                ●{changed() ?? ""}
               </span>
             </Tooltip>
           </Show>
@@ -1098,11 +1114,6 @@ function WorkspaceCard(props: {
               </Tooltip>
             )}
           </Show>
-          <Show when={props.workspace.worktree}>
-            <Tooltip label="Git worktree" contents>
-              <Icon name="git-branch" size={13} class="forge-icon-dim" />
-            </Tooltip>
-          </Show>
           <Show when={props.workspace.pullRequest}>
             {(pr) => (
               <Tooltip label={prLabel(pr())} contents>
@@ -1110,52 +1121,16 @@ function WorkspaceCard(props: {
               </Tooltip>
             )}
           </Show>
-        </span>
-        <span class="ws-meta-actions">
           <IconButton
             label="Start something here"
             size="xs"
-            class="tree-add"
+            class="tree-add ws-start"
             onClick={props.onMenu}
           >
-            +
+            <Icon name="plus" size={13} />
           </IconButton>
-          <button
-            type="button"
-            class="forge-row ws-expand"
-            aria-label={props.open ? "Collapse this checkout" : "Expand this checkout"}
-            onClick={props.onToggle}
-          >
-            <Twisty open={props.open} />
-          </button>
         </span>
       </div>
-
-      <Show when={!props.open}>
-        <div class="ws-chips">
-          <Show
-            when={props.workspace.sessions.length > 0}
-            fallback={<span class="ws-quiet">Nothing running</span>}
-          >
-            <For each={[chips().agents, chips().shells]}>
-              {(group) => (
-                <Show when={group.length > 0}>
-                  <div class="ws-chip-group">
-                    <For each={group}>
-                      {(node) => (
-                        <SessionChip
-                          node={node}
-                          onMenu={(event) => props.onSessionMenu(event, node.session)}
-                        />
-                      )}
-                    </For>
-                  </div>
-                </Show>
-              )}
-            </For>
-          </Show>
-        </div>
-      </Show>
 
       <Show when={props.open}>
         <div class="ws-sessions">
@@ -1170,9 +1145,9 @@ function WorkspaceCard(props: {
             onClick={() => focusCode(props.workspace.id)}
             onContextMenu={(event) => event.stopPropagation()}
           >
-            <span class="tree-twisty" aria-hidden="true" />
             <Icon
-              name="folder-open"
+              name="file-code"
+              size={13}
               class={codeActive() ? "forge-icon-accent" : "forge-icon-muted"}
             />
             <span class="tree-label">Code</span>
@@ -1182,7 +1157,7 @@ function WorkspaceCard(props: {
               <SessionRow
                 session={node.session}
                 label={node.label}
-                wantsYou={node.wantsYou}
+                wantsYou={node.wantsYou || hasQuestion(node.session.id)}
                 unread={node.unread}
                 inTree
                 cursor={props.cursorSession === node.session.id}
@@ -1198,41 +1173,6 @@ function WorkspaceCard(props: {
   );
 }
 
-/**
- * A session inside a card's chip strip.
- *
- * Its own state marker, not the card's: the roll-up says the loudest thing
- * happening here, and the chips are what a click has to distinguish between.
- */
-function SessionChip(props: { node: SessionNode; onMenu: (event: MouseEvent) => void }) {
-  const active = () =>
-    centerMode() === "session" && props.node.session.id === connectionStore.activeSession;
-  return (
-    <Tooltip label={props.node.label} contents>
-      <button
-        type="button"
-        class="forge-row ws-chip"
-        classList={{
-          active: active(),
-          "wants-you": props.node.wantsYou,
-          unread: props.node.unread && !active(),
-        }}
-        aria-label={props.node.label}
-        onClick={() => focusSession(props.node.session.id)}
-        onContextMenu={props.onMenu}
-      >
-        <StateMarker session={props.node.session} />
-        <SessionGlyph
-          providerId={props.node.session.agent_provider_id}
-          session={props.node.session}
-          size={13}
-          emphasis={active() || props.node.wantsYou ? "full" : "dim"}
-        />
-      </button>
-    </Tooltip>
-  );
-}
-
 function SessionRow(props: {
   session: Session;
   /** Pre-computed so the rail and the feature tab name a session identically. */
@@ -1245,13 +1185,15 @@ function SessionRow(props: {
   level?: number;
   /** Whether this row sits inside the rail's tree, or was lifted out of it. */
   inTree?: boolean;
+  /** Drawn in the Needs-you block: the whole row takes the attention shape. */
+  lifted?: boolean;
   /** The rail's keyboard cursor is on this row. */
   cursor?: boolean;
-  showDuration?: boolean;
   onMenu?: (event: MouseEvent) => void;
 }) {
   const active = () =>
     centerMode() === "session" && props.session.id === connectionStore.activeSession;
+  const waited = () => waitedFor(props.session, now());
   return (
     <button
       type="button"
@@ -1265,10 +1207,12 @@ function SessionRow(props: {
       // `level` places that same nesting under the card for a screen reader.
       aria-level={props.inTree ? (props.level ?? 1) + props.depth : undefined}
       aria-selected={props.inTree ? (props.cursor ?? active()) : undefined}
+      aria-label={props.wantsYou ? `${props.label}, waiting on you for ${waited()}` : undefined}
       classList={{
-        active: active(),
+        active: active() && !props.lifted,
         agent: sessionIsAgent(props.session),
         "wants-you": props.wantsYou,
+        lifted: props.lifted === true,
         unread: props.unread && !active(),
         cursor: props.cursor === true,
       }}
@@ -1287,8 +1231,10 @@ function SessionRow(props: {
         emphasis={active() || props.wantsYou ? "full" : "dim"}
       />
       <span class="tree-label">{props.label}</span>
-      <Show when={props.showDuration && props.wantsYou}>
-        <span class="tree-note">{waitedFor(props.session)}</span>
+      <Show when={props.wantsYou}>
+        <span class="tree-waited" aria-hidden="true">
+          {waited()}
+        </span>
       </Show>
     </button>
   );
@@ -1297,8 +1243,14 @@ function SessionRow(props: {
 function Twisty(props: { open: boolean }) {
   return (
     <span class="tree-twisty" classList={{ open: props.open }} aria-hidden="true">
-      ›
+      <Icon name="chevron-right" size={11} />
     </span>
+  );
+}
+
+function FoldedQuestion() {
+  return (
+    <span class="forge-attention-dot" role="img" aria-label="A session inside is waiting on you" />
   );
 }
 

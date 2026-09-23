@@ -7,7 +7,55 @@
  * screen, which is the rule for what lives in this file.
  */
 
-/* Bundled plain JetBrains Mono. Install JetBrainsMono Nerd Font Mono for prompt icons (docs/theming.md). */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IBMPlexSans-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/IBMPlexSans-500.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/IBMPlexSans-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IBMPlexSans-400-italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: Fraunces;
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/Fraunces-500.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: Fraunces;
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/Fraunces-600.woff2") format("woff2");
+}
+
+/* Full TTFs, not a latin subset: the grid needs box-drawing and block glyphs. Install JetBrainsMono Nerd Font Mono for prompt icons (docs/theming.md). */
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;
@@ -31,13 +79,6 @@
 
 :root {
   color-scheme: dark;
-  /*
-   * The chrome is set in the platform's own UI face; mono is reserved for the
-   * surfaces where the characters *are* the content — the grid, the editor, a
-   * patch, a path, a branch, a chord. A label set in mono costs a fifth more
-   * width to say the same thing and has no medium weight to say it with,
-   * which is what pushed half this file down to 10px.
-   */
   font-family: var(--font-sans);
   font-size: var(--text-sm);
   line-height: 1.45;
@@ -46,16 +87,80 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
 
-  /*
-   * Motion and elevation used to be authored here as constants, kept out of
-   * the token pipeline because `applyTheme` writes every variable it is handed
-   * as an inline style. They now live in `tokens.ts`'s `staticTokens()` — the
-   * one part of the pipeline `applyTheme` deliberately does *not* write inline —
-   * and reach the app through `tokens.css` as `--motion-*`, `--ease` and
-   * `--shadow-*`, with `--forge-*` bridges for the rules below that still name
-   * the old tokens. Nothing here to declare.
-   */
+/*
+ * The type scale as roles. Sizes come from tokens; the chrome multiplier moves
+ * `--text-xs`…`--text-xl`, while the section title and the mono label stay put.
+ */
+.forge-section-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.forge-panel-heading {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--fg);
+}
+.forge-card-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: 1.45;
+  font-weight: 600;
+  color: var(--fg);
+}
+.forge-body {
+  font-size: var(--text-md);
+  line-height: 1.6;
+  max-width: 68ch;
+}
+.forge-caption {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--fg-caption);
+}
+/* Never below 10px: the smallest text the app sets. */
+.forge-section-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  color: var(--fg-caption);
+}
+
+/*
+ * Selection and emphasis, as classes for surfaces that do not already have a
+ * state rule. A chosen row changes its own ground plus an inset hairline;
+ * nothing draws a bar down an edge.
+ */
+.forge-selected {
+  background: var(--select-bg);
+  box-shadow: var(--select-ring);
+}
+.forge-attention-row {
+  background: var(--attention-bg);
+  box-shadow: var(--attention-ring);
+}
+.forge-attention-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--attention);
+  box-shadow: var(--attention-halo);
+}
+.forge-card-selected {
+  border-color: var(--card-select-border);
+  box-shadow: var(--card-select-halo);
 }
 
 /* The face a code surface asks for by name. */
@@ -64,34 +169,31 @@
 .diff-view,
 .editor-view,
 .settings-path-name,
-.workbench-tab-text,
 kbd {
   font-family: var(--font-mono);
 }
 
 /*
- * Motion, in one place.
- *
- * Every hover, selection and press in the app was a jump cut before this: the
- * colour arrived in one frame, which reads as a repaint rather than as a
- * response. 110ms is under the threshold where a transition starts to feel
- * like lag on a control the pointer is being dragged across.
+ * Motion, in one place: 90ms for hover, focus and selection, 120ms for menus
+ * and toasts, 160ms for resize. Terminal output and diff repaints never
+ * animate. The in-app switch (`data-reduce-motion`) removes all of it, as does
+ * the OS setting.
  */
 @media (prefers-reduced-motion: no-preference) {
   button,
   [role="tab"],
   [role="option"],
-  /* A chip, a menu item and a checkbox were the three that had no transition:
-     `[role="radio"]`, `.context-item` and the two indicators below. Selecting
-     a history filter or arrowing down a menu was the jump cut this block was
-     written to remove everywhere else. */
   [role="radio"],
+  /* Kobalte renders these as `div`s around a hidden input, so neither
+     `button` nor a role above reaches them. */
   .context-item,
   .forge-chip,
+  .forge-segment,
   .forge-checkbox-box,
   .forge-radio-dot,
   .forge-row,
-  /* A `div`, so the shared row transition above never reaches its hover fill. */
+  .forge-card,
+  .list-card,
   .ws-card,
   .session-tab,
   .palette-row,
@@ -123,6 +225,16 @@ kbd {
     opacity: 1;
     transform: translate(-50%, 0);
   }
+}
+
+/* A spinner is state, not decoration, so it keeps turning. */
+:root[data-reduce-motion="true"] *,
+:root[data-reduce-motion="true"] *::before,
+:root[data-reduce-motion="true"] *::after {
+  transition: none !important;
+}
+:root[data-reduce-motion="true"] *:not(.forge-icon-spin, .forge-btn-spinner) {
+  animation: none !important;
 }
 
 * {
@@ -165,15 +277,13 @@ select {
   padding: 0;
 }
 /*
- * 2px, drawn inside the control rather than around it.
- *
- * A 3px halo with a positive offset is four pixels of ring on a 28px row: it
- * collided with its neighbours in every dense list here, and on the palette's
- * own input it read as an unstyled web form rather than as a focused field.
+ * 2px accent at a 2px offset on everything focusable. A row whose scroller
+ * would clip an outside outline uses `--focus-ring-shadow` instead, which
+ * draws the same gap and ring as box-shadows.
  */
-:where(button, input, textarea, select, [tabindex]):focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: -1px;
+:where(button, input, textarea, select, summary, a[href], [tabindex]):focus-visible {
+  outline: var(--focus-ring-width) solid var(--ring);
+  outline-offset: var(--focus-ring-offset);
 }
 /*
  * One rule for what the pointer says.
@@ -276,7 +386,7 @@ html[data-platform="macos"] .title-bar-inset {
 
 .title-bar {
   align-items: center;
-  background: var(--forge-rail);
+  background: var(--bg-window);
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   flex-shrink: 0;
@@ -391,21 +501,6 @@ html[data-platform="macos"] .title-bar-inset {
   letter-spacing: 0.11em;
   padding: var(--space-8);
   text-transform: uppercase;
-}
-
-.needs-you {
-  align-items: center;
-  background: var(--attention-soft);
-  border-radius: var(--radius-xs);
-  color: var(--attention-text);
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: var(--space-8);
-}
-
-.needs-you-count {
-  font-size: var(--text-xs);
-  padding-right: var(--space-8);
 }
 
 .project-card {
@@ -538,8 +633,8 @@ html[data-platform="macos"] .title-bar-inset {
 
 /* Session state as geometry rather than an icon. The colour class above says
    which state; the shape here says settled (filled dot), in motion (hollow
-   ring) or waiting on a person (a ring that breathes). The pulse is a
-   transform, never a `box-shadow`, so it stays off the perf note's list. */
+   ring) or waiting on a person (a dot with a halo), and the marker's name says
+   it in words. */
 .forge-state-marker {
   --marker-size: 8px;
   align-items: center;
@@ -561,25 +656,15 @@ html[data-platform="macos"] .title-bar-inset {
 .forge-state-dot::before {
   background: currentColor;
 }
-.forge-state-ring::before,
-.forge-state-pulse::before {
+.forge-state-ring::before {
   border: 1.5px solid currentColor;
 }
-@media (prefers-reduced-motion: no-preference) {
-  .forge-state-pulse::before {
-    animation: forge-state-pulse 1.8s ease-in-out infinite;
-  }
+.forge-state-halo {
+  --marker-size: 7px;
 }
-@keyframes forge-state-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.45;
-    transform: scale(0.78);
-  }
+.forge-state-halo::before {
+  background: var(--attention);
+  box-shadow: var(--attention-halo);
 }
 
 /* The bell a session waiting on a person shows in its glyph slot, next to the
@@ -660,7 +745,6 @@ html[data-platform="macos"] .title-bar-inset {
   white-space: nowrap;
 }
 
-.file-tree:focus-visible,
 .projects-view [role="tree"]:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: -2px;

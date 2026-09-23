@@ -62,7 +62,7 @@ export function parseCustomTheme(source: string): CustomTheme {
 function parsePalette(value: unknown): Palette {
   if (!record(value))
     throw new Error("A palette object is required. Download a theme for all fields.");
-  const result = { ...palettes["gruvbox-hard"] };
+  const result = { ...palettes["forge-dark"] };
   for (const key of Object.keys(result) as (keyof Palette)[]) {
     const color = value[key];
     if (key === "ansi") {

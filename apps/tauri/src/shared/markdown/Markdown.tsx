@@ -181,12 +181,13 @@ export function Markdown(props: {
             >
               <Blocks blocks={blocks()} nested={!props.onEdit} />
               <Show when={props.onEdit && blocks().length === 0}>
-                <p
+                <button
+                  type="button"
                   class="forge-md-p forge-md-empty"
                   onClick={(event) => api.begin(0, props.text.length, event)}
                 >
                   Write…
-                </p>
+                </button>
               </Show>
             </div>
           </Edit.Provider>

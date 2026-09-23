@@ -18,9 +18,17 @@ export type RadioGroupProps = {
   label: string;
   hideLabel?: boolean;
   orientation?: "horizontal" | "vertical";
+  /**
+   * `list` draws a dot beside each label; `chips` and `segmented` draw the
+   * label alone, as pills or as one segmented track, and lay out in a row.
+   */
+  variant?: "list" | "chips" | "segmented";
   class?: string;
   itemClass?: string;
 };
+
+const GROUP_CLASS = { list: "", chips: "filter-chips", segmented: "forge-segmented" } as const;
+const ITEM_CLASS = { list: "", chips: "forge-chip", segmented: "forge-segment" } as const;
 
 /**
  * A single choice out of several.
@@ -30,11 +38,13 @@ export type RadioGroupProps = {
  * one tab stop and moves between options with the arrow keys.
  */
 export function RadioGroup(props: RadioGroupProps) {
+  const variant = () => props.variant ?? "list";
+  const bare = () => variant() !== "list";
   return (
     <Kobalte
-      class={`forge-radio-group ${props.class ?? ""}`}
+      class={`forge-radio-group ${GROUP_CLASS[variant()]} ${props.class ?? ""}`}
       value={props.value ?? undefined}
-      orientation={props.orientation ?? "vertical"}
+      orientation={props.orientation ?? (bare() ? "horizontal" : "vertical")}
       onChange={props.onChange}
     >
       <Kobalte.Label classList={{ "forge-visually-hidden": props.hideLabel !== false }}>
@@ -57,13 +67,16 @@ export function RadioGroup(props: RadioGroupProps) {
           <Kobalte.Item
             value={option().value}
             disabled={option().disabled}
-            class={`forge-radio ${props.itemClass ?? ""}`}
+            class={`forge-radio ${ITEM_CLASS[variant()]} ${props.itemClass ?? ""}`}
           >
             <Kobalte.ItemInput class="forge-visually-hidden" />
             <Show
               when={option().render}
               fallback={
-                <>
+                <Show
+                  when={!bare()}
+                  fallback={<Kobalte.ItemLabel>{option().label}</Kobalte.ItemLabel>}
+                >
                   <Kobalte.ItemControl class="forge-radio-dot">
                     <Kobalte.ItemIndicator />
                   </Kobalte.ItemControl>
@@ -75,7 +88,7 @@ export function RadioGroup(props: RadioGroupProps) {
                       </Kobalte.ItemDescription>
                     )}
                   </Show>
-                </>
+                </Show>
               }
             >
               {(render) => (

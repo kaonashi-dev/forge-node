@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { emptySnapshot } from "../../state/forgeStore";
 import type { Launchable, ProviderInfo, ShellSnapshot } from "../../contracts/runtime";
 import type { RebaseState } from "../../contracts/workbench";
-import { conflictLabel, conflictPrompt, resolverFor } from "./conflictPrompt";
+import { conflictLabel, conflictPrompt, conflictSides, resolverFor } from "./conflictPrompt";
 
 function state(partial: Partial<RebaseState> = {}): RebaseState {
   return {
@@ -104,8 +104,10 @@ describe("conflictPrompt", () => {
     );
   });
 
-  it("tells the agent to stage what it resolves, which is what clears the list", () => {
-    expect(prompt).toContain("git add <path>");
+  it("leaves staging to the person, so a resolution is a proposal until they accept it", () => {
+    expect(prompt).toContain("Leave the path unstaged when it is done: no `git add`");
+    expect(prompt).toContain("stages it there");
+    expect(prompt).not.toContain("`git add <path>` when");
   });
 
   it("forbids continuing the replay, which stays a human gesture", () => {
@@ -126,11 +128,11 @@ describe("conflictPrompt", () => {
 
   it("refuses a guess on a conflict that cannot be resolved both ways", () => {
     expect(prompt).toContain("leave");
-    expect(prompt).toContain("unstaged");
+    expect(prompt).toContain("markers in place");
   });
 
-  it("requires no conflict marker survives into the index", () => {
-    expect(prompt).toContain("git diff --cached --check");
+  it("requires no conflict marker survives a resolution", () => {
+    expect(prompt).toContain("git diff --check");
   });
 
   it("admits a capped list rather than looking exhaustive", () => {
@@ -178,6 +180,22 @@ describe("conflictPrompt", () => {
   it("never leaves a blank run where an absent fact was", () => {
     expect(conflictPrompt(state({ head: null, step: null, total: null }))).not.toMatch(/\n\n\n/);
     expect(prompt).not.toMatch(/\n\n\n/);
+  });
+});
+
+describe("conflictSides", () => {
+  it("names the rebase sides by what they hold, since ours is the upstream there", () => {
+    expect(conflictSides(state())).toEqual({
+      ours: "origin/develop",
+      theirs: "the replayed commit",
+    });
+  });
+
+  it("keeps ours on the branch you stand on for a merge", () => {
+    expect(conflictSides(state({ operation: "Merge" }))).toEqual({
+      ours: "feat/strategy",
+      theirs: "the incoming branch",
+    });
   });
 });
 

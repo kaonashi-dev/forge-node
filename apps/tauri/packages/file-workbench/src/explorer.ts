@@ -260,7 +260,9 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   editError.hidden = true;
   editLine.append(editBranch, editIcon, field);
   editBox.append(editLine, editError);
-  spacer.append(items, editBox);
+  const probe = element("div", "fw-tree-row fw-tree-probe");
+  probe.setAttribute("aria-hidden", "true");
+  spacer.append(items, editBox, probe);
   list.append(spacer);
   const message = element("p", "fw-empty");
   message.setAttribute("role", "status");
@@ -401,7 +403,9 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   function measure(): void {
     rowHeight = Math.max(
       16,
-      Number.parseFloat(getComputedStyle(root).getPropertyValue("--fw-row-height")) || 24,
+      probe.offsetHeight ||
+        Number.parseFloat(getComputedStyle(root).getPropertyValue("--fw-row-height")) ||
+        24,
     );
     viewport = list.clientHeight;
     // The field is placed in row units too, so a changed row height moves it.
@@ -905,6 +909,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
   };
   const observer = new ResizeObserver(measure);
   observer.observe(list);
+  observer.observe(probe);
   measure();
   rebuild();
 

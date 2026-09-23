@@ -1,4 +1,4 @@
-import { createEffect, createSignal, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { TERMINAL } from "../../actions/actions";
 import { enterContext, registerAction } from "../../actions/dispatch";
 import {
@@ -49,6 +49,11 @@ import { centerMode } from "../../navigation/viewsStore";
 import { registerFileTerminal } from "../files/explorer/fileDrag";
 import { CursorClick } from "./cursorClick";
 import { SelectionDrag } from "./selectionDrag";
+import { readPrompt, samePrompt, type AnswerPrompt } from "./answerPrompt";
+import { clearQuestion, hasQuestion, markQuestion } from "./questions";
+import { forgeStore } from "../../state/forgeStore";
+import { Button, IconButton } from "../../ui/index";
+import { Icon } from "../../theme/icons/index";
 
 /** Breathing room between the grid and the pane edges (`TERMINAL_PAD`). */
 const PAD = 8;
@@ -59,6 +64,11 @@ const PAD = 8;
  * daemon a `resize` plus a full resync of the grid.
  */
 const RESIZE_DEBOUNCE_MS = 80;
+/** How long frames settle before a waiting screen is re-read for its question. */
+const PROMPT_READ_MS = 150;
+/** The answer card turns this many of a menu's options into buttons. */
+const CARD_CHOICES = 2;
+const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
 
 /** Turn on the p50/p95/p99 overlay with `localStorage.forgeTerminalDebug = "1"`. */
 function debugEnabled(): boolean {
@@ -191,6 +201,65 @@ export function TerminalPane(props: { active?: boolean }) {
     schedule();
   });
 
+  /*
+   * The answer card. Read off the rows only while the attached session has an
+   * open question, and then at most once per `PROMPT_READ_MS` of frames: a
+   * terminal nobody is waiting on costs one boolean per frame.
+   */
+  const [prompt, setPrompt] = createSignal<AnswerPrompt | null>(null);
+  const [cardHidden, setCardHidden] = createSignal(false);
+  let asking = false;
+  let promptTimer: number | undefined;
+
+  function readQuestion(): void {
+    promptTimer = undefined;
+    if (!asking || viewport.scrollOffset > 0) return;
+    if (viewport.terminal === null || viewport.terminal !== connectionStore.activeTerminal) return;
+    const next = readPrompt(viewport.rows);
+    if (samePrompt(prompt(), next)) return;
+    setPrompt(next);
+    setCardHidden(false);
+  }
+
+  function scheduleQuestionRead(): void {
+    if (promptTimer !== undefined) return;
+    promptTimer = window.setTimeout(readQuestion, PROMPT_READ_MS);
+  }
+
+  createEffect(() => {
+    asking = props.active !== false && hasQuestion(connectionStore.activeSession);
+    if (asking) {
+      readQuestion();
+      return;
+    }
+    window.clearTimeout(promptTimer);
+    promptTimer = undefined;
+    setPrompt(null);
+  });
+
+  function noteBell(terminal: string): void {
+    const session = connectionStore.activeSession;
+    if (terminal !== connectionStore.activeTerminal || !session) return;
+    const row = forgeStore.sessions.find((item) => item.id === session);
+    if (row?.agent_provider_id != null) markQuestion(session);
+  }
+
+  function answered(): void {
+    clearQuestion(connectionStore.activeSession);
+  }
+
+  function focusTerminalInput(): void {
+    keys.focus({ preventScroll: true });
+  }
+
+  // The digit alone: agent menus select on the number, and a trailing Enter
+  // would land on whatever the agent shows next.
+  function answerWith(digit: string): void {
+    void sendText(digit, probe.send()).catch(() => undefined);
+    answered();
+    focusTerminalInput();
+  }
+
   createEffect(() => {
     if (props.active !== false) return;
     leaveContext?.();
@@ -290,6 +359,8 @@ export function TerminalPane(props: { active?: boolean }) {
     selection.syncTerminal(payload.terminal);
     const rows = viewport.apply(payload);
     selection.refresh();
+    if (payload.bell) noteBell(payload.terminal);
+    if (asking && (payload.full || rows.length > 0)) scheduleQuestionRead();
     if (payload.full) {
       repaintAll = true;
     } else {
@@ -359,6 +430,7 @@ export function TerminalPane(props: { active?: boolean }) {
     }
 
     event.preventDefault();
+    if (!MODIFIER_KEYS.has(event.key)) answered();
     void sendKey(
       {
         key: event.key,
@@ -373,6 +445,7 @@ export function TerminalPane(props: { active?: boolean }) {
   function onPaste(event: ClipboardEvent): void {
     event.preventDefault();
     const paste = clipboardPaste(event.clipboardData);
+    if (paste.kind !== "empty") answered();
     if (paste.kind === "text") {
       void sendPaste(paste.text, probe.send()).catch(() => undefined);
     } else if (paste.kind === "agent") {
@@ -388,7 +461,9 @@ export function TerminalPane(props: { active?: boolean }) {
     keys.value = "";
     // Committed text is typing, not a paste: it must not pick up the bracketed
     // markers a `Paste` would wrap it in.
-    if (text) void sendText(text, probe.send()).catch(() => undefined);
+    if (!text) return;
+    answered();
+    void sendText(text, probe.send()).catch(() => undefined);
   }
 
   function onInput(): void {
@@ -818,6 +893,7 @@ export function TerminalPane(props: { active?: boolean }) {
       window.removeEventListener("blur", stopDrag);
       stopDrag();
       window.clearTimeout(resizeTimer);
+      window.clearTimeout(promptTimer);
       blink.dispose();
       if (frame !== 0) cancelAnimationFrame(frame);
       if (scrollFrame !== 0) cancelAnimationFrame(scrollFrame);
@@ -886,6 +962,68 @@ export function TerminalPane(props: { active?: boolean }) {
         </div>
       </Show>
       <Show when={overlay()}>{(text) => <div class="terminal-debug">{text()}</div>}</Show>
+      <Show when={!cardHidden() && prompt()}>
+        {(current) => (
+          <section
+            class="answer-card"
+            aria-label="Waiting on your answer"
+            onMouseDown={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
+          >
+            <div class="answer-card-head">
+              <span class="forge-attention-dot" aria-hidden="true" />
+              <span class="answer-card-label">Waiting on your answer</span>
+              <IconButton
+                label="Hide the answer card"
+                size="xs"
+                class="answer-card-hide"
+                onClick={() => setCardHidden(true)}
+              >
+                <Icon name="close" class="forge-icon-muted" size={12} />
+              </IconButton>
+            </div>
+            <p class="answer-card-question">
+              {current().question ?? "The agent is waiting for input in the terminal."}
+            </p>
+            <div class="answer-card-actions">
+              <Show
+                when={current().choices.length > 0}
+                fallback={
+                  <Button variant="primary" size="sm" onClick={() => focusTerminalInput()}>
+                    Answer in the terminal
+                  </Button>
+                }
+              >
+                <For each={current().choices.slice(0, CARD_CHOICES)}>
+                  {(choice, index) => (
+                    <Button
+                      variant={index() === 0 ? "primary" : "secondary"}
+                      size="sm"
+                      aria-label={`Answer ${choice.digit}: ${choice.label}`}
+                      onClick={() => answerWith(choice.digit)}
+                    >
+                      <span class="answer-card-digit" aria-hidden="true">
+                        {choice.digit}
+                      </span>
+                      <span class="answer-card-choice">{choice.label}</span>
+                    </Button>
+                  )}
+                </For>
+                <span class="answer-card-spacer" />
+                <button
+                  type="button"
+                  class="answer-card-reply"
+                  onClick={() => focusTerminalInput()}
+                >
+                  {current().choices.length > CARD_CHOICES
+                    ? `${current().choices.length - CARD_CHOICES} more in the terminal · or type a reply`
+                    : "or type a reply"}
+                </button>
+              </Show>
+            </div>
+          </section>
+        )}
+      </Show>
     </section>
   );
 }

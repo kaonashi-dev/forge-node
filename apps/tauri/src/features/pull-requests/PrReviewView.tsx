@@ -150,7 +150,8 @@ export function PrReviewView(props: { prKey: string }) {
         <div class="pr-review">
           <header class="pr-review-head">
             <h2>
-              <span class="pr-number">#{item().number}</span> {item().title}
+              <span class="pr-number">#{item().number}</span> {item().title}{" "}
+              <Badge>read-only</Badge>
             </h2>
             <div class="pr-detail-actions">
               <Show when={item().is_draft}>

@@ -131,6 +131,16 @@ function sidesFor(state: RebaseState): Sides {
   }
 }
 
+/** Plain names for the two sides, for the three-way view's column heads. */
+export function conflictSides(state: RebaseState): { ours: string; theirs: string } {
+  const sides = sidesFor(state);
+  return { ours: plain(sides.ours.short), theirs: plain(sides.theirs.short) };
+}
+
+function plain(text: string): string {
+  return text.replaceAll("`", "");
+}
+
 /** A `git status` code read with the two sides named, rather than "us"/"them". */
 function describeConflict(code: string, sides: Sides): string {
   const ours = sides.ours.short;
@@ -165,11 +175,10 @@ function describeConflict(code: string, sides: Sides): string {
  * revert. It points at the **commit being replayed**, because that commit's
  * message is what the conflict is actually about and is the one piece of
  * context an agent with a shell can go read that a diff-only tool cannot. It
- * requires the agent to **stage** what it resolves, because staging is what
- * takes a path off the conflict list the panel re-reads. And it forbids
- * `--continue`, `--abort` and every other way of moving or discarding the
- * replay: finishing is a human gesture, in the panel, after the resolutions
- * have been read.
+ * forbids the agent from **staging**: its resolution is a proposal left in the
+ * working tree, and the person staging it from the panel is what accepts it
+ * and takes the path off the conflict list. And it forbids `--continue`,
+ * `--abort` and every other way of moving or discarding the replay.
  */
 export function conflictPrompt(state: RebaseState): string {
   const sides = sidesFor(state);
@@ -239,25 +248,27 @@ export function conflictPrompt(state: RebaseState): string {
     "   file compile is a silent bug, not a resolution.",
     "4. Check the rest of the repo before you commit to a reading — whether a symbol one side",
     "   renamed is still referenced elsewhere is a question `grep` answers.",
-    "5. `git add <path>` when it is done. Staging is what takes the path off Forge Node's",
-    "   conflict list.",
+    "5. Leave the path unstaged when it is done: no `git add`, no `git rm`. Your resolution",
+    "   is a proposal. The person reads it in Forge Node's Git panel and stages it there,",
+    "   and staging is what takes the path off the conflict list.",
     "",
     "## Rules",
     "",
-    "- Never leave a conflict marker in a file you stage. Verify with `git diff --cached --check`.",
+    "- Never leave a conflict marker in a file you call resolved. Verify with `git diff --check`.",
     "- Do not edit files outside the list above, and do not reformat, re-sort imports or",
     "  otherwise tidy the parts of a conflicted file that are not in conflict.",
     "- `git checkout --ours <path>` and `--theirs <path>` take a whole file. That is right for",
     "  an add/delete conflict and wrong for a file both sides edited.",
     "- If both sides changed the same behaviour in ways that cannot both hold, say so and leave",
-    "  that path unstaged. A guess there fails silently, and a human is already reading this.",
+    "  that path's markers in place. A guess there fails silently, and a human is already",
+    "  reading this.",
     "",
     `## Do not finish the ${sides.noun}`,
     "",
     `Do not run \`git ${sides.noun} --continue\`, \`--skip\` or \`--abort\`, and no \`git reset\`,`,
-    "`git checkout <branch>`, `git stash`, `git commit --amend`, or any push. Continuing the",
-    "replay is a human gesture in Forge Node's Git panel, once someone has read your",
-    "resolutions. Leaving it stopped is the point, not an unfinished job.",
+    "`git checkout <branch>`, `git stash`, `git commit --amend`, or any push. Staging and",
+    "continuing the replay are human gestures in Forge Node's Git panel, once someone has read",
+    "your resolutions. Leaving it stopped and unstaged is the point, not an unfinished job.",
     "",
     "## Report back",
     "",

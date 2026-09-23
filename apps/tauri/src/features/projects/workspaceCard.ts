@@ -1,12 +1,9 @@
-// What a checkout card in the rail says about itself.
-//
-// The card answers three questions at a glance — is anything running here, is
-// the tree clean, is there a PR — and each answer is a pure function of the
-// snapshot so it can be tested without a DOM. The card's markup lives in
-// `Sidebar.tsx`; nothing here knows about Solid.
+// What a checkout row in the rail says about itself: is anything running
+// here, is the tree clean, is there a PR. Pure, so it is tested without a DOM;
+// the markup lives in `ProjectsView.tsx`.
 
 import type { SessionWork } from "../sessions/work";
-import type { SessionNode, WorkspacePullRequest } from "./tree";
+import type { WorkspacePullRequest } from "./tree";
 
 /**
  * How the states of the sessions in one checkout outrank each other.
@@ -74,21 +71,4 @@ function reviewWord(decision: string | null): string | null {
     default:
       return null;
   }
-}
-
-/**
- * The chip strip's two pills: agents, then terminals.
- *
- * Split rather than interleaved because they answer different questions — who
- * is working here, and what shells are open — and a single row of mixed marks
- * makes the first one a search.
- */
-export function chipGroups(sessions: SessionNode[]): {
-  agents: SessionNode[];
-  shells: SessionNode[];
-} {
-  return {
-    agents: sessions.filter((node) => node.session.agent_provider_id !== null),
-    shells: sessions.filter((node) => node.session.agent_provider_id === null),
-  };
 }

@@ -11,7 +11,7 @@
  * buttons in this vocabulary and deliberately stay in their own components.
  */
 export { Button, IconButton, type ButtonProps, type IconButtonProps } from "./Button";
-export { Badge, type BadgeProps } from "./Badge";
+export { Badge, type BadgeProps, type BadgeTone } from "./Badge";
 export { Card, Separator, type CardProps, type SeparatorProps } from "./Card";
 export { Combobox, type ComboboxOption, type ComboboxProps } from "./Combobox";
 export { Disclosure, type DisclosureProps } from "./Disclosure";

@@ -1,21 +1,25 @@
-import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { COMMAND_PALETTE } from "../../actions/actions";
 import { enterContext } from "../../actions/dispatch";
 import { forgeStore } from "../../state/forgeStore";
 import { connectionStore } from "../../state/connection";
 import { Button, Combobox, Dialog, type ComboboxOption } from "../../ui/index";
 import { SessionGlyph } from "../../features/sessions/SessionGlyph";
+import { waitedFor } from "../../features/sessions/attention";
+import { now } from "../../runtime/clock";
 import { Icon, LangIcon } from "../../theme/icons/index";
 import {
   BRANCHES,
   CREATE,
   FILES,
   SESSIONS,
+  MODE_PREFIXES,
   admits,
   fileEntries,
   paletteEntries,
+  parseQuery,
   rank,
-  scopeLabel,
+  scopeChip,
   scopePlaceholder,
   type PaletteEntry,
   type PaletteScope,
@@ -27,6 +31,7 @@ import { warmFileTree } from "../../features/files/commands";
 import { filesStore, setFilesStore } from "../../features/files/state";
 import { gitStore } from "../../features/git/state";
 import { activeWorkspace } from "../../state/workspace";
+import { highlight } from "./highlight";
 
 /** Rows shown before the list scrolls. */
 const VISIBLE_ROWS = 12;
@@ -39,6 +44,9 @@ export type CommandPaletteProps = {
 
 export function CommandPalette(props: CommandPaletteProps) {
   const [query, setQuery] = createSignal("");
+  const parsed = createMemo(() => parseQuery(props.scope, query()));
+  const scope = () => parsed().scope;
+  const text = () => parsed().text;
 
   /**
    * Whether the repository listing has been needed yet.
@@ -50,20 +58,20 @@ export function CommandPalette(props: CommandPaletteProps) {
 
   createEffect(() => {
     const workspace = activeWorkspace();
-    if (workspace && admits(props.scope, FILES)) warmFileTree(workspace);
+    if (workspace && admits(scope(), FILES)) warmFileTree(workspace);
   });
 
   const index = createMemo(navigationFileIndex);
   const treePaths = createMemo(() => navigationFilePaths());
 
   createEffect(() => {
-    if (searching() && admits(props.scope, FILES)) {
-      scheduleNameSearch(activeWorkspace(), query());
+    if (searching() && admits(scope(), FILES)) {
+      scheduleNameSearch(activeWorkspace(), text());
     }
   });
 
   const allFiles = createMemo(() => {
-    if (!(searching() && admits(props.scope, FILES))) return [];
+    if (!(searching() && admits(scope(), FILES))) return [];
     const hits = nameResults();
     if (!hits) return [];
     return fileEntries(
@@ -82,7 +90,7 @@ export function CommandPalette(props: CommandPaletteProps) {
    * files are the better half of the answer anyway.
    */
   const recentFiles = createMemo(() => {
-    if (!admits(props.scope, FILES)) return [];
+    if (!admits(scope(), FILES)) return [];
     const paths = treePaths();
     if (!paths) return [];
     const workspace = activeWorkspace();
@@ -96,16 +104,16 @@ export function CommandPalette(props: CommandPaletteProps) {
     );
   });
 
-  const files = () => (query().trim() === "" ? recentFiles() : allFiles());
+  const files = () => (text().trim() === "" ? recentFiles() : allFiles());
 
   const entries = createMemo(() => {
     const base =
-      props.scope === "files"
+      scope() === "files"
         ? []
         : paletteEntries(forgeStore, connectionStore.activeSession).filter((entry) =>
-            admits(props.scope, entry.group),
+            admits(scope(), entry.group),
           );
-    const ranked = rank(base, query());
+    const ranked = rank(base, text());
     const listed = files();
     if (listed.length === 0) return ranked;
     const head = new Set<string>([CREATE, SESSIONS, BRANCHES]);
@@ -124,8 +132,17 @@ export function CommandPalette(props: CommandPaletteProps) {
       render: () => (
         <>
           <PaletteGlyph entry={entry} />
-          <span class="palette-label">{entry.label}</span>
+          <span class="palette-label">
+            <For each={highlight(entry.label, text())}>
+              {(segment) =>
+                segment.hit ? <mark class="palette-match">{segment.text}</mark> : segment.text
+              }
+            </For>
+          </span>
           <Show when={entry.note}>{(note) => <span class="palette-note">{note()}</span>}</Show>
+          <Show when={entry.waiting && entry.choice.kind === "focus_session" && entry.choice}>
+            {(choice) => <WaitingNote session={choice().session} />}
+          </Show>
           <Show when={entry.hint}>
             {(hint) => <kbd class="forge-kbd palette-hint">{hint()}</kbd>}
           </Show>
@@ -141,7 +158,14 @@ export function CommandPalette(props: CommandPaletteProps) {
   });
 
   return (
-    <Dialog title="Command palette" hideTitle flush size="lg" onDismiss={props.onDismiss}>
+    <Dialog
+      title="Command palette"
+      hideTitle
+      flush
+      size="lg"
+      class="command-palette"
+      onDismiss={props.onDismiss}
+    >
       <Combobox
         options={options()}
         query={query()}
@@ -150,23 +174,40 @@ export function CommandPalette(props: CommandPaletteProps) {
           setQuery(next);
         }}
         onChoose={props.onChoose}
-        label={scopePlaceholder(props.scope)}
-        placeholder={scopePlaceholder(props.scope)}
+        label={scopePlaceholder(scope())}
+        placeholder={scopePlaceholder(scope())}
         visibleRows={VISIBLE_ROWS}
-        empty={<p class="empty-copy">Nothing matches.</p>}
+        empty={
+          <p class="empty-copy palette-empty">
+            {scope() === "symbols"
+              ? "Symbols aren't available for this file yet."
+              : "Nothing matches."}
+          </p>
+        }
         leading={
-          <Show when={scopeLabel(props.scope)}>
-            {(label) => <span class="palette-scope">{label()}</span>}
+          <Show when={scopeChip(scope())}>
+            {(chip) => (
+              <span class="palette-scope">
+                <Show when={chip().prefix}>
+                  {(prefix) => (
+                    <span class="palette-scope-prefix" aria-hidden="true">
+                      {prefix()}
+                    </span>
+                  )}
+                </Show>
+                {chip().label}
+              </span>
+            )}
           </Show>
         }
       />
-      <Show when={admits(props.scope, FILES) && index()?.truncated}>
+      <Show when={admits(scope(), FILES) && index()?.truncated}>
         <p class="panel-note">Partial file index — some paths may not be listed.</p>
       </Show>
-      <Show when={admits(props.scope, FILES) && filesStore.nameSearchError}>
+      <Show when={admits(scope(), FILES) && filesStore.nameSearchError}>
         <p class="panel-error">{filesStore.nameSearchError}</p>
       </Show>
-      <Show when={admits(props.scope, FILES) && filesStore.treeError}>
+      <Show when={admits(scope(), FILES) && filesStore.treeError}>
         <p class="panel-error">Could not refresh the file index: {filesStore.treeError}</p>
         <Button
           onClick={() => {
@@ -178,7 +219,34 @@ export function CommandPalette(props: CommandPaletteProps) {
           Retry file index
         </Button>
       </Show>
+      <footer class="palette-footer">
+        <span class="palette-footer-hint">
+          <kbd class="forge-kbd">↑↓</kbd> move
+        </span>
+        <span class="palette-footer-hint">
+          <kbd class="forge-kbd">↵</kbd> open
+        </span>
+        <span class="palette-footer-hint">
+          <For each={MODE_PREFIXES}>{(mode) => <kbd class="forge-kbd">{mode.prefix}</kbd>}</For>{" "}
+          modes
+        </span>
+        <span class="palette-footer-hint palette-footer-end">
+          <kbd class="forge-kbd">esc</kbd> close
+        </span>
+      </footer>
     </Dialog>
+  );
+}
+
+/** How long a session has waited, in words, beside the ember dot its glyph column carries. */
+function WaitingNote(props: { session: string }) {
+  const session = () => forgeStore.sessions.find((item) => item.id === props.session);
+  return (
+    <span class="palette-waiting">
+      <Show when={session()} fallback="waiting">
+        {(found) => `waiting ${waitedFor(found(), now())}`}
+      </Show>
+    </span>
   );
 }
 
@@ -194,6 +262,13 @@ export function CommandPalette(props: CommandPaletteProps) {
 function PaletteGlyph(props: { entry: PaletteEntry }) {
   const glyph = () => {
     const choice = props.entry.choice;
+    if (props.entry.waiting) {
+      return (
+        <span class="palette-glyph palette-glyph-dot" aria-hidden="true">
+          <span class="forge-attention-dot" />
+        </span>
+      );
+    }
     switch (choice.kind) {
       case "new_shell":
       case "focus_session":

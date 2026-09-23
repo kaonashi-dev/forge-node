@@ -1,18 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { sessionFixture } from "../../contracts/sessions.fixture";
-import type { SessionNode, WorkspacePullRequest } from "./tree";
-import { chipGroups, prLabel, prTone, rollupWork, syncLabel } from "./workspaceCard";
-
-function node(id: string, provider: string | null): SessionNode {
-  return {
-    id,
-    session: sessionFixture({ id, agent_provider_id: provider }),
-    label: id,
-    depth: 0,
-    wantsYou: false,
-    unread: false,
-  };
-}
+import type { WorkspacePullRequest } from "./tree";
+import { prLabel, prTone, rollupWork, syncLabel } from "./workspaceCard";
 
 function pr(extra: Partial<WorkspacePullRequest> = {}): WorkspacePullRequest {
   return { number: 12, draft: false, decision: null, title: "Delete strategy", ...extra };
@@ -66,13 +54,5 @@ describe("prTone", () => {
   it("titles the mark with what a hover should say", () => {
     expect(prLabel(pr({ decision: "Approved" }))).toBe("#12 · approved · Delete strategy");
     expect(prLabel(pr())).toBe("#12 · Delete strategy");
-  });
-});
-
-describe("chipGroups", () => {
-  it("splits agents from terminals", () => {
-    const groups = chipGroups([node("a", "claude"), node("t", null), node("b", "codex")]);
-    expect(groups.agents.map((item) => item.label)).toEqual(["a", "b"]);
-    expect(groups.shells.map((item) => item.label)).toEqual(["t"]);
   });
 });

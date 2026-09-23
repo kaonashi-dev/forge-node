@@ -9,15 +9,15 @@ export type MarkerSize = "sm" | "md";
 /**
  * Session state is the app's own vocabulary, so it is a geometric marker rather
  * than an icon: a filled dot for a settled state, a hollow ring for one still
- * in motion, a pulsing ring for one waiting on a person. Three shapes, five
- * states — the colour carries the rest.
+ * in motion, a haloed dot for one waiting on a person. Three shapes, and the
+ * tooltip and accessible name say the state in words.
  */
-type MarkerShape = "dot" | "ring" | "pulse";
+type MarkerShape = "dot" | "ring" | "halo";
 
 function shapeFor(work: SessionWork): MarkerShape {
   switch (work) {
     case "needs-you":
-      return "pulse";
+      return "halo";
     case "working":
     case "starting":
       return "ring";
@@ -27,19 +27,16 @@ function shapeFor(work: SessionWork): MarkerShape {
 }
 
 /**
- * The colour is the whole message.
- *
- * Green is *done* and blue is *still going* — not the other way around, and
- * not one green for both. A rail of four agents was four green dots that said
- * only "four processes are alive", which is the one thing nobody was wondering
- * about. Amber is starting, orange is waiting on a person, red is a crash.
+ * Green is *done* and accent is *still going*, not one green for both: a rail
+ * of four green dots said only that four processes were alive. Amber is
+ * starting, ember is waiting on a person and nothing else, red is a crash.
  */
 function workColorClass(work: SessionWork): string {
   switch (work) {
     case "starting":
       return "forge-icon-amber";
     case "working":
-      return "forge-icon-blue";
+      return "forge-icon-accent";
     case "idle":
     case "running":
       return "forge-icon-green";
@@ -64,7 +61,7 @@ function workLabel(work: SessionWork): string {
     case "running":
       return "Running";
     case "needs-you":
-      return "Needs you";
+      return "Waiting on you";
     case "failed":
       return "Failed";
     default:
@@ -129,5 +126,5 @@ export function StateMarker(props: StateMarkerProps) {
 }
 
 export function AttentionMarker() {
-  return <Marker shape="pulse" colorClass="forge-icon-needs-you" label="Needs you" />;
+  return <Marker shape="halo" colorClass="forge-icon-needs-you" label="Waiting on you" />;
 }

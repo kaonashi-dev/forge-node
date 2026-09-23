@@ -132,14 +132,15 @@ helpers. Document editing belongs to the host; Forge uses its daemon-supervised 
 The explorer supplies its own frame and uses the following optional variables;
 defaults use CSS system colors and monospace, with no imported app theme:
 
-| Variable                                      | Purpose                                    |
-| --------------------------------------------- | ------------------------------------------ |
-| `--fw-background`, `--fw-foreground`          | Surface and text                           |
-| `--fw-muted`, `--fw-border`, `--fw-accent`    | Secondary text, separators, focus          |
-| `--fw-hover`, `--fw-selection`                | Row interaction                            |
-| `--fw-added`, `--fw-modified`, `--fw-deleted` | Optional decorations                       |
-| `--fw-font`, `--fw-font-size`                 | Monospaced typography                      |
-| `--fw-row-height`                             | Unitless row height in pixels, at least 16 |
+| Variable                                      | Purpose                                                                           |
+| --------------------------------------------- | --------------------------------------------------------------------------------- |
+| `--fw-background`, `--fw-foreground`          | Surface and text                                                                  |
+| `--fw-muted`, `--fw-border`, `--fw-accent`    | Secondary text, separators, focus                                                 |
+| `--fw-hover`, `--fw-selection`                | Row interaction                                                                   |
+| `--fw-added`, `--fw-modified`, `--fw-deleted` | Optional decorations                                                              |
+| `--fw-untracked`, `--fw-conflict`             | Optional; fall back to added and deleted                                          |
+| `--fw-font`, `--fw-font-size`                 | Monospaced typography                                                             |
+| `--fw-row-height`                             | Unitless row height in pixels, at least 16; a host may size `.fw-tree-row` itself |
 
 ## Standalone example
 

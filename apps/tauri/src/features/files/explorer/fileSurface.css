@@ -1,27 +1,19 @@
 /* The package consumes semantic roles; Forge owns their values. */
-.fw-host,
-.fw-document {
-  --fw-background: var(--bg-base);
+.fw-host {
+  --fw-background: var(--bg-sidebar);
   --fw-foreground: var(--fg-default);
-  --fw-muted: var(--fg-subtle);
+  --fw-muted: var(--fg-muted);
   --fw-border: var(--border-subtle);
   --fw-accent: var(--accent-text);
   --fw-hover: var(--bg-hover);
-  --fw-selection: var(--accent-soft);
+  --fw-selection: var(--select-bg);
   --fw-added: var(--git-added-text);
   --fw-modified: var(--git-modified-text);
   --fw-deleted: var(--git-deleted-text);
-  --fw-font: var(--font-mono);
-  --fw-font-size: var(--text-md);
-  --fw-editor-ground: var(--forge-editor);
-  /* Soft active-line wash; same idea as editorTheme.activeLine. */
-  --fw-active-line: color-mix(in srgb, var(--fg-default) 5%, var(--forge-editor));
-}
-/* The Files panel runs the explorer in `chrome: "list"`. Ground matches the
-   sidebar so the inline name field does not flash a different paint; padding
-   is zero so a hover or selection wash reaches the sidebar edge. */
-.fw-host {
-  --fw-background: var(--bg-subtle);
+  --fw-untracked: var(--git-untracked-text);
+  --fw-conflict: var(--git-conflict-text);
+  --fw-font: var(--font-sans);
+  --fw-font-size: var(--text-sm);
   gap: 0;
   overflow: hidden;
   padding: 0;
@@ -35,30 +27,84 @@
 .fw-host > .forge-skeleton {
   padding-inline: var(--space-8);
 }
+/* The package measures a row off its own probe, so `--row-h` is the one
+   height and a density change re-lays the virtualised window. */
+.fw-host .fw-tree-row,
+.fw-host .fw-tree-edit-line {
+  gap: var(--space-6);
+  height: var(--row-h);
+}
 .fw-host .fw-tree-row {
-  border-inline-start: none;
+  border-radius: var(--radius-control);
+  color: var(--fg-muted);
+  padding-inline-end: var(--space-8);
 }
-.fw-host .fw-tree-row[aria-selected="true"] {
-  outline: 1px solid var(--accent-solid);
-  outline-offset: -1px;
+.fw-host .fw-tree-items,
+.fw-host .fw-tree-edit {
+  padding-inline: var(--space-8);
 }
-/* The folder glyph is masked with `currentColor`; Forge picks the muted tone
-   the lucide `Icon` carried, so structure never outranks the name beside it. */
+.fw-host .fw-tree-row:hover {
+  background: var(--bg-hover);
+}
+.fw-host .fw-tree-row[aria-selected="true"],
+.fw-host .fw-tree:focus .fw-tree-row[aria-selected="true"] {
+  background: var(--select-bg);
+  box-shadow: var(--select-ring);
+}
+/* The list keeps DOM focus and names the row through
+   `aria-activedescendant`, so the focus ring is drawn on that row. */
+.fw-host .fw-tree:focus-visible .fw-tree-row[aria-selected="true"] {
+  box-shadow: inset 0 0 0 2px var(--ring);
+}
+.fw-host .fw-tree-row[data-file-directory="true"] {
+  color: var(--fg-default);
+}
+.fw-host .fw-tree-row[data-ignored="true"] {
+  color: var(--fg-caption);
+}
+/* A file has no disclosure; its slot stays so names line up with folders'. */
+.fw-host .fw-tree-row[data-file-directory="false"] .fw-tree-branch {
+  visibility: hidden;
+}
+.fw-host .fw-tree-branch {
+  color: var(--fg-caption);
+  font-family: var(--font-mono);
+}
 .fw-host .fw-tree-icon[data-tint="true"] {
   color: var(--fg-muted);
 }
-.fw-document .fw-document-head {
-  background: var(--bg-base);
-}
-.fw-document .editor-breadcrumb {
+.fw-host .fw-tree-mark {
+  color: var(--fg-caption);
   font-family: var(--font-mono);
+  font-size: var(--text-label);
 }
-.fw-document .editor-crumb {
-  font: inherit;
-  border-radius: 0;
+.fw-host .fw-tree-row[data-tone="added"],
+.fw-host .fw-tree-row[data-tone="added"] .fw-tree-mark {
+  color: var(--git-added-text);
 }
-.fw-document-foot {
-  padding-inline: var(--space-12);
+.fw-host .fw-tree-row[data-tone="modified"],
+.fw-host .fw-tree-row[data-tone="modified"] .fw-tree-mark {
+  color: var(--git-modified-text);
+}
+.fw-host .fw-tree-row[data-tone="deleted"],
+.fw-host .fw-tree-row[data-tone="deleted"] .fw-tree-mark {
+  color: var(--git-deleted-text);
+}
+.fw-host .fw-tree-row[data-tone="untracked"],
+.fw-host .fw-tree-row[data-tone="untracked"] .fw-tree-mark {
+  color: var(--git-untracked-text);
+}
+.fw-host .fw-tree-row[data-tone="conflict"],
+.fw-host .fw-tree-row[data-tone="conflict"] .fw-tree-mark {
+  color: var(--git-conflict-text);
+}
+/* A folder's roll-up tints only its count: the name is structure, not a change. */
+.fw-host .fw-tree-row[data-file-directory="true"][data-tone] {
+  color: var(--fg-default);
+}
+.fw-host .fw-tree-edit-field {
+  border-color: var(--accent);
+  border-radius: var(--radius-badge);
 }
 
 .fw-root-identity {
@@ -75,6 +121,7 @@
   width: 100%;
 }
 .fw-root-identity span {
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -98,9 +145,8 @@
   touch-action: none;
 }
 .file-drop-target {
-  outline: 1px solid var(--accent-solid);
-  outline-offset: -1px;
-  background-color: var(--accent-soft);
+  background-color: var(--select-bg);
+  box-shadow: var(--select-ring);
 }
 .file-drag-label {
   position: fixed;
@@ -111,8 +157,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   padding: var(--space-8);
-  background: var(--bg-base);
+  background: var(--surface);
   color: var(--fg-default);
-  border: 1px solid var(--accent-solid);
-  font: var(--forge-mono-size) var(--font-mono);
+  border: 1px solid var(--card-select-border);
+  border-radius: var(--radius-control);
+  box-shadow: var(--depth-2);
+  font: var(--text-xs) var(--font-mono);
 }

@@ -9,7 +9,9 @@ import {
   admits,
   fileEntries,
   paletteEntries,
+  parseQuery,
   rank,
+  scopeChip,
   type PaletteEntry,
 } from "./entries";
 
@@ -124,5 +126,51 @@ describe("rank", () => {
       Array.from({ length: 500 }, (_, index) => `src/file-${index}.ts`),
     );
     expect(rank(many, "").length).toBe(200);
+  });
+});
+
+describe("palette modes", () => {
+  it("switches mode on a leading prefix and searches what follows it", () => {
+    expect(parseQuery("everything", ">work")).toEqual({ scope: "commands", text: "work" });
+    expect(parseQuery("commands", "/ src/pal")).toEqual({ scope: "files", text: "src/pal" });
+    expect(parseQuery("files", "@main")).toEqual({ scope: "sessions", text: "main" });
+    expect(parseQuery("places", "#")).toEqual({ scope: "symbols", text: "" });
+  });
+
+  it("returns to the scope it was opened on once the prefix is deleted", () => {
+    expect(parseQuery("places", "main")).toEqual({ scope: "places", text: "main" });
+  });
+
+  it("keeps the @ mode to sessions and worktrees", () => {
+    expect(admits("sessions", SESSIONS)).toBe(true);
+    expect(admits("sessions", BRANCHES)).toBe(true);
+    expect(admits("sessions", FILES)).toBe(false);
+  });
+
+  it("has no source for symbols, so the mode lists nothing rather than guessing", () => {
+    for (const group of [SESSIONS, BRANCHES, FILES, "Commands", "Create"]) {
+      expect(admits("symbols", group)).toBe(false);
+    }
+  });
+
+  it("labels every narrowed mode with its chip", () => {
+    expect(scopeChip("everything")).toBeNull();
+    expect(scopeChip("commands")).toEqual({ prefix: ">", label: "Command" });
+    expect(scopeChip("symbols")?.prefix).toBe("#");
+  });
+});
+
+describe("waiting sessions", () => {
+  it("lead the session group and say so", () => {
+    const store = {
+      ...snapshot([session("a", "w1"), session("b", "w2")]),
+      session_attention: { b: { wants_you: true, unread: false } },
+    };
+    const sessions = paletteEntries(store, null).filter((entry) => entry.group === SESSIONS);
+    expect(sessions.map((entry) => entry.choice)).toEqual([
+      { kind: "focus_session", session: "b" },
+      { kind: "focus_session", session: "a" },
+    ]);
+    expect(sessions.map((entry) => entry.waiting)).toEqual([true, false]);
   });
 });

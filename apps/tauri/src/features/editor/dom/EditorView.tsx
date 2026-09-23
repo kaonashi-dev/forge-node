@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import { EDITOR } from "../../../actions/actions";
 import { enterContext } from "../../../actions/dispatch";
 import { editorChrome } from "../editorChrome";
+import { EditorBreadcrumbs, EditorConflictNote, EditorStatusBar } from "../EditorChromeBars";
 import { editorAnnouncement, editorAria } from "../editorAria";
 import { sendEditorSurfaceInput, setEditorSurfaceView } from "../commands";
 import { clearEditorConflict, editorConflictFor } from "../conflict/editorConflictStore";
@@ -461,15 +462,9 @@ function EditorSessionView(props: EditorViewProps) {
 
   return (
     <div class="editor-view">
-      <header class="editor-terminal-chrome">
-        <span class="editor-terminal-path">{chrome().path}</span>
-        <Show when={chrome().position}>
-          {(position) => <span class="panel-note">{position()}</span>}
-        </Show>
-        <span class="panel-note">{chrome().mark}</span>
-        <span class="history-spacer" />
+      <EditorBreadcrumbs path={chrome().path}>
         <SourceSwitch path={props.path} surface="editor" />
-      </header>
+      </EditorBreadcrumbs>
 
       {/* The host's open prompt — find, replace, go-to-line. A surface with no
           status row has to show it somewhere, or typing into find is invisible.
@@ -480,8 +475,7 @@ function EditorSessionView(props: EditorViewProps) {
       </Show>
 
       <Show when={conflict()}>
-        <div class="editor-conflict">
-          <span>This file changed on disk while you were editing it.</span>
+        <EditorConflictNote>
           <Button
             variant="secondary"
             size="xs"
@@ -499,7 +493,7 @@ function EditorSessionView(props: EditorViewProps) {
           <Button variant="secondary" size="xs" selected={comparing()} onClick={toggleCompare}>
             Compare
           </Button>
-        </div>
+        </EditorConflictNote>
       </Show>
       <Show when={comparing()}>
         <Show when={sides().error}>
@@ -669,6 +663,7 @@ function EditorSessionView(props: EditorViewProps) {
           }}
         />
       </div>
+      <EditorStatusBar chrome={chrome()} />
     </div>
   );
 }

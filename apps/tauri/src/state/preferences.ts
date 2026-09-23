@@ -25,6 +25,8 @@ export const DIFF_SPLIT_KEY = "ui.diff.split";
 export const SESSION_SPLIT_OPEN_KEY = "ui.session_split.open";
 export const SESSION_SPLIT_WIDTH_KEY = "ui.session_split.width";
 export const DENSITY_KEY = "ui.density";
+/** `"true"` removes every transition in the app, on top of the OS setting. */
+export const REDUCE_MOTION_KEY = "ui.reduce_motion";
 /**
  * Chrome type size, as the `sm` rung in pixels.
  *

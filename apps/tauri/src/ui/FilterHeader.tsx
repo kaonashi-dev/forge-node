@@ -69,9 +69,7 @@ export function FilterHeader(props: FilterHeaderProps) {
           return (
             <RadioGroup
               label={row().label}
-              class="filter-chips"
-              orientation="horizontal"
-              itemClass="forge-chip"
+              variant="chips"
               value={row().value}
               onChange={(value) => row().onChange(value)}
               options={options()}

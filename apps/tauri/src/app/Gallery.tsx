@@ -10,12 +10,15 @@ import {
   RadioGroup,
   SearchField,
   Breadcrumbs,
+  Card,
+  IconButton,
   Kbd,
   ListCard,
   Progress,
   Select,
   Skeleton,
   Switch,
+  Tabs,
   TextField,
   Tooltip,
   toast,
@@ -27,13 +30,9 @@ import { palettes, THEME_LABELS, type ThemeBaseId } from "../theme/tokens";
 import { DENSITIES, applyDensity, type Density } from "../theme/density";
 
 /**
- * `?gallery` — the base layer on one screen.
- *
- * Every swatch is painted with `var(--forge-*)` (or, after F1, a semantic
- * token), so it reflects whatever the pipeline currently emits: the same page
- * is the eyeball review for F0's colours, F1's semantic layer and F2's denser
- * scale without a line of it changing between phases. It is mounted only when
- * the URL carries `?gallery`, never bundled into the shell's own tree.
+ * `?gallery` — the base layer on one screen, painted from live tokens so it
+ * reflects whatever the pipeline currently emits. Mounted only when the URL
+ * carries `?gallery`, never bundled into the shell's own tree.
  */
 
 const bases = Object.keys(palettes) as ThemeBaseId[];
@@ -47,15 +46,7 @@ function resolved(name: string): string {
 function Section(props: { title: string; children: unknown }) {
   return (
     <section style={{ display: "flex", "flex-direction": "column", gap: "10px" }}>
-      <h2
-        style={{
-          margin: "0",
-          "font-size": "var(--forge-text-xs)",
-          "letter-spacing": "0.08em",
-          "text-transform": "uppercase",
-          color: "var(--forge-faint)",
-        }}
-      >
+      <h2 class="forge-section-label" style={{ margin: "0" }}>
         {props.title}
       </h2>
       {props.children as never}
@@ -132,7 +123,7 @@ function FillChip(props: { fill: string; fg: string; label: string }) {
 }
 
 export function Gallery() {
-  const [density, setDensity] = createSignal<Density>("default");
+  const [density, setDensity] = createSignal<Density>("compact");
   return (
     <div
       style={{
@@ -157,11 +148,7 @@ export function Gallery() {
         }}
       >
         <strong style={{ "font-size": "13px" }}>Design gallery</strong>
-        {/* T5: the header is the review surface's own control panel — every
-            base and every density, so a change is compared rather than
-            remembered. `system` is not here: this page is for looking at a
-            specific base, and "whichever the OS says" is the one answer that
-            cannot be looked at. */}
+        {/* No `system` entry: this page looks at one specific base. */}
         <div style={{ display: "flex", gap: "6px" }}>
           <For each={bases}>
             {(id) => (
@@ -366,6 +353,10 @@ function Primitives() {
   const [choice, setChoice] = createSignal("all");
   const [picked, setPicked] = createSignal("claude");
   const [autosave, setAutosave] = createSignal(true);
+  const [density, setDensity] = createSignal("compact");
+  const [pinned, setPinned] = createSignal(true);
+  const [tab, setTab] = createSignal("files");
+  const [picked42, setPicked42] = createSignal(true);
   const row = {
     display: "flex",
     gap: "12px",
@@ -381,6 +372,41 @@ function Primitives() {
           <Button variant="ghost">Ghost</Button>
           <Button variant="danger">Danger</Button>
           <Button variant="danger-ghost">Danger ghost</Button>
+          <Button variant="attention">Answer now</Button>
+        </div>
+        <div style={row}>
+          <Button variant="primary" size="lg" iconLeading={<Icon name="plus" size={14} />}>
+            New session
+          </Button>
+          <Button variant="secondary" size="lg" loading>
+            Detecting…
+          </Button>
+          <IconButton label="Split the pane">
+            <Icon name="columns-2" size={15} />
+          </IconButton>
+          <IconButton label="Search" variant="secondary">
+            <Icon name="search" size={15} />
+          </IconButton>
+          <IconButton
+            label="Pin this session"
+            selected={pinned()}
+            onClick={() => setPinned(!pinned())}
+          >
+            <Icon name="layers" size={15} />
+          </IconButton>
+          <IconButton label="Close">
+            <Icon name="close" size={15} />
+          </IconButton>
+          <RadioGroup
+            label="Row density"
+            variant="segmented"
+            value={density()}
+            onChange={setDensity}
+            options={[
+              { value: "compact", label: "Compact" },
+              { value: "cozy", label: "Cozy" },
+            ]}
+          />
         </div>
         <div style={row}>
           <Button variant="primary" loading>
@@ -485,19 +511,64 @@ function Primitives() {
           <Checkbox checked={checked()} onChange={setChecked} label="Checkbox" />
           <RadioGroup
             label="Filter"
-            hideLabel={false}
-            orientation="horizontal"
+            variant="chips"
             value={choice()}
             onChange={setChoice}
-            itemClass="forge-chip"
             options={[
               { value: "all", label: "All" },
               { value: "mine", label: "Mine" },
               { value: "open", label: "Open" },
             ]}
           />
+        </div>
+
+        <div style={row}>
+          <Badge>draft</Badge>
+          <Badge tone="accent">reviewing</Badge>
           <Badge tone="good">ready</Badge>
-          <Badge tone="warn">draft</Badge>
+          <Badge tone="warn">review required</Badge>
+          <Badge tone="bad">changes requested</Badge>
+          <Badge tone="attention">2 waiting</Badge>
+        </div>
+
+        <div style={{ display: "flex", "flex-direction": "column", "max-width": "320px" }}>
+          <span class="forge-section-label">Row · four states</span>
+          <For
+            each={
+              [
+                ["at rest", ""],
+                ["hovered", "gallery-row-hover"],
+                ["active pane", "forge-selected"],
+                ["waiting on you", "forge-attention-row"],
+              ] as const
+            }
+          >
+            {([label, state]) => (
+              <button
+                type="button"
+                class={`forge-row empty-state-row ${state}`}
+                style={state === "gallery-row-hover" ? { background: "var(--bg-hover)" } : {}}
+              >
+                <span
+                  class={state === "forge-attention-row" ? "forge-attention-dot" : "status-dot"}
+                />
+                <span class="empty-state-label">{label}</span>
+              </button>
+            )}
+          </For>
+        </div>
+
+        <div style={{ "max-width": "420px" }}>
+          <Tabs
+            aria-label="Kit example"
+            value={tab()}
+            onChange={setTab}
+            tabs={[
+              { value: "files", label: "Files changed", content: () => <p>Four files.</p> },
+              { value: "checks", label: "Checks", content: () => <p>Six checks green.</p> },
+              { value: "commits", label: "Commits", content: () => <p>Seven commits.</p> },
+            ]}
+          />
         </div>
 
         <div style={row}>
@@ -600,6 +671,7 @@ function Primitives() {
           <Switch label="Small" size="sm" checked={autosave()} onChange={setAutosave} />
           <Progress label="Reading the checkout" />
           <Progress label="Steps" value={40} detail="2 of 5" />
+          <Progress label="Weekly allowance" value={71} tone="warning" />
           <Skeleton label="Loading the file tree" rows={4} />
         </div>
       </Section>
@@ -621,6 +693,20 @@ function Primitives() {
             ]}
             onChoose={() => undefined}
           />
+          <ListCard
+            ident="#42"
+            selected={picked42()}
+            onOpen={() => setPicked42(!picked42())}
+            openLabel="Select pull request 42"
+            title="Open Markdown source and reflow the preview"
+            meta={
+              <>
+                <span>md-preview → main</span>
+                <span>6 checks</span>
+              </>
+            }
+          />
+          <Card selected>A selected card: accent edge and an outer halo.</Card>
           <ListCard
             glyph={<Icon name="git-pull-request" size={14} />}
             title="Replace the textarea editor with CodeMirror"

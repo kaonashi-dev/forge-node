@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contrast, parseHex } from "./mix";
+import { contrast, hex, mix, parseHex, pct } from "./mix";
 import { withThemeContrast } from "./themeVariants";
 import { metrics, palettes, scale, staticTokens, toCssVariables, type ThemeBaseId } from "./tokens";
 
@@ -76,6 +76,9 @@ describe("AA contrast", () => {
         ),
         v["--accent-soft"],
         v["--danger-soft"],
+        ...[p.bg, p.sidebar, p.surface, p.surfaceHi].flatMap((ground) =>
+          [p.accent, p.needsYou].map((tint) => hex(mix(parseHex(ground), parseHex(tint), pct(13)))),
+        ),
       ];
       for (const token of [
         "--fg-default",
@@ -179,11 +182,11 @@ describe("semantic layer", () => {
   });
 
   it("keeps geometry, elevation and derived foregrounds intact", () => {
-    const map = merged("gruvbox-hard");
+    const map = merged("forge-dark");
     expect(resolve("--control-md", map)).toBe(`${metrics.controlMD}px`);
     expect(resolve("--radius-xs", map)).toBe(`${metrics.radiusXS}px`);
-    expect(resolve("--forge-shadow-md", map)).toBe("0 12px 32px rgb(0 0 0 / 40%)");
-    expect(resolve("--forge-motion-fast", map)).toBe("110ms");
+    expect(resolve("--forge-shadow-md", map)).toBe("0 16px 34px rgb(0 0 0 / 40%)");
+    expect(resolve("--forge-motion-fast", map)).toBe("90ms");
     for (const token of ["--accent-fg", "--danger-fg", "--attention-fg", "--border-strong"]) {
       expect(resolve(token, map), token).toMatch(/^#[0-9a-f]{6}$/);
     }

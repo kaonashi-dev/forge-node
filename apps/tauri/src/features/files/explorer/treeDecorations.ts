@@ -1,21 +1,15 @@
-// U8: what git has to say about a path, arranged for a tree row.
-//
-// The source is the same `LoadDiff` answer the Diff tab renders, so the tree
-// and the patch can never disagree — and nothing new is asked of the daemon to
-// decorate a listing.
-//
-// Pure and its own module: the folder roll-up is the part that is easy to get
-// subtly wrong (an ancestor counted twice, or the file's own directory
-// missed), and it needs no DOM to check.
+// What git has to say about a path, arranged for a tree row. The source is the
+// same `LoadDiff` answer the Diff tab renders, so the tree and the patch never
+// disagree and nothing new is asked of the daemon to decorate a listing.
 
-import type { DiffFile, DiffStatus } from "../../../contracts/workbench";
+import type { DiffFile, DiffStatus, FileEntry } from "../../../contracts/workbench";
 
-/** The one-glyph mark a decorated row carries. */
-export type TreeMark = "A" | "M" | "D" | "R" | "?" | "C";
+/** The letter a decorated row carries beside its tint, so the state is never colour alone. */
+export type TreeMark = "A" | "M" | "D" | "R" | "U" | "C";
 
 export type Decoration = {
   mark: TreeMark;
-  /** The `--forge-git-*` role, as a class suffix. */
+  /** The `--git-*-text` role the row is tinted with. */
   tone: "added" | "modified" | "deleted" | "untracked" | "conflict";
 };
 
@@ -24,7 +18,7 @@ const BY_STATUS: Record<string, Decoration> = {
   Modified: { mark: "M", tone: "modified" },
   Deleted: { mark: "D", tone: "deleted" },
   Renamed: { mark: "R", tone: "modified" },
-  Untracked: { mark: "?", tone: "untracked" },
+  Untracked: { mark: "U", tone: "untracked" },
   Conflicted: { mark: "C", tone: "conflict" },
 };
 
@@ -64,4 +58,21 @@ export function folderCounts(paths: Iterable<string>): Map<string, number> {
     }
   }
   return counts;
+}
+
+/**
+ * The ignored entries whose parent is not itself ignored.
+ *
+ * Only these carry the word: inside an expanded `node_modules/` every row is
+ * ignored, and repeating it on each would bury the names.
+ */
+export function ignoredRoots(entries: readonly FileEntry[]): string[] {
+  const ignored = new Set<string>();
+  for (const entry of entries) if (entry.ignored) ignored.add(entry.path);
+  const roots: string[] = [];
+  for (const path of ignored) {
+    const cut = path.lastIndexOf("/");
+    if (cut === -1 || !ignored.has(path.slice(0, cut))) roots.push(path);
+  }
+  return roots;
 }

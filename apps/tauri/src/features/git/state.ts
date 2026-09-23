@@ -17,6 +17,8 @@ export const [gitStore, setGitStore] = createStore({
   reviewAt: null as number | null,
   rebase: null as RebaseState | null,
   rebaseError: null as string | null,
+  /** The conflicted path the three-way view is showing. */
+  conflictFocus: null as string | null,
   branches: null as Branches | null,
   juvaDraft: null as JuvaDraft | null,
   juvaError: null as string | null,
@@ -32,6 +34,7 @@ export function resetGitAnswers(): void {
     reviewAt: null,
     rebase: null,
     rebaseError: null,
+    conflictFocus: null,
     juvaDraft: null,
     juvaError: null,
   });

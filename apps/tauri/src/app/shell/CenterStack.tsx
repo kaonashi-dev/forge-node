@@ -30,7 +30,7 @@ import {
 import { TerminalPane } from "../../features/terminal/TerminalPane";
 import { ResizeHandle } from "./ResizeHandle";
 import { ViewGlyph } from "./tabs/ViewGlyph";
-import { SessionActionBar } from "../../features/sessions/SessionActionBar";
+import { SessionHeader } from "./SessionHeader";
 import { SessionChangesPanel } from "../../features/git/SessionChangesPanel";
 import {
   QUIET_MS,
@@ -325,8 +325,8 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
         style={{ "--session-split-w": `${splitWidth()}px` }}
       >
         <div class="terminal-slot">
+          <SessionHeader />
           <TerminalPane active={!props.settings && centerMode() === "session"} />
-          <SessionActionBar />
         </div>
         <Show when={splitSession()}>
           {(session) => (
