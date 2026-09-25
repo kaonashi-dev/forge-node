@@ -113,6 +113,43 @@ fn sh_quote(s: &str) -> String {
     out
 }
 
+fn install_fake_agent(bin: &Path, capture: &Path, command: &str, provider: &str, version: &str) {
+    write_executable(
+        bin,
+        command,
+        &format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = --version ]; then\n\
+             \x20 printf '%s\\n' '{version}'\n\
+             \x20 exit 0\n\
+             fi\n\
+             if [ -z \"$FORGE_SESSION_ID\" ]; then\n\
+             \x20 exit 0\n\
+             fi\n\
+             /bin/mkdir -p {cap}\n\
+             name=${{FORGE_ATTEMPT_ID:-session-$FORGE_SESSION_ID}}\n\
+             out={cap}/$name\n\
+             {{\n\
+             \x20 printf 'PROVIDER=%s\\n' '{provider}'\n\
+             \x20 printf 'BIN=%s\\n' '{command}'\n\
+             \x20 printf 'SOCKET=%s\\n' \"$FORGE_SOCKET\"\n\
+             \x20 printf 'SESSION=%s\\n' \"$FORGE_SESSION_ID\"\n\
+             \x20 printf 'RUN=%s\\n' \"$FORGE_RUN_ID\"\n\
+             \x20 printf 'TASK=%s\\n' \"$FORGE_TASK_ID\"\n\
+             \x20 printf 'ATTEMPT=%s\\n' \"$FORGE_ATTEMPT_ID\"\n\
+             \x20 printf 'JSON=%s\\n' \"$FORGECTL_JSON\"\n\
+             \x20 printf 'ARGS=%s\\n' \"$*\"\n\
+             }} > \"$out\"\n\
+             printf 'ready %s\\n' \"$FORGE_ATTEMPT_ID\"\n\
+             exec /bin/cat\n",
+            version = version,
+            provider = provider,
+            command = command,
+            cap = sh_quote(&capture.to_string_lossy()),
+        ),
+    );
+}
+
 fn write_executable(dir: &Path, name: &str, script: &str) -> PathBuf {
     let path = dir.join(name);
     fs::write(&path, script).expect("write script");
@@ -161,30 +198,15 @@ impl Harness {
                 home = sh_quote(&tmp.path().join("home").to_string_lossy()),
             ),
         );
-        write_executable(
-            &bin,
-            "claude",
-            &format!(
-                "#!/bin/sh\n\
-                 if [ \"$1\" = --version ]; then\n\
-                 \x20 printf '%s\\n' 'claude 0.0.0-test'\n\
-                 \x20 exit 0\n\
-                 fi\n\
-                 /bin/mkdir -p {cap}\n\
-                 out={cap}/${{FORGE_ATTEMPT_ID:-$$}}\n\
-                 {{\n\
-                 \x20 printf 'SOCKET=%s\\n' \"$FORGE_SOCKET\"\n\
-                 \x20 printf 'SESSION=%s\\n' \"$FORGE_SESSION_ID\"\n\
-                 \x20 printf 'RUN=%s\\n' \"$FORGE_RUN_ID\"\n\
-                 \x20 printf 'TASK=%s\\n' \"$FORGE_TASK_ID\"\n\
-                 \x20 printf 'ATTEMPT=%s\\n' \"$FORGE_ATTEMPT_ID\"\n\
-                 \x20 printf 'ARGS=%s\\n' \"$*\"\n\
-                 }} > \"$out\"\n\
-                 printf 'ready %s\\n' \"$FORGE_ATTEMPT_ID\"\n\
-                 exec /bin/cat\n",
-                cap = sh_quote(&capture.to_string_lossy()),
-            ),
-        );
+        for (command, provider, version) in [
+            ("claude", "claude", "claude 0.0.0-test"),
+            ("codex", "codex", "codex 0.0.0-test"),
+            ("opencode", "opencode", "opencode 0.0.0-test"),
+            ("agent", "cursor", "cursor 0.0.0-test"),
+            ("grok", "grok", "grok 0.0.0-test"),
+        ] {
+            install_fake_agent(&bin, &capture, command, provider, version);
+        }
         Self {
             socket: tmp.path().join("d.sock"),
             db: tmp.path().join("forge.db"),
@@ -1877,6 +1899,270 @@ fn scenario_configured_stall_is_attention() {
             .then_some(view)
     });
     notes.line(format!("configured_stall_attention {}", view["attention"]));
+}
+
+#[test]
+fn scenario_providers_hand_work_to_each_other() {
+    let mut notes = Notes::file("providers.log");
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    add_project(&client, &repo);
+    let ctl = Ctl::new(&running.socket);
+
+    let providers = poll("five providers detected", || {
+        let providers = ok(&ctl.run(&["providers"], &[]));
+        let ready = ["claude", "codex", "opencode", "cursor", "grok"]
+            .iter()
+            .all(|id| {
+                providers.as_array().unwrap().iter().any(|row| {
+                    row["descriptor"]["id"] == *id
+                        && row["detection"]["status"].get("Installed").is_some()
+                })
+            });
+        ready.then_some(providers)
+    });
+    let versions: Vec<String> = providers
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| {
+            let id = row["descriptor"]["id"].as_str()?;
+            let version = row["detection"]["status"]["Installed"]["version"]
+                .as_str()
+                .unwrap_or("");
+            Some(format!("{id}={version}"))
+        })
+        .collect();
+    notes.line(format!("providers installed={}", versions.join(",")));
+
+    let started = ok(&ctl.run(
+        &[
+            "run",
+            "start",
+            "--controller",
+            "agent:claude",
+            "--objective",
+            "CROSS_PROVIDER_OBJECTIVE",
+        ],
+        &[],
+    ));
+    let run_id = field(&started, "run_id");
+    let controller = field(&started, "controller_session_id");
+    let controller_capture = capture_of(&harness, &format!("session-{controller}"));
+    assert!(
+        controller_capture.contains("PROVIDER=claude\n"),
+        "controller did not launch claude: {controller_capture}"
+    );
+    assert!(
+        controller_capture.contains("BIN=claude\n"),
+        "{controller_capture}"
+    );
+    assert!(
+        controller_capture.contains(&format!("RUN={run_id}\n")),
+        "controller missing its run: {controller_capture}"
+    );
+    assert!(
+        controller_capture.contains("TASK=\n") && controller_capture.contains("ATTEMPT=\n"),
+        "controller was given a worker identity: {controller_capture}"
+    );
+    assert!(
+        controller_capture.contains("JSON=1\n"),
+        "agent was not forced onto JSON: {controller_capture}"
+    );
+    assert!(
+        controller_capture.contains("You are the controller"),
+        "controller prompt was not the launch argv: {controller_capture}"
+    );
+    assert!(
+        !transcript(&ctl, &controller).contains("CROSS_PROVIDER_OBJECTIVE"),
+        "controller prompt was pasted into the terminal"
+    );
+    notes.line(format!(
+        "controller provider=claude session={controller} prompt=argv json=1"
+    ));
+
+    let task = add_task_in(&ctl, &run_id, "codex writes", "PROMPT_TOKEN_codex", false);
+    let codex = ok(&ctl.run(
+        &["task", "start", &task, "--provider", "codex"],
+        &[("FORGE_SESSION_ID", controller.as_str())],
+    ));
+    let codex_attempt = field(&codex, "attempt_id");
+    let codex_session = field(&codex, "session_id");
+    let codex_capture = await_ready(&ctl, &harness, &codex);
+    assert!(
+        codex_capture.contains("PROVIDER=codex\n"),
+        "{codex_capture}"
+    );
+    assert!(codex_capture.contains("BIN=codex\n"), "{codex_capture}");
+    assert!(
+        codex_capture.contains("PROMPT_TOKEN_codex"),
+        "codex launch argv dropped the spec: {codex_capture}"
+    );
+    assert!(
+        !codex_capture.contains("--prompt"),
+        "codex was given OpenCode's prompt flag: {codex_capture}"
+    );
+    assert!(
+        codex_capture.contains(&format!("TASK={task}\n")),
+        "{codex_capture}"
+    );
+    assert!(
+        codex_capture.contains(&format!("ATTEMPT={codex_attempt}\n")),
+        "{codex_capture}"
+    );
+    assert!(
+        !transcript(&ctl, &codex_session).contains("PROMPT_TOKEN_codex"),
+        "worker prompt was pasted into the terminal"
+    );
+    let integration = show(&ctl)["run"]["integration_workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(
+        field(&codex, "workspace_id"),
+        integration,
+        "write attempt shared the integration checkout"
+    );
+    notes.line(format!(
+        "worker provider=codex session={codex_session} attempt={codex_attempt} prompt=positional not-pasted worktree=own"
+    ));
+
+    let mut asking = Command::new(env!("CARGO_BIN_EXE_forgectl"))
+        .args([
+            "--json",
+            "--socket",
+            running.socket.to_str().unwrap(),
+            "--timeout",
+            "20s",
+            "ask",
+            "--wait",
+            "--timeout",
+            "12s",
+            "CODEX_QUESTION",
+        ])
+        .env("FORGE_SOCKET", &running.socket)
+        .env("FORGE_SESSION_ID", &codex_session)
+        .env("FORGE_RUN_ID", &run_id)
+        .env("FORGE_TASK_ID", &task)
+        .env("FORGE_ATTEMPT_ID", &codex_attempt)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("codex ask");
+    poll("codex question", || {
+        let view = show(&ctl);
+        view["attention"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "question" && item["text"] == "CODEX_QUESTION")
+            .then_some(())
+    });
+    ok(&ctl.run(
+        &[
+            "send",
+            "--to",
+            &format!("session:{codex_session}"),
+            "--kind",
+            "answer",
+            "CLAUDE_ANSWER",
+        ],
+        &[("FORGE_SESSION_ID", controller.as_str())],
+    ));
+    let finished = poll("codex ask returned", || asking.try_wait().ok().flatten());
+    assert!(finished.success(), "ask --wait exit {finished:?}");
+    let mut stdout = String::new();
+    asking
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    assert!(stdout.contains("CLAUDE_ANSWER"), "{stdout}");
+    notes.line("codex asked; claude controller answered");
+
+    report_done(&ctl, &codex, &run_id, "REPORT_FROM_CODEX");
+    let reviewed = ok(&ctl.run(&["task", "show", &task], &[]));
+    assert_eq!(reviewed["status"], "review");
+    assert_eq!(reviewed["attempt"]["provider_id"], "codex");
+    assert_eq!(reviewed["report"]["summary"], "REPORT_FROM_CODEX");
+    notes.line("codex report settled the task status=review");
+
+    let retried = ok(&ctl.run(
+        &[
+            "task",
+            "reject",
+            &task,
+            "--feedback",
+            "FEEDBACK_FOR_GROK",
+            "--retry",
+            "--provider",
+            "grok",
+        ],
+        &[("FORGE_SESSION_ID", controller.as_str())],
+    ));
+    let grok_attempt = field(&retried, "attempt_id");
+    let grok_capture = await_ready(&ctl, &harness, &retried);
+    assert!(grok_capture.contains("PROVIDER=grok\n"), "{grok_capture}");
+    assert!(grok_capture.contains("BIN=grok\n"), "{grok_capture}");
+    assert!(
+        grok_capture.contains("FEEDBACK_FOR_GROK"),
+        "grok launch dropped the claude feedback: {grok_capture}"
+    );
+    assert!(
+        grok_capture.contains("REPORT_FROM_CODEX"),
+        "grok launch dropped the codex report: {grok_capture}"
+    );
+    assert_ne!(
+        field(&retried, "workspace_id"),
+        field(&codex, "workspace_id")
+    );
+    notes.line(format!(
+        "retry provider=grok attempt={grok_attempt} prompt includes codex report and claude feedback"
+    ));
+
+    let reviewer = add_task_in(&ctl, &run_id, "opencode reads", "OPENCODE_TOKEN", true);
+    let opencode = ok(&ctl.run(
+        &["task", "start", &reviewer, "--provider", "opencode"],
+        &[("FORGE_SESSION_ID", controller.as_str())],
+    ));
+    let opencode_capture = await_ready(&ctl, &harness, &opencode);
+    assert!(
+        opencode_capture.contains("PROVIDER=opencode\n"),
+        "{opencode_capture}"
+    );
+    assert!(
+        opencode_capture.contains("--prompt") && opencode_capture.contains("OPENCODE_TOKEN"),
+        "opencode did not take the prompt as --prompt: {opencode_capture}"
+    );
+    assert!(
+        opencode_capture.contains("--agent") && opencode_capture.contains("plan"),
+        "read-only opencode was not put in its plan agent: {opencode_capture}"
+    );
+    assert_eq!(field(&opencode, "workspace_id"), integration);
+    notes.line("reviewer provider=opencode args=--agent plan --prompt placement=integration");
+
+    let cursor_task = add_task_in(&ctl, &run_id, "cursor reads", "CURSOR_TOKEN", true);
+    let cursor = ok(&ctl.run(
+        &["task", "start", &cursor_task, "--provider", "cursor"],
+        &[("FORGE_SESSION_ID", controller.as_str())],
+    ));
+    let cursor_capture = await_ready(&ctl, &harness, &cursor);
+    assert!(
+        cursor_capture.contains("PROVIDER=cursor\n"),
+        "{cursor_capture}"
+    );
+    assert!(cursor_capture.contains("BIN=agent\n"), "{cursor_capture}");
+    assert!(
+        cursor_capture.contains("--mode") && cursor_capture.contains("ask"),
+        "read-only cursor was not put in ask mode: {cursor_capture}"
+    );
+    assert!(cursor_capture.contains("CURSOR_TOKEN"), "{cursor_capture}");
+    assert_eq!(field(&cursor, "workspace_id"), integration);
+    notes.line("reviewer provider=cursor bin=agent args=--mode ask placement=integration");
 }
 
 fn json_shape(value: &Value) -> Value {
