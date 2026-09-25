@@ -11,7 +11,6 @@ export function AgentVisibilityButton(props: { agentKey: string; label: string }
       variant="secondary"
       size="xs"
       aria-label={`${visible() ? "Disable" : "Enable"} ${props.label}`}
-      title={visible() ? "Hide from agent selectors" : "Show in agent selectors"}
       onClick={() =>
         void setAppState(agentVisibilityKey(props.agentKey), String(!visible())).catch(
           () => undefined,

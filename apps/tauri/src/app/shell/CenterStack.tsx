@@ -1,35 +1,40 @@
 import { For, Show, createEffect, createSignal, lazy, onCleanup } from "solid-js";
 import type { Section } from "../../features/settings/SettingsRoute";
-import { centerMode, codeOpen, currentViews, focus } from "../../navigation/viewsStore";
+import {
+  centerMode,
+  codeOpen,
+  currentViews,
+  focus,
+  showSession,
+} from "../../navigation/viewsStore";
+import {
+  centerSplit,
+  focusSplitPane,
+  readSplitRatio,
+  setCenterSplitRatio,
+} from "../../navigation/centerSplitStore";
+import { visibleSplit } from "../../navigation/centerSplit";
+import { joinPanes } from "../../features/sessions/sessionActions";
+import { SplitHandle } from "./SplitHandle";
 import { close, closeCode, closeOtherViews, closeViewsToRight } from "../../features/editor/tabs";
-import { EmptyCenter } from "./EmptyCenter";
+import { EmptyCenter, EmptyCode } from "./EmptyCenter";
 import { forgeStore } from "../../state/forgeStore";
 import { reconnect } from "../../runtime/host";
 import { connectionStore } from "../../state/connection";
 import { activeWorkspaceId, sessionsInWorkspace } from "../../features/sessions/sessionScope";
 import { PrDetailView } from "../../features/pull-requests/PrDetailView";
 import { PrComposeView } from "../../features/pull-requests/PrComposeView";
-import { Icon } from "../../theme/icons/index";
-import {
-  Button,
-  ContextMenu,
-  EmptyState,
-  IconButton,
-  Tooltip,
-  type MenuItem,
-} from "../../ui/index";
+import { Button, ContextMenu, type MenuItem } from "../../ui/index";
 import {
   sameView,
   strip,
   viewKey,
-  viewLabel,
-  viewTitle,
   TERMINAL_VIEW,
   type WorkbenchView,
 } from "../../navigation/views";
 import { TerminalPane } from "../../features/terminal/TerminalPane";
 import { ResizeHandle } from "./ResizeHandle";
-import { ViewGlyph } from "./tabs/ViewGlyph";
+import { WorkbenchTab } from "./tabs/WorkbenchTab";
 import { SessionHeader } from "./SessionHeader";
 import { SessionChangesPanel } from "../../features/git/SessionChangesPanel";
 import {
@@ -142,6 +147,33 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
   const [splitWidth, setSplitWidth] = createSignal(
     readWidth(SESSION_SPLIT_WIDTH_KEY, SESSION_SPLIT_RANGE),
   );
+  const [paneRatio, setPaneRatio] = createSignal(readSplitRatio());
+  seedFromAppState(() => setPaneRatio(readSplitRatio()));
+  const layout = () => visibleSplit(centerSplit(), props.settings, centerMode(), active());
+  const hideMainTerminal = () =>
+    props.settings || noSessions() || (onCode() && layout() !== "code");
+  const extraSession = () => (layout() === "session" ? centerSplit().extra : null);
+
+  createEffect(() => {
+    const extra = centerSplit().extra;
+    if (!extra) return;
+    const row = forgeStore.sessions.find((item) => item.id === extra);
+    if (row === undefined) {
+      if (forgeStore.sessions.length > 0) joinPanes();
+      return;
+    }
+    if (row.terminal_id == null) joinPanes();
+  });
+  createEffect(() => {
+    if (centerSplit().kind === "session" && centerMode() === "code") joinPanes();
+  });
+  createEffect(() => {
+    if (centerSplit().kind !== "code") return;
+    if (strip(views()).length === 0) {
+      joinPanes();
+      showSession();
+    }
+  });
   // Read once above, before the daemon has answered, so the stored width would
   // never come back on its own. The split is behind a `Show`, but the signal
   // is not: it is created with the stack, on the frame the window paints.
@@ -228,56 +260,30 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
   }
 
   return (
-    <div class="center-stack">
+    <div
+      class="center-stack"
+      classList={{
+        "pane-split": layout() !== "closed",
+        "split-code": layout() === "code",
+        "split-session": layout() === "session",
+      }}
+      style={
+        layout() !== "closed"
+          ? { "--split-a": `${paneRatio()}fr`, "--split-b": `${1 - paneRatio()}fr` }
+          : undefined
+      }
+    >
       <Show when={onCode() && strip(views()).length > 0}>
         <div class="workbench-strip" role="tablist" aria-label="Open files">
           <For each={strip(views())}>
             {(view) => (
-              <div
-                class="workbench-tab"
-                classList={{
-                  active: sameView(active(), view),
-                  dirty:
-                    view.kind === "editor-terminal" &&
-                    forgeStore.sessions.find((session) => session.id === view.session)?.editor
-                      ?.dirty === true,
+              <WorkbenchTab
+                view={view}
+                active={active()}
+                onMenu={(event, target) => {
+                  setTabMenu({ x: event.clientX, y: event.clientY, view: target });
                 }}
-                role="tab"
-                aria-selected={sameView(active(), view)}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  setTabMenu({ x: event.clientX, y: event.clientY, view });
-                }}
-                // Middle-click closes, the way it does in every browser. On
-                // `auxclick` and not `mouseup`: `mouseup` fires for the right
-                // button too, and would close the tab a context menu is
-                // opening on.
-                onAuxClick={(event) => {
-                  if (event.button !== 1) return;
-                  event.preventDefault();
-                  close(view);
-                }}
-              >
-                <Tooltip label={viewTitle(view)} contents>
-                  <button
-                    type="button"
-                    class="forge-row workbench-tab-label"
-                    onClick={() => focus(view)}
-                  >
-                    <ViewGlyph view={view} />
-                    <span class="workbench-tab-text">{viewLabel(view)}</span>
-                  </button>
-                </Tooltip>
-                <IconButton
-                  label={`Close ${viewLabel(view)}`}
-                  size="xs"
-                  class="workbench-tab-close"
-                  onClick={() => close(view)}
-                >
-                  <span class="workbench-tab-dirty" aria-label="Unsaved changes" />
-                  <Icon name="close" class="workbench-tab-close-icon" size={12} />
-                </IconButton>
-              </div>
+              />
             )}
           </For>
         </div>
@@ -319,16 +325,22 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
       <div
         class="center-slot"
         classList={{
-          hidden: props.settings || onCode() || noSessions(),
-          split: splitSession() !== null,
+          hidden: hideMainTerminal(),
+          split: splitSession() !== null && layout() === "closed",
         }}
         style={{ "--session-split-w": `${splitWidth()}px` }}
       >
-        <div class="terminal-slot">
-          <SessionHeader />
-          <TerminalPane active={!props.settings && centerMode() === "session"} />
+        <div
+          class="terminal-slot"
+          onMouseDown={() => focusSplitPane(layout() === "code" ? "extra" : "primary")}
+        >
+          <SessionHeader onCloseSplit={layout() === "code" ? joinPanes : undefined} />
+          <TerminalPane
+            active={!hideMainTerminal()}
+            onActivate={() => focusSplitPane(layout() === "code" ? "extra" : "primary")}
+          />
         </div>
-        <Show when={splitSession()}>
+        <Show when={layout() === "closed" ? splitSession() : null}>
           {(session) => (
             <>
               <ResizeHandle
@@ -346,6 +358,25 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
           )}
         </Show>
       </div>
+      <Show when={layout() !== "closed"}>
+        <SplitHandle
+          ratio={paneRatio()}
+          onResize={(value) => {
+            setPaneRatio(value);
+            setCenterSplitRatio(value);
+          }}
+          onCommit={(value) => setCenterSplitRatio(value, true)}
+          label="Resize the split"
+        />
+      </Show>
+      <Show when={extraSession()}>
+        {(session) => (
+          <div class="terminal-slot pane-split-extra" onMouseDown={() => focusSplitPane("extra")}>
+            <SessionHeader sessionId={session()} onCloseSplit={joinPanes} />
+            <TerminalPane session={session()} active onActivate={() => focusSplitPane("extra")} />
+          </div>
+        )}
+      </Show>
 
       <Show when={!props.settings && !onCode() && noSessions()}>
         <div class="center-view">
@@ -355,10 +386,7 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
 
       <Show when={onCode() && strip(views()).length === 0}>
         <div class="center-view">
-          <EmptyState
-            message="No files open. Open a file to start working in Code."
-            actions={[{ action: "open_file_palette", label: "Open file", icon: "folder-open" }]}
-          />
+          <EmptyCode />
         </div>
       </Show>
 

@@ -24,6 +24,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Columns2,
   Copy,
   ExternalLink,
@@ -81,6 +82,7 @@ export type ForgeIconName =
   | "chevron-left"
   | "chevron-right"
   | "chevron-down"
+  | "chevron-up"
   | "close"
   | "plus"
   | "folder-open"
@@ -121,6 +123,7 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,
   "chevron-down": ChevronDown,
+  "chevron-up": ChevronUp,
   close: X,
   plus: Plus,
   "folder-open": FolderOpen,

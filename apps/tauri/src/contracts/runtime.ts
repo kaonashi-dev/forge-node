@@ -26,7 +26,34 @@ export type EditorState = {
   status: string;
   /** A save was refused because the file moved under the buffer. */
   conflict: boolean;
+  /** The find panel, while it is open. The editor owns the query and count. */
+  find?: EditorFind | null;
 };
+
+export type EditorFind = {
+  /** Bumped by every open gesture: the panel focuses its field again. */
+  focus: number;
+  pattern: string;
+  case_sensitive: boolean;
+  whole_word: boolean;
+  regex: boolean;
+  /** Matches, counted up to a cap; `capped` says there are more. */
+  total: number;
+  capped: boolean;
+  /** 1-based match the caret is on; 0 when no find gesture placed it. */
+  index: number;
+  /** Why the pattern cannot be searched with. */
+  error: string | null;
+};
+
+export type EditorFindFlags = Pick<EditorFind, "case_sensitive" | "whole_word" | "regex">;
+
+/** Mirrors `domain::EditorFindCommand`, externally tagged. */
+export type EditorFindCommand =
+  | { Set: { pattern: string } & EditorFindFlags }
+  | "Next"
+  | "Previous"
+  | "Close";
 
 export type SessionState =
   | "Starting"

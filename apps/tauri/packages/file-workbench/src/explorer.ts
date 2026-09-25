@@ -362,7 +362,6 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     if (row.isFile || row.opaque) node.removeAttribute("aria-expanded");
     else node.setAttribute("aria-expanded", String(!row.folded));
     node.style.paddingInlineStart = `${row.depth * 2 + 1}ch`;
-    node.title = row.opaque ? `${row.path} — ignored; contents not listed` : row.path;
     if (row.symlink) {
       const target =
         row.symlink === "External"
@@ -372,7 +371,11 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
             : row.symlink === "Unavailable"
               ? "target is unavailable"
               : `linked ${row.symlink.toLowerCase()}`;
-      node.title = `${row.path} — ${target}`;
+      node.title = target;
+    } else if (row.opaque) {
+      node.title = "ignored; contents not listed";
+    } else {
+      node.removeAttribute("title");
     }
     entry.branch.textContent = row.isFile ? "·" : row.opaque ? "─" : row.folded ? "▸" : "▾";
     entry.icon.hidden = !gutter;

@@ -36,7 +36,7 @@ import { watchFiles, fileWatchError, rearmFileWatches } from "../watches/fileWat
 import { ensureDiff } from "../../git/decorations";
 import { installTreeFollow } from "./treeFollow";
 import { requestConfirm, requestTextInput } from "../../../state/dialogs";
-import { fileDecorations, folderCounts, ignoredRoots } from "./treeDecorations";
+import { fileDecorations, folderCounts } from "./treeDecorations";
 import { Icon, langIconUrl } from "../../../theme/icons/index";
 import { themeBase } from "../../../theme/ThemeProvider";
 import { baseIsLight } from "../../../theme/tokens";
@@ -94,8 +94,6 @@ export function FileTreePanel() {
     for (const [path, mark] of marks) result.set(path, { label: mark.mark, tone: mark.tone });
     for (const [path, count] of folderCounts(marks.keys()))
       result.set(path, { label: String(count), tone: "modified" });
-    for (const path of ignoredRoots(listing()?.entries ?? []))
-      if (!result.has(path)) result.set(path, { label: "ignored" });
     return result;
   });
   const directoryFailures = createMemo(() =>
@@ -511,7 +509,6 @@ export function FileTreePanel() {
       <button
         type="button"
         class="fw-root-identity"
-        title={workspaceInfo()?.path}
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           setMenu({ x: rect.left, y: rect.bottom, target: { kind: "root" } });

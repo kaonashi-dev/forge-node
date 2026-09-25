@@ -79,6 +79,10 @@ pub enum Outgoing {
         first_line: u32,
         line_count: u32,
     },
+    /// What the GUI's find panel asked, already checked against its limit.
+    Find {
+        command: editor_control::WireFindCommand,
+    },
 }
 
 impl Outgoing {
@@ -127,6 +131,7 @@ impl Outgoing {
                     line_count,
                 },
             },
+            Self::Find { command } => DaemonMessage::Find { command },
         }
     }
 }
@@ -828,6 +833,9 @@ fn flush(
             cursor_count: state.cursor_count,
             status: state.status,
             conflict,
+            find: state
+                .find
+                .map(|find| Box::new(crate::editor_wire::find_to_domain(find))),
         },
     );
 }

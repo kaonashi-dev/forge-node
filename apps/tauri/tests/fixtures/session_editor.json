@@ -20,7 +20,18 @@
     "selection_length": 0,
     "cursor_count": 1,
     "status": "saved",
-    "conflict": false
+    "conflict": false,
+    "find": {
+      "focus": 1,
+      "pattern": "main",
+      "case_sensitive": false,
+      "whole_word": true,
+      "regex": false,
+      "total": 3,
+      "capped": false,
+      "index": 1,
+      "error": null
+    }
   },
   "agent_provider_id": null,
   "agent_profile_id": null,

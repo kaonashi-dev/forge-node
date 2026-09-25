@@ -9,14 +9,17 @@ import { sessionsInWorkspace } from "../../features/sessions/sessionScope";
 import { hasQuestion } from "../../features/sessions/waiting";
 import { elapsedLabel, since } from "../../features/sessions/elapsed";
 import type { Session } from "../../contracts/runtime";
+import { Icon } from "../../theme/icons/index";
+import { IconButton } from "../../ui/index";
 
-function activeRow(): Session | null {
-  return forgeStore.sessions.find((item) => item.id === connectionStore.activeSession) ?? null;
+function rowFor(id: string | null | undefined): Session | null {
+  const session = id ?? connectionStore.activeSession;
+  return forgeStore.sessions.find((item) => item.id === session) ?? null;
 }
 
 /** Where the session on screen lives, what runs it, and whether it is waiting. */
-export function SessionHeader() {
-  const session = createMemo(activeRow);
+export function SessionHeader(props: { sessionId?: string; onCloseSplit?: () => void }) {
+  const session = createMemo(() => rowFor(props.sessionId));
   const workspace = createMemo(() => {
     const id = session()?.workspace_id;
     return forgeStore.workspaces.find((item) => item.id === id) ?? null;
@@ -91,7 +94,14 @@ export function SessionHeader() {
             )}
           </Show>
           <span class="session-header-spacer" />
-          <SessionActionBar />
+          <Show when={!props.sessionId}>
+            <SessionActionBar />
+          </Show>
+          <Show when={props.onCloseSplit}>
+            <IconButton label="Join panes" size="xs" onClick={props.onCloseSplit}>
+              <Icon name="close" class="forge-icon-muted" size={14} />
+            </IconButton>
+          </Show>
         </header>
       )}
     </Show>

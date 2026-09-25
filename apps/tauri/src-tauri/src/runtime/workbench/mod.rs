@@ -88,6 +88,9 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
         WorkbenchCommand::SetEditorAutosave { session, autosave } => {
             editor::set_editor_autosave(app, client, session, autosave)
         }
+        WorkbenchCommand::EditorFind { session, command } => {
+            editor::editor_find(client, session, command)
+        }
         WorkbenchCommand::LoadSessionTranscript {
             session,
             max_lines,

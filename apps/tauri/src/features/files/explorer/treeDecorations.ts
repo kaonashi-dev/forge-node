@@ -2,7 +2,7 @@
 // same `LoadDiff` answer the Diff tab renders, so the tree and the patch never
 // disagree and nothing new is asked of the daemon to decorate a listing.
 
-import type { DiffFile, DiffStatus, FileEntry } from "../../../contracts/workbench";
+import type { DiffFile, DiffStatus } from "../../../contracts/workbench";
 
 /** The letter a decorated row carries beside its tint, so the state is never colour alone. */
 export type TreeMark = "A" | "M" | "D" | "R" | "U" | "C";
@@ -58,21 +58,4 @@ export function folderCounts(paths: Iterable<string>): Map<string, number> {
     }
   }
   return counts;
-}
-
-/**
- * The ignored entries whose parent is not itself ignored.
- *
- * Only these carry the word: inside an expanded `node_modules/` every row is
- * ignored, and repeating it on each would bury the names.
- */
-export function ignoredRoots(entries: readonly FileEntry[]): string[] {
-  const ignored = new Set<string>();
-  for (const entry of entries) if (entry.ignored) ignored.add(entry.path);
-  const roots: string[] = [];
-  for (const path of ignored) {
-    const cut = path.lastIndexOf("/");
-    if (cut === -1 || !ignored.has(path.slice(0, cut))) roots.push(path);
-  }
-  return roots;
 }

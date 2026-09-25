@@ -65,8 +65,8 @@ pub use pull_request::{
 };
 pub use rebase::{ConflictFile, RebaseState, SequencerOp};
 pub use session::{
-    EditorState, Session, SessionKind, SessionRole, SessionState, SessionTitle, SessionTranscript,
-    MAX_GRAPH_DEPTH,
+    EditorFind, EditorFindCommand, EditorState, Session, SessionKind, SessionRole, SessionState,
+    SessionTitle, SessionTranscript, MAX_EDITOR_FIND_PATTERN_BYTES, MAX_GRAPH_DEPTH,
 };
 pub use share::{
     ShareAction, ShareCandidate, ShareClass, ShareCleanup, ShareRule, ShareState, ShareStatusEntry,

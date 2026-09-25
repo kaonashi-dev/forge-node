@@ -8,7 +8,9 @@ import ini from "highlight.js/lib/languages/ini";
 import java from "highlight.js/lib/languages/java";
 import javascript from "highlight.js/lib/languages/javascript";
 import json from "highlight.js/lib/languages/json";
+import kotlin from "highlight.js/lib/languages/kotlin";
 import markdown from "highlight.js/lib/languages/markdown";
+import makefile from "highlight.js/lib/languages/makefile";
 import python from "highlight.js/lib/languages/python";
 import rust from "highlight.js/lib/languages/rust";
 import sql from "highlight.js/lib/languages/sql";
@@ -27,7 +29,9 @@ const highlighter = createLowlight({
   java,
   javascript,
   json,
+  kotlin,
   markdown,
+  makefile,
   python,
   rust,
   sql,
@@ -52,6 +56,8 @@ const LANGUAGES: Readonly<Record<string, string>> = {
   pyi: "python",
   go: "go",
   java: "java",
+  kt: "kotlin",
+  kts: "kotlin",
   c: "cpp",
   h: "cpp",
   cc: "cpp",
@@ -66,9 +72,13 @@ const LANGUAGES: Readonly<Record<string, string>> = {
   sh: "bash",
   bash: "bash",
   zsh: "bash",
+  mk: "makefile",
+  make: "makefile",
+  prisma: "java",
   css: "css",
   html: "xml",
   htm: "xml",
+  xhtml: "xml",
   xml: "xml",
   svg: "xml",
   md: "markdown",
@@ -117,7 +127,11 @@ export function highlightExcerpt(path: string, lines: readonly string[]): Syntax
   const plain = () => lines.map((text) => [{ text, scope: null }]);
   const name = path.split("/").at(-1)?.toLowerCase() ?? "";
   const language =
-    name === ".env" || name.startsWith(".env.") ? "ini" : LANGUAGES[name.split(".").at(-1) ?? ""];
+    name === ".env" || name.startsWith(".env.")
+      ? "ini"
+      : name === "makefile" || name === "gnumakefile"
+        ? "makefile"
+        : LANGUAGES[name.split(".").at(-1) ?? ""];
   if (!language) return plain();
   let size = 0;
   for (const line of lines) {

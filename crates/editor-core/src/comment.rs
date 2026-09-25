@@ -9,7 +9,7 @@ pub(crate) fn toggle(document: &mut Document) -> Result<Option<Applied>, EditErr
     let prefix = match document.input_style().grammar {
         Grammar::Rust | Grammar::CLike => "//",
         Grammar::Python | Grammar::Shell | Grammar::Keyed => "#",
-        Grammar::Json | Grammar::Markdown | Grammar::None => return Ok(None),
+        Grammar::Json | Grammar::Markdown | Grammar::Html | Grammar::None => return Ok(None),
     };
     let selection = document.selection();
     let text = document.text();
@@ -135,6 +135,12 @@ mod tests {
         assert_eq!(document.as_str(), "# print(1)");
         let mut plain = Document::from_string("text".into(), false);
         assert!(toggle(&mut plain).unwrap().is_none());
+        let mut html = Document::from_string("<div></div>".into(), false);
+        html.set_input_style(InputStyle {
+            grammar: Grammar::Html,
+            ..InputStyle::default()
+        });
+        assert!(toggle(&mut html).unwrap().is_none());
         let mut read_only = Document::from_string("text".into(), true);
         assert_eq!(toggle(&mut read_only), Err(EditError::ReadOnly));
     }

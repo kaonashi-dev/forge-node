@@ -6,13 +6,14 @@
 //! the clamps that matter already happened in the producer.
 
 use domain::{
-    EditorDecoration, EditorDecorationKind, EditorFold, EditorFrame, EditorInputEvent, EditorKey,
-    EditorMark, EditorPlace, EditorPointer, EditorRange, EditorRow, EditorScope, EditorSeverity,
-    EditorSpan, MAX_EDITOR_INPUT_EVENTS, MAX_EDITOR_TEXT_BYTES,
+    EditorDecoration, EditorDecorationKind, EditorFind, EditorFindCommand, EditorFold, EditorFrame,
+    EditorInputEvent, EditorKey, EditorMark, EditorPlace, EditorPointer, EditorRange, EditorRow,
+    EditorScope, EditorSeverity, EditorSpan, MAX_EDITOR_FIND_PATTERN_BYTES,
+    MAX_EDITOR_INPUT_EVENTS, MAX_EDITOR_TEXT_BYTES,
 };
 use editor_control::{
-    EditorInput, ViewFrame, WireCaret, WireDecorationKind, WireKey, WireMarkKind, WireMouseKind,
-    WireRange, WireScope, WireSeverityLevel,
+    EditorInput, ViewFrame, WireCaret, WireDecorationKind, WireFind, WireFindCommand, WireKey,
+    WireMarkKind, WireMouseKind, WireRange, WireScope, WireSeverityLevel,
 };
 use std::sync::Arc;
 
@@ -121,6 +122,52 @@ pub fn input_to_wire(events: Vec<EditorInputEvent>) -> Vec<EditorInput> {
 }
 
 /// Cut committed text on a char boundary, never mid-code-point.
+/// A find-panel command for the editor, or `None` for a pattern over the limit.
+///
+/// Refused whole rather than cut: half a pattern searches for something the
+/// person did not type.
+#[must_use]
+pub fn find_command_to_wire(command: EditorFindCommand) -> Option<WireFindCommand> {
+    Some(match command {
+        EditorFindCommand::Set {
+            pattern,
+            case_sensitive,
+            whole_word,
+            regex,
+        } => {
+            if pattern.len() > MAX_EDITOR_FIND_PATTERN_BYTES {
+                return None;
+            }
+            WireFindCommand::Set {
+                pattern,
+                case_sensitive,
+                whole_word,
+                regex,
+            }
+        }
+        EditorFindCommand::Next => WireFindCommand::Next,
+        EditorFindCommand::Previous => WireFindCommand::Previous,
+        EditorFindCommand::Close => WireFindCommand::Close,
+        _ => return None,
+    })
+}
+
+/// The open find panel, as a session carries it.
+#[must_use]
+pub fn find_to_domain(find: WireFind) -> EditorFind {
+    EditorFind {
+        focus: find.focus,
+        pattern: find.pattern,
+        case_sensitive: find.case_sensitive,
+        whole_word: find.whole_word,
+        regex: find.regex,
+        total: find.total,
+        capped: find.capped,
+        index: find.index,
+        error: find.error,
+    }
+}
+
 fn clamp_text(mut text: String) -> String {
     if text.len() <= MAX_EDITOR_TEXT_BYTES {
         return text;
@@ -273,5 +320,32 @@ mod tests {
             }
             other => panic!("expected Text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_find_pattern_over_the_limit_is_refused_whole() {
+        let set = |pattern: String| EditorFindCommand::Set {
+            pattern,
+            case_sensitive: false,
+            whole_word: true,
+            regex: false,
+        };
+        assert_eq!(
+            find_command_to_wire(set("llvm".into())),
+            Some(WireFindCommand::Set {
+                pattern: "llvm".into(),
+                case_sensitive: false,
+                whole_word: true,
+                regex: false,
+            })
+        );
+        assert_eq!(
+            find_command_to_wire(set("x".repeat(MAX_EDITOR_FIND_PATTERN_BYTES + 1))),
+            None
+        );
+        assert_eq!(
+            find_command_to_wire(EditorFindCommand::Next),
+            Some(WireFindCommand::Next)
+        );
     }
 }

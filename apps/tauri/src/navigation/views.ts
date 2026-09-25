@@ -128,11 +128,11 @@ export function viewLabel(view: WorkbenchView): string {
 }
 
 /**
- * The whole of what a tab is about, for its tooltip.
+ * The whole of what a tab is about, for its accessible name.
  *
  * The tab itself shows the basename, because a strip of full paths is a strip
  * of identical prefixes — but a basename alone cannot tell two `mod.rs` apart,
- * so the path has to stay reachable.
+ * so the path stays on `aria-label` rather than a hover tip.
  */
 export function viewTitle(view: WorkbenchView): string {
   if (view.kind === "editor-terminal" || view.kind === "preview") return view.path;

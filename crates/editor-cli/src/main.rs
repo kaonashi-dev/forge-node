@@ -99,7 +99,7 @@ fn run_headless(options: cli::Options) -> anyhow::Result<()> {
     let mut control = control.expect("--headless implies --control");
     let mut last_state: Option<EditorStateWire> = None;
     let mut last_frame: Option<editor_control::ViewFrame> = None;
-    publish_state(&app, &mut control, &mut last_state)?;
+    publish_state(&mut app, &mut control, &mut last_state)?;
     publish_frame(&mut app, &mut control, buffer_id, &mut last_frame)?;
     let mut published = std::time::Instant::now();
     loop {
@@ -140,7 +140,7 @@ fn run_headless(options: cli::Options) -> anyhow::Result<()> {
         }
         flush_save(&mut app, &mut control)?;
         flush_lookups(&mut app, &mut control)?;
-        publish_state(&app, &mut control, &mut last_state)?;
+        publish_state(&mut app, &mut control, &mut last_state)?;
         if incoming.is_empty() || published.elapsed() >= FRAME {
             publish_frame(&mut app, &mut control, buffer_id, &mut last_frame)?;
             published = std::time::Instant::now();
@@ -170,7 +170,7 @@ fn run(options: cli::Options) -> anyhow::Result<()> {
 
     let mut last_state: Option<EditorStateWire> = None;
     if let Some(channel) = control.as_mut() {
-        publish_state(&app, channel, &mut last_state)?;
+        publish_state(&mut app, channel, &mut last_state)?;
     }
 
     let out = std::io::stdout();
@@ -234,7 +234,7 @@ fn run(options: cli::Options) -> anyhow::Result<()> {
             // `dirty` the GUI paints cannot arrive in the wrong order.
             flush_save(&mut app, channel)?;
             flush_lookups(&mut app, channel)?;
-            publish_state(&app, channel, &mut last_state)?;
+            publish_state(&mut app, channel, &mut last_state)?;
         }
         // Paint after the burst is applied. Damage accumulates across the
         // drained events; the floor still caps a sustained stream to ≤125/s.
@@ -375,6 +375,7 @@ fn handle_control(
             ..
         } => app.details_arrived(line, before, after, truncated),
         DaemonMessage::SetAutosave { autosave, .. } => app.set_autosave(autosave),
+        DaemonMessage::Find { command } => app.find_command(command),
         // Clamped before anything is done with it: `events` arrives from the
         // wire, and a sender that stopped draining must not decide how long
         // this loop runs without publishing.
@@ -490,10 +491,11 @@ fn publish_frame(
 
 /// Report the buffer state when it changed.
 fn publish_state(
-    app: &App,
+    app: &mut App,
     control: &mut ControlChannel,
     last: &mut Option<EditorStateWire>,
 ) -> anyhow::Result<()> {
+    app.refresh_find();
     let state = app.wire_state();
     if last.as_ref() == Some(&state) {
         return Ok(());

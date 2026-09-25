@@ -47,7 +47,7 @@ tabs inside Code. Closing the last file leaves Code open with its empty state.
 ## Files
 
 The Files sidebar is a lazy disk tree, independent of the global file index.
-Empty and hidden folders are visible; ignored folders are decorated and loaded
+Empty and hidden folders are visible; ignored folders are dimmed and loaded
 on expansion. Errors retain the last successful children and partial listings
 are labelled. Reveal loads the required ancestors before selecting its target.
 
@@ -104,6 +104,11 @@ while Code is up, every terminal and agent (`ui.terminal.zoom`) while a
 session is up. Chrome type size is Settings → Personalization → Interface
 size (`ui.font_size`) and does not follow those chords. Unmatched, the same
 chords are swallowed so WKWebView cannot scale the whole window.
+
+`Cmd+D` (`Ctrl+Shift+D` on Linux) splits the centre into two columns: a new
+shell beside the current terminal, or the current session beside the open
+file. Diff, search and pull-request views stay full width. `Cmd+W` on the extra
+column joins the panes without closing the session.
 
 `Cmd+Shift+F` (`Ctrl+Shift+F` on Linux) opens or focuses the Search tab in Code.
 Results are grouped by file with line numbers, highlighted matches and three

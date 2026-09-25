@@ -175,7 +175,51 @@ pub struct EditorState {
     /// when somebody asks to see them, not carried on every `SessionUpdated`.
     #[serde(default)]
     pub conflict: bool,
+    /// The GUI's find panel, while it is open. The editor owns the query and
+    /// the count; the GUI renders this and asks with `EditorFind`. Boxed so a
+    /// closed panel costs a session event one pointer.
+    #[serde(default)]
+    pub find: Option<Box<EditorFind>>,
 }
+
+/// An open find panel, as the editor reports it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorFind {
+    /// Bumped by every open gesture, so the GUI can focus its field again.
+    pub focus: u32,
+    pub pattern: String,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub regex: bool,
+    /// Matches in the buffer, counted up to a cap; `capped` says there are more.
+    pub total: u32,
+    pub capped: bool,
+    /// 1-based match the caret sits on; 0 when no find gesture has placed it.
+    pub index: u32,
+    /// Why the pattern cannot be searched with. Only a regex can be invalid.
+    pub error: Option<String>,
+}
+
+/// What the GUI's find panel asks of an editor session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum EditorFindCommand {
+    /// Search for `pattern` from where the panel opened, as it is typed.
+    /// Longer than [`MAX_EDITOR_FIND_PATTERN_BYTES`] is refused whole.
+    Set {
+        pattern: String,
+        case_sensitive: bool,
+        whole_word: bool,
+        regex: bool,
+    },
+    Next,
+    Previous,
+    /// Close the panel and clear its highlights; the pattern is kept.
+    Close,
+}
+
+/// Longest pattern the find panel may send, the editor's own search limit.
+pub const MAX_EDITOR_FIND_PATTERN_BYTES: usize = 1024;
 
 /// A persistent unit of work in the domain; a node of the session graph.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,6 +418,13 @@ mod tests {
             cursor_count: 2,
             status: "alpha: 3/41".into(),
             conflict: true,
+            find: Some(Box::new(EditorFind {
+                focus: 1,
+                pattern: "alpha".into(),
+                total: 41,
+                index: 3,
+                ..EditorFind::default()
+            })),
         };
         let json = serde_json::to_string(&state).unwrap();
         assert_eq!(serde_json::from_str::<EditorState>(&json).unwrap(), state);
@@ -409,6 +460,7 @@ mod tests {
                 cursor_count: 1,
                 status: String::new(),
                 conflict: false,
+                find: None,
             }),
             agent_provider_id: None,
             agent_profile_id: None,

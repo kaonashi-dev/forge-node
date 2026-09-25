@@ -47,6 +47,17 @@ describe("generated fixtures", () => {
       cursor_count: 1,
       status: "saved",
       conflict: false,
+      find: {
+        focus: 1,
+        pattern: "main",
+        case_sensitive: false,
+        whole_word: true,
+        regex: false,
+        total: 3,
+        capped: false,
+        index: 1,
+        error: null,
+      },
     });
 
     const request = request_create_editor_session.CreateEditorSession;

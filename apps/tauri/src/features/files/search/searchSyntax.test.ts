@@ -8,6 +8,8 @@ describe("search syntax", () => {
     ["src/main.rs", 'let message = "hello"; // note', "let"],
     ["src/main.ts", 'const message: string = "hello"; // note', "const"],
     ["src/main.py", 'return "hello" # note', "return"],
+    ["build.gradle.kts", 'val message = "hello" // note', "val"],
+    ["Makefile", 'include "hello" # note', "include"],
   ])("colours %s without changing its text", (path, source, keyword) => {
     const [tokens] = highlightExcerpt(path, [source]);
     expect(textOf(tokens)).toBe(source);
@@ -19,6 +21,20 @@ describe("search syntax", () => {
       true,
     );
   });
+
+  it.each(["index.html", "page.htm", "app.xhtml", "data.xml", "icon.svg"])(
+    "colours markup tags in %s",
+    (path) => {
+      const source = '<div class="hello"><!-- note --></div>';
+      const [tokens] = highlightExcerpt(path, [source]);
+      expect(textOf(tokens)).toBe(source);
+      expect(tokens.some((token) => token.scope === "tag")).toBe(true);
+      expect(tokens.some((token) => token.scope === "string")).toBe(true);
+      expect(tokens.some((token) => token.scope === "comment" && token.text.includes("note"))).toBe(
+        true,
+      );
+    },
+  );
 
   it.each(["a.tsx", "a.jsx"])("preserves JSX tags and strings in %s", (path) => {
     const source = 'return <Panel title="Hello">{value}</Panel>;';
@@ -55,7 +71,7 @@ describe("search syntax", () => {
     expect(highlightExcerpt("a.ts", [])).toEqual([]);
   });
 
-  it.each(["settings.json", "settings.yaml", "settings.toml", ".env.local"])(
+  it.each(["settings.json", "settings.yaml", "settings.toml", ".env", ".env.local"])(
     "colours configuration %s",
     (path) => {
       const source = path.endsWith("json")
@@ -68,6 +84,17 @@ describe("search syntax", () => {
       expect(tokens.some((token) => token.scope === "string")).toBe(true);
     },
   );
+
+  // highlight.js has no prisma grammar; java is the stand-in for // comments
+  // and @attributes, so a schema excerpt stays coloured rather than plain.
+  it("colours prisma schema comments", () => {
+    const lines = ["model User {", "  // note", '  name String @default("hello")', "}"];
+    const rows = highlightExcerpt("schema.prisma", lines);
+    expect(rows.map(textOf)).toEqual(lines);
+    expect(rows[1].some((token) => token.scope === "comment" && token.text.includes("note"))).toBe(
+      true,
+    );
+  });
 });
 
 describe("syntax search marks", () => {

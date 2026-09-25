@@ -163,7 +163,54 @@ pub enum DaemonMessage {
         expected_document_version: u64,
         edits: Vec<WireEdit>,
     },
+    /// Drive the GUI's find panel. The editor keeps owning the query and the
+    /// search; the answer is the `find` on its next [`EditorMessage::State`].
+    Find { command: WireFindCommand },
 }
+
+/// What the GUI's find panel asks of the editor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum WireFindCommand {
+    /// Search for `pattern` from where the panel opened, as it is typed.
+    /// A pattern over [`MAX_FIND_PATTERN_BYTES`] is refused whole.
+    Set {
+        pattern: String,
+        case_sensitive: bool,
+        whole_word: bool,
+        regex: bool,
+    },
+    Next,
+    Previous,
+    /// Close the panel and clear its highlights; the pattern is kept.
+    Close,
+}
+
+/// The find panel, while it is open.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireFind {
+    /// Bumped by every open gesture, so the GUI can focus its field again.
+    pub focus: u32,
+    pub pattern: String,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub regex: bool,
+    /// Matches in the buffer, counted up to [`MAX_FIND_COUNT`].
+    pub total: u32,
+    /// There are more than [`MAX_FIND_COUNT`].
+    pub capped: bool,
+    /// 1-based match the caret sits on; 0 when no find gesture has placed it.
+    pub index: u32,
+    /// Why the pattern cannot be searched with (only a regex can be invalid).
+    pub error: Option<String>,
+}
+
+/// Longest pattern the find panel may send. Matches `editor_core`'s own limit,
+/// which `editor-cli` asserts.
+pub const MAX_FIND_PATTERN_BYTES: usize = 1024;
+
+/// Most matches the panel counts before it says "more than".
+pub const MAX_FIND_COUNT: u32 = 5_000;
 
 /// What the editor sends to the daemon.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,6 +350,9 @@ pub struct EditorStateWire {
     /// see that row, and it is the answer to the gesture they just made.
     #[serde(default)]
     pub status: String,
+    /// The GUI's find panel, when it is open.
+    #[serde(default)]
+    pub find: Option<WireFind>,
 }
 
 /// Longest caret line that travels on the state.

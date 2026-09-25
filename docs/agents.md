@@ -305,10 +305,12 @@ Notes:
   cached by the daemon in `Inner.detections` (`core.rs`) — *not* in
   `AgentRegistry`, whose own detection map stays empty in production — and
   broadcast as `AgentDetectionChanged`.
-- `RefreshAgentDetection { provider_id }` re-probes exactly one provider when
-  `provider_id` is `Some` (leaving the other cached results untouched) and all
-  of them when it is `None`. `SetProviderExecutable` re-detects **all**
-  providers after storing the override.
+- `RefreshAgentDetection { provider_id }` re-resolves the login-shell environment
+  before probing exactly one provider when `provider_id` is `Some` (leaving the
+  other cached results untouched) or all of them when it is `None`. This picks
+  up a new `PATH` after a CLI update; already-running agent processes still
+  need to be restarted. `SetProviderExecutable` re-detects **all** providers
+  after storing the override.
 
 ## Registry (`registry.rs`)
 

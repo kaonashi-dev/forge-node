@@ -45,4 +45,13 @@ describe("closeTarget", () => {
   it("leaves background sessions alone when Code is empty", () => {
     expect(closeTarget("code", empty)).toEqual({ kind: "none" });
   });
+
+  it("joins the extra column when that pane holds the keyboard", () => {
+    expect(
+      closeTarget("session", empty, { kind: "session", extra: "s-2", focused: "extra" }),
+    ).toEqual({ kind: "unsplit" });
+    expect(closeTarget("code", empty, { kind: "code", extra: null, focused: "extra" })).toEqual({
+      kind: "unsplit",
+    });
+  });
 });

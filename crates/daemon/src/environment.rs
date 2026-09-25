@@ -35,6 +35,7 @@ const FALLBACK_PATH_DIRS: &[&str] = &[
 /// Home-relative bin directories added to the fallback `PATH`.
 const FALLBACK_HOME_DIRS: &[&str] = &[".local/bin", ".cargo/bin", ".bun/bin", ".npm-global/bin"];
 
+#[derive(Clone)]
 pub struct ShellEnvironmentService {
     shell_override: Option<String>,
     cached: Option<ResolvedEnvironment>,
@@ -59,9 +60,7 @@ impl ShellEnvironmentService {
         self.cached.as_ref().expect("just resolved")
     }
 
-    /// Force a re-resolution (e.g. after `$SHELL` changed) and return the result.
-    /// Reserved for the `RefreshAgentDetection` path when `$SHELL` changes.
-    #[allow(dead_code)]
+    /// Force a re-resolution after the shell's PATH or configuration changes.
     pub fn refresh(&mut self) -> &ResolvedEnvironment {
         self.cached = Some(self.resolve());
         self.cached.as_ref().expect("just resolved")

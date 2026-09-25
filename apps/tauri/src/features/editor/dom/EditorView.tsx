@@ -38,6 +38,7 @@ import {
   overwriteEditorBuffer,
   reloadEditorBuffer,
 } from "../conflict/commands";
+import { FindPanel } from "../FindPanel";
 
 type EditorViewProps = {
   session: string;
@@ -502,6 +503,10 @@ function EditorSessionView(props: EditorViewProps) {
         <Show when={sides().conflict}>
           {(both) => <CompareView disk={both().disk} mine={both().mine} />}
         </Show>
+      </Show>
+
+      <Show when={session()?.editor?.find}>
+        {(find) => <FindPanel session={props.session} find={find} onReturn={() => keys.focus()} />}
       </Show>
 
       {/* The surface *is* the accessibility tree here: a real multiline

@@ -1,9 +1,15 @@
 import type { EditorInputEvent } from "../../contracts/editor";
+import type { EditorFindCommand } from "../../contracts/runtime";
 import { sendRuntimeCommand } from "../../runtime/host";
 import { sendWorkbenchCommand } from "../../runtime/workbench";
 
 export async function setEditorAutosave(session: string, autosave: boolean): Promise<void> {
   await sendWorkbenchCommand({ type: "set_editor_autosave", session, autosave });
+}
+
+/** A find-panel gesture; the result arrives as `session.editor.find`. */
+export async function editorFind(session: string, command: EditorFindCommand): Promise<void> {
+  await sendWorkbenchCommand({ type: "editor_find", session, command });
 }
 
 /**

@@ -45,6 +45,7 @@ pub enum Grammar {
     Keyed,
     Shell,
     Markdown,
+    Html,
     /// No colouring: an extension this build does not know.
     #[default]
     None,
@@ -58,18 +59,31 @@ impl Grammar {
     #[must_use]
     pub fn for_path(path: &str) -> Self {
         let name = path.rsplit('/').next().unwrap_or(path);
+        let lower = name.to_ascii_lowercase();
+        // Dotenv files are leading-dot basenames: the extension rule below would
+        // treat `.env` as a name with no extension and `.env.local` as `local`.
+        if lower == ".env" || lower.starts_with(".env.") {
+            return Self::Keyed;
+        }
+        // Makefile / GNUmakefile have no extension; recipes are shell-shaped.
+        if lower == "makefile" || lower == "gnumakefile" {
+            return Self::Shell;
+        }
         let Some(dot) = name.rfind('.').filter(|at| *at > 0) else {
             return Self::None;
         };
         match name[dot + 1..].to_ascii_lowercase().as_str() {
             "rs" => Self::Rust,
-            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "go" | "java" | "kt" | "c" | "h"
-            | "cc" | "cpp" | "hpp" | "cs" | "swift" | "scala" | "php" | "dart" => Self::CLike,
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "go" | "java" | "kt" | "kts" | "c"
+            | "h" | "cc" | "cpp" | "hpp" | "cs" | "swift" | "scala" | "php" | "dart" | "prisma" => {
+                Self::CLike
+            }
             "py" | "pyi" => Self::Python,
             "json" => Self::Json,
             "toml" | "yaml" | "yml" | "ini" | "cfg" | "conf" | "env" => Self::Keyed,
-            "sh" | "bash" | "zsh" | "fish" => Self::Shell,
+            "sh" | "bash" | "zsh" | "fish" | "mk" | "make" => Self::Shell,
             "md" | "markdown" | "mdx" => Self::Markdown,
+            "html" | "htm" | "xhtml" | "xml" | "svg" => Self::Html,
             _ => Self::None,
         }
     }
@@ -262,6 +276,7 @@ impl<'a> Scanner<'a> {
             Grammar::Keyed => self.keyed(),
             Grammar::Shell => self.shell(),
             Grammar::Markdown => self.markdown(),
+            Grammar::Html => self.html(),
             Grammar::None => {}
         }
     }
@@ -481,6 +496,20 @@ fn c_keywords() -> HashSet<&'static str> {
 
 fn is_word(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+}
+
+fn is_markup_name_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte == b':'
+}
+
+fn is_markup_name(byte: u8) -> bool {
+    is_markup_name_start(byte) || byte.is_ascii_digit() || byte == b'-' || byte == b'.'
+}
+
+fn raw_text_tag(name: &str) -> Option<&'static str> {
+    ["script", "style", "textarea", "title"]
+        .into_iter()
+        .find(|tag| name.eq_ignore_ascii_case(tag))
 }
 
 impl Scanner<'_> {
@@ -711,14 +740,17 @@ impl Scanner<'_> {
                     {
                         self.bump();
                     }
-                    let scope = if at_line_start && matches!(self.peek_nonspace(), b'=' | b':') {
-                        Scope::Property
-                    } else if self.text[mark.at..self.at]
-                        .chars()
-                        .all(|c| c.is_ascii_digit() || c == '.')
+                    let word = &self.text[mark.at..self.at];
+                    let scope = if matches!(self.peek_nonspace(), b'=' | b':')
+                        && self.keyed_property_site(mark.at)
                     {
+                        Scope::Property
+                    } else if at_line_start && word == "export" {
+                        // dotenv: `export KEY=value`
+                        Scope::Keyword
+                    } else if word.chars().all(|c| c.is_ascii_digit() || c == '.') {
                         Scope::Number
-                    } else if matches!(&self.text[mark.at..self.at], "true" | "false" | "null") {
+                    } else if matches!(word, "true" | "false" | "null") {
                         Scope::Constant
                     } else {
                         Scope::Plain
@@ -830,12 +862,232 @@ impl Scanner<'_> {
         }
     }
 
+    /// HTML, XML, SVG: tags, attributes, comments. Not a tree, and not a
+    /// browser: `<` inside script/style/textarea/title is text, so those
+    /// regions stay plain until their closer rather than being painted as
+    /// nested tags.
+    fn html(&mut self) {
+        while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
+            match self.byte(self.at) {
+                b'<' => self.take_markup(),
+                b'&' => self.take_entity(),
+                _ => self.bump(),
+            }
+        }
+    }
+
+    fn take_markup(&mut self) {
+        if self.at_bytes(b"<!--") {
+            let mark = self.mark();
+            self.take_until(b"-->");
+            self.emit(mark, Scope::Comment);
+            return;
+        }
+        if self.at_bytes(b"<![CDATA[") {
+            let mark = self.mark();
+            self.take_until(b"]]>");
+            self.emit(mark, Scope::String);
+            return;
+        }
+        if self.at_pair(b'<', b'!') {
+            let mark = self.mark();
+            self.take_until(b">");
+            self.emit(mark, Scope::Keyword);
+            return;
+        }
+        if self.at_pair(b'<', b'?') {
+            let mark = self.mark();
+            self.take_until(b"?>");
+            self.emit(mark, Scope::Keyword);
+            return;
+        }
+        self.take_tag();
+    }
+
+    fn take_tag(&mut self) {
+        let mark = self.mark();
+        self.bump();
+        let closing = self.byte(self.at) == b'/';
+        if closing {
+            self.bump();
+        }
+        if !is_markup_name_start(self.byte(self.at)) {
+            return;
+        }
+        while is_markup_name(self.byte(self.at)) {
+            self.bump();
+        }
+        let name_from = mark.at + 1 + usize::from(closing);
+        let raw = raw_text_tag(&self.text[name_from..self.at]);
+        self.emit(mark, Scope::Type);
+
+        loop {
+            self.bump_markup_space();
+            if self.done() {
+                return;
+            }
+            let byte = self.byte(self.at);
+            if byte == b'>' {
+                let mark = self.mark();
+                self.bump();
+                self.emit(mark, Scope::Type);
+                if !closing {
+                    if let Some(name) = raw {
+                        self.skip_raw_text(name);
+                    }
+                }
+                return;
+            }
+            if byte == b'/' && self.byte(self.at + 1) == b'>' {
+                let mark = self.mark();
+                self.bump();
+                self.bump();
+                self.emit(mark, Scope::Type);
+                return;
+            }
+            if is_markup_name_start(byte) {
+                let mark = self.mark();
+                while is_markup_name(self.byte(self.at)) {
+                    self.bump();
+                }
+                self.emit(mark, Scope::Property);
+                self.bump_markup_space();
+                if self.byte(self.at) != b'=' {
+                    continue;
+                }
+                self.bump();
+                self.bump_markup_space();
+                let quote = self.byte(self.at);
+                if quote == b'"' || quote == b'\'' {
+                    let mark = self.mark();
+                    self.take_markup_quoted(quote);
+                    self.emit(mark, Scope::String);
+                } else {
+                    let mark = self.mark();
+                    while !self.done() {
+                        let value = self.byte(self.at);
+                        if matches!(value, b' ' | b'\t' | b'\n' | b'\r' | b'>')
+                            || (value == b'/' && self.byte(self.at + 1) == b'>')
+                        {
+                            break;
+                        }
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::String);
+                }
+                continue;
+            }
+            self.bump();
+        }
+    }
+
+    /// HTML attributes do not backslash-escape: `\"` is a closer, and treating
+    /// it as an escape would paint the rest of the tag as a string.
+    fn take_markup_quoted(&mut self, quote: u8) {
+        self.bump();
+        while !self.done() {
+            let byte = self.byte(self.at);
+            if byte == b'\n' {
+                return;
+            }
+            self.bump();
+            if byte == quote {
+                return;
+            }
+        }
+    }
+
+    fn take_entity(&mut self) {
+        let mark = self.mark();
+        self.bump();
+        if self.byte(self.at) == b'#' {
+            self.bump();
+            if matches!(self.byte(self.at), b'x' | b'X') {
+                self.bump();
+            }
+            let digits = self.at;
+            while self.byte(self.at).is_ascii_hexdigit() {
+                self.bump();
+            }
+            if self.at == digits {
+                return;
+            }
+        } else {
+            let name = self.at;
+            while is_markup_name(self.byte(self.at)) {
+                self.bump();
+            }
+            if self.at == name {
+                return;
+            }
+        }
+        if self.byte(self.at) != b';' {
+            return;
+        }
+        self.bump();
+        self.emit(mark, Scope::Constant);
+    }
+
+    fn skip_raw_text(&mut self, name: &str) {
+        let needle = name.as_bytes();
+        while !self.done() {
+            if self.at_close_tag(needle) {
+                return;
+            }
+            self.bump();
+        }
+    }
+
+    fn at_close_tag(&self, name: &[u8]) -> bool {
+        if self.byte(self.at) != b'<' || self.byte(self.at + 1) != b'/' {
+            return false;
+        }
+        let start = self.at + 2;
+        let Some(candidate) = self.bytes.get(start..start + name.len()) else {
+            return false;
+        };
+        if !candidate.eq_ignore_ascii_case(name) {
+            return false;
+        }
+        let mut at = start + name.len();
+        while matches!(self.byte(at), b' ' | b'\t' | b'\n' | b'\r') {
+            at += 1;
+        }
+        self.byte(at) == b'>'
+    }
+
+    fn bump_markup_space(&mut self) {
+        while matches!(self.byte(self.at), b' ' | b'\t' | b'\n' | b'\r') {
+            self.bump();
+        }
+    }
+
     // --- shared scanning helpers ---
 
     fn take_line(&mut self) {
         while !self.done() && self.byte(self.at) != b'\n' {
             self.bump();
         }
+    }
+
+    /// Advance until `needle` (consumed) or the end. No checkpoint: this is
+    /// an open construct, and a later scan must not resume inside it.
+    fn take_until(&mut self, needle: &[u8]) {
+        while !self.done() && !self.at_bytes(needle) {
+            self.bump();
+        }
+        for _ in needle {
+            self.bump();
+        }
+    }
+
+    fn at_bytes(&self, needle: &[u8]) -> bool {
+        self.bytes
+            .get(self.at..)
+            .is_some_and(|rest| rest.starts_with(needle))
     }
 
     /// Consume a quoted run, honouring backslash escapes. An unterminated
@@ -914,6 +1166,30 @@ impl Scanner<'_> {
             .bytes()
             .all(|b| b == b' ' || b == b'\t')
     }
+
+    /// A key site for keyed files: line-leading, or after dotenv's `export`.
+    fn keyed_property_site(&self, word_start: usize) -> bool {
+        let mut at = self.line_start;
+        while matches!(self.byte(at), b' ' | b'\t') {
+            at += 1;
+        }
+        if at == word_start {
+            return true;
+        }
+        if !self
+            .text
+            .as_bytes()
+            .get(at..)
+            .is_some_and(|s| s.starts_with(b"export"))
+        {
+            return false;
+        }
+        let after = at + "export".len();
+        after < word_start
+            && self.text[after..word_start]
+                .bytes()
+                .all(|b| b == b' ' || b == b'\t')
+    }
 }
 
 #[cfg(test)]
@@ -935,8 +1211,20 @@ mod tests {
     fn a_grammar_is_chosen_by_extension() {
         assert_eq!(Grammar::for_path("src/main.rs"), Grammar::Rust);
         assert_eq!(Grammar::for_path("app.TSX"), Grammar::CLike);
+        assert_eq!(Grammar::for_path("build.gradle.kts"), Grammar::CLike);
         assert_eq!(Grammar::for_path("a/b/notes.md"), Grammar::Markdown);
         assert_eq!(Grammar::for_path("Cargo.toml"), Grammar::Keyed);
+        assert_eq!(Grammar::for_path(".env"), Grammar::Keyed);
+        assert_eq!(Grammar::for_path("app/.env.local"), Grammar::Keyed);
+        assert_eq!(Grammar::for_path("config.env"), Grammar::Keyed);
+        assert_eq!(Grammar::for_path("Makefile"), Grammar::Shell);
+        assert_eq!(Grammar::for_path("src/rules.mk"), Grammar::Shell);
+        assert_eq!(Grammar::for_path("schema.prisma"), Grammar::CLike);
+        assert_eq!(Grammar::for_path("index.HTML"), Grammar::Html);
+        assert_eq!(Grammar::for_path("page.htm"), Grammar::Html);
+        assert_eq!(Grammar::for_path("app.xhtml"), Grammar::Html);
+        assert_eq!(Grammar::for_path("data.xml"), Grammar::Html);
+        assert_eq!(Grammar::for_path("icon.svg"), Grammar::Html);
         // A dotfile's name is not an extension, and neither is a directory's.
         assert_eq!(Grammar::for_path(".gitignore"), Grammar::None);
         assert_eq!(Grammar::for_path("docs.md/main.rs"), Grammar::Rust);
@@ -1028,6 +1316,46 @@ mod tests {
     }
 
     #[test]
+    fn dotenv_colours_keys_values_export_and_comments() {
+        let text = "# note\nFOO=bar\nexport BAZ=\"qux\"\n";
+        assert_eq!(Grammar::for_path(".env"), Grammar::Keyed);
+        assert_eq!(spans(text, Grammar::Keyed, 0), [("# note", Scope::Comment)]);
+        let plain = spans(text, Grammar::Keyed, 1);
+        assert!(plain.contains(&("FOO", Scope::Property)), "{plain:?}");
+        let exported = spans(text, Grammar::Keyed, 2);
+        assert!(
+            exported.contains(&("export", Scope::Keyword)),
+            "{exported:?}"
+        );
+        assert!(exported.contains(&("BAZ", Scope::Property)), "{exported:?}");
+        assert!(
+            exported.contains(&("\"qux\"", Scope::String)),
+            "{exported:?}"
+        );
+    }
+
+    #[test]
+    fn prisma_schema_colours_comments_enums_and_types() {
+        let text = "// note\nenum Role { USER }\nname String\n";
+        assert_eq!(Grammar::for_path("schema.prisma"), Grammar::CLike);
+        assert_eq!(
+            spans(text, Grammar::CLike, 0),
+            [("// note", Scope::Comment)]
+        );
+        let enumerated = spans(text, Grammar::CLike, 1);
+        assert!(
+            enumerated.contains(&("enum", Scope::Keyword)),
+            "{enumerated:?}"
+        );
+        assert!(
+            enumerated.contains(&("Role", Scope::Type)),
+            "{enumerated:?}"
+        );
+        let field = spans(text, Grammar::CLike, 2);
+        assert!(field.contains(&("String", Scope::Type)), "{field:?}");
+    }
+
+    #[test]
     fn python_handles_triple_quotes_and_defs() {
         let text = "def go():\n    \"\"\"doc\n    more\"\"\"\n    return 1\n";
         let head = spans(text, Grammar::Python, 0);
@@ -1065,6 +1393,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn html_colours_tags_attributes_comments_and_entities() {
+        let text = "<div class=\"x\" checked><!-- n --></div>\n";
+        let found = spans(text, Grammar::Html, 0);
+        assert!(found.contains(&("<div", Scope::Type)), "{found:?}");
+        assert!(found.contains(&("class", Scope::Property)), "{found:?}");
+        assert!(found.contains(&("\"x\"", Scope::String)), "{found:?}");
+        assert!(found.contains(&("checked", Scope::Property)), "{found:?}");
+        assert!(found.contains(&("<!-- n -->", Scope::Comment)), "{found:?}");
+        assert!(found.contains(&("</div", Scope::Type)), "{found:?}");
+        let entity = spans("a &amp; b\n", Grammar::Html, 0);
+        assert!(entity.contains(&("&amp;", Scope::Constant)), "{entity:?}");
+        let decl = spans(
+            "<!DOCTYPE html>\n<?xml version=\"1.0\"?>\n",
+            Grammar::Html,
+            0,
+        );
+        assert!(
+            decl.contains(&("<!DOCTYPE html>", Scope::Keyword)),
+            "{decl:?}"
+        );
+        let pi = spans(
+            "<!DOCTYPE html>\n<?xml version=\"1.0\"?>\n",
+            Grammar::Html,
+            1,
+        );
+        assert!(
+            pi.contains(&("<?xml version=\"1.0\"?>", Scope::Keyword)),
+            "{pi:?}"
+        );
+    }
+
+    #[test]
+    fn html_script_body_is_plain_so_comparisons_are_not_tags() {
+        let text = "<script>\nif (a < b) {}\n</script>\n";
+        assert_eq!(spans(text, Grammar::Html, 1), []);
+        let close = spans(text, Grammar::Html, 2);
+        assert!(close.contains(&("</script", Scope::Type)), "{close:?}");
+        let cdata = spans("<![CDATA[ a < b ]]>\n", Grammar::Html, 0);
+        assert!(
+            cdata.contains(&("<![CDATA[ a < b ]]>", Scope::String)),
+            "{cdata:?}"
+        );
+    }
+
+    #[test]
+    fn html_comments_span_lines_and_do_not_colour_what_follows() {
+        let text = "<!-- one\ntwo -->\n<div></div>\n";
+        assert_eq!(
+            spans(text, Grammar::Html, 0),
+            [("<!-- one", Scope::Comment)]
+        );
+        assert_eq!(spans(text, Grammar::Html, 1), [("two -->", Scope::Comment)]);
+        let tag = spans(text, Grammar::Html, 2);
+        assert!(tag.contains(&("<div", Scope::Type)), "{tag:?}");
+        assert!(!tag.iter().any(|(_, scope)| *scope == Scope::Comment));
+    }
+
     /// Offsets index the line they are on, and never run past it.
     #[test]
     fn every_span_is_inside_its_line() {
@@ -1094,6 +1480,7 @@ mod tests {
             Grammar::Keyed,
             Grammar::Shell,
             Grammar::Markdown,
+            Grammar::Html,
         ] {
             for text in [
                 "",
@@ -1105,6 +1492,10 @@ mod tests {
                 "[[[[[[",
                 "${",
                 "```",
+                "<",
+                "<!--",
+                "<script>",
+                "&",
                 "\u{1f600} é 漢字\n",
                 "a\u{0}b\n",
             ] {
@@ -1263,6 +1654,10 @@ mod tests {
             (Grammar::Keyed, "[s]\na = 1\nb = \"x\"\n"),
             (Grammar::Shell, "if true; then\n  echo $HOME\nfi\n"),
             (Grammar::Markdown, "# h\n\n- one\n`code`\n"),
+            (
+                Grammar::Html,
+                "<div class=\"x\">\n<!-- c -->\n<span>y</span>\n",
+            ),
         ];
         for (grammar, text) in cases {
             let full = Syntax::parse(text, grammar);

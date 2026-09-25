@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use editor_control::{
-    EditorStateWire, WireDiagnostic, WireEdit, WireMark, WireMarkKind, WirePlace,
+    EditorStateWire, WireDiagnostic, WireEdit, WireFind, WireFindCommand, WireMark, WireMarkKind,
+    WirePlace, MAX_FIND_COUNT, MAX_FIND_PATTERN_BYTES,
 };
 use editor_core::{
     execute, metrics, Command, Document, Edit, Grammar, Origin, Query, Range, Refusal, Selection,
@@ -96,6 +97,19 @@ const AUTOSAVE_PAUSE: Duration = Duration::from_secs(1);
 /// frame.
 const MAX_HIGHLIGHT_BYTES: usize = 512 * 1024;
 
+/// What the find panel shows, counted when the query or the document changes
+/// and never per frame or per caret move.
+#[derive(Clone, Debug, Default)]
+struct FindPanel {
+    /// Matches, counted up to one past [`MAX_FIND_COUNT`].
+    total: usize,
+    /// 1-based match a find gesture put the caret on; 0 once it moved away
+    /// from one or the text changed under it.
+    index: usize,
+    /// The document version and query `total` was counted against.
+    counted: Option<(u64, Query)>,
+}
+
 pub struct App {
     document: Document,
     path: PathBuf,
@@ -169,6 +183,11 @@ pub struct App {
     /// Where find-as-you-type searches from. Fixed when the prompt opens, so
     /// adding a character narrows the same match instead of walking forward.
     find_origin: usize,
+    /// The GUI's find panel, while it is open. Integrated only: the
+    /// standalone editor keeps its one-line prompt.
+    find_panel: Option<FindPanel>,
+    /// Open gestures so far, so the GUI can focus its field on a second one.
+    find_opens: u32,
     /// Decorations for the visible rows, and what they were computed against.
     decorations: Vec<(usize, view::Mark)>,
     decor_key: Option<DecorKey>,
@@ -330,6 +349,8 @@ impl App {
             highlight: false,
             query_error: None,
             find_origin: 0,
+            find_panel: None,
+            find_opens: 0,
             decorations: Vec::new(),
             decor_key: None,
             ruler: Vec::new(),
@@ -1226,6 +1247,128 @@ impl App {
                 .flatten()
                 .or_else(|| self.status.clone())
                 .unwrap_or_default(),
+            find: self.find_panel.as_ref().map(|panel| self.wire_find(panel)),
+        }
+    }
+
+    fn wire_find(&self, panel: &FindPanel) -> WireFind {
+        let mut pattern = self.query.pattern.clone();
+        if pattern.len() > MAX_FIND_PATTERN_BYTES {
+            let mut cut = MAX_FIND_PATTERN_BYTES;
+            while !pattern.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            pattern.truncate(cut);
+        }
+        let cap = MAX_FIND_COUNT as usize;
+        WireFind {
+            focus: self.find_opens,
+            pattern,
+            case_sensitive: self.query.case_sensitive,
+            whole_word: self.query.whole_word,
+            regex: self.query.regex,
+            total: u32::try_from(panel.total.min(cap)).unwrap_or(MAX_FIND_COUNT),
+            capped: panel.total > cap,
+            index: u32::try_from(panel.index.min(cap)).unwrap_or(MAX_FIND_COUNT),
+            error: self.query_error.clone(),
+        }
+    }
+
+    /// Open the GUI's find panel, or focus it again when it is already open.
+    fn open_find_panel(&mut self) {
+        self.find_opens = self.find_opens.wrapping_add(1);
+        self.find_origin = self.document.selection().range().start;
+        self.highlight = true;
+        if self.find_panel.is_none() {
+            self.find_panel = Some(FindPanel::default());
+        }
+        self.refresh_find();
+        self.damage_all = true;
+    }
+
+    fn close_find_panel(&mut self) {
+        self.find_panel = None;
+        self.highlight = false;
+        self.status = None;
+        self.damage_all = true;
+    }
+
+    /// What the GUI's find panel asked for.
+    pub fn find_command(&mut self, command: WireFindCommand) {
+        match command {
+            WireFindCommand::Set {
+                pattern,
+                case_sensitive,
+                whole_word,
+                regex,
+            } => {
+                if pattern.len() > MAX_FIND_PATTERN_BYTES {
+                    return;
+                }
+                if self.find_panel.is_none() {
+                    self.find_origin = self.document.selection().range().start;
+                    self.find_panel = Some(FindPanel::default());
+                }
+                self.query.case_sensitive = case_sensitive;
+                self.query.whole_word = whole_word;
+                self.query.regex = regex;
+                self.set_query(&pattern);
+                self.find_as_you_type();
+                self.refresh_find();
+                self.mark_found();
+            }
+            WireFindCommand::Next => self.find(true),
+            WireFindCommand::Previous => self.find(false),
+            WireFindCommand::Close => self.close_find_panel(),
+            _ => {}
+        }
+        self.damage_all = true;
+    }
+
+    /// Recount the panel's matches when the document or the query moved.
+    ///
+    /// Called before a state goes out; a count is a scan of the buffer, so it
+    /// runs when its inputs change and not on every caret move.
+    pub fn refresh_find(&mut self) {
+        let version = self.document.version().0;
+        let Some(panel) = self.find_panel.as_mut() else {
+            return;
+        };
+        if panel
+            .counted
+            .as_ref()
+            .is_some_and(|(at, query)| *at == version && *query == self.query)
+        {
+            return;
+        }
+        panel.total = if self.query.is_empty() || self.query_error.is_some() {
+            0
+        } else {
+            editor_core::count_matches(
+                self.document.text(),
+                &self.query,
+                MAX_FIND_COUNT as usize + 1,
+            )
+        };
+        panel.index = 0;
+        panel.counted = Some((version, self.query.clone()));
+    }
+
+    /// Which match a find gesture left the caret on, for "3 of 12".
+    fn mark_found(&mut self) {
+        let range = self.document.selection().range();
+        let index = if range.is_empty() || self.query.is_empty() || self.query_error.is_some() {
+            0
+        } else {
+            editor_core::count_matches_before(
+                self.document.text(),
+                &self.query,
+                range.start,
+                MAX_FIND_COUNT as usize + 1,
+            ) + 1
+        };
+        if let Some(panel) = self.find_panel.as_mut() {
+            panel.index = index;
         }
     }
 
@@ -1967,6 +2110,9 @@ impl App {
         match action {
             EditorAction::Save => self.save(),
             EditorAction::Close => self.request_close(),
+            // Under the daemon the GUI draws a real find panel; the row is for
+            // a terminal that has nothing else to draw it with.
+            EditorAction::OpenFind if self.integrated => self.open_find_panel(),
             EditorAction::OpenFind => {
                 self.find_origin = self.document.selection().range().start;
                 self.highlight = true;
@@ -2031,22 +2177,31 @@ impl App {
                 self.adopt_input_style();
                 self.status = Some(format!("close brackets: {}", on_off(self.close_brackets)));
             }
+            // With the panel open its toggles say this; a status row would
+            // say it twice.
             EditorAction::ToggleCase => {
                 self.query.case_sensitive = !self.query.case_sensitive;
-                self.status = Some(format!("match case: {}", on_off(self.query.case_sensitive)));
+                if self.find_panel.is_none() {
+                    self.status =
+                        Some(format!("match case: {}", on_off(self.query.case_sensitive)));
+                }
             }
             EditorAction::ToggleWholeWord => {
                 self.query.whole_word = !self.query.whole_word;
                 self.set_query(&self.query.pattern.clone());
-                self.status = Some(format!("whole word: {}", on_off(self.query.whole_word)));
+                if self.find_panel.is_none() {
+                    self.status = Some(format!("whole word: {}", on_off(self.query.whole_word)));
+                }
             }
             EditorAction::ToggleRegex => {
                 self.query.regex = !self.query.regex;
                 self.set_query(&self.query.pattern.clone());
-                self.status = Some(match &self.query_error {
-                    Some(error) => format!("regex: on — {error}"),
-                    None => format!("regex: {}", on_off(self.query.regex)),
-                });
+                if self.find_panel.is_none() {
+                    self.status = Some(match &self.query_error {
+                        Some(error) => format!("regex: on — {error}"),
+                        None => format!("regex: {}", on_off(self.query.regex)),
+                    });
+                }
             }
             EditorAction::Cancel => {
                 // Escape's first job is to get back to one caret: a person who
@@ -2054,6 +2209,10 @@ impl App {
                 // not a new undo unit.
                 if self.document.selection().is_multiple() {
                     self.run(Command::CollapseCarets);
+                    return;
+                }
+                if self.find_panel.is_some() {
+                    self.close_find_panel();
                     return;
                 }
                 self.document.break_undo_group();
@@ -2283,12 +2442,18 @@ impl App {
     }
 
     fn find(&mut self, forward: bool) {
+        // The panel carries the tally, the error and "no results" itself.
+        let panel = self.find_panel.is_some();
         if self.query.is_empty() {
-            self.status = Some("nothing to find".to_string());
+            if !panel {
+                self.status = Some("nothing to find".to_string());
+            }
             return;
         }
         if let Some(error) = &self.query_error {
-            self.status = Some(error.clone());
+            if !panel {
+                self.status = Some(error.clone());
+            }
             return;
         }
         self.highlight = true;
@@ -2298,7 +2463,11 @@ impl App {
             Command::FindPrevious(self.query.clone())
         };
         self.run(command);
-        if self.status.is_none() {
+        if panel {
+            self.status = None;
+            self.refresh_find();
+            self.mark_found();
+        } else if self.status.is_none() {
             self.status = Some(self.match_tally());
         }
     }
@@ -2330,18 +2499,23 @@ impl App {
     /// where it is: the person is still typing it.
     fn find_as_you_type(&mut self) {
         self.highlight = true;
+        let panel = self.find_panel.is_some();
         if self.query.is_empty() {
             self.status = None;
             return;
         }
         if let Some(error) = &self.query_error {
-            self.status = Some(error.clone());
+            if !panel {
+                self.status = Some(error.clone());
+            }
             return;
         }
         let Some(found) =
             editor_core::find_next(self.document.text(), &self.query, self.find_origin)
         else {
-            self.status = Some(format!("{}: no matches", self.query.pattern));
+            if !panel {
+                self.status = Some(format!("{}: no matches", self.query.pattern));
+            }
             return;
         };
         self.document
@@ -3580,17 +3754,156 @@ mod tests {
         assert_eq!(app.content_height(), 24);
     }
 
-    /// A prompt still owns the last row in integrated mode: the HTML around us
-    /// cannot show the find bar.
+    /// A prompt the GUI draws no panel for still owns the last row.
     #[test]
     fn a_prompt_keeps_the_status_row_in_integrated_mode() {
         let mut app = app("hello\nworld\n", false);
         app.set_integrated();
         app.resize(80, 24);
-        app.handle_key(control('f'));
-        assert!(matches!(app.prompt(), Some(Prompt::Find { .. })));
+        app.handle_key(control('g'));
+        assert!(matches!(app.prompt(), Some(Prompt::GotoLine { .. })));
         assert!(app.needs_status_row());
         assert_eq!(app.content_height(), 23);
+    }
+
+    fn set(pattern: &str) -> WireFindCommand {
+        WireFindCommand::Set {
+            pattern: pattern.into(),
+            case_sensitive: false,
+            whole_word: false,
+            regex: false,
+        }
+    }
+
+    /// Under the daemon, find is the GUI's panel: no row, and a second open
+    /// gesture is a new focus request rather than a no-op.
+    #[test]
+    fn integrated_find_opens_the_panel_instead_of_the_row() {
+        let mut app = app("alpha beta alpha\n", false);
+        app.set_integrated();
+        app.resize(80, 24);
+        app.handle_key(control('f'));
+        assert!(app.prompt().is_none());
+        assert!(!app.needs_status_row());
+        let first = app.wire_state().find.expect("panel open").focus;
+        app.handle_key(control('f'));
+        assert_eq!(app.wire_state().find.expect("still open").focus, first + 1);
+    }
+
+    #[test]
+    fn the_panel_counts_matches_and_steps_through_them_wrapping() {
+        let mut app = app("alpha beta alpha gamma alpha\n", false);
+        app.set_integrated();
+        app.resize(80, 24);
+        app.handle_key(control('f'));
+        app.find_command(set("alpha"));
+        app.refresh_find();
+        let find = app.wire_state().find.expect("open");
+        assert_eq!((find.total, find.index, find.capped), (3, 1, false));
+        app.find_command(WireFindCommand::Next);
+        assert_eq!(app.wire_state().find.expect("open").index, 2);
+        app.find_command(WireFindCommand::Next);
+        app.find_command(WireFindCommand::Next);
+        assert_eq!(
+            app.wire_state().find.expect("open").index,
+            1,
+            "wraps to the first"
+        );
+        app.find_command(WireFindCommand::Previous);
+        assert_eq!(
+            app.wire_state().find.expect("open").index,
+            3,
+            "and back to the last"
+        );
+        assert!(
+            app.status().is_none(),
+            "the panel carries the tally, not the row"
+        );
+    }
+
+    #[test]
+    fn the_panel_reports_flags_and_a_bad_regex() {
+        let mut app = app("Alpha alpha\n", false);
+        app.set_integrated();
+        app.find_command(WireFindCommand::Set {
+            pattern: "alpha".into(),
+            case_sensitive: true,
+            whole_word: true,
+            regex: false,
+        });
+        app.refresh_find();
+        let find = app.wire_state().find.expect("open");
+        assert!(find.case_sensitive && find.whole_word && !find.regex);
+        assert_eq!(find.total, 1);
+        app.find_command(WireFindCommand::Set {
+            pattern: "(".into(),
+            case_sensitive: false,
+            whole_word: false,
+            regex: true,
+        });
+        app.refresh_find();
+        let find = app.wire_state().find.expect("open");
+        assert!(find.error.is_some());
+        assert_eq!(find.total, 0);
+    }
+
+    #[test]
+    fn the_count_stops_at_the_cap() {
+        let text = "a ".repeat(MAX_FIND_COUNT as usize + 10);
+        let mut app = app(&text, false);
+        app.set_integrated();
+        app.find_command(set("a"));
+        app.refresh_find();
+        let find = app.wire_state().find.expect("open");
+        assert_eq!(find.total, MAX_FIND_COUNT);
+        assert!(find.capped);
+    }
+
+    #[test]
+    fn an_edit_recounts_and_forgets_which_match_was_current() {
+        let mut app = app("alpha\n", false);
+        app.set_integrated();
+        app.find_command(set("alpha"));
+        app.refresh_find();
+        assert_eq!(app.wire_state().find.expect("open").index, 1);
+        app.handle_key(key(KeyCode::End));
+        for character in " alpha".chars() {
+            app.handle_key(key(KeyCode::Char(character)));
+        }
+        app.refresh_find();
+        let find = app.wire_state().find.expect("open");
+        assert_eq!((find.total, find.index), (2, 0));
+    }
+
+    #[test]
+    fn closing_the_panel_clears_it_and_keeps_the_pattern() {
+        let mut app = app("alpha\n", false);
+        app.set_integrated();
+        app.find_command(set("alpha"));
+        app.find_command(WireFindCommand::Close);
+        assert!(app.wire_state().find.is_none());
+        app.handle_key(control('f'));
+        assert_eq!(app.wire_state().find.expect("reopened").pattern, "alpha");
+    }
+
+    #[test]
+    fn an_oversized_pattern_is_ignored_whole() {
+        let mut app = app("alpha\n", false);
+        app.set_integrated();
+        app.find_command(set(&"x".repeat(MAX_FIND_PATTERN_BYTES + 1)));
+        assert!(app.wire_state().find.is_none());
+    }
+
+    #[test]
+    fn the_wire_limits_match_the_core_search_limits() {
+        assert_eq!(
+            MAX_FIND_PATTERN_BYTES,
+            editor_core::limits::MAX_PATTERN_BYTES
+        );
+        assert_eq!(
+            MAX_FIND_COUNT as usize,
+            editor_core::limits::MAX_SEARCH_RESULTS
+        );
     }
 
     /// A transient message keeps the row too, for the one frame it shows.

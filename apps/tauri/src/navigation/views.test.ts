@@ -64,7 +64,7 @@ describe("parked views", () => {
   });
 
   // Two `mod.rs` tabs are indistinguishable by label alone.
-  it("keeps the whole path reachable as the tab's title", () => {
+  it("keeps the whole path reachable as the tab's accessible name", () => {
     expect(viewTitle(lib)).toBe("crates/client/src/lib.rs");
     expect(viewTitle(diff)).toBe("Diff");
   });

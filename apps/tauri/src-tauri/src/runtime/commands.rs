@@ -52,12 +52,17 @@ pub enum RuntimeCommand {
         key: KeyPress,
         #[serde(default)]
         id: u64,
+        /// When set, the split pane that session occupies rather than the focused one.
+        #[serde(default)]
+        session_id: Option<SessionId>,
     },
     /// Text an input method committed. Typed, so never bracketed.
     InputText {
         text: String,
         #[serde(default)]
         id: u64,
+        #[serde(default)]
+        session_id: Option<SessionId>,
     },
     MoveCursor {
         terminal_id: TerminalId,
@@ -66,12 +71,16 @@ pub enum RuntimeCommand {
         col: u16,
         #[serde(default)]
         id: u64,
+        #[serde(default)]
+        session_id: Option<SessionId>,
     },
     /// Text from the clipboard, bracketed when the terminal asked for it.
     Paste {
         text: String,
         #[serde(default)]
         id: u64,
+        #[serde(default)]
+        session_id: Option<SessionId>,
     },
     /// A file reference may only reach the attachment the gesture named.
     PasteTarget {
@@ -100,21 +109,31 @@ pub enum RuntimeCommand {
         alt: bool,
         #[serde(default)]
         shift: bool,
+        #[serde(default)]
+        session_id: Option<SessionId>,
     },
     /// Move the viewport `lines` into history (positive) or back towards the
     /// live output (negative).
     Scroll {
         lines: i64,
+        #[serde(default)]
+        session_id: Option<SessionId>,
     },
     /// Jump back to the live output.
-    ScrollToBottom,
+    ScrollToBottom {
+        #[serde(default)]
+        session_id: Option<SessionId>,
+    },
     /// Re-send the whole viewport.
     ///
     /// The host connects and attaches before the WebView exists, so the frame
     /// that came with the attach had no canvas to reach. The pane asks for one
     /// when it mounts rather than waiting for the next byte of output, which on
     /// an idle shell never comes.
-    Repaint,
+    Repaint {
+        #[serde(default)]
+        session_id: Option<SessionId>,
+    },
     /// Copy a dragged range, answered with a `runtime:clipboard` event.
     ///
     /// Only the grid knows what a run's cells hold, so the text is cut here
@@ -124,12 +143,22 @@ pub enum RuntimeCommand {
         anchor_col: usize,
         head_line: i64,
         head_col: usize,
+        #[serde(default)]
+        session_id: Option<SessionId>,
     },
     SelectSession {
         session_id: SessionId,
     },
     NewShell {
         workspace: Option<WorkspaceId>,
+    },
+    /// A new shell that stays on screen beside the current attachment.
+    SplitShell {
+        workspace: Option<WorkspaceId>,
+    },
+    /// Drop the extra column's attachment; the session itself stays in the strip.
+    DetachSplit {
+        session_id: SessionId,
     },
     NewAgent {
         provider: AgentProviderId,
@@ -193,6 +222,8 @@ pub enum RuntimeCommand {
     },
     Resize {
         size: PtySize,
+        #[serde(default)]
+        session_id: Option<SessionId>,
     },
     ///
     /// The daemon owns it: this writes and the value comes back on the next

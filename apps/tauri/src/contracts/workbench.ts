@@ -110,7 +110,7 @@ export type FileKind = "File" | "Directory" | string;
 export type FileEntry = {
   path: string;
   kind: FileKind;
-  /** Excluded by `.gitignore`: listed so it can be opened, greyed so it reads
+  /** Excluded by `.gitignore`: listed so it can be opened, dimmed so it reads
    * as outside the work. */
   ignored: boolean;
   symlink?: "File" | "Directory" | "External" | "Broken" | "Unavailable" | null;

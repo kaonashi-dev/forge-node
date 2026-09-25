@@ -895,6 +895,10 @@ impl Daemon {
                 first_line,
                 line_count,
             } => self.set_editor_view(session_id, first_line, line_count),
+            Request::EditorFind {
+                session_id,
+                command,
+            } => self.editor_find(session_id, command),
             Request::GetEditorConflict { session_id } => self.editor_conflict(session_id),
             Request::ReloadEditorBuffer { session_id } => self.reload_editor_buffer(session_id),
             Request::OverwriteEditorBuffer { session_id } => {
@@ -995,6 +999,10 @@ impl Daemon {
                 Ok(Response::ProviderUsage(usage))
             }
             Request::RefreshAgentDetection { provider_id } => {
+                // Shell capture can take seconds; refresh the cache off the core lock.
+                let mut env = { self.lock().env.clone() };
+                env.refresh();
+                self.lock().env = env;
                 let results = match provider_id {
                     Some(id) => vec![self.detect_agent(&id)?],
                     None => self.detect_agents(),
@@ -4009,6 +4017,19 @@ impl Daemon {
                 line_count,
             },
         )?;
+        Ok(Response::Ack)
+    }
+
+    /// Forward a find-panel command; the answer is the session's next state.
+    fn editor_find(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        command: domain::EditorFindCommand,
+    ) -> Result<Response, ProtocolError> {
+        let command = crate::editor_wire::find_command_to_wire(command).ok_or_else(|| {
+            ProtocolError::new(ErrorCode::InvalidRequest, "find pattern is too long")
+        })?;
+        self.send_editor_command(session_id, crate::editor::Outgoing::Find { command })?;
         Ok(Response::Ack)
     }
 
@@ -7780,6 +7801,80 @@ mod tests {
         );
         // `login_shell = false` is the escape hatch for shells that reject `-l`.
         assert!(spec.args.is_empty());
+    }
+
+    #[test]
+    fn refreshing_detection_uses_the_updated_login_path_for_new_agents() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let old_dir = tmp.path().join("old");
+        let new_dir = tmp.path().join("new");
+        std::fs::create_dir(&old_dir).unwrap();
+        std::fs::create_dir(&new_dir).unwrap();
+        let old = test_support::write_fake_agent(&old_dir, "claude", "1.0.0");
+        let new = test_support::write_fake_agent(&new_dir, "claude", "2.0.0");
+        let shell = tmp.path().join("login-shell");
+        std::fs::write(
+            &shell,
+            format!(
+                "#!/bin/sh\nPATH='{}:/usr/bin:/bin'; export PATH\nexec /bin/sh -c \"$3\"\n",
+                new_dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut config = Config::default();
+        config.sessions.shell = shell.to_string_lossy().into_owned();
+        config.sessions.term = terminfo::FALLBACK_TERM.to_owned();
+        let (daemon, project, backend) = test_daemon_with_config(FakePtyBackend::empty(), config);
+        let workspace = seeded_workspace(&daemon, project.path());
+        let provider = AgentProviderId::new("claude");
+        daemon.lock().env.set_for_test(
+            shell,
+            vec![(
+                "PATH".to_owned(),
+                format!("{}:/usr/bin:/bin", old_dir.display()),
+            )],
+        );
+        let before = daemon.detect_agent(&provider).unwrap();
+        assert!(matches!(
+            before.status,
+            DetectionStatus::Installed { executable, .. } if executable == old
+        ));
+
+        daemon
+            .handle_request(Request::RefreshAgentDetection {
+                provider_id: Some(provider.clone()),
+            })
+            .unwrap();
+        let after = daemon.lock().detections.get(&provider).cloned().unwrap();
+        assert!(matches!(
+            after.status,
+            DetectionStatus::Installed { executable, version }
+                if executable == new && version.as_deref() == Some("2.0.0")
+        ));
+
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Agent,
+                Some(provider),
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        let spec = backend.last_spawn().unwrap();
+        assert_eq!(spec.program, new);
+        assert!(spec
+            .env
+            .iter()
+            .any(|(key, value)| key == "PATH" && value.contains(new_dir.to_str().unwrap())));
     }
 
     /// Clicking a discovered transcript re-enters the conversation: the launch

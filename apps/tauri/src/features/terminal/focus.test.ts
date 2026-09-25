@@ -40,14 +40,15 @@ describe("registerTerminalFocus", () => {
   it("withdraws only its own registration", () => {
     let first = 0;
     let second = 0;
-    const withdrawFirst = registerTerminalFocus(() => (first += 1));
-    const withdrawSecond = registerTerminalFocus(() => (second += 1));
-    // The pane that took over is still the one that answers.
+    const withdrawFirst = registerTerminalFocus(() => (first += 1), "a");
+    const withdrawSecond = registerTerminalFocus(() => (second += 1), "b");
+    focusTerminal("b");
+    expect([first, second]).toEqual([0, 1]);
     withdrawFirst();
-    focusTerminal();
-    expect([first, second]).toEqual([0, 1]);
+    focusTerminal("b");
+    expect([first, second]).toEqual([0, 2]);
     withdrawSecond();
-    focusTerminal();
-    expect([first, second]).toEqual([0, 1]);
+    focusTerminal("b");
+    expect([first, second]).toEqual([0, 2]);
   });
 });

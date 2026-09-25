@@ -4,6 +4,7 @@ import { boundChord } from "../../actions/bindings";
 import { invokeAction } from "../../actions/dispatch";
 import { Kbd } from "../../ui/index";
 import { forgeStore } from "../../state/forgeStore";
+import { canReopenClosed } from "../../navigation/viewsStore";
 import { Icon, type ForgeIconName } from "../../theme/icons/index";
 
 /**
@@ -29,7 +30,7 @@ import { Icon, type ForgeIconName } from "../../theme/icons/index";
 export function EmptyCenter() {
   const bare = () => forgeStore.projects.length === 0;
 
-  const rows = (): { action: ActionId; icon: ForgeIconName; label: string; note: string }[] =>
+  const rows = (): EmptyRow[] =>
     bare()
       ? [
           {
@@ -67,17 +68,68 @@ export function EmptyCenter() {
         ];
 
   return (
+    <EmptyCard
+      title="No sessions open"
+      copy={
+        bare()
+          ? "Nothing is set up yet."
+          : "Everything here is closed. Start one to get back to work."
+      }
+      rows={rows()}
+    />
+  );
+}
+
+const CODE_ROWS: EmptyRow[] = [
+  {
+    action: "open_file_palette",
+    icon: "file-code",
+    label: "Open file",
+    note: "Jump to any file in the checkout",
+  },
+  {
+    action: "find_in_project",
+    icon: "search",
+    label: "Find in project",
+    note: "Search the checkout's contents",
+  },
+  {
+    action: "toggle_files",
+    icon: "folder",
+    label: "Browse files",
+    note: "Show the file tree in the sidebar",
+  },
+];
+
+const REOPEN_ROW: EmptyRow = {
+  action: "reopen_closed_tab",
+  icon: "folder-open",
+  label: "Reopen closed tab",
+  note: "Bring back the last view you closed",
+};
+
+/** What Code shows before any file is open. */
+export function EmptyCode() {
+  return (
+    <EmptyCard
+      title="No files open"
+      copy="Open a file to start working in Code."
+      rows={canReopenClosed() ? [...CODE_ROWS, REOPEN_ROW] : CODE_ROWS}
+    />
+  );
+}
+
+type EmptyRow = { action: ActionId; icon: ForgeIconName; label: string; note: string };
+
+function EmptyCard(props: { title: string; copy: string; rows: EmptyRow[] }) {
+  return (
     <div class="empty-center">
       <div class="empty-center-card">
-        <p class="empty-center-title">No sessions open</p>
-        <p class="empty-center-copy">
-          {bare()
-            ? "Nothing is set up yet."
-            : "Everything here is closed. Start one to get back to work."}
-        </p>
+        <p class="empty-center-title">{props.title}</p>
+        <p class="empty-center-copy">{props.copy}</p>
 
         <ul class="empty-center-rows">
-          <For each={rows()}>
+          <For each={props.rows}>
             {(row) => (
               <li>
                 <button

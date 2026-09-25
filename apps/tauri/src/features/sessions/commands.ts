@@ -16,6 +16,15 @@ export async function newShell(workspace: string | null = null): Promise<void> {
   await sendRuntimeCommand({ type: "new_shell", workspace });
 }
 
+/** A new shell that stays beside the current one, rather than replacing it. */
+export async function splitShell(workspace: string | null = null): Promise<void> {
+  await sendRuntimeCommand({ type: "split_shell", workspace });
+}
+
+export async function detachSplit(sessionId: string): Promise<void> {
+  await sendRuntimeCommand({ type: "detach_split", session_id: sessionId });
+}
+
 export async function closeSession(sessionId: string): Promise<void> {
   await sendRuntimeCommand({ type: "close_session", session_id: sessionId });
 }

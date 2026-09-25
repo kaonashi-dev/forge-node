@@ -236,8 +236,11 @@
   font-size: 0.9em;
   line-height: 1.4;
 }
-.fw-tree-row[data-ignored="true"] {
-  color: var(--fw-muted, GrayText);
+/* Fade the glyphs, not the row: a row-level opacity would wash out hover and selection. */
+.fw-tree-row[data-ignored="true"] > .fw-tree-branch,
+.fw-tree-row[data-ignored="true"] > .fw-tree-icon,
+.fw-tree-row[data-ignored="true"] > .fw-tree-label {
+  opacity: var(--fw-ignored-opacity, 0.6);
 }
 .fw-tree-row[data-tone="added"] {
   color: var(--fw-added, inherit);

@@ -9,14 +9,23 @@
 import { isTypingTarget } from "../../actions/dispatch";
 import type { CenterMode } from "../../navigation/viewsStore";
 
-let focuser: (() => void) | null = null;
+const focusers = new Map<string, () => void>();
+let current = "main";
 
 /** The mounted pane offers its keyboard target; the returned call withdraws it. */
-export function registerTerminalFocus(focus: () => void): () => void {
-  focuser = focus;
+export function registerTerminalFocus(focus: () => void, id = "main"): () => void {
+  focusers.set(id, focus);
   return () => {
-    if (focuser === focus) focuser = null;
+    if (focusers.get(id) === focus) focusers.delete(id);
   };
+}
+
+export function setFocusedTerminal(id: string): void {
+  current = id;
+}
+
+export function focusedTerminalId(): string {
+  return current;
 }
 
 /**
@@ -25,9 +34,13 @@ export function registerTerminalFocus(focus: () => void): () => void {
  * Unconditional: re-selecting the session that is already active changes
  * nothing for [`mayTakeCaret`]'s effect to observe, and the gesture still
  * means "type here".
+ *
+ * `id` names the pane when two terminals are on screen; omitted, it is the
+ * last one that held the keyboard.
  */
-export function focusTerminal(): void {
-  focuser?.();
+export function focusTerminal(id?: string): void {
+  const key = id ?? current;
+  (focusers.get(key) ?? focusers.get("main"))?.();
 }
 
 /**

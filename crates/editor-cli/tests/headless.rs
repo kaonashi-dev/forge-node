@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use editor_control::{
     encode, modifiers, read_frame, write_frame, DaemonMessage, EditorInput, EditorMessage,
-    ViewFrame, ViewRequest, WireKey, WireMarkKind, WireMouseKind, CONTROL_VERSION,
+    ViewFrame, ViewRequest, WireFindCommand, WireKey, WireMarkKind, WireMouseKind, CONTROL_VERSION,
     MAX_VIEW_FRAME_BYTES,
 };
 
@@ -542,11 +542,9 @@ fn a_git_mark_arrives_on_the_row_it_marks() {
 fn a_find_marks_every_hit_in_the_window() {
     let host = start("alpha beta alpha\n", "src/note.txt");
     host.frame();
-    // Ctrl-F opens the find prompt; the query is typed into it.
+    // Ctrl-F opens the GUI's panel; the query arrives from its field.
     host.key(WireKey::Char('f'), modifiers::CONTROL);
-    for ch in "alpha".chars() {
-        host.key(WireKey::Char(ch), 0);
-    }
+    host.send(find_set("alpha"));
     let deadline = Instant::now() + WAIT;
     loop {
         assert!(Instant::now() < deadline, "no frame carried a decoration");
@@ -571,10 +569,8 @@ fn a_find_marks_every_hit_in_the_window() {
 fn an_open_prompt_reaches_a_surface_that_has_no_status_row() {
     let host = start("alpha beta\n", "src/note.txt");
     host.frame();
-    host.key(WireKey::Char('f'), modifiers::CONTROL);
-    for ch in "bet".chars() {
-        host.key(WireKey::Char(ch), 0);
-    }
+    host.key(WireKey::Char('g'), modifiers::CONTROL);
+    host.key(WireKey::Char('1'), 0);
     let deadline = Instant::now() + WAIT;
     loop {
         assert!(
@@ -582,11 +578,49 @@ fn an_open_prompt_reaches_a_surface_that_has_no_status_row() {
             "the prompt never reached a State"
         );
         match host.messages.recv_timeout(WAIT) {
-            Ok(EditorMessage::State { state, .. }) if state.status.starts_with("find: bet") => {
+            Ok(EditorMessage::State { state, .. }) if state.status.starts_with("go to line: 1") => {
                 return;
             }
             Ok(_) => continue,
             Err(error) => panic!("the control channel ended: {error}"),
         }
+    }
+}
+
+/// Find is the GUI's panel: its count and position travel on the state, and
+/// no prompt line does.
+#[test]
+fn find_reports_its_count_on_the_state_instead_of_a_prompt() {
+    let host = start("alpha beta beta\n", "src/note.txt");
+    host.frame();
+    host.key(WireKey::Char('f'), modifiers::CONTROL);
+    host.send(find_set("bet"));
+    let deadline = Instant::now() + WAIT;
+    loop {
+        assert!(Instant::now() < deadline, "the find never reached a State");
+        match host.messages.recv_timeout(WAIT) {
+            Ok(EditorMessage::State { state, .. }) => {
+                let Some(find) = state.find else { continue };
+                if find.pattern != "bet" {
+                    continue;
+                }
+                assert_eq!((find.total, find.index), (2, 1));
+                assert!(!state.status.starts_with("find:"), "{}", state.status);
+                return;
+            }
+            Ok(_) => continue,
+            Err(error) => panic!("the control channel ended: {error}"),
+        }
+    }
+}
+
+fn find_set(pattern: &str) -> DaemonMessage {
+    DaemonMessage::Find {
+        command: WireFindCommand::Set {
+            pattern: pattern.into(),
+            case_sensitive: false,
+            whole_word: false,
+            regex: false,
+        },
     }
 }

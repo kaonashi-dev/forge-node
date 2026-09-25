@@ -5,8 +5,9 @@
 
 use domain::{
     AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy, ContextEnvelope,
-    EditorInputEvent, JuvaKind, ProjectGroupId, ProjectId, PtySize, SessionId, SessionKind,
-    SessionRole, ShareCleanup, ShareRule, ShareRuleId, TerminalId, WorkspaceId, WorktreeIgnore,
+    EditorFindCommand, EditorInputEvent, JuvaKind, ProjectGroupId, ProjectId, PtySize, SessionId,
+    SessionKind, SessionRole, ShareCleanup, ShareRule, ShareRuleId, TerminalId, WorkspaceId,
+    WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -624,6 +625,16 @@ pub enum Request {
         first_line: u32,
         /// How many lines to mount. Clamped by the editor.
         line_count: u32,
+    },
+    /// Drive an editor session's find panel → `Ack`.
+    ///
+    /// The editor owns the query and the search; the answer is the `find` on
+    /// the session's next `EditorState`. A `Set` pattern longer than
+    /// [`domain::MAX_EDITOR_FIND_PATTERN_BYTES`] is `InvalidRequest`.
+    /// `PreconditionFailed` when the editor's command queue is saturated.
+    EditorFind {
+        session_id: SessionId,
+        command: EditorFindCommand,
     },
     /// The two sides of a refused editor save → `EditorConflict`.
     ///

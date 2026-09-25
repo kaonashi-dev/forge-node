@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { decorationFor, fileDecorations, folderCounts, ignoredRoots } from "./treeDecorations";
-import type { DiffFile, FileEntry } from "../../../contracts/workbench";
+import { decorationFor, fileDecorations, folderCounts } from "./treeDecorations";
+import type { DiffFile } from "../../../contracts/workbench";
 
 const file = (path: string, status: string): DiffFile => ({
   path,
@@ -45,23 +45,5 @@ describe("folderCounts", () => {
   it("does not count a file as a directory of itself", () => {
     expect(folderCounts(["a.ts"]).size).toBe(0);
     expect(folderCounts(["src/a.ts"]).get("src/a.ts")).toBeUndefined();
-  });
-});
-
-describe("ignoredRoots", () => {
-  const entry = (path: string, ignored: boolean): FileEntry => ({
-    path,
-    kind: "Directory",
-    ignored,
-  });
-
-  it("names only the outermost ignored entry", () => {
-    const roots = ignoredRoots([
-      entry("node_modules", true),
-      entry("node_modules/solid-js", true),
-      entry("src", false),
-      entry("src/dist", true),
-    ]);
-    expect(roots).toEqual(["node_modules", "src/dist"]);
   });
 });

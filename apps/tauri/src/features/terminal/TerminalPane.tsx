@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, on, onCleanup, onMount, Show } from "solid-js";
 import { TERMINAL } from "../../actions/actions";
 import { enterContext, registerAction } from "../../actions/dispatch";
 import {
@@ -43,17 +43,14 @@ import { isMac } from "../../actions/keys";
 import { linkedRefs, openPathRef, warmPathIndex } from "../files/references/pathLinks";
 import { refAt, type PathRef } from "../files/references/pathref";
 import { clipboardPaste } from "../../shared/input/clipboard";
-import { mayTakeCaret, registerTerminalFocus } from "./focus";
+import { mayTakeCaret, registerTerminalFocus, setFocusedTerminal } from "./focus";
 import { connectionStore, sessionSelectionPending } from "../../state/connection";
 import { centerMode } from "../../navigation/viewsStore";
 import { registerFileTerminal } from "../files/explorer/fileDrag";
 import { CursorClick } from "./cursorClick";
 import { SelectionDrag } from "./selectionDrag";
-import { readPrompt, samePrompt, type AnswerPrompt } from "./answerPrompt";
-import { clearQuestion, hasQuestion, markQuestion } from "./questions";
+import { clearQuestion, markQuestion } from "./questions";
 import { forgeStore } from "../../state/forgeStore";
-import { Button, IconButton } from "../../ui/index";
-import { Icon } from "../../theme/icons/index";
 
 /** Breathing room between the grid and the pane edges (`TERMINAL_PAD`). */
 const PAD = 8;
@@ -64,10 +61,6 @@ const PAD = 8;
  * daemon a `resize` plus a full resync of the grid.
  */
 const RESIZE_DEBOUNCE_MS = 80;
-/** How long frames settle before a waiting screen is re-read for its question. */
-const PROMPT_READ_MS = 150;
-/** The answer card turns this many of a menu's options into buttons. */
-const CARD_CHOICES = 2;
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
 
 /** Turn on the p50/p95/p99 overlay with `localStorage.forgeTerminalDebug = "1"`. */
@@ -115,7 +108,12 @@ function scaledSize(zoom: number): number {
   return Math.max(6, Math.round(tokens.monoSize * zoom));
 }
 
-export function TerminalPane(props: { active?: boolean }) {
+export function TerminalPane(props: {
+  active?: boolean;
+  /** Bind this pane to a session; omitted, it follows the window's attachment. */
+  session?: string;
+  onActivate?: () => void;
+}) {
   let host!: HTMLDivElement;
   let canvas!: HTMLCanvasElement;
   let keys!: HTMLTextAreaElement;
@@ -124,6 +122,7 @@ export function TerminalPane(props: { active?: boolean }) {
   const probe = new LatencyProbe();
   const paintProbe = new PaintProbe();
   const [overlay, setOverlay] = createSignal<string | null>(null);
+  const [scrolled, setScrolled] = createSignal(0);
 
   let renderer: TerminalRenderer | null = null;
   /**
@@ -161,7 +160,7 @@ export function TerminalPane(props: { active?: boolean }) {
       return { left: rect.left, top: rect.top, cellWidth: cell.width, cellHeight: cell.height };
     },
     changed: (previous, next) => markSelection(previous, next),
-    scroll: scrollTerminal,
+    scroll: (lines) => scrollTerminal(lines, props.session),
   });
   let focused = false;
 
@@ -201,63 +200,27 @@ export function TerminalPane(props: { active?: boolean }) {
     schedule();
   });
 
-  /*
-   * The answer card. Read off the rows only while the attached session has an
-   * open question, and then at most once per `PROMPT_READ_MS` of frames: a
-   * terminal nobody is waiting on costs one boolean per frame.
-   */
-  const [prompt, setPrompt] = createSignal<AnswerPrompt | null>(null);
-  const [cardHidden, setCardHidden] = createSignal(false);
-  let asking = false;
-  let promptTimer: number | undefined;
-
-  function readQuestion(): void {
-    promptTimer = undefined;
-    if (!asking || viewport.scrollOffset > 0) return;
-    if (viewport.terminal === null || viewport.terminal !== connectionStore.activeTerminal) return;
-    const next = readPrompt(viewport.rows);
-    if (samePrompt(prompt(), next)) return;
-    setPrompt(next);
-    setCardHidden(false);
+  function boundSession(): string | null {
+    return props.session ?? connectionStore.activeSession;
   }
 
-  function scheduleQuestionRead(): void {
-    if (promptTimer !== undefined) return;
-    promptTimer = window.setTimeout(readQuestion, PROMPT_READ_MS);
-  }
-
-  createEffect(() => {
-    asking = props.active !== false && hasQuestion(connectionStore.activeSession);
-    if (asking) {
-      readQuestion();
-      return;
+  function boundTerminal(): string | null {
+    if (props.session) {
+      return forgeStore.sessions.find((item) => item.id === props.session)?.terminal_id ?? null;
     }
-    window.clearTimeout(promptTimer);
-    promptTimer = undefined;
-    setPrompt(null);
-  });
+    return connectionStore.activeTerminal;
+  }
 
   function noteBell(terminal: string): void {
-    const session = connectionStore.activeSession;
-    if (terminal !== connectionStore.activeTerminal || !session) return;
+    const session = boundSession();
+    const mine = boundTerminal();
+    if (!session || terminal !== mine) return;
     const row = forgeStore.sessions.find((item) => item.id === session);
     if (row?.agent_provider_id != null) markQuestion(session);
   }
 
   function answered(): void {
-    clearQuestion(connectionStore.activeSession);
-  }
-
-  function focusTerminalInput(): void {
-    keys.focus({ preventScroll: true });
-  }
-
-  // The digit alone: agent menus select on the number, and a trailing Enter
-  // would land on whatever the agent shows next.
-  function answerWith(digit: string): void {
-    void sendText(digit, probe.send()).catch(() => undefined);
-    answered();
-    focusTerminalInput();
+    clearQuestion(boundSession());
   }
 
   createEffect(() => {
@@ -273,8 +236,8 @@ export function TerminalPane(props: { active?: boolean }) {
     on(
       [
         () => props.active,
-        () => connectionStore.activeSession,
-        () => connectionStore.activeTerminal,
+        () => boundSession(),
+        () => boundTerminal(),
         () => connectionStore.connectionGeneration,
         () => connectionStore.connection.kind,
         sessionSelectionPending,
@@ -349,6 +312,8 @@ export function TerminalPane(props: { active?: boolean }) {
   }
 
   function onFrame(payload: CellsPayload): void {
+    const mine = boundTerminal();
+    if (!mine || payload.terminal !== mine) return;
     if (
       payload.terminal !== viewport.terminal ||
       payload.modes.alt_screen !== viewport.modes.alt_screen ||
@@ -360,22 +325,26 @@ export function TerminalPane(props: { active?: boolean }) {
     const rows = viewport.apply(payload);
     selection.refresh();
     if (payload.bell) noteBell(payload.terminal);
-    if (asking && (payload.full || rows.length > 0)) scheduleQuestionRead();
     if (payload.full) {
       repaintAll = true;
     } else {
       for (const row of rows) dirty.add(row);
     }
     if (payload.echo_id > settleTo) settleTo = payload.echo_id;
-    if (payload.title !== terminalStore.title) setTerminalStore("title", payload.title);
-    if (payload.scroll_offset !== terminalStore.scrollOffset) {
-      setTerminalStore("scrollOffset", payload.scroll_offset);
+    if (payload.scroll_offset !== scrolled()) {
       // The selection is anchored to grid lines, not viewport rows, so it
       // survives the scroll — but every row it touches has to repaint.
       repaintAll = true;
     }
-    if (payload.scrollback_len !== terminalStore.scrollbackLen) {
-      setTerminalStore("scrollbackLen", payload.scrollback_len);
+    setScrolled(payload.scroll_offset);
+    if (!props.session) {
+      if (payload.title !== terminalStore.title) setTerminalStore("title", payload.title);
+      if (payload.scroll_offset !== terminalStore.scrollOffset) {
+        setTerminalStore("scrollOffset", payload.scroll_offset);
+      }
+      if (payload.scrollback_len !== terminalStore.scrollbackLen) {
+        setTerminalStore("scrollbackLen", payload.scrollback_len);
+      }
     }
     schedule();
   }
@@ -392,12 +361,16 @@ export function TerminalPane(props: { active?: boolean }) {
     const size = gridSize(width, height, cell);
     if (size.cols !== lastSize.cols || size.rows !== lastSize.rows) {
       lastSize = size;
-      setTerminalStore({ cols: size.cols, rows: size.rows });
+      if (!props.session) setTerminalStore({ cols: size.cols, rows: size.rows });
       window.clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(() => {
-        void resizeTerminal(size.cols, size.rows, Math.round(width), Math.round(height)).catch(
-          () => undefined,
-        );
+        void resizeTerminal(
+          size.cols,
+          size.rows,
+          Math.round(width),
+          Math.round(height),
+          props.session,
+        ).catch(() => undefined);
       }, RESIZE_DEBOUNCE_MS);
     }
     schedule();
@@ -425,7 +398,9 @@ export function TerminalPane(props: { active?: boolean }) {
     if (event.shiftKey && (event.key === "PageUp" || event.key === "PageDown")) {
       event.preventDefault();
       const page = Math.max(1, viewport.rows.length - 1);
-      void scrollTerminal(event.key === "PageUp" ? page : -page).catch(() => undefined);
+      void scrollTerminal(event.key === "PageUp" ? page : -page, props.session).catch(
+        () => undefined,
+      );
       return;
     }
 
@@ -439,6 +414,7 @@ export function TerminalPane(props: { active?: boolean }) {
         shift: event.shiftKey,
       },
       probe.send(),
+      props.session,
     ).catch(() => undefined);
   }
 
@@ -447,12 +423,14 @@ export function TerminalPane(props: { active?: boolean }) {
     const paste = clipboardPaste(event.clipboardData);
     if (paste.kind !== "empty") answered();
     if (paste.kind === "text") {
-      void sendPaste(paste.text, probe.send()).catch(() => undefined);
+      void sendPaste(paste.text, probe.send(), props.session).catch(() => undefined);
     } else if (paste.kind === "agent") {
       // The agent reads the system clipboard itself for image attachments.
-      void sendKey({ key: "v", ctrl: true, alt: false, shift: false }, probe.send()).catch(
-        () => undefined,
-      );
+      void sendKey(
+        { key: "v", ctrl: true, alt: false, shift: false },
+        probe.send(),
+        props.session,
+      ).catch(() => undefined);
     }
   }
 
@@ -463,7 +441,7 @@ export function TerminalPane(props: { active?: boolean }) {
     // markers a `Paste` would wrap it in.
     if (!text) return;
     answered();
-    void sendText(text, probe.send()).catch(() => undefined);
+    void sendText(text, probe.send(), props.session).catch(() => undefined);
   }
 
   function onInput(): void {
@@ -500,15 +478,20 @@ export function TerminalPane(props: { active?: boolean }) {
 
   function report(event: MouseEvent | WheelEvent, button: string, kind: string): void {
     const { col, row } = reportPoint(event);
-    void sendMouse({
-      button,
-      kind,
-      col,
-      row,
-      ctrl: event.ctrlKey,
-      alt: event.altKey,
-      shift: event.shiftKey,
-    }).catch(() => undefined);
+    // Clicking an option in a TUI answers it, the same edge the host spends.
+    if (kind === "press" && !button.startsWith("wheel")) answered();
+    void sendMouse(
+      {
+        button,
+        kind,
+        col,
+        row,
+        ctrl: event.ctrlKey,
+        alt: event.altKey,
+        shift: event.shiftKey,
+      },
+      props.session,
+    ).catch(() => undefined);
   }
 
   /** `MouseEvent.button` → the name the encoder knows, or `null` for the rest. */
@@ -544,7 +527,7 @@ export function TerminalPane(props: { active?: boolean }) {
       const delta = scrollPending;
       scrollPending = 0;
       if (delta === 0) return;
-      void scrollTerminal(delta).catch(() => undefined);
+      void scrollTerminal(delta, props.session).catch(() => undefined);
     });
   }
 
@@ -637,6 +620,7 @@ export function TerminalPane(props: { active?: boolean }) {
 
   function onMouseDown(event: MouseEvent): void {
     if (!acceptsPointer()) return;
+    props.onActivate?.();
     stopDrag();
     // Before mouse reporting: the modifier is the user overriding whatever the
     // program asked for, the same way `shift` overrides it for selection.
@@ -769,9 +753,37 @@ export function TerminalPane(props: { active?: boolean }) {
       selection.set(null);
       if (target) {
         blink.wake();
-        void moveCursor(target, probe.send()).catch(() => undefined);
+        void moveCursor(target, probe.send(), props.session).catch(() => undefined);
       }
     }
+  }
+
+  const paneId = () => props.session ?? "main";
+  let actionUnbind: (() => void)[] = [];
+  function bindPaneActions(): void {
+    if (actionUnbind.length > 0) return;
+    actionUnbind = [
+      registerAction("copy_terminal", () => {
+        const range = selection.range;
+        if (acceptsPointer() && range && !isEmpty(range)) {
+          void copySelection(range.anchor, range.head, props.session).catch(() => undefined);
+        }
+      }),
+      registerAction("paste_terminal", () => {
+        void pasteClipboard(
+          readClipboard,
+          boundSession() ?? undefined,
+          boundTerminal() ?? undefined,
+        ).catch(() => undefined);
+      }),
+      registerAction("terminal_zoom_in", () => applyZoom(zoom() + TERMINAL_ZOOM_STEP)),
+      registerAction("terminal_zoom_out", () => applyZoom(zoom() - TERMINAL_ZOOM_STEP)),
+      registerAction("terminal_zoom_reset", () => applyZoom(1)),
+    ];
+  }
+  function unbindPaneActions(): void {
+    for (const unbind of actionUnbind) unbind();
+    actionUnbind = [];
   }
 
   // --- lifecycle ------------------------------------------------------------
@@ -817,7 +829,7 @@ export function TerminalPane(props: { active?: boolean }) {
 
     // The host attached before this canvas existed, so its first frame had
     // nowhere to go. Ask for it rather than wait for output.
-    void repaintTerminal().catch(() => undefined);
+    void repaintTerminal(props.session).catch(() => undefined);
 
     // Path links resolve a guessed reference against the checkout's listing;
     // without one every `App.tsx` in output would be a link to nothing.
@@ -829,10 +841,10 @@ export function TerminalPane(props: { active?: boolean }) {
     onCleanup(
       registerFileTerminal(host, {
         identity: () => {
-          const session = connectionStore.activeSession;
-          const terminal = connectionStore.activeTerminal;
+          const session = boundSession();
+          const terminal = boundTerminal();
           return connectionStore.connection.kind === "connected" &&
-            centerMode() === "session" &&
+            props.active !== false &&
             session &&
             terminal
             ? { session, terminal }
@@ -841,34 +853,13 @@ export function TerminalPane(props: { active?: boolean }) {
         focus: takeCaret,
       }),
     );
-    onCleanup(registerTerminalFocus(takeCaret));
+    onCleanup(registerTerminalFocus(takeCaret, paneId()));
     createEffect(() => {
-      if (mayTakeCaret(centerMode(), connectionStore.activeSession, document.activeElement, keys)) {
+      if (props.active === false) return;
+      const mode = props.session ? "session" : centerMode();
+      if (mayTakeCaret(mode, boundSession(), document.activeElement, keys)) {
         takeCaret();
       }
-    });
-
-    // Only this pane knows what is selected and what the modes are, so the
-    // clipboard and scroll actions are answered here rather than in the shell.
-    const bound = [
-      registerAction("copy_terminal", () => {
-        const range = selection.range;
-        if (acceptsPointer() && range && !isEmpty(range)) {
-          void copySelection(range.anchor, range.head).catch(() => undefined);
-        }
-      }),
-      registerAction("paste_terminal", () => {
-        void pasteClipboard(readClipboard).catch(() => undefined);
-      }),
-      // Zoom re-measures the cell, which re-derives the grid and resizes the
-      // PTY: a larger glyph is fewer columns, and a program drawing a box has
-      // to be told so.
-      registerAction("terminal_zoom_in", () => applyZoom(zoom() + TERMINAL_ZOOM_STEP)),
-      registerAction("terminal_zoom_out", () => applyZoom(zoom() - TERMINAL_ZOOM_STEP)),
-      registerAction("terminal_zoom_reset", () => applyZoom(1)),
-    ];
-    onCleanup(() => {
-      for (const unbind of bound) unbind();
     });
 
     // A drag that leaves the pane still belongs to the pane.
@@ -893,10 +884,10 @@ export function TerminalPane(props: { active?: boolean }) {
       window.removeEventListener("blur", stopDrag);
       stopDrag();
       window.clearTimeout(resizeTimer);
-      window.clearTimeout(promptTimer);
       blink.dispose();
       if (frame !== 0) cancelAnimationFrame(frame);
       if (scrollFrame !== 0) cancelAnimationFrame(scrollFrame);
+      unbindPaneActions();
       leaveContext?.();
     });
   });
@@ -928,7 +919,7 @@ export function TerminalPane(props: { active?: boolean }) {
           const range = selection.range;
           if (!acceptsPointer() || !range || isEmpty(range)) return;
           event.preventDefault();
-          void copySelection(range.anchor, range.head).catch(() => undefined);
+          void copySelection(range.anchor, range.head, props.session).catch(() => undefined);
         }}
         onInput={onInput}
         onCompositionEnd={onCompositionEnd}
@@ -938,6 +929,9 @@ export function TerminalPane(props: { active?: boolean }) {
             return;
           }
           focused = true;
+          setFocusedTerminal(paneId());
+          props.onActivate?.();
+          bindPaneActions();
           // The grid holds the keyboard, so its own chords outbid the shell's.
           leaveContext = enterContext(TERMINAL);
           // A blink is an invitation to type, and an unfocused pane is not
@@ -949,6 +943,7 @@ export function TerminalPane(props: { active?: boolean }) {
         onBlur={() => {
           stopDrag();
           focused = false;
+          unbindPaneActions();
           leaveContext?.();
           leaveContext = undefined;
           blink.run(false);
@@ -956,74 +951,10 @@ export function TerminalPane(props: { active?: boolean }) {
           schedule();
         }}
       />
-      <Show when={terminalStore.scrollOffset > 0}>
-        <div class="terminal-scrolled">
-          {terminalStore.scrollOffset} lines back · type to return
-        </div>
+      <Show when={scrolled() > 0}>
+        <div class="terminal-scrolled">{scrolled()} lines back · type to return</div>
       </Show>
       <Show when={overlay()}>{(text) => <div class="terminal-debug">{text()}</div>}</Show>
-      <Show when={!cardHidden() && prompt()}>
-        {(current) => (
-          <section
-            class="answer-card"
-            aria-label="Waiting on your answer"
-            onMouseDown={(event) => event.stopPropagation()}
-            onWheel={(event) => event.stopPropagation()}
-          >
-            <div class="answer-card-head">
-              <span class="forge-attention-dot" aria-hidden="true" />
-              <span class="answer-card-label">Waiting on your answer</span>
-              <IconButton
-                label="Hide the answer card"
-                size="xs"
-                class="answer-card-hide"
-                onClick={() => setCardHidden(true)}
-              >
-                <Icon name="close" class="forge-icon-muted" size={12} />
-              </IconButton>
-            </div>
-            <p class="answer-card-question">
-              {current().question ?? "The agent is waiting for input in the terminal."}
-            </p>
-            <div class="answer-card-actions">
-              <Show
-                when={current().choices.length > 0}
-                fallback={
-                  <Button variant="primary" size="sm" onClick={() => focusTerminalInput()}>
-                    Answer in the terminal
-                  </Button>
-                }
-              >
-                <For each={current().choices.slice(0, CARD_CHOICES)}>
-                  {(choice, index) => (
-                    <Button
-                      variant={index() === 0 ? "primary" : "secondary"}
-                      size="sm"
-                      aria-label={`Answer ${choice.digit}: ${choice.label}`}
-                      onClick={() => answerWith(choice.digit)}
-                    >
-                      <span class="answer-card-digit" aria-hidden="true">
-                        {choice.digit}
-                      </span>
-                      <span class="answer-card-choice">{choice.label}</span>
-                    </Button>
-                  )}
-                </For>
-                <span class="answer-card-spacer" />
-                <button
-                  type="button"
-                  class="answer-card-reply"
-                  onClick={() => focusTerminalInput()}
-                >
-                  {current().choices.length > CARD_CHOICES
-                    ? `${current().choices.length - CARD_CHOICES} more in the terminal · or type a reply`
-                    : "or type a reply"}
-                </button>
-              </Show>
-            </div>
-          </section>
-        )}
-      </Show>
     </section>
   );
 }
