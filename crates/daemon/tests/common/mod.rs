@@ -652,15 +652,19 @@ pub fn wait_for_running(
 ) -> (SessionId, TerminalId) {
     let event = wait_for(events, DEADLINE, |event| {
         matches!(event, DaemonEvent::SessionUpdated(session)
-            if session.state == SessionState::Running
-                && session.terminal_id.is_some()
-                && pred(session))
+            if pred(session)
+                && (matches!(session.state, SessionState::Failed { .. })
+                    || (session.state == SessionState::Running && session.terminal_id.is_some())))
     })
     .expect("a session should reach Running");
     match event {
-        DaemonEvent::SessionUpdated(session) => {
-            (session.id, session.terminal_id.expect("terminal"))
-        }
+        DaemonEvent::SessionUpdated(session) => match session.state {
+            SessionState::Failed { reason } => {
+                panic!("session failed before Running: {reason}");
+            }
+            SessionState::Running => (session.id, session.terminal_id.expect("terminal")),
+            other => panic!("expected Running, got {other:?}"),
+        },
         _ => unreachable!(),
     }
 }

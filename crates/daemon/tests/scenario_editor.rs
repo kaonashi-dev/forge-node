@@ -228,10 +228,12 @@ opened_msg = unpack(read_frame(sock))[0]
 open_body = opened_msg.get("Open") or {}
 text = open_body.get("text") or ""
 path = open_body.get("path") or "buffer"
-sys.stdout.write(text)
-sys.stdout.flush()
+# Opened first: painting the PTY can block if its reader has not started,
+# and the handshake cannot wait on that.
 sock.sendall(opened(int(open_body.get("request_id") or 1)))
 sock.sendall(state(path, int(open_body.get("line") or 1)))
+sys.stdout.write(text)
+sys.stdout.flush()
 
 if mode == "crash":
     time.sleep(0.2)
@@ -462,9 +464,8 @@ fn editor_session_opens_with_the_service_text() {
     let events = client.events();
     let workspace = common::add_main_workspace(&client, repo.path());
     let (_session, terminal) = create_editor(&client, &events, workspace, "note.txt", None);
-    // `create_editor` already waited for `Running`, which the handshake sets
-    // after the editor painted the buffer: the text is in the attach snapshot,
-    // not in a delta that follows it.
+    // Running is the handshake, not the paint: the text may already be in the
+    // attach snapshot or arrive as a delta once the fake writes the PTY.
     assert!(
         common::attach_and_wait_for_row(&client, &events, terminal, |t| t
             .contains("service-text-xyz"))
@@ -616,14 +617,7 @@ fn an_integrated_save_writes_through_fs_service() {
     let Response::SessionCreated { session_id, .. } = response else {
         panic!("expected SessionCreated");
     };
-    assert!(
-        common::wait_for(&events, common::DEADLINE, |event| {
-            matches!(event, DaemonEvent::SessionUpdated(session)
-                if session.id == session_id && session.state == SessionState::Running)
-        })
-        .is_some(),
-        "the buffer must open"
-    );
+    common::wait_for_running(&events, |session| session.id == session_id);
 
     let target = repo.path().join("a.rs");
     assert!(
@@ -816,14 +810,7 @@ fn a_refused_save_arms_the_next_one_instead_of_trapping_the_buffer() {
     let Response::SessionCreated { session_id, .. } = response else {
         panic!("expected SessionCreated");
     };
-    assert!(
-        common::wait_for(&events, common::DEADLINE, |event| {
-            matches!(event, DaemonEvent::SessionUpdated(session)
-                if session.id == session_id && session.state == SessionState::Running)
-        })
-        .is_some(),
-        "the buffer must open"
-    );
+    common::wait_for_running(&events, |session| session.id == session_id);
 
     // Somebody else writes the same path, then the editor is let go.
     fs::write(repo.path().join("a.rs"), "an agent wrote this\n").unwrap();
@@ -868,14 +855,7 @@ fn a_refused_save_offers_both_sides_and_take_disk_resolves_it() {
     let Response::SessionCreated { session_id, .. } = response else {
         panic!("expected SessionCreated");
     };
-    assert!(
-        common::wait_for(&events, common::DEADLINE, |event| {
-            matches!(event, DaemonEvent::SessionUpdated(session)
-                if session.id == session_id && session.state == SessionState::Running)
-        })
-        .is_some(),
-        "the buffer must open"
-    );
+    common::wait_for_running(&events, |session| session.id == session_id);
 
     // Nothing to compare before a save is refused.
     match client
