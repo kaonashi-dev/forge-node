@@ -55,6 +55,11 @@ impl ShellEnvironmentService {
         }
     }
 
+    #[must_use]
+    pub fn is_resolved(&self) -> bool {
+        self.cached.is_some()
+    }
+
     /// The cached environment, resolving it on first use.
     pub fn get(&mut self) -> &ResolvedEnvironment {
         if self.cached.is_none() {
@@ -64,8 +69,22 @@ impl ShellEnvironmentService {
     }
 
     /// Force a re-resolution after the shell's PATH or configuration changes.
+    ///
+    /// A failed capture never replaces a login-shell cache: a slow rc file or a
+    /// transient timeout would otherwise swap a working `PATH` for the process
+    /// fallback and make every agent undetectable until the next restart.
     pub fn refresh(&mut self) -> &ResolvedEnvironment {
-        self.cached = Some(self.resolve());
+        let next = self.resolve();
+        let keep = next.source == EnvSource::ProcessFallback
+            && self
+                .cached
+                .as_ref()
+                .is_some_and(|env| env.source == EnvSource::LoginShell);
+        if keep {
+            tracing::warn!("login-shell refresh failed; keeping the previous environment");
+        } else {
+            self.cached = Some(next);
+        }
         self.cached.as_ref().expect("just resolved")
     }
 
@@ -207,14 +226,26 @@ impl ShellEnvironmentService {
 
 fn capture_login_shell(shell: &Path, timeout: Duration) -> Option<Vec<u8>> {
     let script = format!("printf '%s' '{BEGIN}'; env -0; printf '%s' '{END}'");
-    let mut child = Command::new(shell)
+    let mut command = Command::new(shell);
+    command
         .args(["-l", "-i", "-c", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    // A new session rather than `process_group(0)`: an interactive shell with a
+    // controlling tty in a background group stops itself on SIGTTIN/SIGTTOU
+    // when a daemon started from a terminal runs this, and sits until the
+    // timeout. `setsid` still makes the child its own group leader, so the
+    // negative-pid kill below reaches its descendants.
+    // SAFETY: `setsid` is async-signal-safe and touches no parent memory.
+    unsafe {
+        command.pre_exec(|| {
+            nix::unistd::setsid()
+                .map(drop)
+                .map_err(std::io::Error::from)
+        });
+    }
+    let mut child = command.spawn().ok()?;
     let pid = child.id();
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
@@ -368,6 +399,31 @@ mod tests {
         let mut svc = ShellEnvironmentService::new(None);
         let env = svc.get();
         assert!(env.get("PATH").is_some(), "resolved env should carry PATH");
+    }
+
+    #[test]
+    fn a_failed_refresh_keeps_the_login_shell_environment() {
+        let (_dir, shell) = shell_fixture("exit 1");
+        let mut svc = ShellEnvironmentService::new(Some(shell.display().to_string()));
+        svc.set_for_test(shell, vec![("PATH".into(), "/good/bin".into())]);
+        let env = svc.refresh();
+        assert_eq!(env.source, EnvSource::LoginShell);
+        assert_eq!(env.get("PATH"), Some("/good/bin"));
+    }
+
+    #[test]
+    fn the_capture_runs_without_a_controlling_terminal() {
+        let (_dir, shell) = shell_fixture(
+            r#"if (exec 3</dev/tty) 2>/dev/null; then FORGE_TTY=held; else FORGE_TTY=none; fi
+export FORGE_TTY
+while [ "$1" != "-c" ] && [ $# -gt 0 ]; do shift; done
+shift
+eval "$1""#,
+        );
+        let out = capture_login_shell(&shell, Duration::from_secs(5)).unwrap();
+        let vars = ShellEnvironmentService::parse_between_sentinels(&out).unwrap();
+        let tty = &vars.iter().find(|(key, _)| key == "FORGE_TTY").unwrap().1;
+        assert_eq!(tty, "none");
     }
 
     #[test]

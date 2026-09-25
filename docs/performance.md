@@ -425,7 +425,11 @@ the critical section, act after `drop(inner)`:
 
 - the session-title `upsert` in `pump_terminal` (a WAL write, on the delta rung);
 - `resolved_env`, which takes `&mut Inner` and lazily runs `$SHELL -l -i -c 'env -0'`
-  behind it — measured at **796 ms** on a real machine, with a 5 s timeout.
+  behind it — measured at **796 ms** on a real machine before `-i` also sourced
+  `.zshrc`, with a 5 s timeout. Startup now warms the cache off the lock
+  (`Daemon::warm_env`) before the first detection and `RefreshAgentDetection`
+  re-captures on a worker, so the lazy capture is left to a reader that races
+  the startup warm-up.
 
 Note also that `PRAGMA synchronous` is `NORMAL`, not SQLite's `FULL` default.
 That is correct under WAL and it is what removed the fsync from the pump path;
@@ -493,7 +497,7 @@ Carry these forward; they are real, verified, and not yet fixed.
 |---|---|---|
 | Whole-grid delta on a line feed | `DeltaBuilder::delta` | Mid-screen edits now travel as column patches. A line feed can still report `TermDamage::Full` (see Alacritty `Term::damage()`), so that path still repaints the viewport. |
 | WAL write under the core lock | `Daemon::pump_terminal` | fsync is gone (`synchronous = NORMAL`) but the write still holds the global mutex on the delta rung. |
-| `resolved_env` under the core lock | `Daemon::resolved_env` | 796 ms measured; the 5 s capture deadline and up to 500 ms reap grace can still stall the core while the socket is being bound. |
+| `resolved_env` under the core lock | `Daemon::resolved_env` | 796 ms measured before `-i`; `warm_env` resolves off the lock at startup, but a reader that wins that race still captures under it, up to the 5 s deadline plus 500 ms reap grace. |
 | Unbounded process-output capture | `git-service::diff`, `fs-service` content/definition search | Response limits are applied after complete subprocess output has been captured. |
 | Unbounded analytics records and enumeration | `agents::usage::analytics` | Candidate retention is bounded, but `BufReader::lines()` allocates a complete record and directory enumeration has no entry budget. |
 | Full fold rescanning and undo-string copying | `editor-cli::App::rescan_edited`, `editor-core::history` | Edits still rebuild fold regions; coalesced typing clones growing undo strings. |

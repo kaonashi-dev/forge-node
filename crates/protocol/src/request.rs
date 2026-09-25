@@ -806,8 +806,10 @@ pub enum Request {
         /// and an over-large value is clamped rather than refused.
         window_days: Option<u16>,
     },
-    /// Re-run detection for one provider, or all when `None` → `Ack`;
-    /// `AgentDetectionChanged`.
+    /// Re-capture the shell environment and re-run detection for one provider,
+    /// or all when `None` → `Ack` when the work starts; the results arrive as
+    /// `AgentDetectionChanged`. Requests during a refresh coalesce into one
+    /// more full pass.
     RefreshAgentDetection {
         /// The provider to re-detect, or `None` for all.
         provider_id: Option<AgentProviderId>,

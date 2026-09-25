@@ -96,6 +96,11 @@ pub(crate) struct Inner {
     drafting: HashSet<WorkspaceId>,
     /// Coalesces `RefreshPullRequests` globally — one refresh covers every host.
     pr_refreshing: bool,
+    /// A `RefreshAgentDetection` worker is running.
+    detecting: bool,
+    /// A refresh arrived while `detecting`; the worker runs one more full pass
+    /// instead of dropping it, since the running one may cover one provider.
+    detect_again: bool,
     /// Coalesces `ApplyShares` per workspace. A second request rides
     /// the first one's run rather than queueing a second copy of it.
     provisioning: HashSet<WorkspaceId>,
@@ -187,6 +192,7 @@ impl Daemon {
         {
             let d = daemon.clone();
             std::thread::spawn(move || {
+                d.warm_env();
                 let results = d.detect_agents();
                 d.registry
                     .broadcast_domain(DaemonEvent::AgentDetectionChanged { results });
@@ -327,6 +333,8 @@ impl Daemon {
             pr_opening: HashSet::new(),
             drafting: HashSet::new(),
             pr_refreshing: false,
+            detecting: false,
+            detect_again: false,
             provisioning: HashSet::new(),
             status_checks: HashMap::new(),
             usage: Vec::new(),
@@ -999,17 +1007,7 @@ impl Daemon {
                 Ok(Response::ProviderUsage(usage))
             }
             Request::RefreshAgentDetection { provider_id } => {
-                // Shell capture can take seconds; refresh the cache off the core lock.
-                let mut env = { self.lock().env.clone() };
-                env.refresh();
-                self.lock().env = env;
-                let results = match provider_id {
-                    Some(id) => vec![self.detect_agent(&id)?],
-                    None => self.detect_agents(),
-                };
-                self.registry
-                    .broadcast_domain(DaemonEvent::AgentDetectionChanged { results });
-                Ok(Response::Ack)
+                self.refresh_agent_detection(provider_id)
             }
             Request::SetProviderExecutable { provider_id, path } => {
                 {
@@ -6375,6 +6373,91 @@ impl Daemon {
     }
 
     /// Cached login-shell env. Fallback notice once per daemon.
+    /// Ack when the refresh *starts*; results arrive as `AgentDetectionChanged`.
+    ///
+    /// Re-capturing `$SHELL -l -i` and re-probing every CLI takes seconds, and
+    /// the GUI sends this from the thread that also carries typing.
+    fn refresh_agent_detection(
+        self: &Arc<Self>,
+        provider_id: Option<AgentProviderId>,
+    ) -> Result<Response, ProtocolError> {
+        {
+            let mut inner = self.lock();
+            if let Some(id) = &provider_id {
+                if !inner.agents.descriptors().iter().any(|d| d.id == *id) {
+                    return Err(ProtocolError::not_found("agent provider"));
+                }
+            }
+            if inner.detecting {
+                inner.detect_again = true;
+                return Ok(Response::Ack);
+            }
+            inner.detecting = true;
+        }
+
+        let daemon = Arc::clone(self);
+        std::thread::Builder::new()
+            .name("forge-detect".into())
+            .spawn(move || {
+                let mut guard = DetectingGuard {
+                    daemon: Arc::clone(&daemon),
+                    released: false,
+                };
+                daemon.refresh_env();
+                let mut results = match &provider_id {
+                    Some(id) => daemon.detect_agent(id).map(|result| vec![result]),
+                    None => Ok(daemon.detect_agents()),
+                };
+                loop {
+                    match results {
+                        Ok(results) => daemon
+                            .registry
+                            .broadcast_domain(DaemonEvent::AgentDetectionChanged { results }),
+                        Err(error) => tracing::warn!(%error, "agent detection refresh failed"),
+                    }
+                    // Checked and cleared under one lock, so a request landing
+                    // between the check and the guard's drop is never lost.
+                    let again = {
+                        let mut inner = daemon.lock();
+                        let again = std::mem::take(&mut inner.detect_again);
+                        inner.detecting = again;
+                        again
+                    };
+                    if !again {
+                        guard.released = true;
+                        break;
+                    }
+                    results = Ok(daemon.detect_agents());
+                }
+            })
+            .map_err(|e| {
+                self.lock().detecting = false;
+                ProtocolError::new(ErrorCode::IoError, format!("cannot start detection: {e}"))
+            })?;
+        Ok(Response::Ack)
+    }
+
+    /// Resolve the shell environment once, off the core lock, so the first
+    /// `resolved_env` does not run the capture while holding it.
+    fn warm_env(&self) {
+        let mut env = self.lock().env.clone();
+        if env.is_resolved() {
+            return;
+        }
+        env.get();
+        let mut inner = self.lock();
+        if !inner.env.is_resolved() {
+            inner.env = env;
+        }
+    }
+
+    /// Re-capture the shell environment off the core lock.
+    fn refresh_env(&self) {
+        let mut env = self.lock().env.clone();
+        env.refresh();
+        self.lock().env = env;
+    }
+
     fn resolved_env(&self, inner: &mut Inner) -> ResolvedEnvironment {
         let env = inner.env.get().clone();
         if env.source == EnvSource::ProcessFallback && !inner.env_fallback_noticed {
@@ -6501,6 +6584,25 @@ impl Drop for PrOpeningGuard {
 impl Drop for PrRefreshingGuard {
     fn drop(&mut self) {
         self.daemon.lock().pr_refreshing = false;
+    }
+}
+
+/// Releases the detection flags if the worker panics. A worker that finishes
+/// clears them itself, and must not clear them again after a newer worker
+/// has set them.
+struct DetectingGuard {
+    daemon: Arc<Daemon>,
+    released: bool,
+}
+
+impl Drop for DetectingGuard {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let mut inner = self.daemon.lock();
+        inner.detecting = false;
+        inner.detect_again = false;
     }
 }
 
@@ -7844,11 +7946,25 @@ mod tests {
             DetectionStatus::Installed { executable, .. } if executable == old
         ));
 
+        let rx = daemon.registry.register(ClientId::new());
         daemon
             .handle_request(Request::RefreshAgentDetection {
                 provider_id: Some(provider.clone()),
             })
             .unwrap();
+        // The request acks when the refresh starts; the answer is the event.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let message = rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("detection event");
+            if matches!(
+                message,
+                DaemonMessage::Event(DaemonEvent::AgentDetectionChanged { .. })
+            ) {
+                break;
+            }
+        }
         let after = daemon.lock().detections.get(&provider).cloned().unwrap();
         assert!(matches!(
             after.status,
