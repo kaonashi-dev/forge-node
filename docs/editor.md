@@ -459,17 +459,19 @@ HTML context menu).
 
 ## Language
 
-Eight grammars, chosen by extension. Extension only: sniffing content would have
-to be undone the moment a person types, and a shebang is a guess.
+Eight grammars, chosen by the file name: its extension, plus a few basenames
+that have none (`.env`, `.env.*`, `Makefile`, `GNUmakefile`). Never by content:
+sniffing it would have to be undone the moment a person types, and a shebang is
+a guess.
 
 | Grammar | Extensions | What it knows |
 | --- | --- | --- |
 | Rust | `rs` | line and block comments, attributes, strings and char literals (a lifetime is not a string), numbers, keywords, `Type` by leading capital, `name(` as a call |
-| C-like | `ts` `tsx` `js` `jsx` `mjs` `cjs` `go` `java` `kt` `c` `h` `cc` `cpp` `hpp` `cs` `swift` `scala` `php` `dart` | the same, without Rust's attributes and lifetimes |
+| C-like | `ts` `tsx` `js` `jsx` `mjs` `cjs` `go` `java` `kt` `kts` `c` `h` `cc` `cpp` `hpp` `cs` `swift` `scala` `php` `dart` `prisma` | the same, without Rust's attributes and lifetimes |
 | Python | `py` `pyi` | `#` comments, triple-quoted strings, numbers, keywords, calls |
 | JSON | `json` | keys apart from values, numbers, `true`/`false`/`null` |
-| Keyed | `toml` `yaml` `yml` `ini` `cfg` `conf` `env` | `[section]`, `key =` / `key:`, quoted values, `#`/`;` comments |
-| Shell | `sh` `bash` `zsh` `fish` | `#` comments, quotes, `$VAR` and `${...}`, keywords |
+| Keyed | `toml` `yaml` `yml` `ini` `cfg` `conf` `env`, `.env`, `.env.*` | `[section]`, `key =` / `key:`, dotenv's `export KEY=`, quoted values, `#`/`;` comments |
+| Shell | `sh` `bash` `zsh` `fish` `mk` `make`, `Makefile`, `GNUmakefile` | `#` comments, quotes, `$VAR` and `${...}`, keywords |
 | Markdown | `md` `markdown` `mdx` | headings, quotes, fenced and inline code, links, list bullets |
 | HTML | `html` `htm` `xhtml` `xml` `svg` | comments, doctype and processing instructions, tags, attributes, quoted values, entities; `script`/`style`/`textarea`/`title` bodies stay plain so a `<` there is not a tag |
 

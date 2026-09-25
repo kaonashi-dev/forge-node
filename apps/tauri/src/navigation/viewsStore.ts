@@ -159,13 +159,13 @@ function remember(view: WorkbenchView): void {
   setClosedByWorkspace(workspace, [...kept, view].slice(-CLOSED_DEPTH));
 }
 
-/** Bring back the last view closed in this checkout. */
 /** Whether `reopenClosed` has anything to bring back in this checkout. */
 export function canReopenClosed(): boolean {
   const workspace = activeWorkspace();
   return workspace !== null && (closedByWorkspace[workspace]?.length ?? 0) > 0;
 }
 
+/** Bring back the last view closed in this checkout. */
 export function reopenClosed(): void {
   const workspace = activeWorkspace();
   if (!workspace) return;

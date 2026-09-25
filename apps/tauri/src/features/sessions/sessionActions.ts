@@ -29,12 +29,8 @@ import {
 import { reopenTerminalEditor } from "../editor/cells/commands";
 import { sessionTabLabel } from "./attention";
 import { focusTerminal } from "../terminal/focus";
-import {
-  sessionIsActive,
-  type ExternalAgentSession,
-  type Session,
-  type Workspace,
-} from "../../contracts/runtime";
+import { hasExited } from "./exited";
+import { type ExternalAgentSession, type Session, type Workspace } from "../../contracts/runtime";
 import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "../../state/preferences";
 import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
 import { draftWithJuva, loadWorkspaceReview } from "../git/commands";
@@ -88,11 +84,6 @@ export function currentCheckout(): Workspace | null {
  *
  * The caret goes too: asking for a terminal is asking to type in it.
  */
-/** A session with no terminal to attach to: its process is gone. */
-export function hasExited(row: Pick<Session, "state" | "terminal_id">): boolean {
-  return row.terminal_id === null && !sessionIsActive(row.state);
-}
-
 export function focusSession(session: string): void {
   const row = forgeStore.sessions.find((item) => item.id === session);
   // An editor is not a terminal tab: it lives in the Code strip, so focusing it

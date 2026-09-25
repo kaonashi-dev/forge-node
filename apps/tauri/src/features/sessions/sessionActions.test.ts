@@ -11,7 +11,7 @@ import {
 } from "../../navigation/viewsStore";
 import { sessionFixture } from "../../contracts/sessions.fixture";
 import type { EditorState, Workspace } from "../../contracts/runtime";
-import { focusSession, hasExited, launchShell, splitPane } from "./sessionActions";
+import { focusSession, launchShell, splitPane } from "./sessionActions";
 import { centerSplit, closeSplit, openCodeSplit } from "../../navigation/centerSplitStore";
 import { selectSession } from "./commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
@@ -296,20 +296,6 @@ describe("focusSession", () => {
     });
     expect(currentViews().active).not.toMatchObject({ session: "late-editor" });
     focusWorkspace(null);
-  });
-});
-
-describe("hasExited", () => {
-  it("is a session whose process is gone and whose terminal went with it", () => {
-    expect(hasExited({ state: { Exited: { code: 0, signal: null } }, terminal_id: null })).toBe(
-      true,
-    );
-    expect(hasExited({ state: "Orphaned", terminal_id: null })).toBe(true);
-  });
-
-  it("is never a live session, even between spawn and its first terminal", () => {
-    expect(hasExited({ state: "Starting", terminal_id: null })).toBe(false);
-    expect(hasExited({ state: "Running", terminal_id: "t" })).toBe(false);
   });
 });
 

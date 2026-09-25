@@ -631,18 +631,34 @@ export function AppShell() {
   });
 
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
-  function releaseNotice(): void {
+  // Tracked apart: a new notice arriving under the pointer must not start the
+  // timer, and leaving with the pointer while focus stays inside must not either.
+  const noticeHeld = { pointer: false, focus: false };
+  function armNotice(): void {
     clearTimeout(noticeTimer);
-    if (connectionStore.notice) noticeTimer = setTimeout(() => setNotice(null), NOTICE_DISMISS_MS);
+    if (connectionStore.notice && !noticeHeld.pointer && !noticeHeld.focus) {
+      noticeTimer = setTimeout(() => setNotice(null), NOTICE_DISMISS_MS);
+    }
   }
-  function holdNotice(): void {
+  function holdNotice(by: keyof typeof noticeHeld): void {
+    noticeHeld[by] = true;
     clearTimeout(noticeTimer);
+  }
+  function releaseNotice(by: keyof typeof noticeHeld): void {
+    noticeHeld[by] = false;
+    armNotice();
   }
   createEffect(() => {
-    if (connectionStore.notice) releaseNotice();
-    else holdNotice();
+    if (connectionStore.notice) {
+      armNotice();
+      return;
+    }
+    // The element is gone, and with it any leave event still owed.
+    noticeHeld.pointer = false;
+    noticeHeld.focus = false;
+    clearTimeout(noticeTimer);
   });
-  onCleanup(holdNotice);
+  onCleanup(() => clearTimeout(noticeTimer));
   return (
     <main class="app-shell">
       <TitleBar
@@ -687,10 +703,10 @@ export function AppShell() {
           <div
             class="notice"
             role="status"
-            onPointerEnter={holdNotice}
-            onPointerLeave={releaseNotice}
-            onFocusIn={holdNotice}
-            onFocusOut={releaseNotice}
+            onPointerEnter={() => holdNotice("pointer")}
+            onPointerLeave={() => releaseNotice("pointer")}
+            onFocusIn={() => holdNotice("focus")}
+            onFocusOut={() => releaseNotice("focus")}
           >
             <span>{reason()}</span>
             <IconButton
