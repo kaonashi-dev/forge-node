@@ -7818,7 +7818,7 @@ mod tests {
         std::fs::write(
             &shell,
             format!(
-                "#!/bin/sh\nPATH='{}:/usr/bin:/bin'; export PATH\nexec /bin/sh -c \"$3\"\n",
+                "#!/bin/sh\nPATH='{}:/usr/bin:/bin'; export PATH\nwhile [ \"$1\" != \"-c\" ] && [ $# -gt 0 ]; do shift; done\nshift\nexec /bin/sh -c \"$1\"\n",
                 new_dir.display()
             ),
         )

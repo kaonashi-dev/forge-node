@@ -424,7 +424,7 @@ Two known exceptions remain, both waiting on the same fix shape — collect insi
 the critical section, act after `drop(inner)`:
 
 - the session-title `upsert` in `pump_terminal` (a WAL write, on the delta rung);
-- `resolved_env`, which takes `&mut Inner` and lazily runs `$SHELL -l -c 'env -0'`
+- `resolved_env`, which takes `&mut Inner` and lazily runs `$SHELL -l -i -c 'env -0'`
   behind it — measured at **796 ms** on a real machine, with a 5 s timeout.
 
 Note also that `PRAGMA synchronous` is `NORMAL`, not SQLite's `FULL` default.

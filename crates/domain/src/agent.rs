@@ -56,7 +56,7 @@ pub struct SpawnSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EnvSource {
-    /// Parsed from `$SHELL -l -c env` between sentinels.
+    /// Parsed from `$SHELL -l -i -c env` between sentinels.
     LoginShell,
     /// Fallback: daemon environment plus well-known PATH entries.
     ProcessFallback,

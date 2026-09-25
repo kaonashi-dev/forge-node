@@ -1,11 +1,14 @@
 //! Shell environment resolution.
 //!
 //! A GUI launched from Finder/a launcher does not inherit an interactive
-//! shell's `PATH`. We resolve the login-shell environment once by running
-//! `<shell> -l -c 'printf BEGIN; env -0; printf END'` with a timeout, parsing
+//! shell's `PATH`. We resolve that environment once by running
+//! `<shell> -l -i -c 'printf BEGIN; env -0; printf END'` with a timeout, parsing
 //! the NUL-separated variables between the sentinels (so multiline values are
-//! unambiguous), and cache the result. On failure we fall back to the process
-//! environment with a widened `PATH` and flag it for a `DaemonNotice`.
+//! unambiguous), and cache the result. `-i` is required: Homebrew prepends
+//! itself in `.zprofile`, while native CLIs live in `~/.local/bin` via
+//! `.zshrc`, and a login-only capture would keep detecting the older cask.
+//! On failure we fall back to the process environment with a widened `PATH`
+//! and flag it for a `DaemonNotice`.
 
 use std::io::Read;
 use std::os::unix::process::CommandExt as _;
@@ -205,7 +208,7 @@ impl ShellEnvironmentService {
 fn capture_login_shell(shell: &Path, timeout: Duration) -> Option<Vec<u8>> {
     let script = format!("printf '%s' '{BEGIN}'; env -0; printf '%s' '{END}'");
     let mut child = Command::new(shell)
-        .args(["-l", "-c", &script])
+        .args(["-l", "-i", "-c", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -365,5 +368,25 @@ mod tests {
         let mut svc = ShellEnvironmentService::new(None);
         let env = svc.get();
         assert!(env.get("PATH").is_some(), "resolved env should carry PATH");
+    }
+
+    #[test]
+    fn interactive_path_wins_over_the_login_profile() {
+        let (_dir, shell) = shell_fixture(
+            r#"PATH=/login/bin:/usr/bin:/bin
+for arg; do
+  [ "$arg" = "-i" ] && PATH=/interactive/bin:$PATH
+done
+while [ "$1" != "-c" ] && [ $# -gt 0 ]; do shift; done
+shift
+eval "$1""#,
+        );
+        let out = capture_login_shell(&shell, Duration::from_secs(5)).unwrap();
+        let vars = ShellEnvironmentService::parse_between_sentinels(&out).unwrap();
+        let path = &vars.iter().find(|(key, _)| key == "PATH").unwrap().1;
+        assert!(
+            path.starts_with("/interactive/bin"),
+            "expected the interactive PATH to lead, got {path}"
+        );
     }
 }

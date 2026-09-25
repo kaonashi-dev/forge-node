@@ -279,12 +279,12 @@ fn write_executable(dir: &Path, name: &str, script: &str) -> PathBuf {
 
 /// The generated login shell pins `PATH` to `bin`.
 ///
-/// The daemon resolves the environment by running `<shell> -l -c '... env -0
-/// ...'`. The `-l` is dropped here on purpose: a real login shell sources
+/// The daemon resolves the environment by running `<shell> -l -i -c '... env -0
+/// ...'`. `-l` and `-i` are dropped here on purpose: a real login shell sources
 /// `/etc/profile`, which on macOS runs `path_helper` and rebuilds `PATH` from
-/// `/etc/paths` — the test would then detect whichever agent CLIs this machine
-/// has installed instead of the fakes it wrote. `ENV`/`BASH_ENV` are cleared
-/// for the same reason on the interactive path.
+/// `/etc/paths`, and `-i` would pull in `.zshrc` — the test would then detect
+/// whichever agent CLIs this machine has installed instead of the fakes it
+/// wrote. `ENV`/`BASH_ENV` are cleared for the same reason.
 fn login_shell_script(bin: &Path) -> String {
     let agent_home = bin.parent().expect("bin has a parent").join("agent-home");
     format!(
@@ -305,7 +305,7 @@ fn login_shell_script(bin: &Path) -> String {
          export HOME\n\
          unset ENV\n\
          unset BASH_ENV\n\
-         [ \"$1\" = -l ] && shift\n\
+         while [ \"$1\" = -l ] || [ \"$1\" = -i ]; do shift; done\n\
          exec /bin/sh \"$@\"\n",
         path = sh_quote(&bin.to_string_lossy()),
         claude = sh_quote(&agent_home.join("claude").to_string_lossy()),
@@ -329,7 +329,7 @@ fn login_shell_script(bin: &Path) -> String {
 /// quietly probes the machine instead.
 fn assert_hermetic_login_shell(shell: &Path, bin: &Path) {
     let output = Command::new(shell)
-        .args(["-l", "-c", "env -0"])
+        .args(["-l", "-i", "-c", "env -0"])
         .output()
         .expect("run the generated login shell");
     let vars = String::from_utf8_lossy(&output.stdout);
