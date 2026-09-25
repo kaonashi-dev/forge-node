@@ -25,6 +25,11 @@ export async function detachSplit(sessionId: string): Promise<void> {
   await sendRuntimeCommand({ type: "detach_split", session_id: sessionId });
 }
 
+/** A hidden column keeps its attachment but stops receiving frames. */
+export async function parkSplit(sessionId: string, parked: boolean): Promise<void> {
+  await sendRuntimeCommand({ type: "park_split", session_id: sessionId, parked });
+}
+
 export async function closeSession(sessionId: string): Promise<void> {
   await sendRuntimeCommand({ type: "close_session", session_id: sessionId });
 }

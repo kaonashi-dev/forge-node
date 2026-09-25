@@ -110,6 +110,15 @@ shell beside the current terminal, or the current session beside the open
 file. Diff, search and pull-request views stay full width. `Cmd+W` on the extra
 column joins the panes without closing the session.
 
+Settings, a full-width Code view, or switching to Code while two terminals are
+split hides the split and keeps it: coming back shows it again. The extra shell
+stays attached with its own size, scroll and frame floor; while hidden it is
+parked, so the host keeps its replica current without sending frames and
+repaints it on return. Moving to another checkout or reconnecting to the daemon
+joins the panes, and the extra shell stays in the strip. When the main session
+goes and the extra one is its successor, the split closes and that session
+takes the single column.
+
 `Cmd+Shift+F` (`Ctrl+Shift+F` on Linux) opens or focuses the Search tab in Code.
 Results are grouped by file with line numbers, highlighted matches and three
 lines of context on each side; overlapping excerpts merge. Click a line to

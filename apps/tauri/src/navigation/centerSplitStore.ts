@@ -8,10 +8,8 @@ import {
 } from "./centerSplit";
 
 const [split, setSplit] = createSignal<CenterSplitState>(CLOSED_SPLIT);
-const [ratio, setRatioState] = createSignal(SPLIT_RATIO_RANGE.fallback);
 
 export const centerSplit = split;
-export const centerSplitRatio = ratio;
 
 export function readSplitRatio(): number {
   return readScale(
@@ -22,18 +20,22 @@ export function readSplitRatio(): number {
   );
 }
 
-export function setCenterSplitRatio(value: number, persist = false): void {
-  const next = clampSplitRatio(value);
-  setRatioState(next);
-  if (persist) writeChoice(CENTER_SPLIT_RATIO_KEY, String(next));
+export function persistSplitRatio(value: number): void {
+  writeChoice(CENTER_SPLIT_RATIO_KEY, String(clampSplitRatio(value)));
 }
 
 export function openCodeSplit(): void {
-  setSplit({ kind: "code", extra: null, focused: "primary" });
+  setSplit({ kind: "code", extra: null, terminal: null, focused: "primary" });
 }
 
-export function openSessionSplit(extra: string): void {
-  setSplit({ kind: "session", extra, focused: "extra" });
+/** Open the terminal column, or follow its session onto a new terminal after a restart. */
+export function openSessionSplit(extra: string, terminal: string): void {
+  const current = split();
+  if (current.kind === "session" && current.extra === extra) {
+    if (current.terminal !== terminal) setSplit({ ...current, terminal });
+    return;
+  }
+  setSplit({ kind: "session", extra, terminal, focused: "extra" });
 }
 
 export function focusSplitPane(pane: CenterSplitState["focused"]): void {

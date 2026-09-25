@@ -43,7 +43,12 @@ import { isMac } from "../../actions/keys";
 import { linkedRefs, openPathRef, warmPathIndex } from "../files/references/pathLinks";
 import { refAt, type PathRef } from "../files/references/pathref";
 import { clipboardPaste } from "../../shared/input/clipboard";
-import { mayTakeCaret, registerTerminalFocus, setFocusedTerminal } from "./focus";
+import {
+  mayTakeCaret,
+  registerTerminalFocus,
+  releaseFocusedTerminal,
+  setFocusedTerminal,
+} from "./focus";
 import { connectionStore, sessionSelectionPending } from "../../state/connection";
 import { centerMode } from "../../navigation/viewsStore";
 import { registerFileTerminal } from "../files/explorer/fileDrag";
@@ -112,6 +117,8 @@ export function TerminalPane(props: {
   active?: boolean;
   /** Bind this pane to a session; omitted, it follows the window's attachment. */
   session?: string;
+  /** The host's word on `session`'s terminal, which the session list can lag. */
+  terminal?: string;
   onActivate?: () => void;
 }) {
   let host!: HTMLDivElement;
@@ -206,7 +213,11 @@ export function TerminalPane(props: {
 
   function boundTerminal(): string | null {
     if (props.session) {
-      return forgeStore.sessions.find((item) => item.id === props.session)?.terminal_id ?? null;
+      return (
+        props.terminal ??
+        forgeStore.sessions.find((item) => item.id === props.session)?.terminal_id ??
+        null
+      );
     }
     return connectionStore.activeTerminal;
   }
@@ -246,6 +257,18 @@ export function TerminalPane(props: {
     ),
   );
 
+  // The host's full frame for a new terminal can land before this pane binds
+  // it and is dropped by `onFrame`, so a bound pane asks again.
+  createEffect(
+    on(
+      () => (props.session ? boundTerminal() : null),
+      (terminal) => {
+        if (terminal) void repaintTerminal(props.session).catch(() => undefined);
+      },
+      { defer: true },
+    ),
+  );
+
   // --- painting -------------------------------------------------------------
 
   function schedule(): void {
@@ -280,7 +303,9 @@ export function TerminalPane(props: {
       probe.settle(settleTo);
       settleTo = 0;
       const p95 = probe.p95();
-      if (p95 !== terminalStore.latencyP95) setTerminalStore("latencyP95", p95);
+      if (!props.session && p95 !== terminalStore.latencyP95) {
+        setTerminalStore("latencyP95", p95);
+      }
       if (showOverlay) {
         const stats = probe.percentiles();
         const paint = paintProbe.stats();
@@ -760,8 +785,13 @@ export function TerminalPane(props: {
 
   const paneId = () => props.session ?? "main";
   let actionUnbind: (() => void)[] = [];
+  /**
+   * Bound for the pane's whole life so the palette can reach them after it
+   * takes focus; re-binding on focus puts this pane on top of the handler
+   * stack, so with two panes the one last typed in answers.
+   */
   function bindPaneActions(): void {
-    if (actionUnbind.length > 0) return;
+    unbindPaneActions();
     actionUnbind = [
       registerAction("copy_terminal", () => {
         const range = selection.range;
@@ -776,6 +806,9 @@ export function TerminalPane(props: {
           boundTerminal() ?? undefined,
         ).catch(() => undefined);
       }),
+      // Zoom re-measures the cell, which re-derives the grid and resizes the
+      // PTY: a larger glyph is fewer columns, and a program drawing a box has
+      // to be told so.
       registerAction("terminal_zoom_in", () => applyZoom(zoom() + TERMINAL_ZOOM_STEP)),
       registerAction("terminal_zoom_out", () => applyZoom(zoom() - TERMINAL_ZOOM_STEP)),
       registerAction("terminal_zoom_reset", () => applyZoom(1)),
@@ -854,6 +887,8 @@ export function TerminalPane(props: {
       }),
     );
     onCleanup(registerTerminalFocus(takeCaret, paneId()));
+    const pane = paneId();
+    onCleanup(() => releaseFocusedTerminal(pane));
     createEffect(() => {
       if (props.active === false) return;
       const mode = props.session ? "session" : centerMode();
@@ -943,7 +978,6 @@ export function TerminalPane(props: {
         onBlur={() => {
           stopDrag();
           focused = false;
-          unbindPaneActions();
           leaveContext?.();
           leaveContext = undefined;
           blink.run(false);

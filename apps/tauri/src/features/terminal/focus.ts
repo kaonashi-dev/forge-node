@@ -24,6 +24,11 @@ export function setFocusedTerminal(id: string): void {
   current = id;
 }
 
+/** An unmounting pane hands the keyboard target back to the main terminal. */
+export function releaseFocusedTerminal(id: string): void {
+  if (current === id) current = "main";
+}
+
 export function focusedTerminalId(): string {
   return current;
 }

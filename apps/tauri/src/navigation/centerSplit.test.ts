@@ -16,8 +16,18 @@ const file: WorkbenchView = {
 };
 const preview: WorkbenchView = { kind: "preview", path: "README.md" };
 const diff: WorkbenchView = { kind: "diff" };
-const codeSplit: CenterSplitState = { kind: "code", extra: null, focused: "primary" };
-const sessionSplit: CenterSplitState = { kind: "session", extra: "s-2", focused: "extra" };
+const codeSplit: CenterSplitState = {
+  kind: "code",
+  extra: null,
+  terminal: null,
+  focused: "primary",
+};
+const sessionSplit: CenterSplitState = {
+  kind: "session",
+  extra: "s-2",
+  terminal: "t-2",
+  focused: "extra",
+};
 
 describe("viewAllowsTerminalSplit", () => {
   it("allows a file or a rendered preview, not a diff", () => {

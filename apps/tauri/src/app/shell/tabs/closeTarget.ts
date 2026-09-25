@@ -1,6 +1,6 @@
 import type { CenterMode } from "../../../navigation/viewsStore";
 import type { ParkedViews, WorkbenchView } from "../../../navigation/views";
-import type { CenterSplitState } from "../../../navigation/centerSplit";
+import { visibleSplit, type CenterSplitState } from "../../../navigation/centerSplit";
 
 /** What `MOD-W` acts on. */
 export type CloseTarget =
@@ -22,8 +22,15 @@ export function closeTarget(
   mode: CenterMode,
   views: ParkedViews,
   split?: CenterSplitState,
+  settings = false,
 ): CloseTarget {
-  if (split && split.kind !== "closed" && split.focused === "extra") {
+  // A remembered split hidden behind a diff or Settings is not what the chord
+  // points at; joining it would drop the split and leave the diff open.
+  if (
+    split &&
+    split.focused === "extra" &&
+    visibleSplit(split, settings, mode, views.active) !== "closed"
+  ) {
     return { kind: "unsplit" };
   }
   if (mode !== "code") return { kind: "session" };

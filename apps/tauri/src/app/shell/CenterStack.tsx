@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, lazy, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, lazy, onCleanup } from "solid-js";
 import type { Section } from "../../features/settings/SettingsRoute";
 import {
   centerMode,
@@ -10,11 +10,12 @@ import {
 import {
   centerSplit,
   focusSplitPane,
+  persistSplitRatio,
   readSplitRatio,
-  setCenterSplitRatio,
 } from "../../navigation/centerSplitStore";
 import { visibleSplit } from "../../navigation/centerSplit";
 import { joinPanes } from "../../features/sessions/sessionActions";
+import { parkSplit } from "../../features/sessions/commands";
 import { SplitHandle } from "./SplitHandle";
 import { close, closeCode, closeOtherViews, closeViewsToRight } from "../../features/editor/tabs";
 import { EmptyCenter, EmptyCode } from "./EmptyCenter";
@@ -152,20 +153,34 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
   const layout = () => visibleSplit(centerSplit(), props.settings, centerMode(), active());
   const hideMainTerminal = () =>
     props.settings || noSessions() || (onCode() && layout() !== "code");
-  const extraSession = () => (layout() === "session" ? centerSplit().extra : null);
+  const extraPane = () => {
+    const split = centerSplit();
+    return layout() === "session" && split.extra && split.terminal
+      ? { session: split.extra, terminal: split.terminal }
+      : null;
+  };
 
+  const splitParking = createMemo(
+    () => {
+      const split = centerSplit();
+      return split.kind === "session" && split.extra
+        ? { session: split.extra, parked: layout() !== "session" }
+        : null;
+    },
+    null,
+    { equals: (a, b) => a?.session === b?.session && a?.parked === b?.parked },
+  );
+  createEffect(() => {
+    const parking = splitParking();
+    if (parking) void parkSplit(parking.session, parking.parked).catch(() => undefined);
+  });
+  // A missing row is the store lagging the host's `runtime:terminal_split`;
+  // a removed session arrives as `runtime:split_closed` instead.
   createEffect(() => {
     const extra = centerSplit().extra;
     if (!extra) return;
     const row = forgeStore.sessions.find((item) => item.id === extra);
-    if (row === undefined) {
-      if (forgeStore.sessions.length > 0) joinPanes();
-      return;
-    }
-    if (row.terminal_id == null) joinPanes();
-  });
-  createEffect(() => {
-    if (centerSplit().kind === "session" && centerMode() === "code") joinPanes();
+    if (row !== undefined && row.terminal_id == null) joinPanes();
   });
   createEffect(() => {
     if (centerSplit().kind !== "code") return;
@@ -361,19 +376,21 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
       <Show when={layout() !== "closed"}>
         <SplitHandle
           ratio={paneRatio()}
-          onResize={(value) => {
-            setPaneRatio(value);
-            setCenterSplitRatio(value);
-          }}
-          onCommit={(value) => setCenterSplitRatio(value, true)}
+          onResize={setPaneRatio}
+          onCommit={persistSplitRatio}
           label="Resize the split"
         />
       </Show>
-      <Show when={extraSession()}>
+      <Show when={extraPane()?.session}>
         {(session) => (
           <div class="terminal-slot pane-split-extra" onMouseDown={() => focusSplitPane("extra")}>
             <SessionHeader sessionId={session()} onCloseSplit={joinPanes} />
-            <TerminalPane session={session()} active onActivate={() => focusSplitPane("extra")} />
+            <TerminalPane
+              session={session()}
+              terminal={extraPane()?.terminal}
+              active
+              onActivate={() => focusSplitPane("extra")}
+            />
           </div>
         )}
       </Show>

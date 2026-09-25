@@ -344,7 +344,7 @@ export function AppShell() {
    * the last one); on the terminal it closes the session.
    */
   function closeActive(): void {
-    const target = closeTarget(centerMode(), currentViews(), centerSplit());
+    const target = closeTarget(centerMode(), currentViews(), centerSplit(), settings());
     if (target.kind === "none") return;
     if (target.kind === "unsplit") {
       joinPanes();

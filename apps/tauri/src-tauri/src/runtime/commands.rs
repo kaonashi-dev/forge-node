@@ -160,6 +160,12 @@ pub enum RuntimeCommand {
     DetachSplit {
         session_id: SessionId,
     },
+    /// The extra column went off screen (`parked`) or came back. A parked
+    /// column stays attached but its frames are not sent; unparking repaints it.
+    ParkSplit {
+        session_id: SessionId,
+        parked: bool,
+    },
     NewAgent {
         provider: AgentProviderId,
         profile: Option<AgentProfileId>,

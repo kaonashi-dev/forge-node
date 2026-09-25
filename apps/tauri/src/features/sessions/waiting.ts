@@ -1,6 +1,7 @@
 import { createEffect, untrack } from "solid-js";
 import { forgeStore } from "../../state/forgeStore";
 import { connectionStore } from "../../state/connection";
+import { centerSplit } from "../../navigation/centerSplitStore";
 import { sessionIsActive, type Session } from "../../contracts/runtime";
 import { clearQuestion, hasQuestion, markQuestion, questionIds } from "../terminal/questions";
 
@@ -25,11 +26,13 @@ export function trackQuestions(): void {
     );
     untrack(() => {
       for (const id of asking) markQuestion(id);
-      // Off screen the snapshot is authoritative; only the attached session,
-      // which the snapshot never marks, keeps the latch until it is answered.
-      const onScreen = connectionStore.activeSession;
+      // Off screen the snapshot is authoritative; only the attached sessions,
+      // which the snapshot never marks, keep the latch until it is answered.
+      const split = centerSplit();
+      const attached = new Set([connectionStore.activeSession]);
+      if (split.kind === "session") attached.add(split.extra);
       for (const id of questionIds()) {
-        if (!live.has(id) || (id !== onScreen && !asking.has(id))) clearQuestion(id);
+        if (!live.has(id) || (!attached.has(id) && !asking.has(id))) clearQuestion(id);
       }
     });
   });

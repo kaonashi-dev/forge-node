@@ -20,12 +20,20 @@ export type CenterSplitState = {
    * shell that occupies the right-hand column.
    */
   extra: string | null;
+  /**
+   * The terminal the host attached for `extra`, as the host announced it.
+   *
+   * Not read from the session list: the host reports the split before the
+   * daemon's `SessionCreated` reaches the store, and its frames name this id.
+   */
+  terminal: string | null;
   focused: "primary" | "extra";
 };
 
 export const CLOSED_SPLIT: CenterSplitState = {
   kind: "closed",
   extra: null,
+  terminal: null,
   focused: "primary",
 };
 

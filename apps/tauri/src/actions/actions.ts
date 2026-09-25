@@ -157,7 +157,7 @@ export const ACTIONS: Action[] = [
   {
     id: "join_panes",
     label: "Join Panes",
-    detail: "Close the split and keep the focused column",
+    detail: "Close the extra column; its session keeps running",
     palette: true,
     repeats: false,
   },

@@ -65,7 +65,12 @@ export function SessionTabs(props: SessionTabsProps) {
      same strip would both claim the window. */
   const groundOf = (session: Session) => {
     const split = centerSplit();
-    if (split.kind === "session" && split.extra === session.id && split.focused === "extra") {
+    if (
+      !props.codeActive &&
+      split.kind === "session" &&
+      split.extra === session.id &&
+      split.focused === "extra"
+    ) {
       return tabGround(session, session.id);
     }
     return tabGround(session, props.codeActive ? null : props.activeId);
