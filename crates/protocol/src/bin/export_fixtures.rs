@@ -125,6 +125,7 @@ fn sample_session() -> Session {
         last_activity_at: ts(),
         ended_at: None,
         base_commit: Some("4f2b1ac".to_string()),
+        activity: domain::AgentActivity::unknown(),
     }
 }
 
@@ -1105,6 +1106,7 @@ fn sample_snapshot_response() -> Response {
         app_state: vec![("sidebar_width".to_string(), "280".to_string())],
         external_agents: vec![],
         pull_requests: Box::new(PullRequestState::default()),
+        runs: vec![],
         usage: vec![],
     }
 }
@@ -1129,6 +1131,7 @@ fn populated_snapshot_response() -> Response {
         app_state: vec![("ui.theme_base".to_string(), "gruvbox".to_string())],
         external_agents: vec![],
         pull_requests: Box::new(sample_pull_request_state()),
+        runs: vec![],
         usage: vec![sample_provider_usage()],
     }
 }

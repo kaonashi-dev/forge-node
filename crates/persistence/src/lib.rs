@@ -10,7 +10,7 @@ pub mod repositories;
 
 pub use db::{Db, DbError};
 pub use repositories::{
-    AgentProfileRepo, AppStateRepo, ContextRepo, ProjectGroupRepo, ProjectRepo,
+    AgentProfileRepo, AppStateRepo, ContextRepo, OrchestrationRepo, ProjectGroupRepo, ProjectRepo,
     ProviderOverrideRepo, SessionRepo, WorkspaceRepo,
 };
 

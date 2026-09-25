@@ -63,6 +63,8 @@ persistence      SQLite (WAL + FK), migrations, repositories, orphan reconciliat
 client           sync UDS client + passive CellGrid replica (no tokio)
 daemon           the runtime: core dispatcher, server, registry, terminal loop,
                  shell env, services  → binary forge-daemon
+forge-ctl        argv client of that daemon for runs, tasks, and context
+                 → binary forgectl. Depends only on client → protocol → domain.
 forge-tauri      Tauri host: runtime thread, workbench worker, cells encoder,
                  daemon locator                       → binary forge-tauri
 test-support     FakePtyBackend, fake agents, temp git repos
@@ -77,6 +79,8 @@ terminal-input} → domain`).
 Dependency direction is one-way: `forge-tauri → client → {protocol,
 terminal-input} → domain` and
 `daemon → {agents, git-service, fs-service, persistence, terminal-core} → domain`.
+`forgectl` is `forge-ctl → client → protocol → domain` and must not depend on
+`daemon`.
 The GUI renders `domain::terminal` wire types, it does
 not emulate. ADR numbers cited in code are indexed in [decisions.md](./decisions.md).
 

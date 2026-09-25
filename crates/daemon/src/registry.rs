@@ -8,14 +8,16 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
-use domain::{ClientId, TerminalId};
-use protocol::{DaemonEvent, DaemonMessage};
+use domain::{ClientId, SessionId, TerminalId};
+use protocol::{ClientKind, DaemonEvent, DaemonMessage};
 
 pub const CLIENT_QUEUE_CAPACITY: usize = 256;
 
 /// One connected client's outbound channel and subscription state.
 struct ClientHandle {
     tx: flume::Sender<DaemonMessage>,
+    kind: ClientKind,
+    inbox_session: Option<SessionId>,
     subscriptions: HashSet<TerminalId>,
     /// Terminals for which this client fell behind and needs a resync.
     behind: HashSet<TerminalId>,
@@ -44,17 +46,38 @@ impl ClientRegistry {
 
     /// Register a client, returning the receiver its writer task drains.
     pub fn register(&self, id: ClientId) -> flume::Receiver<DaemonMessage> {
+        self.register_kind(id, ClientKind::Gui)
+    }
+
+    pub fn register_kind(&self, id: ClientId, kind: ClientKind) -> flume::Receiver<DaemonMessage> {
         let (tx, rx) = flume::bounded(CLIENT_QUEUE_CAPACITY);
         self.lock_clients().insert(
             id,
             ClientHandle {
                 tx,
+                kind,
+                inbox_session: None,
                 subscriptions: HashSet::new(),
                 behind: HashSet::new(),
                 finished: HashMap::new(),
             },
         );
         rx
+    }
+
+    /// A `forgectl inbox --wait` or `ask --wait` on this connection. Dropped
+    /// with the client, the same way a directory watch is.
+    pub fn set_inbox_watch(&self, id: ClientId, session_id: Option<SessionId>) {
+        if let Some(client) = self.lock_clients().get_mut(&id) {
+            client.inbox_session = session_id;
+        }
+    }
+
+    #[must_use]
+    pub fn session_inbox_watched(&self, session_id: SessionId) -> bool {
+        self.lock_clients()
+            .values()
+            .any(|client| client.inbox_session == Some(session_id))
     }
 
     /// Removes all subscriptions as well as the client.
@@ -86,6 +109,9 @@ impl ClientRegistry {
     pub fn broadcast_domain(&self, event: DaemonEvent) {
         let clients = self.lock_clients();
         for c in clients.values() {
+            if cli_skips(c.kind, &event) {
+                continue;
+            }
             // Domain events are low-volume; a momentarily full queue drops this
             // one rather than blocking. The client resyncs domain state on
             // reconnect / next GetSnapshot.
@@ -234,11 +260,26 @@ impl ClientRegistry {
     pub fn notify_non_subscribers(&self, terminal_id: TerminalId, event: DaemonEvent) {
         let clients = self.lock_clients();
         for c in clients.values() {
+            if cli_skips(c.kind, &event) {
+                continue;
+            }
             if !c.subscriptions.contains(&terminal_id) {
                 let _ = c.tx.try_send(DaemonMessage::Event(event.clone()));
             }
         }
     }
+}
+
+fn cli_skips(kind: ClientKind, event: &DaemonEvent) -> bool {
+    kind == ClientKind::Cli
+        && matches!(
+            event,
+            DaemonEvent::TerminalActivity { .. }
+                | DaemonEvent::TerminalBell { .. }
+                | DaemonEvent::ClipboardStore { .. }
+                | DaemonEvent::EditorFrame { .. }
+                | DaemonEvent::ProviderUsageChanged { .. }
+        )
 }
 
 #[cfg(test)]

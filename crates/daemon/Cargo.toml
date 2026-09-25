@@ -16,6 +16,7 @@ domain.workspace = true
 protocol.workspace = true
 editor-control.workspace = true
 terminal-core.workspace = true
+terminal-input.workspace = true
 agents.workspace = true
 git-service.workspace = true
 fs-service.workspace = true

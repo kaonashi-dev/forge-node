@@ -23,7 +23,10 @@ pub use framing::{
     MAX_FRAME_SIZE,
 };
 pub use hello::{ClientKind, EditorSurface, Hello, HelloAck, HelloReject};
-pub use request::{RemoveProjectPolicy, Request, SendContextSpawn, Signal};
+pub use request::{
+    CloseRunPullRequest, IntegrateHow, RemoveProjectPolicy, Request, SendContextSpawn, Signal,
+};
+pub use response::OrchestrationLimitsView;
 pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 
 /// Handshake equality check. Bump when [`Request`], [`Response`], or
@@ -33,10 +36,13 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// every new request with an undecodable frame and no `Response` — the caller
 /// waits on a reply that never comes. Equality at connect turns that stall
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
+// `Request` is the decoded frame. Boxing `body` would not shrink that
+// allocation; handlers move it immediately.
+#[allow(clippy::large_enum_variant)]
 pub enum ClientMessage {
     Hello(Hello),
     /// A request correlated by `request_id` with its future response.
@@ -201,6 +207,7 @@ mod tests {
             last_activity_at: sample_timestamp(),
             ended_at: None,
             base_commit: None,
+            activity: domain::AgentActivity::unknown(),
         }
     }
 
@@ -337,6 +344,7 @@ mod tests {
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
             pull_requests: Box::new(sample_pull_request_state()),
+            runs: vec![],
             usage: vec![],
         };
         let msg = DaemonMessage::Response {

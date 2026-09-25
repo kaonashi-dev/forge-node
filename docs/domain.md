@@ -1,8 +1,8 @@
 # Domain model
 
 The `domain` crate is the contract every other crate builds on. It depends only
-on `serde`, `uuid`, `time`, `thiserror` and `compact_str`, and it contains **no
-behavior beyond validation** — no I/O, no Git, no PTY. Everything in it is
+on `serde`, `uuid`, `time`, `thiserror` and `compact_str`. It does validation
+and the pure orchestration policy, and no I/O: no Git, no PTY. Everything in it is
 `Serialize + Deserialize` so the same values travel over IPC, live in the
 daemon's memory and map to SQLite columns.
 
@@ -21,11 +21,16 @@ Source: `crates/domain/src/`.
 | **Session graph** | Logical parent/child relationships between sessions (a session can spawn sessions). Independent of the OS process tree. |
 | **Context envelope** | An explicit, persisted hand-off of context, delivered to an existing session or used to seed a child. See [session-context.md](./session-context.md). |
 | **Managed worktree** | A worktree Forge created itself (`managed_by_app = true`). Only these are ever removed from disk. |
+| **Run** | One orchestration objective, controller, integration workspace, and board. See [orchestration.md](./orchestration.md). |
+| **Task** | A unit of work inside a run, with dependency edges. |
+| **Attempt** | One assignment of a task to a session. Only an explicit report settles it. |
+| **Board** | The run-scoped versioned JSON map (`RunState`). |
+| **Controller** | The session allowed to accept, reject, integrate, and cancel. A human caller has no session. |
 
 ## Identifiers (`ids.rs`)
 
 - `ProjectGroupId`, `ProjectId`, `WorkspaceId`, `SessionId`, `TerminalId`, `ClientId`,
-  `ContextId` are newtypes over **UUID v7**. v7 is time-ordered, so sorting by
+  `ContextId`, `RunId`, `TaskId`, `AttemptId` are newtypes over **UUID v7**. v7 is time-ordered, so sorting by
   id gives creation order for free (sidebar ordering, session lists).
 - `AgentProfileId` is a UUID v7 too: a launch profile (§13.4) is a saved row
   the user can rename, so its identity cannot be its name.

@@ -263,6 +263,82 @@ pub struct Session {
     /// was no HEAD to read — a folder workspace, or a repository with no
     /// commits yet.
     pub base_commit: Option<String>,
+    /// Whether the agent is working, waiting, or idle.
+    ///
+    /// Runtime-only, like [`Self::last_activity_at`]: never a column. Hooks and
+    /// typed input move it. Silence does not.
+    #[serde(default)]
+    pub activity: AgentActivity,
+}
+
+/// What a provider hook or a typed keystroke last said about a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ActivityState {
+    /// No hook has reported, and this process was not just spawned as an agent.
+    Unknown,
+    /// The process is up and has not finished its first turn (trust prompt, login).
+    Starting,
+    /// A turn is in progress, or the user typed into an idle session.
+    Working,
+    /// The agent is blocked on a person (permission, question, elicitation).
+    Waiting,
+    /// The last turn ended. Quiet is not this.
+    Idle,
+    /// A state this build does not recognize.
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// Why [`AgentActivity`] last changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ActivityEvidence {
+    Hook,
+    Input,
+    Exit,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// Runtime activity of one session. `since` is when `state` last changed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentActivity {
+    pub state: ActivityState,
+    pub since: Timestamp,
+    #[serde(default)]
+    pub evidence: Option<ActivityEvidence>,
+}
+
+impl Default for AgentActivity {
+    fn default() -> Self {
+        Self::unknown()
+    }
+}
+
+impl AgentActivity {
+    /// No observation yet.
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            state: ActivityState::Unknown,
+            since: Timestamp::from_offset(time::OffsetDateTime::UNIX_EPOCH),
+            evidence: None,
+        }
+    }
+
+    /// The daemon just spawned the process. Not a hook: a provider that never
+    /// reports stays here rather than being called idle.
+    #[must_use]
+    pub fn starting(now: Timestamp) -> Self {
+        Self {
+            state: ActivityState::Starting,
+            since: now,
+            evidence: None,
+        }
+    }
 }
 
 impl Session {
@@ -471,6 +547,7 @@ mod tests {
             last_activity_at: Timestamp::now(),
             ended_at: None,
             base_commit: None,
+            activity: AgentActivity::unknown(),
         };
         let json = serde_json::to_value(&session).unwrap();
         assert!(

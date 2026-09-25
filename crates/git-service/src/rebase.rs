@@ -395,6 +395,8 @@ mod tests {
 
     fn git(repo: &Path, args: &[&str]) {
         let status = Command::new("git")
+            .arg("-c")
+            .arg("commit.gpgsign=false")
             .args(args)
             .current_dir(repo)
             .status()
@@ -403,7 +405,12 @@ mod tests {
     }
 
     fn git_allow_failure(repo: &Path, args: &[&str]) {
-        let _ = Command::new("git").args(args).current_dir(repo).status();
+        let _ = Command::new("git")
+            .arg("-c")
+            .arg("commit.gpgsign=false")
+            .args(args)
+            .current_dir(repo)
+            .status();
     }
 
     /// A repository whose `topic` branch conflicts with `main` on `a.txt`.

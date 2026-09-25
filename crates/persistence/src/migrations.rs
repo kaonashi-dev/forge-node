@@ -300,6 +300,132 @@ CREATE TABLE worktree_ignores (
 CREATE INDEX idx_worktree_ignores_project ON worktree_ignores (project_id);
 ";
 
+/// Runs, tasks, attempts, the run board, and idempotency receipts.
+///
+/// `runs.parent_attempt_id` is added after `attempts` exists. Envelope columns
+/// are nullable so a handoff written before this migration still loads.
+/// `source_session_id` becomes nullable: a human controller has no session.
+/// Activity is not a column.
+pub const ORCHESTRATION: &str = "\
+CREATE TABLE runs (
+    id                        TEXT PRIMARY KEY,
+    project_id                TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    objective                 TEXT NOT NULL,
+    brief                     TEXT NOT NULL,
+    brief_version             INTEGER NOT NULL,
+    controller_session_id     TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    integration_workspace_id  TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+    base                      TEXT,
+    status                    TEXT NOT NULL,
+    revision                  INTEGER NOT NULL,
+    created_at                TEXT NOT NULL,
+    updated_at                TEXT NOT NULL,
+    closed_at                 TEXT
+);
+
+CREATE TABLE tasks (
+    id            TEXT PRIMARY KEY,
+    run_id        TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    title         TEXT NOT NULL,
+    spec          TEXT NOT NULL,
+    acceptance    TEXT NOT NULL,
+    mode          TEXT NOT NULL,
+    allow_subruns INTEGER NOT NULL,
+    status        TEXT NOT NULL,
+    attempts_used INTEGER NOT NULL,
+    revision      INTEGER NOT NULL,
+    feedback      TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE task_deps (
+    task_id       TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    after_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, after_task_id)
+);
+
+CREATE TABLE attempts (
+    id                 TEXT PRIMARY KEY,
+    task_id            TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    n                  INTEGER NOT NULL,
+    session_id         TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    workspace_id       TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+    branch             TEXT,
+    base_commit        TEXT,
+    provider_id        TEXT NOT NULL,
+    profile_id         TEXT,
+    read_only          INTEGER NOT NULL,
+    phase              TEXT NOT NULL,
+    outcome            TEXT,
+    lost_reason        TEXT,
+    summary            TEXT,
+    verification       TEXT,
+    result_path        TEXT,
+    reported_head      TEXT,
+    dirty_at_report    INTEGER,
+    files_changed_json TEXT,
+    integrated_commit  TEXT,
+    created_at         TEXT NOT NULL,
+    settled_at         TEXT
+);
+
+CREATE TABLE run_state (
+    run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    key         TEXT NOT NULL,
+    value_json  TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    updated_by  TEXT,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (run_id, key)
+);
+
+CREATE TABLE orchestration_receipts (
+    request_id      TEXT NOT NULL,
+    caller          TEXT NOT NULL,
+    response_msgpack BLOB NOT NULL,
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (request_id, caller)
+);
+
+ALTER TABLE runs ADD COLUMN parent_attempt_id TEXT
+    REFERENCES attempts(id) ON DELETE SET NULL;
+
+CREATE TABLE context_envelopes_new (
+    id                TEXT PRIMARY KEY,
+    source_session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+    target_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    summary           TEXT,
+    instructions      TEXT,
+    artifacts_json    TEXT NOT NULL,
+    git_context_json  TEXT,
+    created_at        TEXT NOT NULL,
+    run_id            TEXT,
+    task_id           TEXT,
+    kind              TEXT,
+    in_reply_to       TEXT,
+    acked_at          TEXT
+);
+INSERT INTO context_envelopes_new (
+    id, source_session_id, target_session_id, summary, instructions,
+    artifacts_json, git_context_json, created_at
+)
+SELECT
+    id, source_session_id, target_session_id, summary, instructions,
+    artifacts_json, git_context_json, created_at
+FROM context_envelopes;
+DROP TABLE context_envelopes;
+ALTER TABLE context_envelopes_new RENAME TO context_envelopes;
+
+CREATE INDEX idx_envelopes_source ON context_envelopes (source_session_id);
+CREATE INDEX idx_envelopes_target ON context_envelopes (target_session_id);
+CREATE INDEX idx_envelopes_run    ON context_envelopes (run_id);
+CREATE INDEX idx_tasks_run        ON tasks (run_id);
+CREATE INDEX idx_attempts_task    ON attempts (task_id);
+CREATE INDEX idx_attempts_session ON attempts (session_id);
+CREATE INDEX idx_runs_project     ON runs (project_id);
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -315,5 +441,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(SESSION_BASE_COMMIT),
         M::up(PROFILE_CONFIG_DIR),
         M::up(WORKTREE_IGNORES),
+        M::up(ORCHESTRATION),
     ])
 }

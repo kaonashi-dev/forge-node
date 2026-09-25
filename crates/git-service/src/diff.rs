@@ -747,6 +747,8 @@ mod tests {
 
     fn git(repo: &Path, args: &[&str]) {
         let status = Command::new("git")
+            .arg("-c")
+            .arg("commit.gpgsign=false")
             .args(args)
             .current_dir(repo)
             .status()

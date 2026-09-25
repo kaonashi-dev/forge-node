@@ -34,6 +34,7 @@ pub fn bind(socket_path: &Path) -> std::io::Result<UnixListener> {
 }
 
 pub async fn serve(daemon: Arc<Daemon>, listener: UnixListener, socket_path: PathBuf) {
+    daemon.note_bound_socket(socket_path.clone());
     loop {
         if daemon.is_shutting_down() {
             break;
@@ -111,7 +112,9 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
         }
     };
     let ClientMessage::Hello(Hello {
-        protocol_version, ..
+        protocol_version,
+        client_kind,
+        ..
     }) = hello
     else {
         unreachable!()
@@ -126,7 +129,7 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     }
 
     let client_id = ClientId::new();
-    let rx = daemon.registry().register(client_id);
+    let rx = daemon.registry().register_kind(client_id, client_kind);
 
     let ack = DaemonMessage::HelloAck(HelloAck {
         protocol_version: PROTOCOL_VERSION,
@@ -210,6 +213,9 @@ async fn read_loop(
             Request::DetachTerminal { terminal_id } => Some((false, *terminal_id)),
             _ => None,
         };
+        if let Request::WatchInbox { session_id, .. } = &body {
+            daemon.registry().set_inbox_watch(client_id, *session_id);
+        }
 
         // One span per request, carrying the `request_id` and the request
         // *variant* only. The payload never goes near the log — a

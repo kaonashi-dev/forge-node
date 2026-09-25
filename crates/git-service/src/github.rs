@@ -170,7 +170,7 @@ pub fn create_pull_request(
     body: &str,
     base: Option<&str>,
 ) -> Result<PullRequest, GitError> {
-    create_pull_request_with_cli(&GitHubCli::default(), repo, title, body, base)
+    create_pull_request_with_cli(&GitHubCli::default(), repo, title, body, base, false)
 }
 
 /// Configured form of [`create_pull_request`].
@@ -183,6 +183,7 @@ pub fn create_pull_request_with_cli(
     title: &str,
     body: &str,
     base: Option<&str>,
+    draft: bool,
 ) -> Result<PullRequest, GitError> {
     let title = title.trim();
     if title.is_empty() {
@@ -205,6 +206,9 @@ pub fn create_pull_request_with_cli(
     if let Some(base) = base.filter(|base| !base.is_empty()) {
         args.push("--base".to_string());
         args.push(base.to_string());
+    }
+    if draft {
+        args.push("--draft".to_string());
     }
 
     let output = run_gh(cli, Some(repo), &args)?;

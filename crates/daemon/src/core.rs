@@ -14,14 +14,14 @@ use std::time::{Duration, Instant};
 
 use agents::AgentRegistry;
 use domain::{
-    AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy,
-    ContextArtifactRef, ContextEnvelope, ContextId, DetectionResult, DetectionStatus, EnvSource,
-    IgnoreScope, LaunchAgentRequest, Project, ProjectGroup, ProjectGroupId, ProjectId, PtySize,
-    ResolvedEnvironment, ScrollbackRows, Session, SessionId, SessionKind, SessionRole,
-    SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId, ShareStrategy, ShareTrigger,
-    SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId, WorkspaceKind, WorkspaceStatus,
-    WorktreeIgnore, DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH, MAX_SHARE_RULES,
-    MAX_WORKTREE_IGNORES,
+    AgentActivity, AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId,
+    ChildWorkspacePolicy, ContextArtifactRef, ContextEnvelope, ContextId, DetectionResult,
+    DetectionStatus, EnvSource, IgnoreScope, LaunchAgentRequest, Project, ProjectGroup,
+    ProjectGroupId, ProjectId, PtySize, ResolvedEnvironment, ScrollbackRows, Session, SessionId,
+    SessionKind, SessionRole, SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId,
+    ShareStrategy, ShareTrigger, SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId,
+    WorkspaceKind, WorkspaceStatus, WorktreeIgnore, DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH,
+    MAX_SHARE_RULES, MAX_WORKTREE_IGNORES,
 };
 use persistence::Db;
 use protocol::{
@@ -67,12 +67,12 @@ const MAX_TRANSCRIPT_BYTES: u32 = 96_000;
 const MAX_REVIEW_SESSIONS: usize = 20;
 
 pub(crate) struct Inner {
-    db: Db,
+    pub(crate) db: Db,
     project_groups: HashMap<ProjectGroupId, ProjectGroup>,
     pub(crate) projects: HashMap<ProjectId, Project>,
     pub(crate) workspaces: HashMap<WorkspaceId, Workspace>,
-    sessions: HashMap<SessionId, Session>,
-    terminals: HashMap<TerminalId, TerminalRuntime>,
+    pub(crate) sessions: HashMap<SessionId, Session>,
+    pub(crate) terminals: HashMap<TerminalId, TerminalRuntime>,
     pub(crate) agents: AgentRegistry,
     /// Provider then name — the order every launch menu shows.
     profiles: Vec<AgentProfile>,
@@ -121,6 +121,7 @@ pub(crate) struct Inner {
     /// Live editor control ports. Runtime-only; dropped when the supervisor
     /// ends. A full queue answers busy rather than dropping a request_id.
     editors: HashMap<SessionId, crate::editor::CommandPort>,
+    pub(crate) ledger: crate::orchestration::Ledger,
 }
 
 /// Shared as `Arc<Daemon>` across the accept loop and PTY threads.
@@ -164,6 +165,8 @@ pub struct Daemon {
     /// Absolute paths of the Forge attention assets, or `None` when install
     /// failed. Injected at launch by [`agents::inject_attention`].
     attention_assets: Option<agents::AttentionAssets>,
+    /// The socket this process is actually listening on, injected into PTYs.
+    bound_socket: Mutex<Option<PathBuf>>,
 }
 
 struct ResetGuard<'a>(&'a AtomicBool);
@@ -250,6 +253,8 @@ impl Daemon {
         pty_backend: Box<dyn PtyBackend>,
     ) -> Result<Arc<Daemon>, String> {
         // A PTY never survives the daemon. Default: drop session rows. Opt-in: mark them Orphaned.
+        crate::orchestration::reconcile_startup(&db, &config.orchestration.limits())
+            .map_err(|error| error.to_string())?;
         if config.sessions.persist_history {
             let orphaned = db.reconcile_orphaned().map_err(|e| e.to_string())?;
             if orphaned > 0 {
@@ -306,6 +311,7 @@ impl Daemon {
         }
 
         let profiles = db.agent_profiles().list().map_err(|e| e.to_string())?;
+        let ledger = crate::orchestration::load_ledger(&db).map_err(|e| e.to_string())?;
 
         let mut worktree_ignores: HashMap<ProjectId, Vec<WorktreeIgnore>> = HashMap::new();
         for rule in db.ignores().list_all().map_err(|e| e.to_string())? {
@@ -342,6 +348,7 @@ impl Daemon {
             term_selection: None,
             worktree_ignores,
             editors: HashMap::new(),
+            ledger,
         };
 
         let attention_assets = install_attention_assets(&worktrees_root);
@@ -367,7 +374,22 @@ impl Daemon {
             editor_conflicts: Mutex::new(HashMap::new()),
             editor_file_operations: Mutex::new(()),
             attention_assets,
+            bound_socket: Mutex::new(None),
         }))
+    }
+
+    pub fn note_bound_socket(&self, path: PathBuf) {
+        *self
+            .bound_socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
+    }
+
+    fn bound_socket(&self) -> Option<PathBuf> {
+        self.bound_socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn registry(&self) -> &crate::registry::ClientRegistry {
@@ -832,7 +854,7 @@ impl Daemon {
                 title,
                 body,
                 base,
-            } => self.create_pull_request(workspace_id, title, body, base),
+            } => self.create_pull_request(workspace_id, title, body, base, false),
 
             Request::CreateShellSession {
                 workspace_id,
@@ -936,7 +958,12 @@ impl Daemon {
             Request::SetSessionRole { session_id, role } => self.set_session_role(session_id, role),
             Request::CreateContextEnvelope { envelope } => {
                 let inner = self.lock();
-                if !inner.sessions.contains_key(&envelope.source_session_id) {
+                let Some(source) = envelope.source_session_id else {
+                    return Err(ProtocolError::invalid_request(
+                        "a stored handoff needs a source session",
+                    ));
+                };
+                if !inner.sessions.contains_key(&source) {
                     return Err(ProtocolError::not_found("source session"));
                 }
                 if let Some(target) = envelope.target_session_id {
@@ -1055,6 +1082,9 @@ impl Daemon {
                 self.set_worktree_ignores(project_id, rules)
             }
 
+            request if crate::orchestration::handles(&request) => {
+                crate::orchestration::handle(self, request)
+            }
             _ => Err(ProtocolError::new(
                 ErrorCode::InvalidRequest,
                 "unsupported request in this daemon build",
@@ -1100,6 +1130,14 @@ impl Daemon {
     /// Recover from poison: `Inner` is a cache over SQLite, not an invariant a
     /// panicking handler can silently corrupt. `expect` here made one bad
     /// request a permanently dead daemon.
+    pub(crate) fn orchestration_config(&self) -> crate::config::OrchestrationConfig {
+        self.config.orchestration.clone()
+    }
+
+    pub(crate) fn worktrees_root_path(&self) -> &std::path::Path {
+        &self.worktrees_root
+    }
+
     pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|poisoned| {
             tracing::error!("daemon core lock was poisoned by a panicking handler; recovering");
@@ -1172,6 +1210,7 @@ impl Daemon {
             app_state,
             external_agents,
             pull_requests: Box::new(pull_requests),
+            runs: crate::orchestration::active_run_views(self),
             usage,
         };
         for event in self.take_pending_notices() {
@@ -2062,7 +2101,10 @@ impl Daemon {
     /// A recorded baseline that git no longer resolves falls back to `HEAD`
     /// and says so through [`domain::BaseOrigin`]: a silent fallback would
     /// present a much smaller diff as if it were everything the session did.
-    fn get_session_changes(&self, session_id: SessionId) -> Result<Response, ProtocolError> {
+    pub(crate) fn get_session_changes(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
         let (path, base, sharing) = {
             let inner = self.lock();
             let session = inner
@@ -2728,12 +2770,13 @@ impl Daemon {
     }
 
     /// Ack when the push+`gh` *starts*.
-    fn create_pull_request(
+    pub(crate) fn create_pull_request(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
         title: String,
         body: String,
         base: Option<String>,
+        draft: bool,
     ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
         let path_entries = {
@@ -2769,6 +2812,7 @@ impl Daemon {
                         &title,
                         &body,
                         base.as_deref(),
+                        draft,
                     )?;
                     Ok(pr.url)
                 })();
@@ -2844,7 +2888,7 @@ impl Daemon {
     }
 
     /// Shared with `CreateChildSession` (`NewManagedWorktree`).
-    fn create_managed_worktree(
+    pub(crate) fn create_managed_worktree(
         self: &Arc<Self>,
         project_id: ProjectId,
         branch: &str,
@@ -3468,7 +3512,7 @@ impl Daemon {
         }
     }
 
-    fn remove_worktree(
+    pub(crate) fn remove_worktree(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
         force: bool,
@@ -3680,7 +3724,7 @@ impl Daemon {
     // --- Sessions ---
 
     #[allow(clippy::too_many_arguments)]
-    fn create_session(
+    pub(crate) fn create_session(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
         kind: SessionKind,
@@ -3692,6 +3736,7 @@ impl Daemon {
         initial_prompt: Option<String>,
         read_only: bool,
     ) -> Result<Response, ProtocolError> {
+        let extra_env = crate::orchestration::take_spawn_env();
         let _span = tracing::info_span!("session.create", %workspace_id, ?kind).entered();
 
         let profile = self.launch_profile(kind, provider_id.as_ref(), profile_id)?;
@@ -3739,6 +3784,7 @@ impl Daemon {
                 None,
                 &cwd,
                 id,
+                &extra_env,
             )?;
 
             let now = Timestamp::now();
@@ -3760,6 +3806,11 @@ impl Daemon {
                 last_activity_at: now,
                 ended_at: None,
                 base_commit,
+                activity: if kind == SessionKind::Agent {
+                    AgentActivity::starting(now)
+                } else {
+                    AgentActivity::unknown()
+                },
             };
             inner.db.sessions().upsert(&session).map_err(db_err)?;
             inner.sessions.insert(id, session.clone());
@@ -3872,6 +3923,7 @@ impl Daemon {
                 last_activity_at: now,
                 ended_at: None,
                 base_commit: None,
+                activity: AgentActivity::unknown(),
             };
             let spec = self.build_spawn_spec(
                 &mut inner,
@@ -3885,6 +3937,7 @@ impl Daemon {
                 }),
                 &ws.path,
                 session_id,
+                &[],
             )?;
             inner.db.sessions().upsert(&session).map_err(db_err)?;
             inner.sessions.insert(session_id, session.clone());
@@ -4199,13 +4252,18 @@ impl Daemon {
             let prompt = {
                 let draft = ContextEnvelope {
                     id: ContextId::new(),
-                    source_session_id,
+                    source_session_id: Some(source_session_id),
                     target_session_id: None,
                     summary: summary.clone(),
                     instructions: instructions.clone(),
                     artifacts: artifacts.clone(),
                     git_context: None,
                     created_at: Timestamp::now(),
+                    run_id: None,
+                    task_id: None,
+                    kind: None,
+                    in_reply_to: None,
+                    acked_at: None,
                 };
                 crate::context_xfer::format_delivery(
                     &draft,
@@ -4236,13 +4294,18 @@ impl Daemon {
             };
             let envelope = ContextEnvelope {
                 id: ContextId::new(),
-                source_session_id,
+                source_session_id: Some(source_session_id),
                 target_session_id: Some(child_id),
                 summary,
                 instructions,
                 artifacts,
                 git_context: None,
                 created_at: Timestamp::now(),
+                run_id: None,
+                task_id: None,
+                kind: None,
+                in_reply_to: None,
+                acked_at: None,
             };
             self.lock().db.context().insert(&envelope).map_err(db_err)?;
             return Ok(created);
@@ -4266,13 +4329,18 @@ impl Daemon {
 
         let envelope = ContextEnvelope {
             id: ContextId::new(),
-            source_session_id,
+            source_session_id: Some(source_session_id),
             target_session_id: Some(target_id),
             summary,
             instructions,
             artifacts,
             git_context: None,
             created_at: Timestamp::now(),
+            run_id: None,
+            task_id: None,
+            kind: None,
+            in_reply_to: None,
+            acked_at: None,
         };
         let paste = crate::context_xfer::format_delivery(
             &envelope,
@@ -4282,10 +4350,13 @@ impl Daemon {
         self.lock().db.context().insert(&envelope).map_err(db_err)?;
 
         if let Some(terminal_id) = terminal_id {
-            let mut bytes = paste.into_bytes();
-            if !bytes.ends_with(b"\n") {
-                bytes.push(b'\n');
-            }
+            let modes = self
+                .lock()
+                .terminals
+                .get(&terminal_id)
+                .map(|rt| rt.engine.modes())
+                .unwrap_or_default();
+            let bytes = crate::context_xfer::encode_context_paste(&paste, &source_label, &modes);
             let _ = self.write_terminal_input(terminal_id, &bytes);
         }
         Ok(Response::Ack)
@@ -4534,7 +4605,10 @@ impl Daemon {
         }
     }
 
-    fn close_session(self: &Arc<Self>, session_id: SessionId) -> Result<Response, ProtocolError> {
+    pub(crate) fn close_session(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
         {
             let inner = self.lock();
             let session = inner
@@ -4713,6 +4787,7 @@ impl Daemon {
                 None,
                 &cwd,
                 session_id,
+                &[],
             )?;
 
             let updated =
@@ -4816,6 +4891,8 @@ impl Daemon {
         })
     }
 
+    // Kind, launch, cwd, and the orchestration env are independent inputs.
+    #[allow(clippy::too_many_arguments)]
     fn build_spawn_spec(
         &self,
         inner: &mut Inner,
@@ -4824,6 +4901,7 @@ impl Daemon {
         editor: Option<EditorLaunch>,
         cwd: &Path,
         session_id: SessionId,
+        extra_env: &[(String, String)],
     ) -> Result<SpawnSpec, ProtocolError> {
         let env: ResolvedEnvironment = self.resolved_env(inner);
         let mut spec = match kind {
@@ -5011,6 +5089,22 @@ impl Daemon {
         };
         upsert_var(&mut spec.env, "FORGE_SESSION_ID", &session_id.to_string());
         upsert_var(&mut spec.env, "FORGE_WORKSPACE", &cwd.to_string_lossy());
+        if let Some(socket) = self.bound_socket() {
+            upsert_var(&mut spec.env, "FORGE_SOCKET", &socket.to_string_lossy());
+        }
+        for (key, value) in extra_env {
+            upsert_var(&mut spec.env, key, value);
+        }
+        if let Some((run, task, attempt)) = crate::orchestration::identity_for(inner, session_id) {
+            upsert_var(&mut spec.env, "FORGE_RUN_ID", &run);
+            if let Some(task) = task {
+                upsert_var(&mut spec.env, "FORGE_TASK_ID", &task);
+            }
+            if let Some(attempt) = attempt {
+                upsert_var(&mut spec.env, "FORGE_ATTEMPT_ID", &attempt);
+            }
+            upsert_var(&mut spec.env, "FORGECTL_JSON", "1");
+        }
         // Agents call `forge-daemon session|context …` with FORGE_SESSION_ID;
         // the daemon binary's directory must be on PATH inside the PTY.
         prepend_daemon_bin_to_path(&mut spec.env);
@@ -5148,6 +5242,15 @@ impl Daemon {
         crate::terminal::write_pty(&writer, bytes)
             .map_err(|e| ProtocolError::new(ErrorCode::IoError, e.to_string()))?;
         self.note_client_activity(terminal_id);
+        // The guard must not cover `note_user_input`: that takes the same lock,
+        // and a temporary in `if let` lives for the whole statement.
+        let session_id = {
+            let inner = self.lock();
+            inner.terminals.get(&terminal_id).map(|rt| rt.session_id)
+        };
+        if let Some(session_id) = session_id {
+            crate::orchestration::note_user_input(self, session_id);
+        }
         Ok(Response::Ack)
     }
 
@@ -5470,6 +5573,7 @@ impl Daemon {
             Self::set_session_state(&mut inner, session_id, state, None)
         };
         if let Some(session) = session {
+            crate::orchestration::note_session_exit(self, session.id);
             // Transcript just finished: invalidate so History does not wait the TTL.
             if session.kind == SessionKind::Agent {
                 self.external_agents
@@ -7485,6 +7589,7 @@ mod tests {
             last_activity_at: Timestamp::now(),
             ended_at: None,
             base_commit: None,
+            activity: AgentActivity::unknown(),
         };
         inner
             .db
@@ -8404,13 +8509,18 @@ mod tests {
 
         let envelope = domain::ContextEnvelope {
             id: domain::ContextId::new(),
-            source_session_id: session_id,
+            source_session_id: Some(session_id),
             target_session_id: None,
             summary: Some("hand-off".to_string()),
             instructions: None,
             artifacts: vec![],
             git_context: None,
             created_at: Timestamp::now(),
+            run_id: None,
+            task_id: None,
+            kind: None,
+            in_reply_to: None,
+            acked_at: None,
         };
         daemon
             .lock()
@@ -10422,6 +10532,7 @@ mod tests {
             last_activity_at: Timestamp::now(),
             ended_at: None,
             base_commit: None,
+            activity: AgentActivity::unknown(),
         };
         assert_eq!(session_fallback_title(&session), "Editor");
     }
