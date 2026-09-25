@@ -1127,6 +1127,18 @@ impl Client {
         })
     }
 
+    /// Drive an editor session's find panel; the answer arrives on its state.
+    pub fn editor_find(
+        &self,
+        session_id: SessionId,
+        command: domain::EditorFindCommand,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::EditorFind {
+            session_id,
+            command,
+        })
+    }
+
     /// Forward a burst of input to a DOM editor surface's session.
     ///
     /// Batched by the caller: one call per input burst, never one per key. The

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { focusTerminal, mayTakeCaret, registerTerminalFocus } from "./focus";
+import {
+  focusTerminal,
+  focusedTerminalId,
+  mayTakeCaret,
+  registerTerminalFocus,
+  releaseFocusedTerminal,
+  setFocusedTerminal,
+} from "./focus";
 
 /* Only `tagName`/`type` are read, and vitest runs in a node environment with
    no `HTMLElement` to build. The cast is what says so. */
@@ -40,14 +47,27 @@ describe("registerTerminalFocus", () => {
   it("withdraws only its own registration", () => {
     let first = 0;
     let second = 0;
-    const withdrawFirst = registerTerminalFocus(() => (first += 1));
-    const withdrawSecond = registerTerminalFocus(() => (second += 1));
-    // The pane that took over is still the one that answers.
+    const withdrawFirst = registerTerminalFocus(() => (first += 1), "a");
+    const withdrawSecond = registerTerminalFocus(() => (second += 1), "b");
+    focusTerminal("b");
+    expect([first, second]).toEqual([0, 1]);
     withdrawFirst();
-    focusTerminal();
-    expect([first, second]).toEqual([0, 1]);
+    focusTerminal("b");
+    expect([first, second]).toEqual([0, 2]);
     withdrawSecond();
-    focusTerminal();
-    expect([first, second]).toEqual([0, 1]);
+    focusTerminal("b");
+    expect([first, second]).toEqual([0, 2]);
+  });
+});
+
+describe("releaseFocusedTerminal", () => {
+  // Scroll chords address the focused pane by session; a pane that is gone
+  // would have them dropped by the host.
+  it("hands a closed pane's keyboard back to the main terminal", () => {
+    setFocusedTerminal("s-2");
+    releaseFocusedTerminal("s-3");
+    expect(focusedTerminalId()).toBe("s-2");
+    releaseFocusedTerminal("s-2");
+    expect(focusedTerminalId()).toBe("main");
   });
 });

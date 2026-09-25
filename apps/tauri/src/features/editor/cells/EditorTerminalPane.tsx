@@ -44,6 +44,7 @@ import {
   overwriteEditorBuffer,
   reloadEditorBuffer,
 } from "../conflict/commands";
+import { FindPanel } from "../FindPanel";
 
 const PAD = 8;
 const RESIZE_DEBOUNCE_MS = 80;
@@ -448,6 +449,15 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
           setMenuAt({ x: event.clientX, y: event.clientY });
         }}
       >
+        <Show when={session()?.editor?.find}>
+          {(find) => (
+            <FindPanel
+              session={props.session}
+              find={find}
+              onReturn={() => keys.focus({ preventScroll: true })}
+            />
+          )}
+        </Show>
         <canvas ref={canvas} />
         {/* The screen-reader mirror. `application` rather than `textbox`: the
             keys go to the textarea below, and a reader that took this for an

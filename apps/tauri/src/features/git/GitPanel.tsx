@@ -155,23 +155,20 @@ export function GitPanel() {
             </Show>
             {/* Disabled rather than hidden: the button is where a reader looks
                 for the way out, and the tooltip says what unlocks it. */}
-            <Tooltip
-              label={
-                readyToContinue(rebase())
-                  ? `Continue the ${operation().toLowerCase()}`
-                  : "Stage every conflicted path first"
+            <Show
+              when={!readyToContinue(rebase())}
+              fallback={
+                <Button variant="primary" size="sm" onClick={continueReplay}>
+                  Continue {operation().toLowerCase()}
+                </Button>
               }
-              contents
             >
-              <Button
-                variant={readyToContinue(rebase()) ? "primary" : "secondary"}
-                size="sm"
-                disabled={!readyToContinue(rebase())}
-                onClick={continueReplay}
-              >
-                Continue {operation().toLowerCase()}
-              </Button>
-            </Tooltip>
+              <Tooltip label="Stage every conflicted path first" contents>
+                <Button variant="secondary" size="sm" disabled onClick={continueReplay}>
+                  Continue {operation().toLowerCase()}
+                </Button>
+              </Tooltip>
+            </Show>
             <Button variant="ghost" size="sm" onClick={abortReplay}>
               Abort
             </Button>
@@ -202,9 +199,7 @@ export function GitPanel() {
                     >
                       <ConflictMark />
                       <span class="git-conflict-text">
-                        <Tooltip label={conflict.path} contents>
-                          <span class="git-conflict-path">{conflict.path}</span>
-                        </Tooltip>
+                        <span class="git-conflict-path">{conflict.path}</span>
                         <span class="git-conflict-code">
                           {conflictLabel(conflict.code)}
                           <Show when={regions() !== undefined}>

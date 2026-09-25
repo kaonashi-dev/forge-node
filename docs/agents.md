@@ -270,8 +270,8 @@ until that account is signed in.
 ## Detection (`detection.rs`, §13.1)
 
 Runs in the daemon at startup (in the background, off the snapshot path) and on
-`RefreshAgentDetection`, always against the **resolved login-shell
-environment** (see [terminal.md](./terminal.md#login-shell-environment-12-daemonsrcenvironmentrs)).
+`RefreshAgentDetection`, always against the **resolved login+interactive
+shell environment** (see [terminal.md](./terminal.md#login-shell-environment-12-daemonsrcenvironmentrs)).
 
 ```
 override set?  ──yes──►  probe that path  ──►  Installed | Rejected | ProbeTimeout
@@ -305,10 +305,13 @@ Notes:
   cached by the daemon in `Inner.detections` (`core.rs`) — *not* in
   `AgentRegistry`, whose own detection map stays empty in production — and
   broadcast as `AgentDetectionChanged`.
-- `RefreshAgentDetection { provider_id }` re-probes exactly one provider when
-  `provider_id` is `Some` (leaving the other cached results untouched) and all
-  of them when it is `None`. `SetProviderExecutable` re-detects **all**
-  providers after storing the override.
+- `RefreshAgentDetection { provider_id }` re-resolves the login+interactive
+  shell environment before probing exactly one provider when `provider_id` is
+  `Some` (leaving the other cached results untouched) or all of them when it
+  is `None`. This picks up a new `PATH` after a CLI update, including native
+  installs that live ahead of Homebrew in `.zshrc`; already-running agent
+  processes still need to be restarted. `SetProviderExecutable` re-detects
+  **all** providers after storing the override.
 
 ## Registry (`registry.rs`)
 

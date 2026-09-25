@@ -1,6 +1,5 @@
 import { For, Show, createSignal } from "solid-js";
 import { LangIcon } from "../../../theme/icons/index";
-import { Tooltip } from "../../../ui/index";
 import { PatchView } from "./PatchView";
 import { SplitPatchView } from "./SplitPatchView";
 import type { DiffFile } from "../../../contracts/workbench";
@@ -66,24 +65,22 @@ export function DiffFiles(props: {
                 <p class="panel-note">Binary file.</p>
               </Show>
               <Show when={!file.truncated && !file.binary}>
-                <Tooltip label="Double-click a line to open it in the editor" contents>
-                  <div class="diff-body">
-                    <Show
-                      when={props.split}
-                      fallback={
-                        <PatchView
-                          patch={file.patch}
-                          onOpenLine={(line) => props.onOpenLine(file.path, line)}
-                        />
-                      }
-                    >
-                      <SplitPatchView
+                <div class="diff-body">
+                  <Show
+                    when={props.split}
+                    fallback={
+                      <PatchView
                         patch={file.patch}
                         onOpenLine={(line) => props.onOpenLine(file.path, line)}
                       />
-                    </Show>
-                  </div>
-                </Tooltip>
+                    }
+                  >
+                    <SplitPatchView
+                      patch={file.patch}
+                      onOpenLine={(line) => props.onOpenLine(file.path, line)}
+                    />
+                  </Show>
+                </div>
               </Show>
             </Show>
           </section>

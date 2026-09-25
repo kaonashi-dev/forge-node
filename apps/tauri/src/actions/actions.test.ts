@@ -173,6 +173,18 @@ describe("default bindings (actions.rs port)", () => {
     expect(chordFor("about")).toBeNull();
   });
 
+  it("binds split to Command-D on Mac, and keeps Ctrl-D for the PTY elsewhere", () => {
+    const bindings = defaultBindings().filter((item) => item.action === "split_pane");
+    expect(bindings.map((item) => item.context).sort()).toEqual(["Editor", "Terminal"]);
+    for (const binding of bindings) {
+      if (MOD === "cmd") {
+        expect(binding.chord).toEqual(parseChord("cmd-d"));
+      } else {
+        expect(binding.chord).toEqual(parseChord("ctrl-shift-d"));
+      }
+    }
+  });
+
   it("uses the platform's shortcut modifier", () => {
     const chord = chordFor("new_terminal");
     expect(MOD === "cmd" ? chord?.meta : chord?.ctrl).toBe(true);
@@ -192,6 +204,8 @@ describe("firesOnRepeat", () => {
       "toggle_pull_requests",
       "toggle_git",
       "cycle_sidebar_views",
+      "split_pane",
+      "join_panes",
     ] as const) {
       expect(firesOnRepeat(action), action).toBe(false);
     }

@@ -1,5 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { applyConnected, applyStatePayload } from "./connection";
+import { closeSplit } from "../../navigation/centerSplitStore";
 import { disconnectFileWatches } from "../../features/files/watches/fileWatch";
 import { directories } from "../../features/files/directories/directoryState";
 import { pathOperations } from "../../features/files/operations/operations";
@@ -10,6 +11,7 @@ import { setFilesStore } from "../../features/files/state";
 export function bindRuntimeEvents(): Promise<UnlistenFn[]> {
   return Promise.all([
     listen("runtime:connecting", () => {
+      closeSplit();
       clearSessionSelection();
       pathOperations.disconnect();
       directories.connection(false);

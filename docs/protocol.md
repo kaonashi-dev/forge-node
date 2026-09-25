@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 26` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 27` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -191,6 +191,7 @@ DaemonMessage::Event    (DaemonEvent)
 | `CreatePullRequest { workspace_id, title, body, base }` | `Ack` on start, then `PullRequestOpened`; explicitly pushes before opening through `gh`, coalesced per workspace. |
 | `SendEditorInput { session_id, events }` | `Ack` after queueing bounded structured input for the DOM editor; `PreconditionFailed` on a saturated editor queue. |
 | `SetEditorView { session_id, first_line, line_count }` | `Ack` after queueing a bounded line-window request; rendered content arrives in `EditorFrame`. |
+| `EditorFind { session_id, command }` | `Ack` after queueing a find-panel gesture (`Set`, `Next`, `Previous`, `Close`); the result arrives as `EditorState.find`. A `Set` pattern over 1 024 bytes is `InvalidRequest`. |
 
 Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 `Subscribe`/`Unsubscribe` (attach *is* the subscription).

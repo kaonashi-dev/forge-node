@@ -1,0 +1,13 @@
+{
+  "EditorFind": {
+    "session_id": "00000000-0000-7000-8000-000000000004",
+    "command": {
+      "Set": {
+        "pattern": "main",
+        "case_sensitive": false,
+        "whole_word": true,
+        "regex": false
+      }
+    }
+  }
+}

@@ -24,6 +24,8 @@ export const DIFF_SPLIT_KEY = "ui.diff.split";
  */
 export const SESSION_SPLIT_OPEN_KEY = "ui.session_split.open";
 export const SESSION_SPLIT_WIDTH_KEY = "ui.session_split.width";
+/** Left/right weight of a Cmd+D terminal split, as a 0–1 fraction. */
+export const CENTER_SPLIT_RATIO_KEY = "ui.center_split.ratio";
 export const DENSITY_KEY = "ui.density";
 /** `"true"` removes every transition in the app, on top of the OS setting. */
 export const REDUCE_MOTION_KEY = "ui.reduce_motion";

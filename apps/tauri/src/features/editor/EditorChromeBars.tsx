@@ -6,7 +6,7 @@ export function EditorBreadcrumbs(props: { path: string; children?: JSX.Element 
   const crumbs = () => pathCrumbs(props.path);
   return (
     <header class="editor-breadcrumb">
-      <ol class="editor-crumbs" aria-label="File path" title={props.path}>
+      <ol class="editor-crumbs" aria-label="File path">
         <For each={crumbs().parents}>
           {(part) => (
             <li class="editor-crumb">

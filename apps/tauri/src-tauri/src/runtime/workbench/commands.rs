@@ -1,5 +1,6 @@
 use domain::{
-    AgentProfileId, AgentProviderId, JuvaKind, ProjectId, SessionId, ShareRuleId, WorkspaceId,
+    AgentProfileId, AgentProviderId, EditorFindCommand, JuvaKind, ProjectId, SessionId,
+    ShareRuleId, WorkspaceId,
 };
 use serde::Deserialize;
 
@@ -69,6 +70,11 @@ pub enum WorkbenchCommand {
     SetEditorAutosave {
         session: SessionId,
         autosave: bool,
+    },
+    /// A find-panel gesture; the result arrives on the session's editor state.
+    EditorFind {
+        session: SessionId,
+        command: EditorFindCommand,
     },
     /// Remove a discovered run's transcript from disk.
     DeleteExternalSession {

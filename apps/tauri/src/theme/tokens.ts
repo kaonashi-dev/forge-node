@@ -445,7 +445,7 @@ export function registerCustomPalette(value: Palette, light: boolean): void {
 }
 
 export const metrics = {
-  titleH: 40,
+  titleH: 36,
   tabH: 34,
   sidebarW: 300,
   handleW: 4,

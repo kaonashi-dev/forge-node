@@ -39,7 +39,6 @@ import {
   type WorkspaceNode,
 } from "./tree";
 import { prLabel, prTone, rollupWork, syncLabel, type PrTone } from "./workspaceCard";
-import { workspaceBranchMeta } from "./workspaceLabel";
 import { seedFromAppState } from "../../state/preferences";
 import { foldsPayload, parseFolds, toggleFold } from "./railFolds";
 import { newWorktreeItem } from "./railMenuItems";
@@ -1075,12 +1074,7 @@ function WorkspaceCard(props: {
             size={12}
             class={current() ? "forge-icon-accent" : "forge-icon-muted"}
           />
-          <Tooltip
-            label={`${workspaceBranchMeta(props.workspace)} · ${props.workspace.path}`}
-            contents
-          >
-            <span class="tree-label ws-label">{props.workspace.label}</span>
-          </Tooltip>
+          <span class="tree-label ws-label">{props.workspace.label}</span>
           <Show when={!props.workspace.worktree}>
             <span class="ws-badge">primary</span>
           </Show>
@@ -1109,9 +1103,9 @@ function WorkspaceCard(props: {
           </Show>
           <Show when={sync()}>
             {(label) => (
-              <Tooltip label="Ahead of / behind the remote" contents>
-                <span class="ws-sync">{label()}</span>
-              </Tooltip>
+              <span class="ws-sync" aria-label="Ahead of or behind the remote">
+                {label()}
+              </span>
             )}
           </Show>
           <Show when={props.workspace.pullRequest}>

@@ -3,17 +3,21 @@ import { sendRuntimeCommand } from "../../runtime/host";
 import { connectionStore } from "../../state/connection";
 import type { CursorTarget } from "./cursorClick";
 
-export async function sendKey(key: KeyPress, id: number): Promise<void> {
-  await sendRuntimeCommand({ type: "input", key, id });
+export async function sendKey(key: KeyPress, id: number, sessionId?: string): Promise<void> {
+  await sendRuntimeCommand({ type: "input", key, id, session_id: sessionId });
 }
 
-export async function moveCursor(target: CursorTarget, id: number): Promise<void> {
-  await sendRuntimeCommand({ type: "move_cursor", ...target, id });
+export async function moveCursor(
+  target: CursorTarget,
+  id: number,
+  sessionId?: string,
+): Promise<void> {
+  await sendRuntimeCommand({ type: "move_cursor", ...target, id, session_id: sessionId });
 }
 
 /** Text an input method committed: typed, so never bracketed. */
-export async function sendText(text: string, id: number): Promise<void> {
-  await sendRuntimeCommand({ type: "input_text", text, id });
+export async function sendText(text: string, id: number, sessionId?: string): Promise<void> {
+  await sendRuntimeCommand({ type: "input_text", text, id, session_id: sessionId });
 }
 
 /**
@@ -23,23 +27,26 @@ export async function sendText(text: string, id: number): Promise<void> {
  * the pane keeps the mouse for selection otherwise, and `shift` is the xterm
  * convention for taking it back while a program has it.
  */
-export async function sendMouse(event: {
-  /** `left`, `middle`, `right`, `wheel_up`, `wheel_down`. */
-  button: string;
-  /** `press`, `release`, `motion`. */
-  kind: string;
-  /** 0-based cell coordinates. */
-  col: number;
-  row: number;
-  ctrl: boolean;
-  alt: boolean;
-  shift: boolean;
-}): Promise<void> {
-  await sendRuntimeCommand({ type: "mouse", ...event });
+export async function sendMouse(
+  event: {
+    /** `left`, `middle`, `right`, `wheel_up`, `wheel_down`. */
+    button: string;
+    /** `press`, `release`, `motion`. */
+    kind: string;
+    /** 0-based cell coordinates. */
+    col: number;
+    row: number;
+    ctrl: boolean;
+    alt: boolean;
+    shift: boolean;
+  },
+  sessionId?: string,
+): Promise<void> {
+  await sendRuntimeCommand({ type: "mouse", ...event, session_id: sessionId });
 }
 
-export async function sendPaste(text: string, id: number): Promise<void> {
-  await sendRuntimeCommand({ type: "paste", text, id });
+export async function sendPaste(text: string, id: number, sessionId?: string): Promise<void> {
+  await sendRuntimeCommand({ type: "paste", text, id, session_id: sessionId });
 }
 
 export async function sendTargetedPaste(
@@ -57,12 +64,18 @@ export async function sendTargetedPaste(
   });
 }
 
-export async function pasteClipboard(read: () => Promise<string | null>): Promise<void> {
-  const { activeSession, activeTerminal, connectionGeneration } = connectionStore;
-  if (!activeSession || !activeTerminal) return;
+export async function pasteClipboard(
+  read: () => Promise<string | null>,
+  sessionId?: string,
+  terminalId?: string,
+): Promise<void> {
+  const session = sessionId ?? connectionStore.activeSession;
+  const terminal = terminalId ?? connectionStore.activeTerminal;
+  const { connectionGeneration } = connectionStore;
+  if (!session || !terminal) return;
   const text = await read();
   if (!text || connectionGeneration !== connectionStore.connectionGeneration) return;
-  await sendTargetedPaste(activeSession, activeTerminal, text, connectionGeneration);
+  await sendTargetedPaste(session, terminal, text, connectionGeneration);
 }
 
 export async function resizeTerminal(
@@ -70,20 +83,22 @@ export async function resizeTerminal(
   rows: number,
   pixelWidth: number,
   pixelHeight: number,
+  sessionId?: string,
 ): Promise<void> {
   await sendRuntimeCommand({
     type: "resize",
     size: { cols, rows, pixel_width: pixelWidth, pixel_height: pixelHeight },
+    session_id: sessionId,
   });
 }
 
 /** Positive moves into history, negative back towards the live output. */
-export async function scrollTerminal(lines: number): Promise<void> {
-  await sendRuntimeCommand({ type: "scroll", lines });
+export async function scrollTerminal(lines: number, sessionId?: string): Promise<void> {
+  await sendRuntimeCommand({ type: "scroll", lines, session_id: sessionId });
 }
 
-export async function scrollToBottom(): Promise<void> {
-  await sendRuntimeCommand({ type: "scroll_to_bottom" });
+export async function scrollToBottom(sessionId?: string): Promise<void> {
+  await sendRuntimeCommand({ type: "scroll_to_bottom", session_id: sessionId });
 }
 
 /**
@@ -93,8 +108,8 @@ export async function scrollToBottom(): Promise<void> {
  * came with the attach had no canvas to reach; the pane asks for one when it
  * mounts rather than waiting for output an idle shell will never produce.
  */
-export async function repaintTerminal(): Promise<void> {
-  await sendRuntimeCommand({ type: "repaint" });
+export async function repaintTerminal(sessionId?: string): Promise<void> {
+  await sendRuntimeCommand({ type: "repaint", session_id: sessionId });
 }
 
 /**
@@ -107,6 +122,7 @@ export async function repaintTerminal(): Promise<void> {
 export async function copySelection(
   anchor: { line: number; col: number },
   head: { line: number; col: number },
+  sessionId?: string,
 ): Promise<void> {
   await sendRuntimeCommand({
     type: "copy_selection",
@@ -114,5 +130,6 @@ export async function copySelection(
     anchor_col: anchor.col,
     head_line: head.line,
     head_col: head.col,
+    session_id: sessionId,
   });
 }

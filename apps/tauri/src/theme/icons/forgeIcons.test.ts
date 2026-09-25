@@ -25,6 +25,7 @@ const NAMES: ForgeIconName[] = [
   "chevron-left",
   "chevron-right",
   "chevron-down",
+  "chevron-up",
   "close",
   "plus",
   "folder-open",

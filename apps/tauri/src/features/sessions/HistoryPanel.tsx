@@ -163,15 +163,22 @@ export function HistoryPanel() {
             }
             actions={
               <>
-                <Tooltip label={blockedReason(session) ?? "Re-enter this conversation"}>
-                  <Button
-                    size="xs"
-                    disabled={Boolean(blockedReason(session))}
-                    onClick={() => resume(session)}
-                  >
-                    Resume
-                  </Button>
-                </Tooltip>
+                <Show
+                  when={blockedReason(session)}
+                  fallback={
+                    <Button size="xs" onClick={() => resume(session)}>
+                      Resume
+                    </Button>
+                  }
+                >
+                  {(reason) => (
+                    <Tooltip label={reason()}>
+                      <Button size="xs" disabled onClick={() => resume(session)}>
+                        Resume
+                      </Button>
+                    </Tooltip>
+                  )}
+                </Show>
                 <Menu
                   triggerClass="history-more"
                   triggerLabel={`More actions for ${session.title}`}

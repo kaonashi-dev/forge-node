@@ -20,7 +20,7 @@ export function PathText(props: { text: string }) {
             <button
               type="button"
               class="path-link"
-              title={`Open ${ref().path}`}
+              aria-label={`Open ${ref().path}`}
               onClick={() => openPathRef(ref())}
             >
               {piece.text}

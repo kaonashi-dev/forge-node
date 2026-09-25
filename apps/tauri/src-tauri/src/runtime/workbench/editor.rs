@@ -1,5 +1,5 @@
 use client::Client;
-use domain::SessionId;
+use domain::{EditorFindCommand, SessionId};
 use tauri::AppHandle;
 
 use super::{emit, fail_session};
@@ -35,5 +35,13 @@ pub(super) fn set_editor_autosave(
 ) {
     if let Err(error) = client.set_editor_autosave(session, autosave) {
         fail_session(app, "workbench:editor_conflict_failed", session, &error);
+    }
+}
+
+/// A refusal needs no notice: a saturated queue drops one keystroke of a
+/// query the next keystroke sends again whole.
+pub(super) fn editor_find(client: &Client, session: SessionId, command: EditorFindCommand) {
+    if let Err(error) = client.editor_find(session, command) {
+        tracing::debug!(%session, "editor find refused: {error}");
     }
 }

@@ -15,11 +15,12 @@ export type TooltipProps = {
 };
 
 /**
- * A hover/focus tip.
+ * A hover/focus tip for a control that has no visible name.
  *
- * The shell used the `title` attribute for this, which never appears for a
- * keyboard user and cannot be styled. Keep `title` only where the text is a
- * long detail nobody needs to read to operate the control.
+ * Icon-only buttons, sidebar view glyphs and geometric marks need one. A row
+ * or tab that already shows its label does not — wrapping it with a path or a
+ * restatement just covers the tree. Native `title` is the same rule: keep it
+ * for a truncated error or a colour swatch, not for a labeled name.
  */
 export function Tooltip(props: TooltipProps) {
   return (

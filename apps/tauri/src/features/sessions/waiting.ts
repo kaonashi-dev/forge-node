@@ -1,10 +1,13 @@
 import { createEffect, untrack } from "solid-js";
 import { forgeStore } from "../../state/forgeStore";
+import { connectionStore } from "../../state/connection";
+import { centerSplit } from "../../navigation/centerSplitStore";
 import { sessionIsActive, type Session } from "../../contracts/runtime";
 import { clearQuestion, hasQuestion, markQuestion, questionIds } from "../terminal/questions";
 
 /**
- * Feed the question latch from the snapshot and retire it with its session.
+ * Feed the question latch from the snapshot and retire it with its session, or
+ * as soon as the snapshot stops marking a session that is not on screen.
  *
  * Runs on the shell rung — a snapshot, a few times a minute — never per frame.
  * Only agents ask: a shell's bell is a completion beep, the same rule
@@ -23,7 +26,14 @@ export function trackQuestions(): void {
     );
     untrack(() => {
       for (const id of asking) markQuestion(id);
-      for (const id of questionIds()) if (!live.has(id)) clearQuestion(id);
+      // Off screen the snapshot is authoritative; only the attached sessions,
+      // which the snapshot never marks, keep the latch until it is answered.
+      const split = centerSplit();
+      const attached = new Set([connectionStore.activeSession]);
+      if (split.kind === "session") attached.add(split.extra);
+      for (const id of questionIds()) {
+        if (!live.has(id) || (!attached.has(id) && !asking.has(id))) clearQuestion(id);
+      }
     });
   });
 }

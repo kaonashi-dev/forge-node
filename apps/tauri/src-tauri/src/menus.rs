@@ -75,6 +75,9 @@ pub(crate) fn app_menus(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry
             &item(app, "toggle_pull_requests", "Pull Requests")?,
             &item(app, "toggle_files", "Files")?,
             &PredefinedMenuItem::separator(app)?,
+            &item(app, "split_pane", "Split Pane")?,
+            &item(app, "join_panes", "Join Panes")?,
+            &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],
     )?;

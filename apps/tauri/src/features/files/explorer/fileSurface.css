@@ -12,6 +12,7 @@
   --fw-deleted: var(--git-deleted-text);
   --fw-untracked: var(--git-untracked-text);
   --fw-conflict: var(--git-conflict-text);
+  --fw-ignored-opacity: 0.6;
   --fw-font: var(--font-sans);
   --fw-font-size: var(--text-sm);
   gap: 0;
@@ -58,9 +59,6 @@
 }
 .fw-host .fw-tree-row[data-file-directory="true"] {
   color: var(--fg-default);
-}
-.fw-host .fw-tree-row[data-ignored="true"] {
-  color: var(--fg-caption);
 }
 /* A file has no disclosure; its slot stays so names line up with folders'. */
 .fw-host .fw-tree-row[data-file-directory="false"] .fw-tree-branch {

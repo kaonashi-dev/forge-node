@@ -5,12 +5,14 @@ import {
   centerMode,
   currentViews,
   showSession,
+  openDiff,
   openEditorTerminal,
   viewsStore,
 } from "../../navigation/viewsStore";
 import { sessionFixture } from "../../contracts/sessions.fixture";
 import type { EditorState, Workspace } from "../../contracts/runtime";
-import { focusSession, launchShell } from "./sessionActions";
+import { focusSession, launchShell, splitPane } from "./sessionActions";
+import { centerSplit, closeSplit, openCodeSplit } from "../../navigation/centerSplitStore";
 import { selectSession } from "./commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
 import {
@@ -293,6 +295,98 @@ describe("focusSession", () => {
       path: "original.rs",
     });
     expect(currentViews().active).not.toMatchObject({ session: "late-editor" });
+    focusWorkspace(null);
+  });
+});
+
+describe("splitPane", () => {
+  afterEach(() => {
+    closeSplit();
+    focusWorkspace(null);
+    showSession();
+  });
+
+  it("puts a file beside the current session without leaving Code", () => {
+    focusWorkspace("split-ws");
+    setConnectionStore("activeSession", "t1");
+    applyShellSnapshot({
+      ...emptySnapshot(),
+      workspaces: [workspace("split-ws")],
+      sessions: [sessionFixture({ id: "t1", workspace_id: "split-ws" })],
+    });
+    openEditorTerminal("e1", "src/main.rs", "split-ws");
+    expect(centerMode()).toBe("code");
+    splitPane();
+    expect(centerSplit().kind).toBe("code");
+    expect(centerMode()).toBe("code");
+  });
+
+  it("keeps the file on screen when a session tab is clicked in a code split", async () => {
+    focusWorkspace("split-ws");
+    setConnectionStore("activeSession", "t1");
+    applyShellSnapshot({
+      ...emptySnapshot(),
+      workspaces: [workspace("split-ws")],
+      sessions: [
+        sessionFixture({ id: "t1", workspace_id: "split-ws" }),
+        sessionFixture({ id: "t2", workspace_id: "split-ws" }),
+      ],
+    });
+    openEditorTerminal("e1", "src/main.rs", "split-ws");
+    openCodeSplit();
+    vi.stubGlobal("window", { crypto, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    mockIPC(() => undefined);
+    focusSession("t2");
+    await Promise.resolve();
+    expect(centerMode()).toBe("code");
+    expect(centerSplit().focused).toBe("extra");
+    clearMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("does not split a diff", () => {
+    focusWorkspace("split-ws");
+    applyShellSnapshot({
+      ...emptySnapshot(),
+      workspaces: [workspace("split-ws")],
+    });
+    openDiff();
+    expect(currentViews().active).toEqual({ kind: "diff" });
+    splitPane();
+    expect(centerSplit().kind).toBe("closed");
+  });
+});
+
+describe("opening an exited session", () => {
+  afterEach(() => {
+    clearMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("restarts it instead of asking to attach to a terminal that is gone", async () => {
+    vi.stubGlobal("window", { crypto, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    const sent: unknown[] = [];
+    mockIPC((_cmd, args) => {
+      sent.push((args as { command?: unknown } | undefined)?.command);
+    });
+    applyShellSnapshot({
+      ...emptySnapshot(),
+      workspaces: [workspace("exited")],
+      sessions: [
+        sessionFixture({
+          id: "gone",
+          workspace_id: "exited",
+          state: { Exited: { code: 0, signal: null } },
+          terminal_id: null,
+        }),
+      ],
+    });
+    focusSession("gone");
+    await Promise.resolve();
+    expect(sent).toContainEqual(
+      expect.objectContaining({ type: "restart_session", session_id: "gone" }),
+    );
+    expect(sent).not.toContainEqual(expect.objectContaining({ type: "select_session" }));
     focusWorkspace(null);
   });
 });

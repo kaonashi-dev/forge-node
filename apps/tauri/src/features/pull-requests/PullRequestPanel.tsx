@@ -16,15 +16,7 @@ import {
 } from "./prFilters";
 import { decisionChip } from "./prDetail";
 import { Icon } from "../../theme/icons/index";
-import {
-  Badge,
-  Button,
-  IconButton,
-  ListCard,
-  RadioGroup,
-  SearchField,
-  Tooltip,
-} from "../../ui/index";
+import { Badge, Button, IconButton, ListCard, RadioGroup, SearchField } from "../../ui/index";
 import { refreshPullRequests } from "./commands";
 import { loading, setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
@@ -94,16 +86,14 @@ export function PullRequestPanel() {
         /* Below the card and not in its header: the header is a button, and a
            button inside a button is not a control a keyboard can reach. */
         actions={
-          <Tooltip label="Start an agent review, read-only" contents>
-            <Button
-              variant={selected() ? "primary" : "secondary"}
-              size="xs"
-              aria-label={`Review pull request #${pr.number} with an agent`}
-              onClick={() => openPrReview(key)}
-            >
-              Review
-            </Button>
-          </Tooltip>
+          <Button
+            variant={selected() ? "primary" : "secondary"}
+            size="xs"
+            aria-label={`Review pull request #${pr.number} with an agent, read-only`}
+            onClick={() => openPrReview(key)}
+          >
+            Review
+          </Button>
         }
         meta={
           <>

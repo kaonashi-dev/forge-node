@@ -2,7 +2,7 @@ import { For, Show, createMemo } from "solid-js";
 import { openDiff, revealInTree } from "../../navigation/viewsStore";
 import { beginSessionChanges, splitEntry } from "./sessionChangesStore";
 import { Icon, LangIcon } from "../../theme/icons/index";
-import { EmptyState, IconButton, Skeleton, Tooltip } from "../../ui/index";
+import { EmptyState, IconButton, Skeleton } from "../../ui/index";
 import { baseNote, summaryTotals } from "../../contracts/workbench";
 import { loadSessionChanges } from "./commands";
 import { statusLetter, statusWord } from "./gitView";
@@ -33,11 +33,7 @@ export function SessionChangesPanel(props: { session: string }) {
       <header class="session-changes-head">
         <span class="session-changes-branch">{summary()?.branch ?? "detached"}</span>
         <Show when={summary()?.base}>
-          {(base) => (
-            <Tooltip label="Everything since this session started">
-              <span class="session-changes-base">base {base()}</span>
-            </Tooltip>
-          )}
+          {(base) => <span class="session-changes-base">base {base()}</span>}
         </Show>
         <span class="history-spacer" />
         <span class="git-counts">

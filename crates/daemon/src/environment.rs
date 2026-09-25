@@ -1,11 +1,14 @@
 //! Shell environment resolution.
 //!
 //! A GUI launched from Finder/a launcher does not inherit an interactive
-//! shell's `PATH`. We resolve the login-shell environment once by running
-//! `<shell> -l -c 'printf BEGIN; env -0; printf END'` with a timeout, parsing
+//! shell's `PATH`. We resolve that environment once by running
+//! `<shell> -l -i -c 'printf BEGIN; env -0; printf END'` with a timeout, parsing
 //! the NUL-separated variables between the sentinels (so multiline values are
-//! unambiguous), and cache the result. On failure we fall back to the process
-//! environment with a widened `PATH` and flag it for a `DaemonNotice`.
+//! unambiguous), and cache the result. `-i` is required: Homebrew prepends
+//! itself in `.zprofile`, while native CLIs live in `~/.local/bin` via
+//! `.zshrc`, and a login-only capture would keep detecting the older cask.
+//! On failure we fall back to the process environment with a widened `PATH`
+//! and flag it for a `DaemonNotice`.
 
 use std::io::Read;
 use std::os::unix::process::CommandExt as _;
@@ -35,6 +38,7 @@ const FALLBACK_PATH_DIRS: &[&str] = &[
 /// Home-relative bin directories added to the fallback `PATH`.
 const FALLBACK_HOME_DIRS: &[&str] = &[".local/bin", ".cargo/bin", ".bun/bin", ".npm-global/bin"];
 
+#[derive(Clone)]
 pub struct ShellEnvironmentService {
     shell_override: Option<String>,
     cached: Option<ResolvedEnvironment>,
@@ -51,6 +55,11 @@ impl ShellEnvironmentService {
         }
     }
 
+    #[must_use]
+    pub fn is_resolved(&self) -> bool {
+        self.cached.is_some()
+    }
+
     /// The cached environment, resolving it on first use.
     pub fn get(&mut self) -> &ResolvedEnvironment {
         if self.cached.is_none() {
@@ -59,11 +68,23 @@ impl ShellEnvironmentService {
         self.cached.as_ref().expect("just resolved")
     }
 
-    /// Force a re-resolution (e.g. after `$SHELL` changed) and return the result.
-    /// Reserved for the `RefreshAgentDetection` path when `$SHELL` changes.
-    #[allow(dead_code)]
+    /// Force a re-resolution after the shell's PATH or configuration changes.
+    ///
+    /// A failed capture never replaces a login-shell cache: a slow rc file or a
+    /// transient timeout would otherwise swap a working `PATH` for the process
+    /// fallback and make every agent undetectable until the next restart.
     pub fn refresh(&mut self) -> &ResolvedEnvironment {
-        self.cached = Some(self.resolve());
+        let next = self.resolve();
+        let keep = next.source == EnvSource::ProcessFallback
+            && self
+                .cached
+                .as_ref()
+                .is_some_and(|env| env.source == EnvSource::LoginShell);
+        if keep {
+            tracing::warn!("login-shell refresh failed; keeping the previous environment");
+        } else {
+            self.cached = Some(next);
+        }
         self.cached.as_ref().expect("just resolved")
     }
 
@@ -205,14 +226,26 @@ impl ShellEnvironmentService {
 
 fn capture_login_shell(shell: &Path, timeout: Duration) -> Option<Vec<u8>> {
     let script = format!("printf '%s' '{BEGIN}'; env -0; printf '%s' '{END}'");
-    let mut child = Command::new(shell)
-        .args(["-l", "-c", &script])
+    let mut command = Command::new(shell);
+    command
+        .args(["-l", "-i", "-c", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    // A new session rather than `process_group(0)`: an interactive shell with a
+    // controlling tty in a background group stops itself on SIGTTIN/SIGTTOU
+    // when a daemon started from a terminal runs this, and sits until the
+    // timeout. `setsid` still makes the child its own group leader, so the
+    // negative-pid kill below reaches its descendants.
+    // SAFETY: `setsid` is async-signal-safe and touches no parent memory.
+    unsafe {
+        command.pre_exec(|| {
+            nix::unistd::setsid()
+                .map(drop)
+                .map_err(std::io::Error::from)
+        });
+    }
+    let mut child = command.spawn().ok()?;
     let pid = child.id();
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
@@ -366,5 +399,50 @@ mod tests {
         let mut svc = ShellEnvironmentService::new(None);
         let env = svc.get();
         assert!(env.get("PATH").is_some(), "resolved env should carry PATH");
+    }
+
+    #[test]
+    fn a_failed_refresh_keeps_the_login_shell_environment() {
+        let (_dir, shell) = shell_fixture("exit 1");
+        let mut svc = ShellEnvironmentService::new(Some(shell.display().to_string()));
+        svc.set_for_test(shell, vec![("PATH".into(), "/good/bin".into())]);
+        let env = svc.refresh();
+        assert_eq!(env.source, EnvSource::LoginShell);
+        assert_eq!(env.get("PATH"), Some("/good/bin"));
+    }
+
+    #[test]
+    fn the_capture_runs_without_a_controlling_terminal() {
+        let (_dir, shell) = shell_fixture(
+            r#"if (exec 3</dev/tty) 2>/dev/null; then FORGE_TTY=held; else FORGE_TTY=none; fi
+export FORGE_TTY
+while [ "$1" != "-c" ] && [ $# -gt 0 ]; do shift; done
+shift
+eval "$1""#,
+        );
+        let out = capture_login_shell(&shell, Duration::from_secs(5)).unwrap();
+        let vars = ShellEnvironmentService::parse_between_sentinels(&out).unwrap();
+        let tty = &vars.iter().find(|(key, _)| key == "FORGE_TTY").unwrap().1;
+        assert_eq!(tty, "none");
+    }
+
+    #[test]
+    fn interactive_path_wins_over_the_login_profile() {
+        let (_dir, shell) = shell_fixture(
+            r#"PATH=/login/bin:/usr/bin:/bin
+for arg; do
+  [ "$arg" = "-i" ] && PATH=/interactive/bin:$PATH
+done
+while [ "$1" != "-c" ] && [ $# -gt 0 ]; do shift; done
+shift
+eval "$1""#,
+        );
+        let out = capture_login_shell(&shell, Duration::from_secs(5)).unwrap();
+        let vars = ShellEnvironmentService::parse_between_sentinels(&out).unwrap();
+        let path = &vars.iter().find(|(key, _)| key == "PATH").unwrap().1;
+        assert!(
+            path.starts_with("/interactive/bin"),
+            "expected the interactive PATH to lead, got {path}"
+        );
     }
 }

@@ -18,7 +18,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   Hello: {
-    protocol_version: 26,
+    protocol_version: 27,
     client_version: "0.1.0",
     client_kind: "Gui",
   },
@@ -83,7 +83,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   HelloAck: {
-    protocol_version: 26,
+    protocol_version: 27,
     daemon_version: "0.1.0",
     instance_id: "forge-daemon-0001",
     started_at: "2026-08-30T12:00:00Z",
@@ -93,7 +93,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   HelloReject: {
-    daemon_protocol_version: 26,
+    daemon_protocol_version: 27,
     reason: "protocol version mismatch",
   },
 } as const;
@@ -657,13 +657,13 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  protocol_version: 26,
+  protocol_version: 27,
   client_version: "0.1.0",
   client_kind: "Gui",
 } as const;
 
 export const hello_ack = {
-  protocol_version: 26,
+  protocol_version: 27,
   daemon_version: "0.1.0",
   instance_id: "forge-daemon-0001",
   started_at: "2026-08-30T12:00:00Z",
@@ -671,7 +671,7 @@ export const hello_ack = {
 } as const;
 
 export const hello_reject = {
-  daemon_protocol_version: 26,
+  daemon_protocol_version: 27,
   reason: "protocol version mismatch",
 } as const;
 
@@ -747,6 +747,20 @@ export const request_create_shell_session = {
 export const request_detach_terminal = {
   DetachTerminal: {
     terminal_id: "00000000-0000-7000-8000-000000000005",
+  },
+} as const;
+
+export const request_editor_find = {
+  EditorFind: {
+    session_id: "00000000-0000-7000-8000-000000000004",
+    command: {
+      Set: {
+        pattern: "main",
+        case_sensitive: false,
+        whole_word: true,
+        regex: false,
+      },
+    },
   },
 } as const;
 
@@ -1588,6 +1602,17 @@ export const session_editor = {
     cursor_count: 1,
     status: "saved",
     conflict: false,
+    find: {
+      focus: 1,
+      pattern: "main",
+      case_sensitive: false,
+      whole_word: true,
+      regex: false,
+      total: 3,
+      capped: false,
+      index: 1,
+      error: null,
+    },
   },
   agent_provider_id: null,
   agent_profile_id: null,
@@ -2364,6 +2389,7 @@ export const FIXTURE_NAMES = [
   "request_create_editor_session.json",
   "request_create_shell_session.json",
   "request_detach_terminal.json",
+  "request_editor_find.json",
   "request_factory_reset.json",
   "request_fetch_scrollback.json",
   "request_get_snapshot.json",

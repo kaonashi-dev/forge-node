@@ -5,8 +5,9 @@
 
 use domain::{
     AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy, ContextEnvelope,
-    EditorInputEvent, JuvaKind, ProjectGroupId, ProjectId, PtySize, SessionId, SessionKind,
-    SessionRole, ShareCleanup, ShareRule, ShareRuleId, TerminalId, WorkspaceId, WorktreeIgnore,
+    EditorFindCommand, EditorInputEvent, JuvaKind, ProjectGroupId, ProjectId, PtySize, SessionId,
+    SessionKind, SessionRole, ShareCleanup, ShareRule, ShareRuleId, TerminalId, WorkspaceId,
+    WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -625,6 +626,16 @@ pub enum Request {
         /// How many lines to mount. Clamped by the editor.
         line_count: u32,
     },
+    /// Drive an editor session's find panel → `Ack`.
+    ///
+    /// The editor owns the query and the search; the answer is the `find` on
+    /// the session's next `EditorState`. A `Set` pattern longer than
+    /// [`domain::MAX_EDITOR_FIND_PATTERN_BYTES`] is `InvalidRequest`.
+    /// `PreconditionFailed` when the editor's command queue is saturated.
+    EditorFind {
+        session_id: SessionId,
+        command: EditorFindCommand,
+    },
     /// The two sides of a refused editor save → `EditorConflict`.
     ///
     /// A synchronous read like `GetWorkspaceDiff`: the daemon answers from the
@@ -795,8 +806,10 @@ pub enum Request {
         /// and an over-large value is clamped rather than refused.
         window_days: Option<u16>,
     },
-    /// Re-run detection for one provider, or all when `None` → `Ack`;
-    /// `AgentDetectionChanged`.
+    /// Re-capture the shell environment and re-run detection for one provider,
+    /// or all when `None` → `Ack` when the work starts; the results arrive as
+    /// `AgentDetectionChanged`. Requests during a refresh coalesce into one
+    /// more full pass.
     RefreshAgentDetection {
         /// The provider to re-detect, or `None` for all.
         provider_id: Option<AgentProviderId>,

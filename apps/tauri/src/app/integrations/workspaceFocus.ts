@@ -7,6 +7,7 @@ import { resetGitAnswers } from "../../features/git/state";
 import { parentPath } from "../../shared/paths";
 import { setLoading } from "../../state/loading";
 import { onWorkspaceChange } from "../../state/workspace";
+import { joinPanes } from "../../features/sessions/sessionActions";
 
 /**
  * Clear every answer when the workbench moves to another checkout.
@@ -33,5 +34,6 @@ export function startWorkspaceFocus(): () => void {
       resetGitAnswers();
       setLoading(reconcile({}));
     });
+    joinPanes();
   });
 }

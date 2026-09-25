@@ -9,6 +9,7 @@ import { ContextMenu, IconButton, type MenuItem } from "../../ui/index";
 import { SessionMenu } from "../../features/sessions/SessionMenu";
 import { hasQuestion } from "../../features/sessions/waiting";
 import { closeSessionFromUi, sessionMenuItems } from "../../features/sessions/sessionMenuItems";
+import { centerSplit } from "../../navigation/centerSplitStore";
 import {
   clampGapToKind,
   dropFromGap,
@@ -62,8 +63,18 @@ export function SessionTabs(props: SessionTabsProps) {
   const tabs = () => props.sessions.filter((session) => session.terminal_id != null);
   /* While Code is up no session is current. Left at `current`, two tabs in the
      same strip would both claim the window. */
-  const groundOf = (session: Session) =>
-    tabGround(session, props.codeActive ? null : props.activeId);
+  const groundOf = (session: Session) => {
+    const split = centerSplit();
+    if (
+      !props.codeActive &&
+      split.kind === "session" &&
+      split.extra === session.id &&
+      split.focused === "extra"
+    ) {
+      return tabGround(session, session.id);
+    }
+    return tabGround(session, props.codeActive ? null : props.activeId);
+  };
 
   /* Measured, not counted. Two tabs in a wide window overflow nothing, and a
      count-based guess kept the scroll chevrons on screen with nowhere to

@@ -658,9 +658,33 @@ fn main() {
             cursor_count: 1,
             status: "saved".to_string(),
             conflict: false,
+            find: Some(Box::new(domain::EditorFind {
+                focus: 1,
+                pattern: "main".to_string(),
+                case_sensitive: false,
+                whole_word: true,
+                regex: false,
+                total: 3,
+                capped: false,
+                index: 1,
+                error: None,
+            })),
         });
         session
     });
+    write(
+        &out,
+        "request_editor_find",
+        &Request::EditorFind {
+            session_id: session_id(),
+            command: domain::EditorFindCommand::Set {
+                pattern: "main".to_string(),
+                case_sensitive: false,
+                whole_word: true,
+                regex: false,
+            },
+        },
+    );
     write(
         &out,
         "request_refresh_workspace_status",

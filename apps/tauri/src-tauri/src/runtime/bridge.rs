@@ -67,6 +67,58 @@ const fn cell_send_floor(scroll_offset: u64) -> Duration {
     }
 }
 
+/// One pane's output held back by [`cell_send_floor`], merged until it lifts.
+#[derive(Default)]
+struct FrameFloor {
+    held: Option<(Instant, Damage)>,
+    last_sent: Option<Instant>,
+}
+
+impl FrameFloor {
+    /// The damage to publish now, or `None` when it was held.
+    ///
+    /// `urgent` skips the floor: anything the shell also cares about goes out
+    /// at once, so a session appearing is never delayed by terminal output.
+    fn offer(&mut self, damage: Damage, floor: Duration, urgent: bool) -> Option<Damage> {
+        let within_floor = self.last_sent.is_some_and(|sent| sent.elapsed() < floor);
+        if !urgent && within_floor {
+            self.held = Some(match self.held.take() {
+                Some((since, held)) => (since, held.merge(damage)),
+                None => (self.last_sent.unwrap_or_else(Instant::now), damage),
+            });
+            return None;
+        }
+        Some(self.release(damage))
+    }
+
+    /// Publish `damage` now, with whatever was held folded in.
+    fn release(&mut self, damage: Damage) -> Damage {
+        self.last_sent = Some(Instant::now());
+        match self.held.take() {
+            Some((_, held)) => held.merge(damage),
+            None => damage,
+        }
+    }
+
+    /// Held output whose floor has lifted.
+    fn due(&mut self, floor: Duration) -> Option<Damage> {
+        let (since, _) = self.held.as_ref()?;
+        if since.elapsed() < floor {
+            return None;
+        }
+        let (_, damage) = self.held.take()?;
+        self.last_sent = Some(Instant::now());
+        Some(damage)
+    }
+
+    /// How long the loop may block before held output falls due.
+    fn wait(&self, floor: Duration) -> Option<Duration> {
+        self.held
+            .as_ref()
+            .map(|(since, _)| floor.saturating_sub(since.elapsed()))
+    }
+}
+
 /// Geometry used until the WebView has measured its own cell box and asked for
 /// the size it can actually paint.
 const DEFAULT_SIZE: PtySize = PtySize {
@@ -178,6 +230,45 @@ struct EditorAttachment {
     size: PtySize,
 }
 
+/// The extra session terminal in a Cmd+D split. Not the focused attachment.
+///
+/// The original session stays `Attached` so switching tabs does not resize it
+/// to nothing. This column has its own size and scroll, like an editor pane.
+struct SplitAttachment {
+    session: SessionId,
+    terminal: TerminalId,
+    size: PtySize,
+    scroll_offset: u64,
+    /// This pane's own echo ids: each pane's `LatencyProbe` numbers from 1, so
+    /// sharing the main pane's counter would settle one pane with the other's.
+    pending_echo: u64,
+    floor: FrameFloor,
+    /// Off screen behind Code or Settings: the replica keeps up, the WebView
+    /// is not sent frames nothing would paint.
+    parked: bool,
+}
+
+impl SplitAttachment {
+    fn new(session: SessionId, terminal: TerminalId, size: PtySize) -> Self {
+        Self {
+            session,
+            terminal,
+            size,
+            scroll_offset: 0,
+            pending_echo: 0,
+            floor: FrameFloor::default(),
+            parked: false,
+        }
+    }
+
+    fn opened(&self) -> SplitOpened {
+        SplitOpened {
+            session_id: self.session,
+            terminal_id: self.terminal,
+        }
+    }
+}
+
 /// Emits the two event streams and keeps the `connect` command's cached
 /// snapshot in step with them.
 struct Emitter<'a> {
@@ -222,17 +313,36 @@ impl Emitter<'_> {
 
     /// Publish one terminal frame.
     fn cells(&self, store: &mut Store, at: &Attached, damage: &Damage, echo_id: u64) {
-        request_scrollback(self.client, store, at);
+        self.emit_cells(store, at.terminal, at.scroll_offset, damage, echo_id);
+    }
+
+    fn split_cells(&self, store: &mut Store, open: &mut SplitAttachment, damage: &Damage) {
+        if open.parked {
+            return;
+        }
+        let echo_id = std::mem::take(&mut open.pending_echo);
+        self.emit_cells(store, open.terminal, open.scroll_offset, damage, echo_id);
+    }
+
+    fn emit_cells(
+        &self,
+        store: &mut Store,
+        terminal: TerminalId,
+        scroll_offset: u64,
+        damage: &Damage,
+        echo_id: u64,
+    ) {
+        request_scrollback(self.client, store, terminal, scroll_offset);
         let bell = store
             .terminals
-            .get_mut(&at.terminal)
+            .get_mut(&terminal)
             .is_some_and(CellGrid::take_bell);
-        let Some(grid) = store.terminal(&at.terminal) else {
+        let Some(grid) = store.terminal(&terminal) else {
             return;
         };
         let _ = self.app.emit(
             "runtime:cells",
-            cells::frame(at.terminal, grid, at.scroll_offset, damage, bell, echo_id),
+            cells::frame(terminal, grid, scroll_offset, damage, bell, echo_id),
         );
     }
 
@@ -272,6 +382,21 @@ struct EditorOpened {
     terminal_id: TerminalId,
     workspace: WorkspaceId,
     path: String,
+}
+
+/// The extra column's session and the terminal its frames name. Sent again
+/// when that session moves to a new terminal.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct SplitOpened {
+    session_id: SessionId,
+    terminal_id: TerminalId,
+}
+
+/// The host let the extra column go on its own: its session was removed or
+/// promoted into the main pane.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct SplitClosed {
+    session_id: SessionId,
 }
 
 fn runtime_loop(
@@ -321,6 +446,7 @@ fn runtime_loop(
             terminal,
             scroll_offset: 0,
         };
+        let mut split: Option<SplitAttachment> = None;
         let mut editors: HashMap<SessionId, EditorAttachment> = HashMap::new();
         // A worker per connection: dropping the previous sender ends the one
         // bound to the client that just died.
@@ -348,10 +474,7 @@ fn runtime_loop(
 
         let events = client.events();
         let mut pending_command = None;
-        // Output held back by the frame floor, with everything it has to
-        // repaint once the floor lifts.
-        let mut held: Option<(Instant, Damage)> = None;
-        let mut last_cells_sent: Option<Instant> = None;
+        let mut main_floor = FrameFloor::default();
         // The newest keystroke whose bytes reached the daemon and whose echo
         // has not gone back out yet.
         let mut pending_echo: u64 = 0;
@@ -379,6 +502,7 @@ fn runtime_loop(
                     &client,
                     &mut store,
                     &mut at,
+                    &mut split,
                     &mut editors,
                     &mut size,
                     &mut pending_echo,
@@ -395,8 +519,7 @@ fn runtime_loop(
                             emitter.shell(&store, &at);
                         }
                         if let Some(damage) = effect.damage {
-                            held = None;
-                            last_cells_sent = Some(Instant::now());
+                            let damage = main_floor.release(damage);
                             emitter.cells(
                                 &mut store,
                                 &at,
@@ -412,6 +535,17 @@ fn runtime_loop(
                         }
                         if let Some(opened) = effect.editor_opened {
                             let _ = app.emit("runtime:editor_opened", opened);
+                        }
+                        if let Some(opened) = effect.split_opened {
+                            let _ = app.emit("runtime:terminal_split", opened);
+                        }
+                        if let Some((terminal, damage)) = effect.split_damage {
+                            if let Some(open) =
+                                split.as_mut().filter(|open| open.terminal == terminal)
+                            {
+                                let damage = open.floor.release(damage);
+                                emitter.split_cells(&mut store, open, &damage);
+                            }
                         }
                         if let Some(session) = effect.editor_detached {
                             let _ = app.emit("runtime:editor_detached", session);
@@ -459,21 +593,25 @@ fn runtime_loop(
             // Output held back by the floor goes out here, before the thread
             // blocks: a burst that stops inside the floor must not sit unsent
             // until some unrelated event wakes the loop.
-            if let Some((since, damage)) = held.take() {
-                if since.elapsed() >= cell_send_floor(at.scroll_offset) {
-                    last_cells_sent = Some(Instant::now());
-                    emitter.cells(&mut store, &at, &damage, std::mem::take(&mut pending_echo));
-                } else {
-                    held = Some((since, damage));
+            if let Some(damage) = main_floor.due(cell_send_floor(at.scroll_offset)) {
+                emitter.cells(&mut store, &at, &damage, std::mem::take(&mut pending_echo));
+            }
+            if let Some(open) = split.as_mut() {
+                if let Some(damage) = open.floor.due(cell_send_floor(open.scroll_offset)) {
+                    emitter.split_cells(&mut store, open, &damage);
                 }
             }
 
-            let wait = match &held {
-                Some((since, _)) => {
-                    cell_send_floor(at.scroll_offset).saturating_sub(since.elapsed())
-                }
-                None => LIVENESS_TICK,
-            };
+            let wait = [
+                main_floor.wait(cell_send_floor(at.scroll_offset)),
+                split
+                    .as_ref()
+                    .and_then(|open| open.floor.wait(cell_send_floor(open.scroll_offset))),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(LIVENESS_TICK);
 
             let event = match events.try_recv() {
                 Ok(event) => Some(event),
@@ -512,10 +650,17 @@ fn runtime_loop(
 
             if let Some(event) = event {
                 let mut batch = Batch::default();
-                batch.absorb(&event, &store, &at);
+                batch.absorb_named(&event, &store, &at, split.as_ref());
                 emit_side_event(&app, &event);
-                emit_clipboard_event(&app, &event, &at, &editors);
-                batch.apply(&event, &mut store, &client, size, at.terminal);
+                emit_clipboard_event(&app, &event, &at, &editors, split.as_ref());
+                batch.apply(
+                    &event,
+                    &mut store,
+                    &client,
+                    size,
+                    at.terminal,
+                    split.as_ref(),
+                );
                 let batch_end = Instant::now() + EVENT_BATCH_BUDGET;
                 for _ in 1..EVENT_BATCH_LIMIT {
                     if Instant::now() >= batch_end {
@@ -524,10 +669,17 @@ fn runtime_loop(
                     let Ok(more) = events.try_recv() else {
                         break;
                     };
-                    batch.absorb(&more, &store, &at);
+                    batch.absorb_named(&more, &store, &at, split.as_ref());
                     emit_side_event(&app, &more);
-                    emit_clipboard_event(&app, &more, &at, &editors);
-                    batch.apply(&more, &mut store, &client, size, at.terminal);
+                    emit_clipboard_event(&app, &more, &at, &editors, split.as_ref());
+                    batch.apply(
+                        &more,
+                        &mut store,
+                        &client,
+                        size,
+                        at.terminal,
+                        split.as_ref(),
+                    );
                 }
 
                 for id in &batch.editor_sessions_removed {
@@ -535,21 +687,82 @@ fn runtime_loop(
                     let _ = app.emit("runtime:editor_detached", *id);
                 }
 
+                if batch.split_removed {
+                    if let Some(open) = split.take() {
+                        if open.terminal != at.terminal {
+                            let _ = client.detach_terminal(open.terminal);
+                            store.detach_terminal(&open.terminal);
+                        }
+                        let _ = app.emit(
+                            "runtime:split_closed",
+                            SplitClosed {
+                                session_id: open.session,
+                            },
+                        );
+                    }
+                }
+                if let Some(terminal) = batch.split_retarget.take() {
+                    if let Some(open) = split.as_mut() {
+                        if follow_split_terminal(&client, &mut store, open, at.terminal, terminal) {
+                            let _ = app.emit("runtime:terminal_split", open.opened());
+                            batch.split_damage = Some((open.terminal, Damage::Full));
+                        }
+                    }
+                }
+
                 if batch.active_session_removed {
                     let Some(next_session) = successor_session(&store, batch.departing) else {
                         break;
                     };
-                    match switch_session(&client, &mut store, at.terminal, next_session, size) {
-                        Ok(next_terminal) => {
-                            at.session = next_session;
-                            at.terminal = next_terminal;
-                            at.scroll_offset = 0;
+                    if split
+                        .as_ref()
+                        .is_some_and(|open| open.session == next_session)
+                    {
+                        if let Some(open) = split.take() {
+                            // The departed session's grid; `switch_session_keeping`
+                            // lets it go on the other branch.
+                            if at.terminal != open.terminal {
+                                let _ = client.detach_terminal(at.terminal);
+                                store.detach_terminal(&at.terminal);
+                            }
+                            at.session = open.session;
+                            at.terminal = open.terminal;
+                            at.scroll_offset = open.scroll_offset;
+                            size = open.size;
+                            pending_echo = 0;
+                            main_floor = FrameFloor::default();
                             preferred_session = Some(next_session);
+                            batch.shell = true;
                             batch.damage = Some(Damage::Full);
+                            // Without this the WebView keeps the column and paints
+                            // the promoted session twice, both panes resizing one PTY.
+                            let _ = app.emit(
+                                "runtime:split_closed",
+                                SplitClosed {
+                                    session_id: open.session,
+                                },
+                            );
                         }
-                        Err(error) => {
-                            tracing::warn!(%error, "failed to leave a removed session");
-                            break;
+                    } else {
+                        match switch_session_keeping(
+                            &client,
+                            &mut store,
+                            at.terminal,
+                            next_session,
+                            size,
+                            split.as_ref().map(|open| open.terminal),
+                        ) {
+                            Ok(next_terminal) => {
+                                at.session = next_session;
+                                at.terminal = next_terminal;
+                                at.scroll_offset = 0;
+                                preferred_session = Some(next_session);
+                                batch.damage = Some(Damage::Full);
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "failed to leave a removed session");
+                                break;
+                            }
                         }
                     }
                 }
@@ -562,26 +775,20 @@ fn runtime_loop(
                 for (terminal, damage) in batch.editor_damage {
                     emitter.editor_cells(&mut store, terminal, &damage);
                 }
+                if let Some((terminal, damage)) = batch.split_damage {
+                    if let Some(open) = split.as_mut().filter(|open| open.terminal == terminal) {
+                        let floor = cell_send_floor(open.scroll_offset);
+                        if let Some(damage) = open.floor.offer(damage, floor, batch.shell) {
+                            emitter.split_cells(&mut store, open, &damage);
+                        }
+                    }
+                }
                 for (session_id, frame) in batch.editor_frames {
                     emitter.editor_frame(session_id, frame);
                 }
                 if let Some(damage) = batch.damage {
-                    // A cells-only burst inside the floor is held and merged;
-                    // anything the shell also cares about goes out at once, so
-                    // a session appearing is never delayed by terminal output.
                     let floor = cell_send_floor(at.scroll_offset);
-                    let within_floor = last_cells_sent.is_some_and(|sent| sent.elapsed() < floor);
-                    if !batch.shell && within_floor {
-                        held = Some(match held.take() {
-                            Some((since, held_damage)) => (since, held_damage.merge(damage)),
-                            None => (last_cells_sent.unwrap_or_else(Instant::now), damage),
-                        });
-                    } else {
-                        let damage = match held.take() {
-                            Some((_, held_damage)) => held_damage.merge(damage),
-                            None => damage,
-                        };
-                        last_cells_sent = Some(Instant::now());
+                    if let Some(damage) = main_floor.offer(damage, floor, batch.shell) {
                         emitter.cells(&mut store, &at, &damage, std::mem::take(&mut pending_echo));
                     }
                 }
@@ -686,11 +893,12 @@ fn emit_clipboard_event(
     event: &DaemonEvent,
     at: &Attached,
     editors: &HashMap<SessionId, EditorAttachment>,
+    split: Option<&SplitAttachment>,
 ) {
     let DaemonEvent::ClipboardStore { terminal_id, text } = event else {
         return;
     };
-    if !clipboard_is_allowed(*terminal_id, at, editors) {
+    if !clipboard_is_allowed(*terminal_id, at, editors, split) {
         return;
     }
     let _ = app.emit("runtime:clipboard", ClipboardPayload { text: text.clone() });
@@ -704,8 +912,11 @@ fn clipboard_is_allowed(
     terminal_id: TerminalId,
     at: &Attached,
     editors: &HashMap<SessionId, EditorAttachment>,
+    split: Option<&SplitAttachment>,
 ) -> bool {
-    terminal_id == at.terminal || editors.values().any(|open| open.terminal == terminal_id)
+    terminal_id == at.terminal
+        || split.is_some_and(|open| open.terminal == terminal_id)
+        || editors.values().any(|open| open.terminal == terminal_id)
 }
 
 fn emit_side_event(app: &AppHandle, event: &DaemonEvent) {
@@ -783,6 +994,10 @@ struct Effect {
     editor_damage: Option<(TerminalId, Damage)>,
     /// A new editor session was spawned; the WebView opens its Code view.
     editor_opened: Option<EditorOpened>,
+    /// A new shell occupies the extra column; the WebView mounts its pane.
+    split_opened: Option<SplitOpened>,
+    /// The extra column's grid, keyed so it does not merge with the main pane.
+    split_damage: Option<(TerminalId, Damage)>,
     /// The Code pane let an editor go; the process is still running.
     editor_detached: Option<SessionId>,
     /// An unforced worktree removal needs a second confirmation.
@@ -871,11 +1086,13 @@ fn command_on_connection(command: &RuntimeCommand, generation: u64) -> bool {
 fn paste_target_matches(
     store: &Store,
     at: &Attached,
+    split: Option<&SplitAttachment>,
     session: SessionId,
     terminal: TerminalId,
 ) -> bool {
-    at.session == session
-        && at.terminal == terminal
+    let on_screen = (at.session == session && at.terminal == terminal)
+        || split.is_some_and(|open| open.session == session && open.terminal == terminal);
+    on_screen
         && store.sessions.iter().any(|item| {
             item.id == session && item.terminal_id == Some(terminal) && item.state.is_active()
         })
@@ -897,8 +1114,8 @@ fn flush_pending_closes(pending: &mut HashSet<SessionId>, store: &Store, client:
 /// Run one command. `Err` means the connection is gone and the loop reconnects.
 ///
 /// The arguments are the whole of one connection's mutable state — the main
-/// attachment, the editor attachments, the viewport size and the echo
-/// watermark. Bundling them into a struct would only move the same fields
+/// attachment, the split column, the editor attachments, the viewport size and
+/// the echo watermark. Bundling them into a struct would only move the same fields
 /// behind a name and make every borrow in the loop go through it.
 #[allow(clippy::too_many_arguments)]
 fn run_command(
@@ -906,36 +1123,47 @@ fn run_command(
     client: &Client,
     store: &mut Store,
     at: &mut Attached,
+    split: &mut Option<SplitAttachment>,
     editors: &mut HashMap<SessionId, EditorAttachment>,
     size: &mut PtySize,
     pending_echo: &mut u64,
 ) -> Result<Effect, CommandError> {
     match command {
-        RuntimeCommand::Input { key, id } => {
-            let modes = store.terminal(&at.terminal).map(|grid| grid.modes);
+        RuntimeCommand::Input {
+            key,
+            id,
+            session_id,
+        } => {
+            let Some(pane) = pane(at, pending_echo, split, session_id) else {
+                return Ok(Effect::nothing());
+            };
+            let modes = store.terminal(&pane.terminal).map(|grid| grid.modes);
             let Some(bytes) = input::encode_terminal(&key, &modes.unwrap_or_default()) else {
                 return Ok(Effect::nothing());
             };
-            write_input(client, store, at, bytes, id, pending_echo)
+            write_input(client, store, pane, bytes, id)
         }
-        RuntimeCommand::InputText { text, id } => write_input(
-            client,
-            store,
-            at,
-            input::encode_text(&text),
+        RuntimeCommand::InputText {
+            text,
             id,
-            pending_echo,
-        ),
+            session_id,
+        } => match pane(at, pending_echo, split, session_id) {
+            Some(pane) => write_input(client, store, pane, input::encode_text(&text), id),
+            None => Ok(Effect::nothing()),
+        },
         RuntimeCommand::MoveCursor {
             terminal_id,
             seq,
             row,
             col,
             id,
+            session_id,
         } => {
-            if terminal_id != at.terminal || at.scroll_offset != 0 {
+            let Some(pane) = pane(at, pending_echo, split, session_id)
+                .filter(|pane| pane.terminal == terminal_id && *pane.scroll_offset == 0)
+            else {
                 return Ok(Effect::nothing());
-            }
+            };
             let Some(grid) = store
                 .terminal(&terminal_id)
                 .filter(|grid| grid.last_seq == seq)
@@ -945,15 +1173,22 @@ fn run_command(
             let Some(bytes) = input::encode_cursor_move(grid, row, col) else {
                 return Ok(Effect::nothing());
             };
-            write_input(client, store, at, bytes, id, pending_echo)
+            write_input(client, store, pane, bytes, id)
         }
-        RuntimeCommand::Paste { text, id } => {
+        RuntimeCommand::Paste {
+            text,
+            id,
+            session_id,
+        } => {
+            let Some(pane) = pane(at, pending_echo, split, session_id) else {
+                return Ok(Effect::nothing());
+            };
             let modes = store
-                .terminal(&at.terminal)
+                .terminal(&pane.terminal)
                 .map(|grid| grid.modes)
                 .unwrap_or_default();
             let bytes = input::encode_paste(&text, &modes);
-            write_input(client, store, at, bytes, id, pending_echo)
+            write_input(client, store, pane, bytes, id)
         }
         RuntimeCommand::PasteTarget {
             session_id,
@@ -961,7 +1196,7 @@ fn run_command(
             text,
             ..
         } => {
-            if !paste_target_matches(store, at, session_id, terminal_id) {
+            if !paste_target_matches(store, at, split.as_ref(), session_id, terminal_id) {
                 return Err(CommandError::refused(
                     "The terminal destination changed; reference was not inserted.",
                 ));
@@ -972,7 +1207,12 @@ fn run_command(
                 ));
             };
             let bytes = input::encode_paste(&text, &grid.modes);
-            write_input(client, store, at, bytes, 0, pending_echo)
+            let Some(pane) = pane(at, pending_echo, split, Some(session_id)) else {
+                return Err(CommandError::refused(
+                    "The terminal destination changed; reference was not inserted.",
+                ));
+            };
+            write_input(client, store, pane, bytes, 0)
         }
         // The pane only sends these while a program asked to read the mouse,
         // and the encoder refuses the events the *active* mode does not report
@@ -986,9 +1226,14 @@ fn run_command(
             ctrl,
             alt,
             shift,
+            session_id,
         } => {
+            let Some(pane) = pane(at, pending_echo, split, session_id) else {
+                return Ok(Effect::nothing());
+            };
+            let terminal = pane.terminal;
             let modes = store
-                .terminal(&at.terminal)
+                .terminal(&terminal)
                 .map(|grid| grid.modes)
                 .unwrap_or_default();
             let mods = client::Modifiers { ctrl, alt, shift };
@@ -997,30 +1242,54 @@ fn run_command(
                 return Ok(Effect::nothing());
             };
             client
-                .write_terminal_input(at.terminal, bytes)
+                .write_terminal_input(terminal, bytes)
                 .map_err(CommandError::from_client)?;
+            // A TUI that reads the mouse can be answered with a click, so a
+            // button press spends the attention mark the way typing does.
             // No echo id and no scroll snap: a mouse report is not typing, and
             // yanking the viewport to the live output under a program that is
             // painting its own scrollback would fight it.
+            if mouse_answers(&button, &kind) && store.answer_attention(&terminal) {
+                return Ok(pane.route(Effect::shell()));
+            }
             Ok(Effect::nothing())
         }
-        RuntimeCommand::Scroll { lines } => Ok(scroll(client, store, at, lines)),
-        RuntimeCommand::ScrollToBottom => {
-            if at.scroll_offset == 0 {
-                return Ok(Effect::nothing());
-            }
-            at.scroll_offset = 0;
-            Ok(Effect::repaint())
+        RuntimeCommand::Scroll { lines, session_id } => {
+            Ok(match pane(at, pending_echo, split, session_id) {
+                Some(pane) => {
+                    let effect = scroll(client, store, pane.terminal, pane.scroll_offset, lines);
+                    pane.route(effect)
+                }
+                None => Effect::nothing(),
+            })
         }
-        RuntimeCommand::Repaint => Ok(Effect::repaint()),
+        RuntimeCommand::ScrollToBottom { session_id } => {
+            Ok(match pane(at, pending_echo, split, session_id) {
+                Some(pane) if *pane.scroll_offset != 0 => {
+                    *pane.scroll_offset = 0;
+                    pane.route(Effect::repaint())
+                }
+                _ => Effect::nothing(),
+            })
+        }
+        RuntimeCommand::Repaint { session_id } => {
+            Ok(match pane(at, pending_echo, split, session_id) {
+                Some(pane) => pane.route(Effect::repaint()),
+                None => Effect::nothing(),
+            })
+        }
         RuntimeCommand::CopySelection {
             anchor_line,
             anchor_col,
             head_line,
             head_col,
+            session_id,
         } => {
+            let Some(pane) = pane(at, pending_echo, split, session_id) else {
+                return Ok(Effect::nothing());
+            };
             let text = store
-                .terminal(&at.terminal)
+                .terminal(&pane.terminal)
                 .map(|grid| {
                     cells::selection_text(grid, (anchor_line, anchor_col), (head_line, head_col))
                 })
@@ -1035,7 +1304,20 @@ fn run_command(
             if session_id == at.session {
                 return Ok(Effect::nothing());
             }
-            let terminal = switch_session(client, store, at.terminal, session_id, *size)?;
+            if split
+                .as_ref()
+                .is_some_and(|open| open.session == session_id)
+            {
+                return Ok(Effect::nothing());
+            }
+            let terminal = switch_session_keeping(
+                client,
+                store,
+                at.terminal,
+                session_id,
+                *size,
+                split.as_ref().map(|open| open.terminal),
+            )?;
             at.session = session_id;
             at.terminal = terminal;
             at.scroll_offset = 0;
@@ -1048,6 +1330,52 @@ fn run_command(
             at.terminal = terminal;
             at.scroll_offset = 0;
             Ok(Effect::shell())
+        }
+        RuntimeCommand::SplitShell { workspace } => {
+            if split.is_some() {
+                return Ok(Effect::nothing());
+            }
+            let (session_id, terminal_id) = spawn_shell(client, store, at.terminal, workspace)?;
+            let snapshot = client
+                .attach_terminal(terminal_id, *size)
+                .map_err(CommandError::from_client)?;
+            store.attach_terminal(terminal_id, &snapshot);
+            let open = SplitAttachment::new(session_id, terminal_id, *size);
+            let opened = open.opened();
+            *split = Some(open);
+            Ok(Effect {
+                shell: true,
+                split_opened: Some(opened),
+                split_damage: Some((terminal_id, Damage::Full)),
+                ..Effect::nothing()
+            })
+        }
+        RuntimeCommand::ParkSplit { session_id, parked } => {
+            let Some(open) = split
+                .as_mut()
+                .filter(|open| open.session == session_id && open.parked != parked)
+            else {
+                return Ok(Effect::nothing());
+            };
+            open.parked = parked;
+            Ok(Effect {
+                split_damage: (!parked).then_some((open.terminal, Damage::Full)),
+                ..Effect::nothing()
+            })
+        }
+        RuntimeCommand::DetachSplit { session_id } => {
+            let Some(open) = split.take() else {
+                return Ok(Effect::nothing());
+            };
+            if open.session != session_id {
+                *split = Some(open);
+                return Ok(Effect::nothing());
+            }
+            if open.terminal != at.terminal {
+                let _ = client.detach_terminal(open.terminal);
+                store.detach_terminal(&open.terminal);
+            }
+            Ok(Effect::nothing())
         }
         RuntimeCommand::NewAgent {
             provider,
@@ -1158,8 +1486,29 @@ fn run_command(
                 }
             }
         }
-        RuntimeCommand::Resize { size: requested } => {
+        RuntimeCommand::Resize {
+            size: requested,
+            session_id,
+        } => {
             let requested = requested.sanitized();
+            if let Some(open) = split
+                .as_mut()
+                .filter(|open| session_id == Some(open.session))
+            {
+                if requested == open.size {
+                    return Ok(Effect::nothing());
+                }
+                resize_and_reattach(client, store, open.terminal, requested)?;
+                open.size = requested;
+                open.scroll_offset = 0;
+                return Ok(Effect {
+                    split_damage: Some((open.terminal, Damage::Full)),
+                    ..Effect::nothing()
+                });
+            }
+            if session_id.is_some() && session_id != Some(at.session) {
+                return Ok(Effect::nothing());
+            }
             if requested == *size {
                 return Ok(Effect::nothing());
             }
@@ -1216,7 +1565,44 @@ fn run_command(
             // A restart mints a fresh terminal, and the shell follows it there:
             // restarting the session you are looking at and staying attached to
             // the dead one is not what the gesture meant.
-            match switch_session(client, store, at.terminal, session_id, *size) {
+            if split
+                .as_ref()
+                .is_some_and(|open| open.session == session_id)
+            {
+                let split_size = split.as_ref().map(|open| open.size).unwrap_or(*size);
+                match attach_session(client, store, session_id, split_size) {
+                    Ok(terminal) => {
+                        let opened = split.as_mut().map(|open| {
+                            open.terminal = terminal;
+                            open.scroll_offset = 0;
+                            open.pending_echo = 0;
+                            open.opened()
+                        });
+                        return Ok(Effect {
+                            forget_pending_close: Some(session_id),
+                            shell: true,
+                            split_opened: opened,
+                            split_damage: Some((terminal, Damage::Full)),
+                            ..Effect::nothing()
+                        });
+                    }
+                    Err(CommandError::Refused(_)) => {
+                        return Ok(Effect {
+                            forget_pending_close: Some(session_id),
+                            ..Effect::shell()
+                        });
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            match switch_session_keeping(
+                client,
+                store,
+                at.terminal,
+                session_id,
+                *size,
+                split.as_ref().map(|open| open.terminal),
+            ) {
                 Ok(terminal) => {
                     at.session = session_id;
                     at.terminal = terminal;
@@ -1912,35 +2298,87 @@ fn detach_editor(
     }
 }
 
-/// Write encoded bytes to the attached terminal.
+/// A terminal pane on screen, resolved from the session a command names.
+struct Pane<'a> {
+    terminal: TerminalId,
+    scroll_offset: &'a mut u64,
+    /// Each pane's `LatencyProbe` numbers from 1, so each pane settles its own.
+    pending_echo: &'a mut u64,
+    split: bool,
+}
+
+impl Pane<'_> {
+    /// Address an effect's repaint to this pane's own damage slot.
+    fn route(&self, effect: Effect) -> Effect {
+        if !self.split {
+            return effect;
+        }
+        Effect {
+            split_damage: effect.damage.map(|damage| (self.terminal, damage)),
+            damage: None,
+            ..effect
+        }
+    }
+}
+
+/// The pane `session` names; `None` names the window's attachment.
+///
+/// A session in neither pane resolves to nothing: it is a column the host
+/// already let go and the WebView has not heard about yet, and falling back
+/// to the main pane would type into, or copy from, a terminal nobody aimed at.
+fn pane<'a>(
+    at: &'a mut Attached,
+    pending_echo: &'a mut u64,
+    split: &'a mut Option<SplitAttachment>,
+    session: Option<SessionId>,
+) -> Option<Pane<'a>> {
+    if let Some(open) = split.as_mut().filter(|open| session == Some(open.session)) {
+        return Some(Pane {
+            terminal: open.terminal,
+            scroll_offset: &mut open.scroll_offset,
+            pending_echo: &mut open.pending_echo,
+            split: true,
+        });
+    }
+    if session.is_some_and(|id| id != at.session) {
+        return None;
+    }
+    Some(Pane {
+        terminal: at.terminal,
+        scroll_offset: &mut at.scroll_offset,
+        pending_echo,
+        split: false,
+    })
+}
+
+/// Write encoded bytes to a terminal this window is showing.
 ///
 /// Typing snaps the viewport back to the live output: input that lands
 /// somewhere the user cannot see is the worst outcome of a scrolled viewport.
 fn write_input(
     client: &Client,
     store: &mut Store,
-    at: &mut Attached,
+    pane: Pane<'_>,
     bytes: Vec<u8>,
     id: u64,
-    pending_echo: &mut u64,
 ) -> Result<Effect, CommandError> {
     if bytes.is_empty() {
         return Ok(Effect::nothing());
     }
     client
-        .write_terminal_input(at.terminal, bytes)
+        .write_terminal_input(pane.terminal, bytes)
         .map_err(CommandError::from_client)?;
-    *pending_echo = (*pending_echo).max(id);
+    *pane.pending_echo = (*pane.pending_echo).max(id);
     // Typing is how a permission prompt gets answered, so it is what spends the
     // attention mark. `answer_attention` reports the edge, and only the edge
     // republishes the shell: a keystroke must never reach `from_store`.
-    if store.answer_attention(&at.terminal) {
-        at.scroll_offset = 0;
-        return Ok(Effect::shell());
+    if store.answer_attention(&pane.terminal) {
+        *pane.scroll_offset = 0;
+        return Ok(pane.route(Effect::shell()));
     }
-    if at.scroll_offset != 0 {
-        at.scroll_offset = 0;
-        return Ok(Effect::repaint());
+    if *pane.scroll_offset != 0 {
+        *pane.scroll_offset = 0;
+        return Ok(pane.route(Effect::repaint()));
     }
     Ok(Effect::nothing())
 }
@@ -1950,20 +2388,26 @@ fn write_input(
 /// Refused on the alternate screen and while a program is reading the mouse:
 /// a full-screen TUI scrolls itself, and stealing the wheel from it would
 /// scroll our replica while the program under it stayed put.
-fn scroll(client: &Client, store: &mut Store, at: &mut Attached, lines: i64) -> Effect {
-    let Some(grid) = store.terminal(&at.terminal) else {
+fn scroll(
+    client: &Client,
+    store: &mut Store,
+    terminal: TerminalId,
+    scroll_offset: &mut u64,
+    lines: i64,
+) -> Effect {
+    let Some(grid) = store.terminal(&terminal) else {
         return Effect::nothing();
     };
     if grid.modes.alt_screen || grid.modes.mouse_mode != MouseMode::Off {
         return Effect::nothing();
     }
     let limit = grid.scrollback_len as i64;
-    let next = (at.scroll_offset as i64 + lines).clamp(0, limit) as u64;
-    if next == at.scroll_offset {
+    let next = (*scroll_offset as i64 + lines).clamp(0, limit) as u64;
+    if next == *scroll_offset {
         return Effect::nothing();
     }
-    at.scroll_offset = next;
-    request_scrollback(client, store, at);
+    *scroll_offset = next;
+    request_scrollback(client, store, terminal, *scroll_offset);
     Effect::repaint()
 }
 
@@ -1973,11 +2417,16 @@ fn scroll(client: &Client, store: &mut Store, at: &mut Attached, lines: i64) -> 
 /// The request starts half a page earlier than strictly needed, so scrolling
 /// steadily in one direction keeps hitting the cache instead of stalling on a
 /// round trip at every page boundary.
-fn request_scrollback(client: &Client, store: &mut Store, at: &Attached) {
-    let Some(grid) = store.terminal(&at.terminal) else {
+fn request_scrollback(
+    client: &Client,
+    store: &mut Store,
+    terminal: TerminalId,
+    scroll_offset: u64,
+) {
+    let Some(grid) = store.terminal(&terminal) else {
         return;
     };
-    let offset = at.scroll_offset.min(grid.scrollback_len);
+    let offset = scroll_offset.min(grid.scrollback_len);
     if cells::viewport_is_cached(grid, offset) {
         return;
     }
@@ -1985,8 +2434,8 @@ fn request_scrollback(client: &Client, store: &mut Store, at: &Attached) {
         return;
     };
     let from_line = (oldest - i64::from(cells::SCROLLBACK_PAGE) / 2).max(0);
-    match client.fetch_scrollback(at.terminal, from_line, cells::SCROLLBACK_PAGE) {
-        Ok(block) => store.merge_scrollback(&at.terminal, &block),
+    match client.fetch_scrollback(terminal, from_line, cells::SCROLLBACK_PAGE) {
+        Ok(block) => store.merge_scrollback(&terminal, &block),
         Err(error) => tracing::warn!(%error, "failed to fetch scrollback"),
     }
 }
@@ -1996,6 +2445,12 @@ fn request_scrollback(client: &Client, store: &mut Store, at: &Attached) {
 struct Batch {
     shell: bool,
     damage: Option<Damage>,
+    split_damage: Option<(TerminalId, Damage)>,
+    split_removed: bool,
+    /// The split's session reported a terminal the column is not attached to:
+    /// a restart minted one, possibly after the restart command's own attach
+    /// read the replica before the new id reached it.
+    split_retarget: Option<TerminalId>,
     active_session_removed: bool,
     /// Where the session that just went was, read while the store still had
     /// the row: `successor_session` needs its checkout to stay in it.
@@ -2026,10 +2481,21 @@ struct Departing {
 }
 
 impl Batch {
+    #[cfg(test)]
+    fn absorb(&mut self, event: &DaemonEvent, store: &Store, at: &Attached) {
+        self.absorb_named(event, store, at, None);
+    }
+
     /// Read what an event means for the shell and the viewport, *before* it is
     /// applied: a delta names the rows it damages, and the store does not keep
     /// them.
-    fn absorb(&mut self, event: &DaemonEvent, store: &Store, at: &Attached) {
+    fn absorb_named(
+        &mut self,
+        event: &DaemonEvent,
+        store: &Store,
+        at: &Attached,
+        split: Option<&SplitAttachment>,
+    ) {
         if matches!(event, DaemonEvent::FactoryReset) {
             self.active_session_removed = true;
         }
@@ -2046,10 +2512,20 @@ impl Batch {
                         key: tab_key(session),
                     });
             }
+            if split.is_some_and(|open| open.session == *session_id) {
+                self.split_removed = true;
+            }
             if store.sessions.iter().any(|session| {
                 session.id == *session_id && session.kind == domain::SessionKind::Editor
             }) {
                 self.editor_sessions_removed.push(*session_id);
+            }
+        }
+        if let (DaemonEvent::SessionUpdated(session), Some(open)) = (event, split) {
+            if session.id == open.session {
+                if let Some(terminal) = session.terminal_id.filter(|id| *id != open.terminal) {
+                    self.split_retarget = Some(terminal);
+                }
             }
         }
         if let DaemonEvent::EditorFrame { session_id, frame } = event {
@@ -2057,12 +2533,31 @@ impl Batch {
             // scales with the window and they ship behind an `Arc`.
             self.editor_frames.insert(*session_id, frame.clone());
         }
+        let split_terminal = split.map(|open| open.terminal);
         let damage = match event {
             DaemonEvent::TerminalDelta { terminal_id, delta } if *terminal_id == at.terminal => {
                 Some(delta_damage(delta))
             }
             DaemonEvent::TerminalResync { terminal_id, .. } if *terminal_id == at.terminal => {
                 Some(Damage::Full)
+            }
+            DaemonEvent::TerminalDelta { terminal_id, delta }
+                if split_terminal == Some(*terminal_id) =>
+            {
+                let d = delta_damage(delta);
+                self.split_damage = Some(match self.split_damage.take() {
+                    Some((terminal, existing)) if terminal == *terminal_id => {
+                        (terminal, existing.merge(d))
+                    }
+                    _ => (*terminal_id, d),
+                });
+                None
+            }
+            DaemonEvent::TerminalResync { terminal_id, .. }
+                if split_terminal == Some(*terminal_id) =>
+            {
+                self.split_damage = Some((*terminal_id, Damage::Full));
+                None
             }
             DaemonEvent::TerminalDelta { terminal_id, delta } => {
                 let d = editor_delta_damage(delta);
@@ -2102,12 +2597,21 @@ impl Batch {
         client: &Client,
         size: PtySize,
         active_terminal: TerminalId,
+        split: Option<&SplitAttachment>,
     ) {
         if let EventOutcome::NeedsResync { terminal_id } = store.apply_event(event) {
-            if terminal_id == active_terminal {
-                if let Ok(snapshot) = client.attach_terminal(terminal_id, size) {
+            let split_size = split
+                .filter(|open| open.terminal == terminal_id)
+                .map(|open| open.size);
+            if terminal_id == active_terminal || split_size.is_some() {
+                let attach_size = split_size.unwrap_or(size);
+                if let Ok(snapshot) = client.attach_terminal(terminal_id, attach_size) {
                     store.attach_terminal(terminal_id, &snapshot);
-                    self.damage = Some(Damage::Full);
+                    if split_size.is_some() {
+                        self.split_damage = Some((terminal_id, Damage::Full));
+                    } else {
+                        self.damage = Some(Damage::Full);
+                    }
                 }
             }
         }
@@ -2282,6 +2786,11 @@ fn find_live_session(store: &Store, preferred: Option<SessionId>) -> Option<Sess
         })
 }
 
+/// A button press answers a prompt; a wheel notch or a drag does not.
+fn mouse_answers(button: &str, kind: &str) -> bool {
+    kind == "press" && matches!(button, "left" | "middle" | "right")
+}
+
 /// Attach to a session's terminal.
 ///
 /// A session with no `terminal_id` is one that already exited: the daemon drops
@@ -2313,15 +2822,16 @@ fn attach_session(
 /// reads more naturally and is wrong: a switch that fails half-way would leave
 /// the shell attached to nothing, with the session it was on still on screen
 /// and no longer receiving output.
-fn switch_session(
+fn switch_session_keeping(
     client: &Client,
     store: &mut Store,
     old_terminal: TerminalId,
     session_id: SessionId,
     size: PtySize,
+    keep: Option<TerminalId>,
 ) -> Result<TerminalId, CommandError> {
     let terminal = attach_session(client, store, session_id, size)?;
-    if terminal != old_terminal {
+    if terminal != old_terminal && keep != Some(old_terminal) {
         let _ = client.detach_terminal(old_terminal);
         store.detach_terminal(&old_terminal);
     }
@@ -2418,6 +2928,58 @@ fn create_session(
     Ok((session_id, terminal_id))
 }
 
+/// Move the extra column onto the terminal its session now runs in.
+///
+/// Attach first, as `switch_session_keeping` does: a failed attach leaves the
+/// column on the terminal it had rather than on nothing.
+fn follow_split_terminal(
+    client: &Client,
+    store: &mut Store,
+    open: &mut SplitAttachment,
+    main: TerminalId,
+    terminal: TerminalId,
+) -> bool {
+    let snapshot = match client.attach_terminal(terminal, open.size) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            tracing::warn!(%error, "failed to follow the split session to its new terminal");
+            return false;
+        }
+    };
+    store.attach_terminal(terminal, &snapshot);
+    let old = std::mem::replace(&mut open.terminal, terminal);
+    if old != main {
+        let _ = client.detach_terminal(old);
+        store.detach_terminal(&old);
+    }
+    open.scroll_offset = 0;
+    open.pending_echo = 0;
+    true
+}
+
+/// Mint a shell without touching the window's current attachment.
+fn spawn_shell(
+    client: &Client,
+    store: &Store,
+    old_terminal: TerminalId,
+    workspace: Option<WorkspaceId>,
+) -> Result<(SessionId, TerminalId), CommandError> {
+    let workspace_id = workspace
+        .filter(|id| store.workspaces.iter().any(|item| item.id == *id))
+        .or_else(|| {
+            store
+                .sessions
+                .iter()
+                .find(|session| session.terminal_id == Some(old_terminal))
+                .map(|session| session.workspace_id)
+        })
+        .or_else(|| store.workspaces.first().map(|workspace| workspace.id))
+        .ok_or_else(|| CommandError::refused("no checkout is available to start it in"))?;
+    client
+        .create_shell_session(workspace_id)
+        .map_err(CommandError::from_client)
+}
+
 fn resize_and_reattach(
     client: &Client,
     store: &mut Store,
@@ -2478,6 +3040,15 @@ mod tests {
     use domain::{Cursor, TermModes, TerminalDelta};
     use std::collections::HashSet;
 
+    #[test]
+    fn a_button_press_answers_but_a_wheel_or_drag_does_not() {
+        assert!(mouse_answers("left", "press"));
+        assert!(mouse_answers("right", "press"));
+        assert!(!mouse_answers("left", "release"));
+        assert!(!mouse_answers("left", "motion"));
+        assert!(!mouse_answers("wheel_up", "press"));
+    }
+
     fn attached(terminal: TerminalId, session: SessionId, scroll_offset: u64) -> Attached {
         Attached {
             session,
@@ -2535,6 +3106,106 @@ mod tests {
         let store = Store::new();
         let mut batch = Batch::default();
         batch.absorb(&delta(TerminalId::new(), vec![0], 0), &store, &at);
+        assert_eq!(batch.damage, None);
+        assert!(!batch.shell);
+    }
+
+    #[test]
+    fn the_frame_floor_holds_a_burst_and_merges_it() {
+        let mut floor = FrameFloor::default();
+        let span = Duration::from_secs(60);
+        assert_eq!(
+            floor.offer(Damage::Rows(vec![1]), span, false),
+            Some(Damage::Rows(vec![1]))
+        );
+        assert_eq!(floor.offer(Damage::Rows(vec![3]), span, false), None);
+        assert_eq!(floor.offer(Damage::Rows(vec![2]), span, false), None);
+        assert!(floor.wait(span).is_some());
+        assert_eq!(floor.due(span), None, "held until the floor lifts");
+        assert_eq!(floor.due(Duration::ZERO), Some(Damage::Rows(vec![2, 3])));
+        assert_eq!(floor.wait(span), None);
+    }
+
+    #[test]
+    fn urgent_output_skips_the_floor_and_carries_what_was_held() {
+        let mut floor = FrameFloor::default();
+        let span = Duration::from_secs(60);
+        let _ = floor.offer(Damage::Rows(vec![0]), span, false);
+        assert_eq!(floor.offer(Damage::Rows(vec![4]), span, false), None);
+        assert_eq!(
+            floor.offer(Damage::Rows(vec![5]), span, true),
+            Some(Damage::Rows(vec![4, 5]))
+        );
+        assert_eq!(floor.release(Damage::Full), Damage::Full);
+    }
+
+    #[test]
+    fn a_split_session_on_a_new_terminal_is_followed() {
+        let at = attached(TerminalId::new(), SessionId::new(), 0);
+        let mut row = sample_session(domain::SessionState::Running);
+        let split = SplitAttachment::new(row.id, TerminalId::new(), DEFAULT_SIZE);
+        let store = Store::new();
+
+        let mut batch = Batch::default();
+        row.terminal_id = Some(split.terminal);
+        batch.absorb_named(
+            &DaemonEvent::SessionUpdated(row.clone()),
+            &store,
+            &at,
+            Some(&split),
+        );
+        assert_eq!(batch.split_retarget, None);
+
+        let restarted = TerminalId::new();
+        row.terminal_id = Some(restarted);
+        batch.absorb_named(
+            &DaemonEvent::SessionUpdated(row.clone()),
+            &store,
+            &at,
+            Some(&split),
+        );
+        assert_eq!(batch.split_retarget, Some(restarted));
+
+        let mut exited = Batch::default();
+        row.terminal_id = None;
+        exited.absorb_named(&DaemonEvent::SessionUpdated(row), &store, &at, Some(&split));
+        assert_eq!(exited.split_retarget, None, "an exit is not a new terminal");
+    }
+
+    #[test]
+    fn input_for_a_column_the_host_let_go_reaches_no_terminal() {
+        let main_session = SessionId::new();
+        let mut at = attached(TerminalId::new(), main_session, 0);
+        let extra = TerminalId::new();
+        let extra_session = SessionId::new();
+        let mut split = Some(SplitAttachment::new(extra_session, extra, DEFAULT_SIZE));
+        let mut echo = 0;
+
+        let main = pane(&mut at, &mut echo, &mut split, None).map(|pane| pane.split);
+        assert_eq!(main, Some(false));
+        let named = pane(&mut at, &mut echo, &mut split, Some(main_session)).map(|p| p.split);
+        assert_eq!(named, Some(false));
+        let column = pane(&mut at, &mut echo, &mut split, Some(extra_session))
+            .map(|pane| pane.route(Effect::shell()))
+            .expect("the split column resolves");
+        assert_eq!(column.damage, None);
+        assert_eq!(column.split_damage, Some((extra, Damage::Full)));
+        assert!(column.shell);
+
+        split = None;
+        assert!(pane(&mut at, &mut echo, &mut split, Some(extra_session)).is_none());
+    }
+
+    #[test]
+    fn a_split_terminal_delta_does_not_paint_as_an_editor() {
+        let at = attached(TerminalId::new(), SessionId::new(), 0);
+        let extra = TerminalId::new();
+        let store = Store::new();
+        let split = SplitAttachment::new(SessionId::new(), extra, DEFAULT_SIZE);
+        let mut batch = Batch::default();
+        batch.absorb_named(&delta(extra, vec![2, 4], 0), &store, &at, Some(&split));
+        assert_eq!(batch.split_damage, Some((extra, Damage::Rows(vec![2, 4]))));
+        assert!(batch.editor_damage.is_empty());
         assert_eq!(batch.damage, None);
         assert!(!batch.shell);
     }
@@ -2666,15 +3337,20 @@ mod tests {
             },
         );
 
-        assert!(clipboard_is_allowed(focused, &at, &editors));
-        assert!(clipboard_is_allowed(editor, &at, &editors));
+        assert!(clipboard_is_allowed(focused, &at, &editors, None));
+        assert!(clipboard_is_allowed(editor, &at, &editors, None));
         assert!(
-            !clipboard_is_allowed(background, &at, &editors),
+            !clipboard_is_allowed(background, &at, &editors, None),
             "a background agent must not be able to replace the clipboard"
         );
         assert!(
-            !clipboard_is_allowed(editor, &at, &HashMap::new()),
+            !clipboard_is_allowed(editor, &at, &HashMap::new(), None),
             "a detached editor is not on screen either"
+        );
+        let split = SplitAttachment::new(SessionId::new(), background, DEFAULT_SIZE);
+        assert!(
+            clipboard_is_allowed(background, &at, &editors, Some(&split)),
+            "a terminal in the extra column is on screen"
         );
     }
 
@@ -3167,31 +3843,41 @@ mod tests {
         let at = attached(terminal, session.id, 0);
         let mut store = Store::new();
         let _ = store.apply_event(&DaemonEvent::SessionCreated(session.clone()));
-        assert!(paste_target_matches(&store, &at, session.id, terminal));
+        assert!(paste_target_matches(
+            &store, &at, None, session.id, terminal
+        ));
         assert!(!paste_target_matches(
             &store,
             &at,
+            None,
             SessionId::new(),
             terminal
         ));
         assert!(!paste_target_matches(
             &store,
             &at,
+            None,
             session.id,
             TerminalId::new()
         ));
         let other = attached(TerminalId::new(), SessionId::new(), 0);
-        assert!(!paste_target_matches(&store, &other, session.id, terminal));
+        assert!(!paste_target_matches(
+            &store, &other, None, session.id, terminal
+        ));
         session.terminal_id = Some(TerminalId::new());
         let _ = store.apply_event(&DaemonEvent::SessionUpdated(session.clone()));
-        assert!(!paste_target_matches(&store, &at, session.id, terminal));
+        assert!(!paste_target_matches(
+            &store, &at, None, session.id, terminal
+        ));
         session.terminal_id = Some(terminal);
         session.state = domain::SessionState::Exited {
             code: Some(0),
             signal: None,
         };
         let _ = store.apply_event(&DaemonEvent::SessionUpdated(session.clone()));
-        assert!(!paste_target_matches(&store, &at, session.id, terminal));
+        assert!(!paste_target_matches(
+            &store, &at, None, session.id, terminal
+        ));
     }
 
     #[test]

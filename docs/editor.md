@@ -65,8 +65,8 @@ What happens then:
 paints an inverted status row — path, `[modified]`, `line:column`, `F1 help` —
 along the bottom. Integrated, that row is a second copy of what the pane's HTML
 chrome already shows, so the TUI drops it and gives the whole height to the
-buffer. A prompt (find, go-to-line, confirm) and a transient message still take
-the last row in both modes; only the idle bar and successful save messages are silenced. The file tab marks
+buffer. A prompt (replace, go-to-line, confirm) and a transient message still take
+the last row in both modes (find is the pane's own panel under the daemon, below); only the idle bar and successful save messages are silenced. The file tab marks
 unsaved changes with a dot until the daemon confirms the save. Closing one or
 several unsaved tabs asks for confirmation before detaching their buffers.
 
@@ -254,9 +254,17 @@ opened, so narrowing a query lands on the same match instead of walking forward
 one hit per keystroke; Enter steps to the next. Every hit in view is underlined,
 not just the one the caret is on, and the status says `pattern: 3/41` — counted
 at the gesture and never on a caret move, which would be a document scan on the
-movement rung. The counter lives in the editor's own prompt row rather than the
-GUI header: it is on screen exactly when it is relevant, and a second copy in
-the chrome would be stale the moment Escape closed the bar. With the bar closed,
+movement rung. That row is the standalone editor's.
+
+**Under the daemon, find is a GUI panel.** `Ctrl-F` opens a panel over the top
+right of the pane — a field, `3 of 12`, case / whole-word / regex toggles,
+previous, next and close — instead of the row. The editor still owns the query,
+the search and the marks: the panel sends `EditorFind` (`DaemonMessage::Find` on
+the control channel) and renders the `find` the editor reports on its state. The
+count is capped at 5 000 and recounted only when the query or the document
+version changes, never per frame; `focus` is bumped on every open gesture so a
+second `Ctrl-F` puts the caret back in the field. Escape in either place closes
+it and keeps the pattern. With the bar closed,
 a short single-line selection underlines its *other* occurrences
 (`highlightSelectionMatches`), and that lookup stays literal even when find is
 in regex mode: a selected `a.c` means `a.c`.
@@ -451,22 +459,25 @@ HTML context menu).
 
 ## Language
 
-Seven grammars, chosen by extension. Extension only: sniffing content would have
-to be undone the moment a person types, and a shebang is a guess.
+Eight grammars, chosen by the file name: its extension, plus a few basenames
+that have none (`.env`, `.env.*`, `Makefile`, `GNUmakefile`). Never by content:
+sniffing it would have to be undone the moment a person types, and a shebang is
+a guess.
 
 | Grammar | Extensions | What it knows |
 | --- | --- | --- |
 | Rust | `rs` | line and block comments, attributes, strings and char literals (a lifetime is not a string), numbers, keywords, `Type` by leading capital, `name(` as a call |
-| C-like | `ts` `tsx` `js` `jsx` `mjs` `cjs` `go` `java` `kt` `c` `h` `cc` `cpp` `hpp` `cs` `swift` `scala` `php` `dart` | the same, without Rust's attributes and lifetimes |
+| C-like | `ts` `tsx` `js` `jsx` `mjs` `cjs` `go` `java` `kt` `kts` `c` `h` `cc` `cpp` `hpp` `cs` `swift` `scala` `php` `dart` `prisma` | the same, without Rust's attributes and lifetimes |
 | Python | `py` `pyi` | `#` comments, triple-quoted strings, numbers, keywords, calls |
 | JSON | `json` | keys apart from values, numbers, `true`/`false`/`null` |
-| Keyed | `toml` `yaml` `yml` `ini` `cfg` `conf` `env` | `[section]`, `key =` / `key:`, quoted values, `#`/`;` comments |
-| Shell | `sh` `bash` `zsh` `fish` | `#` comments, quotes, `$VAR` and `${...}`, keywords |
+| Keyed | `toml` `yaml` `yml` `ini` `cfg` `conf` `env`, `.env`, `.env.*` | `[section]`, `key =` / `key:`, dotenv's `export KEY=`, quoted values, `#`/`;` comments |
+| Shell | `sh` `bash` `zsh` `fish` `mk` `make`, `Makefile`, `GNUmakefile` | `#` comments, quotes, `$VAR` and `${...}`, keywords |
 | Markdown | `md` `markdown` `mdx` | headings, quotes, fenced and inline code, links, list bullets |
+| HTML | `html` `htm` `xhtml` `xml` `svg` | comments, doctype and processing instructions, tags, attributes, quoted values, entities; `script`/`style`/`textarea`/`title` bodies stay plain so a `<` there is not a tag |
 
 Everything else is plain, which is the honest answer rather than a wrong colour.
-Against CodeMirror's language packs the gaps are HTML/XML, CSS/SCSS, SQL, Ruby,
-Lua, Haskell and the rest of the long tail; each is a scanner arm here, not a
+Against CodeMirror's language packs the gaps are CSS/SCSS, SQL, Ruby, Lua,
+Haskell and the rest of the long tail; each is a scanner arm here, not a
 dependency.
 
 Ten scopes reach the terminal as the ANSI 16, and that is not a limitation in

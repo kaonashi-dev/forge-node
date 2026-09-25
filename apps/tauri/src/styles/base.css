@@ -636,7 +636,7 @@ html[data-platform="macos"] .title-bar-inset {
    ring) or waiting on a person (a dot with a halo), and the marker's name says
    it in words. */
 .forge-state-marker {
-  --marker-size: 8px;
+  --marker-size: 6px;
   align-items: center;
   display: inline-flex;
   flex: none;
@@ -651,10 +651,15 @@ html[data-platform="macos"] .title-bar-inset {
   width: var(--marker-size);
 }
 .forge-state-lg {
-  --marker-size: 10px;
+  --marker-size: 8px;
 }
 .forge-state-dot::before {
   background: currentColor;
+}
+/* Settled-and-fine is the common case, so it recedes; the states that need a
+   look keep full strength. */
+.forge-state-dot.forge-icon-green::before {
+  opacity: 0.55;
 }
 .forge-state-ring::before {
   border: 1.5px solid currentColor;

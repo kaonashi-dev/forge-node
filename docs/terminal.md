@@ -121,8 +121,12 @@ A GUI launched from Finder or a launcher does not inherit an interactive
 shell's `PATH`, so the daemon runs once at startup:
 
 ```
-<shell> -l -c 'printf __FORGE_ENV_BEGIN__; env -0; printf __FORGE_ENV_END__'
+<shell> -l -i -c 'printf __FORGE_ENV_BEGIN__; env -0; printf __FORGE_ENV_END__'
 ```
+
+`-i` is what picks up `.zshrc` PATH prepends (native CLIs in `~/.local/bin`).
+Login-only (`-l`) sources `.zprofile`, where Homebrew puts itself first, and
+would keep detecting a stale cask next to a newer install.
 
 with a 5 s timeout, parses the NUL-separated variables between the sentinels
 (multi-line values stay unambiguous) and caches the result as

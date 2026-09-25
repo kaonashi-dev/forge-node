@@ -33,6 +33,50 @@
 .center-slot.split {
   grid-template-columns: minmax(0, 1fr) var(--forge-handle-w) var(--session-split-w);
 }
+
+.center-stack.pane-split {
+  grid-template-columns: minmax(0, var(--split-a, 1fr)) var(--forge-handle-w) minmax(
+      0,
+      var(--split-b, 1fr)
+    );
+}
+.center-stack.pane-split.split-code > .center-view {
+  grid-column: 1;
+}
+.center-stack.pane-split.split-code > .pane-split-handle {
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+.center-stack.pane-split.split-code > .center-slot {
+  grid-column: 3;
+  visibility: visible;
+}
+.center-stack.pane-split.split-code > .center-slot.hidden {
+  visibility: visible;
+}
+.center-stack.pane-split.split-code:has(.workbench-strip) > .center-slot,
+.center-stack.pane-split.split-code:has(.workbench-strip) > .center-view,
+.center-stack.pane-split.split-code:has(.workbench-strip) > .pane-split-handle {
+  grid-row: 2;
+}
+.center-stack.pane-split.split-code > .workbench-strip {
+  grid-column: 1 / -1;
+}
+.center-stack.pane-split.split-session > .center-slot {
+  grid-column: 1;
+  grid-row: 1 / -1;
+}
+.center-stack.pane-split.split-session > .pane-split-handle {
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+.center-stack.pane-split.split-session > .pane-split-extra {
+  grid-column: 3;
+  grid-row: 1 / -1;
+}
+.center-stack.pane-split > .disconnected-banner {
+  grid-column: 1 / -1;
+}
 /* Header, then grid. The header only exists with a session, so the grid's row
    is the one that takes the height. */
 .terminal-slot {
@@ -56,7 +100,7 @@
   display: flex;
   gap: var(--space-10);
   grid-row: 1;
-  height: 46px;
+  height: var(--forge-tab-h);
   min-width: 0;
   padding: 0 var(--space-12) 0 var(--space-16);
 }
@@ -301,24 +345,17 @@
   color: var(--fg-default);
 }
 .workbench-tab-dirty {
-  display: none;
+  display: block;
   width: 7px;
   height: 7px;
   margin: calc(var(--space-6) / 2);
   border-radius: 50%;
   background: var(--warning-text);
+  flex: none;
 }
-.workbench-tab.dirty .workbench-tab-dirty {
-  display: block;
-}
-.workbench-tab.dirty .workbench-tab-close-icon {
-  display: none;
-}
-.workbench-tab.dirty .workbench-tab-close:hover .workbench-tab-dirty {
-  display: none;
-}
-.workbench-tab.dirty .workbench-tab-close:hover .workbench-tab-close-icon {
-  display: block;
+.workbench-tab-close-hit {
+  display: inline-flex;
+  flex: none;
 }
 /* A tab is one line. Left to wrap, a long name doubles the strip's height and
    pushes the editor down by a row that is not there a moment later. */

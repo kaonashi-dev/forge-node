@@ -16,6 +16,7 @@ import { addProjectFromPicker } from "../../features/projects/commands";
 import { closeSession } from "../../features/sessions/commands";
 import { setAppState } from "../../features/settings/commands";
 import { scrollTerminal } from "../../features/terminal/commands";
+import { focusedTerminalId } from "../../features/terminal/focus";
 import { startAppRuntime } from "../lifecycle/index";
 import { startGitSync } from "../../features/git/gitSync";
 import { startCheckoutWatch } from "../integrations/checkoutWatch";
@@ -48,6 +49,7 @@ import {
   closeOtherViews,
   closeViewsToRight,
 } from "../../features/editor/tabs";
+import { centerSplit } from "../../navigation/centerSplitStore";
 import { openEditor } from "../../features/editor/open";
 import {
   DENSITY_KEY,
@@ -99,8 +101,10 @@ import {
 import {
   currentWorkspace as sharedWorkspace,
   focusSession,
+  joinPanes,
   launchAgent,
   launchShell,
+  splitPane,
   restoreWorkspace,
   openCheckoutReview,
   startHandoff,
@@ -135,6 +139,8 @@ import { gitStore, setGitStore } from "../../features/git/state";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
 
 const TAB_ORDER_KEY = "ui.tab_order";
+
+const NOTICE_DISMISS_MS = 6000;
 
 export function AppShell() {
   const [sidebarWidth, setSidebarWidth] = createSignal(SIDEBAR_RANGE.fallback);
@@ -338,8 +344,12 @@ export function AppShell() {
    * the last one); on the terminal it closes the session.
    */
   function closeActive(): void {
-    const target = closeTarget(centerMode(), currentViews());
+    const target = closeTarget(centerMode(), currentViews(), centerSplit(), settings());
     if (target.kind === "none") return;
+    if (target.kind === "unsplit") {
+      joinPanes();
+      return;
+    }
     if (target.kind === "view") {
       closeView(target.view);
       return;
@@ -476,6 +486,8 @@ export function AppShell() {
         () => void launchShell(currentWorkspace()).catch(() => undefined),
       ),
       registerAction("new_agent", launchDefaultAgent),
+      registerAction("split_pane", splitPane),
+      registerAction("join_panes", joinPanes),
       registerAction("close_session", closeActive),
       registerAction("next_session", () => cycleTab(1)),
       registerAction("previous_session", () => cycleTab(-1)),
@@ -533,8 +545,14 @@ export function AppShell() {
       registerAction("add_project", () => {
         void addProjectFromPicker(null).catch(() => undefined);
       }),
-      registerAction("scroll_up", () => void scrollTerminal(pageLines()).catch(() => undefined)),
-      registerAction("scroll_down", () => void scrollTerminal(-pageLines()).catch(() => undefined)),
+      registerAction("scroll_up", () => {
+        const id = focusedTerminalId();
+        void scrollTerminal(pageLines(), id === "main" ? undefined : id).catch(() => undefined);
+      }),
+      registerAction("scroll_down", () => {
+        const id = focusedTerminalId();
+        void scrollTerminal(-pageLines(), id === "main" ? undefined : id).catch(() => undefined);
+      }),
       registerAction("editor_zoom_in", () =>
         bumpScale(EDITOR_FONT_SIZE_KEY, 1, EDITOR_FONT_SIZE_RANGE),
       ),
@@ -612,6 +630,35 @@ export function AppShell() {
     });
   });
 
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  // Tracked apart: a new notice arriving under the pointer must not start the
+  // timer, and leaving with the pointer while focus stays inside must not either.
+  const noticeHeld = { pointer: false, focus: false };
+  function armNotice(): void {
+    clearTimeout(noticeTimer);
+    if (connectionStore.notice && !noticeHeld.pointer && !noticeHeld.focus) {
+      noticeTimer = setTimeout(() => setNotice(null), NOTICE_DISMISS_MS);
+    }
+  }
+  function holdNotice(by: keyof typeof noticeHeld): void {
+    noticeHeld[by] = true;
+    clearTimeout(noticeTimer);
+  }
+  function releaseNotice(by: keyof typeof noticeHeld): void {
+    noticeHeld[by] = false;
+    armNotice();
+  }
+  createEffect(() => {
+    if (connectionStore.notice) {
+      armNotice();
+      return;
+    }
+    // The element is gone, and with it any leave event still owed.
+    noticeHeld.pointer = false;
+    noticeHeld.focus = false;
+    clearTimeout(noticeTimer);
+  });
+  onCleanup(() => clearTimeout(noticeTimer));
   return (
     <main class="app-shell">
       <TitleBar
@@ -649,11 +696,18 @@ export function AppShell() {
         </Show>
         <CenterStack settings={settings()} settingsSection={settingsSection()} />
       </div>
-      {/* What the host refused, and why. Dismissed by hand rather than on a
-          timer: a message that vanishes before it is read is not a message. */}
+      {/* What the host refused, and why. It leaves on its own, but never while
+          the pointer or focus is on it, so it cannot vanish mid-read. */}
       <Show when={connectionStore.notice}>
         {(reason) => (
-          <div class="notice" role="status">
+          <div
+            class="notice"
+            role="status"
+            onPointerEnter={() => holdNotice("pointer")}
+            onPointerLeave={() => releaseNotice("pointer")}
+            onFocusIn={() => holdNotice("focus")}
+            onFocusOut={() => releaseNotice("focus")}
+          >
             <span>{reason()}</span>
             <IconButton
               label="Dismiss"

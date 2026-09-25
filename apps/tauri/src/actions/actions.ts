@@ -61,6 +61,8 @@ export type ActionId =
   | "go_to"
   | "find_command"
   | "new_terminal"
+  | "split_pane"
+  | "join_panes"
   | "new_agent"
   | "new_worktree"
   | "open_settings"
@@ -144,6 +146,20 @@ export const ACTIONS: Action[] = [
     label: "New Terminal",
     detail: "Shell session in the active workspace",
     palette: true,
+  },
+  {
+    id: "split_pane",
+    label: "Split Pane",
+    detail: "A terminal beside this terminal, or beside the open file",
+    palette: true,
+    repeats: false,
+  },
+  {
+    id: "join_panes",
+    label: "Join Panes",
+    detail: "Close the extra column; its session keeps running",
+    palette: true,
+    repeats: false,
   },
   {
     id: "new_agent",
@@ -580,6 +596,13 @@ export function defaultBindings(): Binding[] {
     bind(`${MOD}-shift-o`, "go_to", APP),
     bind(`${MOD}-shift-p`, "find_command", APP),
     bind(`${MOD}-t`, "new_terminal", APP),
+    /*
+     * iTerm's chord on macOS. On Linux `MOD` is `ctrl`, and `ctrl-d` is EOF
+     * in the PTY, so the split takes a shift rather than steal that byte.
+     */
+    ...(isMac()
+      ? [bind("cmd-d", "split_pane", TERMINAL), bind("cmd-d", "split_pane", EDITOR)]
+      : [bind("ctrl-shift-d", "split_pane", TERMINAL), bind("ctrl-shift-d", "split_pane", EDITOR)]),
     bind(`${MOD}-shift-a`, "new_agent", APP),
     bind(`${MOD}-shift-n`, "new_worktree", APP),
     bind(`${MOD}-,`, "open_settings", APP),

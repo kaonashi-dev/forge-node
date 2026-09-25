@@ -10,12 +10,27 @@ import { forgeStore } from "../../state/forgeStore";
 import { beginSessionLaunch, connectionStore } from "../../state/connection";
 import { requestHandoff, requestSendContext, requestSpawnChild } from "./dialogs";
 import { setSplitOpen, splitOpen } from "../git/sessionChangesStore";
-import { openReview, showSession } from "../../navigation/viewsStore";
-import { newAgent, newShell, selectSession } from "./commands";
+import { centerMode, currentViews, openReview, showSession } from "../../navigation/viewsStore";
+import {
+  centerSplit,
+  closeSplit,
+  focusSplitPane,
+  openCodeSplit,
+} from "../../navigation/centerSplitStore";
+import { canSplitCenter, visibleSplit } from "../../navigation/centerSplit";
+import {
+  newAgent,
+  newShell,
+  restartSession,
+  selectSession,
+  splitShell,
+  detachSplit,
+} from "./commands";
 import { reopenTerminalEditor } from "../editor/cells/commands";
 import { sessionTabLabel } from "./attention";
 import { focusTerminal } from "../terminal/focus";
-import type { ExternalAgentSession, Session, Workspace } from "../../contracts/runtime";
+import { hasExited } from "./exited";
+import { type ExternalAgentSession, type Session, type Workspace } from "../../contracts/runtime";
 import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "../../state/preferences";
 import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
 import { draftWithJuva, loadWorkspaceReview } from "../git/commands";
@@ -78,13 +93,30 @@ export function focusSession(session: string): void {
     void reopenTerminalEditor(row.id).catch(() => undefined);
     return;
   }
+  const split = visibleSplit(centerSplit(), false, centerMode(), currentViews().active);
+  if (split === "session" && centerSplit().extra === session) {
+    focusSplitPane("extra");
+    if (row?.workspace_id) focusWorkspace(row.workspace_id);
+    focusTerminal(session);
+    return;
+  }
+  // Opening an exited session means running it again; the host follows the
+  // restart onto its new terminal.
+  if (row && hasExited(row)) void restartSession(session).catch(() => undefined);
   // Before `showSession`: raising the centre column wakes the focus-ring
   // effect, and the pending selection is what stops it recording the terminal
   // this call is leaving.
-  void selectSession(session).catch(() => undefined);
-  showSession();
+  else void selectSession(session).catch(() => undefined);
+  if (split === "code") {
+    // The file stays; this tab is the terminal column beside it.
+    focusSplitPane("extra");
+  } else if (split === "session") {
+    focusSplitPane("primary");
+  } else {
+    showSession();
+  }
   if (row?.workspace_id) focusWorkspace(row.workspace_id);
-  focusTerminal();
+  focusTerminal(centerSplit().extra === session ? session : "main");
 }
 
 /**
@@ -123,6 +155,31 @@ export function launchAgent(...args: Parameters<typeof newAgent>): Promise<void>
 export function sessionChangesOpen(): boolean {
   const session = activeSession();
   return splitOpen(session?.id ?? null, readFlag(SESSION_SPLIT_OPEN_KEY, false));
+}
+
+/**
+ * Cmd+D: a terminal beside this terminal, or beside the open file.
+ *
+ * A second press is a no-op — there is one extra column, not a tree of
+ * them. Diff, search and pull-request views are not a split surface.
+ */
+export function splitPane(): void {
+  if (centerSplit().kind !== "closed") return;
+  if (!canSplitCenter(centerMode(), currentViews().active)) return;
+  if (centerMode() === "code") {
+    openCodeSplit();
+    if (!connectionStore.activeSession) {
+      void newShell(currentWorkspace()).catch(() => undefined);
+    }
+    return;
+  }
+  void splitShell(currentWorkspace()).catch(() => undefined);
+}
+
+export function joinPanes(): void {
+  const extra = centerSplit().extra;
+  closeSplit();
+  if (extra) void detachSplit(extra).catch(() => undefined);
 }
 
 export function toggleSessionChanges(): void {

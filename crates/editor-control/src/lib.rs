@@ -18,7 +18,8 @@ pub mod view;
 
 pub use message::{
     version_matches, DaemonMessage, EditorMessage, EditorStateWire, WireDiagnostic, WireEdit,
-    WireMark, WireMarkKind, WirePlace, WireSeverity, MAX_CARET_LINE_BYTES, MAX_PLACES,
+    WireFind, WireFindCommand, WireMark, WireMarkKind, WirePlace, WireSeverity,
+    MAX_CARET_LINE_BYTES, MAX_FIND_COUNT, MAX_FIND_PATTERN_BYTES, MAX_PLACES,
 };
 pub use view::{
     modifiers, EditorInput, ViewFrame, ViewRequest, ViewRow, WireCaret, WireDecoration,
@@ -29,7 +30,7 @@ pub use view::{
 
 /// Version of the control wire. The handshake refuses any other value, the way
 /// `protocol::PROTOCOL_VERSION` does for the client wire.
-pub const CONTROL_VERSION: u16 = 4;
+pub const CONTROL_VERSION: u16 = 5;
 
 /// Hard cap for one decoded control frame.
 ///
@@ -222,6 +223,17 @@ mod tests {
                 column: Some(4),
             },
             DaemonMessage::GetState { request_id: 3 },
+            DaemonMessage::Find {
+                command: WireFindCommand::Set {
+                    pattern: "llvm".into(),
+                    case_sensitive: true,
+                    whole_word: false,
+                    regex: false,
+                },
+            },
+            DaemonMessage::Find {
+                command: WireFindCommand::Previous,
+            },
             DaemonMessage::GitMarks {
                 request_id: 7,
                 marks: vec![WireMark {
@@ -294,6 +306,13 @@ mod tests {
                     selection_length: 0,
                     cursor_count: 1,
                     status: String::new(),
+                    find: Some(WireFind {
+                        focus: 2,
+                        pattern: "llvm".into(),
+                        total: 12,
+                        index: 3,
+                        ..WireFind::default()
+                    }),
                 },
             },
             EditorMessage::State {
