@@ -4024,9 +4024,8 @@ impl Daemon {
         session_id: SessionId,
         command: domain::EditorFindCommand,
     ) -> Result<Response, ProtocolError> {
-        let command = crate::editor_wire::find_command_to_wire(command).ok_or_else(|| {
-            ProtocolError::new(ErrorCode::InvalidRequest, "find pattern is too long")
-        })?;
+        let command = crate::editor_wire::find_command_to_wire(command)
+            .map_err(|reason| ProtocolError::new(ErrorCode::InvalidRequest, reason))?;
         self.send_editor_command(session_id, crate::editor::Outgoing::Find { command })?;
         Ok(Response::Ack)
     }

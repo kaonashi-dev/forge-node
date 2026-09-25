@@ -103,9 +103,12 @@ const MAX_HIGHLIGHT_BYTES: usize = 512 * 1024;
 struct FindPanel {
     /// Matches, counted up to one past [`MAX_FIND_COUNT`].
     total: usize,
-    /// 1-based match a find gesture put the caret on; 0 once it moved away
-    /// from one or the text changed under it.
+    /// 1-based match a find gesture put the caret on; 0 once the text
+    /// changed under it. Reported only while the selection is still `found`.
     index: usize,
+    /// The selection that find gesture left, so a caret move drops the
+    /// position without a rescan.
+    found: Range,
     /// The document version and query `total` was counted against.
     counted: Option<(u64, Query)>,
 }
@@ -1269,7 +1272,11 @@ impl App {
             regex: self.query.regex,
             total: u32::try_from(panel.total.min(cap)).unwrap_or(MAX_FIND_COUNT),
             capped: panel.total > cap,
-            index: u32::try_from(panel.index.min(cap)).unwrap_or(MAX_FIND_COUNT),
+            index: if self.document.selection().range() == panel.found {
+                u32::try_from(panel.index.min(cap)).unwrap_or(MAX_FIND_COUNT)
+            } else {
+                0
+            },
             error: self.query_error.clone(),
         }
     }
@@ -1369,6 +1376,7 @@ impl App {
         };
         if let Some(panel) = self.find_panel.as_mut() {
             panel.index = index;
+            panel.found = range;
         }
     }
 
@@ -3871,6 +3879,18 @@ mod tests {
             app.handle_key(key(KeyCode::Char(character)));
         }
         app.refresh_find();
+        let find = app.wire_state().find.expect("open");
+        assert_eq!((find.total, find.index), (2, 0));
+    }
+
+    #[test]
+    fn moving_the_caret_off_a_match_drops_its_position_but_keeps_the_count() {
+        let mut app = app("alpha alpha\n", false);
+        app.set_integrated();
+        app.find_command(set("alpha"));
+        app.refresh_find();
+        assert_eq!(app.wire_state().find.expect("open").index, 1);
+        app.handle_key(key(KeyCode::End));
         let find = app.wire_state().find.expect("open");
         assert_eq!((find.total, find.index), (2, 0));
     }

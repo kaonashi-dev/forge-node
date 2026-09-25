@@ -190,6 +190,9 @@ pub fn find_all(text: &Text, query: &Query) -> Matches {
 /// How many matches exist, counted without keeping them, up to `limit`.
 #[must_use]
 pub fn count_matches(text: &Text, query: &Query, limit: usize) -> usize {
+    if query.regex {
+        return regex_matches(text, query, 0, |found| found.take(limit).count());
+    }
     scan(text, query).take(limit).count()
 }
 
@@ -209,10 +212,16 @@ pub fn find_in(text: &Text, query: &Query, window: Range) -> Vec<Range> {
     while start > 0 && !text.is_boundary(start) {
         start -= 1;
     }
-    scan_from(text, query, start)
-        .take_while(|range| range.start < window.end)
-        .filter(|range| range.end > window.start)
-        .collect()
+    let visible = |found: &mut dyn Iterator<Item = Range>| {
+        found
+            .take_while(|range| range.start < window.end)
+            .filter(|range| range.end > window.start)
+            .collect()
+    };
+    if query.regex {
+        return regex_matches(text, query, start, visible);
+    }
+    visible(&mut scan_from(text, query, start))
 }
 
 /// How many matches start before `offset`, up to `limit`.
@@ -221,10 +230,16 @@ pub fn find_in(text: &Text, query: &Query, window: Range) -> Vec<Range> {
 /// says where it sits without materialising the ones over it.
 #[must_use]
 pub fn count_matches_before(text: &Text, query: &Query, offset: usize, limit: usize) -> usize {
-    scan(text, query)
-        .take_while(|range| range.start < offset)
-        .take(limit)
-        .count()
+    let before = |found: &mut dyn Iterator<Item = Range>| {
+        found
+            .take_while(|range| range.start < offset)
+            .take(limit)
+            .count()
+    };
+    if query.regex {
+        return regex_matches(text, query, 0, before);
+    }
+    before(&mut scan(text, query))
 }
 
 /// The first match at or after `from`, wrapping to the start of the buffer.
@@ -274,8 +289,9 @@ fn scan<'a>(text: &'a Text, query: &'a Query) -> impl Iterator<Item = Range> + '
 /// A regular expression is matched eagerly into a `Vec` rather than lazily:
 /// the compiled program lives in a thread-local the iterator cannot borrow
 /// across a yield, and the result is bounded by the same caps the literal path
-/// has. A pattern that does not compile matches nothing, which is what an
-/// unfinished `(` being typed should do.
+/// has; a caller that needs only a prefix uses [`regex_matches`] instead. A
+/// pattern that does not compile matches nothing, which is what an unfinished
+/// `(` being typed should do.
 fn scan_from<'a>(
     text: &'a Text,
     query: &'a Query,
@@ -289,23 +305,39 @@ fn scan_from<'a>(
 
 /// Regex matches from `from`, capped like every other listing.
 fn scan_regex(text: &Text, query: &Query, from: usize) -> Vec<Range> {
+    regex_matches(text, query, from, |found| {
+        found.take(MAX_REPLACE_MATCHES).collect()
+    })
+}
+
+/// Hand `consume` the regex's matches from `from`, lazily.
+///
+/// A count or a viewport needs a prefix of the matches, and going through
+/// [`scan_regex`] would first collect up to [`MAX_REPLACE_MATCHES`] of them
+/// across the whole buffer — on every find keystroke and every edit while the
+/// panel is open. An invalid or empty pattern hands over no matches.
+fn regex_matches<T: Default>(
+    text: &Text,
+    query: &Query,
+    from: usize,
+    consume: impl FnOnce(&mut dyn Iterator<Item = Range>) -> T,
+) -> T {
     if query.pattern.is_empty() {
-        return Vec::new();
+        return T::default();
     }
     let haystack = text.as_str();
     let from = from.min(haystack.len());
     query.compiled(|program| {
         let Ok(program) = program else {
-            return Vec::new();
+            return T::default();
         };
-        program
+        let mut found = program
             .find_iter(&haystack[from..])
             // An empty match (`a*` against `b`) would otherwise be returned
             // once per byte and never advance a find-next.
             .filter(|found| found.end() > found.start())
-            .take(MAX_REPLACE_MATCHES)
-            .map(|found| Range::new(from + found.start(), from + found.end()))
-            .collect()
+            .map(|found| Range::new(from + found.start(), from + found.end()));
+        consume(&mut found)
     })
 }
 
@@ -556,5 +588,21 @@ mod tests {
         let reused = COMPILED.with(|slot| slot.borrow().is_some());
         assert!(reused, "the program stayed for the next scan");
         assert_eq!(count_matches(&body, &query, 10), 2);
+    }
+
+    #[test]
+    fn regex_counts_and_windows_stop_where_their_caller_does() {
+        let body = text("ab ab ab ab ab\n");
+        let query = Query::literal("a.").regular_expression();
+        assert_eq!(count_matches(&body, &query, 3), 3);
+        assert_eq!(count_matches(&body, &query, 100), 5);
+        assert_eq!(count_matches_before(&body, &query, 6, 100), 2);
+        assert_eq!(
+            find_in(&body, &query, Range::new(4, 7)),
+            vec![Range::new(3, 5), Range::new(6, 8)]
+        );
+        let broken = Query::literal("(").regular_expression();
+        assert_eq!(count_matches(&body, &broken, 100), 0);
+        assert!(find_in(&body, &broken, Range::new(0, 5)).is_empty());
     }
 }

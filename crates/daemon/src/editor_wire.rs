@@ -121,14 +121,19 @@ pub fn input_to_wire(events: Vec<EditorInputEvent>) -> Vec<EditorInput> {
         .collect()
 }
 
-/// Cut committed text on a char boundary, never mid-code-point.
-/// A find-panel command for the editor, or `None` for a pattern over the limit.
+// The daemon refuses at the request and the editor again at its port; two
+// different limits would let one side accept what the other drops.
+const _: () = assert!(MAX_EDITOR_FIND_PATTERN_BYTES == editor_control::MAX_FIND_PATTERN_BYTES);
+
+/// A find-panel command for the editor, or why it is refused.
 ///
-/// Refused whole rather than cut: half a pattern searches for something the
-/// person did not type.
-#[must_use]
-pub fn find_command_to_wire(command: EditorFindCommand) -> Option<WireFindCommand> {
-    Some(match command {
+/// A pattern over the limit is refused whole rather than cut: half a pattern
+/// searches for something the person did not type.
+///
+/// # Errors
+/// The reason, for an `InvalidRequest`.
+pub fn find_command_to_wire(command: EditorFindCommand) -> Result<WireFindCommand, &'static str> {
+    Ok(match command {
         EditorFindCommand::Set {
             pattern,
             case_sensitive,
@@ -136,7 +141,7 @@ pub fn find_command_to_wire(command: EditorFindCommand) -> Option<WireFindComman
             regex,
         } => {
             if pattern.len() > MAX_EDITOR_FIND_PATTERN_BYTES {
-                return None;
+                return Err("find pattern is too long");
             }
             WireFindCommand::Set {
                 pattern,
@@ -148,7 +153,7 @@ pub fn find_command_to_wire(command: EditorFindCommand) -> Option<WireFindComman
         EditorFindCommand::Next => WireFindCommand::Next,
         EditorFindCommand::Previous => WireFindCommand::Previous,
         EditorFindCommand::Close => WireFindCommand::Close,
-        _ => return None,
+        _ => return Err("this editor does not know that find command"),
     })
 }
 
@@ -168,6 +173,7 @@ pub fn find_to_domain(find: WireFind) -> EditorFind {
     }
 }
 
+/// Cut committed text on a char boundary, never mid-code-point.
 fn clamp_text(mut text: String) -> String {
     if text.len() <= MAX_EDITOR_TEXT_BYTES {
         return text;
@@ -332,7 +338,7 @@ mod tests {
         };
         assert_eq!(
             find_command_to_wire(set("llvm".into())),
-            Some(WireFindCommand::Set {
+            Ok(WireFindCommand::Set {
                 pattern: "llvm".into(),
                 case_sensitive: false,
                 whole_word: true,
@@ -341,11 +347,11 @@ mod tests {
         );
         assert_eq!(
             find_command_to_wire(set("x".repeat(MAX_EDITOR_FIND_PATTERN_BYTES + 1))),
-            None
+            Err("find pattern is too long")
         );
         assert_eq!(
             find_command_to_wire(EditorFindCommand::Next),
-            Some(WireFindCommand::Next)
+            Ok(WireFindCommand::Next)
         );
     }
 }

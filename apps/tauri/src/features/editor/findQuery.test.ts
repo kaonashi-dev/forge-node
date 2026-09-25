@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { EditorFind } from "../../contracts/runtime";
-import { findCounter, findKeyCommand, flagsOf, setFind } from "./findQuery";
+import {
+  MAX_FIND_PATTERN_BYTES,
+  findCounter,
+  findKeyCommand,
+  findPatternTooLong,
+  flagsOf,
+  setFind,
+} from "./findQuery";
 
 const find = (partial: Partial<EditorFind> = {}): EditorFind => ({
   focus: 1,
@@ -53,5 +60,19 @@ describe("setFind", () => {
     expect(setFind("x", flagsOf(find({ regex: true })))).toEqual({
       Set: { pattern: "x", case_sensitive: false, whole_word: false, regex: true },
     });
+  });
+});
+
+describe("findPatternTooLong", () => {
+  it("counts bytes, as the daemon does, not UTF-16 units", () => {
+    expect(findPatternTooLong("a".repeat(MAX_FIND_PATTERN_BYTES))).toBe(false);
+    expect(findPatternTooLong("a".repeat(MAX_FIND_PATTERN_BYTES + 1))).toBe(true);
+    expect(findPatternTooLong("é".repeat(MAX_FIND_PATTERN_BYTES / 2))).toBe(false);
+    expect(findPatternTooLong("é".repeat(MAX_FIND_PATTERN_BYTES / 2 + 1))).toBe(true);
+  });
+
+  it("says so rather than the count for the last pattern the editor took", () => {
+    const long = "x".repeat(MAX_FIND_PATTERN_BYTES + 1);
+    expect(findCounter(find(), long)).toBe("Pattern is too long");
   });
 });

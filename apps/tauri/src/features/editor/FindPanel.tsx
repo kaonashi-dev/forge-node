@@ -1,9 +1,9 @@
 import { createEffect, createSignal, on } from "solid-js";
 import type { EditorFind, EditorFindCommand, EditorFindFlags } from "../../contracts/runtime";
 import { Icon } from "../../theme/icons/index";
-import { Button, IconButton, TextField } from "../../ui/index";
+import { Button, IconButton, TextField, Tooltip } from "../../ui/index";
 import { editorFind } from "./commands";
-import { findCounter, findKeyCommand, flagsOf, setFind } from "./findQuery";
+import { findCounter, findKeyCommand, findPatternTooLong, flagsOf, setFind } from "./findQuery";
 
 const TOGGLES: { flag: keyof EditorFindFlags; glyph: string; label: string }[] = [
   { flag: "case_sensitive", glyph: "Aa", label: "Match case" },
@@ -28,6 +28,7 @@ export function FindPanel(props: {
   const [typed, setTyped] = createSignal(props.find().pattern);
 
   function send(command: EditorFindCommand): void {
+    if (typeof command === "object" && findPatternTooLong(command.Set.pattern)) return;
     void editorFind(props.session, command).catch(() => undefined);
   }
 
@@ -86,14 +87,16 @@ export function FindPanel(props: {
           onChange={onType}
           aria-label="Find"
           placeholder="Find"
-          invalid={props.find().error !== null}
+          invalid={props.find().error !== null || findPatternTooLong(typed())}
           ref={(element) => (input = element)}
           onKeyDown={onKeyDown}
           leading={<Icon name="search" size={12} class="forge-icon-muted" />}
         />
         <span
           class="editor-find-count"
-          classList={{ "editor-find-error": props.find().error !== null }}
+          classList={{
+            "editor-find-error": props.find().error !== null || findPatternTooLong(typed()),
+          }}
           role="status"
           aria-live="polite"
         >
@@ -101,17 +104,18 @@ export function FindPanel(props: {
         </span>
         <div class="editor-find-toggles" role="group" aria-label="Search options">
           {TOGGLES.map((toggleDef) => (
-            <Button
-              variant="ghost"
-              size="xs"
-              class="editor-find-toggle"
-              aria-label={toggleDef.label}
-              title={toggleDef.label}
-              selected={props.find()[toggleDef.flag]}
-              onClick={() => toggle(toggleDef.flag)}
-            >
-              {toggleDef.glyph}
-            </Button>
+            <Tooltip label={toggleDef.label}>
+              <Button
+                variant="ghost"
+                size="xs"
+                class="editor-find-toggle"
+                aria-label={toggleDef.label}
+                selected={props.find()[toggleDef.flag]}
+                onClick={() => toggle(toggleDef.flag)}
+              >
+                {toggleDef.glyph}
+              </Button>
+            </Tooltip>
           ))}
         </div>
         <IconButton
