@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub enum ClientKind {
     /// The desktop GUI.
     Gui,
+    /// `forgectl` and other socket clients that must not receive terminal chatter.
+    Cli,
     /// A client kind this build does not recognize (forward compatibility).
     #[serde(other)]
     Unknown,

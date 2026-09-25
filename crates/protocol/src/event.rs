@@ -1,8 +1,9 @@
 //! Domain events are broadcast; terminal deltas go only to attached subscribers.
 
+use domain::orchestration::{Attempt, Run, Task};
 use domain::{
     AgentProfile, DetectionResult, EditorFrame, JuvaDraft, Project, ProjectGroup, ProjectGroupId,
-    ProjectId, ProviderUsage, PullRequestState, Session, SessionId, ShareAction, ShareRule,
+    ProjectId, ProviderUsage, PullRequestState, RunId, Session, SessionId, ShareAction, ShareRule,
     ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot, Workspace, WorkspaceId,
     WorktreeIgnore,
 };
@@ -217,6 +218,24 @@ pub enum DaemonEvent {
     DaemonShuttingDown {
         /// Why the daemon is shutting down.
         reason: String,
+    },
+    RunUpdated(Run),
+    TaskUpdated(Task),
+    AttemptUpdated(Attempt),
+    RunRemoved {
+        run_id: RunId,
+    },
+    /// No body. Clients re-read the inbox.
+    MailboxChanged {
+        session_id: Option<SessionId>,
+        run_id: Option<RunId>,
+        unread: u32,
+    },
+    /// No value. Clients re-read the key.
+    RunStateChanged {
+        run_id: RunId,
+        key: String,
+        version: u64,
     },
 }
 

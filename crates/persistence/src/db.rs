@@ -8,8 +8,8 @@ use rusqlite::{params, Connection};
 
 use crate::migrations::migrations;
 use crate::repositories::{
-    AgentProfileRepo, AppStateRepo, ContextRepo, IgnoreRepo, ProjectGroupRepo, ProjectRepo,
-    ProviderOverrideRepo, SessionRepo, ShareRepo, WorkspaceRepo,
+    AgentProfileRepo, AppStateRepo, ContextRepo, IgnoreRepo, OrchestrationRepo, ProjectGroupRepo,
+    ProjectRepo, ProviderOverrideRepo, SessionRepo, ShareRepo, WorkspaceRepo,
 };
 
 /// Errors produced by the persistence layer.
@@ -179,7 +179,13 @@ impl Db {
     pub fn reset(&mut self) -> Result<(), DbError> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
-            "DELETE FROM context_envelopes;
+            "DELETE FROM orchestration_receipts;
+             DELETE FROM run_state;
+             DELETE FROM attempts;
+             DELETE FROM task_deps;
+             DELETE FROM tasks;
+             DELETE FROM runs;
+             DELETE FROM context_envelopes;
              DELETE FROM sessions;
              DELETE FROM workspaces;
              DELETE FROM projects;
@@ -216,6 +222,11 @@ impl Db {
     #[must_use]
     pub fn context(&self) -> ContextRepo<'_> {
         ContextRepo::new(&self.conn)
+    }
+
+    #[must_use]
+    pub fn orchestration(&self) -> OrchestrationRepo<'_> {
+        OrchestrationRepo::new(&self.conn)
     }
 
     #[must_use]

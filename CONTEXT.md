@@ -9,7 +9,8 @@ nothing.
 
 The glossary lives in [`docs/domain.md`](docs/domain.md): Project group,
 Project, Workspace, Session, Terminal, Agent provider, session graph, context
-envelope, managed worktree.
+envelope, managed worktree, run, task, attempt, board, controller.
+Orchestration: [`docs/orchestration.md`](docs/orchestration.md).
 
 ## Map
 

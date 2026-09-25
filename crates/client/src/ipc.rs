@@ -167,12 +167,22 @@ impl Client {
         socket_path: &Path,
         client_version: impl Into<String>,
     ) -> Result<Self, ClientError> {
+        Self::connect_as(socket_path, client_version, ClientKind::Gui)
+    }
+
+    /// Connect as `kind`. `forgectl` uses [`ClientKind::Cli`] so terminal
+    /// chatter is not queued onto a long wait.
+    pub fn connect_as(
+        socket_path: &Path,
+        client_version: impl Into<String>,
+        kind: ClientKind,
+    ) -> Result<Self, ClientError> {
         let mut stream = UnixStream::connect(socket_path)?;
 
         let hello = ClientMessage::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
             client_version: client_version.into(),
-            client_kind: ClientKind::Gui,
+            client_kind: kind,
         });
         write_frame(&mut stream, &hello)?;
 
@@ -1859,6 +1869,7 @@ mod tests {
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
             pull_requests: Box::new(domain::PullRequestState::default()),
+            runs: vec![],
             usage: vec![],
         };
         let server_expected = expected.clone();

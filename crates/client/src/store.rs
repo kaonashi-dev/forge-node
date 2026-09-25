@@ -63,6 +63,8 @@ pub struct Store {
     pub usage: Vec<ProviderUsage>,
     /// Complete cached pull-request state from the daemon.
     pub pull_requests: PullRequestState,
+    /// Active orchestration runs from the snapshot. The GUI does not draw them yet.
+    pub runs: Vec<domain::orchestration::RunView>,
     /// Cell replicas for the terminals the GUI is attached to, keyed by id.
     pub terminals: HashMap<TerminalId, CellGrid>,
     /// Kept outside `CellGrid` so unattached terminals can retain attention flags.
@@ -91,6 +93,7 @@ impl Store {
                 app_state,
                 external_agents,
                 pull_requests,
+                runs,
                 usage,
             } => {
                 self.project_groups = project_groups;
@@ -104,6 +107,7 @@ impl Store {
                 self.app_state = app_state;
                 self.external_agents = external_agents;
                 self.pull_requests = *pull_requests;
+                self.runs = runs;
                 // Usage rides in the snapshot from the daemon's cache (L1); a
                 // later `ProviderUsageChanged` refreshes it in place.
                 self.usage = usage;
@@ -680,6 +684,7 @@ mod tests {
             last_activity_at: Timestamp::now(),
             ended_at: None,
             base_commit: None,
+            activity: domain::AgentActivity::unknown(),
         }
     }
 
@@ -775,6 +780,7 @@ mod tests {
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
             pull_requests: Box::new(pull_requests.clone()),
+            runs: vec![],
             usage: vec![sample_usage("claude", 40)],
         };
         store.apply_snapshot(response);
@@ -805,6 +811,7 @@ mod tests {
             ],
             external_agents: vec![],
             pull_requests: Box::new(PullRequestState::default()),
+            runs: vec![],
             usage: vec![],
         });
 

@@ -11,7 +11,6 @@ use client::Client;
 pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const CONNECT_RETRIES: usize = 60;
 pub const CONNECT_RETRY: Duration = Duration::from_millis(50);
-const MAX_SOCKET_PATH: usize = 100;
 
 #[derive(Clone, Debug, Default)]
 pub struct Locator {
@@ -43,34 +42,12 @@ impl Locator {
     }
 
     pub fn socket_path(&self) -> Result<PathBuf, String> {
-        if let Some(path) = &self.socket_override {
-            return Ok(path.clone());
-        }
-
-        #[cfg(target_os = "linux")]
-        if let Some(dir) = &self.xdg_runtime_dir {
-            let path = dir.join("forge/daemon.sock");
-            if fits(&path) {
-                return Ok(path);
-            }
-        }
-        #[cfg(target_os = "macos")]
-        if let Some(dir) = &self.tmpdir {
-            let path = dir.join("forge/daemon.sock");
-            if fits(&path) {
-                return Ok(path);
-            }
-        }
-
-        let path = PathBuf::from(format!("/tmp/forge-{}/daemon.sock", self.uid));
-        if fits(&path) {
-            Ok(path)
-        } else {
-            Err(format!(
-                "daemon socket path is too long: {}",
-                path.display()
-            ))
-        }
+        client::resolve_socket(&client::SocketQuery {
+            forge_socket: self.socket_override.clone(),
+            tmpdir: self.tmpdir.clone(),
+            xdg_runtime_dir: self.xdg_runtime_dir.clone(),
+            uid: self.uid,
+        })
     }
 
     pub fn daemon_executable(&self) -> Result<PathBuf, String> {
@@ -126,10 +103,6 @@ pub fn connect_or_spawn(locator: &Locator) -> Result<Client, String> {
     ))
 }
 
-fn fits(path: &Path) -> bool {
-    path.as_os_str().len() < MAX_SOCKET_PATH
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,7 +128,7 @@ mod tests {
         };
         let path = locator.socket_path().unwrap();
         assert_eq!(path, PathBuf::from("/tmp/forge-501/daemon.sock"));
-        assert!(path.as_os_str().len() < MAX_SOCKET_PATH);
+        assert!(path.as_os_str().len() < client::MAX_SOCKET_PATH_LEN);
     }
 
     #[test]

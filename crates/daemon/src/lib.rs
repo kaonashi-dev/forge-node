@@ -17,6 +17,7 @@ pub mod idle;
 pub mod juva;
 pub mod lockfile;
 pub mod logging;
+pub mod orchestration;
 pub mod paths;
 pub mod pull_requests;
 pub mod registry;

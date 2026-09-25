@@ -3,11 +3,14 @@
 //! [`crate::response::Response`] defines successful results and `AttachTerminal`
 //! establishes terminal subscriptions.
 
+use domain::orchestration::{
+    AttemptPlacement, ControllerSpec, IntegrationPlacement, ReportOutcome, TaskDecision, WorkMode,
+};
 use domain::{
-    AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy, ContextEnvelope,
-    EditorFindCommand, EditorInputEvent, JuvaKind, ProjectGroupId, ProjectId, PtySize, SessionId,
-    SessionKind, SessionRole, ShareCleanup, ShareRule, ShareRuleId, TerminalId, WorkspaceId,
-    WorktreeIgnore,
+    ActivityState, AgentProfile, AgentProfileId, AgentProviderId, AttemptId, ChildWorkspacePolicy,
+    ContextEnvelope, ContextKind, EditorFindCommand, EditorInputEvent, JuvaKind, ProjectGroupId,
+    ProjectId, PtySize, RunId, SessionId, SessionKind, SessionRole, ShareCleanup, ShareRule,
+    ShareRuleId, TaskId, TerminalId, WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -641,17 +644,23 @@ pub enum Request {
     /// A synchronous read like `GetWorkspaceDiff`: the daemon answers from the
     /// draft it refused and the bytes that were on disk instead. `NotFound`
     /// when that session has no standing conflict, which is the ordinary case.
-    GetEditorConflict { session_id: SessionId },
+    GetEditorConflict {
+        session_id: SessionId,
+    },
     /// Reload an editor's buffer from disk, discarding the draft → `Ack`.
     ///
     /// The *take disk* half of resolving a conflict. `PreconditionFailed` when
     /// the editor's command queue is saturated.
-    ReloadEditorBuffer { session_id: SessionId },
+    ReloadEditorBuffer {
+        session_id: SessionId,
+    },
     /// Write the editor's draft over whatever is on disk now → `Ack`.
     ///
     /// The *keep mine* half. The daemon already learned the disk's revision
     /// when it refused, so this is the second `Ctrl-S` by another name.
-    OverwriteEditorBuffer { session_id: SessionId },
+    OverwriteEditorBuffer {
+        session_id: SessionId,
+    },
     /// Create a child session under a parent, choosing its workspace via
     /// `workspace_policy` → `Ack`; `SessionCreated`.
     CreateChildSession {
@@ -940,6 +949,192 @@ pub enum Request {
         /// The rules, in the order they should be kept.
         rules: Vec<WorktreeIgnore>,
     },
+
+    // ----- Orchestration (`forgectl`) -----
+    /// Reachability is the handshake. This is the ledger's limits and whether it is on.
+    OrchestrationStatus,
+    CreateRun {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        project_id: ProjectId,
+        objective: String,
+        controller: ControllerSpec,
+        integration: IntegrationPlacement,
+        base: Option<String>,
+        parent_attempt_id: Option<AttemptId>,
+    },
+    ListRuns {
+        project_id: Option<ProjectId>,
+        active_only: bool,
+    },
+    GetRun {
+        run_id: RunId,
+    },
+    UpdateRunBrief {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        run_id: RunId,
+        brief: String,
+        expected_version: u64,
+    },
+    CloseRun {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        run_id: RunId,
+        cancel: bool,
+        cleanup: bool,
+        pull_request: Option<CloseRunPullRequest>,
+    },
+    ResumeRun {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        run_id: RunId,
+        provider_id: AgentProviderId,
+        profile_id: Option<AgentProfileId>,
+    },
+    CreateTask {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        run_id: RunId,
+        title: String,
+        spec: String,
+        acceptance: String,
+        after: Vec<TaskId>,
+        mode: WorkMode,
+        allow_subruns: bool,
+    },
+    StartAttempt {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        task_id: TaskId,
+        provider_id: AgentProviderId,
+        profile_id: Option<AgentProfileId>,
+        placement: AttemptPlacement,
+        branch: Option<String>,
+    },
+    /// Add and start share one receipt when `request_id` is set.
+    RunTask {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        run_id: RunId,
+        title: String,
+        spec: String,
+        acceptance: String,
+        after: Vec<TaskId>,
+        mode: WorkMode,
+        allow_subruns: bool,
+        provider_id: AgentProviderId,
+        profile_id: Option<AgentProfileId>,
+        placement: AttemptPlacement,
+        branch: Option<String>,
+    },
+    ReportAttempt {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        attempt_id: AttemptId,
+        outcome: ReportOutcome,
+        summary: String,
+        verification: Option<String>,
+        result_file: Option<String>,
+    },
+    DecideTask {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        task_id: TaskId,
+        expected_revision: u64,
+        decision: TaskDecision,
+        retry_provider_id: Option<AgentProviderId>,
+        retry_profile_id: Option<AgentProfileId>,
+    },
+    IntegrateTask {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        task_id: TaskId,
+        how: IntegrateHow,
+    },
+    CleanupTask {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        task_id: TaskId,
+        keep_worktree: bool,
+    },
+    ReviewTask {
+        task_id: TaskId,
+        patch: bool,
+    },
+    PostMessage {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        run_id: RunId,
+        address: String,
+        kind: ContextKind,
+        body: String,
+        in_reply_to: Option<domain::ContextId>,
+    },
+    ReadInbox {
+        session_id: Option<SessionId>,
+        run_id: Option<RunId>,
+        unread_only: bool,
+        limit: u32,
+        ack: Vec<domain::ContextId>,
+    },
+    /// Connection-scoped. The server records it; the core does not.
+    WatchInbox {
+        session_id: Option<SessionId>,
+        run_id: Option<RunId>,
+    },
+    ListRunState {
+        run_id: RunId,
+        prefix: Option<String>,
+    },
+    GetRunState {
+        run_id: RunId,
+        key: String,
+    },
+    SetRunState {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        run_id: RunId,
+        key: String,
+        value_json: String,
+        expected_version: u64,
+    },
+    DeleteRunState {
+        request_id: Option<String>,
+        caller_session_id: Option<SessionId>,
+        run_id: RunId,
+        key: String,
+        expected_version: u64,
+    },
+    /// Runtime-only. Always safe to call; the handler does not touch SQLite.
+    ReportAgentActivity {
+        session_id: SessionId,
+        state: ActivityState,
+        source: String,
+    },
+}
+
+/// Pull request opened from `run close`, after cleanup is decided.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CloseRunPullRequest {
+    pub title: String,
+    pub body: String,
+    pub draft: bool,
+    pub base: Option<String>,
+}
+
+/// How an accepted task branch meets the integration worktree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum IntegrateHow {
+    Merge {
+        squash: bool,
+    },
+    Continue,
+    Abort,
+    #[serde(other)]
+    Unrecognized,
 }
 
 #[cfg(test)]

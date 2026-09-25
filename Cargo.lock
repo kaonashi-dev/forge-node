@@ -494,6 +494,7 @@ version = "0.1.5"
 dependencies = [
  "domain",
  "flume",
+ "nix 0.31.3",
  "protocol",
  "tempfile",
  "terminal-input",
@@ -759,6 +760,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "terminal-core",
+ "terminal-input",
  "test-support",
  "thiserror 2.0.20",
  "time",
@@ -1287,6 +1289,25 @@ name = "foreign-types-shared"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
+
+[[package]]
+name = "forge-ctl"
+version = "0.1.5"
+dependencies = [
+ "clap",
+ "client",
+ "daemon",
+ "domain",
+ "flume",
+ "insta",
+ "persistence",
+ "protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-support",
+ "tokio",
+]
 
 [[package]]
 name = "forge-tauri"

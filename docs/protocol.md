@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 27` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 28` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -279,6 +279,11 @@ reader thread, `flume` channels — no tokio, no GUI toolkit):
 - `Client::connect(socket_path, client_version)` performs the handshake and
   exposes `daemon_info()`. The `Hello` is built internally from
   `PROTOCOL_VERSION` and `ClientKind::Gui`; callers do not supply one.
+  `connect_as(..., ClientKind::Cli)` is what `forgectl` uses. A CLI connection
+  is not sent `TerminalActivity`, `TerminalBell`, `ClipboardStore`,
+  `EditorFrame`, or `ProviderUsageChanged`. Orchestration requests and events
+  (runs, tasks, attempts, the board, inbox) are version 28; see
+  [orchestration.md](./orchestration.md).
 - `request(body)` / `request_timeout(body, dur)` block until the matching
   response arrives. They must be bridged off the UI thread.
 - `events()` returns a bounded receiver (64 events). The reader uses nonblocking

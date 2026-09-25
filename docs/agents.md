@@ -574,3 +574,12 @@ invalid profile is refused at save time.
 `crates/test-support::fake_agent` provides the same for daemon-level tests.
 Note that real daemon startup runs `--version` on whichever agent CLIs are
 installed on the machine, so workspace tests are not fully hermetic.
+
+## Activity hooks
+
+A provider hook calls `forgectl hook --state working|waiting|idle`. The command
+always exits 0, even when the daemon is unreachable, and it does not write
+SQLite. Silence does not change activity. A provider with no working hook stays
+`Unknown`; reports still settle. Forge injects `FORGE_SOCKET` plus the run,
+task, and attempt ids into the PTY environment. It does not write `AGENTS.md`
+or `CLAUDE.md`. See [orchestration.md](./orchestration.md).
