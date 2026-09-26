@@ -154,6 +154,12 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             workspace,
             path,
         } => files::delete_path(app, client, operation_id, workspace, path),
+        WorkbenchCommand::CopyPath {
+            operation_id,
+            workspace,
+            from,
+            to,
+        } => files::copy_path(app, client, operation_id, workspace, from, to),
         WorkbenchCommand::SearchFiles {
             workspace,
             query,

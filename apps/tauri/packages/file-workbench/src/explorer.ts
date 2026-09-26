@@ -57,7 +57,19 @@ export type ExplorerDerived = {
  */
 export type EditRequest =
   | { kind: "rename"; path: string }
-  | { kind: "create"; parent: string; directory: boolean };
+  | { kind: "create"; parent: string; directory: boolean }
+  | { kind: "duplicate"; source: string; parent: string; name: string };
+
+/** The path an edit has to keep visible: the row itself, or the folder a new name is typed under. */
+function editAnchor(request: EditRequest): string {
+  switch (request.kind) {
+    case "rename":
+      return request.path;
+    case "create":
+    case "duplicate":
+      return request.parent;
+  }
+}
 export type ExplorerOptions = {
   label?: string;
   chrome?: ExplorerChrome;
@@ -531,7 +543,8 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     const request = editing;
     if (!request || submitting) return;
     const name = field.value;
-    if (name !== "" && name === editOriginal) {
+    // A duplicate's prefilled name is the copy to create, not an unchanged rename.
+    if (request.kind !== "duplicate" && name !== "" && name === editOriginal) {
       abandonEdit();
       return;
     }
@@ -551,7 +564,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
     editing = request;
     revealPath = null;
     drafts += 1;
-    expandAncestors(request.kind === "create" ? request.parent : request.path);
+    expandAncestors(editAnchor(request));
     folds += 1;
     editError.hidden = true;
     editError.textContent = "";
@@ -569,15 +582,20 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       "aria-label",
       request.kind === "rename"
         ? `Rename ${request.path}`
-        : `New ${request.directory ? "folder" : "file"} path`,
+        : request.kind === "duplicate"
+          ? `Name for the copy of ${request.source}`
+          : `New ${request.directory ? "folder" : "file"} path`,
     );
-    field.value = editOriginal;
+    field.value = request.kind === "duplicate" ? request.name : editOriginal;
     rebuild();
     const at = editIndex();
     if (at < 0) return;
     select(at);
     focusEdit();
-    const span = nameSelection(editOriginal, rows[at].isFile);
+    const span =
+      request.kind === "duplicate"
+        ? { start: 0, end: field.value.length }
+        : nameSelection(field.value, rows[at].isFile);
     field.setSelectionRange(span.start, span.end);
   }
 
@@ -610,7 +628,7 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
         openedIgnored,
         new Set([
           ...(preservedPath ? [preservedPath] : []),
-          ...(editing ? [editing.kind === "create" ? editing.parent : editing.path] : []),
+          ...(editing ? [editAnchor(editing)] : []),
         ]),
       );
       files = 0;
@@ -655,7 +673,9 @@ export function createFileExplorer(host: HTMLElement, options: ExplorerOptions):
       }
       // After the counts and the watch interest: a name nobody has typed yet
       // is not a file, and an unwritten row is nothing to watch.
-      if (editing?.kind === "create") rows = withDraft(rows, editing.parent, editing.directory);
+      if (editing && editing.kind !== "rename") {
+        rows = withDraft(rows, editing.parent, editing.kind === "create" && editing.directory);
+      }
       // An unrelated refresh cannot discard the draft before its explicit result arrives.
       if (
         editing?.kind === "rename" &&

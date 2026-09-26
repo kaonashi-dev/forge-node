@@ -6,7 +6,7 @@
 mod deliver;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ use domain::orchestration::{
 use domain::orchestration::{Attempt, Run, Task};
 use domain::{
     ActivityState, AgentProviderId, AttemptId, ContextEnvelope, ContextId, ContextKind, ProjectId,
-    RunId, SessionId, SessionKind, SessionRole, SessionState, TaskId, Timestamp, WorkspaceId,
+    RunId, SessionId, SessionKind, SessionRole, TaskId, Timestamp, WorkspaceId,
 };
 use protocol::{
     ErrorCode, IntegrateHow, OrchestrationLimitsView, ProtocolError, Request, Response,
@@ -64,10 +64,23 @@ pub struct Ledger {
     pub board: HashMap<(RunId, String), BoardEntry>,
     pub pointer: HashMap<SessionId, PointerSlot>,
     pub conflict: Vec<RunId>,
+    pub max_attempts_per_task: u32,
+    pub resuming: HashSet<RunId>,
+    /// `(request_id, caller)` pairs being dispatched right now.
+    pub in_flight: HashSet<(String, String)>,
+    /// Events a ledger change under someone else's critical section owes the
+    /// clients; drained by [`flush_events`] once that lock is released.
+    pub outbox: Vec<protocol::DaemonEvent>,
 }
 
-pub fn load_ledger(db: &persistence::Db) -> Result<Ledger, persistence::DbError> {
-    let mut ledger = Ledger::default();
+pub fn load_ledger(
+    db: &persistence::Db,
+    limits: &OrchestrationLimits,
+) -> Result<Ledger, persistence::DbError> {
+    let mut ledger = Ledger {
+        max_attempts_per_task: limits.max_attempts_per_task,
+        ..Ledger::default()
+    };
     for run in db.orchestration().list_runs()? {
         ledger.runs.insert(run.id, run);
     }
@@ -106,6 +119,124 @@ pub fn reconcile_startup(
         db.orchestration().update_attempt(attempt)?;
     }
     Ok(())
+}
+
+/// A session row is gone. SQLite has already nulled its id in `runs` and
+/// `attempts`; the ledger follows, or the next write of that row names a
+/// missing session and fails its foreign key. A live attempt is lost here
+/// because the PTY's exit will no longer find its session.
+pub(crate) fn forget_session(inner: &mut Inner, session_id: SessionId) {
+    let now = Timestamp::now();
+    let max_attempts = inner.ledger.max_attempts_per_task;
+    let mut attempts = Vec::new();
+    let mut tasks = Vec::new();
+    for attempt in inner.ledger.attempts.values_mut() {
+        if attempt.session_id != Some(session_id) {
+            continue;
+        }
+        attempt.session_id = None;
+        if attempt.is_live() {
+            attempt.phase = AttemptPhase::Lost;
+            attempt.lost_reason = Some(LostReason::ExitedWithoutReport);
+            attempt.settled_at = Some(now);
+            if let Some(task) = inner.ledger.tasks.get_mut(&attempt.task_id) {
+                if matches!(task.status, TaskStatus::Active | TaskStatus::Blocked) {
+                    task.status = task_status_after_loss(task.attempts_used, max_attempts);
+                    task.updated_at = now;
+                    task.revision = task.revision.saturating_add(1);
+                    tasks.push(task.clone());
+                }
+            }
+        }
+        attempts.push(attempt.clone());
+    }
+    let mut runs = Vec::new();
+    for run in inner.ledger.runs.values_mut() {
+        if run.controller_session_id == Some(session_id) {
+            run.controller_session_id = None;
+            runs.push(run.clone());
+        }
+    }
+    inner.ledger.pointer.remove(&session_id);
+    persist_forgotten(inner, runs, tasks, attempts);
+}
+
+/// A workspace row is gone; see [`forget_session`].
+pub(crate) fn forget_workspace(inner: &mut Inner, workspace_id: WorkspaceId) {
+    let mut attempts = Vec::new();
+    for attempt in inner.ledger.attempts.values_mut() {
+        if attempt.workspace_id == Some(workspace_id) {
+            attempt.workspace_id = None;
+            attempts.push(attempt.clone());
+        }
+    }
+    let mut runs = Vec::new();
+    for run in inner.ledger.runs.values_mut() {
+        if run.integration_workspace_id == Some(workspace_id) {
+            run.integration_workspace_id = None;
+            runs.push(run.clone());
+        }
+    }
+    persist_forgotten(inner, runs, Vec::new(), attempts);
+}
+
+/// A project row is gone and its runs cascaded with it in SQLite.
+pub(crate) fn forget_project(inner: &mut Inner, project_id: ProjectId) {
+    let ledger = &mut inner.ledger;
+    let runs: Vec<RunId> = ledger
+        .runs
+        .values()
+        .filter(|run| run.project_id == project_id)
+        .map(|run| run.id)
+        .collect();
+    ledger.runs.retain(|_, run| run.project_id != project_id);
+    let tasks: Vec<TaskId> = ledger
+        .tasks
+        .values()
+        .filter(|task| runs.contains(&task.run_id))
+        .map(|task| task.id)
+        .collect();
+    ledger.tasks.retain(|id, _| !tasks.contains(id));
+    ledger
+        .attempts
+        .retain(|_, attempt| !tasks.contains(&attempt.task_id));
+    ledger.board.retain(|(run_id, _), _| !runs.contains(run_id));
+    ledger.conflict.retain(|run_id| !runs.contains(run_id));
+}
+
+fn persist_forgotten(inner: &mut Inner, runs: Vec<Run>, tasks: Vec<Task>, attempts: Vec<Attempt>) {
+    for run in &runs {
+        if let Err(error) = inner.db.orchestration().update_run(run) {
+            tracing::warn!(%error, run_id = %run.id, "could not persist a run after a removal");
+        }
+    }
+    for task in &tasks {
+        if let Err(error) = persist_task(inner, task) {
+            tracing::warn!(%error, "could not persist a task after a removal");
+        }
+    }
+    for attempt in &attempts {
+        if let Err(error) = persist_attempt(inner, attempt) {
+            tracing::warn!(%error, "could not persist an attempt after a removal");
+        }
+    }
+    let outbox = &mut inner.ledger.outbox;
+    outbox.extend(runs.into_iter().map(protocol::DaemonEvent::RunUpdated));
+    outbox.extend(tasks.into_iter().map(protocol::DaemonEvent::TaskUpdated));
+    outbox.extend(
+        attempts
+            .into_iter()
+            .map(protocol::DaemonEvent::AttemptUpdated),
+    );
+}
+
+/// Broadcasts what [`forget_session`] and friends queued. Call it after the
+/// core lock that made the change is released.
+pub(crate) fn flush_events(daemon: &Daemon) {
+    let events = std::mem::take(&mut daemon.lock().ledger.outbox);
+    for event in events {
+        daemon.registry.broadcast_domain(event);
+    }
 }
 
 pub(crate) fn identity_for(
@@ -167,11 +298,49 @@ pub fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<Response, Protoc
         if let Some(stored) = load_receipt(daemon, &request_id, caller)? {
             return Ok(stored);
         }
+        let _in_flight = InFlight::claim(daemon, &request_id, caller)?;
+        // A receipt can land between the read above and the claim.
+        if let Some(stored) = load_receipt(daemon, &request_id, caller)? {
+            return Ok(stored);
+        }
         let response = dispatch(daemon, request)?;
-        store_receipt(daemon, &request_id, caller, &response)?;
+        // The mutation has happened; an error here would invite a retry that
+        // repeats it.
+        if let Err(error) = store_receipt(daemon, &request_id, caller, &response) {
+            tracing::warn!(%error, %request_id, "could not store an idempotency receipt");
+        }
         return Ok(response);
     }
     dispatch(daemon, request)
+}
+
+/// A retry of a request that is still running (a worktree and a spawn take
+/// seconds) is refused rather than run twice. Released by `Drop` on every path.
+struct InFlight<'a> {
+    daemon: &'a Daemon,
+    key: (String, String),
+}
+
+impl<'a> InFlight<'a> {
+    fn claim(
+        daemon: &'a Daemon,
+        request_id: &str,
+        caller: Option<SessionId>,
+    ) -> Result<Self, ProtocolError> {
+        let key = (request_id.to_owned(), caller_key(caller));
+        if !daemon.lock().ledger.in_flight.insert(key.clone()) {
+            return Err(ProtocolError::conflict(
+                "a request with this id is still in progress; retry once it finishes",
+            ));
+        }
+        Ok(Self { daemon, key })
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.daemon.lock().ledger.in_flight.remove(&self.key);
+    }
 }
 
 fn dispatch(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ProtocolError> {
@@ -932,6 +1101,14 @@ fn refuse_stale_start(
     workspace: WorkspaceId,
     limits: &OrchestrationLimits,
 ) -> Result<u32, ProtocolError> {
+    if !inner
+        .ledger
+        .runs
+        .get(&run_id)
+        .is_some_and(|run| run.status.is_open())
+    {
+        return Err(ProtocolError::precondition_failed("run is not open"));
+    }
     let (status, attempts_used, after, mode) = {
         let task = inner
             .ledger
@@ -988,8 +1165,9 @@ fn abandon_uncommitted_start(
         let _ = daemon.remove_worktree(workspace_id, true);
         return;
     }
-    let _ = daemon.kill_session(session_id);
-    let _ = daemon.close_session(session_id);
+    if let Err(error) = daemon.kill_and_close_session(session_id) {
+        tracing::warn!(%error, %session_id, "could not close an uncommitted attempt's session");
+    }
 }
 
 fn start_attempt(
@@ -1017,6 +1195,9 @@ fn start_attempt(
             .cloned()
             .ok_or_else(|| ProtocolError::not_found("run"))?;
         allow_controller(caller, run.controller_session_id).map_err(policy)?;
+        if !run.status.is_open() {
+            return Err(ProtocolError::precondition_failed("run is not open"));
+        }
         if !matches!(task.status, TaskStatus::Ready | TaskStatus::Pending) {
             return Err(ProtocolError::precondition_failed(format!(
                 "task is {:?}, not ready",
@@ -1282,7 +1463,7 @@ fn report_attempt(
     };
     let _ = attempt_session;
     let copied = if let Some(file) = result_file.as_deref() {
-        Some(copy_result(daemon, attempt_id, file)?)
+        Some(copy_result(daemon, attempt_id, file, path.as_deref())?)
     } else {
         None
     };
@@ -1359,44 +1540,11 @@ fn decide_task(
 ) -> Result<Response, ProtocolError> {
     let limits = daemon.config_orchestration().limits();
     let now = Timestamp::now();
-    let prepared = {
-        let inner = daemon.lock();
-        let task = inner
-            .ledger
-            .tasks
-            .get(&task_id)
-            .ok_or_else(|| ProtocolError::not_found("task"))?;
-        let run = inner
-            .ledger
-            .runs
-            .get(&task.run_id)
-            .ok_or_else(|| ProtocolError::not_found("run"))?;
-        allow_controller(caller, run.controller_session_id).map_err(policy)?;
-        if task.revision != expected_revision {
-            return Err(version_conflict(task.revision));
-        }
-        match &decision {
-            TaskDecision::Accept { .. } | TaskDecision::Reject { .. } => {
-                if task.status != TaskStatus::Review && task.status != TaskStatus::Blocked {
-                    return Err(ProtocolError::precondition_failed(
-                        "task is not awaiting a decision",
-                    ));
-                }
-            }
-            TaskDecision::Cancel { .. } => {
-                if task.status.is_final() {
-                    return Err(ProtocolError::precondition_failed("task is already final"));
-                }
-            }
-            _ => return Err(ProtocolError::invalid_request("decision")),
-        }
-        Ok::<_, ProtocolError>(())
-    };
-    prepared?;
-    match decision {
+    match decision.clone() {
         TaskDecision::Accept { note: _ } => {
             let mut inner = daemon.lock();
-            let task = inner.ledger.tasks.get_mut(&task_id).unwrap();
+            check_decision(&inner, caller, task_id, expected_revision, &decision)?;
+            let task = task_mut(&mut inner, task_id)?;
             task.status = TaskStatus::Accepted;
             task.updated_at = now;
             task.revision = task.revision.saturating_add(1);
@@ -1426,7 +1574,24 @@ fn decide_task(
             let (feedback, _) = domain::orchestration::clamp_text(&feedback, MAX_MESSAGE_BYTES);
             if !retry {
                 let mut inner = daemon.lock();
-                let task = inner.ledger.tasks.get_mut(&task_id).unwrap();
+                check_decision(&inner, caller, task_id, expected_revision, &decision)?;
+                // Reopening hands the task back to the worker that reported it;
+                // one whose session has ended would never report again.
+                let worker_alive = inner
+                    .ledger
+                    .attempts
+                    .values()
+                    .filter(|attempt| attempt.task_id == task_id)
+                    .max_by_key(|attempt| attempt.n)
+                    .and_then(|attempt| attempt.session_id)
+                    .and_then(|id| inner.sessions.get(&id))
+                    .is_some_and(|session| !session.state.is_terminal());
+                if !worker_alive {
+                    return Err(ProtocolError::precondition_failed(
+                        "the attempt's session has ended; reject with a retry instead",
+                    ));
+                }
+                let task = task_mut(&mut inner, task_id)?;
                 task.feedback = Some(feedback.clone());
                 task.status = TaskStatus::Active;
                 task.updated_at = now;
@@ -1474,10 +1639,12 @@ fn decide_task(
             }
             let (provider, profile, placement) = {
                 let mut inner = daemon.lock();
-                let task = inner.ledger.tasks.get_mut(&task_id).unwrap();
+                check_decision(&inner, caller, task_id, expected_revision, &decision)?;
+                let task = task_mut(&mut inner, task_id)?;
                 if task.attempts_used >= limits.max_attempts_per_task {
                     task.status = TaskStatus::Failed;
                     task.updated_at = now;
+                    task.revision = task.revision.saturating_add(1);
                     let task = task.clone();
                     persist_task(&inner, &task)?;
                     drop(inner);
@@ -1530,7 +1697,8 @@ fn decide_task(
         }
         TaskDecision::Cancel { kill } => {
             let mut inner = daemon.lock();
-            let task = inner.ledger.tasks.get_mut(&task_id).unwrap();
+            check_decision(&inner, caller, task_id, expected_revision, &decision)?;
+            let task = task_mut(&mut inner, task_id)?;
             task.status = TaskStatus::Cancelled;
             task.updated_at = now;
             task.revision = task.revision.saturating_add(1);
@@ -1567,6 +1735,55 @@ fn decide_task(
         }
         _ => Err(ProtocolError::invalid_request("decision")),
     }
+}
+
+/// The compare-and-set half of a decision. It runs in the same critical
+/// section as the write, or two decisions at one revision would both apply.
+fn check_decision(
+    inner: &Inner,
+    caller: Option<SessionId>,
+    task_id: TaskId,
+    expected_revision: u64,
+    decision: &TaskDecision,
+) -> Result<(), ProtocolError> {
+    let task = inner
+        .ledger
+        .tasks
+        .get(&task_id)
+        .ok_or_else(|| ProtocolError::not_found("task"))?;
+    let run = inner
+        .ledger
+        .runs
+        .get(&task.run_id)
+        .ok_or_else(|| ProtocolError::not_found("run"))?;
+    allow_controller(caller, run.controller_session_id).map_err(policy)?;
+    if task.revision != expected_revision {
+        return Err(version_conflict(task.revision));
+    }
+    match decision {
+        TaskDecision::Accept { .. } | TaskDecision::Reject { .. } => {
+            if task.status != TaskStatus::Review && task.status != TaskStatus::Blocked {
+                return Err(ProtocolError::precondition_failed(
+                    "task is not awaiting a decision",
+                ));
+            }
+        }
+        TaskDecision::Cancel { .. } => {
+            if task.status.is_final() {
+                return Err(ProtocolError::precondition_failed("task is already final"));
+            }
+        }
+        _ => return Err(ProtocolError::invalid_request("decision")),
+    }
+    Ok(())
+}
+
+fn task_mut(inner: &mut Inner, task_id: TaskId) -> Result<&mut Task, ProtocolError> {
+    inner
+        .ledger
+        .tasks
+        .get_mut(&task_id)
+        .ok_or_else(|| ProtocolError::not_found("task"))
 }
 
 fn integrate_task(
@@ -1733,18 +1950,8 @@ fn cleanup_task(
     };
     let mut residual = Vec::new();
     if let Some(session) = session {
-        let state = daemon
-            .lock()
-            .sessions
-            .get(&session)
-            .map(|session| session.state.clone());
-        if matches!(state, Some(SessionState::Running | SessionState::Starting))
-            && daemon.kill_session(session).is_err()
-        {
-            residual.push(format!("session {session} could not be stopped"));
-        }
-        if daemon.close_session(session).is_err() {
-            residual.push(format!("session {session} could not be closed"));
+        if let Err(error) = daemon.kill_and_close_session(session) {
+            residual.push(format!("session {session} could not be closed: {error}"));
         }
     }
     if !keep_worktree {
@@ -1777,7 +1984,9 @@ fn cleanup_task(
                             ));
                         }
                         Ok(_) => {
-                            if let Err(error) = git_service::remove(&root, &path, false) {
+                            // Through the daemon, so the row, the tombstone and
+                            // `WorkspaceRemoved` go with the directory.
+                            if let Err(error) = daemon.remove_worktree(workspace, false) {
                                 residual.push(format!(
                                     "{} could not be removed: {error}",
                                     path.display()
@@ -1889,33 +2098,41 @@ fn close_run(
 
 fn resume_run(
     daemon: &Arc<Daemon>,
-    _caller: Option<SessionId>,
+    caller: Option<SessionId>,
     run_id: RunId,
     provider_id: AgentProviderId,
     profile_id: Option<domain::AgentProfileId>,
 ) -> Result<Response, ProtocolError> {
-    let (objective, base, workspace) = {
+    let (objective, base, workspace, _claim) = {
         let mut inner = daemon.lock();
         let run = inner
             .ledger
             .runs
-            .get_mut(&run_id)
+            .get(&run_id)
             .ok_or_else(|| ProtocolError::not_found("run"))?;
-        if run.status != RunStatus::Interrupted && run.status != RunStatus::Active {
+        allow_controller(caller, run.controller_session_id).map_err(policy)?;
+        // An open run whose controller is gone (its tab was closed) resumes
+        // like an interrupted one; a live controller is never replaced.
+        let controller_live = run
+            .controller_session_id
+            .and_then(|id| inner.sessions.get(&id))
+            .is_some_and(|session| !session.state.is_terminal());
+        let resumable = run.status == RunStatus::Interrupted
+            || (run.status == RunStatus::Active && !controller_live);
+        if !resumable {
             return Err(ProtocolError::precondition_failed(
-                "only an interrupted run can be resumed",
+                "only an interrupted run, or one whose controller has ended, can be resumed",
             ));
         }
-        run.status = RunStatus::Active;
-        run.updated_at = Timestamp::now();
-        run.revision = run.revision.saturating_add(1);
-        let run = run.clone();
-        inner.db.orchestration().update_run(&run).map_err(db_err)?;
-        (
+        let facts = (
             run.objective.clone(),
             run.base.clone(),
             run.integration_workspace_id,
-        )
+        );
+        if !inner.ledger.resuming.insert(run_id) {
+            return Err(ProtocolError::conflict("run is already being resumed"));
+        }
+        (facts.0, facts.1, facts.2, ResumeClaim { daemon, run_id })
     };
     let workspace = workspace.ok_or_else(|| {
         ProtocolError::precondition_failed("resume needs the integration workspace")
@@ -1937,22 +2154,43 @@ fn resume_run(
         false,
     )?;
     let session_id = session_of(&created)?;
-    {
+    let run = {
         let mut inner = daemon.lock();
-        if let Some(run) = inner.ledger.runs.get_mut(&run_id) {
-            run.controller_session_id = Some(session_id);
-            let run = run.clone();
-            inner.db.orchestration().update_run(&run).map_err(db_err)?;
-            daemon
-                .registry
-                .broadcast_domain(protocol::DaemonEvent::RunUpdated(run));
-        }
-    }
+        let run = inner
+            .ledger
+            .runs
+            .get_mut(&run_id)
+            .ok_or_else(|| ProtocolError::not_found("run"))?;
+        run.status = RunStatus::Active;
+        run.controller_session_id = Some(session_id);
+        run.updated_at = Timestamp::now();
+        run.revision = run.revision.saturating_add(1);
+        let run = run.clone();
+        inner.db.orchestration().update_run(&run).map_err(db_err)?;
+        run
+    };
+    daemon
+        .registry
+        .broadcast_domain(protocol::DaemonEvent::RunUpdated(run));
     Ok(Response::RunCreated {
         run_id,
         controller_session_id: Some(session_id),
         integration_workspace_id: Some(workspace),
     })
+}
+
+/// Holds `Ledger::resuming` for one run until the new controller is recorded
+/// or the attempt fails; `Daemon::lock` recovers from poisoning, so only a
+/// `Drop` releases it on every path.
+struct ResumeClaim<'a> {
+    daemon: &'a Daemon,
+    run_id: RunId,
+}
+
+impl Drop for ResumeClaim<'_> {
+    fn drop(&mut self) {
+        self.daemon.lock().ledger.resuming.remove(&self.run_id);
+    }
 }
 
 fn review_task(daemon: &Daemon, task_id: TaskId, patch: bool) -> Result<Response, ProtocolError> {
@@ -2232,7 +2470,7 @@ fn read_inbox(
         inner
             .db
             .context()
-            .list_for_session(session)
+            .list_for_target(session)
             .map_err(db_err)?
     } else if let Some(run) = run_id {
         inner.db.context().list_for_run(run).map_err(db_err)?
@@ -2812,12 +3050,25 @@ fn git_facts(
     (head, dirty, files)
 }
 
+/// A relative `file` is the worker's, so it resolves against the attempt's
+/// checkout rather than the daemon's working directory.
 fn copy_result(
     daemon: &Daemon,
     attempt_id: AttemptId,
     file: &str,
+    workspace: Option<&std::path::Path>,
 ) -> Result<String, ProtocolError> {
-    let bytes = client::read_capped(std::path::Path::new(file), MAX_RESULT_FILE_BYTES)
+    let file = std::path::Path::new(file);
+    let file = match workspace {
+        Some(root) if file.is_relative() => root.join(file),
+        _ if file.is_relative() => {
+            return Err(ProtocolError::invalid_request(
+                "result file must be an absolute path",
+            ))
+        }
+        _ => file.to_path_buf(),
+    };
+    let bytes = client::read_capped(&file, MAX_RESULT_FILE_BYTES)
         .map_err(|error| ProtocolError::new(ErrorCode::IoError, error.to_string()))?
         .bytes;
     let run_id = {
@@ -2849,7 +3100,7 @@ fn unread_count(daemon: &Daemon, session: SessionId) -> u32 {
         .lock()
         .db
         .context()
-        .list_for_session(session)
+        .list_for_target(session)
         .unwrap_or_default()
         .into_iter()
         .filter(|message| message.kind.is_some() && message.acked_at.is_none())

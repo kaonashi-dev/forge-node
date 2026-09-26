@@ -51,6 +51,26 @@ describe("findPathRefs", () => {
     expect(paths("../sibling/App.tsx")).toEqual([]);
   });
 
+  it("follows a ~/ path into another checkout when that one matches further", () => {
+    const parent = "/Users/kaonashi/hellopay/repos";
+    const worktree = "/Users/kaonashi/hellopay/repos/hellopay-backend-portal-balance";
+    const text =
+      "Update(~/hellopay/repos/hellopay-backend-portal-balance/test/provider-balances.postgres-spec.ts)";
+    const away = findPathRefs(text, parent, [worktree])[0];
+    expect(text.slice(away?.from ?? 0, away?.to ?? 0)).toBe(
+      "~/hellopay/repos/hellopay-backend-portal-balance/test/provider-balances.postgres-spec.ts",
+    );
+    expect(away).toMatchObject({
+      path: "test/provider-balances.postgres-spec.ts",
+      checkout: worktree,
+      line: null,
+    });
+    expect(findPathRefs(text, worktree, [parent])[0]).toMatchObject({
+      path: "test/provider-balances.postgres-spec.ts",
+      checkout: null,
+    });
+  });
+
   it("is not fooled by the rest of a command line", () => {
     // Every one of these turned up in one screen of agent output.
     expect(paths("cargo check/clippy -p forge-tauri")).toEqual([]);
@@ -105,6 +125,12 @@ describe("resolvePath", () => {
 
   it("does not answer with a directory", () => {
     expect(resolvePath("docs", index)).toBeNull();
+  });
+
+  it("passes a slash path the listing has not seen, which an agent may just have written", () => {
+    expect(resolvePath("src/ledger/balance-by-method.ts", index)).toBe(
+      "src/ledger/balance-by-method.ts",
+    );
   });
 });
 

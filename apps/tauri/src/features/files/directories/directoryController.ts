@@ -371,19 +371,22 @@ export function createDirectoryController(publish: (snapshot: DirectorySnapshot)
       }
       treeDirty = true;
       const moved: FileEntry[] = [];
-      for (const record of records.values()) {
-        record.entries = record.entries.filter((entry) => {
-          if (
-            !result.from ||
-            (entry.path !== result.from && !entry.path.startsWith(`${result.from}/`))
-          )
-            return true;
-          if (result.to)
-            moved.push({ ...entry, path: retargetPath(entry.path, result.from, result.to) });
-          return false;
-        });
+      // A copy keeps the source. Rename and delete are the operations that take it away.
+      if (result.kind === "rename" || result.kind === "delete") {
+        for (const record of records.values()) {
+          record.entries = record.entries.filter((entry) => {
+            if (
+              !result.from ||
+              (entry.path !== result.from && !entry.path.startsWith(`${result.from}/`))
+            )
+              return true;
+            if (result.to && result.from)
+              moved.push({ ...entry, path: retargetPath(entry.path, result.from, result.to) });
+            return false;
+          });
+        }
+        if (result.from) removeSubtree(result.from);
       }
-      if (result.from) removeSubtree(result.from);
       if (result.to && !moved.some((entry) => entry.path === result.to))
         moved.push({ path: result.to, kind: directory ? "Directory" : "File", ignored: false });
       let entryCount = [...records.values()].reduce(

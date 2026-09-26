@@ -17,13 +17,13 @@ export type LineText = {
 };
 
 /**
- * How far a wrapped line is followed either way.
+ * How many rows a soft wrap is followed either way.
  *
- * One row is enough for the case this exists for — a path straddling the right
- * margin — and the bound is what keeps a screen of wrapped output from being
- * joined into one string on every crossed cell.
+ * A `~/` path on a narrow terminal crosses more than the margin once. The cap
+ * is what keeps a screen of wrapped prose from being joined into one string
+ * on every crossed cell.
  */
-const WRAP_REACH = 1;
+const WRAP_LIMIT = 8;
 
 /** The text around a row, joined across a soft wrap it takes part in. */
 export function lineTextAt(
@@ -32,9 +32,17 @@ export function lineTextAt(
   width: number,
 ): LineText {
   let first = row;
-  if (first - 1 >= 0 && rows[first - 1]?.w === true) first -= WRAP_REACH;
+  let backward = 0;
+  while (first - 1 >= 0 && rows[first - 1]?.w === true && backward < WRAP_LIMIT) {
+    first -= 1;
+    backward += 1;
+  }
   let last = row;
-  if (rows[last]?.w === true && last + 1 < rows.length) last += WRAP_REACH;
+  let forward = 0;
+  while (rows[last]?.w === true && last + 1 < rows.length && forward < WRAP_LIMIT) {
+    last += 1;
+    forward += 1;
+  }
 
   const text: string[] = [];
   const rowOf: number[] = [];

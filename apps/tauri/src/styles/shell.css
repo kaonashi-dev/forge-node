@@ -551,6 +551,9 @@
      select a canvas element, which is nothing. */
   user-select: none;
 }
+.terminal-pane.terminal-link {
+  cursor: pointer;
+}
 .terminal-canvas {
   display: block;
 }

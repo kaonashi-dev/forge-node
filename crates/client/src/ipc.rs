@@ -893,6 +893,23 @@ impl Client {
         })
     }
 
+    /// Copy one file to a new path inside the same checkout (ADR-012).
+    ///
+    /// Refuses directories and occupied destinations. A symlink is copied as a
+    /// symlink. The source is left in place.
+    pub fn copy_path(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        from: impl Into<String>,
+        to: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::CopyPath {
+            workspace_id,
+            from: from.into(),
+            to: to.into(),
+        })
+    }
+
     /// Search files by name or content (ADR-012).
     pub fn search_files(
         &self,

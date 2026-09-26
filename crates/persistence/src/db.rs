@@ -155,8 +155,8 @@ impl Db {
     /// A PTY never survives the daemon, so on startup every persisted
     /// session is already dead. Keeping them only grows a tree of `Orphaned`
     /// rows nobody restarts, so by default the daemon starts on an empty
-    /// session list instead. Context envelopes are owned by their source
-    /// session and cascade with it; projects, workspaces, provider
+    /// session list instead. Handoff envelopes are owned by their source
+    /// session and go with it, while run messages stay for the run; projects, workspaces, provider
     /// overrides and app state are untouched. Returns the number of rows
     /// deleted.
     ///

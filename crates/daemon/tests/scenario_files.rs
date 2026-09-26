@@ -200,6 +200,64 @@ fn refusal_code(error: client::ClientError) -> ErrorCode {
     }
 }
 
+/// A copy is a new file with the same bytes. The source stays, and a directory,
+/// an occupied destination, or a path that leaves the checkout is refused.
+#[test]
+fn copy_path_duplicates_a_file_and_refuses_the_rest() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("keep.rs"), b"keep\0\xff").unwrap();
+    fs::create_dir(repo.path().join("docs")).unwrap();
+
+    let daemon = harness.boot();
+    let client = daemon.connect("copy");
+    let workspace = common::add_main_workspace(&client, repo.path());
+
+    client
+        .request(Request::CopyPath {
+            workspace_id: workspace,
+            from: "keep.rs".into(),
+            to: "src/keep copy.rs".into(),
+        })
+        .expect("CopyPath");
+    assert_eq!(
+        fs::read(repo.path().join("keep.rs")).unwrap(),
+        b"keep\0\xff"
+    );
+    assert_eq!(
+        fs::read(repo.path().join("src/keep copy.rs")).unwrap(),
+        b"keep\0\xff"
+    );
+
+    let directory = client
+        .request(Request::CopyPath {
+            workspace_id: workspace,
+            from: "docs".into(),
+            to: "docs copy".into(),
+        })
+        .expect_err("copying a directory must be refused");
+    assert_eq!(refusal_code(directory), ErrorCode::InvalidRequest);
+    assert!(!repo.path().join("docs copy").exists());
+
+    let occupied = client
+        .request(Request::CopyPath {
+            workspace_id: workspace,
+            from: "keep.rs".into(),
+            to: "src/keep copy.rs".into(),
+        })
+        .expect_err("copy onto an existing path must be refused");
+    assert_eq!(refusal_code(occupied), ErrorCode::InvalidRequest);
+
+    let escaped = client
+        .request(Request::CopyPath {
+            workspace_id: workspace,
+            from: "keep.rs".into(),
+            to: "../outside.rs".into(),
+        })
+        .expect_err("copy escaping the workspace must be refused");
+    assert_eq!(refusal_code(escaped), ErrorCode::InvalidRequest);
+}
+
 /// A11: create, rename and delete a path through the daemon (ADR-012).
 ///
 /// The GUI never touches a checkout with `std::fs`, so every one of these has

@@ -311,7 +311,8 @@ impl Daemon {
         }
 
         let profiles = db.agent_profiles().list().map_err(|e| e.to_string())?;
-        let ledger = crate::orchestration::load_ledger(&db).map_err(|e| e.to_string())?;
+        let ledger = crate::orchestration::load_ledger(&db, &config.orchestration.limits())
+            .map_err(|e| e.to_string())?;
 
         let mut worktree_ignores: HashMap<ProjectId, Vec<WorktreeIgnore>> = HashMap::new();
         for rule in db.ignores().list_all().map_err(|e| e.to_string())? {
@@ -663,6 +664,7 @@ impl Daemon {
                     continue;
                 }
                 inner.workspaces.remove(workspace_id);
+                crate::orchestration::forget_workspace(&mut inner, *workspace_id);
                 // One owner, one deletion path: the throttle table follows the row.
                 inner.status_checks.remove(workspace_id);
                 if managed && !explicitly_ignored {
@@ -706,6 +708,7 @@ impl Daemon {
         for message in keep_notices {
             self.notice(NoticeLevel::Warning, message);
         }
+        crate::orchestration::flush_events(self);
         (added, removed)
     }
 
@@ -829,6 +832,11 @@ impl Daemon {
                 to,
             } => self.rename_path(workspace_id, &from, &to),
             Request::DeletePath { workspace_id, path } => self.delete_path(workspace_id, &path),
+            Request::CopyPath {
+                workspace_id,
+                from,
+                to,
+            } => self.copy_path(workspace_id, &from, &to),
             Request::SearchFiles {
                 workspace_id,
                 query,
@@ -1708,6 +1716,7 @@ impl Daemon {
         }
         inner.db.projects().delete(project_id).map_err(db_err)?;
 
+        crate::orchestration::forget_project(&mut inner, project_id);
         for id in &session_ids {
             Self::remove_session_cache(&mut inner, *id);
         }
@@ -1731,6 +1740,7 @@ impl Daemon {
         }
         self.registry
             .broadcast_domain(DaemonEvent::ProjectRemoved { project_id });
+        crate::orchestration::flush_events(self);
         Ok(Response::Ack)
     }
 
@@ -2599,6 +2609,19 @@ impl Daemon {
     ) -> Result<Response, ProtocolError> {
         let root = self.workspace_path(workspace_id)?;
         fs_service::delete_path(&root, relative).map_err(fs_err)?;
+        self.invalidate_file_index(workspace_id);
+        Ok(Response::Ack)
+    }
+
+    /// Copy one file inside the checkout (ADR-012). Lock released before IO.
+    fn copy_path(
+        &self,
+        workspace_id: WorkspaceId,
+        from: &str,
+        to: &str,
+    ) -> Result<Response, ProtocolError> {
+        let root = self.workspace_path(workspace_id)?;
+        fs_service::copy_path(&root, from, to).map_err(fs_err)?;
         self.invalidate_file_index(workspace_id);
         Ok(Response::Ack)
     }
@@ -3585,6 +3608,7 @@ impl Daemon {
         }
         self.registry
             .broadcast_domain(DaemonEvent::WorkspaceRemoved { workspace_id });
+        crate::orchestration::flush_events(self);
 
         // Unmanaged: drop the model row, never someone else's directory. A
         // directory already gone leaves only git's dead bookkeeping, and
@@ -3618,6 +3642,7 @@ impl Daemon {
         }
         inner.db.workspaces().delete(workspace_id).map_err(db_err)?;
         inner.workspaces.remove(&workspace_id);
+        crate::orchestration::forget_workspace(&mut inner, workspace_id);
         // One owner, one deletion path.
         inner.status_checks.remove(&workspace_id);
 
@@ -4636,6 +4661,33 @@ impl Daemon {
         }
         self.registry
             .broadcast_domain(DaemonEvent::SessionRemoved { session_id });
+        crate::orchestration::flush_events(self);
+        Ok(Response::Ack)
+    }
+
+    /// Kills and closes in one call. [`Daemon::close_session`] refuses an
+    /// active session, and the state only turns terminal on the PTY's EOF, so
+    /// the process group is stopped synchronously and the row goes directly,
+    /// as a forced worktree removal does.
+    pub(crate) fn kill_and_close_session(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
+        self.kill_groups_blocking(&self.kill_targets(&[session_id]));
+        let updated = {
+            let mut inner = self.lock();
+            if !inner.sessions.contains_key(&session_id) {
+                return Err(ProtocolError::not_found("session"));
+            }
+            Self::delete_session_locked(&mut inner, session_id)?
+        };
+        for session in updated {
+            self.registry
+                .broadcast_domain(DaemonEvent::SessionUpdated(session));
+        }
+        self.registry
+            .broadcast_domain(DaemonEvent::SessionRemoved { session_id });
+        crate::orchestration::flush_events(self);
         Ok(Response::Ack)
     }
 
@@ -4679,6 +4731,7 @@ impl Daemon {
     }
 
     fn remove_session_cache(inner: &mut Inner, session_id: SessionId) {
+        crate::orchestration::forget_session(inner, session_id);
         inner.sessions.remove(&session_id);
         inner.idle_warned.remove(&session_id);
         inner.resumed_from.remove(&session_id);
@@ -7374,6 +7427,7 @@ fn fs_err(e: fs_service::FsError) -> ProtocolError {
         }
         fs_service::FsError::TooLarge { .. }
         | fs_service::FsError::Binary
+        | fs_service::FsError::NotAFile(_)
         | fs_service::FsError::NotAnImage(_) => {
             ProtocolError::new(ErrorCode::InvalidRequest, e.to_string())
         }
@@ -10896,5 +10950,110 @@ mod tests {
             .expect_err("full");
         assert_eq!(busy.code, ErrorCode::PreconditionFailed);
         assert!(busy.message.contains("busy"), "{}", busy.message);
+    }
+
+    #[test]
+    fn closing_run_sessions_leaves_the_ledger_writable() {
+        use domain::orchestration::{
+            Attempt, AttemptPhase, Run, RunStatus, Task, TaskStatus, WorkMode,
+        };
+        let (daemon, _tmp) = test_daemon();
+        let project = add_project_row(&daemon, "a", None);
+        let workspace = add_workspace_row(&daemon, project, true);
+        let ended = SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        };
+        let controller = add_session_row(&daemon, workspace, None, ended);
+        let worker = add_session_row(&daemon, workspace, None, SessionState::Running);
+        let now = Timestamp::now();
+        let run = Run {
+            id: domain::RunId::new(),
+            project_id: project,
+            objective: "ship".into(),
+            brief: String::new(),
+            brief_version: 0,
+            controller_session_id: Some(controller),
+            integration_workspace_id: Some(workspace),
+            base: None,
+            parent_attempt_id: None,
+            status: RunStatus::Active,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            closed_at: None,
+        };
+        let task = Task {
+            id: domain::TaskId::new(),
+            run_id: run.id,
+            title: "t".into(),
+            spec: String::new(),
+            acceptance: String::new(),
+            after: vec![],
+            mode: WorkMode::Write,
+            allow_subruns: false,
+            status: TaskStatus::Active,
+            attempts_used: 1,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            feedback: None,
+        };
+        let attempt = Attempt {
+            id: domain::AttemptId::new(),
+            task_id: task.id,
+            n: 1,
+            session_id: Some(worker),
+            workspace_id: Some(workspace),
+            branch: None,
+            base_commit: None,
+            provider_id: AgentProviderId::new("claude"),
+            profile_id: None,
+            read_only: false,
+            phase: AttemptPhase::Running,
+            outcome: None,
+            lost_reason: None,
+            report: None,
+            integrated_commit: None,
+            created_at: now,
+            settled_at: None,
+        };
+        {
+            let mut inner = daemon.lock();
+            inner.db.orchestration().insert_run(&run).unwrap();
+            inner.db.orchestration().insert_task(&task).unwrap();
+            inner.db.orchestration().insert_attempt(&attempt).unwrap();
+            inner.ledger.runs.insert(run.id, run.clone());
+            inner.ledger.tasks.insert(task.id, task.clone());
+            inner.ledger.attempts.insert(attempt.id, attempt.clone());
+        }
+
+        daemon
+            .close_session(controller)
+            .expect("an ended session closes");
+        // No terminal, so the kill is a no-op and only the row goes.
+        daemon
+            .kill_and_close_session(worker)
+            .expect("a running session is killed and closed");
+
+        let inner = daemon.lock();
+        let run = inner.ledger.runs[&run.id].clone();
+        let attempt = inner.ledger.attempts[&attempt.id].clone();
+        let task = inner.ledger.tasks[&task.id].clone();
+        assert_eq!(run.controller_session_id, None);
+        assert_eq!(attempt.session_id, None);
+        // The PTY's exit can no longer find the session, so the loss is recorded here.
+        assert_eq!(attempt.phase, AttemptPhase::Lost);
+        assert_ne!(task.status, TaskStatus::Active);
+        inner
+            .db
+            .orchestration()
+            .update_run(&run)
+            .expect("run is writable");
+        inner
+            .db
+            .orchestration()
+            .update_attempt(&attempt)
+            .expect("attempt is writable");
     }
 }

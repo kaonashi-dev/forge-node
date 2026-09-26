@@ -33,7 +33,10 @@ Identity inside a worker is only the injected environment: `FORGE_SESSION_ID`,
 - Accept a report from another session or from a superseded attempt (exit 5).
 
 A daemon restart marks live attempts lost (`daemon_restarted`) and an active run
-interrupted. `run resume` starts a new controller seeded from the ledger.
+interrupted. `run resume` starts a new controller seeded from the ledger; it
+also revives an active run whose controller session has ended, and never
+replaces a live one. Run messages, including unanswered questions, outlive the
+sessions that sent and received them.
 
 ## Placement
 
@@ -50,7 +53,7 @@ There is no free-form memory store. Controllers and workers share four things:
 stored messages (the body is never written into a PTY), reports (summary capped
 at 16 KiB, optional result file capped at 1 MiB), the board, and the integration
 branch. At most one one-line pointer is typed, and only while activity is idle
-and nobody is blocked in `inbox --wait`. Waiting, starting, and unknown suppress
+and nobody is blocked in `inbox --wait`, which returns on unread mail only. Waiting, starting, and unknown suppress
 the pointer. A separate carriage return follows the line.
 
 `run wait` is level-triggered: if the condition already holds it returns the
@@ -63,7 +66,8 @@ Success is `{"ok":true,"result":…}`. Failure is
 `{"ok":false,"error":{"code","message","details","next"}}` with `next` as argv.
 Exit codes: 0 ok, 1 other refusal, 2 usage, 3 unreachable or protocol mismatch,
 4 not found, 5 conflict or precondition, 6 policy, 124 wait timeout. A repeated
-mutation `--request-id` returns the stored result. An uncertain timeout exits 3
+mutation `--request-id` returns the stored result; one that arrives while the
+first is still running is refused with exit 5 rather than run twice. An uncertain timeout exits 3
 with `details.uncertain: true`.
 
 `guide` and `schema` are served by the binary. `hook` always exits 0 and does

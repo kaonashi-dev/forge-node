@@ -83,7 +83,7 @@ pub fn deliver_pointer(daemon: &Daemon, session_id: SessionId) {
         let unread = inner
             .db
             .context()
-            .list_for_session(session_id)
+            .list_for_target(session_id)
             .unwrap_or_default()
             .into_iter()
             .filter(|message| message.kind.is_some() && message.acked_at.is_none())

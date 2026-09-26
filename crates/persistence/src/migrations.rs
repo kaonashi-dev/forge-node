@@ -426,6 +426,56 @@ CREATE INDEX idx_attempts_session ON attempts (session_id);
 CREATE INDEX idx_runs_project     ON runs (project_id);
 ";
 
+/// Run messages outlive the sessions that wrote and received them.
+///
+/// A worker's question must survive its tab closing and the startup purge,
+/// and a message to a closed worker must not turn into a message to the human
+/// controller, which is what a nulled target means. So the session columns
+/// lose their foreign keys and keep the id as history. Handoff envelopes
+/// (`run_id IS NULL`) keep their old lifecycle through a trigger, and run
+/// envelopes go with their run.
+pub const RUN_ENVELOPE_HISTORY: &str = "\
+CREATE TABLE context_envelopes_new (
+    id                TEXT PRIMARY KEY,
+    source_session_id TEXT,
+    target_session_id TEXT,
+    summary           TEXT,
+    instructions      TEXT,
+    artifacts_json    TEXT NOT NULL,
+    git_context_json  TEXT,
+    created_at        TEXT NOT NULL,
+    run_id            TEXT,
+    task_id           TEXT,
+    kind              TEXT,
+    in_reply_to       TEXT,
+    acked_at          TEXT
+);
+INSERT INTO context_envelopes_new
+SELECT id, source_session_id, target_session_id, summary, instructions,
+       artifacts_json, git_context_json, created_at, run_id, task_id, kind,
+       in_reply_to, acked_at
+FROM context_envelopes;
+DROP TABLE context_envelopes;
+ALTER TABLE context_envelopes_new RENAME TO context_envelopes;
+
+CREATE INDEX idx_envelopes_source ON context_envelopes (source_session_id);
+CREATE INDEX idx_envelopes_target ON context_envelopes (target_session_id);
+CREATE INDEX idx_envelopes_run    ON context_envelopes (run_id);
+
+CREATE TRIGGER envelopes_follow_session AFTER DELETE ON sessions
+BEGIN
+    DELETE FROM context_envelopes
+     WHERE run_id IS NULL AND source_session_id = OLD.id;
+    UPDATE context_envelopes SET target_session_id = NULL
+     WHERE run_id IS NULL AND target_session_id = OLD.id;
+END;
+
+CREATE TRIGGER envelopes_follow_run AFTER DELETE ON runs
+BEGIN
+    DELETE FROM context_envelopes WHERE run_id = OLD.id;
+END;
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -442,5 +492,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(PROFILE_CONFIG_DIR),
         M::up(WORKTREE_IGNORES),
         M::up(ORCHESTRATION),
+        M::up(RUN_ENVELOPE_HISTORY),
     ])
 }

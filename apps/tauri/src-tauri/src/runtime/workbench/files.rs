@@ -180,6 +180,29 @@ pub(super) fn rename_path(
     );
 }
 
+pub(super) fn copy_path(
+    app: &AppHandle,
+    client: &Client,
+    operation_id: String,
+    workspace: WorkspaceId,
+    from: String,
+    to: String,
+) {
+    let result = client.copy_path(workspace, from.clone(), to.clone());
+    emit(
+        app,
+        "workbench:path_result",
+        &PathResult::new(
+            operation_id,
+            workspace,
+            PathOperationKind::Copy,
+            Some(from),
+            Some(to),
+            result,
+        ),
+    );
+}
+
 pub(super) fn delete_path(
     app: &AppHandle,
     client: &Client,
@@ -232,6 +255,7 @@ enum PathOperationKind {
     Create,
     Rename,
     Delete,
+    Copy,
 }
 
 #[derive(Debug, Serialize)]
@@ -371,6 +395,12 @@ mod tests {
                 Some("lib"),
             ),
             (PathOperationKind::Delete, "delete", Some("lib"), None),
+            (
+                PathOperationKind::Copy,
+                "copy",
+                Some("keep.rs"),
+                Some("keep copy.rs"),
+            ),
         ] {
             let payload = PathResult::new(
                 "operation-1".into(),

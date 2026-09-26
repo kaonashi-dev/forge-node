@@ -31,6 +31,7 @@ import {
   directoryTree,
 } from "../directories/directoryState";
 import { parentPath, validatePath, validateRename } from "../../../shared/paths";
+import { duplicateFileName } from "./duplicateName";
 import { subscribePathOperations } from "../operations/operations";
 import { watchFiles, fileWatchError, rearmFileWatches } from "../watches/fileWatch";
 import { ensureDiff } from "../../git/decorations";
@@ -46,6 +47,7 @@ import { sendTargetedPaste } from "../../terminal/commands";
 import { connectionStore } from "../../../state/connection";
 import {
   beginWorkbenchRequest,
+  copyPath,
   createPath,
   deletePath,
   ensureDirectory,
@@ -288,10 +290,14 @@ export function FileTreePanel() {
         ? "Enter a name."
         : request.kind === "rename" && /[/\\]/.test(name)
           ? "Enter a name without separators. Use Move to… to choose another folder."
-          : (validatePath(name) ??
-            (request.kind === "rename"
-              ? validateRename(request.path, target)
-              : validatePath(target)));
+          : request.kind === "duplicate" && /[/\\]/.test(name)
+            ? "Enter a name without separators."
+            : (validatePath(name) ??
+              (request.kind === "rename"
+                ? validateRename(request.path, target)
+                : request.kind === "duplicate"
+                  ? validateRename(request.source, target)
+                  : validatePath(target)));
     if (error) {
       explorer?.editFailed(error);
       return;
@@ -302,7 +308,9 @@ export function FileTreePanel() {
     const write =
       request.kind === "rename"
         ? renamePath(workspace, request.path, target)
-        : createPath(workspace, target, request.directory);
+        : request.kind === "duplicate"
+          ? copyPath(workspace, request.source, target)
+          : createPath(workspace, target, request.directory);
     void write
       .then(() => {
         if (disposed || pending !== attempt || activeWorkspace() !== workspace) return;
@@ -315,12 +323,30 @@ export function FileTreePanel() {
           if (hasEditableSource(target)) openEditorSource(target);
           else open(target);
         }
+        if (request.kind === "duplicate") open(target);
       })
       .catch((error) => {
         if (disposed || pending !== attempt || activeWorkspace() !== workspace) return;
         pending = null;
         explorer?.editFailed(error instanceof Error ? error.message : String(error));
       });
+  }
+  function duplicate(path: string): void {
+    const parent = parentPath(path);
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    const prefix = parent === "" ? "" : `${parent}/`;
+    const taken = new Set<string>();
+    for (const entry of directoryTree()?.entries ?? []) {
+      if (parentPath(entry.path) !== parent) continue;
+      const rest = entry.path.slice(prefix.length);
+      if (rest && !rest.includes("/")) taken.add(rest);
+    }
+    const name = duplicateFileName(base, (candidate) => taken.has(candidate));
+    if (!name) {
+      setOperationError("Every copy name next to this file is already taken.");
+      return;
+    }
+    explorer?.edit({ kind: "duplicate", source: path, parent, name });
   }
   function move(path: string, value = parentPath(path), error?: string): void {
     const workspace = activeWorkspace();
@@ -460,6 +486,17 @@ export function FileTreePanel() {
       },
       { kind: "rule" },
       ...createItems,
+      ...(target.kind === "file"
+        ? [
+            {
+              kind: "item" as const,
+              label: "Duplicate…",
+              icon: "copy" as const,
+              disabled: !workspace,
+              run: () => duplicate(path),
+            },
+          ]
+        : []),
       {
         kind: "item",
         label: "Rename…",

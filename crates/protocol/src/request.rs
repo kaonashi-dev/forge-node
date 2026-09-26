@@ -448,6 +448,19 @@ pub enum Request {
         /// Workspace-relative path. Never the workspace root itself.
         path: String,
     },
+    /// Copy one file to a new path inside the same checkout → `Ack` (ADR-012).
+    ///
+    /// Refuses a directory, a missing source, an occupied destination, and a
+    /// file over the service's copy ceiling. A symlink is copied as a symlink
+    /// and is not followed. The source stays where it is.
+    CopyPath {
+        /// Workspace both paths are relative to.
+        workspace_id: WorkspaceId,
+        /// Workspace-relative file that exists now.
+        from: String,
+        /// Workspace-relative path of the copy. Parent directories are created with it.
+        to: String,
+    },
     /// Search files by name or content → [`crate::response::Response::SearchResults`].
     SearchFiles {
         /// Workspace to search.

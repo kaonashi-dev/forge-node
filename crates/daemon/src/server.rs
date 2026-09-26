@@ -353,6 +353,7 @@ fn request_name(request: &Request) -> &'static str {
         Request::CreatePath { .. } => "CreatePath",
         Request::RenamePath { .. } => "RenamePath",
         Request::DeletePath { .. } => "DeletePath",
+        Request::CopyPath { .. } => "CopyPath",
         Request::SearchFiles { .. } => "SearchFiles",
         Request::DraftWithJuva { .. } => "DraftWithJuva",
         Request::CreateCommit { .. } => "CreateCommit",

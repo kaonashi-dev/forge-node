@@ -1007,7 +1007,13 @@ impl App {
                 outcome,
                 summary,
                 verification,
-                result_file: result_file.map(|path| path.to_string_lossy().into_owned()),
+                // The daemon's working directory is not this shell's.
+                result_file: result_file.map(|path| {
+                    std::path::absolute(&path)
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .into_owned()
+                }),
             },
             true,
         )?;
@@ -1151,26 +1157,44 @@ impl App {
                 run_id,
             });
         }
-        let ack_ids = ack
+        let mut ack_ids = ack
             .iter()
             .filter_map(|id| id.parse().ok())
             .collect::<Vec<domain::ContextId>>();
+        // Waiting is for new mail: every page of read history is non-empty.
         let read = |ack: Vec<domain::ContextId>| {
             self.call(
                 client,
                 Request::ReadInbox {
                     session_id: session,
                     run_id,
-                    unread_only: false,
+                    unread_only: wait,
                     limit: 50,
                     ack,
                 },
                 false,
             )
         };
+        let ack_shown = |value: &Value| -> Result<(), u8> {
+            if !ack_all {
+                return Ok(());
+            }
+            let shown: Vec<domain::ContextId> = value
+                .get("messages")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|message| message.get("id")?.as_str()?.parse().ok())
+                .collect();
+            if !shown.is_empty() {
+                read(shown)?;
+            }
+            Ok(())
+        };
         if !wait {
-            let response = read(ack_ids)?;
-            self.print_ok(flatten(&response));
+            let value = flatten(&read(ack_ids)?);
+            ack_shown(&value)?;
+            self.print_ok(value);
             return Ok(());
         }
         let budget = timeout
@@ -1181,13 +1205,14 @@ impl App {
             .unwrap_or(self.timeout);
         let deadline = Instant::now() + budget;
         loop {
-            let response = read(if ack_all { vec![] } else { ack_ids.clone() })?;
+            let response = read(std::mem::take(&mut ack_ids))?;
             let value = flatten(&response);
             let empty = value
                 .get("messages")
                 .and_then(|v| v.as_array())
                 .is_none_or(|messages| messages.is_empty());
             if !empty {
+                ack_shown(&value)?;
                 self.print_ok(value);
                 return Ok(());
             }

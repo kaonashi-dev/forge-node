@@ -92,8 +92,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 12,
-        "twelve migrations applied => user_version == 12"
+        version, 13,
+        "thirteen migrations applied => user_version == 13"
     );
 
     for table in [
@@ -153,7 +153,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -568,6 +568,49 @@ fn deleting_a_session_cascades_to_its_context_envelopes() {
     assert!(db.context().list_by_source(source.id).unwrap().is_empty());
 }
 
+#[test]
+fn run_messages_outlive_their_sessions_and_only_the_target_reads_them() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/run-mail");
+    db.projects().upsert(&project).unwrap();
+    let workspace = mk_workspace(project.id, "/tmp/run-mail");
+    db.workspaces().upsert(&workspace).unwrap();
+    let worker = mk_session(workspace.id, SessionState::Running);
+    let controller = mk_session(workspace.id, SessionState::Running);
+    db.sessions().upsert(&worker).unwrap();
+    db.sessions().upsert(&controller).unwrap();
+
+    let question = ContextEnvelope {
+        id: ContextId::new(),
+        source_session_id: Some(worker.id),
+        target_session_id: Some(controller.id),
+        summary: None,
+        instructions: Some("which API?".to_owned()),
+        artifacts: vec![],
+        git_context: None,
+        created_at: Timestamp::now(),
+        run_id: Some(domain::RunId::new()),
+        task_id: None,
+        kind: Some(domain::ContextKind::Question),
+        in_reply_to: None,
+        acked_at: None,
+    };
+    db.context().insert(&question).unwrap();
+
+    assert!(db.context().list_for_target(worker.id).unwrap().is_empty());
+    assert_eq!(
+        db.context().list_for_target(controller.id).unwrap().len(),
+        1
+    );
+
+    // A nulled target would read as mail for the human controller.
+    assert!(db.sessions().delete(worker.id).unwrap());
+    assert!(db.sessions().delete(controller.id).unwrap());
+    let kept = db.context().list_by_source(worker.id).unwrap();
+    assert_eq!(kept.len(), 1, "the question survives both sessions");
+    assert_eq!(kept[0].target_session_id, Some(controller.id));
+}
+
 // ---- projects --------------------------------------------------------------
 
 #[test]
@@ -972,7 +1015,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 12, "orchestration is migration 12");
+    assert_eq!(version, 13, "run envelope history is migration 13");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1122,7 +1165,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 12, "reset retains the migrated schema");
+    assert_eq!(version, 13, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
