@@ -1,15 +1,18 @@
-// Turning a path named in output into an open tab.
+// Turning a path or address named in output into an open tab or a browser.
 //
 // The impure half of `./pathref`: it reads the checkout the window is pointed
 // at and the file tree already in hand, and it is the one place a reference in
-// the terminal or in an agent's transcript becomes a workbench tab.
+// the terminal or in an agent's transcript becomes a workbench tab. An address
+// leaves the workbench; the platform opens it.
 
 import { forgeStore } from "../../../state/forgeStore";
+import { openUrl } from "../../../runtime/host";
 import { openEditor, openEditorAt } from "../../editor/open";
-import { buildPathIndex, findPathRefs, resolvePath, type PathIndex, type PathRef } from "./pathref";
+import { buildPathIndex, resolvePath, type PathIndex, type PathRef } from "./pathref";
+import { assembleLinks, type ScreenLink } from "./screenLinks";
 import { navigationFileIndex } from "../index/fileIndex";
 import { openFile, warmFileTree } from "../commands";
-import { activeWorkspace } from "../../../state/workspace";
+import { activeWorkspace, focusWorkspace } from "../../../state/workspace";
 
 /** The absolute path of the checkout, which is how output spells it. */
 export function workspaceRoot(): string | null {
@@ -36,33 +39,73 @@ export function warmPathIndex(): void {
   if (workspace) warmFileTree(workspace);
 }
 
+/** Paths and addresses on one line, resolved against the checkouts we know. */
+export function linksOnLine(text: string): ScreenLink[] {
+  warmPathIndex();
+  const root = workspaceRoot();
+  return assembleLinks(text, root, otherRoots(root), pathIndex());
+}
+
 /**
- * The references on a line that this checkout can actually open.
+ * The file references on a line that a checkout can actually open.
  *
  * `path` comes back rewritten when the listing resolved it — a bare
  * `App.tsx` in prose, a `b/` from a diff — so the caller opens what was found
  * rather than what was written.
  */
 export function linkedRefs(text: string): PathRef[] {
-  warmPathIndex();
-  const root = workspaceRoot();
-  const index = pathIndex();
-  const linked: PathRef[] = [];
-  for (const ref of findPathRefs(text, root)) {
-    const path = resolvePath(ref.path, index);
-    if (path !== null) linked.push(path === ref.path ? ref : { ...ref, path });
+  const refs: PathRef[] = [];
+  for (const link of linksOnLine(text)) {
+    if (link.kind !== "path") continue;
+    refs.push({
+      from: link.from,
+      to: link.to,
+      path: link.path,
+      line: link.line,
+      checkout: link.checkout,
+    });
   }
-  return linked;
+  return refs;
 }
 
-export function openPathRef(ref: PathRef): void {
-  const workspace = activeWorkspace();
+export function openScreenLink(link: ScreenLink): void {
+  if (link.kind === "url") {
+    void openUrl(link.url).catch(() => undefined);
+    return;
+  }
+  openPathRef(link);
+}
+
+export function openPathRef(ref: Pick<PathRef, "path" | "line" | "checkout">): void {
+  const workspace = ref.checkout === null ? activeWorkspace() : workspaceId(ref.checkout);
   if (!workspace) return;
-  const path = resolvePath(ref.path, pathIndex()) ?? ref.path;
-  // Same pair as the diff's D4 jump: the read is started here as well as by the
-  // editor's own effect, so the tab lands on the line rather than on an empty
-  // buffer that then jumps.
+  if (workspace !== activeWorkspace()) focusWorkspace(workspace);
+  // A path into another checkout is already relative to it. Re-resolving
+  // against this window's listing would rename it to a same-named file here.
+  const path = ref.checkout === null ? (resolvePath(ref.path, pathIndex()) ?? ref.path) : ref.path;
+  // The read is started here as well as by the editor's own effect, so the tab
+  // lands on the line rather than on an empty buffer that then jumps.
   if (ref.line === null) openEditor(path);
   else openEditorAt(path, ref.line);
   void openFile(workspace, path).catch(() => undefined);
+}
+
+function otherRoots(active: string | null): string[] {
+  const roots: string[] = [];
+  for (const workspace of forgeStore.workspaces) {
+    if (workspace.path && workspace.path !== active) roots.push(workspace.path);
+  }
+  return roots;
+}
+
+function workspaceId(root: string): string | null {
+  const wanted = stripSlash(root);
+  for (const workspace of forgeStore.workspaces) {
+    if (stripSlash(workspace.path) === wanted) return workspace.id;
+  }
+  return null;
+}
+
+function stripSlash(path: string): string {
+  return path.length > 1 ? path.replace(/\/+$/, "") : path;
 }

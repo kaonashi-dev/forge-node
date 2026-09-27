@@ -151,6 +151,7 @@ impl WorkspaceArg {
 
 /// Run `forge-daemon session …`.
 pub fn run_session(cli: SessionCli) -> anyhow::Result<()> {
+    eprintln!("note: `forge-daemon session` is deprecated; use `forgectl session`");
     let client = connect()?;
     match cli.command {
         SessionCommand::List => {
@@ -217,6 +218,7 @@ pub fn run_session(cli: SessionCli) -> anyhow::Result<()> {
 
 /// Run `forge-daemon context …`.
 pub fn run_context(cli: ContextCli) -> anyhow::Result<()> {
+    eprintln!("note: `forge-daemon context` is deprecated; use `forgectl`");
     let client = connect()?;
     match cli.command {
         ContextCommand::List { session } => {
@@ -228,10 +230,11 @@ pub fn run_context(cli: ContextCli) -> anyhow::Result<()> {
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "-".into());
                 let summary = envelope.summary.as_deref().unwrap_or("");
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    envelope.id, envelope.source_session_id, target, summary
-                );
+                let source = envelope
+                    .source_session_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".into());
+                println!("{}\t{}\t{}\t{}", envelope.id, source, target, summary);
             }
             Ok(())
         }

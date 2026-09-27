@@ -39,9 +39,9 @@ import type { CellsPayload } from "../../contracts/terminal";
 import { Viewport } from "../../shared/cell-grid/viewport";
 import { CursorBlink, prefersReducedMotion } from "../../shared/cell-grid/cursorBlink";
 import { indexOfCell, lineTextAt, spansOfRange } from "./links";
-import { isMac } from "../../actions/keys";
-import { linkedRefs, openPathRef, warmPathIndex } from "../files/references/pathLinks";
-import { refAt, type PathRef } from "../files/references/pathref";
+import { LinkPress } from "./linkPress";
+import { linksOnLine, openScreenLink, warmPathIndex } from "../files/references/pathLinks";
+import { linkAt, type ScreenLink } from "../files/references/screenLinks";
 import { clipboardPaste } from "../../shared/input/clipboard";
 import {
   mayTakeCaret,
@@ -160,6 +160,7 @@ export function TerminalPane(props: {
   });
   let cell: CellMetrics = measureCell(scaledSize(zoom()), tokens.mono, tokens.monoLineHeight);
   const cursorClick = new CursorClick();
+  const linkPress = new LinkPress();
   const selection = new SelectionDrag({
     viewport,
     geometry: () => {
@@ -195,11 +196,22 @@ export function TerminalPane(props: {
   const showOverlay = debugEnabled();
 
   /**
-   * The path under the pointer while a modifier is held, and the caret's
-   * blink phase — both presentation, so both live on this side of the wire.
+   * The link under the pointer, and the caret's blink phase — both
+   * presentation, so both live on this side of the wire.
    */
-  let hovered: { ref: PathRef; spans: LinkSpan[] } | null = null;
+  let hovered: { link: ScreenLink; spans: LinkSpan[] } | null = null;
   let hoveredCell = { row: -1, col: -1 };
+  /** The link a press landed on, opened if the press does not become a drag. */
+  let armedLink: ScreenLink | null = null;
+  let linkOrigin: {
+    clientX: number;
+    clientY: number;
+    ctrlKey: boolean;
+    altKey: boolean;
+    shiftKey: boolean;
+  } | null = null;
+  /** A drag that started on a link belongs to a program that asked for the mouse. */
+  let linkToProgram = false;
   const blink = new CursorBlink((visible) => {
     if (!renderer) return;
     renderer.cursorVisible = visible;
@@ -487,7 +499,7 @@ export function TerminalPane(props: {
   }
 
   /** Cell coordinates for the PTY: 0-based, and unaffected by the scrollback. */
-  function reportPoint(event: MouseEvent | WheelEvent): { col: number; row: number } {
+  function reportPoint(event: { clientX: number; clientY: number }): { col: number; row: number } {
     const rect = canvas.getBoundingClientRect();
     return {
       col: Math.max(
@@ -501,7 +513,17 @@ export function TerminalPane(props: {
     };
   }
 
-  function report(event: MouseEvent | WheelEvent, button: string, kind: string): void {
+  function report(
+    event: {
+      clientX: number;
+      clientY: number;
+      ctrlKey: boolean;
+      altKey: boolean;
+      shiftKey: boolean;
+    },
+    button: string,
+    kind: string,
+  ): void {
     const { col, row } = reportPoint(event);
     // Clicking an option in a TUI answers it, the same edge the host spends.
     if (kind === "press" && !button.startsWith("wheel")) answered();
@@ -603,11 +625,15 @@ export function TerminalPane(props: {
   function stopDrag(): void {
     selection.stop();
     cursorClick.cancel();
+    linkPress.cancel();
+    armedLink = null;
+    linkOrigin = null;
+    linkToProgram = false;
   }
 
   function resetInteraction(): void {
+    stopDrag();
     selection.reset();
-    cursorClick.cancel();
     reporting = null;
     lastReported = { col: -1, row: -1 };
     clearLink();
@@ -647,11 +673,24 @@ export function TerminalPane(props: {
     if (!acceptsPointer()) return;
     props.onActivate?.();
     stopDrag();
-    // Before mouse reporting: the modifier is the user overriding whatever the
-    // program asked for, the same way `shift` overrides it for selection.
-    if (event.button === 0 && hovered && openModifier(event)) {
+    // A click opens the link. Shift stays a selection, and a second click in a
+    // double-click stays a word select. The press is not reported to a program
+    // that asked for the mouse; a drag past the slop hands that gesture back.
+    const hit = event.button === 0 && !event.shiftKey && event.detail < 2 ? linkUnder(event) : null;
+    if (hit) {
       event.preventDefault();
-      openPathRef(hovered.ref);
+      keys.focus({ preventScroll: true });
+      setHover(hit);
+      armedLink = hit.link;
+      linkOrigin = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+      };
+      linkToProgram = reportsMouse(event);
+      linkPress.arm(event.clientX, event.clientY);
       return;
     }
     // Reporting comes first, and takes every button: a program that asked for
@@ -692,43 +731,61 @@ export function TerminalPane(props: {
   }
 
   /**
-   * The path the pointer is over, while the open-modifier is held.
+   * The link under the pointer.
    *
-   * Behind a modifier so an ordinary drag over output never underlines
-   * anything, and so a click on a path is a deliberate gesture rather than
-   * something a mis-aimed selection can trigger. Recomputed only when the cell
-   * changes: a pointer crossing one cell fires dozens of moves, and each one
-   * would otherwise join a wrapped line into a string and re-scan it.
+   * Recomputed only when the cell changes: a pointer crossing one cell fires
+   * dozens of moves, and each one would otherwise join a wrapped line into a
+   * string and re-scan it.
    */
   function trackLink(event: MouseEvent): void {
-    if (!openModifier(event)) {
-      clearLink();
-      return;
-    }
     const point = pointAt(event);
     const row = point.line + viewport.scrollOffset;
-    if (hovered && hoveredCell.row === row && hoveredCell.col === point.col) return;
+    if (hoveredCell.row === row && hoveredCell.col === point.col) return;
     hoveredCell = { row, col: point.col };
-
-    const line = lineTextAt(viewport.rows, row, viewport.cols);
-    const index = indexOfCell(line, row, point.col);
-    const ref = index < 0 ? null : refAt(linkedRefs(line.text), index);
-    const previous = hovered;
-    hovered = ref ? { ref, spans: spansOfRange(line, ref.from, ref.to) } : null;
-    markLink(previous, hovered);
+    setHover(linkUnder(event));
   }
 
-  /** The platform's "follow this" chord — the same one a browser link takes. */
-  function openModifier(event: MouseEvent): boolean {
-    return isMac() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  function linkUnder(event: MouseEvent): { link: ScreenLink; spans: LinkSpan[] } | null {
+    const point = pointAt(event);
+    const row = point.line + viewport.scrollOffset;
+    if (row < 0 || row >= viewport.rows.length) return null;
+    const line = lineTextAt(viewport.rows, row, viewport.cols);
+    const index = indexOfCell(line, row, point.col);
+    if (index < 0) return null;
+    const link = linkAt(linksOnLine(line.text), index);
+    if (!link) return null;
+    return { link, spans: spansOfRange(line, link.from, link.to) };
+  }
+
+  function setHover(next: { link: ScreenLink; spans: LinkSpan[] } | null): void {
+    const previous = hovered;
+    hovered = next;
+    host.classList.toggle("terminal-link", next !== null);
+    if (previous === next) return;
+    markLink(previous, next);
+  }
+
+  /** A drag that began on a link: selection, or the program's mouse. */
+  function promoteLinkDrag(event: MouseEvent): void {
+    const origin = linkOrigin;
+    const toProgram = linkToProgram;
+    armedLink = null;
+    linkOrigin = null;
+    linkToProgram = false;
+    if (!origin) return;
+    if (toProgram) {
+      reporting = "left";
+      lastReported = reportPoint(origin);
+      report(origin, "left", "press");
+      return;
+    }
+    selection.begin(origin);
+    selection.move(event);
   }
 
   function clearLink(): void {
-    if (!hovered) return;
-    const previous = hovered;
-    hovered = null;
     hoveredCell = { row: -1, col: -1 };
-    markLink(previous, null);
+    setHover(null);
   }
 
   /** Repaint only the rows the underline moved on or off. */
@@ -744,8 +801,12 @@ export function TerminalPane(props: {
 
   function onMouseMove(event: MouseEvent): void {
     if (!acceptsPointer()) return;
-    if (selection.dragging && (event.buttons & 1) === 0) stopDrag();
+    if ((selection.dragging || linkPress.pending) && (event.buttons & 1) === 0) stopDrag();
     cursorClick.move(event);
+    if (linkPress.pending && linkPress.drag(event.clientX, event.clientY)) {
+      promoteLinkDrag(event);
+    }
+    if (linkPress.pending) return;
     trackLink(event);
     if (reporting !== null) {
       // Only on a cell boundary: a pointer crossing one cell fires dozens of
@@ -761,8 +822,20 @@ export function TerminalPane(props: {
   }
 
   function onMouseUp(event: MouseEvent): void {
+    if (linkPress.pending && linkPress.drag(event.clientX, event.clientY)) {
+      promoteLinkDrag(event);
+    }
+    const activate = linkPress.release(event.clientX, event.clientY);
+    const armed = armedLink;
+    armedLink = null;
+    linkOrigin = null;
+    linkToProgram = false;
     if (!acceptsPointer()) {
       stopDrag();
+      return;
+    }
+    if (activate && armed && event.button === 0) {
+      openScreenLink(armed);
       return;
     }
     const target = cursorClick.finish(event, pointAt(event), viewport);

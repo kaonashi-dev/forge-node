@@ -93,6 +93,18 @@ uuid_id!(
 uuid_id!(ContextId);
 uuid_id!(AgentProfileId);
 uuid_id!(ShareRuleId);
+uuid_id!(
+    /// One orchestration run: an objective, a controller, and a board.
+    RunId
+);
+uuid_id!(
+    /// One unit of work inside a run.
+    TaskId
+);
+uuid_id!(
+    /// One assignment of a task to a session.
+    AttemptId
+);
 
 /// Stable provider slug, such as `"claude"`, rather than a generated UUID.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

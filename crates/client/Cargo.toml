@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 domain.workspace = true
 protocol.workspace = true
+nix.workspace = true
 terminal-input.workspace = true
 flume.workspace = true
 tracing.workspace = true

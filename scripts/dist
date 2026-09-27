@@ -132,6 +132,8 @@ case "$(uname -s)" in
       || die "broken bundle: missing $app/Contents/MacOS/forge-daemon (the GUI spawns its sibling)"
     [ -x "$app/Contents/MacOS/forge-editor" ] \
       || die "broken bundle: missing $app/Contents/MacOS/forge-editor (the daemon spawns it for an Editor session)"
+    [ -x "$app/Contents/MacOS/forgectl" ] \
+      || die "broken bundle: missing $app/Contents/MacOS/forgectl"
 
     # Refuse (or warn about) an architecture mismatch early instead of letting
     # the kernel kill the app with a cryptic "Code Signature Invalid".

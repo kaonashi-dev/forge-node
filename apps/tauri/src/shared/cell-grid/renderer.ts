@@ -48,7 +48,7 @@ export class TerminalRenderer {
   metrics: CellMetrics;
   selection: Selection | null = null;
   focused = false;
-  /** The path under the pointer, underlined while a modifier is held. */
+  /** The link under the pointer. */
   link: LinkSpan[] = [];
   /** Held steady while unfocused or under reduced motion; see `cursorBlink`. */
   cursorVisible = true;
@@ -231,7 +231,7 @@ export class TerminalRenderer {
     }
   }
 
-  /** The rule under a hovered path, in the project's accent so it reads as live. */
+  /** The rule under a hovered link, in the project's accent so it reads as live. */
   private paintLink(context: CanvasRenderingContext2D, row: number): void {
     const { width: cellWidth, height: cellHeight } = this.metrics;
     for (const span of this.link) {

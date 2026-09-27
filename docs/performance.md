@@ -530,3 +530,13 @@ Reproducible, and worth repeating before and after any change on the delta rung:
 
 `scripts/dev check` is the gate for correctness, not for cost. Nothing in it
 would have caught any finding on this page.
+
+## Orchestration traffic
+
+`forgectl hook` fires once per turn, not per tool call, and the handler does
+not touch SQLite. A `ClientKind::Cli` connection skips `TerminalActivity`,
+`TerminalBell`, `ClipboardStore`, `EditorFrame`, and `ProviderUsageChanged`,
+so a controller blocked in `run wait` is not queued behind a terminal burst.
+Message bodies are not written into a PTY. Result files and board values are
+clamped with `metadata` plus `Read::take` before the rest of the bytes are
+resident. See [orchestration.md](./orchestration.md).

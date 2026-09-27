@@ -15,6 +15,7 @@ members = [
     "crates/editor-cli",
     "crates/client",
     "crates/daemon",
+    "crates/forge-ctl",
     "apps/tauri/src-tauri",
 ]
 

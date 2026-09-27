@@ -350,12 +350,17 @@ pub struct AgentProfile {
 /// contract with the child process, and a provider whose config
 /// directory was spelled with one of these would break the emulator rather
 /// than switch accounts.
-pub const RESERVED_PROFILE_VARS: [&str; 5] = [
+pub const RESERVED_PROFILE_VARS: [&str; 10] = [
     "TERM",
     "TERMINFO",
     "COLORTERM",
     "FORGE_SESSION_ID",
     "FORGE_WORKSPACE",
+    "FORGE_SOCKET",
+    "FORGE_RUN_ID",
+    "FORGE_TASK_ID",
+    "FORGE_ATTEMPT_ID",
+    "FORGECTL_JSON",
 ];
 
 impl AgentProfile {

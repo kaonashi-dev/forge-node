@@ -28,10 +28,14 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
 
 - **Append only.** Add a new `M::up(...)` to `migrations()`; never edit or
   reorder an existing one, or already-migrated databases will diverge.
-- Eleven migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
+- Twelve migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
   `PROJECT_GROUPS`, `AGENT_PROFILES`, `PROJECT_ICONS`,
   `WORKSPACE_DISPLAY_NAMES`, `SESSION_LAUNCH_COMMAND`, `WORKTREE_SHARES`,
-  `SESSION_BASE_COMMIT`, `PROFILE_CONFIG_DIR` and `WORKTREE_IGNORES`.
+  `SESSION_BASE_COMMIT`, `PROFILE_CONFIG_DIR`, `WORKTREE_IGNORES`, and
+  `ORCHESTRATION` (runs, tasks, attempts, the board, idempotency receipts).
+  Session activity is not a column. A restart reconciles live attempts to lost
+  and an active run to interrupted before the socket is bound. Factory reset
+  deletes those tables with the rest of the application rows.
 - `PROJECT_ICONS` adds a nullable `projects.icon`, and null is what every
   existing project keeps: no icon means the UI draws initials, which is what it
   drew before the column existed. The column carries no `CHECK` — what makes a

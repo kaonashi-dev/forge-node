@@ -152,6 +152,19 @@ export async function renamePath(
   );
 }
 
+/** Copy one file. The source stays; an occupied destination is refused. */
+export async function copyPath(
+  workspace: string,
+  from: string,
+  to: string,
+): Promise<PathOperationResult> {
+  const operation: PathOperation = { workspace, kind: "copy", from, to, directory: false };
+  validateOperation(operation, validateRename(from, to));
+  return pathOperations.run(operation, (operation_id) =>
+    sendWorkbenchCommand({ type: "copy_path", workspace, from, to, operation_id }),
+  );
+}
+
 export async function deletePath(workspace: string, path: string): Promise<PathOperationResult> {
   const operation: PathOperation = { workspace, kind: "delete", from: path };
   validateOperation(operation, validatePath(path));

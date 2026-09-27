@@ -13,6 +13,7 @@ Grep the diff; do not rely on memory.
 - [ ] Git via `git_service::run_git` / `run_git_network`; host API only in `github.rs`.
 - [ ] Tauri colours/metrics from `apps/tauri/src/theme/tokens.ts`; repeated UI from `apps/tauri/src/ui`.
 - [ ] `domain` serializable; `protocol` framing; `#[non_exhaustive]` wildcards.
+- [ ] `forgectl` (`forge-ctl`) depends only on `client → protocol → domain`, never on `daemon`.
 
 Example greps:
 

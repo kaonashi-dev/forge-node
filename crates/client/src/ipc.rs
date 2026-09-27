@@ -167,12 +167,22 @@ impl Client {
         socket_path: &Path,
         client_version: impl Into<String>,
     ) -> Result<Self, ClientError> {
+        Self::connect_as(socket_path, client_version, ClientKind::Gui)
+    }
+
+    /// Connect as `kind`. `forgectl` uses [`ClientKind::Cli`] so terminal
+    /// chatter is not queued onto a long wait.
+    pub fn connect_as(
+        socket_path: &Path,
+        client_version: impl Into<String>,
+        kind: ClientKind,
+    ) -> Result<Self, ClientError> {
         let mut stream = UnixStream::connect(socket_path)?;
 
         let hello = ClientMessage::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
             client_version: client_version.into(),
-            client_kind: ClientKind::Gui,
+            client_kind: kind,
         });
         write_frame(&mut stream, &hello)?;
 
@@ -880,6 +890,23 @@ impl Client {
         self.expect_ack(Request::DeletePath {
             workspace_id,
             path: path.into(),
+        })
+    }
+
+    /// Copy one file to a new path inside the same checkout (ADR-012).
+    ///
+    /// Refuses directories and occupied destinations. A symlink is copied as a
+    /// symlink. The source is left in place.
+    pub fn copy_path(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        from: impl Into<String>,
+        to: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::CopyPath {
+            workspace_id,
+            from: from.into(),
+            to: to.into(),
         })
     }
 
@@ -1859,6 +1886,7 @@ mod tests {
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
             pull_requests: Box::new(domain::PullRequestState::default()),
+            runs: vec![],
             usage: vec![],
         };
         let server_expected = expected.clone();

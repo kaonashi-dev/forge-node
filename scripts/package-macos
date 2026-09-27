@@ -24,6 +24,7 @@
 #   Forge Node.app/Contents/MacOS/forge-daemon   <- runtime, spawned by the GUI
 #   Forge Node.app/Contents/MacOS/forge-editor   <- integrated editor, spawned
 #                                                   by the daemon under a PTY
+#   Forge Node.app/Contents/MacOS/forgectl       <- orchestration client
 #   Forge Node.app/Contents/Resources/forge.icns <- repo icon by default; FORGE_ICNS overrides
 #
 # The Solid frontend is not a bundle resource: `tauri-build` embeds the Vite
@@ -132,6 +133,7 @@ daemon_name="forge-daemon"
 # the bundle because `[editor] executable` defaults to a PATH lookup, and a
 # packaged install has no target/debug to fall back on.
 editor_name="forge-editor"
+ctl_name="forgectl"
 
 # WKWebView (Tauri's renderer) and the workspace's own floor. It is both the
 # Info.plist minimum and what we promise installers.
@@ -243,6 +245,8 @@ if [ "$dry_run" -eq 1 ]; then
     "$daemon_name" "$daemon_name"
   printf '    editor         %s -> Contents/MacOS/%s\n' \
     "$editor_name" "$editor_name"
+  printf '    forgectl       %s -> Contents/MacOS/%s\n' \
+    "$ctl_name" "$ctl_name"
   printf '    icon           %s\n' "${FORGE_ICNS:-<none>}"
   printf '    bundle         %s\n' "$app"
   [ "$make_zip" -eq 1 ] && printf '    archive        %s/ForgeNode-%s.zip\n' "$out_dir" "$version"
@@ -275,11 +279,11 @@ for slice in "${slices[@]}"; do
   rust_target="$(rust_target_for "$slice")"
   require_target "$rust_target"
 
-  note "building $daemon_name, $editor_name and $gui_bin (release) for $rust_target"
+  note "building $daemon_name, $editor_name, $ctl_name and $gui_bin (release) for $rust_target"
   # One graph shares dependency features; custom-protocol embeds the frontend.
   cargo build --release --locked --target "$rust_target" \
-    -p daemon -p editor-cli -p "$gui_crate" \
-    --bin "$daemon_name" --bin "$editor_name" --bin "$gui_bin" \
+    -p daemon -p editor-cli -p forge-ctl -p "$gui_crate" \
+    --bin "$daemon_name" --bin "$editor_name" --bin "$ctl_name" --bin "$gui_bin" \
     --features "$gui_crate/custom-protocol" \
     || {
       extra=""
@@ -325,6 +329,7 @@ require_slices() {
 gui_sources=()
 daemon_sources=()
 editor_sources=()
+ctl_sources=()
 for slice in "${slices[@]}"; do
   gui_src="target/$(rust_target_for "$slice")/release/$gui_bin"
   [ -f "$gui_src" ] || die "missing $gui_src — the release build produced no $gui_bin for $slice"
@@ -337,6 +342,10 @@ for slice in "${slices[@]}"; do
   editor_src="target/$(rust_target_for "$slice")/release/$editor_name"
   [ -f "$editor_src" ] || die "missing $editor_src — the release build produced no $editor_name for $slice"
   editor_sources+=("$editor_src")
+
+  ctl_src="target/$(rust_target_for "$slice")/release/$ctl_name"
+  [ -f "$ctl_src" ] || die "missing $ctl_src — the release build produced no $ctl_name for $slice"
+  ctl_sources+=("$ctl_src")
 done
 
 # The frontend is embedded, not a bundle resource, so nothing downstream can
@@ -363,11 +372,13 @@ done
 merge_or_copy "$app/Contents/MacOS/$gui_name" "${gui_sources[@]}"
 merge_or_copy "$app/Contents/MacOS/$daemon_name" "${daemon_sources[@]}"
 merge_or_copy "$app/Contents/MacOS/$editor_name" "${editor_sources[@]}"
+merge_or_copy "$app/Contents/MacOS/$ctl_name" "${ctl_sources[@]}"
 
 require_cmd lipo "part of the Xcode Command Line Tools"
 require_slices "$app/Contents/MacOS/$gui_name" "${slices[@]}"
 require_slices "$app/Contents/MacOS/$daemon_name" "${slices[@]}"
 require_slices "$app/Contents/MacOS/$editor_name" "${slices[@]}"
+require_slices "$app/Contents/MacOS/$ctl_name" "${slices[@]}"
 
 [ -n "${FORGE_ICNS:-}" ] && cp "$FORGE_ICNS" "$app/Contents/Resources/forge.icns"
 
@@ -391,6 +402,7 @@ if [ -n "${FORGE_CODESIGN_IDENTITY:-}" ]; then
   # time the GUI spawns it.
   codesign "${sign_args[@]}" "$app/Contents/MacOS/$daemon_name"
   codesign "${sign_args[@]}" "$app/Contents/MacOS/$editor_name"
+  codesign "${sign_args[@]}" "$app/Contents/MacOS/$ctl_name"
   codesign "${sign_args[@]}" "$app/Contents/MacOS/$gui_name"
   codesign "${sign_args[@]}" "$app"
   codesign --verify --deep --strict --verbose=2 "$app"

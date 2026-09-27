@@ -157,6 +157,25 @@ describe("lazy directory reconciliation", () => {
     expect(h.state.directories.src).toBeUndefined();
     expect(h.state.tree?.entries).toEqual([]);
   });
+  it("keeps the source when a copy is confirmed", async () => {
+    const h = setup();
+    h.controller.ensure("w");
+    await h.tick();
+    h.reply(h.requests[0], [file(".env.staging")]);
+    h.controller.operation({
+      operation_id: "copy",
+      workspace: "w",
+      kind: "copy",
+      from: ".env.staging",
+      to: ".env.staging copy",
+      success: true,
+      uncertain: false,
+    });
+    expect(h.state.tree?.entries.map((entry) => entry.path).sort()).toEqual([
+      ".env.staging",
+      ".env.staging copy",
+    ]);
+  });
   it("retires ancestor reads that predate confirmed nested creation", async () => {
     const h = setup();
     h.controller.ensure("w");

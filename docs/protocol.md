@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 27` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 29` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -28,7 +28,7 @@ The WebView's `send_workbench_command` is a separate host API, not an addition
 to the daemon wire. It rejects when the worker is absent, closed or its bounded
 queue is full. Accepted means enqueued, not completed.
 
-- `create_path`, `rename_path`, `delete_path` carry `operation_id` and finish on
+- `create_path`, `rename_path`, `delete_path`, `copy_path` carry `operation_id` and finish on
   `workbench:path_result { operation_id, workspace, kind, from, to, success,
   error, uncertain }`. Structured daemon refusals are definitive; transport
   failures are uncertain. Listing failures never complete mutations.
@@ -129,6 +129,7 @@ DaemonMessage::Event    (DaemonEvent)
 | | `CreatePath { workspace_id, path, directory }` | `Ack` after creating an empty entry and missing parents; refuses occupied paths and escapes. |
 | | `RenamePath { workspace_id, from, to }` | `Ack` after an exclusive move inside the checkout. Root, identical paths, occupied destinations and moves into descendants are refused. Confirmed moves retarget editors and broadcast `FileChanged` for both paths. |
 | | `DeletePath { workspace_id, path }` | `Ack` after deletion; directories are recursive, final symlink entries are removed without following them. Root is refused. There is no trash or undo. |
+| | `CopyPath { workspace_id, from, to }` | `Ack` after copying one file to a new path inside the checkout. Refuses a directory, a missing source, an occupied destination (including a dangling symlink), an escape, and a file over `fs_service::MAX_COPY_BYTES` (32 MiB) — the copy is synchronous, so the ceiling bounds how long the call can run. A symlink is copied as a symlink and is not followed. The source is left in place. Missing parents of `to` are created. |
 | | `SearchFiles { workspace_id, query, kind, limit }` | `Response::SearchResults(SearchResults)` — fuzzy name match, fixed-string `git grep -F` content search, or `Definition`: a `git grep -w -F` for the bare word kept only where the line declares it. The answer echoes `query`, which is what tells a client whose lookup it is. |
 | | `WatchFiles { workspace_id, directories }` | Replaces this **connection's** directory watches and answers `Ack`; an empty list releases them. Directories are workspace-relative and non-recursive, capped before they are watched (128 per connection, 4096 bytes per path) and must canonicalize inside the checkout — a path that escapes is refused, one that no longer resolves is skipped, since the listing the client watched from is always a moment older than the checkout. Native events are coalesced (~150 ms, at most 32 paths per batch) and reported as `FileChanged`; a lost event becomes one empty-path invalidation. The `Ack` is not itself news: the set is replaced in place with no gap, so a client reconciles after an *arm* (first watch, new checkout, reconnect, retry) and not after every reply. The subscription belongs to the connection and dies with it. |
 | Sessions | `CreateShellSession { workspace_id, parent, role }` | `SessionCreated` (state `Starting`, then `SessionUpdated` → `Running`). |
@@ -279,6 +280,11 @@ reader thread, `flume` channels — no tokio, no GUI toolkit):
 - `Client::connect(socket_path, client_version)` performs the handshake and
   exposes `daemon_info()`. The `Hello` is built internally from
   `PROTOCOL_VERSION` and `ClientKind::Gui`; callers do not supply one.
+  `connect_as(..., ClientKind::Cli)` is what `forgectl` uses. A CLI connection
+  is not sent `TerminalActivity`, `TerminalBell`, `ClipboardStore`,
+  `EditorFrame`, or `ProviderUsageChanged`. Orchestration requests and events
+  (runs, tasks, attempts, the board, inbox) are version 28; see
+  [orchestration.md](./orchestration.md).
 - `request(body)` / `request_timeout(body, dur)` block until the matching
   response arrives. They must be bridged off the UI thread.
 - `events()` returns a bounded receiver (64 events). The reader uses nonblocking

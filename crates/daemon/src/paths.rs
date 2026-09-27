@@ -112,10 +112,17 @@ pub fn socket_path() -> Result<PathBuf, PathError> {
 
 /// Resolve the socket given an optional `FORGE_SOCKET`-style override.
 fn socket_path_from(forge_socket: Option<std::ffi::OsString>) -> Result<PathBuf, PathError> {
-    if let Some(path) = forge_socket {
-        return Ok(PathBuf::from(path));
-    }
-    Ok(resolve_runtime_dir()?.join("daemon.sock"))
+    client::resolve_socket(&client::SocketQuery {
+        forge_socket: forge_socket.map(PathBuf::from),
+        tmpdir: std::env::var_os("TMPDIR")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from),
+        xdg_runtime_dir: std::env::var_os("XDG_RUNTIME_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from),
+        uid: uid(),
+    })
+    .map_err(|_| PathError::NoRuntimeDir)
 }
 
 /// The singleton follows the socket namespace, including `FORGE_SOCKET`.

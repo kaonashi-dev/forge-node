@@ -2,7 +2,7 @@
 export type PathOperationResult = {
   operation_id: string;
   workspace: string;
-  kind: "create" | "rename" | "delete";
+  kind: "create" | "rename" | "delete" | "copy";
   from?: string | null;
   to?: string | null;
   success: boolean;

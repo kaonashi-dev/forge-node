@@ -20,6 +20,15 @@ pub use name_search::search_names;
 /// Soft ceiling for one file's contents on the wire.
 pub const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 
+/// Ceiling for one [`copy_path`].
+///
+/// The copy runs synchronously on the request path. Bytes are streamed, not
+/// loaded, but the call still cannot return until the copy finishes, so a
+/// multi-gigabyte file is refused rather than held. The size is checked
+/// before the destination is created, and the reader is capped so a file
+/// that grows during the copy cannot write past this.
+pub const MAX_COPY_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Ceiling for one image read. The daemon ships it as base64 — a third larger —
 /// inside a frame capped at 16 MiB, so this leaves room for the envelope.
 pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -99,6 +108,9 @@ pub enum FsError {
     /// The file contains a `NUL` in its probe window.
     #[error("binary file")]
     Binary,
+    /// [`copy_path`] was asked to copy a directory or a non-file entry.
+    #[error("not a file: {0}")]
+    NotAFile(String),
     /// [`read_image`] was asked for a path without an image extension.
     #[error("not an image: {0}")]
     NotAnImage(String),
@@ -799,6 +811,46 @@ pub fn delete_path(root: &Path, relative: &str) -> Result<(), FsError> {
         fs::remove_file(&path)?;
     }
     Ok(())
+}
+
+/// Copy one file to a new path inside the checkout. Never overwrites.
+///
+/// A directory is refused. A symlink is copied as a symlink and is not
+/// followed, so a duplicate cannot pull in a target outside the checkout.
+/// The source is left in place. Missing parents of `to` are created.
+pub fn copy_path(root: &Path, from: &str, to: &str) -> Result<(), FsError> {
+    copy_path_limited(root, from, to, MAX_COPY_BYTES)
+}
+
+fn copy_path_limited(root: &Path, from: &str, to: &str, limit: u64) -> Result<(), FsError> {
+    const MAX_COPY_PATH_BYTES: usize = 4096;
+    for path in [from, to] {
+        if path.len() > MAX_COPY_PATH_BYTES {
+            return Err(FsError::TooLarge {
+                size: path.len() as u64,
+                limit: MAX_COPY_PATH_BYTES,
+            });
+        }
+    }
+    let root = canonicalize_root(root)?;
+    let source = resolve_entry_inside(&root, from)?;
+    let target = resolve_entry_inside(&root, to)?;
+    if source == target {
+        return Err(FsError::AlreadyExists(normalize_rel(to)));
+    }
+    match entry_move::copy(&root, &source, &target, limit) {
+        Ok(()) => Ok(()),
+        Err(entry_move::CopyError::NotAFile) => Err(FsError::NotAFile(normalize_rel(from))),
+        Err(entry_move::CopyError::TooLarge { size }) => Err(FsError::TooLarge {
+            size,
+            limit: usize::try_from(limit).unwrap_or(usize::MAX),
+        }),
+        Err(entry_move::CopyError::Io(error)) => match error.kind() {
+            std::io::ErrorKind::AlreadyExists => Err(FsError::AlreadyExists(normalize_rel(to))),
+            std::io::ErrorKind::NotFound => Err(FsError::NotFound(normalize_rel(from))),
+            _ => Err(FsError::Io(error)),
+        },
+    }
 }
 
 /// Search by file name or by content under `root`.
@@ -2723,6 +2775,95 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         let tmp = git_repo();
         let err = create_path(tmp.path(), "../outside.rs", PathKind::File).unwrap_err();
         assert!(matches!(err, FsError::EscapesWorkspace(_)));
+    }
+
+    #[test]
+    fn copy_duplicates_bytes_and_mode_without_touching_the_source() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = git_repo();
+        let source = tmp.path().join("keep.rs");
+        fs::write(&source, b"keep\0\xff").unwrap();
+        let mut perms = fs::metadata(&source).unwrap().permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&source, perms).unwrap();
+        copy_path(tmp.path(), "keep.rs", "nested/keep copy.rs").unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"keep\0\xff");
+        let copied = tmp.path().join("nested/keep copy.rs");
+        assert_eq!(fs::read(&copied).unwrap(), b"keep\0\xff");
+        assert_eq!(
+            fs::metadata(&copied).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn copy_refuses_a_directory_an_occupied_path_and_an_escape() {
+        let tmp = git_repo();
+        fs::create_dir(tmp.path().join("dir")).unwrap();
+        fs::write(tmp.path().join("keep.rs"), "keep").unwrap();
+        std::os::unix::fs::symlink("missing", tmp.path().join("occupied")).unwrap();
+        assert!(matches!(
+            copy_path(tmp.path(), "dir", "dir copy").unwrap_err(),
+            FsError::NotAFile(_)
+        ));
+        assert!(!tmp.path().join("dir copy").exists());
+        assert!(matches!(
+            copy_path(tmp.path(), "keep.rs", "keep.rs").unwrap_err(),
+            FsError::AlreadyExists(_)
+        ));
+        assert!(matches!(
+            copy_path(tmp.path(), "keep.rs", "occupied").unwrap_err(),
+            FsError::AlreadyExists(_)
+        ));
+        assert_eq!(
+            fs::read_link(tmp.path().join("occupied")).unwrap(),
+            Path::new("missing")
+        );
+        assert!(matches!(
+            copy_path(tmp.path(), "../outside.rs", "outside.rs").unwrap_err(),
+            FsError::EscapesWorkspace(_)
+        ));
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("outside")).unwrap();
+        assert!(matches!(
+            copy_path(tmp.path(), "keep.rs", "outside/copy.rs").unwrap_err(),
+            FsError::EscapesWorkspace(_)
+        ));
+        assert!(!outside.path().join("copy.rs").exists());
+        assert!(matches!(
+            copy_path(tmp.path(), "missing.rs", "missing copy.rs").unwrap_err(),
+            FsError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn copy_duplicates_a_symlink_without_reading_its_target() {
+        let tmp = git_repo();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret"), "do not copy").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret"), tmp.path().join("link")).unwrap();
+        copy_path(tmp.path(), "link", "link copy").unwrap();
+        assert!(fs::symlink_metadata(tmp.path().join("link copy"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_link(tmp.path().join("link copy")).unwrap(),
+            outside.path().join("secret")
+        );
+        assert_eq!(
+            fs::read_to_string(outside.path().join("secret")).unwrap(),
+            "do not copy"
+        );
+    }
+
+    #[test]
+    fn copy_refuses_a_file_past_the_limit_without_creating_the_destination() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join("big.bin"), vec![1, 2, 3, 4, 5]).unwrap();
+        let err = copy_path_limited(tmp.path(), "big.bin", "big copy.bin", 4).unwrap_err();
+        assert!(matches!(err, FsError::TooLarge { size: 5, limit: 4 }));
+        assert!(!tmp.path().join("big copy.bin").exists());
     }
 
     #[test]

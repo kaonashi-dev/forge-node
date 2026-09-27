@@ -132,6 +132,13 @@ pub enum WorkbenchCommand {
         workspace: WorkspaceId,
         path: String,
     },
+    /// Copy one file. Never overwrites, and never follows a symlink.
+    CopyPath {
+        operation_id: String,
+        workspace: WorkspaceId,
+        from: String,
+        to: String,
+    },
     SearchFiles {
         workspace: WorkspaceId,
         query: String,
@@ -218,6 +225,7 @@ mod tests {
             json!({"type": "create_path", "workspace": workspace, "path": ".agents", "directory": true}),
             json!({"type": "rename_path", "workspace": workspace, "from": "src", "to": "lib"}),
             json!({"type": "delete_path", "workspace": workspace, "path": "lib"}),
+            json!({"type": "copy_path", "workspace": workspace, "from": "keep.rs", "to": "keep copy.rs"}),
         ] {
             assert!(serde_json::from_value::<WorkbenchCommand>(command.clone()).is_err());
             command["operation_id"] = json!("operation-1");
@@ -225,7 +233,8 @@ mod tests {
             let operation_id = match parsed {
                 WorkbenchCommand::CreatePath { operation_id, .. }
                 | WorkbenchCommand::RenamePath { operation_id, .. }
-                | WorkbenchCommand::DeletePath { operation_id, .. } => operation_id,
+                | WorkbenchCommand::DeletePath { operation_id, .. }
+                | WorkbenchCommand::CopyPath { operation_id, .. } => operation_id,
                 other => panic!("unexpected command: {other:?}"),
             };
             assert_eq!(operation_id, "operation-1");

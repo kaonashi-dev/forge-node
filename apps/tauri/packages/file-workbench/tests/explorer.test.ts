@@ -255,6 +255,26 @@ describe("inline edits", () => {
     expect(field.readOnly).toBe(false);
   });
 
+  it("commits a duplicate's prefilled name without treating it as an unchanged rename", () => {
+    const commits: string[] = [];
+    const { explorer, field } = mount({
+      onEditCommit: (_request, name) => commits.push(name),
+    });
+    explorer.setState({ tree: tree([entry(".env.staging", "File")]) });
+    explorer.edit({
+      kind: "duplicate",
+      source: ".env.staging",
+      parent: "",
+      name: ".env.staging copy",
+    });
+    expect(field.value).toBe(".env.staging copy");
+    expect(field.selectionStart).toBe(0);
+    expect(field.selectionEnd).toBe(".env.staging copy".length);
+    expect(field.attributes.get("aria-label")).toBe("Name for the copy of .env.staging");
+    key(field, "Enter");
+    expect(commits).toEqual([".env.staging copy"]);
+  });
+
   it("keeps an unsent blank value open for host validation and cancels only on Escape", () => {
     let commits = 0;
     const { explorer, field, host } = mount({

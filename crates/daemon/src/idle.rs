@@ -221,6 +221,7 @@ mod tests {
             last_activity_at: at(idle_secs),
             ended_at: None,
             base_commit: None,
+            activity: domain::AgentActivity::unknown(),
         }
     }
 

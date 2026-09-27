@@ -5,11 +5,11 @@
 use std::path::PathBuf;
 
 use domain::{
-    AgentProfile, AgentProfileId, AgentProviderId, ContextArtifactKind, ContextArtifactRef,
-    ContextEnvelope, ContextId, GitContextRef, IgnoreScope, Project, ProjectGroup, ProjectGroupId,
-    ProjectId, Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle, ShareRule,
-    ShareRuleId, ShareStrategy, Timestamp, Workspace, WorkspaceId, WorkspaceKind, WorkspaceStatus,
-    WorktreeIgnore,
+    AgentActivity, AgentProfile, AgentProfileId, AgentProviderId, ContextArtifactKind,
+    ContextArtifactRef, ContextEnvelope, ContextId, GitContextRef, IgnoreScope, Project,
+    ProjectGroup, ProjectGroupId, ProjectId, Session, SessionId, SessionKind, SessionRole,
+    SessionState, SessionTitle, ShareRule, ShareRuleId, ShareStrategy, Timestamp, Workspace,
+    WorkspaceId, WorkspaceKind, WorkspaceStatus, WorktreeIgnore,
 };
 
 use crate::Db;
@@ -75,6 +75,7 @@ fn mk_session(workspace_id: WorkspaceId, state: SessionState) -> Session {
         last_activity_at: created_at,
         ended_at: None,
         base_commit: None,
+        activity: AgentActivity::unknown(),
     }
 }
 
@@ -91,8 +92,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 11,
-        "eleven migrations applied => user_version == 11"
+        version, 13,
+        "thirteen migrations applied => user_version == 13"
     );
 
     for table in [
@@ -106,6 +107,12 @@ fn migrations_apply_and_user_version_advances() {
         "agent_profiles",
         "worktree_shares",
         "worktree_ignores",
+        "runs",
+        "tasks",
+        "task_deps",
+        "attempts",
+        "run_state",
+        "orchestration_receipts",
     ] {
         let count: i64 = db
             .conn()
@@ -146,7 +153,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 13);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -535,13 +542,18 @@ fn deleting_a_session_cascades_to_its_context_envelopes() {
 
     let envelope = ContextEnvelope {
         id: ContextId::new(),
-        source_session_id: source.id,
+        source_session_id: Some(source.id),
         target_session_id: Some(target.id),
         summary: Some("hand-off".to_string()),
         instructions: None,
         artifacts: vec![],
         git_context: None,
         created_at: Timestamp::now(),
+        run_id: None,
+        task_id: None,
+        kind: None,
+        in_reply_to: None,
+        acked_at: None,
     };
     db.context().insert(&envelope).unwrap();
 
@@ -554,6 +566,49 @@ fn deleting_a_session_cascades_to_its_context_envelopes() {
     // Deleting the *source* removes the envelope with it (ON DELETE CASCADE).
     assert!(db.sessions().delete(source.id).unwrap());
     assert!(db.context().list_by_source(source.id).unwrap().is_empty());
+}
+
+#[test]
+fn run_messages_outlive_their_sessions_and_only_the_target_reads_them() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/run-mail");
+    db.projects().upsert(&project).unwrap();
+    let workspace = mk_workspace(project.id, "/tmp/run-mail");
+    db.workspaces().upsert(&workspace).unwrap();
+    let worker = mk_session(workspace.id, SessionState::Running);
+    let controller = mk_session(workspace.id, SessionState::Running);
+    db.sessions().upsert(&worker).unwrap();
+    db.sessions().upsert(&controller).unwrap();
+
+    let question = ContextEnvelope {
+        id: ContextId::new(),
+        source_session_id: Some(worker.id),
+        target_session_id: Some(controller.id),
+        summary: None,
+        instructions: Some("which API?".to_owned()),
+        artifacts: vec![],
+        git_context: None,
+        created_at: Timestamp::now(),
+        run_id: Some(domain::RunId::new()),
+        task_id: None,
+        kind: Some(domain::ContextKind::Question),
+        in_reply_to: None,
+        acked_at: None,
+    };
+    db.context().insert(&question).unwrap();
+
+    assert!(db.context().list_for_target(worker.id).unwrap().is_empty());
+    assert_eq!(
+        db.context().list_for_target(controller.id).unwrap().len(),
+        1
+    );
+
+    // A nulled target would read as mail for the human controller.
+    assert!(db.sessions().delete(worker.id).unwrap());
+    assert!(db.sessions().delete(controller.id).unwrap());
+    let kept = db.context().list_by_source(worker.id).unwrap();
+    assert_eq!(kept.len(), 1, "the question survives both sessions");
+    assert_eq!(kept[0].target_session_id, Some(controller.id));
 }
 
 // ---- projects --------------------------------------------------------------
@@ -677,6 +732,7 @@ fn session_roundtrip_custom_role_states_and_graph() {
         ),
         ended_at: Some(Timestamp::now()),
         base_commit: None,
+        activity: AgentActivity::unknown(),
     };
     db.sessions().upsert(&root).unwrap();
 
@@ -731,6 +787,7 @@ fn session_roundtrip_custom_role_states_and_graph() {
         // Round-tripped like any other column; the round-trip assert below is
         // what proves migration 9 landed.
         base_commit: Some("9f1c0de4c0ffee0000000000000000000000cafe".to_owned()),
+        activity: AgentActivity::unknown(),
     };
     db.sessions().upsert(&child).unwrap();
     assert_eq!(db.sessions().get(child_id).unwrap().unwrap(), child);
@@ -797,7 +854,7 @@ fn context_envelope_roundtrip_with_artifacts_and_git() {
 
     let envelope = ContextEnvelope {
         id: ContextId::new(),
-        source_session_id: source.id,
+        source_session_id: Some(source.id),
         target_session_id: Some(target.id),
         summary: Some("did the thing".to_owned()),
         instructions: Some("now do the next thing".to_owned()),
@@ -817,6 +874,11 @@ fn context_envelope_roundtrip_with_artifacts_and_git() {
             commit: Some("abc123".to_owned()),
         }),
         created_at: Timestamp::now(),
+        run_id: None,
+        task_id: None,
+        kind: None,
+        in_reply_to: None,
+        acked_at: None,
     };
     db.context().insert(&envelope).unwrap();
 
@@ -827,13 +889,18 @@ fn context_envelope_roundtrip_with_artifacts_and_git() {
     // An envelope with no artifacts and no git context also round-trips.
     let bare = ContextEnvelope {
         id: ContextId::new(),
-        source_session_id: source.id,
+        source_session_id: Some(source.id),
         target_session_id: None,
         summary: None,
         instructions: None,
         artifacts: vec![],
         git_context: None,
         created_at: Timestamp::now(),
+        run_id: None,
+        task_id: None,
+        kind: None,
+        in_reply_to: None,
+        acked_at: None,
     };
     db.context().insert(&bare).unwrap();
     let loaded = db.context().list_by_source(source.id).unwrap();
@@ -948,7 +1015,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 11, "feature 19 adds no migration");
+    assert_eq!(version, 13, "run envelope history is migration 13");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -995,13 +1062,18 @@ fn purge_sessions_drops_the_whole_session_history_but_keeps_the_workspace() {
     db.context()
         .insert(&ContextEnvelope {
             id: ContextId::new(),
-            source_session_id: parent.id,
+            source_session_id: Some(parent.id),
             target_session_id: Some(child.id),
             summary: None,
             instructions: None,
             artifacts: vec![],
             git_context: None,
             created_at: Timestamp::now(),
+            run_id: None,
+            task_id: None,
+            kind: None,
+            in_reply_to: None,
+            acked_at: None,
         })
         .unwrap();
 
@@ -1031,13 +1103,18 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
     db.context()
         .insert(&ContextEnvelope {
             id: ContextId::new(),
-            source_session_id: session.id,
+            source_session_id: Some(session.id),
             target_session_id: None,
             summary: None,
             instructions: None,
             artifacts: vec![],
             git_context: None,
             created_at: Timestamp::now(),
+            run_id: None,
+            task_id: None,
+            kind: None,
+            in_reply_to: None,
+            acked_at: None,
         })
         .unwrap();
     db.project_groups()
@@ -1069,6 +1146,12 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         "agent_profiles",
         "worktree_shares",
         "worktree_ignores",
+        "runs",
+        "tasks",
+        "task_deps",
+        "attempts",
+        "run_state",
+        "orchestration_receipts",
     ] {
         let count: i64 = db
             .conn()
@@ -1082,7 +1165,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 11, "reset retains the migrated schema");
+    assert_eq!(version, 13, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------

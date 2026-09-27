@@ -3,7 +3,7 @@
 //! Keeps the framed paste / initial_prompt shape out of `core.rs`. Budgets are
 //! applied before allocation so a wire string cannot balloon under the lock.
 
-use domain::{ContextArtifactKind, ContextArtifactRef, ContextEnvelope};
+use domain::{ContextArtifactKind, ContextArtifactRef, ContextEnvelope, TermModes};
 
 /// Cap on `summary` / `instructions` stored and shown.
 pub const MAX_CONTEXT_FIELD_BYTES: usize = 8_192;
@@ -28,7 +28,11 @@ pub fn format_delivery(
     let mut out = String::from("--- forge context ---\n");
     out.push_str(&format!(
         "From session {} ({})\n",
-        envelope.source_session_id, source_label
+        envelope
+            .source_session_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "human".to_owned()),
+        source_label
     ));
     if let Some(summary) = envelope.summary.as_deref() {
         out.push_str("Summary: ");
@@ -50,6 +54,17 @@ pub fn format_delivery(
     }
     out.push_str("--- end forge context ---\n");
     out
+}
+
+/// Lead line as raw keystrokes, then the body in the terminal's paste encoding.
+///
+/// Nothing is appended after the paste. A bare newline there is what used to
+/// answer a permission prompt.
+#[must_use]
+pub fn encode_context_paste(body: &str, source_label: &str, modes: &TermModes) -> Vec<u8> {
+    let mut bytes = format!("Forge context from {source_label}: ").into_bytes();
+    bytes.extend(terminal_input::paste(body, modes));
+    bytes
 }
 
 /// Optional transcript artifact for the envelope.
@@ -82,13 +97,18 @@ mod tests {
     fn envelope(summary: Option<&str>, instructions: Option<&str>) -> ContextEnvelope {
         ContextEnvelope {
             id: ContextId::new(),
-            source_session_id: SessionId::new(),
+            source_session_id: Some(SessionId::new()),
             target_session_id: None,
             summary: summary.map(str::to_owned),
             instructions: instructions.map(str::to_owned),
             artifacts: vec![],
             git_context: None,
             created_at: Timestamp::now(),
+            run_id: None,
+            task_id: None,
+            kind: None,
+            in_reply_to: None,
+            acked_at: None,
         }
     }
 
@@ -100,6 +120,32 @@ mod tests {
         let clamped = clamp_field(Some(long)).unwrap();
         assert!(clamped.len() <= MAX_CONTEXT_FIELD_BYTES + "…".len());
         assert!(clamped.ends_with('…'));
+    }
+
+    #[test]
+    fn paste_follows_terminal_modes_and_does_not_add_a_newline() {
+        let plain = TermModes::default();
+        let body = "review this\n";
+        let encoded = encode_context_paste(body, "Planner", &plain);
+        let text = String::from_utf8(encoded.clone()).unwrap();
+        assert!(text.starts_with("Forge context from Planner: "));
+        assert!(text.contains("review this\n"));
+        assert!(!text.contains('\u{1b}'));
+        assert_eq!(encoded.last().copied(), Some(b'\n'));
+        assert!(!encoded.ends_with(b"\n\n"));
+
+        let bracketed = TermModes {
+            bracketed_paste: true,
+            ..TermModes::default()
+        };
+        let encoded = encode_context_paste(body, "Planner", &bracketed);
+        let start = encoded
+            .windows(6)
+            .position(|window| window == b"\x1b[200~")
+            .expect("bracketed paste start");
+        assert!(encoded.ends_with(b"\x1b[201~"));
+        assert!(start >= "Forge context from Planner: ".len());
+        assert!(!encoded.ends_with(b"\x1b[201~\n"));
     }
 
     #[test]

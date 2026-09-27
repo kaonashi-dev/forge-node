@@ -13,6 +13,7 @@ pub mod editor_frame;
 pub mod external;
 pub mod file;
 pub mod ids;
+pub mod orchestration;
 pub mod pr_review;
 pub mod pr_task;
 pub mod project;
@@ -34,7 +35,9 @@ pub use agent::{
 };
 pub use branch::{BranchRef, RefScope, Remote};
 pub use change::{ChangeContext, ChangeFile, JuvaDraft, JuvaKind};
-pub use context::{ContextArtifactKind, ContextArtifactRef, ContextEnvelope, GitContextRef};
+pub use context::{
+    ContextArtifactKind, ContextArtifactRef, ContextEnvelope, ContextKind, GitContextRef,
+};
 pub use diff::{
     BaseOrigin, ChangeSummary, ChangeSummaryFile, CommitLine, DiffFile, DiffStatus, ReviewSession,
     SessionChanges, WorkspaceDiff, WorkspaceReview,
@@ -50,8 +53,8 @@ pub use file::{
     SearchMatch, SearchResults, SymlinkTarget,
 };
 pub use ids::{
-    AgentProfileId, AgentProviderId, ClientId, ContextId, ProjectGroupId, ProjectId, SessionId,
-    ShareRuleId, TerminalId, Timestamp, WorkspaceId,
+    AgentProfileId, AgentProviderId, AttemptId, ClientId, ContextId, ProjectGroupId, ProjectId,
+    RunId, SessionId, ShareRuleId, TaskId, TerminalId, Timestamp, WorkspaceId,
 };
 pub use pr_review::{
     builtin_recipes, compose_review_prompt, recipe_or_default, ReviewRecipe, CUSTOM_RECIPE,
@@ -65,8 +68,9 @@ pub use pull_request::{
 };
 pub use rebase::{ConflictFile, RebaseState, SequencerOp};
 pub use session::{
-    EditorFind, EditorFindCommand, EditorState, Session, SessionKind, SessionRole, SessionState,
-    SessionTitle, SessionTranscript, MAX_EDITOR_FIND_PATTERN_BYTES, MAX_GRAPH_DEPTH,
+    ActivityEvidence, ActivityState, AgentActivity, EditorFind, EditorFindCommand, EditorState,
+    Session, SessionKind, SessionRole, SessionState, SessionTitle, SessionTranscript,
+    MAX_EDITOR_FIND_PATTERN_BYTES, MAX_GRAPH_DEPTH,
 };
 pub use share::{
     ShareAction, ShareCandidate, ShareClass, ShareCleanup, ShareRule, ShareState, ShareStatusEntry,

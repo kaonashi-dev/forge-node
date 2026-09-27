@@ -4,8 +4,13 @@
 //! never links a VT engine; [`CellGrid`] applies snapshots and row deltas.
 //! Wire types are re-exported so `forge-tauri` does not depend on `protocol`.
 
+mod clamp;
 mod ipc;
+mod paths;
 mod store;
+
+pub use clamp::{read_capped, CappedBytes};
+pub use paths::{resolve_socket, socket_path, SocketQuery, MAX_SOCKET_PATH_LEN};
 
 pub use domain::{DirectoryListing, SymlinkTarget};
 pub use ipc::{Branches, Client, ClientError, DaemonInfo, SendContextResult};

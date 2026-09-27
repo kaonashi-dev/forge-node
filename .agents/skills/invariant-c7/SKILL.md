@@ -11,7 +11,8 @@ Read `docs/performance.md` if any box is unclear.
 - [ ] No new unbounded queues; bounded + drop + resync pattern.
 - [ ] Per-cell terminal path: no alloc, no locks, no `format!`; palette/theme cached before the cell loop.
 - [ ] Store-derived Tauri UI state computed in store updates or memoized selectors, not per frame.
-- [ ] Wire/subprocess/file sizes bounded **before** allocation.
+- [ ] Wire/subprocess/file sizes bounded **before** allocation. Result files and board values included.
+- [ ] `ClientKind::Cli` skips terminal-activity, bell, clipboard, editor-frame, and usage broadcasts.
 - [ ] New `Inner` maps: one owner, one deletion path on close.
 - [ ] No sleep-and-check unless waiting on non-wakeable condition.
 - [ ] Timeout commands: `.process_group(0)`, kill negative pgid.

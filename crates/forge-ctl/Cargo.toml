@@ -1,0 +1,33 @@
+[package]
+name = "forge-ctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "forgectl, a client of the Forge daemon for runs, tasks, and shared context"
+
+[[bin]]
+name = "forgectl"
+path = "src/main.rs"
+
+[dependencies]
+domain.workspace = true
+protocol.workspace = true
+client.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+daemon = { path = "../daemon" }
+client.workspace = true
+domain.workspace = true
+protocol.workspace = true
+serde_json.workspace = true
+persistence.workspace = true
+test-support.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+flume.workspace = true
+insta.workspace = true

@@ -18,6 +18,7 @@ pub struct Config {
     pub juva: JuvaConfig,
     pub editor: EditorConfig,
     pub daemon: DaemonConfig,
+    pub orchestration: OrchestrationConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -255,6 +256,61 @@ pub struct JuvaConfig {
 #[serde(default)]
 pub struct DaemonConfig {
     pub log_level: String,
+}
+
+/// Rails for `forgectl`. `enabled` defaults on. The one-writer rule is not a key.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OrchestrationConfig {
+    pub enabled: bool,
+    pub max_active_attempts_per_run: u32,
+    pub max_tasks_per_run: u32,
+    pub max_run_depth: u32,
+    pub max_attempts_per_task: u32,
+    pub stall_after_secs: u64,
+    /// `none`, `merge`, or `pr`. Anything else is treated as `pr`.
+    pub agent_may_integrate: String,
+    pub keep_closed_runs_days: u32,
+}
+
+impl Default for OrchestrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_active_attempts_per_run: domain::orchestration::DEFAULT_MAX_ACTIVE_ATTEMPTS,
+            max_tasks_per_run: domain::orchestration::DEFAULT_MAX_TASKS,
+            max_run_depth: domain::orchestration::DEFAULT_MAX_RUN_DEPTH,
+            max_attempts_per_task: domain::orchestration::DEFAULT_MAX_ATTEMPTS,
+            stall_after_secs: domain::orchestration::DEFAULT_STALL_AFTER_SECS,
+            agent_may_integrate: "pr".to_owned(),
+            keep_closed_runs_days: 30,
+        }
+    }
+}
+
+impl OrchestrationConfig {
+    #[must_use]
+    pub fn limits(&self) -> domain::orchestration::OrchestrationLimits {
+        let permission = match self.agent_may_integrate.trim() {
+            "none" => domain::orchestration::IntegratePermission::None,
+            "merge" => domain::orchestration::IntegratePermission::Merge,
+            _ => domain::orchestration::IntegratePermission::Pr,
+        };
+        domain::orchestration::OrchestrationLimits {
+            max_active_attempts_per_run: self.max_active_attempts_per_run,
+            max_tasks_per_run: self.max_tasks_per_run,
+            max_run_depth: self.max_run_depth,
+            max_attempts_per_task: self.max_attempts_per_task,
+            stall_after: std::time::Duration::from_secs(self.stall_after_secs),
+            waiting_attention_after: std::time::Duration::from_secs(
+                domain::orchestration::WAITING_ATTENTION_SECS,
+            ),
+            starting_attention_after: std::time::Duration::from_secs(
+                domain::orchestration::STARTING_ATTENTION_SECS,
+            ),
+            agent_may_integrate: permission,
+        }
+    }
 }
 
 impl Default for TerminalConfig {

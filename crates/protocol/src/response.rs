@@ -7,13 +7,15 @@
 //! [`crate::event::DaemonEvent`], so most mutating requests answer with the
 //! generic [`Response::Ack`] and the client learns the result from the event.
 
+use domain::orchestration::{BoardEntry, RunView};
 use domain::{
-    AgentDescriptor, AgentProfile, BranchRef, ChangeContext, ContextEnvelope, DetectionResult,
-    ExternalAgentSession, ExternalTranscript, FileContents, FileTree, ImageContents, JuvaDraft,
-    Project, ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState, Remote,
-    ScrollbackRows, SearchResults, Session, SessionChanges, SessionId, SessionTranscript,
-    ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TerminalId, TerminalSnapshot,
-    UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceReview, WorktreeIgnore,
+    AgentDescriptor, AgentProfile, AttemptId, BranchRef, ChangeContext, ContextEnvelope, ContextId,
+    DetectionResult, DiffFile, ExternalAgentSession, ExternalTranscript, FileContents, FileTree,
+    ImageContents, JuvaDraft, Project, ProjectGroup, ProjectId, ProviderUsage, PullRequestState,
+    RebaseState, Remote, RunId, ScrollbackRows, SearchResults, Session, SessionChanges, SessionId,
+    SessionTranscript, ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TaskId,
+    TerminalId, TerminalSnapshot, UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId,
+    WorkspaceReview, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +125,10 @@ pub enum Response {
         ///
         /// Boxed so this variant does not dwarf the rest of `Response`.
         pull_requests: Box<PullRequestState>,
+        /// Active runs only, with tasks and current attempts. Bounded by the
+        /// runs that are still open.
+        #[serde(default)]
+        runs: Vec<RunView>,
         /// The last per-provider account usage the daemon read, served
         /// straight from its cache. Producing a snapshot performs **no** network
         /// I/O — a background sweeper keeps this current — so a client learns the
@@ -223,6 +229,74 @@ pub enum Response {
     UsageAnalytics(Box<UsageAnalytics>),
     /// Answers `GetStats`.
     DaemonStats(DaemonStats),
+    OrchestrationStatus(OrchestrationLimitsView),
+    RunCreated {
+        run_id: RunId,
+        controller_session_id: Option<SessionId>,
+        integration_workspace_id: Option<WorkspaceId>,
+    },
+    Runs(Vec<RunView>),
+    RunView(Box<RunView>),
+    TaskCreated {
+        task_id: TaskId,
+    },
+    AttemptStarted {
+        attempt_id: AttemptId,
+        task_id: TaskId,
+        n: u32,
+        session_id: SessionId,
+        terminal_id: TerminalId,
+        workspace_id: WorkspaceId,
+        branch: Option<String>,
+        base_commit: Option<String>,
+    },
+    IntegrationResult {
+        state: String,
+        integrated_commit: Option<String>,
+        conflicts: Vec<String>,
+    },
+    CleanupResult {
+        residual: Vec<String>,
+    },
+    /// `CloseRun`. `residual` is everything cleanup could not remove.
+    /// An empty list is the only "cleanup finished" answer.
+    RunClosed {
+        residual: Vec<String>,
+    },
+    MessagesPosted {
+        ids: Vec<ContextId>,
+    },
+    Inbox {
+        messages: Vec<ContextEnvelope>,
+        more: bool,
+    },
+    RunStateList(Vec<BoardEntry>),
+    RunStateValue(BoardEntry),
+    TaskReview {
+        task_id: TaskId,
+        session_id: Option<SessionId>,
+        base_commit: Option<String>,
+        head: Option<String>,
+        reported_head: Option<String>,
+        dirty: bool,
+        files: Vec<String>,
+        summary: String,
+        /// Unified patches, present only when the review asked for them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        patches: Vec<DiffFile>,
+    },
+}
+
+/// The `[orchestration]` rails a `forgectl status` prints. Durations are seconds.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OrchestrationLimitsView {
+    pub enabled: bool,
+    pub max_active_attempts_per_run: u32,
+    pub max_tasks_per_run: u32,
+    pub max_run_depth: u32,
+    pub max_attempts_per_task: u32,
+    pub stall_after_secs: u64,
+    pub agent_may_integrate: String,
 }
 
 #[cfg(test)]

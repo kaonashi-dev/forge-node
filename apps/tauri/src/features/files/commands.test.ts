@@ -5,6 +5,7 @@ import {
   acceptFileIndex,
   failFileIndex,
   warmFileTree,
+  copyPath,
   createPath,
   deletePath,
   renamePath,
@@ -55,7 +56,7 @@ describe("workbench path transport", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
-  it.each(["create", "rename", "delete"] as const)(
+  it.each(["create", "rename", "delete", "copy"] as const)(
     "%s carries identity and resolves on explicit result without root-index reload",
     async (kind) => {
       const promise =
@@ -63,7 +64,9 @@ describe("workbench path transport", () => {
           ? createPath("w", "a", false)
           : kind === "rename"
             ? renamePath("w", "a", "b")
-            : deletePath("w", "a");
+            : kind === "copy"
+              ? copyPath("w", "a", "b")
+              : deletePath("w", "a");
       await Promise.resolve();
       const command = commands[0];
       expect(command.type).toBe(`${kind}_path`);
@@ -74,9 +77,9 @@ describe("workbench path transport", () => {
         kind,
         ...(kind === "create"
           ? { to: "a" }
-          : kind === "rename"
-            ? { from: "a", to: "b" }
-            : { from: "a" }),
+          : kind === "delete"
+            ? { from: "a" }
+            : { from: "a", to: "b" }),
         success: true,
         uncertain: false,
       });

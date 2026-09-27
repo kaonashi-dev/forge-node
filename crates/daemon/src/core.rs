@@ -14,14 +14,14 @@ use std::time::{Duration, Instant};
 
 use agents::AgentRegistry;
 use domain::{
-    AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId, ChildWorkspacePolicy,
-    ContextArtifactRef, ContextEnvelope, ContextId, DetectionResult, DetectionStatus, EnvSource,
-    IgnoreScope, LaunchAgentRequest, Project, ProjectGroup, ProjectGroupId, ProjectId, PtySize,
-    ResolvedEnvironment, ScrollbackRows, Session, SessionId, SessionKind, SessionRole,
-    SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId, ShareStrategy, ShareTrigger,
-    SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId, WorkspaceKind, WorkspaceStatus,
-    WorktreeIgnore, DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH, MAX_SHARE_RULES,
-    MAX_WORKTREE_IGNORES,
+    AgentActivity, AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId,
+    ChildWorkspacePolicy, ContextArtifactRef, ContextEnvelope, ContextId, DetectionResult,
+    DetectionStatus, EnvSource, IgnoreScope, LaunchAgentRequest, Project, ProjectGroup,
+    ProjectGroupId, ProjectId, PtySize, ResolvedEnvironment, ScrollbackRows, Session, SessionId,
+    SessionKind, SessionRole, SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId,
+    ShareStrategy, ShareTrigger, SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId,
+    WorkspaceKind, WorkspaceStatus, WorktreeIgnore, DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH,
+    MAX_SHARE_RULES, MAX_WORKTREE_IGNORES,
 };
 use persistence::Db;
 use protocol::{
@@ -67,12 +67,12 @@ const MAX_TRANSCRIPT_BYTES: u32 = 96_000;
 const MAX_REVIEW_SESSIONS: usize = 20;
 
 pub(crate) struct Inner {
-    db: Db,
+    pub(crate) db: Db,
     project_groups: HashMap<ProjectGroupId, ProjectGroup>,
     pub(crate) projects: HashMap<ProjectId, Project>,
     pub(crate) workspaces: HashMap<WorkspaceId, Workspace>,
-    sessions: HashMap<SessionId, Session>,
-    terminals: HashMap<TerminalId, TerminalRuntime>,
+    pub(crate) sessions: HashMap<SessionId, Session>,
+    pub(crate) terminals: HashMap<TerminalId, TerminalRuntime>,
     pub(crate) agents: AgentRegistry,
     /// Provider then name — the order every launch menu shows.
     profiles: Vec<AgentProfile>,
@@ -121,6 +121,7 @@ pub(crate) struct Inner {
     /// Live editor control ports. Runtime-only; dropped when the supervisor
     /// ends. A full queue answers busy rather than dropping a request_id.
     editors: HashMap<SessionId, crate::editor::CommandPort>,
+    pub(crate) ledger: crate::orchestration::Ledger,
 }
 
 /// Shared as `Arc<Daemon>` across the accept loop and PTY threads.
@@ -164,6 +165,8 @@ pub struct Daemon {
     /// Absolute paths of the Forge attention assets, or `None` when install
     /// failed. Injected at launch by [`agents::inject_attention`].
     attention_assets: Option<agents::AttentionAssets>,
+    /// The socket this process is actually listening on, injected into PTYs.
+    bound_socket: Mutex<Option<PathBuf>>,
 }
 
 struct ResetGuard<'a>(&'a AtomicBool);
@@ -250,6 +253,8 @@ impl Daemon {
         pty_backend: Box<dyn PtyBackend>,
     ) -> Result<Arc<Daemon>, String> {
         // A PTY never survives the daemon. Default: drop session rows. Opt-in: mark them Orphaned.
+        crate::orchestration::reconcile_startup(&db, &config.orchestration.limits())
+            .map_err(|error| error.to_string())?;
         if config.sessions.persist_history {
             let orphaned = db.reconcile_orphaned().map_err(|e| e.to_string())?;
             if orphaned > 0 {
@@ -306,6 +311,8 @@ impl Daemon {
         }
 
         let profiles = db.agent_profiles().list().map_err(|e| e.to_string())?;
+        let ledger = crate::orchestration::load_ledger(&db, &config.orchestration.limits())
+            .map_err(|e| e.to_string())?;
 
         let mut worktree_ignores: HashMap<ProjectId, Vec<WorktreeIgnore>> = HashMap::new();
         for rule in db.ignores().list_all().map_err(|e| e.to_string())? {
@@ -342,6 +349,7 @@ impl Daemon {
             term_selection: None,
             worktree_ignores,
             editors: HashMap::new(),
+            ledger,
         };
 
         let attention_assets = install_attention_assets(&worktrees_root);
@@ -367,7 +375,22 @@ impl Daemon {
             editor_conflicts: Mutex::new(HashMap::new()),
             editor_file_operations: Mutex::new(()),
             attention_assets,
+            bound_socket: Mutex::new(None),
         }))
+    }
+
+    pub fn note_bound_socket(&self, path: PathBuf) {
+        *self
+            .bound_socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
+    }
+
+    fn bound_socket(&self) -> Option<PathBuf> {
+        self.bound_socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn registry(&self) -> &crate::registry::ClientRegistry {
@@ -641,6 +664,7 @@ impl Daemon {
                     continue;
                 }
                 inner.workspaces.remove(workspace_id);
+                crate::orchestration::forget_workspace(&mut inner, *workspace_id);
                 // One owner, one deletion path: the throttle table follows the row.
                 inner.status_checks.remove(workspace_id);
                 if managed && !explicitly_ignored {
@@ -684,6 +708,7 @@ impl Daemon {
         for message in keep_notices {
             self.notice(NoticeLevel::Warning, message);
         }
+        crate::orchestration::flush_events(self);
         (added, removed)
     }
 
@@ -807,6 +832,11 @@ impl Daemon {
                 to,
             } => self.rename_path(workspace_id, &from, &to),
             Request::DeletePath { workspace_id, path } => self.delete_path(workspace_id, &path),
+            Request::CopyPath {
+                workspace_id,
+                from,
+                to,
+            } => self.copy_path(workspace_id, &from, &to),
             Request::SearchFiles {
                 workspace_id,
                 query,
@@ -832,7 +862,7 @@ impl Daemon {
                 title,
                 body,
                 base,
-            } => self.create_pull_request(workspace_id, title, body, base),
+            } => self.create_pull_request(workspace_id, title, body, base, false),
 
             Request::CreateShellSession {
                 workspace_id,
@@ -936,7 +966,12 @@ impl Daemon {
             Request::SetSessionRole { session_id, role } => self.set_session_role(session_id, role),
             Request::CreateContextEnvelope { envelope } => {
                 let inner = self.lock();
-                if !inner.sessions.contains_key(&envelope.source_session_id) {
+                let Some(source) = envelope.source_session_id else {
+                    return Err(ProtocolError::invalid_request(
+                        "a stored handoff needs a source session",
+                    ));
+                };
+                if !inner.sessions.contains_key(&source) {
                     return Err(ProtocolError::not_found("source session"));
                 }
                 if let Some(target) = envelope.target_session_id {
@@ -1055,6 +1090,9 @@ impl Daemon {
                 self.set_worktree_ignores(project_id, rules)
             }
 
+            request if crate::orchestration::handles(&request) => {
+                crate::orchestration::handle(self, request)
+            }
             _ => Err(ProtocolError::new(
                 ErrorCode::InvalidRequest,
                 "unsupported request in this daemon build",
@@ -1100,6 +1138,14 @@ impl Daemon {
     /// Recover from poison: `Inner` is a cache over SQLite, not an invariant a
     /// panicking handler can silently corrupt. `expect` here made one bad
     /// request a permanently dead daemon.
+    pub(crate) fn orchestration_config(&self) -> crate::config::OrchestrationConfig {
+        self.config.orchestration.clone()
+    }
+
+    pub(crate) fn worktrees_root_path(&self) -> &std::path::Path {
+        &self.worktrees_root
+    }
+
     pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|poisoned| {
             tracing::error!("daemon core lock was poisoned by a panicking handler; recovering");
@@ -1172,6 +1218,7 @@ impl Daemon {
             app_state,
             external_agents,
             pull_requests: Box::new(pull_requests),
+            runs: crate::orchestration::active_run_views(self),
             usage,
         };
         for event in self.take_pending_notices() {
@@ -1669,6 +1716,7 @@ impl Daemon {
         }
         inner.db.projects().delete(project_id).map_err(db_err)?;
 
+        crate::orchestration::forget_project(&mut inner, project_id);
         for id in &session_ids {
             Self::remove_session_cache(&mut inner, *id);
         }
@@ -1692,6 +1740,7 @@ impl Daemon {
         }
         self.registry
             .broadcast_domain(DaemonEvent::ProjectRemoved { project_id });
+        crate::orchestration::flush_events(self);
         Ok(Response::Ack)
     }
 
@@ -2062,7 +2111,10 @@ impl Daemon {
     /// A recorded baseline that git no longer resolves falls back to `HEAD`
     /// and says so through [`domain::BaseOrigin`]: a silent fallback would
     /// present a much smaller diff as if it were everything the session did.
-    fn get_session_changes(&self, session_id: SessionId) -> Result<Response, ProtocolError> {
+    pub(crate) fn get_session_changes(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
         let (path, base, sharing) = {
             let inner = self.lock();
             let session = inner
@@ -2561,6 +2613,19 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
+    /// Copy one file inside the checkout (ADR-012). Lock released before IO.
+    fn copy_path(
+        &self,
+        workspace_id: WorkspaceId,
+        from: &str,
+        to: &str,
+    ) -> Result<Response, ProtocolError> {
+        let root = self.workspace_path(workspace_id)?;
+        fs_service::copy_path(&root, from, to).map_err(fs_err)?;
+        self.invalidate_file_index(workspace_id);
+        Ok(Response::Ack)
+    }
+
     /// Write one file conditioned on a revision (ADR-012).
     fn write_file(
         &self,
@@ -2728,12 +2793,13 @@ impl Daemon {
     }
 
     /// Ack when the push+`gh` *starts*.
-    fn create_pull_request(
+    pub(crate) fn create_pull_request(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
         title: String,
         body: String,
         base: Option<String>,
+        draft: bool,
     ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
         let path_entries = {
@@ -2769,6 +2835,7 @@ impl Daemon {
                         &title,
                         &body,
                         base.as_deref(),
+                        draft,
                     )?;
                     Ok(pr.url)
                 })();
@@ -2844,7 +2911,7 @@ impl Daemon {
     }
 
     /// Shared with `CreateChildSession` (`NewManagedWorktree`).
-    fn create_managed_worktree(
+    pub(crate) fn create_managed_worktree(
         self: &Arc<Self>,
         project_id: ProjectId,
         branch: &str,
@@ -3468,7 +3535,7 @@ impl Daemon {
         }
     }
 
-    fn remove_worktree(
+    pub(crate) fn remove_worktree(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
         force: bool,
@@ -3541,6 +3608,7 @@ impl Daemon {
         }
         self.registry
             .broadcast_domain(DaemonEvent::WorkspaceRemoved { workspace_id });
+        crate::orchestration::flush_events(self);
 
         // Unmanaged: drop the model row, never someone else's directory. A
         // directory already gone leaves only git's dead bookkeeping, and
@@ -3574,6 +3642,7 @@ impl Daemon {
         }
         inner.db.workspaces().delete(workspace_id).map_err(db_err)?;
         inner.workspaces.remove(&workspace_id);
+        crate::orchestration::forget_workspace(&mut inner, workspace_id);
         // One owner, one deletion path.
         inner.status_checks.remove(&workspace_id);
 
@@ -3680,7 +3749,7 @@ impl Daemon {
     // --- Sessions ---
 
     #[allow(clippy::too_many_arguments)]
-    fn create_session(
+    pub(crate) fn create_session(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
         kind: SessionKind,
@@ -3692,6 +3761,7 @@ impl Daemon {
         initial_prompt: Option<String>,
         read_only: bool,
     ) -> Result<Response, ProtocolError> {
+        let extra_env = crate::orchestration::take_spawn_env();
         let _span = tracing::info_span!("session.create", %workspace_id, ?kind).entered();
 
         let profile = self.launch_profile(kind, provider_id.as_ref(), profile_id)?;
@@ -3739,6 +3809,7 @@ impl Daemon {
                 None,
                 &cwd,
                 id,
+                &extra_env,
             )?;
 
             let now = Timestamp::now();
@@ -3760,6 +3831,11 @@ impl Daemon {
                 last_activity_at: now,
                 ended_at: None,
                 base_commit,
+                activity: if kind == SessionKind::Agent {
+                    AgentActivity::starting(now)
+                } else {
+                    AgentActivity::unknown()
+                },
             };
             inner.db.sessions().upsert(&session).map_err(db_err)?;
             inner.sessions.insert(id, session.clone());
@@ -3872,6 +3948,7 @@ impl Daemon {
                 last_activity_at: now,
                 ended_at: None,
                 base_commit: None,
+                activity: AgentActivity::unknown(),
             };
             let spec = self.build_spawn_spec(
                 &mut inner,
@@ -3885,6 +3962,7 @@ impl Daemon {
                 }),
                 &ws.path,
                 session_id,
+                &[],
             )?;
             inner.db.sessions().upsert(&session).map_err(db_err)?;
             inner.sessions.insert(session_id, session.clone());
@@ -4199,13 +4277,18 @@ impl Daemon {
             let prompt = {
                 let draft = ContextEnvelope {
                     id: ContextId::new(),
-                    source_session_id,
+                    source_session_id: Some(source_session_id),
                     target_session_id: None,
                     summary: summary.clone(),
                     instructions: instructions.clone(),
                     artifacts: artifacts.clone(),
                     git_context: None,
                     created_at: Timestamp::now(),
+                    run_id: None,
+                    task_id: None,
+                    kind: None,
+                    in_reply_to: None,
+                    acked_at: None,
                 };
                 crate::context_xfer::format_delivery(
                     &draft,
@@ -4236,13 +4319,18 @@ impl Daemon {
             };
             let envelope = ContextEnvelope {
                 id: ContextId::new(),
-                source_session_id,
+                source_session_id: Some(source_session_id),
                 target_session_id: Some(child_id),
                 summary,
                 instructions,
                 artifacts,
                 git_context: None,
                 created_at: Timestamp::now(),
+                run_id: None,
+                task_id: None,
+                kind: None,
+                in_reply_to: None,
+                acked_at: None,
             };
             self.lock().db.context().insert(&envelope).map_err(db_err)?;
             return Ok(created);
@@ -4266,13 +4354,18 @@ impl Daemon {
 
         let envelope = ContextEnvelope {
             id: ContextId::new(),
-            source_session_id,
+            source_session_id: Some(source_session_id),
             target_session_id: Some(target_id),
             summary,
             instructions,
             artifacts,
             git_context: None,
             created_at: Timestamp::now(),
+            run_id: None,
+            task_id: None,
+            kind: None,
+            in_reply_to: None,
+            acked_at: None,
         };
         let paste = crate::context_xfer::format_delivery(
             &envelope,
@@ -4282,10 +4375,13 @@ impl Daemon {
         self.lock().db.context().insert(&envelope).map_err(db_err)?;
 
         if let Some(terminal_id) = terminal_id {
-            let mut bytes = paste.into_bytes();
-            if !bytes.ends_with(b"\n") {
-                bytes.push(b'\n');
-            }
+            let modes = self
+                .lock()
+                .terminals
+                .get(&terminal_id)
+                .map(|rt| rt.engine.modes())
+                .unwrap_or_default();
+            let bytes = crate::context_xfer::encode_context_paste(&paste, &source_label, &modes);
             let _ = self.write_terminal_input(terminal_id, &bytes);
         }
         Ok(Response::Ack)
@@ -4534,7 +4630,10 @@ impl Daemon {
         }
     }
 
-    fn close_session(self: &Arc<Self>, session_id: SessionId) -> Result<Response, ProtocolError> {
+    pub(crate) fn close_session(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
         {
             let inner = self.lock();
             let session = inner
@@ -4562,6 +4661,33 @@ impl Daemon {
         }
         self.registry
             .broadcast_domain(DaemonEvent::SessionRemoved { session_id });
+        crate::orchestration::flush_events(self);
+        Ok(Response::Ack)
+    }
+
+    /// Kills and closes in one call. [`Daemon::close_session`] refuses an
+    /// active session, and the state only turns terminal on the PTY's EOF, so
+    /// the process group is stopped synchronously and the row goes directly,
+    /// as a forced worktree removal does.
+    pub(crate) fn kill_and_close_session(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
+        self.kill_groups_blocking(&self.kill_targets(&[session_id]));
+        let updated = {
+            let mut inner = self.lock();
+            if !inner.sessions.contains_key(&session_id) {
+                return Err(ProtocolError::not_found("session"));
+            }
+            Self::delete_session_locked(&mut inner, session_id)?
+        };
+        for session in updated {
+            self.registry
+                .broadcast_domain(DaemonEvent::SessionUpdated(session));
+        }
+        self.registry
+            .broadcast_domain(DaemonEvent::SessionRemoved { session_id });
+        crate::orchestration::flush_events(self);
         Ok(Response::Ack)
     }
 
@@ -4605,6 +4731,7 @@ impl Daemon {
     }
 
     fn remove_session_cache(inner: &mut Inner, session_id: SessionId) {
+        crate::orchestration::forget_session(inner, session_id);
         inner.sessions.remove(&session_id);
         inner.idle_warned.remove(&session_id);
         inner.resumed_from.remove(&session_id);
@@ -4713,6 +4840,7 @@ impl Daemon {
                 None,
                 &cwd,
                 session_id,
+                &[],
             )?;
 
             let updated =
@@ -4816,6 +4944,8 @@ impl Daemon {
         })
     }
 
+    // Kind, launch, cwd, and the orchestration env are independent inputs.
+    #[allow(clippy::too_many_arguments)]
     fn build_spawn_spec(
         &self,
         inner: &mut Inner,
@@ -4824,6 +4954,7 @@ impl Daemon {
         editor: Option<EditorLaunch>,
         cwd: &Path,
         session_id: SessionId,
+        extra_env: &[(String, String)],
     ) -> Result<SpawnSpec, ProtocolError> {
         let env: ResolvedEnvironment = self.resolved_env(inner);
         let mut spec = match kind {
@@ -5011,6 +5142,22 @@ impl Daemon {
         };
         upsert_var(&mut spec.env, "FORGE_SESSION_ID", &session_id.to_string());
         upsert_var(&mut spec.env, "FORGE_WORKSPACE", &cwd.to_string_lossy());
+        if let Some(socket) = self.bound_socket() {
+            upsert_var(&mut spec.env, "FORGE_SOCKET", &socket.to_string_lossy());
+        }
+        for (key, value) in extra_env {
+            upsert_var(&mut spec.env, key, value);
+        }
+        if let Some((run, task, attempt)) = crate::orchestration::identity_for(inner, session_id) {
+            upsert_var(&mut spec.env, "FORGE_RUN_ID", &run);
+            if let Some(task) = task {
+                upsert_var(&mut spec.env, "FORGE_TASK_ID", &task);
+            }
+            if let Some(attempt) = attempt {
+                upsert_var(&mut spec.env, "FORGE_ATTEMPT_ID", &attempt);
+            }
+            upsert_var(&mut spec.env, "FORGECTL_JSON", "1");
+        }
         // Agents call `forge-daemon session|context …` with FORGE_SESSION_ID;
         // the daemon binary's directory must be on PATH inside the PTY.
         prepend_daemon_bin_to_path(&mut spec.env);
@@ -5148,6 +5295,15 @@ impl Daemon {
         crate::terminal::write_pty(&writer, bytes)
             .map_err(|e| ProtocolError::new(ErrorCode::IoError, e.to_string()))?;
         self.note_client_activity(terminal_id);
+        // The guard must not cover `note_user_input`: that takes the same lock,
+        // and a temporary in `if let` lives for the whole statement.
+        let session_id = {
+            let inner = self.lock();
+            inner.terminals.get(&terminal_id).map(|rt| rt.session_id)
+        };
+        if let Some(session_id) = session_id {
+            crate::orchestration::note_user_input(self, session_id);
+        }
         Ok(Response::Ack)
     }
 
@@ -5470,6 +5626,7 @@ impl Daemon {
             Self::set_session_state(&mut inner, session_id, state, None)
         };
         if let Some(session) = session {
+            crate::orchestration::note_session_exit(self, session.id);
             // Transcript just finished: invalidate so History does not wait the TTL.
             if session.kind == SessionKind::Agent {
                 self.external_agents
@@ -7270,6 +7427,7 @@ fn fs_err(e: fs_service::FsError) -> ProtocolError {
         }
         fs_service::FsError::TooLarge { .. }
         | fs_service::FsError::Binary
+        | fs_service::FsError::NotAFile(_)
         | fs_service::FsError::NotAnImage(_) => {
             ProtocolError::new(ErrorCode::InvalidRequest, e.to_string())
         }
@@ -7485,6 +7643,7 @@ mod tests {
             last_activity_at: Timestamp::now(),
             ended_at: None,
             base_commit: None,
+            activity: AgentActivity::unknown(),
         };
         inner
             .db
@@ -8404,13 +8563,18 @@ mod tests {
 
         let envelope = domain::ContextEnvelope {
             id: domain::ContextId::new(),
-            source_session_id: session_id,
+            source_session_id: Some(session_id),
             target_session_id: None,
             summary: Some("hand-off".to_string()),
             instructions: None,
             artifacts: vec![],
             git_context: None,
             created_at: Timestamp::now(),
+            run_id: None,
+            task_id: None,
+            kind: None,
+            in_reply_to: None,
+            acked_at: None,
         };
         daemon
             .lock()
@@ -10422,6 +10586,7 @@ mod tests {
             last_activity_at: Timestamp::now(),
             ended_at: None,
             base_commit: None,
+            activity: AgentActivity::unknown(),
         };
         assert_eq!(session_fallback_title(&session), "Editor");
     }
@@ -10785,5 +10950,110 @@ mod tests {
             .expect_err("full");
         assert_eq!(busy.code, ErrorCode::PreconditionFailed);
         assert!(busy.message.contains("busy"), "{}", busy.message);
+    }
+
+    #[test]
+    fn closing_run_sessions_leaves_the_ledger_writable() {
+        use domain::orchestration::{
+            Attempt, AttemptPhase, Run, RunStatus, Task, TaskStatus, WorkMode,
+        };
+        let (daemon, _tmp) = test_daemon();
+        let project = add_project_row(&daemon, "a", None);
+        let workspace = add_workspace_row(&daemon, project, true);
+        let ended = SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        };
+        let controller = add_session_row(&daemon, workspace, None, ended);
+        let worker = add_session_row(&daemon, workspace, None, SessionState::Running);
+        let now = Timestamp::now();
+        let run = Run {
+            id: domain::RunId::new(),
+            project_id: project,
+            objective: "ship".into(),
+            brief: String::new(),
+            brief_version: 0,
+            controller_session_id: Some(controller),
+            integration_workspace_id: Some(workspace),
+            base: None,
+            parent_attempt_id: None,
+            status: RunStatus::Active,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            closed_at: None,
+        };
+        let task = Task {
+            id: domain::TaskId::new(),
+            run_id: run.id,
+            title: "t".into(),
+            spec: String::new(),
+            acceptance: String::new(),
+            after: vec![],
+            mode: WorkMode::Write,
+            allow_subruns: false,
+            status: TaskStatus::Active,
+            attempts_used: 1,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            feedback: None,
+        };
+        let attempt = Attempt {
+            id: domain::AttemptId::new(),
+            task_id: task.id,
+            n: 1,
+            session_id: Some(worker),
+            workspace_id: Some(workspace),
+            branch: None,
+            base_commit: None,
+            provider_id: AgentProviderId::new("claude"),
+            profile_id: None,
+            read_only: false,
+            phase: AttemptPhase::Running,
+            outcome: None,
+            lost_reason: None,
+            report: None,
+            integrated_commit: None,
+            created_at: now,
+            settled_at: None,
+        };
+        {
+            let mut inner = daemon.lock();
+            inner.db.orchestration().insert_run(&run).unwrap();
+            inner.db.orchestration().insert_task(&task).unwrap();
+            inner.db.orchestration().insert_attempt(&attempt).unwrap();
+            inner.ledger.runs.insert(run.id, run.clone());
+            inner.ledger.tasks.insert(task.id, task.clone());
+            inner.ledger.attempts.insert(attempt.id, attempt.clone());
+        }
+
+        daemon
+            .close_session(controller)
+            .expect("an ended session closes");
+        // No terminal, so the kill is a no-op and only the row goes.
+        daemon
+            .kill_and_close_session(worker)
+            .expect("a running session is killed and closed");
+
+        let inner = daemon.lock();
+        let run = inner.ledger.runs[&run.id].clone();
+        let attempt = inner.ledger.attempts[&attempt.id].clone();
+        let task = inner.ledger.tasks[&task.id].clone();
+        assert_eq!(run.controller_session_id, None);
+        assert_eq!(attempt.session_id, None);
+        // The PTY's exit can no longer find the session, so the loss is recorded here.
+        assert_eq!(attempt.phase, AttemptPhase::Lost);
+        assert_ne!(task.status, TaskStatus::Active);
+        inner
+            .db
+            .orchestration()
+            .update_run(&run)
+            .expect("run is writable");
+        inner
+            .db
+            .orchestration()
+            .update_attempt(&attempt)
+            .expect("attempt is writable");
     }
 }

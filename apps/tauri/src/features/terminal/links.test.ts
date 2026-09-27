@@ -26,6 +26,12 @@ describe("lineTextAt", () => {
     expect(lineTextAt(rows, 1, 6).text).toBe("second");
   });
 
+  it("follows a wrap that crosses more than one row", () => {
+    const rows = [row("src/led", true), row("ger/bal", true), row("ance.ts")];
+    expect(lineTextAt(rows, 0, 7).text).toBe("src/ledger/balance.ts");
+    expect(lineTextAt(rows, 2, 7).text).toBe("src/ledger/balance.ts");
+  });
+
   it("keeps a wide glyph on the column it paints in", () => {
     const wide: WireRow = {
       w: false,

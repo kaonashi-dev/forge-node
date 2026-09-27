@@ -3832,6 +3832,7 @@ mod tests {
             last_activity_at: domain::Timestamp::now(),
             ended_at: None,
             base_commit: None,
+            activity: domain::AgentActivity::unknown(),
         }
     }
 

@@ -12,7 +12,8 @@ Source: `crates/daemon/src/context_xfer.rs`, `session_cli.rs`, `core.rs`
 **Forge mediates. Providers do not peer.**
 
 Claude cannot call Codex, and Codex cannot read Claude's transcript. Both talk
-only to the daemon (protocol or `forge-daemon` CLI). ACP is Client↔one Agent,
+only to the daemon (protocol or `forgectl`; `forge-daemon session` and
+`forge-daemon context` still run and print a deprecation hint). ACP is Client↔one Agent,
 not agent↔agent. Cross-provider work always looks like:
 
 ```
