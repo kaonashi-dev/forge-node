@@ -1,9 +1,8 @@
-// Wire color → CSS color.
+// Wire color -> CSS color.
 //
-// Port of `apps/tauri indexed_color}`. The 16
-// named colors come from the active theme so a reskin carries the terminal with
-// it; the 216-color cube and the 24-step grey ramp are the xterm formulas and
-// belong to no theme.
+// The 16 named colors come from the active theme so a reskin carries the terminal
+// with it; the 216-color cube and the 24-step grey ramp are the xterm formulas
+// and belong to no theme.
 
 import { COLOR_BG, COLOR_FG, COLOR_RGB } from "../../contracts/terminal";
 

@@ -1,8 +1,6 @@
-//! `config.toml` loading.
-//!
-//! The GUI reads the `[terminal]` keys; the daemon reads `[sessions]`,
-//! `[worktrees]`, `[git]`, `[github]` and `[daemon]`. Changes require a restart
-//! in the MVP (no hot reload). A missing file yields defaults.
+//! `config.toml` loading. The daemon is the only reader; the GUI shows and
+//! reveals the file's path. Changes need a restart (no hot reload), and a
+//! missing file yields defaults.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -25,7 +23,9 @@ pub struct Config {
 #[serde(default)]
 pub struct TerminalConfig {
     pub scrollback_lines: u32,
+    /// Reserved: accepted, not read yet.
     pub font_family: String,
+    /// Reserved: accepted, not read yet.
     pub font_size: f32,
 }
 
@@ -128,9 +128,9 @@ pub struct WorktreesConfig {
     /// A command run inside every worktree Forge creates, after `copy`.
     ///
     /// Empty = do nothing. Run through `sh -c` from the worktree root, with a
-    /// timeout of [`WorktreesConfig::setup_timeout_secs`]. Its output goes to
-    /// the daemon log and its failure is reported as a notice — it never
-    /// aborts the worktree, which by then exists on disk and is usable.
+    /// timeout of [`WorktreesConfig::setup_timeout_secs`]. Its output is logged
+    /// at `debug` and its failure is a `Skip` with a note in `SharesApplied` — it
+    /// never aborts the worktree, which by then exists on disk and is usable.
     pub setup_script: String,
 
     /// How long [`WorktreesConfig::setup_script`] may run before it is killed.
@@ -159,12 +159,9 @@ pub struct GitConfig {
     /// restores the `git-service` default of 120 s.
     pub fetch_timeout_secs: u64,
 
-    /// Fetch automatically every N seconds. `0` (the default) disables it.
-    ///
-    /// Off deliberately. Background network traffic nobody asked for is a
-    /// battery cost and, on a repository whose credentials have expired, a
-    /// failure that repeats forever. The GUI fetches when the branch picker
-    /// opens, which is when a fresh list is actually worth something.
+    /// Reserved: accepted, not read yet. Nothing fetches on a timer; the GUI
+    /// fetches when the branch picker opens, which is when a fresh list is
+    /// worth something.
     pub auto_fetch_secs: u64,
 }
 

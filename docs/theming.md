@@ -117,7 +117,7 @@ moves content: the editor keeps `ui.editor.font_size` and every terminal and
 agent shares `ui.terminal.zoom`. A theme switch reapplies both overlays from
 `dataset` so they survive `applyTheme` rewriting the metric variables.
 
-Control heights and radii come from the same token module (`CONTROL_XS`…`LG`).
+Control heights and radii come from the same token module (`metrics.controlXS`…`controlLG`).
 Component look lives in `apps/tauri/src/ui/ui.css`, keyed off those CSS
 variables. `styles/index.css` loads global defaults, then the control kit, then
 feature layouts. Use control sizes and variants instead of redefining their
@@ -137,7 +137,8 @@ disagree about which artwork a name gets.
 
 1. Add a palette to `palettes` in `tokens.ts`.
 2. Update `ThemeBaseId`, `THEME_LABELS`, and any light-base sets.
-3. Regenerate `tests/fixtures/theme.json`.
+3. Regenerate `tests/fixtures/theme.json`, and `src/theme/tokens.css` with
+   `bun run tokens`.
 4. Cover derived tokens in `mix.test.ts` / `tokens.test.ts` if formulas change.
 
 ## Custom JSON themes

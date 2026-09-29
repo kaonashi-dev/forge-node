@@ -1,11 +1,10 @@
 //! Grok account usage over its ACP entry.
 //!
-//! The odd one of the four. Claude and Codex keep their meter behind an HTTP
-//! endpoint that a local OAuth token opens; Grok does not publish one at all —
-//! its account billing is a JSON-RPC *extension method*, `_x.ai/billing`, on
-//! the same `grok agent stdio` wire the descriptor already declares for ACP.
-//! So a reading here costs one short-lived child process and two lines of
-//! stdin instead of one GET, and the credentials never leave the CLI: this
+//! Claude and Codex keep their meter behind an HTTP endpoint that a local OAuth
+//! token opens; Grok publishes none. Its account billing is a JSON-RPC
+//! *extension method*, `_x.ai/billing`, on the `grok agent stdio` wire the
+//! descriptor already declares for ACP, so a reading costs one short-lived child
+//! process and two lines of stdin. The credentials never leave the CLI: this
 //! never opens `~/.grok/auth.json`, it asks the binary that owns it.
 //!
 //! The spawn reuses [`domain::AcpSpec::args`] rather than spelling

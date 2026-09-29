@@ -92,12 +92,12 @@ its cost times its rung.
 
 | Rung | Rate | Where | Budget |
 |------|------|-------|--------|
-| per cell | ~10 000 / frame | `ui::terminal::terminal_row`, `cell_style` | **zero allocations, zero lock acquisitions** |
+| per cell | ~10 000 / frame | `runtime/cells.rs` (`cell_style`), `shared/cell-grid/` | **zero allocations, zero lock acquisitions** |
 | per row | ~50 / frame, ~50 / delta | `DeltaBuilder::delta`, `CellGrid::apply_delta` | one `Vec` at most |
 | per PTY batch | input-driven; not capped by `FRAME` | `Daemon::pump_terminal_batch` | no blocking syscall or grid-sized clone under the core lock |
 | per emitted delta | ≤125 /s **per attached terminal** (`FRAME` = 8 ms) | `route_terminal_delta`, `runtime_loop` | no syscall that can block, no clone that scales with the grid |
 | per frame | every repaint | Tauri frontend render | nothing derivable from the store |
-| per store change | user actions and daemon broadcasts | `RuntimeUpdate::State` handling | this is where per-frame work belongs |
+| per store change | user actions and daemon broadcasts | `applyShellSnapshot`, `createMemo` | this is where per-frame work belongs |
 | per request | user-initiated | daemon request handlers | subprocesses and disk are fine, **outside the core lock** |
 | per sweep | 30 s / 300 s | idle, usage, PR sweepers | anything, within its timeout |
 
@@ -176,12 +176,11 @@ A bounded scan that silently truncates is worse than one that refuses: report
 Every `HashMap<SomeId, _>` on `Inner` needs exactly one place that removes from
 it, and that place must be on the path the close actually takes.
 
-`remove_project` deletes from `sessions`/`workspaces`/`projects` by hand instead
-of going through `delete_session_locked` and `delete_workspace_locked`, so
-`idle_warned`, `resumed_from` and `status_checks` keep an entry per removed
-entity forever. The code already knows the rule — `delete_workspace_locked`
-carries the comment *"leaving it behind grew the map by one entry per workspace
-the daemon ever saw"*.
+`remove_project` releases every session through `remove_session_cache` and clears
+`status_checks` per workspace, and `drop_workspace_rows` does the same for one
+workspace, so `idle_warned`, `resumed_from`, `read_only` and `status_checks` do
+not keep an entry per removed entity. A new map adds its removal to those paths
+instead of inventing another.
 
 **The counter-example matters as much as the rule.** `inner.terminals` is
 deliberately **not** cleared by `delete_session_locked`: the `TerminalRuntime` is
@@ -224,9 +223,9 @@ resync instead of replaying a backlog.
 
 ### Compute on change, not on frame
 
-Everything derivable from the store belongs in the `RuntimeUpdate::State`
-handler. Per frame, the audit found: the diff pane re-parsing, re-flattening and
-re-hashing the whole patch; the sidebar running four sorts whose comparator is
+Everything derivable from the store belongs where the store changes
+(`applyShellSnapshot`, a `createMemo`), not in a render path. Per frame, the
+audit found: the diff pane re-parsing, re-flattening and re-hashing the whole patch; the sidebar running four sorts whose comparator is
 `a.name.to_lowercase().cmp(&b.name.to_lowercase())` — two `String`s per
 comparison — over nested O(P·W·S) scans; the history panel allocating two
 `String`s per row in `matches_search`; the file tree rebuilt from scratch with a

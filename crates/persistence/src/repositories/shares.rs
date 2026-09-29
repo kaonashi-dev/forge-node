@@ -1,4 +1,3 @@
-//!
 //! A rule says how one path reaches every workspace of a project. The strategy
 //! is stored as JSON for the same reason `agent_profiles.args_json` is: nothing
 //! ever queries inside it, and a `Run` command is a shape, not a column.

@@ -1,26 +1,16 @@
-//! Key-to-delta latency and canvas payload measurement.
+//! Key-to-delta latency and canvas payload measurement against a running daemon.
 //!
-//! Types into a real session on a running daemon, times the round trip from the
-//! write to the delta that carried its echo, and encodes each frame the way the
-//! WebView receives it — so the byte cost printed here is the byte cost on the
-//! IPC path, not an estimate of it.
+//! Types into a real session, times each write to the delta that carried its
+//! echo, and encodes every frame as the WebView receives it, so the printed byte
+//! cost is the IPC cost. Never run automatically: it starts a session and types
+//! into it.
 //!
-//! Exit 0 when the p95 is within budget, 1 when it is not or when the
-//! daemon cannot be reached. Never run automatically: it starts a session and
-//! types into it.
-//!
-//! Two modes:
-//!
-//! ```sh
-//! forge-tauri-latency                      # a shell session
-//! forge-tauri-latency --editor <path>      # forge-editor on that file (R33)
-//! ```
-//!
-//! The editor mode is the feature-19 measurement: it opens the file through
-//! `CreateEditorSession`, so the round trip it times is the real route —
-//! PTY → daemon VT → IPC → the frame the canvas paints — and it also reports
-//! what one editor session costs in processes and resident memory, and how
-//! often its state reaches the shell under a burst of typing.
+//! `forge-tauri-latency` measures a shell; `forge-tauri-latency --editor <path>`
+//! opens that file in `forge-editor` through `CreateEditorSession` and also
+//! reports what one editor session costs in processes and resident memory, and
+//! how often its state reaches the shell under a burst of typing. Exit 0 when p95
+//! is within budget (`BUDGET`, or `EDITOR_BUDGET` with `--editor`) and no echo
+//! was lost; 1 otherwise, including when the daemon cannot be reached.
 
 use std::time::{Duration, Instant};
 
@@ -31,7 +21,7 @@ use forge_tauri::{connect_or_spawn, Locator};
 
 /// The gate: `p95 ≤ 50 ms`.
 const BUDGET: Duration = Duration::from_millis(50);
-/// The editor route's own budget (R33), tighter because it is a TUI redrawing
+/// The editor route's own budget, tighter because it is a TUI redrawing
 /// one row rather than a shell echoing a character.
 const EDITOR_BUDGET: Duration = Duration::from_millis(16);
 /// Keystrokes to time. 120 is the rolling p95 window.

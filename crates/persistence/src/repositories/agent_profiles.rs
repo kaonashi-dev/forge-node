@@ -1,4 +1,3 @@
-//!
 //! A profile is a named way to start a known provider: its own binary, its own
 //! config directory and its own arguments. `args` is stored as a JSON list
 //! rather than a child table — nothing queries inside it and its order is

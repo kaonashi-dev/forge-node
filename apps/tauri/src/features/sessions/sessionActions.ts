@@ -1,10 +1,8 @@
-// The three session gestures, in one place so the overlay, the session menu
-// and the command palette all run the same code.
+// Session gestures shared by the overlay, the session menu, the command palette
+// and the `registerAction` bodies in `AppShell`.
 //
-// Functions rather than a component's closures: two of the three are also
-// `registerAction` bodies in `AppShell`, and a palette entry that quietly did
-// something slightly different from the button beside it is a bug nobody
-// reports.
+// Functions rather than a component's closures, so a palette entry cannot
+// quietly do something slightly different from the button beside it.
 
 import { forgeStore } from "../../state/forgeStore";
 import { beginSessionLaunch, connectionStore } from "../../state/connection";

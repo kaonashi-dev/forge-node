@@ -1,7 +1,6 @@
-//
-// Its own module and not helpers inside the component: a component module
-// cannot be imported by a node test without pulling Solid's server build in
-// with it.
+// Agent-profile helpers in their own module, not inside the component: a
+// component module cannot be imported by a node test without pulling Solid's
+// server build in with it.
 
 import type { AgentProfile } from "../../contracts/runtime";
 

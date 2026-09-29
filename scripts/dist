@@ -29,9 +29,7 @@
 # ./install.sh "$HOME/Applications".
 #
 # Bundle assembly is delegated to scripts/package-macos / scripts/package-linux,
-# so their knobs keep working unchanged (the macOS bundle now holds the Tauri
-# GUI from apps/tauri plus the Rust forge-daemon; Linux is
-# unchanged): FORGE_CODESIGN_IDENTITY /
+# so their knobs keep working: FORGE_CODESIGN_IDENTITY /
 # FORGE_ENTITLEMENTS / FORGE_NOTARY_PROFILE (signing + notarization),
 # FORGE_VERSION, FORGE_BUNDLE_ID, FORGE_ICNS / FORGE_ICON_PNG,
 # FORGE_MAINTAINER. This script adds exactly one:

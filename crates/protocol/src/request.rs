@@ -473,7 +473,8 @@ pub enum Request {
         limit: Option<u32>,
     },
     /// Ask Juva to draft a commit message or PR description from the current
-    /// changes → [`crate::response::Response::JuvaDraft`].
+    /// changes → `Ack` when the draft starts; the text arrives as
+    /// `DaemonEvent::JuvaDraftReady`.
     DraftWithJuva {
         /// Workspace whose checkout feeds the draft.
         workspace_id: WorkspaceId,
@@ -544,7 +545,8 @@ pub enum Request {
     },
 
     // ----- Sessions -----
-    /// Create a plain shell session → `Ack`; `SessionCreated`.
+    /// Create a plain shell session → `Response::SessionCreated`; the
+    /// `SessionCreated` event follows.
     CreateShellSession {
         /// Workspace the session runs in.
         workspace_id: WorkspaceId,
@@ -552,7 +554,8 @@ pub enum Request {
         /// The session's role tag.
         role: SessionRole,
     },
-    /// Create an agent CLI session → `Ack`; `SessionCreated`.
+    /// Create an agent CLI session → `Response::SessionCreated`; the
+    /// `SessionCreated` event follows.
     CreateAgentSession {
         /// Workspace the session runs in.
         workspace_id: WorkspaceId,
@@ -607,9 +610,9 @@ pub enum Request {
     /// Move the caret in a live editor session → `Ack`.
     ///
     /// The way a second jump into an already-open file behaves: it moves the
-    /// caret in that session rather than opening a rival one, the same rule
-    /// `editorReveal` follows in the GUI. `PreconditionFailed` when the
-    /// editor's command queue is saturated — the caller retries.
+    /// caret in that session rather than opening a rival one.
+    /// `PreconditionFailed` when the editor's command queue is saturated — the
+    /// caller retries.
     RevealInEditorSession {
         session_id: SessionId,
         /// 1-based.
@@ -675,7 +678,8 @@ pub enum Request {
         session_id: SessionId,
     },
     /// Create a child session under a parent, choosing its workspace via
-    /// `workspace_policy` → `Ack`; `SessionCreated`.
+    /// `workspace_policy` → `Response::SessionCreated`; the `SessionCreated`
+    /// event follows.
     CreateChildSession {
         /// The parent session.
         parent_session_id: SessionId,

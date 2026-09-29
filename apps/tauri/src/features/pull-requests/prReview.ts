@@ -6,7 +6,7 @@
 //
 // The recipe is only half of what makes a review a review. The other half is
 // the provider's own read-only mode, applied by the launch — see
-// `providerReviews` in `runtime/types`.
+// `providerReviews` in `contracts/runtime`.
 
 import type { Launchable, ProviderInfo, PullRequest } from "../../contracts/runtime";
 import { providerName, providerReviewMode, providerReviews } from "../../contracts/runtime";

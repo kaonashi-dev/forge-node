@@ -1,4 +1,4 @@
-// Subsequence scoring — subsequence scoring for the palette.
+// Subsequence scoring for the palette.
 //
 // Matches at a word boundary and runs of consecutive matches score higher,
 // which is what makes "nt" find "New Terminal" ahead of "Agent Settings".

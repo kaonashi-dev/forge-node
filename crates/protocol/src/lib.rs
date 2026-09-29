@@ -30,7 +30,8 @@ pub use response::OrchestrationLimitsView;
 pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 
 /// Handshake equality check. Bump when [`Request`], [`Response`], or
-/// [`DaemonEvent`] gains, loses, or reshapes a variant.
+/// [`DaemonEvent`] gains, loses, or reshapes a variant, or when a type they
+/// carry changes shape.
 ///
 /// An older daemon that still advertises the previous number will then fail
 /// every new request with an undecodable frame and no `Response` — the caller

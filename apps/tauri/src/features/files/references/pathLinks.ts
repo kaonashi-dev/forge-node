@@ -1,7 +1,7 @@
 // Turning a path or address named in output into an open tab or a browser.
 //
 // The impure half of `./pathref`: it reads the checkout the window is pointed
-// at and the file tree already in hand, and it is the one place a reference in
+// at and the navigation index already loaded, and it is the one place a reference in
 // the terminal or in an agent's transcript becomes a workbench tab. An address
 // leaves the workbench; the platform opens it.
 

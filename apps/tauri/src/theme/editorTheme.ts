@@ -4,10 +4,9 @@
 // (`AGENTS.md`, TypeScript section).
 //
 // The terminal editor does not read these: it emits the ANSI 16, which the
-// canvas resolves through `--forge-ansi-*` from the same theme. These are the
-// DOM surfaces that still paint text — the diff, the review and the preview
-// panes — and the reason both tables exist is that a cell grid has sixteen
-// slots and a stylesheet does not.
+// canvas resolves through `--forge-ansi-*` from the same theme. They serve DOM
+// surfaces that colour syntax by scope (project-search excerpts, the theme
+// preview), because a cell grid has sixteen slots and a stylesheet does not.
 
 import { hex, mix, parseHex, pct, readableColor } from "./mix";
 import { palettes, type Palette, type ThemeBaseId } from "./tokens";
@@ -15,7 +14,7 @@ import { palettes, type Palette, type ThemeBaseId } from "./tokens";
 // Syntax uses a 4:1 product floor, below WCAG AA's 4.5:1 for normal-sized text.
 export const SCOPE_CONTRAST_FLOOR = 4;
 
-/** Every colour the editor paints, by role rather than by CM6 class name. */
+/** Every colour the editor paints, by role. */
 export type EditorPalette = {
   background: string;
   foreground: string;
@@ -32,7 +31,7 @@ export type EditorPalette = {
   searchMatchSelected: string;
   /** Syntax, by tag family, for the DOM surfaces that paint text. */
   scopes: EditorScopes;
-  /** The three git gutter marks (A5). */
+  /** The three git gutter marks. */
   gitAdded: string;
   gitModified: string;
   gitDeleted: string;

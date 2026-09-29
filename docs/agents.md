@@ -223,8 +223,9 @@ daemon sweeps all of them: the default login plus every profile that moved the
 config directory, each probed against an environment whose `ConfigDirSpec`
 variables point at that account (`agents::env_for_config_dir`, the same helper
 the launch uses, so a reading and a launch cannot disagree about which login
-they mean). Every reading carries the `profile_id` it came from, and the status
-bar draws one meter per account rather than one per provider.
+they mean). Every reading carries the `profile_id` it came from, and Settings →
+Stats & Usage draws one subscription meter per account rather than one per
+provider.
 
 On macOS the Keychain holds a single Claude login — the default account's — so a
 profile whose own directory has no `.credentials.json` reports **nothing**
@@ -335,8 +336,12 @@ registry state.
 - `program` — absolute path: the request's `executable_override`, else the
   first candidate found on `env.path_entries`. `AgentError::NotInstalled`
   otherwise (surfaced as `ErrorCode::ProviderNotInstalled`).
-- `args` — `descriptor.default_args` followed by `req.extra_args` (the
-  profile's arguments, or empty).
+- `args` — `descriptor.default_args`, the resume arguments, `req.extra_args`
+  (the profile's arguments), the provider's read-only flags for a review, then
+  the initial prompt last. The read-only flags follow the profile's so they win,
+  and the prompt follows every flag so a positional one is not read as part of
+  a flag. A resume, review or prompt the provider does not declare is
+  `AgentError::ResumeUnsupported`, `ReviewUnsupported` or `PromptUnsupported`.
 - `env` — the complete resolved environment plus `TERM=xterm-256color` and
   `COLORTERM=truecolor`.
 
@@ -434,9 +439,6 @@ Two properties are worth stating plainly:
   to the process group, SIGKILL after `kill_grace_ms`), announces itself with a
   notice, and leaves the session `Exited` and restartable. No client
   special-cases an idle death, because there is nothing special about it.
-
-The sidebar renders the same idleness as a dim `45m` on the session row once it
-passes ten minutes — ambient information, well below the notice threshold.
 
 ## Discovered history
 

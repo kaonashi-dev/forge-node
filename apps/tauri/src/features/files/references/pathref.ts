@@ -2,7 +2,7 @@
 //
 // Pure and filesystem-free: this decides what *looks* like a path and what it
 // means relative to the checkout. Whether the file is there is the daemon's
-// answer; the index here is only what a file tree already read.
+// answer; the index here is only what the `ListFiles` navigation listing already returned.
 
 import type { FileEntry } from "../../../contracts/workbench";
 

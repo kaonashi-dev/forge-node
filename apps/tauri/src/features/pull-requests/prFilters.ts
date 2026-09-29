@@ -1,7 +1,7 @@
 // Which of the last read's pull requests the panel shows.
 //
 // The daemon already asked GitHub the three questions that matter — assigned,
-// review requested, authored — and ships the answers as `PullRequest.relations`
+// review requested, authored — and ships the answers as `PullRequest.relations`.
 // Filtering is therefore a read over data already in hand, not a
 // second round trip: a scope the user picks must not cost a `gh` subprocess.
 //

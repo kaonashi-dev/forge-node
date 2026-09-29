@@ -1,17 +1,15 @@
 /**
  * The six marks that are logotypes, not UI icons.
  *
- * lucide has no Claude, Codex, opencode, Cursor, Grok or Zed glyph, and it should not
- * — these are brands, drawn from their own SVG. The technique is the mask-tint
- * the whole icon set used before lucide: the SVG is a `mask-image` and the fill
- * is `currentColor`, so a mark takes the colour of the row it sits in and no
- * provider carries a hue of its own. That last part is the invariant the
- * history list, the tab strip and the rail all depend on: a provider is a
- * choice the reader made, and colouring it would rank the providers.
+ * lucide has no Claude, Codex, opencode, Cursor, Grok or Zed glyph, and should
+ * not: these are brands, drawn from their own SVG as a `mask-image` filled with
+ * `currentColor`, so a mark takes the colour of the row it sits in and no
+ * provider carries a hue of its own. The history list, the tab strip and the
+ * rail depend on that: a provider is a choice the reader made, and colouring it
+ * would rank the providers.
  *
- * `LangIcon` is the one mark that does not do this, and the reason is the same
- * rule read the other way — a file type is not a choice, and its colour is
- * what makes a tree scannable.
+ * `LangIcon` is the one mark that does not do this: a file type is not a choice,
+ * and its colour is what makes a tree scannable.
  */
 export type BrandName = "claude" | "codex" | "opencode" | "cursor" | "grok" | "editor-zed";
 

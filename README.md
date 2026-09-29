@@ -130,8 +130,12 @@ crates/
 apps/tauri/       Tauri 2 + Solid shell; the Rust host is under `src-tauri/`
 ```
 
-Dependency direction: `forge-tauri → client → {protocol, terminal-input} → domain`
-and `daemon → {agents, git-service, fs-service, persistence, terminal-core} → domain`.
+Dependency direction (enforced by `Cargo.toml`): `forge-tauri → {client, domain}`,
+`client → {protocol, terminal-input, domain}`, `daemon → {agents, client,
+editor-control, fs-service, git-service, persistence, protocol, terminal-core,
+domain}`, `fs-service → git-service`, `editor-cli → {editor-core, editor-control}`;
+every other crate depends on `domain` alone or on nothing. The host depends on
+neither `protocol` nor `terminal-core` directly.
 
 Rust · Tauri 2 + Solid/Vite · Unix domain socket + MessagePack · Git CLI ·
 SQLite · `alacritty_terminal`.

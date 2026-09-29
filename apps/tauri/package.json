@@ -15,7 +15,7 @@
     "typecheck": "bun run build:file-workbench && bun scripts/runtime.ts && tsc --noEmit && tsc -p tsconfig.scripts.json",
     "check": "bun run build:file-workbench && bun run lint && bun run fmt:check && bun run test && bun run boundaries && bun run build",
     "boundaries": "bun scripts/boundaries.ts",
-    "codegen": "bun scripts/codegen-types.ts",
+    "codegen": "bun scripts/codegen-types.ts && oxfmt --write src/contracts/generated/fixtures.ts",
     "tokens": "bun scripts/generate-tokens.ts && oxfmt --write src/theme/tokens.css",
     "theme:fixture": "bun scripts/emit-theme-fixture.ts",
     "tauri": "tauri",

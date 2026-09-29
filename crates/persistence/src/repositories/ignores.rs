@@ -1,4 +1,3 @@
-//!
 //! One row per `(project_id, path)`: a rule has no identity of its own and the
 //! rescan keys on the path, so the path is the primary key. `RemoveWorktree`
 //! upserts an `Exact` tombstone here, the GUI replaces a project's whole

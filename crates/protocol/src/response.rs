@@ -192,7 +192,8 @@ pub enum Response {
     ProviderUsage(Vec<ProviderUsage>),
     /// Working-tree change context, answering `GetChangeContext`.
     ChangeContext(ChangeContext),
-    /// Juva draft text, answering `DraftWithJuva`.
+    /// Juva draft text. `DraftWithJuva` answers `Ack` and delivers the draft as
+    /// `DaemonEvent::JuvaDraftReady`; nothing constructs this variant.
     JuvaDraft(JuvaDraft),
     /// One checkout's uncommitted changes, answering `GetWorkspaceDiff`.
     WorkspaceDiff(WorkspaceDiff),

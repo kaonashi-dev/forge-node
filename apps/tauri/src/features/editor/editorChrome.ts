@@ -4,7 +4,7 @@ import type { EditorState } from "../../contracts/runtime";
  * What the terminal editor pane's header shows.
  *
  * `position` is `null` rather than a guess: the state comes from the editor's
- * control channel by way of the daemon (R14/R29), and until the first one
+ * control channel by way of the daemon, and until the first one
  * lands there is no caret to report. Showing `1:1` there would be a number the
  * editor never said.
  */
@@ -77,7 +77,7 @@ function details(state: EditorState, path: string): string[] {
  * opened with.
  *
  * Every field comes from `Session.editor` — never from ANSI output or an OSC
- * title (R29). The pane paints the editor's own screen; reading its chrome off
+ * title. The pane paints the editor's own screen; reading its chrome off
  * that screen would mean parsing the TUI's status line back out of the cells
  * it just drew.
  */

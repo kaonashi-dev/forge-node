@@ -14,8 +14,8 @@ Crate: `crates/persistence`. Plan references: §15.
   application name there). The daemon integration tests use
   `Db::open_in_memory()`.
 - Per-connection pragmas, set in `Db::init` (shared by `open` and
-  `open_in_memory`): `journal_mode = WAL`, `busy_timeout = 5000` and
-  `foreign_keys = OFF`; migrations then run; only afterwards is
+  `open_in_memory`): `journal_mode = WAL`, `synchronous = NORMAL` (deliberate under WAL),
+  `busy_timeout = 5000` and `foreign_keys = OFF`; migrations then run; only afterwards is
   `foreign_keys = ON` set. The deliberate FK-off window exists because
   migration 2 rebuilds tables, which foreign keys would block.
 - One `Db` handle, owned by the daemon core and used under its lock; all
@@ -161,8 +161,9 @@ impossible to remove an inherited entry.
 ## Repositories (`repositories/`)
 
 One repository per table, obtained from the handle: `db.projects()`,
-`db.workspaces()`, `db.sessions()`, `db.context()`,
-`db.provider_overrides()`, `db.agent_profiles()`, `db.app_state()`. Each maps every domain field to
+`db.project_groups()`, `db.workspaces()`, `db.sessions()`, `db.context()`,
+`db.provider_overrides()`, `db.agent_profiles()`, `db.shares()`, `db.ignores()`,
+`db.app_state()`. Each maps every domain field to
 and from its columns; the daemon loads all rows into memory at startup and
 writes through on every mutation (`upsert`/`delete`).
 

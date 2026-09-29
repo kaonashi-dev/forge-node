@@ -5,25 +5,9 @@
 //! [`PtyHandle`] (one live child) — plus [`PortablePtyBackend`], the default
 //! implementation built on the `portable-pty` crate.
 //!
-//! ## Backend requirements
-//!
-//! The plan keeps `portable-pty` only if it can (a) `setsid` + acquire a
-//! controlling TTY, (b) expose the child's process-group id, (c) apply
-//! `TIOCSWINSZ` *including pixel size*, and (d) close inherited fds. Reading the
-//! 0.9 unix backend, all four hold:
-//!
-//! - **(a)** `spawn_command` runs `libc::setsid()` and `ioctl(0, TIOCSCTTY)` in
-//!   the child's `pre_exec` (controlling-TTY defaults to `true`).
-//! - **(b)** [`MasterPty::process_group_leader`] returns `tcgetpgrp(master)`;
-//!   because the child called `setsid`, it is its own session/group leader, so
-//!   at spawn `pgid == child_pid`. See [`PtyHandle::process_group`].
-//! - **(c)** `openpty`/`resize` fill `winsize.ws_xpixel`/`ws_ypixel` from
-//!   [`PtySize::pixel_width`]/`pixel_height` and issue `TIOCSWINSZ`.
-//! - **(d)** master and slave fds are set `FD_CLOEXEC`, and `close_random_fds()`
-//!   runs in `pre_exec`, so no daemon fds leak into the child.
-//!
-//! Therefore `portable-pty` is retained; no custom `nix`/`rustix` backend is
-//! needed for the MVP.
+//! The child is a session leader (`setsid`) that closes inherited fds, so at
+//! spawn `pgid == child_pid`: [`PtyHandle::process_group`] is what the daemon
+//! signals.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd};

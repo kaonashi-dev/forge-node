@@ -5,12 +5,13 @@
 //! behaviour around git — that `ListBranches` knows which worktree already
 //! holds a branch, that `FetchRemote` acks before it finishes and reports
 //! through an event, that `RefreshProject` reconciles a worktree made outside
-//! the app, and that a new worktree is provisioned before it is handed over.
+//! the app, and that a new worktree is handed over first and provisioned
+//! afterwards (`SharesApplied`).
 //!
-//! Every test uses a real repository and a real second repository as `origin`
-//! (a local path is a first-class git transport), so the fetch path is the
-//! genuine one and nothing here touches the network. They fail rather than
-//! skip without `git`, like the rest of the daemon E2E suite.
+//! Every test uses a real repository; the fetch tests add a real second
+//! repository as `origin` (a local path is a first-class git transport), so
+//! nothing here touches the network. They fail rather than skip without `git`,
+//! like the rest of the daemon E2E suite.
 
 mod common;
 

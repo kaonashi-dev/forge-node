@@ -294,7 +294,7 @@ function General() {
             <span class="settings-path-value">
               {paths()?.logs_dir ?? "no data directory on this platform"}
             </span>
-            <span class="settings-row-note">app.log, daemon.log</span>
+            <span class="settings-row-note">daemon.&lt;date&gt;.log, last 5 days</span>
           </li>
         </ul>
         <div class="settings-actions">

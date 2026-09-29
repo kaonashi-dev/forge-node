@@ -30,7 +30,8 @@ cargo test -p forge-tauri
 ```
 
 After a protocol change, re-export the wire fixtures and regenerate the typed
-copies the round-trip tests read; CI fails on drift between them.
+copies the round-trip tests read. No CI step compares them with the wire, so
+run both and commit the result.
 
 The generator writes `src/contracts/generated/fixtures.ts`; wire type mirrors
 live alongside it under `src/contracts/` and are maintained separately:

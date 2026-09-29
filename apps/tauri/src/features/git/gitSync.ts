@@ -1,23 +1,11 @@
-// Keeping the sidebar's branch honest after a `git checkout` in a terminal.
+// Keeps the rail's branch current after a `git checkout` typed into a terminal.
 //
-// `Workspace.branch` is a persisted column, not a subscription. The daemon
-// re-reads it in `apply_workspace_status`, but only from places that already
-// know git moved: a commit, a rebase step, opening a pull request, a project
-// rescan, a session switch, and the rail's own "Refresh status" item. Typing
-// `git checkout main` into a shell reaches none of them, so the rail went on
-// naming the branch the worktree was created on — for the rest of the session.
-//
-// The file watcher (`daemon::file_watch`) does not replace this. It is
-// non-recursive and bounded to the folders a file surface has open, so a
-// `git checkout` that rewrites a subtree nobody expanded moves nothing it can
-// see — and with neither the Files panel nor an editor mounted there is no
-// watch at all. It also watches one checkout, the focused one, while the rail
-// names every worktree.
-//
-// So this asks at the two moments a person can tell something happened. It is
-// deliberately *not* a poll: a `git status` on a large checkout is real
-// subprocess time, and paying it every few seconds forever to catch a command
-// nobody ran is the cost this shell is careful about elsewhere.
+// `Workspace.branch` is only re-read from places that already know git moved, and
+// `daemon::file_watch` is non-recursive and watches only the focused checkout, so
+// neither sees a bare `checkout`. This re-reads status when the active terminal
+// goes quiet (sampled, not debounced per frame) and when the window regains
+// focus, never at a fixed rate: a `git status` on a large checkout is real
+// subprocess time.
 
 import { cellsChannel } from "../../runtime/bus";
 import { refreshWorkspaceStatus } from "../sessions/commands";

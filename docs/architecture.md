@@ -76,12 +76,15 @@ and platform resources alongside its Rust. It is a workspace member like any
 other and sits on the same spine (`forge-tauri → client → {protocol,
 terminal-input} → domain`).
 
-Dependency direction is one-way: `forge-tauri → client → {protocol,
-terminal-input} → domain` and
-`daemon → {agents, git-service, fs-service, persistence, terminal-core} → domain`.
-`forgectl` is `forge-ctl → client → protocol → domain` and must not depend on
-`daemon`.
-The GUI renders `domain::terminal` wire types, it does
+Dependency direction is one-way and enforced by `Cargo.toml`:
+`forge-tauri → {client, domain}`, `client → {protocol, terminal-input, domain}`,
+`daemon → {agents, client, editor-control, fs-service, git-service, persistence,
+protocol, terminal-core, domain}`, `fs-service → git-service` and
+`editor-cli → {editor-core, editor-control}`. `forgectl` is
+`forge-ctl → client → protocol → domain` and must not depend on `daemon`.
+Every other crate depends on `domain` alone or on nothing (`editor-core`,
+`editor-control`), there is no cycle, and the host depends on neither
+`protocol` nor `terminal-core` directly. The GUI renders `domain::terminal` wire types, it does
 not emulate. ADR numbers cited in code are indexed in [decisions.md](./decisions.md).
 
 The Tauri host runs blocking `client::Client` calls on a dedicated runtime thread. A
@@ -191,8 +194,8 @@ applies the `[sessions]` idle policy (`crates/daemon/src/idle.rs`): a quiet
 session is reported once per quiet spell, and, only if the user sets
 `idle_stop_after_secs`, ended through the normal kill path so it stays
 restartable. A second clock — age since creation — answers "open too long" and
-never stops anything. The sidebar shows the same idleness as a dim `45m` on the
-session row once it passes ten minutes.
+never stops anything. A session waiting on the person shows how long it has
+waited in its header.
 
 A worktree Forge creates lives away from the repository, so it arrives without
 the untracked files the project needs to run. Which ones follow it is a

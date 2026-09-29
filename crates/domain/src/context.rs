@@ -1,7 +1,7 @@
-//!
-//! `summary` and `instructions` are the primary fields; artifacts and git
-//! context are optional. Cross-session delivery goes through `SendContext`
-//! (persist + optional PTY paste or child spawn) and `ListContextEnvelopes`.
+//! Context envelopes: `summary` and `instructions` are the primary fields;
+//! artifacts and git context are optional. Cross-session delivery goes through
+//! `SendContext` (persist + optional PTY paste or child spawn) and
+//! `ListContextEnvelopes`.
 
 use crate::ids::{ContextId, RunId, SessionId, TaskId, Timestamp};
 use serde::{Deserialize, Serialize};

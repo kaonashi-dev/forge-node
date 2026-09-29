@@ -3,8 +3,7 @@
  *
  * A name maps to a concrete lucide component imported by name, so the bundler
  * keeps only the glyphs the app actually names — the registry is a lookup, not
- * a barrel re-export. Call sites still say `name="check"`; what changed is what
- * sits behind the name.
+ * a barrel re-export.
  *
  * Two kinds of mark are deliberately *not* here. A provider's or an editor's
  * logo is a brand, drawn from its own SVG by `BrandIcon`. A session's state —

@@ -143,7 +143,7 @@ Paths (macOS shown; Linux uses `$XDG_RUNTIME_DIR`, `$XDG_DATA_HOME`,
 | socket / lock | `$TMPDIR/forge/daemon.sock`, `daemon.lock` (full path < 100 bytes, else `/tmp/forge-$UID/`) |
 | database | `~/Library/Application Support/Forge/app.db` |
 | worktrees | `~/Library/Application Support/Forge/worktrees/<project-id>/<slug>` |
-| logs | `~/Library/Application Support/Forge/logs/daemon.log` (rotated) |
+| logs | `~/Library/Application Support/Forge/logs/daemon.<date>.log` (daily, last 5) |
 | config | `~/Library/Application Support/Forge/config.toml` |
 
 `config.toml` is optional; a missing file uses defaults; changes need a
@@ -173,8 +173,12 @@ restart (no hot reload). See [`config.example.toml`](./config.example.toml).
 | cost rungs | [performance.md](./performance.md) |
 
 Dependency direction is one-way and enforced by `Cargo.toml`:
-`forge-tauri → client → {protocol, terminal-input} → domain` and
-`daemon → {agents, git-service, fs-service, persistence, terminal-core} → domain`.
+`forge-tauri → {client, domain}`, `client → {protocol, terminal-input, domain}`,
+`daemon → {agents, client, editor-control, fs-service, git-service, persistence,
+protocol, terminal-core, domain}`, `fs-service → git-service`,
+`editor-cli → {editor-core, editor-control}`; every other crate depends on
+`domain` alone or on nothing. The host depends on neither `protocol` nor
+`terminal-core` directly.
 
 ## Testing notes
 

@@ -1,9 +1,8 @@
 //! Caret movement over the buffer, in graphemes and display columns.
 //!
-//! Every function is a pure offset → offset map, so a key binding, the palette
-//! and a Vim operator can share one definition of "word left". Nothing here
-//! scrolls: the viewport is the view's, and moving the caret must not cost
-//! work proportional to the document.
+//! Every function is a pure offset → offset map, so every caller shares one
+//! definition of "word left". Nothing here scrolls: the viewport is the view's,
+//! and moving the caret must not cost work proportional to the document.
 
 use crate::metrics::{self, byte_column_for_display, display_column};
 use crate::selection::Selection;

@@ -1,13 +1,7 @@
-//! Talking to a remote: `fetch`, and `push` only when a caller explicitly asks
-//! (Juva's `CreatePullRequest` path). Local commits stay in [`crate::change`].
-//!
-//! Everything here goes through [`run_git_network`], not [`crate::run_git`]:
-//! its own timeout, `ssh` in batch mode, askpass disabled. See the
-//! [`crate::command`] module docs for why that is a deliberate deviation from
-//! ADR-008 rather than an oversight.
-//!
-//! **Push is never automatic.** A background sweeper must not call it; only an
-//! explicit user-confirmed request may.
+//! Talking to a remote: `fetch` and the remote lookups. Everything here goes
+//! through [`run_git_network`], not [`crate::run_git`]: its own timeout, `ssh` in
+//! batch mode, askpass disabled. See the [`crate::command`] module docs for why
+//! that is a deliberate deviation from ADR-008.
 
 use crate::command::{run_git, run_git_network, GitError, GIT_NETWORK_TIMEOUT};
 use std::path::Path;

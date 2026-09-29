@@ -1,8 +1,8 @@
 //! Name ranking for the navigation index.
 //!
-//! `neo_frizbee` is the SIMD matcher FFF uses. Basename and depth bonuses stay
-//! ours so a query without `/` still prefers `entries.ts` over a hit in a
-//! folder named `entries`.
+//! `neo_frizbee` is a SIMD fuzzy matcher. Basename and depth bonuses stay ours so
+//! a query without `/` still prefers `entries.ts` over a hit in a folder named
+//! `entries`.
 
 use neo_frizbee::{Config, Matcher, SortStrategy};
 

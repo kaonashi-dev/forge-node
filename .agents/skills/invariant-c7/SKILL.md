@@ -18,3 +18,5 @@ Read `docs/performance.md` if any box is unclear.
 - [ ] Timeout commands: `.process_group(0)`, kill negative pgid.
 - [ ] Every `spawn()` reaped; coalescing flags cleared on `Drop` failure paths.
 - [ ] Id-minting mutations return the id; no snapshot reload to guess created ids.
+- [ ] Directory watches stay connection-scoped and bounded (128 directories, 4096 bytes per path, `try_send` into a bounded queue); overflow is one empty-path `FileChanged`.
+- [ ] A cache key is fingerprinted from its inputs, never the resolved output; a TTL shorter than the gap between two user actions is not a cache.

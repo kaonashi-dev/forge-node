@@ -1,4 +1,4 @@
-//! Daemon logging: `daemon.log` plus stderr.
+//! Daemon logging: a daily `daemon.<date>.log` plus stderr.
 //!
 //! Lines never contain terminal content or environment values.
 //! `tracing-appender` rotates daily, capped at 5 files.

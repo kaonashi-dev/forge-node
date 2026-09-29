@@ -1,9 +1,4 @@
-//! Built-in provider launch and detection declarations.
-//!
-//! Descriptors carry only static data (candidate binaries, version probe,
-//! capabilities); all behavior lives in [`crate::detection`] and
-//! [`crate::descriptor`]. Every provider-specific fact of the MVP is encoded
-//! here (principle P2): nothing else in the workspace branches on provider id.
+//! Static descriptors for the built-in providers, in picker order.
 
 use domain::{
     AcpSpec, AgentCapabilities, AgentDescriptor, AgentProviderId, ConfigDirSpec, PromptStyle,

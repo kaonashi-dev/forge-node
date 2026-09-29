@@ -1,11 +1,11 @@
-// Which files were opened lately, per checkout, and what the palette shows
-// before anything is typed.
+// Which files were opened lately, per checkout, and what the palette shows before
+// anything is typed.
 //
-// The tree comes from `git ls-files` and carries paths and nothing else — no
-// mtime, no order but the repository's own. So "recently edited" is answered
-// from two things the shell already knows: what was opened here, and what has
-// uncommitted changes. Nothing in this file imports Solid or the daemon; the
-// store wrapper at the bottom is the only part that does.
+// The navigation index (`git ls-files`) has no mtime and no order but the
+// repository's own, so "recent" comes from two things the shell already knows:
+// what was opened here, and what has uncommitted changes. The list functions are
+// pure; `recentPaths`, `noteFileOpened` and `retargetRecentFiles` are the
+// wrappers over `forgeStore` and `app_state`.
 
 import { forgeStore } from "../../../state/forgeStore";
 import { setAppState } from "../../settings/commands";

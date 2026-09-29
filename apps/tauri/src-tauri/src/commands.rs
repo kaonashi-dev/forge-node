@@ -99,14 +99,14 @@ pub async fn pick_directory(app: AppHandle, title: Option<String>) -> Option<Str
 pub struct ConfigPaths {
     /// Host version. The daemon reports its own; the two match in a release.
     pub app_version: String,
-    /// `config.toml`, read by both the host and the daemon.
+    /// `config.toml`, which the daemon reads; the host only shows where it is.
     pub config_file: Option<String>,
     /// Its directory, which is what "Reveal" opens: the file need not exist
     /// yet, and a file manager cannot show what is not there.
     pub config_dir: Option<String>,
     /// Whether `config.toml` exists right now.
     pub config_exists: bool,
-    /// `app.log` and `daemon.log` live here.
+    /// The daemon's `daemon.<date>.log` files live here.
     pub logs_dir: Option<String>,
 }
 
