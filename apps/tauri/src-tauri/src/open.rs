@@ -1,6 +1,5 @@
-//! Desktop integrations: open a directory in an editor or file manager.
-//!
-//! Daemon-free side effects.rs` and `file_manager.rs`.
+//! Desktop integrations with no daemon request: open a directory in an external
+//! editor (Zed, Cursor) or the platform file manager, and open a URL.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -60,29 +59,41 @@ pub fn locate(editor: Editor) -> Option<Launch> {
         .map(Launch::Bundle)
 }
 
+/// Start `command` and reap it on a detached thread: `Child::drop` does not
+/// wait, so every fire-and-forget spawn would otherwise stay a zombie.
+pub(crate) fn spawn_detached(command: &mut Command) -> std::io::Result<()> {
+    let mut child = command.spawn()?;
+    let _ = std::thread::Builder::new()
+        .name("forge-tauri-reap".to_string())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+    Ok(())
+}
+
 pub fn open_editor(editor: Editor, path: &Path) -> Result<(), String> {
     let launch = locate(editor).ok_or_else(|| format!("{} is not installed", editor.label()))?;
     let (program, args) = editor_invocation(&launch, path);
-    Command::new(&program)
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("{}: {error}", program.display()))
+    spawn_detached(
+        Command::new(&program)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .map_err(|error| format!("{}: {error}", program.display()))
 }
 
 pub fn open_file_manager(path: &Path) -> Result<(), String> {
     let (program, args) = file_manager_invocation(path);
-    Command::new(&program)
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("{}: {error}", program.display()))
+    spawn_detached(
+        Command::new(&program)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .map_err(|error| format!("{}: {error}", program.display()))
 }
 
 pub fn open_url(url: &str) -> Result<(), String> {
@@ -91,25 +102,25 @@ pub fn open_url(url: &str) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        Command::new("/usr/bin/open")
-            .arg(url)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("open: {error}"))
+        spawn_detached(
+            Command::new("/usr/bin/open")
+                .arg(url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .map_err(|error| format!("open: {error}"))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Command::new("xdg-open")
-            .arg(url)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("xdg-open: {error}"))
+        spawn_detached(
+            Command::new("xdg-open")
+                .arg(url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .map_err(|error| format!("xdg-open: {error}"))
     }
 }
 
@@ -161,4 +172,15 @@ fn application_dirs() -> Vec<PathBuf> {
         dirs.push(PathBuf::from(home).join("Applications"));
     }
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_detached_reports_a_missing_program_and_starts_a_present_one() {
+        assert!(spawn_detached(&mut Command::new("/nonexistent/forge-test-program")).is_err());
+        assert!(spawn_detached(Command::new("true").stdin(Stdio::null())).is_ok());
+    }
 }

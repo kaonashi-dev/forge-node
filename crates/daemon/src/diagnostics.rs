@@ -107,8 +107,9 @@ fn capture(root: &Path, program: &str, args: &[String]) -> Option<String> {
 
 fn kill_group(pid: u32) {
     use nix::sys::signal::Signal::SIGKILL;
-    #[allow(clippy::cast_possible_wrap)]
-    let raw = pid as i32;
+    let Ok(raw) = i32::try_from(pid) else {
+        return;
+    };
     // The group first — that is what reaches the descendants holding the pipes
     // — then the bare pid, for a child that moved itself out of the group.
     crate::core::signal_group(raw, SIGKILL);

@@ -33,7 +33,6 @@ clap.workspace = true
 toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-rmp-serde.workspace = true
 ureq.workspace = true
 directories.workspace = true
 nix.workspace = true
@@ -44,6 +43,3 @@ time.workspace = true
 [dev-dependencies]
 test-support.workspace = true
 tempfile.workspace = true
-# The editor scenario's stand-in speaks the control wire, so its fixture reads
-# CONTROL_VERSION rather than hardcoding a number that silently goes stale.
-editor-control.workspace = true

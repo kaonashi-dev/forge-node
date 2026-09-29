@@ -52,6 +52,10 @@ pub async fn serve(daemon: Arc<Daemon>, listener: UnixListener, socket_path: Pat
                     }
                 });
             }
+            Err(e) if accept_error_is_transient(&e) => {
+                tracing::warn!(error = %e, "accept failed; retrying");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "accept failed");
                 break;
@@ -60,6 +64,26 @@ pub async fn serve(daemon: Arc<Daemon>, listener: UnixListener, socket_path: Pat
     }
     let _ = std::fs::remove_file(&socket_path);
     tracing::info!("accept loop stopped");
+}
+
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Descriptor or memory exhaustion and an aborted connection pass on their own.
+/// Leaving `serve` ends the daemon and kills every session, so only these
+/// retry; a broken listener still stops it rather than leaving it deaf.
+fn accept_error_is_transient(error: &std::io::Error) -> bool {
+    use nix::errno::Errno;
+    matches!(
+        error.raw_os_error().map(Errno::from_raw),
+        Some(
+            Errno::EMFILE
+                | Errno::ENFILE
+                | Errno::ENOBUFS
+                | Errno::ENOMEM
+                | Errno::ECONNABORTED
+                | Errno::EINTR
+        )
+    )
 }
 
 /// Poll the shutdown flag so the accept loop can exit promptly after StopDaemon.
@@ -99,8 +123,8 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     let Some(first) = read_frame(&mut read_half).await? else {
         return Ok(());
     };
-    let hello: ClientMessage = match decode_payload(&first) {
-        Ok(ClientMessage::Hello(h)) => ClientMessage::Hello(h),
+    let hello: Hello = match decode_payload(&first) {
+        Ok(ClientMessage::Hello(hello)) => hello,
         _ => {
             // Not a Hello: reject and close.
             let reject = DaemonMessage::HelloReject(HelloReject {
@@ -111,14 +135,11 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
             return Ok(());
         }
     };
-    let ClientMessage::Hello(Hello {
+    let Hello {
         protocol_version,
         client_kind,
         ..
-    }) = hello
-    else {
-        unreachable!()
-    };
+    } = hello;
     if protocol_version != PROTOCOL_VERSION {
         let reject = DaemonMessage::HelloReject(HelloReject {
             daemon_protocol_version: PROTOCOL_VERSION,
@@ -396,4 +417,31 @@ async fn write_message(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     writer.write_all(&frame).await?;
     writer.flush().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nix::errno::Errno;
+
+    fn os_error(errno: Errno) -> std::io::Error {
+        std::io::Error::from_raw_os_error(errno as i32)
+    }
+
+    #[test]
+    fn exhaustion_retries_and_a_broken_listener_stops_the_daemon() {
+        for errno in [
+            Errno::EMFILE,
+            Errno::ENFILE,
+            Errno::ENOBUFS,
+            Errno::ENOMEM,
+            Errno::ECONNABORTED,
+            Errno::EINTR,
+        ] {
+            assert!(accept_error_is_transient(&os_error(errno)), "{errno}");
+        }
+        for errno in [Errno::EBADF, Errno::EINVAL, Errno::ENOTSOCK] {
+            assert!(!accept_error_is_transient(&os_error(errno)), "{errno}");
+        }
+    }
 }

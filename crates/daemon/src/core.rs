@@ -1,10 +1,12 @@
 //! In-memory domain state, request dispatch, and the terminal-runtime methods
 //! the PTY loop calls.
 //!
-//! All state lives behind one `Mutex<Inner>`. Handlers are synchronous and run
-//! off the async accept loop via `spawn_blocking` (git and PTY spawns block), so
-//! the lock is never held across an `.await`. Lock order is always
-//! `inner` → `registry` / `pending_notices`; neither leaf lock takes `inner`.
+//! Domain state lives behind one `Mutex<Inner>`; slow reads keep their own locks
+//! (`external_agents`, `pull_requests`, `usage_stats`, `file_index`,
+//! `editor_conflicts`) so they never queue behind it. Handlers are synchronous
+//! and run via `spawn_blocking`, so the lock is never held across an `.await`.
+//! Lock order is `inner` -> `registry` / `pending_notices`;
+//! `editor_file_operations` is taken before `inner`, never from inside it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -193,18 +195,17 @@ impl Daemon {
         daemon.rescan_worktrees();
 
         {
+            // One thread, in this order: a sweeper started beside the warm-up
+            // reaches `resolved_env` first and captures the login shell under
+            // the core lock, and its first sweep would read no detections.
             let d = daemon.clone();
             std::thread::spawn(move || {
                 d.warm_env();
                 let results = d.detect_agents();
                 d.registry
                     .broadcast_domain(DaemonEvent::AgentDetectionChanged { results });
+                d.run_usage_sweeper();
             });
-        }
-
-        {
-            let d = daemon.clone();
-            std::thread::spawn(move || d.run_usage_sweeper());
         }
 
         if daemon.config.idle_policy().is_enabled() {
@@ -2154,9 +2155,9 @@ impl Daemon {
     ///
     /// One diff for the checkout, based at the common ancestor of every
     /// baseline its sessions carry — `merge-base --octopus`, one subprocess
-    /// whatever the number of sessions. Per-session commit counts are one
-    /// `rev-list` each, which is why the session list is capped: that cost
-    /// scales with sessions, and nothing else here does.
+    /// whatever the number of sessions. Each session costs a `rev-parse` (is its
+    /// baseline still a commit) and a `rev-list` (its commit count), which is
+    /// why the session list is capped: nothing else here scales with sessions.
     fn get_workspace_review(
         &self,
         workspace_id: WorkspaceId,
@@ -2182,11 +2183,17 @@ impl Daemon {
         sessions.sort_unstable_by(|a, b| b.created_at.cmp(&a.created_at));
         sessions.truncate(MAX_REVIEW_SESSIONS);
 
-        let recorded: Vec<String> = sessions
+        // One `rev-parse` per session, shared by the merge base and the rows.
+        let valid_bases: Vec<Option<String>> = sessions
             .iter()
-            .filter_map(|session| session.base_commit.clone())
-            .filter(|base| git_service::commit_exists(&path, base))
+            .map(|session| {
+                session
+                    .base_commit
+                    .clone()
+                    .filter(|base| git_service::commit_exists(&path, base))
+            })
             .collect();
+        let recorded: Vec<String> = valid_bases.iter().flatten().cloned().collect();
         let had_baseline = sessions.iter().any(|s| s.base_commit.is_some());
         let (base, origin) = match git_service::merge_base(&path, &recorded) {
             Some(base) => (Some(base), domain::BaseOrigin::Recorded),
@@ -2204,11 +2211,9 @@ impl Daemon {
 
         let rows = sessions
             .into_iter()
-            .map(|session| {
-                let base = session
-                    .base_commit
-                    .as_deref()
-                    .filter(|base| git_service::commit_exists(&path, base));
+            .zip(valid_bases)
+            .map(|(session, base)| {
+                let base = base.as_deref();
                 domain::ReviewSession {
                     session_id: session.id,
                     title: session
@@ -3748,6 +3753,7 @@ impl Daemon {
 
     // --- Sessions ---
 
+    // Each argument is a separate fact the caller resolved; a parameter struct would only rename them.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_session(
         self: &Arc<Self>,
@@ -3981,7 +3987,7 @@ impl Daemon {
             false,
         ) {
             Ok(terminal_id) => {
-                supervisor.supervise(
+                let supervised = supervisor.supervise(
                     self.clone(),
                     crate::editor::OpenSpec {
                         buffer: opened,
@@ -3991,6 +3997,13 @@ impl Daemon {
                     },
                     commands_rx,
                 );
+                if let Err(error) = supervised {
+                    let reason = format!("cannot start the editor supervisor: {error}");
+                    self.drop_editor_port(session.id);
+                    self.mark_session_failed(session.id, reason.clone());
+                    let _ = self.kill_session(session.id);
+                    return Err(ProtocolError::new(ErrorCode::SpawnError, reason));
+                }
                 Ok(Response::SessionCreated {
                     session_id: session.id,
                     terminal_id,
@@ -4146,6 +4159,7 @@ impl Daemon {
         Ok((session.workspace_id, path))
     }
 
+    // Same shape as `create_session`: separate resolved facts, no natural grouping.
     #[allow(clippy::too_many_arguments)]
     fn create_child_session(
         self: &Arc<Self>,
@@ -4213,6 +4227,7 @@ impl Daemon {
 
     /// Persist an envelope and either paste it into a live PTY or spawn a child
     /// that starts with it.
+    // Same shape as `create_session`: separate resolved facts, no natural grouping.
     #[allow(clippy::too_many_arguments)]
     fn send_context(
         self: &Arc<Self>,
@@ -4336,7 +4351,12 @@ impl Daemon {
             return Ok(created);
         }
 
-        let target_id = target_session_id.expect("validated above");
+        let Some(target_id) = target_session_id else {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                "SendContext needs target_session_id or spawn",
+            ));
+        };
         if target_id == source_session_id {
             return Err(ProtocolError::new(
                 ErrorCode::InvalidRequest,
@@ -6528,7 +6548,6 @@ impl Daemon {
         selection
     }
 
-    /// Cached login-shell env. Fallback notice once per daemon.
     /// Ack when the refresh *starts*; results arrive as `AgentDetectionChanged`.
     ///
     /// Re-capturing `$SHELL -l -i` and re-probing every CLI takes seconds, and
@@ -6583,6 +6602,7 @@ impl Daemon {
                         guard.released = true;
                         break;
                     }
+                    daemon.refresh_env();
                     results = Ok(daemon.detect_agents());
                 }
             })
@@ -6614,6 +6634,7 @@ impl Daemon {
         self.lock().env = env;
     }
 
+    /// Cached login-shell env. Fallback notice once per daemon.
     fn resolved_env(&self, inner: &mut Inner) -> ResolvedEnvironment {
         let env = inner.env.get().clone();
         if env.source == EnvSource::ProcessFallback && !inner.env_fallback_noticed {
@@ -6673,7 +6694,6 @@ fn describe_detection(status: &DetectionStatus) -> String {
     }
 }
 
-/// `Ok(false)` if the source is absent. Refuses anything that is not a plain file inside both trees.
 /// Releases a workspace's provisioning flag however the worker ends.
 ///
 /// `Daemon::lock` recovers from poisoning, so a panicked worker that left the
@@ -6762,7 +6782,6 @@ impl Drop for DetectingGuard {
     }
 }
 
-/// Out-of-range git dates become `None` rather than failing the listing.
 /// How long the shutdown snapshot waits for `ps`.
 const SNAPSHOT_PS_TIMEOUT: Duration = Duration::from_secs(2);
 /// Longest command line remembered for resurrect.
@@ -6820,12 +6839,12 @@ fn run_ps_table() -> Option<String> {
         }
         // Stalled or failed: kill the group so no `ps` outlives the daemon.
         _ => {
-            #[allow(clippy::cast_possible_wrap)]
-            let raw = pid as i32;
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(-raw),
-                nix::sys::signal::Signal::SIGKILL,
-            );
+            if let Ok(raw) = i32::try_from(pid) {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(-raw),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
             None
         }
     }
@@ -6908,6 +6927,7 @@ fn clamp_command(args: &str) -> String {
     }
 }
 
+/// Out-of-range git dates become `None` rather than failing the listing.
 fn unix_to_timestamp(secs: i64) -> Option<Timestamp> {
     time::OffsetDateTime::from_unix_timestamp(secs)
         .ok()
@@ -6932,7 +6952,6 @@ fn inferred_display_name(path: &Path, branch: Option<&str>) -> Option<String> {
     }
 }
 
-/// Used for the out-of-home warning.
 /// One provider's usage probe and every login it should be run for.
 struct UsageSource {
     descriptor: domain::AgentDescriptor,
@@ -6957,6 +6976,7 @@ fn profile_config_dir(profile: &AgentProfile, env: &ResolvedEnvironment) -> Opti
     })
 }
 
+/// Used for the out-of-home warning.
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
@@ -7147,6 +7167,7 @@ struct AgentLaunch {
 }
 
 impl AgentLaunch {
+    // A launch is these independent facts; the constructor is the one place they meet.
     #[allow(clippy::too_many_arguments)]
     fn new(
         provider_id: Option<AgentProviderId>,
@@ -10907,10 +10928,24 @@ mod tests {
         // the supervisor thread via record_editor_state, never from a PTY
         // batch: a keystroke that only moves the caret must not clone
         // EditorState on that rung.
-        let src = include_str!("terminal.rs");
-        assert!(!src.contains("record_editor_state"));
-        assert!(!src.contains("EditorState"));
-        assert!(!src.contains("SessionKind::Editor"));
+        let src = include_str!("core.rs");
+        let start = src
+            .find("pub(crate) fn pump_terminal_batch(")
+            .expect("the pump lives in core.rs");
+        let rest = &src[start + 1..];
+        let end = ["\n    fn ", "\n    pub fn ", "\n    pub(crate) fn "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .unwrap_or(rest.len());
+        let pump = &rest[..end];
+        assert!(
+            pump.contains("route_terminal_delta"),
+            "sliced the wrong span: {pump:.80}"
+        );
+        assert!(!pump.contains("record_editor_state"));
+        assert!(!pump.contains("EditorState"));
+        assert!(!pump.contains("SessionKind::Editor"));
     }
 
     #[test]

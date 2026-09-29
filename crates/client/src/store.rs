@@ -181,6 +181,14 @@ impl Store {
             }
             DaemonEvent::ProjectRemoved { project_id } => {
                 self.projects.retain(|x| x.id != *project_id);
+                // The daemon drops these by cascade and broadcasts nothing
+                // more, so the replica would keep them until the next snapshot.
+                self.worktree_shares
+                    .retain(|rule| rule.project_id != *project_id);
+                self.worktree_ignores
+                    .retain(|rule| rule.project_id != *project_id);
+                self.external_agents
+                    .retain(|session| session.project_id != *project_id);
                 EventOutcome::Applied
             }
             DaemonEvent::WorkspaceCreated(w) | DaemonEvent::WorkspaceUpdated(w) => {
@@ -885,6 +893,40 @@ mod tests {
         });
         assert_eq!(store.projects.len(), 1);
         assert_eq!(store.projects[0].id, other.id);
+    }
+
+    #[test]
+    fn removing_a_project_drops_the_rows_the_daemon_cascades_away() {
+        let mut store = Store::new();
+        let gone = sample_project("gone");
+        let kept = sample_project("kept");
+        let rule = |project: &Project| domain::ShareRule {
+            id: domain::ShareRuleId::new(),
+            project_id: project.id,
+            path: ".env".to_string(),
+            strategy: domain::ShareStrategy::Copy,
+            enabled: true,
+            position: 0,
+            created_at: Timestamp::now(),
+        };
+        let ignore = |project: &Project| WorktreeIgnore {
+            project_id: project.id,
+            path: PathBuf::from("/tmp/forge-wt"),
+            scope: domain::IgnoreScope::Exact,
+            created_at: Timestamp::now(),
+        };
+        store.projects = vec![gone.clone(), kept.clone()];
+        store.worktree_shares = vec![rule(&gone), rule(&kept)];
+        store.worktree_ignores = vec![ignore(&gone), ignore(&kept)];
+
+        let _ = store.apply_event(&DaemonEvent::ProjectRemoved {
+            project_id: gone.id,
+        });
+
+        assert_eq!(store.worktree_shares.len(), 1);
+        assert_eq!(store.worktree_shares[0].project_id, kept.id);
+        assert_eq!(store.worktree_ignores.len(), 1);
+        assert_eq!(store.worktree_ignores[0].project_id, kept.id);
     }
 
     #[test]
