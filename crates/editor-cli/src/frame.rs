@@ -147,6 +147,11 @@ fn spans_of(line: &str, scopes: &[editor_core::Span]) -> Vec<WireSpan> {
         if end <= at || start >= line.len() {
             continue;
         }
+        // A span from a scan the text has since outgrown can end mid-character;
+        // slicing it would end the editor process.
+        if !line.is_char_boundary(start.max(at)) || !line.is_char_boundary(end) {
+            return vec![WireSpan::plain(line)];
+        }
         if start > at {
             push_run(&mut spans, &line[at..start], WireScope::Plain);
         }
@@ -251,6 +256,18 @@ const _: () = assert!(editor_control::MAX_CARETS == editor_core::limits::MAX_CUR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stale_span_inside_a_multibyte_char_degrades_to_plain() {
+        let line = "let s = \"éé\";";
+        let stale = [editor_core::Span {
+            start: 8,
+            end: 12,
+            scope: editor_core::Scope::String,
+        }];
+        let spans = spans_of(line, &stale);
+        assert_eq!(spans, vec![WireSpan::plain(line)]);
+    }
 
     #[test]
     fn a_long_row_is_cut_on_a_char_boundary() {

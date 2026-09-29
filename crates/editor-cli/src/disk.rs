@@ -56,6 +56,9 @@ pub fn revision(path: &Path) -> Option<String> {
 
 /// Write `text` atomically, returning the revision now on disk.
 pub fn save(path: &Path, text: &str) -> Result<String, DiskError> {
+    // `rename` over a symlink replaces the link, not the file it points at.
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = resolved.as_path();
     let temp = temp_path(path)?;
     let guard = TempFile(temp);
     let mode = path.metadata().ok().map(|meta| meta.permissions());
@@ -160,6 +163,23 @@ mod tests {
             leftovers.is_empty(),
             "temp files left behind: {leftovers:?}"
         );
+    }
+
+    #[test]
+    fn saving_through_a_symlink_writes_its_target_and_keeps_the_link() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let target = directory.path().join("real.txt");
+        let link = directory.path().join("link.txt");
+        std::fs::write(&target, "old").expect("fixture");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        save(&link, "new").expect("save");
+
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("link")
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).expect("target"), "new");
     }
 
     #[test]
