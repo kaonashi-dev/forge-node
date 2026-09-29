@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  QUIET_MS,
   REFRESH_FLOOR_MS,
   applySessionChanges,
+  autoRefreshDelay,
   beginSessionChanges,
   failSessionChanges,
   forgetSession,
@@ -60,6 +62,21 @@ describe("mayAutoRefresh", () => {
     const readAt = splitEntry(SESSION).readAt ?? 0;
     expect(mayAutoRefresh(SESSION, readAt + REFRESH_FLOOR_MS - 1)).toBe(false);
     expect(mayAutoRefresh(SESSION, readAt + REFRESH_FLOOR_MS)).toBe(true);
+  });
+
+  /* The quiet timer fires once. If it fires inside the floor and gives up,
+     nothing re-arms it and the panel keeps the pre-burst answer, so the timer
+     is sized to fire when a read is allowed. */
+  it("waits out the floor rather than firing inside it", () => {
+    expect(autoRefreshDelay(SESSION, 5_000)).toBe(QUIET_MS);
+
+    applySessionChanges(SESSION, changes());
+    const readAt = splitEntry(SESSION).readAt ?? 0;
+    expect(autoRefreshDelay(SESSION, readAt + 300)).toBe(REFRESH_FLOOR_MS - 300);
+    expect(mayAutoRefresh(SESSION, readAt + 300 + autoRefreshDelay(SESSION, readAt + 300))).toBe(
+      true,
+    );
+    expect(autoRefreshDelay(SESSION, readAt + REFRESH_FLOOR_MS)).toBe(QUIET_MS);
   });
 
   /* Answers are not ordered, so a second read landing first would paint an

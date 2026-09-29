@@ -207,22 +207,6 @@ export function clearTreeReveal(): void {
   setPendingReveal(null);
 }
 
-/**
- * The line the editor should put the caret on, and for which file.
- *
- * The same shape as `treeReveal` and for the same reason: the editor for that
- * path may not be mounted yet — opening it is what mounts it — and the read
- * that gives it a document has not landed either. The request stands until the
- * editor takes it, and the editor clears it.
- */
-const [pendingLine, setPendingLine] = createSignal<{ path: string; line: number } | null>(null);
-
-export const editorReveal = pendingLine;
-
-export function clearEditorReveal(): void {
-  setPendingLine(null);
-}
-
 // The lazy Search tab consumes the focus request after its input mounts.
 const [pendingFindInFiles, setPendingFindInFiles] = createSignal<{ query: string | null } | null>(
   null,
@@ -253,10 +237,6 @@ export function retargetWorkspaceViews(workspace: string, from: string, to: stri
     reveal?.workspace === workspace
       ? { ...reveal, path: retargetViewPath(reveal.path, from, to) }
       : reveal,
-  );
-  if (workspace !== activeWorkspace()) return;
-  setPendingLine((reveal) =>
-    reveal === null ? null : { ...reveal, path: retargetViewPath(reveal.path, from, to) },
   );
 }
 

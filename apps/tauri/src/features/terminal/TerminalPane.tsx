@@ -53,6 +53,7 @@ import { connectionStore, sessionSelectionPending } from "../../state/connection
 import { centerMode } from "../../navigation/viewsStore";
 import { registerFileTerminal } from "../files/explorer/fileDrag";
 import { CursorClick } from "./cursorClick";
+import { acceptsPointer as pointerAccepted } from "./pointerGate";
 import { SelectionDrag } from "./selectionDrag";
 import { clearQuestion, markQuestion } from "./questions";
 import { forgeStore } from "../../state/forgeStore";
@@ -612,14 +613,14 @@ export function TerminalPane(props: {
   // --- selection ------------------------------------------------------------
 
   function acceptsPointer(): boolean {
-    return (
-      props.active !== false &&
-      !sessionSelectionPending() &&
-      viewport.terminal !== null &&
-      viewport.rows.length > 0 &&
-      connectionStore.connection.kind === "connected" &&
-      connectionStore.activeTerminal === viewport.terminal
-    );
+    return pointerAccepted({
+      active: props.active,
+      selectionPending: sessionSelectionPending(),
+      viewportTerminal: viewport.terminal,
+      hasRows: viewport.rows.length > 0,
+      connected: connectionStore.connection.kind === "connected",
+      boundTerminal: boundTerminal(),
+    });
   }
 
   function stopDrag(): void {

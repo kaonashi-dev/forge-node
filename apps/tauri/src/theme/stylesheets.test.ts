@@ -49,6 +49,24 @@ function scan(test: (line: string) => boolean): Offence[] {
   return found;
 }
 
+/** Whether `needle` sits inside an unclosed top-level `@media` block that gates on `condition`. */
+function insideMedia(source: string, needle: string, condition: string): boolean {
+  const lines = source.slice(0, source.indexOf(needle)).split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index] === "}") return false;
+    if (lines[index].startsWith("@media")) return lines[index].includes(condition);
+  }
+  return false;
+}
+
+describe("stylesheet motion", () => {
+  it("keeps the two looping placeholders off when the OS asks for less motion", () => {
+    for (const name of ["forge-progress-shuttle 1.2s", "forge-skeleton-pulse 1.6s"]) {
+      expect(insideMedia(components, `animation: ${name}`, "no-preference"), name).toBe(true);
+    }
+  });
+});
+
 describe("stylesheet token discipline", () => {
   it("inspects real CSS instead of the test runner's empty style mocks", () => {
     for (const [name, source] of SHEETS) expect(source, name).toContain("{");

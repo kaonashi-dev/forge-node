@@ -79,6 +79,7 @@ export function FindPanel(props: {
         aria-label="Find in file"
         onMouseDown={(event) => event.stopPropagation()}
         onWheel={(event) => event.stopPropagation()}
+        onContextMenu={(event) => event.stopPropagation()}
       >
         <TextField
           class="editor-find-field"

@@ -21,6 +21,7 @@ import type { ExternalTranscript } from "../../../contracts/runtime";
 import { setGitStore } from "../../../features/git/state";
 import { setSettingsStore } from "../../../features/settings/state";
 import { setLoading } from "../../../state/loading";
+import { toast } from "../../../ui/index";
 
 type SessionFailure = { session: string; error: string };
 
@@ -86,6 +87,14 @@ export function bindGitEvents(): Promise<UnlistenFn[]> {
         default_branch: payload.default_branch,
       });
     }),
+    // The host reports a failed read as an event; without a binding the
+    // surface that raised `loading` waits forever.
+    failure("workbench:branches_failed", "branches", (error) =>
+      toast({ title: "Could not list branches", detail: error }),
+    ),
+    failure("workbench:pull_requests_failed", "pull_requests", (error) =>
+      toast({ title: "Could not refresh pull requests", detail: error }),
+    ),
     listen<UsageAnalytics>("workbench:usage", ({ payload }) => {
       setLoading("usage", false);
       setSettingsStore({ usage: payload, usageError: null });

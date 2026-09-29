@@ -1,6 +1,7 @@
 import { createStore, reconcile } from "solid-js/store";
 import type { ShellSnapshot } from "../contracts/runtime";
 import { agentVisible } from "./agentVisibility";
+import { setLoading } from "./loading";
 
 export const emptySnapshot = (): ShellSnapshot => ({
   project_groups: [],
@@ -47,6 +48,10 @@ export const [forgeStore, setForgeStore] = createStore<ShellSnapshot>(emptySnaps
  * and in a stable order.
  */
 export function applyShellSnapshot(snapshot: ShellSnapshot): void {
+  const before = forgeStore.pull_requests;
+  const answered =
+    snapshot.pull_requests.refreshed_at !== before.refreshed_at ||
+    snapshot.pull_requests.error !== before.error;
   setForgeStore(
     reconcile(
       {
@@ -58,4 +63,6 @@ export function applyShellSnapshot(snapshot: ShellSnapshot): void {
       { key: "id" },
     ),
   );
+  // A refresh acks when it starts and is answered by the next snapshot.
+  if (answered) setLoading("pull_requests", false);
 }

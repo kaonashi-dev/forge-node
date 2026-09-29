@@ -133,6 +133,22 @@ describe("tabSwitcher", () => {
     expect(tabSwitcherView()).toBeNull();
   });
 
+  it("ends the gesture without committing when the window loses focus", () => {
+    // The Control-up that would have closed the list goes to whatever took
+    // focus, so nothing else will.
+    recordTabFocus("session:t1");
+    stepTabSwitcher(1, local, "session:t1", ["t1"]);
+
+    for (const listener of new Set(listeners.get("blur"))) {
+      listener({ type: "blur" } as unknown as KeyboardEvent);
+    }
+    // A Control-up that reaches the window later belongs to no gesture.
+    release("Control");
+
+    expect(committed).toBeNull();
+    expect(tabSwitcherView()).toBeNull();
+  });
+
   it("gives the release back to the keyboard when the pointer leaves", () => {
     // Pinning is not a latch: a cursor that merely crossed the card must not
     // take Control-up with it for the rest of the gesture.

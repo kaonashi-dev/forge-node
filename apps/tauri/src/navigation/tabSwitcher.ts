@@ -213,6 +213,7 @@ function armListeners(): void {
   listening = true;
   window.addEventListener("keyup", onKeyUp, true);
   window.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("blur", onBlur);
 }
 
 function disarmListeners(): void {
@@ -220,6 +221,12 @@ function disarmListeners(): void {
   listening = false;
   window.removeEventListener("keyup", onKeyUp, true);
   window.removeEventListener("keydown", onKeyDown, true);
+  window.removeEventListener("blur", onBlur);
+}
+
+/** Control-up lands wherever focus went, so the window cannot wait for it. */
+function onBlur(): void {
+  finish(null);
 }
 
 function onKeyUp(event: KeyboardEvent): void {
