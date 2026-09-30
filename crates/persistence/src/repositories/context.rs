@@ -1,9 +1,8 @@
 //! Context envelopes repository.
 //!
 //! The two structured fields — `artifacts` and `git_context` — are stored as
-//! JSON TEXT via `serde_json` (ADR-009 keeps them out of dedicated columns). The
-//! `artifacts_json` column is NOT NULL and holds `"[]"` for an empty list;
-//! `git_context_json` is NULL when there is no Git context.
+//! JSON TEXT via `serde_json`. `artifacts_json` is NOT NULL and holds `"[]"` for
+//! an empty list; `git_context_json` is NULL when there is no Git context.
 
 use domain::{
     ContextArtifactRef, ContextEnvelope, ContextId, ContextKind, GitContextRef, RunId, SessionId,

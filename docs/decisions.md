@@ -12,7 +12,7 @@ implemented. Do not restore them from `plan/`.
 | ADR-005 | The daemon owns every PTY | `crates/terminal-core` |
 | ADR-006 | An agent is a terminal session running a known CLI | [`agents.md`](./agents.md) |
 | ADR-007 | Declarative provider registry: descriptors, not integrations | `crates/agents` |
-| ADR-008 | Git CLI first: `LC_ALL=C`, no prompts, 30 s local timeout, never in a user PTY. Network commands use `run_git_network` (default 120 s) | `crates/git-service/src/command.rs`, [`worktrees.md`](./worktrees.md) |
+| ADR-008 | Git CLI first: `LC_ALL=C`, no prompts, 30 s local timeout, never in a user PTY, `git status` throttled to one run per workspace per 2 s. Network commands use `run_git_network` (default 120 s) | `crates/git-service/src/command.rs`, [`worktrees.md`](./worktrees.md) |
 | ADR-009 | SQLite stores metadata only — never the terminal stream, never a runtime `terminal_id` | [`persistence.md`](./persistence.md) |
 | ADR-010 | Sessions form a logical graph (parent/child, depth ≤ 8), not the process tree | [`domain.md`](./domain.md) |
 | ADR-011 | One VT engine, in the daemon. The client is a passive cell replica | [`terminal.md`](./terminal.md), `crates/client` |

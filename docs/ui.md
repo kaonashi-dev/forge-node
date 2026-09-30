@@ -37,7 +37,7 @@ One left sidebar holds a strip of view icons above a single visible view, in the
 order Projects, Files, History, PR, Git. Projects stays
 mounted while another view is up. Whether it is open, its width and the active
 view live in `ui.sidebar.open` / `ui.sidebar.width` / `ui.sidebar.view`; theme metrics
-(`TITLE_H`, the sidebar default, control ladder) come from `theme/tokens.ts`,
+(`metrics.titleH`, the sidebar default, control ladder) come from `theme/tokens.ts`,
 never hardcoded hex in views.
 
 Each workspace has one Code entry in Projects and one Code tab in the title bar,

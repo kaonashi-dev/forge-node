@@ -1,19 +1,11 @@
 //! Reading account usage from a provider.
 //!
-//! Every provider-specific fact stays in this crate (principle P2). A provider
-//! declares *where* its usage comes from with a [`UsageSource`]; nothing else in
-//! the workspace branches on provider id. Four sources exist today:
-//!
-//! - [`UsageSource::Cli`] — run a CLI that prints one documented JSON document.
-//! - [`UsageSource::CodexOAuth`] / [`UsageSource::ClaudeOauth`] — read the
-//!   provider's *existing* local OAuth credentials and call its usage endpoint,
-//!   with no extra login (the Orca/CodexBar approach).
-//! - [`UsageSource::GrokAcp`] — ask the provider's own ACP entry, because Grok
-//!   publishes no usage URL: the account meter is a JSON-RPC extension method.
-//!
-//! Every failure — no source, not signed in, network down, an unexpected shape —
-//! resolves to `None`: the provider is simply absent from the result, exactly as
-//! before. An error here must never become a number on screen.
+//! A provider declares *where* its usage comes from with a [`UsageSource`]: a CLI
+//! that prints one documented JSON document, the provider's existing local OAuth
+//! credentials plus its usage endpoint (Claude, Codex), or its own ACP entry
+//! (Grok, which publishes no usage URL). Every failure — no source, not signed
+//! in, network down, an unexpected shape — resolves to `None`: the provider is
+//! absent from the result, and an error never becomes a number on screen.
 
 pub mod analytics;
 mod claude;

@@ -39,7 +39,7 @@ import { WorkbenchTab } from "./tabs/WorkbenchTab";
 import { SessionHeader } from "./SessionHeader";
 import { SessionChangesPanel } from "../../features/git/SessionChangesPanel";
 import {
-  QUIET_MS,
+  autoRefreshDelay,
   beginSessionChanges,
   mayAutoRefresh,
   splitEntry,
@@ -232,7 +232,7 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
     activeSession()?.last_activity_at;
     const timer = window.setTimeout(() => {
       if (mayAutoRefresh(session)) read(session);
-    }, QUIET_MS);
+    }, autoRefreshDelay(session));
     onCleanup(() => window.clearTimeout(timer));
   });
 

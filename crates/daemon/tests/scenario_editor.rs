@@ -11,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
-use domain::{PtySize, SessionKind, SessionState};
+use domain::{SessionKind, SessionState};
 use protocol::{DaemonEvent, ErrorCode, Request, Response};
 
 const FAKE_EDITOR: &str = r#"#!/usr/bin/python3
@@ -1101,16 +1101,6 @@ fn editor_session_refuses_binary_and_missing() {
         }
     }
     assert!(common::sessions(&client).is_empty());
-}
-
-#[allow(dead_code)]
-fn _size() -> PtySize {
-    PtySize {
-        cols: 80,
-        rows: 24,
-        pixel_width: 0,
-        pixel_height: 0,
-    }
 }
 
 /// Install the fake pinned to one mode, for a test that cannot set the

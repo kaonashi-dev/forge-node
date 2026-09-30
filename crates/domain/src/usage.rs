@@ -1,4 +1,3 @@
-//!
 //! [`ProviderUsage`](crate::ProviderUsage) answers "how much of this month's
 //! allowance is gone" — one meter per rolling window, read from the provider's
 //! own endpoint. These types answer a different question: "what have the agents

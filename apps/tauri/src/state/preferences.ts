@@ -1,15 +1,13 @@
-// Preferences are persisted through the daemon.
-//
-// The daemon owns them rather than `localStorage`: it is the same store the
-// so a persisted rail width survives relaunch.
-// the next, and a second window opens where the first left off.
+// UI preferences, persisted through the daemon's `app_state` rather than
+// `localStorage`, so they survive a relaunch and a second window opens where the
+// first left off.
 
 import { createEffect } from "solid-js";
 
 import { sendRuntimeCommand } from "../runtime/host";
 import { forgeStore, setForgeStore } from "./forgeStore";
 
-/** Keys, in `ui.*` — the namespace `apps/tauri already uses. */
+/** Keys, in the `ui.*` namespace. */
 export const SIDEBAR_OPEN_KEY = "ui.sidebar.open";
 export const SIDEBAR_WIDTH_KEY = "ui.sidebar.width";
 export const SIDEBAR_VIEW_KEY = "ui.sidebar.view";

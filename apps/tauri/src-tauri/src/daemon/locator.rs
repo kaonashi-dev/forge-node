@@ -1,12 +1,17 @@
-//! Socket and daemon binary resolution
-//! (`socket_path`, `daemon_executable`, `connect_or_spawn` constants).
+//! Finds the daemon socket and binary and connects, starting the adjacent
+//! `forge-daemon` if needed. The socket rules duplicate
+//! `crates/daemon/src/paths.rs` because the host does not depend on that crate;
+//! keep them in step.
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use client::Client;
+use client::{Client, ClientError};
+
+use crate::open::spawn_detached;
 
 pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const CONNECT_RETRIES: usize = 60;
@@ -76,23 +81,30 @@ impl Locator {
 
 pub fn connect_or_spawn(locator: &Locator) -> Result<Client, String> {
     let socket = locator.socket_path()?;
-    if let Ok(client) = Client::connect(&socket, CLIENT_VERSION) {
-        return Ok(client);
+    match Client::connect(&socket, CLIENT_VERSION) {
+        Ok(client) => return Ok(client),
+        Err(error) if !daemon_absent(&error) => return Err(describe(&error)),
+        Err(_) => {}
     }
 
     let daemon = locator.daemon_executable()?;
-    Command::new(&daemon)
-        .arg("run")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("failed to start {}: {error}", daemon.display()))?;
+    // Its own group, so a terminal's Ctrl-C or a group-wide SIGINT aimed at this
+    // app does not take every session down with it.
+    spawn_detached(
+        Command::new(&daemon)
+            .arg("run")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .map_err(|error| format!("failed to start {}: {error}", daemon.display()))?;
 
     let mut last_error = None;
     for _ in 0..CONNECT_RETRIES {
         match Client::connect(&socket, CLIENT_VERSION) {
             Ok(client) => return Ok(client),
+            Err(error @ ClientError::VersionMismatch { .. }) => return Err(describe(&error)),
             Err(error) => last_error = Some(error.to_string()),
         }
         thread::sleep(CONNECT_RETRY);
@@ -101,6 +113,28 @@ pub fn connect_or_spawn(locator: &Locator) -> Result<Client, String> {
         "daemon did not become ready: {}",
         last_error.unwrap_or_else(|| "unknown connection error".to_string())
     ))
+}
+
+/// Nothing is listening: a missing socket file, or one left by a dead daemon.
+/// Any other failure means something answered, and a second daemon cannot help.
+fn daemon_absent(error: &ClientError) -> bool {
+    matches!(
+        error,
+        ClientError::Io(io) if matches!(
+            io.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        )
+    )
+}
+
+fn describe(error: &ClientError) -> String {
+    match error {
+        ClientError::VersionMismatch { expected, got } => format!(
+            "the running forge-daemon speaks protocol {got} and this app speaks {expected}; \
+             stop that daemon, then relaunch"
+        ),
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +163,38 @@ mod tests {
         let path = locator.socket_path().unwrap();
         assert_eq!(path, PathBuf::from("/tmp/forge-501/daemon.sock"));
         assert!(path.as_os_str().len() < client::MAX_SOCKET_PATH_LEN);
+    }
+
+    #[test]
+    fn only_an_absent_daemon_is_worth_starting_another() {
+        use std::io::{Error, ErrorKind};
+
+        assert!(daemon_absent(&ClientError::Io(Error::from(
+            ErrorKind::NotFound
+        ))));
+        assert!(daemon_absent(&ClientError::Io(Error::from(
+            ErrorKind::ConnectionRefused
+        ))));
+        assert!(!daemon_absent(&ClientError::Io(Error::from(
+            ErrorKind::PermissionDenied
+        ))));
+        assert!(!daemon_absent(&ClientError::VersionMismatch {
+            expected: 27,
+            got: 26
+        }));
+        assert!(!daemon_absent(&ClientError::Disconnected));
+    }
+
+    #[test]
+    fn a_version_mismatch_names_both_protocols() {
+        let message = describe(&ClientError::VersionMismatch {
+            expected: 27,
+            got: 26,
+        });
+        assert!(
+            message.contains("26") && message.contains("27"),
+            "{message}"
+        );
     }
 
     #[test]

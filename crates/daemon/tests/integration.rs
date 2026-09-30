@@ -1,11 +1,5 @@
 //! End-to-end daemon integration tests: a real daemon on a temporary
 //! socket driven by the real `client`, spawning real shell PTYs.
-//!
-//!
-//! Everything that depends on PTY or process timing polls with a generous
-//! deadline instead of sleeping a fixed amount, so the suite stays honest on
-//! slow CI machines. The one exception is the backpressure test, where being
-//! slow to read *is* the condition under test.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -1442,8 +1436,8 @@ fn slow_subscriber_gets_a_resync_instead_of_an_unbounded_backlog() {
     write_input(&client, terminal_id, &format!("set +m; yes {FLOOD}\n"));
 
     // Let the flood run while the slow client ignores its socket. This is the
-    // one place a fixed pause is inherent: the test *is* the paused GUI of
-    // scenario H.
+    // one place a fixed pause is inherent: the test *is* a GUI that stopped
+    // reading.
     //
     // What has to overflow is the daemon's queue, and ahead of it sits a
     // kernel socket buffer whose size is the platform's business — a GitHub

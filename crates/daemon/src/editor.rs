@@ -304,14 +304,17 @@ impl Supervisor {
     /// coalesce the editor's state into `SessionUpdated` broadcasts. Any
     /// failure — accept deadline, version mismatch, socket death — kills the
     /// process group and marks the session `Failed`.
+    ///
+    /// # Errors
+    /// The supervisor thread could not start; nothing then serves the session.
     pub fn supervise(
         mut self,
         daemon: Arc<Daemon>,
         spec: OpenSpec,
         commands: flume::Receiver<Outgoing>,
-    ) {
+    ) -> io::Result<()> {
         let Some(listener) = self.listener.take() else {
-            return;
+            return Ok(());
         };
         let session_id = self.session_id;
         let _span = tracing::info_span!("editor.supervise", %session_id).entered();
@@ -323,7 +326,7 @@ impl Supervisor {
                 let _supervisor = self;
                 serve(daemon, session_id, listener, spec, commands);
             })
-            .expect("spawn the editor supervisor thread");
+            .map(|_| ())
     }
 }
 
@@ -408,7 +411,7 @@ fn serve(
             return;
         }
     };
-    {
+    let commands_thread = {
         let writer = Arc::clone(&writer);
         let daemon = Arc::clone(&daemon);
         std::thread::Builder::new()
@@ -431,11 +434,21 @@ fn serve(
                         Err(_) => break,
                     }
                 }
+                // A writer that stopped leaves a session that answers `Busy`
+                // to everything and says nothing. Closing the stream ends the
+                // read loop, and with it the session, through the usual path.
+                if let Ok(half) = writer.lock() {
+                    let _ = half.shutdown(std::net::Shutdown::Both);
+                }
             })
-            // The queue is bounded and the thread only writes: a spawn failure
-            // here is the process being out of threads, which no editor
-            // session can recover from.
-            .expect("spawn the editor command writer");
+    };
+    if let Err(error) = commands_thread {
+        fail(
+            &daemon,
+            session_id,
+            format!("could not start the editor command writer: {error}"),
+        );
+        return;
     }
 
     let mut revision = buffer.revision.clone();

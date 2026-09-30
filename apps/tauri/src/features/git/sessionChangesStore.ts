@@ -1,5 +1,5 @@
 // Session-keyed changes reads survive tab switches, independently of checkout
-// focus. Answers stay runtime-only; the split preference lives in shell/layout.ts.
+// focus. Answers stay runtime-only; the split preference lives in state/preferences.ts.
 
 import { createStore } from "solid-js/store";
 import type { SessionChanges } from "../../contracts/workbench";
@@ -77,6 +77,17 @@ export function failSessionChanges(session: string, error: string): void {
 export function forgetSession(session: string): void {
   setSessionChangesStore("bySession", session, undefined!);
   setSessionChangesStore("open", session, undefined!);
+}
+
+/**
+ * How long to wait before the quiet trigger asks for a read.
+ *
+ * The trigger fires once, so a delay that ends inside the floor would be
+ * refused and never retried; this one ends when a read is allowed.
+ */
+export function autoRefreshDelay(session: string, now = Date.now()): number {
+  const { readAt } = splitEntry(session);
+  return Math.max(QUIET_MS, readAt === null ? 0 : readAt + REFRESH_FLOOR_MS - now);
 }
 
 /**

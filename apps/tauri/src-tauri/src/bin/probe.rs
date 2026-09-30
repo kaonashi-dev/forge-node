@@ -1,7 +1,7 @@
 //! Wire smoke: connect, print session count, attach, print first delta.
 //!
 //! Exit 0 on success (an idle terminal with no delta is still success).
-//! Exit 1 if the socket cannot be reached and the daemon cannot be spawned.
+//! Exit 1 on any failure, including no daemon after `connect_or_spawn`.
 
 use std::time::{Duration, Instant};
 

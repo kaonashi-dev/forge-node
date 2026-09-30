@@ -53,6 +53,12 @@ describe("findKeyCommand", () => {
     expect(findKeyCommand({ key: "Escape", shiftKey: false })).toBe("Close");
     expect(findKeyCommand({ key: "a", shiftKey: false })).toBeNull();
   });
+
+  it("leaves Enter and Escape to an IME that is mid-composition", () => {
+    expect(findKeyCommand({ key: "Enter", shiftKey: false, isComposing: true })).toBeNull();
+    expect(findKeyCommand({ key: "Escape", shiftKey: false, isComposing: true })).toBeNull();
+    expect(findKeyCommand({ key: "Enter", shiftKey: false, keyCode: 229 })).toBeNull();
+  });
 });
 
 describe("setFind", () => {

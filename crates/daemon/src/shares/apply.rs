@@ -497,16 +497,16 @@ fn run_in(workspace: &Path, command: &str, timeout: Duration) -> io::Result<()> 
         }
         Ok(Err(e)) => Err(e),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            #[allow(clippy::cast_possible_wrap)]
-            let raw = pid as i32;
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(-raw),
-                nix::sys::signal::Signal::SIGKILL,
-            );
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(raw),
-                nix::sys::signal::Signal::SIGKILL,
-            );
+            if let Ok(raw) = i32::try_from(pid) {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(-raw),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(raw),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
             let _ = rx.recv_timeout(Duration::from_secs(5));
             Err(io::Error::other(format!(
                 "the command timed out after {}s and was killed",

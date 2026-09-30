@@ -5,11 +5,8 @@
 // trip per row. A name that says nothing gets the plain sheet rather than a
 // guess, so a wrong mark is never asserted.
 //
-// The upstream icon theme ships a suffix table of 66 exotic entries (`jspx`,
-// `wsdl`, `karma.conf.js`) and leaves `rs`, `ts`, `py`, `json` to the editor's
-// own defaults, which are not in that repository. This table is therefore ours
-// to write and ours to keep true; `langIcons.test.ts` is what holds it to the
-// files that were actually vendored.
+// The table is ours to keep true: `langIcons.test.ts` holds it to the SVGs
+// under `public/icons/lang`.
 
 /**
  * Every vendored mark.

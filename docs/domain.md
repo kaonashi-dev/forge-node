@@ -325,7 +325,7 @@ answers neither question.
 
 | Type | Role |
 |------|------|
-| `UsageSource` / `UsageProbe` | Where a provider's *allowance* reading comes from: a CLI printing one documented JSON document, or its existing local OAuth credentials (`ClaudeOauth`, `CodexOAuth`). |
+| `UsageSource` / `UsageProbe` | Where a provider's *allowance* reading comes from: a CLI printing one documented JSON document, its existing local OAuth credentials (`ClaudeOauth`, `CodexOAuth`), or its own ACP entry (`GrokAcp`). |
 | `ProviderUsage` / `UsageWindow` | The provider's own word on how much of a rolling window is gone: a whole `used_percent` (no float in a wire type), a human `window` label, an optional `resets_at`, and `collected_at` so a stale reading can be shown as stale. Empty `windows` means "reported nothing", rendered as no meter — never as 0%. A reading belongs to one *account*: `profile_id` names the launch profile whose login it describes, `None` being the provider's default one (§13.4). |
 | `UsageAnalytics` | *Our* count, from the transcripts the CLIs write to disk: `providers`, activity-only `daily` buckets, the `window_days` scanned, and `scanned`/`skipped` so a bounded scan never looks exhaustive. |
 | `ProviderAnalytics` | One provider's totals: `tokens`, `sessions`, `turns`, `cost_micros`, `unpriced_turns` (a non-zero count means the cost is a floor), `top_model`, `worked_secs`, and the first/last activity seen. |

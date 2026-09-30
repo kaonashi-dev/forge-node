@@ -414,6 +414,11 @@
 .git-commit-field:focus-within {
   border-color: var(--card-select-border);
 }
+/* The input draws no outline, and the selection border alone is under 3:1. */
+.git-commit-field:has(.git-commit-input:focus-visible) {
+  outline: var(--focus-ring-width) solid var(--ring);
+  outline-offset: var(--focus-ring-offset);
+}
 .git-commit-field .forge-section-label {
   margin: 0;
 }

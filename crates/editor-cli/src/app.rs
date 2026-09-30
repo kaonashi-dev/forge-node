@@ -1,9 +1,8 @@
 //! The event loop's decision half: keys in, damage out. No terminal, no IO.
 //!
-//! Keys resolve to `editor_core::Command`, so the binding table is the only
-//! place that knows about crossterm and the palette will reach the same
-//! actions. This owns the viewport and which rows a frame must repaint; it
-//! never owns the text, which lives in one `Document`.
+//! Keys resolve to `editor_core::Command`, so the binding table is the only place
+//! that knows about crossterm. This owns the viewport and which rows a frame
+//! must repaint; it never owns the text, which lives in one `Document`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -1182,13 +1181,13 @@ impl App {
 
     /// The daemon refused the write; the buffer is untouched and stays dirty.
     pub fn save_refused(&mut self, request_id: u64, reason: &str) {
-        match self.in_flight_save.take() {
-            Some((pending, snapshot)) if pending != request_id => {
-                self.in_flight_save = Some((pending, snapshot));
-                return;
-            }
-            _ => {}
+        // The daemon answers a failed open with this same message, so only the
+        // save in flight is a refusal that may suspend autosave.
+        if !matches!(&self.in_flight_save, Some((pending, _)) if *pending == request_id) {
+            self.status = Some(reason.to_string());
+            return;
         }
+        self.in_flight_save = None;
         self.autosave_suspended = true;
         self.autosave_at = None;
         self.close_after_save = false;
@@ -1415,8 +1414,9 @@ impl App {
     pub fn reload(&mut self, text: &str, revision: Option<String>) -> Result<u64, String> {
         let line = self.caret_position().0;
         let read_only = self.document.is_read_only();
-        let document =
+        let mut document =
             Document::from_bytes(text.as_bytes(), read_only).map_err(|error| error.to_string())?;
+        document.continue_from(self.document.version());
         self.document = document;
         if let Some(revision) = revision {
             self.document.set_disk_revision(revision);
@@ -3588,6 +3588,51 @@ mod tests {
         let (id, _, _) = app.take_save_request().unwrap();
         app.save_confirmed(id, "new".into());
         app.handle_key(key(KeyCode::Char('.')));
+        assert!(app.autosave_deadline().is_some());
+    }
+
+    #[test]
+    fn replace_all_recolours_the_buffer_and_arms_autosave() {
+        let text = "let aa = \"aa\";\nlet b = 1;\n";
+        let document = Document::from_bytes(text.as_bytes(), false).unwrap();
+        let mut app = App::new(document, PathBuf::from("fixture.rs"), None);
+        app.set_integrated();
+        app.set_autosave(true);
+
+        app.run(editor_core::Command::ReplaceAll {
+            query: editor_core::Query::literal("aa"),
+            replacement: "x\ny".to_string(),
+        });
+
+        let replaced = app.document().as_str().to_string();
+        assert_eq!(replaced, "let x\ny = \"x\ny\";\nlet b = 1;\n");
+        let fresh = editor_core::Syntax::parse(&replaced, editor_core::Grammar::Rust);
+        for line in 0..5 {
+            assert_eq!(app.syntax_line(line), fresh.line(line), "line {line}");
+        }
+        assert!(app.autosave_deadline().is_some());
+    }
+
+    #[test]
+    fn a_reload_never_moves_the_document_version_backwards() {
+        let mut app = app("hello", false);
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('b')));
+        let before = app.document().version();
+
+        app.reload("fresh", None).unwrap();
+
+        assert!(app.document().version() > before);
+    }
+
+    #[test]
+    fn a_refusal_that_is_not_for_the_save_in_flight_keeps_autosave_on() {
+        let mut app = app("hello", false);
+        app.set_integrated();
+        app.set_autosave(true);
+        app.handle_key(key(KeyCode::Char('!')));
+        app.save_refused(999, "could not open src/lib.rs");
+        app.handle_key(key(KeyCode::Char('?')));
         assert!(app.autosave_deadline().is_some());
     }
 

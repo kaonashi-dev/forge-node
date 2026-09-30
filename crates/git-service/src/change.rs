@@ -1,7 +1,8 @@
-//! Working-tree diffs and local commits for Juva.
+//! Working-tree diffs and local commits for Juva, plus [`push`].
 //!
-//! Read paths stay local (`run_git`). [`push`] opens a socket and therefore
-//! goes through [`crate::run_git_network`] — same hardening as [`crate::fetch`].
+//! Read paths stay local ([`crate::run_git`]). [`push`] opens a socket, so it goes
+//! through [`crate::run_git_network`] like [`crate::fetch`], and it is never
+//! automatic: only an explicit user-confirmed request may call it, never a sweeper.
 
 use crate::command::{run_git, run_git_network, GitError, GIT_NETWORK_TIMEOUT};
 use crate::repository::{current_branch, default_branch, status};

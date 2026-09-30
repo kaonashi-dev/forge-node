@@ -15,8 +15,8 @@ pub use paths::{resolve_socket, socket_path, SocketQuery, MAX_SOCKET_PATH_LEN};
 pub use domain::{DirectoryListing, SymlinkTarget};
 pub use ipc::{Branches, Client, ClientError, DaemonInfo, SendContextResult};
 pub use protocol::{
-    DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ProtocolError, ProviderInfo,
-    RemoveProjectPolicy, SendContextSpawn, PROTOCOL_VERSION,
+    DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ProtocolCodecError, ProtocolError,
+    ProviderInfo, RemoveProjectPolicy, SendContextSpawn, PROTOCOL_VERSION,
 };
 pub use store::{CellGrid, DeltaOutcome, EventOutcome, Store};
 pub use terminal_input::{

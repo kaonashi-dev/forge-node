@@ -165,8 +165,9 @@ Forge-injected adapters; see [agents.md](./agents.md#attention-needs-you).
 
 An OSC string may be terminated by BEL, and Codex animates its terminal title
 about once a second while it waits — so the engine must keep consuming that
-byte as the OSC terminator rather than dispatching it (`terminal-core`'s
-`title_and_bell` golden), or `needs-you` would latch on permanently.
+byte as the OSC terminator rather than dispatching it
+(`terminal-core/tests/engine.rs::title_and_bell`), or `needs-you` would latch on
+permanently.
 
 ## Sequence numbers and resync (§10.5)
 

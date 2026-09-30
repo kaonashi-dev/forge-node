@@ -4,8 +4,9 @@
 
 use git_service::command::run_git;
 use git_service::{
-    create, current_branch, default_remote, discover_root, fetch, has_remote, list_branches,
-    list_refs, list_remotes, list_worktrees, precheck_remove, prune, remove, status, GitError,
+    create, current_branch, default_remote, discover_root, fetch, has_remote, ignored_paths,
+    list_branches, list_refs, list_remotes, list_worktrees, precheck_remove, prune, remove, status,
+    GitError,
 };
 use std::path::Path;
 use tempfile::{tempdir, TempDir};
@@ -605,4 +606,26 @@ fn a_worktree_created_from_a_remote_ref_tracks_it() {
         .find(|r| r.name == "feature/tracked" && r.remote.is_none())
         .expect("local branch should exist");
     assert_eq!(local.upstream.as_deref(), Some("origin/feature/tracked"));
+}
+
+#[test]
+fn ignored_paths_reads_past_a_staged_rename_of_a_non_ascii_file() {
+    require_git!();
+    let repo = init_repo();
+    let p = repo.path();
+    std::fs::write(p.join("日本語.md"), "text\n").unwrap();
+    setup(p, &["add", "."]);
+    setup(p, &["-c", "commit.gpgsign=false", "commit", "-m", "cjk"]);
+    setup(p, &["mv", "日本語.md", "renamed.md"]);
+    std::fs::write(p.join("scratch.log"), "").unwrap();
+
+    let found = ignored_paths(p).unwrap();
+
+    assert!(found.iter().any(|f| f.path == "scratch.log" && !f.ignored));
+    assert!(
+        found
+            .iter()
+            .all(|f| !f.path.contains("renamed") && !f.path.contains("日本語")),
+        "a tracked rename is not a sharing candidate: {found:?}"
+    );
 }

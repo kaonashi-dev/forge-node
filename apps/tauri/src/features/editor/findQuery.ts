@@ -43,11 +43,19 @@ export function flagsOf(find: EditorFind): EditorFindFlags {
   };
 }
 
-/** The keys the field answers itself; anything else types into it. */
+/**
+ * The keys the field answers itself; anything else types into it.
+ *
+ * Mid-composition Enter accepts a candidate and Escape cancels the composition,
+ * so neither is ours; `keyCode === 229` is the spelling some WebViews still use.
+ */
 export function findKeyCommand(event: {
   key: string;
   shiftKey: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
 }): Exclude<EditorFindCommand, { Set: unknown }> | null {
+  if (event.isComposing || event.keyCode === 229) return null;
   if (event.key === "Enter") return event.shiftKey ? "Previous" : "Next";
   if (event.key === "Escape") return "Close";
   return null;

@@ -1198,8 +1198,12 @@
 }
 /* No proportion to show, so a shuttle rather than a fill that would claim one. */
 .forge-progress[data-indeterminate] .forge-progress-fill {
-  animation: forge-progress-shuttle 1.2s ease-in-out infinite;
   width: 35%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .forge-progress[data-indeterminate] .forge-progress-fill {
+    animation: forge-progress-shuttle 1.2s ease-in-out infinite;
+  }
 }
 @keyframes forge-progress-shuttle {
   0% {
@@ -1219,12 +1223,16 @@
   padding: var(--space-4) 0;
 }
 .forge-skeleton-row {
-  /* Slow on purpose: a fast shimmer beside a live terminal competes with it. */
-  animation: forge-skeleton-pulse 1.6s ease-in-out infinite;
   background: var(--surface);
   border-radius: var(--radius-badge);
   display: block;
   height: var(--row-h);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .forge-skeleton-row {
+    /* Slow on purpose: a fast shimmer beside a live terminal competes with it. */
+    animation: forge-skeleton-pulse 1.6s ease-in-out infinite;
+  }
 }
 .forge-skeleton-row:nth-child(even) {
   width: 76%;

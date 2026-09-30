@@ -4,7 +4,7 @@
 //! boundary is the *painted* form of the rows that changed — adjacent cells
 //! sharing a style merged into one run — never a clone of the grid. A
 //! full-screen frame is ~10 000 cells, and per-cell JSON at the 62 fps the
-//! `cells_only` floor allows is the defect `docs/performance.md` forbids on the
+//! `CELL_SEND_FLOOR` allows is the defect `docs/performance.md` forbids on the
 //! delta rung; a merged row is one to a few dozen runs instead.
 //!
 //! Runs break at wide graphemes, whose advance cannot be assumed to be exactly

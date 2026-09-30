@@ -161,6 +161,14 @@ impl Document {
         self.version
     }
 
+    /// Number this document after one it replaces, so a consumer that drops
+    /// anything older than the version it has shown never sees it go backwards.
+    pub fn continue_from(&mut self, replaced: DocumentVersion) {
+        self.version = self
+            .version
+            .max(DocumentVersion(replaced.0.saturating_add(1)));
+    }
+
     #[must_use]
     pub fn is_read_only(&self) -> bool {
         self.read_only
@@ -468,7 +476,10 @@ impl Document {
             Err(outcome) => return Ok(outcome),
         };
         if ranges.is_empty() {
-            return Ok(ReplaceOutcome::Replaced(0));
+            return Ok(ReplaceOutcome::Replaced {
+                count: 0,
+                applied: None,
+            });
         }
         let count = ranges.len();
         let removed: usize = ranges.iter().map(|range| range.end - range.start).sum();
@@ -489,9 +500,12 @@ impl Document {
             .collect();
         let transaction = Transaction::new(edits, Origin::ReplaceAll, self.selection.clone())?;
         self.history.seal();
-        self.apply(transaction)?;
+        let applied = self.apply(transaction)?;
         self.history.seal();
-        Ok(ReplaceOutcome::Replaced(count))
+        Ok(ReplaceOutcome::Replaced {
+            count,
+            applied: Some(applied),
+        })
     }
 
     /// Move the caret to the start of a 1-based line, the way a person counts.

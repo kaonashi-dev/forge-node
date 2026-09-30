@@ -1,4 +1,4 @@
-// D1: a unified patch, arranged for a row renderer.
+// A unified patch, arranged for a row renderer.
 //
 // The daemon sends `git diff` output — hunks with headers and no full file —
 // so the patch itself is the document. Line numbering is arithmetic with a

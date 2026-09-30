@@ -1,19 +1,9 @@
 // What checkout the window is in, and what belongs to it.
 //
-// The rail is four levels deep (group → project → workspace → session) but the
-// window only ever tracked two selections: the active session and the checkout
-// the workbench points at. The tab strip sat above both and showed every open
-// session in the daemon, so walking from one checkout to another left the
-// previous one's terminals in the strip — tabs for a branch that is no longer
-// on screen, one click away from typing into the wrong worktree.
-//
-// The checkout is the unit, not the project: two worktrees of the same
-// repository are two working directories with two branches and two sets of
-// uncommitted changes, and a terminal in one of them is no more relevant to
-// the other than a terminal in a different repository would be. It is also the
-// unit everything else in the window already uses — `viewsStore` parks the
-// Code tab per checkout, `focusWorkspace` clears the answer stores per
-// checkout — so the strip was the last surface with a scope of its own.
+// The checkout, not the project, is the unit: two worktrees of one repository
+// have separate working directories, branches and uncommitted changes, and it is
+// the scope `viewsStore` (parked Code tab) and `focusWorkspace` (answer stores)
+// already use, so the tab strip shows only the current checkout's sessions.
 //
 // Pure functions over the snapshot, so the rules are testable without a DOM;
 // `AppShell` is the only place that reads the live stores.

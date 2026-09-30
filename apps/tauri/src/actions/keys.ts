@@ -1,13 +1,9 @@
-// Keystroke specs, in `theme tokens::actions`' own vocabulary.
+// Keystroke specs for chrome shortcuts, written `cmd-shift-o`, `ctrl-tab`, `down`.
 //
-// A chord is written the way `actions.rs` writes it — `cmd-shift-o`,
-// `ctrl-tab`, `down` — so the two tables can be read side by side and a
-// divergence is visible rather than inferred.
-//
-// Matching prefers `KeyboardEvent.code` over `.key`, which is what makes a
-// chord land on the physical key it was drawn on. `cmd-shift-[` produces `{`
-// on a US layout and something else again on a Latin one; the position does
-// not move, and neither should the shortcut.
+// Matching prefers `KeyboardEvent.code` over `.key`, which is what makes a chord
+// land on the physical key it was drawn on. `cmd-shift-[` produces `{` on a US
+// layout and something else again on a Latin one; the position does not move, and
+// neither should the shortcut.
 
 export type Chord = {
   /** Lower-case key name, as written in the spec. */
@@ -20,7 +16,7 @@ export type Chord = {
   meta: boolean;
 };
 
-/** `cmd` on macOS, `ctrl` everywhere else — `actions::MOD`. */
+/** `cmd` on macOS, `ctrl` everywhere else. */
 export const MOD: "cmd" | "ctrl" = isMac() ? "cmd" : "ctrl";
 
 /**
@@ -128,7 +124,7 @@ const NAMED_KEYS: Record<string, string> = {
   right: "arrowright",
 };
 
-/** Parse `"cmd-shift-o"`. Throws on an unparseable spec, like `KeyBinding::new`. */
+/** Parse `"cmd-shift-o"`. Throws on an unparseable spec. */
 export function parseChord(spec: string): Chord {
   const tokens = spec.split("-");
   const chord: Chord = {

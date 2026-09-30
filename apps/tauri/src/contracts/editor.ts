@@ -1,4 +1,4 @@
-// The DOM editor surface's input wire, as `domain::editor_input` serializes it.
+// The DOM editor surface's input wire, as `domain::EditorInputEvent` serializes it.
 
 export type EditorKey =
   | { Char: string }

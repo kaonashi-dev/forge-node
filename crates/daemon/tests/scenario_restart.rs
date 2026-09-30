@@ -1,15 +1,13 @@
 //! Session history and graph reconstruction after daemon restart.
 //!
-//! Both scenarios hinge on the same thing the GUI cannot fake — a daemon
-//! process that dies without telling anyone, and a second one that opens the
-//! same database afterwards. `common::TestDaemon::crash` models the
-//! `kill -9` of scenario G: the accept loop stops and the socket is unlinked,
-//! but no session is killed and no row is rewritten, so the reconciliation of
-//! the next daemon has exactly the state a crash leaves behind.
+//! The GUI cannot fake a daemon that dies without telling anyone and a second one
+//! that opens the same database afterwards. `common::TestDaemon::crash` models
+//! `kill -9`: the accept loop stops and the socket is unlinked, but no session is
+//! killed and no row is rewritten, so the reconciliation of the next daemon has
+//! exactly the state a crash leaves behind.
 //!
-//! What is *not* covered here is the GUI half of both scenarios: the
-//! "Disconnected" banner and the "Restart daemon" button of G, and the sidebar
-//! nesting of E. Those are GUI concerns.
+//! What is *not* covered here is the GUI half: the "Disconnected" banner, the
+//! "Restart daemon" button and the sidebar nesting. Those are GUI concerns.
 
 mod common;
 

@@ -124,8 +124,9 @@ impl Syntax {
 
     /// Re-colour only what an edit can have changed.
     ///
-    /// `first_line` and `last_line` are the touched lines in the *new* text and
-    /// `line_delta` how many lines it gained or lost. The scan restarts on the
+    /// `first_line` and `last_line` are the touched lines in the *old* text, as
+    /// `Applied` reports them, and `line_delta` how many lines the edit gained
+    /// or lost. The scan restarts on the
     /// nearest line above the edit that the previous one passed at top level,
     /// and stops on the first line boundary below it that both scans agree is
     /// top level: a span is a column pair inside its own line, so everything
@@ -155,7 +156,8 @@ impl Syntax {
         // memory bandwidth, and re-lexing the head is the thing being avoided.
         let mut out = Scanner::new(&text[line_offset(text, from)..], from);
         out.resume = Some(Resume {
-            after_line: last_line,
+            after_line: usize::try_from(last_line as isize + line_delta)
+                .map_or(first_line, |line| line.max(first_line)),
             old_safe: &self.safe,
             line_delta,
         });
@@ -170,6 +172,10 @@ impl Syntax {
         } else {
             self.lines.len()
         };
+        // A bad span must cost a rescan, not the editor process and its draft.
+        if old_end < from || old_end > self.lines.len() || old_end > self.safe.len() {
+            return Self::parse(text, grammar);
+        }
         self.lines.splice(from..old_end, out.lines);
         self.safe.splice(from..old_end, out.safe);
         self.scanned = scanned;
@@ -225,8 +231,8 @@ fn line_offset(text: &str, line: usize) -> usize {
 
 /// Where an incremental scan may hand back to the spans it already has.
 struct Resume<'a> {
-    /// The lowest line the edit touched. A resync at or above it would reuse
-    /// spans the edit invalidated.
+    /// The last line of the edit in the *new* text. A resync at or above it
+    /// would reuse spans the edit invalidated.
     after_line: usize,
     /// `safe` from the scan being reused, in *its* line numbering.
     old_safe: &'a [bool],
@@ -1591,6 +1597,74 @@ mod tests {
         );
     }
 
+    fn numbered_lines(range: std::ops::Range<usize>) -> String {
+        range.map(|n| format!("let x{n} = \"s{n}\";\n")).collect()
+    }
+
+    /// `edited` with the old-text line span `Applied` reports, checked against a
+    /// full scan and against having stayed on the incremental path.
+    fn assert_edit_matches_full_scan(
+        before: &str,
+        after: &str,
+        first_line: usize,
+        last_line: usize,
+        line_delta: isize,
+    ) {
+        let next = Syntax::parse(before, Grammar::Rust).edited(
+            after,
+            Grammar::Rust,
+            first_line,
+            last_line,
+            line_delta,
+        );
+        let lines = after.lines().count() + 2;
+        assert_eq!(
+            all_spans(&next, lines),
+            all_spans(&Syntax::parse(after, Grammar::Rust), lines),
+            "the incremental scan disagreed with the full one"
+        );
+        assert!(
+            next.scanned_lines().end + 5 < lines,
+            "fell back to a near-full rescan: {:?} of {lines}",
+            next.scanned_lines()
+        );
+    }
+
+    #[test]
+    fn enter_between_braces_resumes_below_the_new_lines() {
+        let (head, tail) = (numbered_lines(0..10), numbered_lines(10..40));
+        let before = format!("{head}fn f() {{}}\n{tail}");
+        let after = format!("{head}fn f() {{\n    \n}}\n{tail}");
+        assert_edit_matches_full_scan(&before, &after, 10, 10, 2);
+    }
+
+    #[test]
+    fn splitting_a_line_recolours_both_halves() {
+        let (head, tail) = (numbered_lines(0..10), numbered_lines(10..40));
+        let before = format!("{head}let a = 1; let b = \"x\";\n{tail}");
+        let after = format!("{head}let a = 1;\n let b = \"x\";\n{tail}");
+        assert_edit_matches_full_scan(&before, &after, 10, 10, 1);
+    }
+
+    #[test]
+    fn pasting_several_lines_mid_line_resumes_below_them() {
+        let (head, tail) = (numbered_lines(0..20), numbered_lines(21..60));
+        let before = format!("{head}let m = 1; let n = 2;\n{tail}");
+        let after = format!(
+            "{head}let m = 1; let a = \"a\";\nlet b = 'b';\nlet c = 3;\nlet d = 4;\nlet e = 5; let n = 2;\n{tail}"
+        );
+        assert_edit_matches_full_scan(&before, &after, 20, 20, 4);
+    }
+
+    #[test]
+    fn replacing_a_selection_with_more_lines_than_it_covered() {
+        let (head, tail) = (numbered_lines(0..10), numbered_lines(13..50));
+        let before = format!("{head}let a = 1;\nlet b = 2;\nlet c = 3;\n{tail}");
+        let after =
+            format!("{head}let p = \"p\";\nlet q = 1;\nlet r = 2;\nlet s = 3;\nlet t = 4;\n{tail}");
+        assert_edit_matches_full_scan(&before, &after, 10, 12, 2);
+    }
+
     #[test]
     fn an_edit_reuses_untouched_span_allocations() {
         let mut text = "let value = 1;\n".repeat(20_000);
@@ -1602,7 +1676,9 @@ mod tests {
         let syntax = syntax.edited(&text, Grammar::Rust, 10_000, 10_000, 1);
         assert_eq!(syntax.line(0).as_ptr(), before);
         assert_eq!(syntax.line(20_000).as_ptr(), after);
-        assert_eq!(syntax.scanned_lines(), 10_000..10_001);
+        // The insert's end sits on the first byte of the line it pushed down, so
+        // that line is lexed once more before the scan resyncs.
+        assert_eq!(syntax.scanned_lines(), 10_000..10_002);
         assert_eq!(
             all_spans(&syntax, 20_002),
             all_spans(&Syntax::parse(&text, Grammar::Rust), 20_002)

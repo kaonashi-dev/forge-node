@@ -1,11 +1,7 @@
-//! Provider adapters and launch construction (ADR-007).
-//!
-//! ADR-007 defines two levels. Level 1 is the [`AgentDescriptor`] (static
-//! data, see [`crate::builtins`]). Level 2 is the [`AgentAdapter`] trait, for
-//! providers that need special behavior (resume, initial prompts, session
-//! detection). The MVP ships **no** real adapter: every built-in is served by
-//! the generic [`DescriptorAdapter`], which wraps a descriptor with no special
-//! behavior.
+//! Launch construction from an [`AgentDescriptor`], and the [`AgentAdapter`]
+//! seam for a provider whose behaviour a descriptor cannot express (ADR-007,
+//! `docs/agents.md`). No built-in needs it: [`DescriptorAdapter`] serves every
+//! provider.
 
 use std::path::{Path, PathBuf};
 
@@ -52,7 +48,7 @@ pub enum AgentError {
 
 /// Behavioral contract for an agent provider (ADR-007).
 ///
-/// The MVP implements this only via [`DescriptorAdapter`]. Real adapters would
+/// Only [`DescriptorAdapter`] implements this today. Real adapters would
 /// override [`build_launch`](AgentAdapter::build_launch) (e.g. to add resume
 /// flags) or [`detect`](AgentAdapter::detect) (e.g. to inspect a config file).
 pub trait AgentAdapter: Send + Sync {
@@ -90,7 +86,7 @@ pub trait AgentAdapter: Send + Sync {
     }
 }
 
-/// The generic, data-only adapter used for every MVP built-in: it wraps an
+/// The generic, data-only adapter used for every built-in: it wraps an
 /// [`AgentDescriptor`] and adds no special behavior (ADR-007, level 1).
 pub struct DescriptorAdapter {
     descriptor: AgentDescriptor,

@@ -1,9 +1,8 @@
 //! Named intentions, one per thing a person can ask the editor to do.
 //!
-//! A key binding, the palette and a future Vim operator all resolve to one of
-//! these, so there is a single definition of what "delete word" means and one
-//! list to build a help screen from. Geometry arrives as data (`lines`), never
-//! as a peek at the view.
+//! A key binding resolves to one of these, so there is a single definition of
+//! what "delete word" means and one list to build a help screen from. Geometry
+//! arrives as data (`lines`), never as a peek at the view.
 
 use crate::document::{Applied, Document};
 use crate::indent::{self, IndentUnit};
@@ -290,10 +289,11 @@ pub fn execute(document: &mut Document, command: Command) -> Outcome {
         }
         Command::ReplaceAll { query, replacement } => {
             match document.replace_all(&query, &replacement) {
-                Ok(ReplaceOutcome::Replaced(0)) => Outcome::refused(Refusal::NoMatch),
-                Ok(ReplaceOutcome::Replaced(count)) => Outcome {
+                Ok(ReplaceOutcome::Replaced { count: 0, .. }) => Outcome::refused(Refusal::NoMatch),
+                Ok(ReplaceOutcome::Replaced { count, applied }) => Outcome {
                     changed: true,
                     replaced: Some(count),
+                    applied,
                     ..Outcome::default()
                 },
                 Ok(ReplaceOutcome::OverBudget { limit }) => {

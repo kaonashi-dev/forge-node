@@ -5,14 +5,11 @@
 //! scenarios in this directory need two things that harness cannot give them,
 //! so they get their own:
 //!
-//! * **A daemon that can be restarted.** Scenarios E and G are about what
-//!   survives a daemon that went away, so the database has to be a file that
-//!   both the old and the new daemon open, not `Db::open_in_memory`.
-//! * **A hermetic `PATH`.** Scenario F is about what provider detection
-//!   reports, which on a developer machine depends on which agent CLIs happen
-//!   to be installed. Every daemon booted here runs with a generated login
+//! * **A restartable daemon.** Restart scenarios need a database file that the
+//!   old and the new daemon both open, not `Db::open_in_memory`.
+//! * **A hermetic `PATH`.** Every daemon booted here runs with a generated login
 //!   shell that exports a `PATH` containing exactly one directory the test
-//!   owns, so detection sees only the fake binaries the test wrote and
+//!   owns, so provider detection sees only the fake binaries the test wrote and
 //!   probes nothing else — no real provider, no `/usr/local/bin`.
 //!
 //! Everything that depends on PTY or process timing polls with a generous
@@ -125,8 +122,8 @@ impl Harness {
     ///
     /// This is the production entry point ([`Daemon::start`]): it runs
     /// the startup reconciliation, the path validation, the worktree rescan and
-    /// the background detection sweep, which is exactly what scenarios E, F and
-    /// G are about.
+    /// the background detection sweep, which is exactly what the restart and
+    /// detection scenarios are about.
     #[must_use]
     pub fn boot(&self) -> TestDaemon {
         self.boot_with(|_| {})

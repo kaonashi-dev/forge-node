@@ -4,10 +4,10 @@
 //! test wrote (see `common`), so detection reports what the fixtures
 //! say and nothing about the machine running the suite. That is what makes
 //! "OpenCode is not found" and "`agent` is the Grok CLI, not Cursor" testable
-//! at all: on the reference machine all four providers are installed.
+//! at all: a developer machine usually has the real agent CLIs installed.
 //!
 //! Not covered here: the picker rows and the "Set path…" dialog, and
-//! the `Cmd+Shift+]` switch time of scenario B — both are GUI.
+//! the `Cmd+Shift+]` switch time — both are GUI.
 
 mod common;
 

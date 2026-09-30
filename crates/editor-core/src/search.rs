@@ -165,11 +165,13 @@ pub struct Matches {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplaceOutcome {
-    Replaced(usize),
-    /// More matches than one transaction may carry; nothing was replaced.
-    OverBudget {
-        limit: usize,
+    /// `applied` is what the one transaction changed, `None` when nothing matched.
+    Replaced {
+        count: usize,
+        applied: Option<crate::Applied>,
     },
+    /// More matches than one transaction may carry; nothing was replaced.
+    OverBudget { limit: usize },
 }
 
 /// Every match, up to `MAX_SEARCH_RESULTS`.

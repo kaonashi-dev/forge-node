@@ -33,6 +33,7 @@ export function closeTarget(
   ) {
     return { kind: "unsplit" };
   }
+  if (settings) return { kind: "none" };
   if (mode !== "code") return { kind: "session" };
   // The terminal can be `active` while views are parked; it is not a tab in
   // the strip, so there is nothing there to close.

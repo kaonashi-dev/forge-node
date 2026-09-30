@@ -1,4 +1,4 @@
-// Which centre views a checkout has open .
+// Which centre views a checkout has open.
 //
 // Keyed by workspace because that is what the views are *about*: leaving a
 // worktree and coming back should find the diff and the file still there, and
@@ -14,8 +14,8 @@ export type WorkbenchView =
   /**
    * A daemon-supervised `forge-editor` in the Code region.
    *
-   * Keyed on the session, not the path: the buffer identity is the process,
-   * and a second open of the same file is a second session.
+   * Keyed on the session, not the path: the buffer identity is the process.
+   * Opening a file a session already holds re-attaches that session.
    */
   | { kind: "editor-terminal"; session: string; path: string }
   /**

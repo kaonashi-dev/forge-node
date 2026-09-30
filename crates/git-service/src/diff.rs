@@ -32,6 +32,10 @@ use crate::repository::current_branch;
 /// pager, and a reviewer reading a hunk in a GUI has the room for it.
 pub const DIFF_CONTEXT_LINES: u32 = 12;
 
+/// Ceiling for a caller-supplied context width. Past it a hunk is the whole
+/// file, and the request would be sizing git's output with a wire number.
+pub const MAX_DIFF_CONTEXT_LINES: u32 = 200;
+
 /// Soft ceiling for the whole diff, across every file.
 pub const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 
@@ -109,6 +113,7 @@ pub fn working_tree_diff(
     base: Option<&str>,
     context: u32,
 ) -> Result<WorkingTreeDiff, GitError> {
+    let context = context.min(MAX_DIFF_CONTEXT_LINES);
     let branch = current_branch(repo).ok().flatten();
     // A recorded base is itself a commit, so it proves there is history to
     // diff against even where `HEAD` alone would not.
@@ -781,6 +786,38 @@ mod tests {
         assert!(file.patch.contains("+TWO"));
         assert!(file.patch.contains("-two"));
         assert!(!diff.truncated);
+    }
+
+    #[test]
+    fn a_wire_sized_context_width_is_clamped_before_git_sees_it() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        repo_with_commit(repo);
+        let numbered = |middle: &str| -> String {
+            (0..1000)
+                .map(|n| {
+                    if n == 500 {
+                        format!("{middle}\n")
+                    } else {
+                        format!("line {n}\n")
+                    }
+                })
+                .collect()
+        };
+        std::fs::write(repo.join("a.txt"), numbered("line 500")).unwrap();
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-m", "long"]);
+        std::fs::write(repo.join("a.txt"), numbered("CHANGED")).unwrap();
+
+        let diff = working_tree_diff(repo, None, u32::MAX).unwrap();
+
+        let patch = &diff.files[0].patch;
+        assert!(patch.contains("+CHANGED"));
+        assert!(patch.contains("line 400"), "inside the clamp window");
+        assert!(
+            !patch.contains("line 100\n"),
+            "outside it: not the whole file"
+        );
     }
 
     #[test]

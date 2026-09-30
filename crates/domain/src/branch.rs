@@ -1,4 +1,3 @@
-//!
 //! A [`BranchRef`] is one row of the branch picker: enough to sort the list, to
 //! label it, and to know whether choosing it would fail before trying. It is a
 //! *reported* value, never authoritative — the daemon re-reads git on every

@@ -1,4 +1,4 @@
-//! Opaque application/layout state repository (ADR-003).
+//! Opaque application/layout state repository.
 //!
 //! A simple key/value store the daemon persists on behalf of the GUI without
 //! interpreting it (`SetAppState`/`GetAppState`): serialized dock layout,

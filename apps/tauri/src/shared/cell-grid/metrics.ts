@@ -2,7 +2,7 @@
 //
 // A wrong advance shears every box-drawing TUI, so the width comes from the
 // font's own `0` advance and the PTY is sized from the same numbers the canvas
-// paints with (`theme tokens::CellMetrics`).
+// paints with (`CellMetrics`, below).
 
 export type CellMetrics = {
   /** Advance width of one column, unrounded: rounding it shears long runs. */

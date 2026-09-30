@@ -42,6 +42,17 @@ describe("closeTarget", () => {
     expect(closeTarget("session", views)).toEqual({ kind: "session" });
   });
 
+  // Settings covers the centre column: the session or file behind it is not
+  // what the person is looking at, and closing a session is not recoverable.
+  it("closes nothing while Settings is covering the centre column", () => {
+    const views: ParkedViews = {
+      open: [{ kind: "editor-terminal", session: "s-1", path: "a.rs" }],
+      active: { kind: "editor-terminal", session: "s-1", path: "a.rs" },
+    };
+    expect(closeTarget("session", empty, undefined, true)).toEqual({ kind: "none" });
+    expect(closeTarget("code", views, undefined, true)).toEqual({ kind: "none" });
+  });
+
   it("leaves background sessions alone when Code is empty", () => {
     expect(closeTarget("code", empty)).toEqual({ kind: "none" });
   });

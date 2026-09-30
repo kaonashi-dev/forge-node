@@ -1,16 +1,14 @@
-//! Dedicated runtime thread: blocking `client::Client`, event pump, 16 ms
-//! `cells_only` coalesce.
+//! Dedicated runtime thread: blocking `client::Client`, event pump, and the
+//! `CELL_SEND_FLOOR` (16 ms) coalesce of terminal frames.
 //!
 //! One thread drains one command channel, and that channel carries keystrokes,
 //! so nothing on it may block on a socket: a synchronous network write queued
 //! behind a key press would freeze typing (AGENTS.md).
 //!
-//! Two event streams leave this thread and they are deliberately separate.
-//! `runtime:state` carries the shell — projects, sessions, providers — and goes
-//! out only when one of them actually changed. `runtime:cells` carries terminal
-//! output and goes out up to 62 times a second. Sending the shell snapshot on
-//! every frame, as this bridge did while the canvas was a placeholder, put the
-//! whole session tree through `serde_json` on the delta rung.
+//! Two event streams leave this thread and stay separate. `runtime:state` carries
+//! the shell — projects, sessions, providers — and goes out only when one of them
+//! changed. `runtime:cells` carries terminal output at up to 62 frames a second,
+//! so the session tree never goes through `serde_json` on the delta rung.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -829,12 +827,15 @@ impl CommandError {
     /// Classify a `ClientError`.
     ///
     /// A structured error from the daemon is an answer — it arrived, so the
-    /// socket is alive. Only the transport variants mean the connection went.
+    /// socket is alive. A `Codec` error from a request is the local encode
+    /// failing (an oversize frame) before a byte was written; the reader
+    /// disconnects for a bad inbound frame itself. Only the transport variants
+    /// mean the connection went.
     fn from_client(error: client::ClientError) -> Self {
         match error {
-            client::ClientError::Protocol(_) | client::ClientError::UnexpectedResponse { .. } => {
-                Self::Refused(error.to_string())
-            }
+            client::ClientError::Protocol(_)
+            | client::ClientError::UnexpectedResponse { .. }
+            | client::ClientError::Codec(_) => Self::Refused(error.to_string()),
             _ => Self::Disconnected(error.to_string()),
         }
     }
@@ -2078,8 +2079,7 @@ fn open_editor(
     } = open;
     // A second open of the same file moves the caret in the session that
     // already has it: a rival editor would be a second process, a second PTY
-    // and a second draft of one file. The same rule `editorReveal` follows for
-    // the DOM editor, one layer down.
+    // and a second draft of one file.
     if let Some((session_id, terminal_id)) = live_editor_for(store, editors, workspace, &path) {
         // A closed view detached the terminal, not the editor: the process
         // still holds the draft. Re-attach rather than open the disk state
@@ -2401,8 +2401,9 @@ fn scroll(
     if grid.modes.alt_screen || grid.modes.mouse_mode != MouseMode::Off {
         return Effect::nothing();
     }
-    let limit = grid.scrollback_len as i64;
-    let next = (*scroll_offset as i64 + lines).clamp(0, limit) as u64;
+    let limit = i64::try_from(grid.scrollback_len).unwrap_or(i64::MAX);
+    let current = i64::try_from(*scroll_offset).unwrap_or(i64::MAX);
+    let next = current.saturating_add(lines).clamp(0, limit) as u64;
     if next == *scroll_offset {
         return Effect::nothing();
     }
@@ -3649,6 +3650,18 @@ mod tests {
         let refused =
             CommandError::from_client(client::ClientError::UnexpectedResponse { expected: "Ack" });
         assert!(matches!(refused, CommandError::Refused(_)));
+    }
+
+    #[test]
+    fn an_oversize_request_is_refused_and_does_not_reconnect() {
+        let error = client::ClientError::Codec(client::ProtocolCodecError::FrameTooLarge {
+            size: 20 << 20,
+            max: 16 << 20,
+        });
+        assert!(matches!(
+            CommandError::from_client(error),
+            CommandError::Refused(_)
+        ));
     }
 
     #[test]

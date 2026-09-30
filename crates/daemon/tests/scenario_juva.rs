@@ -1,6 +1,6 @@
 //! Juva: draft a commit message from a dirty worktree and create the commit.
 //!
-//! Covers the new protocol surface end to end through a real daemon + client,
+//! Covers the protocol surface end to end through a real daemon + client,
 //! without needing the GUI or `gh`.
 
 mod common;

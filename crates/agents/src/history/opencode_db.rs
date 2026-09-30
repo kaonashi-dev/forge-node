@@ -1,19 +1,11 @@
-//! Reading opencode's session database (opencode ≥ 1.17).
+//! Reading opencode's session database (opencode ≥ 1.17), the other half of
+//! [`super`]'s opencode support: older versions wrote one JSON file per session
+//! under `<data>/opencode/storage` and current ones stop updating that tree.
 //!
-//! opencode used to keep one JSON file per session under
-//! `<data>/opencode/storage`. Current versions write a single SQLite database
-//! next to it — `<data>/opencode/opencode.db` — and stop updating that tree, so
-//! a scanner that only reads files reports a history frozen at the upgrade:
-//! present, plausible, and months out of date. This module is the other half of
-//! [`super`]'s opencode support, reading the same facts out of
-//! the database.
-//!
-//! Two rules hold throughout. The database belongs to another program, so it is
-//! opened **read-only** with `query_only` on top — Forge must not be the reason
-//! someone's history breaks. And every failure — no database, a schema this
-//! build does not recognise, a locked file, a malformed JSON blob — resolves to
-//! "no sessions from here", never to an error: the JSON tree is still scanned,
-//! and the panel degrades to what it can read.
+//! The database belongs to another program, so it is opened **read-only** with
+//! `query_only`. Every failure — no database, an unrecognised schema, a locked
+//! file, a malformed JSON blob — resolves to "no sessions from here", never an
+//! error, so the JSON tree is still scanned.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

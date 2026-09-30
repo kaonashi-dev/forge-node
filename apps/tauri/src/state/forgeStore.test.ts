@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { sessionFixture } from "../contracts/sessions.fixture";
 import type { Launchable, ShellSnapshot } from "../contracts/runtime";
 import { applyShellSnapshot, emptySnapshot, forgeStore } from "./forgeStore";
+import { loading, setLoading } from "./loading";
 
 /**
  * A snapshot arrives from the IPC freshly parsed, so *every* object in it is a
@@ -151,5 +152,39 @@ describe("applyShellSnapshot", () => {
     applyShellSnapshot(snapshot([first()]));
 
     expect(forgeStore.sessions.map((session) => session.id)).toEqual(["a"]);
+  });
+});
+
+describe("a pull-request refresh", () => {
+  const withRefresh = (refreshed_at: string | null, error: string | null = null) => ({
+    ...emptySnapshot(),
+    pull_requests: { ...emptySnapshot().pull_requests, refreshed_at, error },
+  });
+
+  it("is over when a snapshot carries a newer answer", () => {
+    applyShellSnapshot(withRefresh("2026-09-28T10:00:00Z"));
+    setLoading("pull_requests", true);
+
+    applyShellSnapshot(withRefresh("2026-09-28T10:01:00Z"));
+
+    expect(loading.pull_requests).toBe(false);
+  });
+
+  it("is over when the answer is an error and the timestamp did not move", () => {
+    applyShellSnapshot(withRefresh("2026-09-28T10:00:00Z"));
+    setLoading("pull_requests", true);
+
+    applyShellSnapshot(withRefresh("2026-09-28T10:00:00Z", "gh is not signed in"));
+
+    expect(loading.pull_requests).toBe(false);
+  });
+
+  it("stays in flight through a snapshot that says nothing about it", () => {
+    applyShellSnapshot(withRefresh("2026-09-28T10:00:00Z"));
+    setLoading("pull_requests", true);
+
+    applyShellSnapshot(withRefresh("2026-09-28T10:00:00Z"));
+
+    expect(loading.pull_requests).toBe(true);
   });
 });

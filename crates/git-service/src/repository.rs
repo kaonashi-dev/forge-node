@@ -141,7 +141,13 @@ pub fn is_tracked(repo: &Path, relative: &str) -> Result<bool, GitError> {
 pub fn ignored_paths(repo: &Path) -> Result<Vec<IgnoredPath>, GitError> {
     let out = run_git(
         Some(repo),
-        &["status", "--porcelain", "--ignored=matching", "-z"],
+        &[
+            "status",
+            "--porcelain",
+            "--ignored=matching",
+            "--no-renames",
+            "-z",
+        ],
     )?;
     if !out.success() {
         return Err(GitError::CommandFailed {
@@ -156,15 +162,14 @@ pub fn ignored_paths(repo: &Path) -> Result<Vec<IgnoredPath>, GitError> {
     }
     let mut found = Vec::new();
     for record in out.stdout.split('\0') {
-        // `XY <path>`: `!!` is ignored, `??` untracked. Anything else is a
-        // tracked change, which is git's business and not ours.
-        let Some((code, path)) = record.split_at_checked(3) else {
+        // `!!` is ignored, `??` untracked. Anything else is a tracked change,
+        // which is git's business and not ours.
+        let (path, ignored) = if let Some(path) = record.strip_prefix("!! ") {
+            (path, true)
+        } else if let Some(path) = record.strip_prefix("?? ") {
+            (path, false)
+        } else {
             continue;
-        };
-        let ignored = match &code[..2] {
-            "!!" => true,
-            "??" => false,
-            _ => continue,
         };
         let path = path.trim_end_matches('/');
         if path.is_empty() || path == ".git" {

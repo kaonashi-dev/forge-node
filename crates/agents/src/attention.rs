@@ -213,22 +213,28 @@ fn ensure_cursor_hooks(home: &Path, ring_bell: &Path) -> std::io::Result<bool> {
     let command = ring_bell.to_string_lossy().into_owned();
     let entry = serde_json::json!({ "command": command, "timeout": 5 });
 
-    let mut root = if path.is_file() {
-        serde_json::from_str(&std::fs::read_to_string(&path)?)
-            .unwrap_or_else(|_| serde_json::json!({ "version": 1, "hooks": {} }))
+    let invalid =
+        |reason: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, reason.to_owned());
+    let existing = if path.is_file() {
+        std::fs::read_to_string(&path)?
     } else {
-        serde_json::json!({ "version": 1, "hooks": {} })
+        String::new()
     };
-    if root.get("version").is_none() {
-        root["version"] = serde_json::json!(1);
-    }
-    let hooks = root
+    // The file is the user's: one this cannot read is left alone, never rewritten.
+    let mut root = if existing.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&existing).map_err(|error| invalid(&error.to_string()))?
+    };
+    let root_object = root
         .as_object_mut()
-        .map(|o| {
-            o.entry("hooks".to_owned())
-                .or_insert_with(|| serde_json::json!({}))
-        })
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "hooks.json root"))?;
+        .ok_or_else(|| invalid("hooks.json root is not an object"))?;
+    root_object
+        .entry("version".to_owned())
+        .or_insert_with(|| serde_json::json!(1));
+    let hooks = root_object
+        .entry("hooks".to_owned())
+        .or_insert_with(|| serde_json::json!({}));
 
     let mut changed = false;
     for event in ["beforeShellExecution", "beforeMCPExecution"] {
@@ -610,6 +616,54 @@ mod tests {
             .iter()
             .any(|e| e["command"].as_str().unwrap().contains("forge-ring-bell")));
         assert!(!inject_attention(&descriptor, &mut spec, &assets));
+    }
+
+    #[test]
+    fn cursor_hooks_leave_a_file_they_cannot_use_untouched() {
+        let assets_dir = tempfile::tempdir().unwrap();
+        let assets = install_assets(&assets_dir.path().join("p")).unwrap();
+        let descriptor = builtins::builtin("cursor").unwrap();
+        // A hand-edited file with a comment and a trailing comma, and roots
+        // that parse but are not objects: none may be replaced or panic.
+        for body in [
+            "{\n  // mine\n  \"version\": 1,\n}\n",
+            "[]",
+            "123",
+            "\"x\"",
+            "null",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            std::fs::create_dir_all(home.join(".cursor")).unwrap();
+            std::fs::write(home.join(".cursor/hooks.json"), body).unwrap();
+            let mut spec = empty_spec();
+            spec.env = vec![("HOME".into(), home.to_string_lossy().into_owned())];
+
+            assert!(!inject_attention(&descriptor, &mut spec, &assets));
+            assert_eq!(
+                std::fs::read_to_string(home.join(".cursor/hooks.json")).unwrap(),
+                body
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_hooks_treat_an_empty_file_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".cursor")).unwrap();
+        std::fs::write(home.join(".cursor/hooks.json"), "  \n").unwrap();
+        let assets = install_assets(&dir.path().join("p")).unwrap();
+        let descriptor = builtins::builtin("cursor").unwrap();
+        let mut spec = empty_spec();
+        spec.env = vec![("HOME".into(), home.to_string_lossy().into_owned())];
+
+        assert!(inject_attention(&descriptor, &mut spec, &assets));
+        let hooks: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(home.join(".cursor/hooks.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(hooks["version"], 1);
     }
 
     #[test]
