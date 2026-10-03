@@ -574,16 +574,13 @@ fn serve(
             Ok(EditorMessage::Refused { request_id, .. }) => {
                 daemon.finish_editor_reload(session_id, request_id);
             }
-            // Disk work, on this thread and off the core lock — the rule
-            // go-to-definition exists under (AGENTS.md). The symbol is
-            // validated as an identifier by `fs-service` before it reaches
-            // `git grep`, so a caret in a buffer cannot become a regex.
             Ok(EditorMessage::FindDefinition { request_id, symbol }) => {
-                let places = daemon.editor_definitions(session_id, &symbol);
+                let (places, truncated) = daemon.editor_definitions(session_id, &symbol);
                 let answer = DaemonMessage::Definitions {
                     request_id,
                     symbol,
                     places,
+                    truncated,
                 };
                 if send(&writer, &answer).is_err() {
                     return;

@@ -74,6 +74,7 @@ pub enum Prompt {
         symbol: String,
         places: Vec<WirePlace>,
         selected: usize,
+        truncated: bool,
     },
 }
 
@@ -88,6 +89,58 @@ const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
 /// The same second the GUI editor waits. Shorter and a burst of typing becomes
 /// a burst of writes; longer and "it saves by itself" stops being true.
 const AUTOSAVE_PAUSE: Duration = Duration::from_secs(1);
+
+/// A second press on the same cell within this window is the next click of one
+/// gesture. The mouse reports we read are presses, not click counts.
+const MULTI_CLICK: Duration = Duration::from_millis(500);
+
+/// What a drag after this press grows by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerUnit {
+    Char,
+    Word,
+    Line,
+}
+
+/// One press in a multi-click, in screen cells.
+struct ClickRun {
+    column: u16,
+    row: u16,
+    at: Instant,
+    count: u8,
+}
+
+/// The next click of `previous`, or 1 when the cell or the window changed.
+///
+/// A fourth press starts over: click, identifier, line, click.
+#[must_use]
+fn next_click_count(previous: Option<&ClickRun>, column: u16, row: u16, now: Instant) -> u8 {
+    match previous {
+        Some(prev)
+            if prev.column == column
+                && prev.row == row
+                && now.saturating_duration_since(prev.at) <= MULTI_CLICK =>
+        {
+            if prev.count >= 3 {
+                1
+            } else {
+                prev.count + 1
+            }
+        }
+        _ => 1,
+    }
+}
+
+/// Command-click or Ctrl-click, the two ways a pointer asks for a declaration.
+///
+/// The cell surface's mouse report has no Command bit, so that pane sends
+/// Command as Control. Alt stays a caret and Shift stays a selection.
+#[must_use]
+fn opens_definition(modifiers: KeyModifiers) -> bool {
+    (modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::SUPER))
+        && !modifiers.contains(KeyModifiers::ALT)
+        && !modifiers.contains(KeyModifiers::SHIFT)
+}
 
 /// Past this many bytes a buffer is shown without colour.
 ///
@@ -147,6 +200,15 @@ pub struct App {
     regions: Vec<editor_core::fold::Region>,
     /// Where the pointer went down, for a rectangular drag.
     drag_origin: Option<(u16, u16)>,
+    /// Presses that are still one gesture.
+    click_run: Option<ClickRun>,
+    /// What a drag after the current press grows by.
+    pointer_unit: PointerUnit,
+    /// Byte range the multi-click took, so a drag grows from it.
+    multi_click_span: (usize, usize),
+    /// Command-click already asked for a declaration; a drag must not turn
+    /// that into a selection.
+    define_click: bool,
     /// An OSC 52 the renderer has not written yet, if a copy just happened.
     clipboard_escape: Option<String>,
     /// Save on a pause. The opener's preference; off standalone.
@@ -331,6 +393,10 @@ impl App {
             folded: BTreeSet::new(),
             regions: Vec::new(),
             drag_origin: None,
+            click_run: None,
+            pointer_unit: PointerUnit::Char,
+            multi_click_span: (0, 0),
+            define_click: false,
             clipboard_escape: None,
             autosave: false,
             autosave_suspended: false,
@@ -1131,10 +1197,14 @@ impl App {
     }
 
     /// The daemon answered a definition lookup.
-    pub fn definitions_arrived(&mut self, symbol: String, places: Vec<WirePlace>) {
+    pub fn definitions_arrived(&mut self, symbol: String, places: Vec<WirePlace>, truncated: bool) {
         self.damage_all = true;
         if places.is_empty() {
-            self.status = Some(format!("{symbol}: not declared anywhere I can see"));
+            self.status = Some(if truncated {
+                format!("{symbol}: no declaration found (search incomplete)")
+            } else {
+                format!("{symbol}: not declared anywhere I can see")
+            });
             return;
         }
         self.status = None;
@@ -1142,6 +1212,7 @@ impl App {
             symbol,
             places,
             selected: 0,
+            truncated,
         });
     }
 
@@ -1787,42 +1858,169 @@ impl App {
 
     /// Turn a mouse report into a caret move, a selection change, or a scroll.
     ///
-    /// Left button lands the caret; Shift or a drag extends the selection to
-    /// the same point; the wheel moves the viewport. Everything else — the
-    /// middle button, motion with no button — is not a gesture this editor has.
+    /// A click lands the caret. A second click on the same cell selects the
+    /// identifier; a third selects the line; a drag after either grows by that
+    /// unit. Shift extends, Command or Ctrl asks where the identifier is
+    /// declared, and the wheel moves the viewport. The middle button and motion
+    /// with no button are not gestures this editor has.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
         let alt = event.modifiers.contains(KeyModifiers::ALT);
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) if alt => {
+                self.end_click_run();
                 self.drag_origin = Some((event.column, event.row));
                 self.add_caret_at(event.column, event.row);
             }
             MouseEventKind::Down(MouseButton::Left)
                 if self.ruler_visible() && event.column as usize >= self.ruler_column() =>
             {
+                self.end_click_run();
                 let line = self.ruler_line(event.row as usize);
                 self.goto_line(line);
                 self.damage_all = true;
             }
             MouseEventKind::Down(MouseButton::Left) if self.is_fold_column(event.column) => {
+                self.end_click_run();
                 self.click_fold(event.row);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                self.drag_origin = Some((event.column, event.row));
-                let extend = event.modifiers.contains(KeyModifiers::SHIFT);
-                self.click(event.column, event.row, extend);
+                self.text_click(event.column, event.row, event.modifiers);
             }
             // Alt-drag is a column, not a run: every line between the two rows
             // gets its own caret at the dragged columns.
             MouseEventKind::Drag(MouseButton::Left) if alt => {
                 self.rectangular(event.column, event.row);
             }
-            MouseEventKind::Drag(MouseButton::Left) => self.click(event.column, event.row, true),
-            MouseEventKind::Up(MouseButton::Left) => self.drag_origin = None,
+            MouseEventKind::Drag(MouseButton::Left) if !self.define_click => {
+                if self.pointer_unit == PointerUnit::Char {
+                    self.click(event.column, event.row, true);
+                } else {
+                    self.extend_unit(event.column, event.row);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag_origin = None;
+                self.define_click = false;
+                self.pointer_unit = PointerUnit::Char;
+            }
             MouseEventKind::ScrollUp => self.scroll(-1),
             MouseEventKind::ScrollDown => self.scroll(1),
             _ => {}
         }
+    }
+
+    /// A left click in the text, once the gutter's own targets have declined it.
+    fn text_click(&mut self, column: u16, row: u16, modifiers: KeyModifiers) {
+        self.drag_origin = Some((column, row));
+        self.define_click = false;
+        if opens_definition(modifiers) {
+            self.click_run = None;
+            // The status row is chrome. A lookup from it would name whatever
+            // the caret was already on.
+            if row as usize >= self.content_height() {
+                return;
+            }
+            self.define_click = true;
+            self.select_unit(column, row, PointerUnit::Word);
+            self.find_definition();
+            return;
+        }
+        if !modifiers.is_empty() {
+            self.click_run = None;
+            self.pointer_unit = PointerUnit::Char;
+            self.click(column, row, modifiers.contains(KeyModifiers::SHIFT));
+            return;
+        }
+        match self.note_click(column, row) {
+            2 => self.select_unit(column, row, PointerUnit::Word),
+            3 => self.select_unit(column, row, PointerUnit::Line),
+            _ => {
+                self.pointer_unit = PointerUnit::Char;
+                self.click(column, row, false);
+            }
+        }
+    }
+
+    /// Forget a multi-click. The next press is a caret again.
+    fn end_click_run(&mut self) {
+        self.click_run = None;
+        self.pointer_unit = PointerUnit::Char;
+        self.define_click = false;
+    }
+
+    fn note_click(&mut self, column: u16, row: u16) -> u8 {
+        let now = Instant::now();
+        let count = next_click_count(self.click_run.as_ref(), column, row, now);
+        self.click_run = Some(ClickRun {
+            column,
+            row,
+            at: now,
+            count,
+        });
+        count
+    }
+
+    /// Select the identifier or the line under the cell.
+    ///
+    /// An empty span stays a caret: a word drag needs an edge to grow from.
+    fn select_unit(&mut self, column: u16, row: u16, unit: PointerUnit) {
+        if row as usize >= self.content_height() {
+            return;
+        }
+        let offset = self.offset_at(column, row);
+        let (start, end) = self.unit_span(unit, offset);
+        if start == end {
+            self.pointer_unit = PointerUnit::Char;
+            self.multi_click_span = (offset, offset);
+            self.move_caret_to(offset, false);
+            return;
+        }
+        self.pointer_unit = unit;
+        self.multi_click_span = (start, end);
+        self.set_span(start, end);
+    }
+
+    /// Grow the multi-click's selection out to the unit under the pointer.
+    fn extend_unit(&mut self, column: u16, row: u16) {
+        if row as usize >= self.content_height() {
+            return;
+        }
+        let at = self.offset_at(column, row);
+        let (origin_start, origin_end) = self.multi_click_span;
+        let (hit_start, hit_end) = self.unit_span(self.pointer_unit, at);
+        let (hit_start, hit_end) = if hit_start == hit_end {
+            (at, at)
+        } else {
+            (hit_start, hit_end)
+        };
+        let (anchor, head) = if at >= origin_end {
+            (origin_start, hit_end.max(origin_end))
+        } else if at < origin_start {
+            (origin_end, hit_start.min(origin_start))
+        } else {
+            (origin_start, origin_end)
+        };
+        self.set_span(anchor, head);
+    }
+
+    fn unit_span(&self, unit: PointerUnit, offset: usize) -> (usize, usize) {
+        let text = self.document.text();
+        match unit {
+            PointerUnit::Word => editor_core::movement::word_span(text, offset),
+            PointerUnit::Line => editor_core::movement::line_span(text, Selection::caret(offset)),
+            PointerUnit::Char => (offset, offset),
+        }
+    }
+
+    fn set_span(&mut self, anchor: usize, head: usize) {
+        let before = self.document.selection();
+        self.document.set_selection(Selection::new(anchor, head));
+        let after = self.document.selection();
+        if before != after {
+            self.damage_selection(&before);
+            self.damage_selection(&after);
+        }
+        self.ensure_visible();
     }
 
     /// Toggle the fold whose marker sits on `row`.
@@ -2291,6 +2489,7 @@ impl App {
                 symbol,
                 places,
                 mut selected,
+                truncated,
             } => match key.code {
                 KeyCode::Up => {
                     selected = (selected + places.len() - 1) % places.len();
@@ -2298,6 +2497,7 @@ impl App {
                         symbol,
                         places,
                         selected,
+                        truncated,
                     });
                 }
                 KeyCode::Down => {
@@ -2306,6 +2506,7 @@ impl App {
                         symbol,
                         places,
                         selected,
+                        truncated,
                     });
                 }
                 KeyCode::Enter => {
@@ -2322,6 +2523,7 @@ impl App {
                         symbol,
                         places,
                         selected,
+                        truncated,
                     });
                 }
             },
@@ -3026,6 +3228,21 @@ mod tests {
             row,
             modifiers,
         }
+    }
+
+    fn click_cell(app: &mut App, col: u16, row: u16) {
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            col,
+            row,
+            KeyModifiers::NONE,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            col,
+            row,
+            KeyModifiers::NONE,
+        ));
     }
 
     #[test]
@@ -4173,6 +4390,192 @@ mod tests {
         assert_eq!(app.document().selection().range(), Range::new(0, 5));
     }
 
+    /// The caret between the two humps of `PayinEvents` still takes the whole
+    /// identifier. A dot stays a boundary.
+    #[test]
+    fn a_double_click_selects_the_whole_identifier() {
+        let line = "export enum PayinEvents {";
+        let mut app = app(
+            &format!("{line}\n  PROCESSING = 'payin.processing',\n"),
+            false,
+        );
+        app.resize(80, 24);
+        let gutter = app.gutter_width() as u16;
+        let into = line.find("PayinEvents").unwrap() + "Payin".len();
+        click_cell(&mut app, gutter + into as u16, 0);
+        click_cell(&mut app, gutter + into as u16, 0);
+        let start = line.find("PayinEvents").unwrap();
+        assert_eq!(
+            app.document().selection().range(),
+            Range::new(start, start + "PayinEvents".len())
+        );
+
+        let body = app.document().text().as_str().to_string();
+        let processing = body.find("payin.processing").unwrap();
+        let col = gutter + 2 + "PROCESSING = '".len() as u16;
+        click_cell(&mut app, col, 1);
+        click_cell(&mut app, col, 1);
+        assert_eq!(
+            app.document().selection().range(),
+            Range::new(processing, processing + "payin".len())
+        );
+    }
+
+    /// The terminator comes with the line, so cutting the selection removes the row.
+    #[test]
+    fn a_third_click_selects_the_line() {
+        let line = "export enum PayinEvents {";
+        let mut app = app(&format!("{line}\n"), false);
+        app.resize(80, 24);
+        let col = app.gutter_width() as u16 + line.find('P').unwrap() as u16;
+        click_cell(&mut app, col, 0);
+        click_cell(&mut app, col, 0);
+        click_cell(&mut app, col, 0);
+        assert_eq!(
+            app.document().selection().range(),
+            Range::new(0, line.len() + 1)
+        );
+    }
+
+    #[test]
+    fn a_second_click_on_another_cell_is_a_caret() {
+        let line = "export enum PayinEvents {";
+        let mut app = app(&format!("{line}\n"), false);
+        app.resize(80, 24);
+        let payin = app.gutter_width() as u16 + line.find("PayinEvents").unwrap() as u16;
+        click_cell(&mut app, payin, 0);
+        click_cell(&mut app, payin + 5, 0);
+        assert!(app.document().selection().is_empty());
+    }
+
+    #[test]
+    fn a_double_click_drag_grows_by_identifier() {
+        let first = "export enum PayinEvents {";
+        let text = format!("{first}\n  PROCESSING = 1,\n");
+        let mut app = app(&text, false);
+        app.resize(80, 24);
+        let gutter = app.gutter_width() as u16;
+        let col = gutter + first.find("PayinEvents").unwrap() as u16;
+        click_cell(&mut app, col, 0);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            col,
+            0,
+            KeyModifiers::NONE,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            gutter + 2,
+            1,
+            KeyModifiers::NONE,
+        ));
+        let processing = text.find("PROCESSING").unwrap();
+        assert_eq!(
+            app.document().selection().range(),
+            Range::new(
+                first.find("PayinEvents").unwrap(),
+                processing + "PROCESSING".len()
+            )
+        );
+    }
+
+    #[test]
+    fn a_command_or_control_click_asks_for_the_declaration() {
+        let line = "export enum PayinEvents {";
+        for modifiers in [KeyModifiers::SUPER, KeyModifiers::CONTROL] {
+            let mut app = app(&format!("{line}\n"), false);
+            app.set_integrated();
+            app.resize(80, 24);
+            let gutter = app.gutter_width() as u16;
+            let into = line.find("PayinEvents").unwrap() + "Payin".len();
+            let start = line.find("PayinEvents").unwrap();
+            app.handle_mouse(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                gutter + into as u16,
+                0,
+                modifiers,
+            ));
+            let (_, symbol) = app.take_definition_request().expect("a lookup");
+            assert_eq!(symbol, "PayinEvents");
+            assert_eq!(
+                app.document().selection().range(),
+                Range::new(start, start + "PayinEvents".len())
+            );
+            app.handle_mouse(mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                gutter,
+                0,
+                modifiers,
+            ));
+            assert_eq!(
+                app.document().selection().range(),
+                Range::new(start, start + "PayinEvents".len())
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_click_on_a_gap_has_nothing_to_look_up() {
+        let line = "export enum PayinEvents {";
+        let mut app = app(&format!("{line}\n"), false);
+        app.set_integrated();
+        app.resize(80, 24);
+        // The brace is not touching an identifier: the caret sits on `{`,
+        // and the character before it is a space.
+        let col = app.gutter_width() as u16 + line.find('{').unwrap() as u16;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            col,
+            0,
+            KeyModifiers::SUPER,
+        ));
+        assert!(app.take_definition_request().is_none());
+        assert_eq!(app.status(), Some("no symbol under the caret"));
+        assert!(app.document().selection().is_empty());
+    }
+
+    #[test]
+    fn a_click_run_resets_past_the_window_and_after_the_third() {
+        let at = Instant::now();
+        let first = ClickRun {
+            column: 4,
+            row: 1,
+            at,
+            count: 1,
+        };
+        assert_eq!(next_click_count(Some(&first), 4, 1, at), 2);
+        assert_eq!(next_click_count(Some(&first), 4, 1, at + MULTI_CLICK), 2);
+        assert_eq!(
+            next_click_count(
+                Some(&first),
+                4,
+                1,
+                at + MULTI_CLICK + Duration::from_millis(1)
+            ),
+            1
+        );
+        assert_eq!(next_click_count(Some(&first), 5, 1, at), 1);
+        let third = ClickRun { count: 3, ..first };
+        assert_eq!(next_click_count(Some(&third), 4, 1, at), 1);
+    }
+
+    #[test]
+    fn a_shifted_command_click_extends_the_selection() {
+        let mut app = app("hello world\n", false);
+        app.set_integrated();
+        app.resize(80, 24);
+        let gutter = app.gutter_width() as u16;
+        click_cell(&mut app, gutter, 0);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            gutter + 5,
+            0,
+            KeyModifiers::SUPER | KeyModifiers::SHIFT,
+        ));
+        assert!(app.take_definition_request().is_none());
+        assert_eq!(app.document().selection().range(), Range::new(0, 5));
+    }
+
     /// The wheel moves the viewport; a caret still on screen does not budge.
     #[test]
     fn the_wheel_scrolls_and_leaves_a_visible_caret_alone() {
@@ -4720,6 +5123,7 @@ mod tests {
                 place("lib.rs", 1, "pub fn answer() -> u8 {"),
                 place("other.rs", 9, "fn answer() {}"),
             ],
+            false,
         );
         assert!(matches!(app.prompt(), Some(Prompt::Definitions { .. })));
 
@@ -4755,11 +5159,46 @@ mod tests {
         let mut app = app("answer\n", false);
         app.set_integrated();
         app.resize(60, 10);
-        app.definitions_arrived("answer".to_string(), Vec::new());
+        app.definitions_arrived("answer".to_string(), Vec::new(), false);
         assert!(app.prompt().is_none());
         assert_eq!(
             app.status(),
             Some("answer: not declared anywhere I can see")
+        );
+    }
+
+    #[test]
+    fn an_incomplete_definition_search_stays_visible_while_choosing() {
+        let mut app = app("upsertJobScheduler\n", false);
+        app.set_integrated();
+        app.resize(80, 10);
+        app.definitions_arrived("upsertJobScheduler".to_string(), Vec::new(), true);
+        assert_eq!(
+            app.status(),
+            Some("upsertJobScheduler: no declaration found (search incomplete)")
+        );
+        app.definitions_arrived(
+            "upsertJobScheduler".to_string(),
+            vec![place(
+                "node_modules/bullmq/queue.d.ts",
+                12,
+                "upsertJobScheduler(id: string): Promise<void>;",
+            )],
+            true,
+        );
+        app.handle_key(key(KeyCode::Down));
+        assert!(matches!(
+            app.prompt(),
+            Some(Prompt::Definitions {
+                truncated: true,
+                ..
+            })
+        ));
+        app.handle_key(key(KeyCode::Enter));
+        let (_, path, line) = app.take_open_request().unwrap();
+        assert_eq!(
+            (path.as_str(), line),
+            ("node_modules/bullmq/queue.d.ts", 12)
         );
     }
 

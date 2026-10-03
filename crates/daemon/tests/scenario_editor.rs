@@ -287,13 +287,21 @@ if mode == "save_twice":
     with open(".forge-editor-save", "w") as fh:
         fh.write(" ".join(answers) + "\n")
 
-if mode == "definition":
-    sock.sendall(find_definition(1500, "answer"))
+if mode == "definition" or (mode == "definition_nestjs" and path.endswith(".service.ts")):
+    symbol = "upsertJobScheduler" if mode == "definition_nestjs" else "answer"
+    sock.sendall(find_definition(1500, symbol))
     _, body = await_message(sock, "Definitions")
     with open(".forge-editor-definitions", "w") as fh:
         for place in body["places"]:
             fh.write("%s:%s %s\n" % (place["path"], place["line"], place["text"].strip()))
         fh.write("end\n")
+    if mode == "definition_nestjs" and body["places"]:
+        place = body["places"][0]
+        sock.sendall(frame(pack_map([("OpenPath", pack_map([
+            ("request_id", pack_int(1501)),
+            ("path", pack_str(place["path"])),
+            ("line", pack_int(place["line"])),
+        ]))])))
 
 if mode == "copy":
     # Written only once the test has attached: the escape is a single burst,
@@ -1016,6 +1024,39 @@ fn the_editor_asks_the_daemon_where_a_symbol_is_declared() {
         found.contains("lib.rs:1") && found.contains("pub fn answer"),
         "the declaration was not offered:\n{found}"
     );
+}
+
+#[test]
+fn the_editor_can_follow_a_nestjs_dependency_method_into_ignored_types() {
+    let harness = common::Harness::new();
+    install_editor_mode(&harness, "definition_nestjs", None);
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join(".gitignore"), "node_modules/\n").unwrap();
+    fs::write(
+        repo.path().join("scheduler.service.ts"),
+        "import { Queue } from 'bullmq';\n@Injectable()\nexport class SettlementSchedulerService {\n  constructor(@InjectQueue('payins') private readonly queue: Queue) {}\n  async onModuleInit() {\n    await this.queue.upsertJobScheduler('hourly-due-settlement', {}, {});\n  }\n}\n",
+    ).unwrap();
+    fs::create_dir_all(repo.path().join("node_modules/bullmq/dist/esm/classes")).unwrap();
+    let target = "node_modules/bullmq/dist/esm/classes/queue.d.ts";
+    fs::write(
+        repo.path().join(target),
+        "export declare class Queue {\n  upsertJobScheduler(\n    id: string,\n    options: RepeatOptions,\n  ): Promise<Job>;\n}\n",
+    ).unwrap();
+    commit_all(repo.path(), "seed NestJS scheduler");
+    let running = harness.boot();
+    let client = running.connect("editor-nestjs-definition");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    create_editor(&client, &events, workspace, "scheduler.service.ts", None);
+    let found = await_receipt(&repo.path().join(".forge-editor-definitions"));
+    assert!(
+        found.contains(&format!("{target}:2")),
+        "the dependency method was not offered:\n{found}"
+    );
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::SessionUpdated(session) if session.state == SessionState::Running
+            && session.editor.as_ref().is_some_and(|state| state.path == target && state.line == 2))
+    }).expect("following the candidate must open the dependency declaration at its line");
 }
 
 /// A copy in the editor reaches the host, not just the editor's own register.

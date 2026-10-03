@@ -40,6 +40,9 @@ pub struct Span {
 pub enum Grammar {
     Rust,
     CLike,
+    Prisma,
+    Sql,
+    Hcl,
     Python,
     Json,
     Keyed,
@@ -75,12 +78,14 @@ impl Grammar {
         match name[dot + 1..].to_ascii_lowercase().as_str() {
             "rs" => Self::Rust,
             "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "go" | "java" | "kt" | "kts" | "c"
-            | "h" | "cc" | "cpp" | "hpp" | "cs" | "swift" | "scala" | "php" | "dart" | "prisma" => {
-                Self::CLike
-            }
+            | "h" | "cc" | "cpp" | "hpp" | "cs" | "swift" | "scala" | "php" | "dart" => Self::CLike,
+            "prisma" => Self::Prisma,
+            "sql" | "psql" | "pgsql" | "mysql" => Self::Sql,
+            "tf" | "tfvars" | "hcl" => Self::Hcl,
             "py" | "pyi" => Self::Python,
             "json" => Self::Json,
-            "toml" | "yaml" | "yml" | "ini" | "cfg" | "conf" | "env" => Self::Keyed,
+            // Helm chart templates (`.tpl`) are keyed YAML with `{{ }}` actions.
+            "toml" | "yaml" | "yml" | "ini" | "cfg" | "conf" | "env" | "tpl" => Self::Keyed,
             "sh" | "bash" | "zsh" | "fish" | "mk" | "make" => Self::Shell,
             "md" | "markdown" | "mdx" => Self::Markdown,
             "html" | "htm" | "xhtml" | "xml" | "svg" => Self::Html,
@@ -277,6 +282,9 @@ impl<'a> Scanner<'a> {
         match grammar {
             Grammar::Rust => self.c_like(&rust_keywords(), true),
             Grammar::CLike => self.c_like(&c_keywords(), false),
+            Grammar::Prisma => self.c_like(&prisma_keywords(), false),
+            Grammar::Sql => self.sql(),
+            Grammar::Hcl => self.hcl(),
             Grammar::Python => self.python(),
             Grammar::Json => self.json(),
             Grammar::Keyed => self.keyed(),
@@ -500,6 +508,136 @@ fn c_keywords() -> HashSet<&'static str> {
     .collect()
 }
 
+fn prisma_keywords() -> HashSet<&'static str> {
+    [
+        "datasource",
+        "enum",
+        "false",
+        "generator",
+        "model",
+        "null",
+        "true",
+        "type",
+        "view",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn sql_keywords() -> HashSet<&'static str> {
+    [
+        "add",
+        "all",
+        "alter",
+        "and",
+        "as",
+        "asc",
+        "between",
+        "by",
+        "cascade",
+        "check",
+        "column",
+        "constraint",
+        "create",
+        "cross",
+        "database",
+        "default",
+        "delete",
+        "desc",
+        "distinct",
+        "drop",
+        "else",
+        "end",
+        "except",
+        "exists",
+        "false",
+        "foreign",
+        "from",
+        "full",
+        "grant",
+        "group",
+        "having",
+        "if",
+        "in",
+        "index",
+        "inner",
+        "insert",
+        "intersect",
+        "into",
+        "is",
+        "join",
+        "key",
+        "left",
+        "like",
+        "limit",
+        "not",
+        "null",
+        "offset",
+        "on",
+        "or",
+        "order",
+        "outer",
+        "over",
+        "primary",
+        "references",
+        "returning",
+        "revoke",
+        "right",
+        "schema",
+        "select",
+        "set",
+        "table",
+        "then",
+        "true",
+        "union",
+        "unique",
+        "update",
+        "using",
+        "values",
+        "view",
+        "when",
+        "where",
+        "with",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn sql_control() -> HashSet<&'static str> {
+    ["case", "when", "then", "else", "end", "if"]
+        .into_iter()
+        .collect()
+}
+
+fn hcl_keywords() -> HashSet<&'static str> {
+    [
+        "check",
+        "data",
+        "dynamic",
+        "ephemeral",
+        "false",
+        "import",
+        "lifecycle",
+        "locals",
+        "module",
+        "moved",
+        "null",
+        "output",
+        "provider",
+        "provisioner",
+        "resource",
+        "terraform",
+        "true",
+        "variable",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn hcl_control() -> HashSet<&'static str> {
+    ["for", "in", "if", "else"].into_iter().collect()
+}
+
 fn is_word(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
 }
@@ -580,6 +718,132 @@ impl Scanner<'_> {
                         Scope::Keyword
                     } else if word.starts_with(|c: char| c.is_ascii_uppercase()) {
                         Scope::Type
+                    } else if self.peek_nonspace() == b'(' {
+                        Scope::Function
+                    } else {
+                        Scope::Plain
+                    };
+                    self.emit(mark, scope);
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    /// SQL: `--` line comments, `/* */` blocks, quotes, case-insensitive keywords.
+    fn sql(&mut self) {
+        let keywords = sql_keywords();
+        let control = sql_control();
+        while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
+            let byte = self.byte(self.at);
+            let mark = self.mark();
+            match byte {
+                b'-' if self.byte(self.at + 1) == b'-' => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'/' if self.at_pair(b'/', b'*') => {
+                    self.bump();
+                    self.bump();
+                    while !self.done() && !self.at_pair(b'*', b'/') {
+                        self.bump();
+                    }
+                    self.bump();
+                    self.bump();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'\'' | b'"' => {
+                    self.take_quoted(byte);
+                    self.emit(mark, Scope::String);
+                }
+                b'0'..=b'9' => {
+                    while !self.done()
+                        && (self.byte(self.at).is_ascii_alphanumeric()
+                            || self.byte(self.at) == b'.'
+                            || self.byte(self.at) == b'_')
+                    {
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::Number);
+                }
+                b if is_word(b) && !b.is_ascii_digit() => {
+                    while !self.done() && is_word(self.byte(self.at)) {
+                        self.bump();
+                    }
+                    let word = self.text[mark.at..self.at].to_ascii_lowercase();
+                    let scope = if control.contains(word.as_str()) {
+                        Scope::ControlKeyword
+                    } else if keywords.contains(word.as_str()) {
+                        Scope::Keyword
+                    } else if self.peek_nonspace() == b'(' {
+                        Scope::Function
+                    } else {
+                        Scope::Plain
+                    };
+                    self.emit(mark, scope);
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    /// HCL / Terraform: `#`/`//`/`/* */` comments, quotes, block keywords, `name(`.
+    fn hcl(&mut self) {
+        let keywords = hcl_keywords();
+        let control = hcl_control();
+        while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
+            let byte = self.byte(self.at);
+            let mark = self.mark();
+            match byte {
+                b'#' => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'/' if self.at_pair(b'/', b'/') => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'/' if self.at_pair(b'/', b'*') => {
+                    self.bump();
+                    self.bump();
+                    while !self.done() && !self.at_pair(b'*', b'/') {
+                        self.bump();
+                    }
+                    self.bump();
+                    self.bump();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'"' => {
+                    self.take_quoted(b'"');
+                    self.emit(mark, Scope::String);
+                }
+                b'0'..=b'9' => {
+                    while !self.done()
+                        && (self.byte(self.at).is_ascii_alphanumeric()
+                            || self.byte(self.at) == b'.'
+                            || self.byte(self.at) == b'_')
+                    {
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::Number);
+                }
+                b if is_word(b) && !b.is_ascii_digit() => {
+                    while !self.done() && is_word(self.byte(self.at)) {
+                        self.bump();
+                    }
+                    let word = &self.text[mark.at..self.at];
+                    let scope = if control.contains(word) {
+                        Scope::ControlKeyword
+                    } else if keywords.contains(word) {
+                        Scope::Keyword
+                    } else if self.peek_nonspace() == b'=' {
+                        Scope::Property
                     } else if self.peek_nonspace() == b'(' {
                         Scope::Function
                     } else {
@@ -717,7 +981,7 @@ impl Scanner<'_> {
         }
     }
 
-    /// TOML, YAML, ini, dotenv: a key before a separator, then a value.
+    /// TOML, YAML, ini, dotenv, Helm templates: a key before a separator, then a value.
     fn keyed(&mut self) {
         while !self.done() {
             if self.checkpoint() {
@@ -728,6 +992,17 @@ impl Scanner<'_> {
                 b'#' | b';' => {
                     self.take_line();
                     self.emit(mark, Scope::Comment);
+                }
+                // Helm / Go template actions inside chart YAML and `.tpl` files.
+                b'{' if self.byte(self.at + 1) == b'{' => {
+                    self.bump();
+                    self.bump();
+                    while !self.done() && !self.at_pair(b'}', b'}') {
+                        self.bump();
+                    }
+                    self.bump();
+                    self.bump();
+                    self.emit(mark, Scope::Keyword);
                 }
                 b'"' | b'\'' => {
                     let quote = self.byte(self.at);
@@ -1225,7 +1500,16 @@ mod tests {
         assert_eq!(Grammar::for_path("config.env"), Grammar::Keyed);
         assert_eq!(Grammar::for_path("Makefile"), Grammar::Shell);
         assert_eq!(Grammar::for_path("src/rules.mk"), Grammar::Shell);
-        assert_eq!(Grammar::for_path("schema.prisma"), Grammar::CLike);
+        assert_eq!(Grammar::for_path("schema.prisma"), Grammar::Prisma);
+        assert_eq!(Grammar::for_path("migrations/001.sql"), Grammar::Sql);
+        assert_eq!(Grammar::for_path("query.PSQL"), Grammar::Sql);
+        assert_eq!(Grammar::for_path("main.tf"), Grammar::Hcl);
+        assert_eq!(Grammar::for_path("prod.tfvars"), Grammar::Hcl);
+        assert_eq!(Grammar::for_path("shared.hcl"), Grammar::Hcl);
+        assert_eq!(Grammar::for_path("values.yaml"), Grammar::Keyed);
+        assert_eq!(Grammar::for_path("Chart.yml"), Grammar::Keyed);
+        assert_eq!(Grammar::for_path("nginx.conf"), Grammar::Keyed);
+        assert_eq!(Grammar::for_path("templates/_helpers.tpl"), Grammar::Keyed);
         assert_eq!(Grammar::for_path("index.HTML"), Grammar::Html);
         assert_eq!(Grammar::for_path("page.htm"), Grammar::Html);
         assert_eq!(Grammar::for_path("app.xhtml"), Grammar::Html);
@@ -1342,13 +1626,17 @@ mod tests {
 
     #[test]
     fn prisma_schema_colours_comments_enums_and_types() {
-        let text = "// note\nenum Role { USER }\nname String\n";
-        assert_eq!(Grammar::for_path("schema.prisma"), Grammar::CLike);
+        let text = "// note\nmodel User { id String }\nenum Role { USER }\n";
+        assert_eq!(Grammar::for_path("schema.prisma"), Grammar::Prisma);
         assert_eq!(
-            spans(text, Grammar::CLike, 0),
+            spans(text, Grammar::Prisma, 0),
             [("// note", Scope::Comment)]
         );
-        let enumerated = spans(text, Grammar::CLike, 1);
+        let model = spans(text, Grammar::Prisma, 1);
+        assert!(model.contains(&("model", Scope::Keyword)), "{model:?}");
+        assert!(model.contains(&("User", Scope::Type)), "{model:?}");
+        assert!(model.contains(&("String", Scope::Type)), "{model:?}");
+        let enumerated = spans(text, Grammar::Prisma, 2);
         assert!(
             enumerated.contains(&("enum", Scope::Keyword)),
             "{enumerated:?}"
@@ -1357,8 +1645,57 @@ mod tests {
             enumerated.contains(&("Role", Scope::Type)),
             "{enumerated:?}"
         );
-        let field = spans(text, Grammar::CLike, 2);
-        assert!(field.contains(&("String", Scope::Type)), "{field:?}");
+    }
+
+    #[test]
+    fn sql_colours_comments_and_case_insensitive_keywords() {
+        let text = "-- note\nSELECT id FROM users WHERE name = 'x';\n/* block */\n";
+        assert_eq!(Grammar::for_path("seed.sql"), Grammar::Sql);
+        assert_eq!(spans(text, Grammar::Sql, 0), [("-- note", Scope::Comment)]);
+        let query = spans(text, Grammar::Sql, 1);
+        assert!(query.contains(&("SELECT", Scope::Keyword)), "{query:?}");
+        assert!(query.contains(&("FROM", Scope::Keyword)), "{query:?}");
+        assert!(query.contains(&("WHERE", Scope::Keyword)), "{query:?}");
+        assert!(query.contains(&("'x'", Scope::String)), "{query:?}");
+        assert_eq!(
+            spans(text, Grammar::Sql, 2),
+            [("/* block */", Scope::Comment)]
+        );
+        let lower = spans("select * from t;\n", Grammar::Sql, 0);
+        assert!(lower.contains(&("select", Scope::Keyword)), "{lower:?}");
+        assert!(lower.contains(&("from", Scope::Keyword)), "{lower:?}");
+    }
+
+    #[test]
+    fn hcl_colours_terraform_blocks_and_comments() {
+        let text = "# note\nresource \"aws_s3_bucket\" \"data\" {\n  bucket = \"x\"\n}\n";
+        assert_eq!(Grammar::for_path("main.tf"), Grammar::Hcl);
+        assert_eq!(spans(text, Grammar::Hcl, 0), [("# note", Scope::Comment)]);
+        let block = spans(text, Grammar::Hcl, 1);
+        assert!(block.contains(&("resource", Scope::Keyword)), "{block:?}");
+        assert!(
+            block.contains(&("\"aws_s3_bucket\"", Scope::String)),
+            "{block:?}"
+        );
+        let attr = spans(text, Grammar::Hcl, 2);
+        assert!(attr.contains(&("bucket", Scope::Property)), "{attr:?}");
+        assert!(attr.contains(&("\"x\"", Scope::String)), "{attr:?}");
+        let slash = spans("// c\nvariable \"n\" {}\n", Grammar::Hcl, 0);
+        assert_eq!(slash, [("// c", Scope::Comment)]);
+    }
+
+    #[test]
+    fn helm_template_actions_are_coloured_in_keyed_files() {
+        let text = "image: {{ .Values.image }}\n# note\n";
+        assert_eq!(Grammar::for_path("values.yaml"), Grammar::Keyed);
+        assert_eq!(Grammar::for_path("helpers.tpl"), Grammar::Keyed);
+        let row = spans(text, Grammar::Keyed, 0);
+        assert!(row.contains(&("image", Scope::Property)), "{row:?}");
+        assert!(
+            row.contains(&("{{ .Values.image }}", Scope::Keyword)),
+            "{row:?}"
+        );
+        assert_eq!(spans(text, Grammar::Keyed, 1), [("# note", Scope::Comment)]);
     }
 
     #[test]
@@ -1481,6 +1818,9 @@ mod tests {
         for grammar in [
             Grammar::Rust,
             Grammar::CLike,
+            Grammar::Prisma,
+            Grammar::Sql,
+            Grammar::Hcl,
             Grammar::Python,
             Grammar::Json,
             Grammar::Keyed,
@@ -1725,6 +2065,12 @@ mod tests {
         let cases = [
             (Grammar::Rust, "fn a() {}\n// c\nlet s = \"x\";\n"),
             (Grammar::CLike, "function a() {}\n// c\nconst s = `x`;\n"),
+            (Grammar::Prisma, "model User {\n  // c\n  name String\n}\n"),
+            (Grammar::Sql, "SELECT a\n-- c\nFROM t WHERE b = 'x';\n"),
+            (
+                Grammar::Hcl,
+                "resource \"x\" \"y\" {\n  # c\n  name = \"z\"\n}\n",
+            ),
             (Grammar::Python, "def a():\n    # c\n    s = \"x\"\n"),
             (Grammar::Json, "{\n  \"a\": 1,\n  \"b\": true\n}\n"),
             (Grammar::Keyed, "[s]\na = 1\nb = \"x\"\n"),

@@ -26,13 +26,13 @@ export class CursorClick {
     this.pending = null;
   }
 
-  begin(event: ClickEvent, point: CellPoint, viewport: Viewport): void {
+  begin(event: ClickEvent, point: CellPoint, viewport: Viewport, agent = false): void {
     this.pending = null;
     if (
       !plainClick(event) ||
       !viewport.terminal ||
       viewport.scrollOffset !== 0 ||
-      viewport.modes.alt_screen ||
+      (viewport.modes.alt_screen && !agent) ||
       viewport.modes.mouse_mode !== "Off" ||
       !viewport.cursor.visible ||
       point.line < 0 ||

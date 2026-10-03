@@ -448,17 +448,19 @@ fn status_text(app: &App) -> String {
                 symbol,
                 places,
                 selected,
+                truncated,
             } => {
                 let at = selected + 1;
                 let count = places.len();
+                let cut = if *truncated { " (partial search)" } else { "" };
                 match places.get(*selected) {
                     Some(place) => format!(
-                        "{symbol} {at}/{count}: {}:{}  {}   (Up/Down, Enter opens, Esc cancels)",
+                        "{symbol} {at}/{count}{cut}: {}:{}  {}   (Up/Down, Enter opens, Esc cancels)",
                         place.path,
                         place.line,
                         place.text.trim()
                     ),
-                    None => format!("{symbol}: {count} places"),
+                    None => format!("{symbol}: {count} places{cut}"),
                 }
             }
         };

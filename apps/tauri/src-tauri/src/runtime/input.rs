@@ -89,9 +89,12 @@ fn shell_navigation(modes: &TermModes) -> bool {
 
 const MAX_CURSOR_STEPS: usize = 4096;
 
-/// Only traverse soft-wrapped rows: up/down would recall shell history.
-pub fn encode_cursor_move(grid: &CellGrid, row: u16, col: u16) -> Option<Vec<u8>> {
-    if !shell_navigation(&grid.modes) || !grid.cursor.visible {
+/// Only traverse soft-wrapped rows: up/down may recall history or select a TUI control.
+pub fn encode_cursor_move(grid: &CellGrid, row: u16, col: u16, agent: bool) -> Option<Vec<u8>> {
+    if grid.modes.mouse_mode != MouseMode::Off
+        || (grid.modes.alt_screen && !agent)
+        || !grid.cursor.visible
+    {
         return None;
     }
     let width = usize::from(grid.size.cols);
@@ -289,25 +292,40 @@ mod tests {
     #[test]
     fn clicks_batch_horizontal_moves_and_honor_application_cursor_mode() {
         let mut grid = cursor_grid(40, 3, 1, 24);
-        assert_eq!(encode_cursor_move(&grid, 1, 10), Some(b"\x1b[D".repeat(14)));
-        assert_eq!(encode_cursor_move(&grid, 1, 30), Some(b"\x1b[C".repeat(6)));
-        assert_eq!(encode_cursor_move(&grid, 1, 24), None);
+        assert_eq!(
+            encode_cursor_move(&grid, 1, 10, false),
+            Some(b"\x1b[D".repeat(14))
+        );
+        assert_eq!(
+            encode_cursor_move(&grid, 1, 30, false),
+            Some(b"\x1b[C".repeat(6))
+        );
+        assert_eq!(encode_cursor_move(&grid, 1, 24, false), None);
         grid.modes.app_cursor_keys = true;
-        assert_eq!(encode_cursor_move(&grid, 1, 10), Some(b"\x1bOD".repeat(14)));
+        assert_eq!(
+            encode_cursor_move(&grid, 1, 10, false),
+            Some(b"\x1bOD".repeat(14))
+        );
     }
 
     #[test]
     fn clicks_cross_soft_wraps_but_never_hard_line_breaks() {
         let mut grid = cursor_grid(10, 3, 2, 3);
-        assert_eq!(encode_cursor_move(&grid, 0, 8), None);
+        assert_eq!(encode_cursor_move(&grid, 0, 8, false), None);
         grid.visible[0].wrapped = true;
         grid.visible[1].wrapped = true;
-        assert_eq!(encode_cursor_move(&grid, 0, 8), Some(b"\x1b[D".repeat(15)));
+        assert_eq!(
+            encode_cursor_move(&grid, 0, 8, false),
+            Some(b"\x1b[D".repeat(15))
+        );
         grid.cursor.line = 0;
         grid.cursor.col = 8;
-        assert_eq!(encode_cursor_move(&grid, 2, 3), Some(b"\x1b[C".repeat(15)));
+        assert_eq!(
+            encode_cursor_move(&grid, 2, 3, false),
+            Some(b"\x1b[C".repeat(15))
+        );
         grid.visible[1].wrapped = false;
-        assert_eq!(encode_cursor_move(&grid, 2, 3), None);
+        assert_eq!(encode_cursor_move(&grid, 2, 3, false), None);
     }
 
     #[test]
@@ -335,11 +353,23 @@ mod tests {
             Cell::default(),
         ]
         .into();
-        assert_eq!(encode_cursor_move(&grid, 0, 0), Some(b"\x1b[D".repeat(3)));
-        assert_eq!(encode_cursor_move(&grid, 0, 2), Some(b"\x1b[D".repeat(2)));
+        assert_eq!(
+            encode_cursor_move(&grid, 0, 0, false),
+            Some(b"\x1b[D".repeat(3))
+        );
+        assert_eq!(
+            encode_cursor_move(&grid, 0, 2, false),
+            Some(b"\x1b[D".repeat(2))
+        );
         grid.cursor.col = 0;
-        assert_eq!(encode_cursor_move(&grid, 0, 4), Some(b"\x1b[C".repeat(3)));
-        assert_eq!(encode_cursor_move(&grid, 0, 2), Some(b"\x1b[C".to_vec()));
+        assert_eq!(
+            encode_cursor_move(&grid, 0, 4, false),
+            Some(b"\x1b[C".repeat(3))
+        );
+        assert_eq!(
+            encode_cursor_move(&grid, 0, 2, false),
+            Some(b"\x1b[C".to_vec())
+        );
     }
 
     #[test]
@@ -364,14 +394,33 @@ mod tests {
             },
         ] {
             grid.modes = modes;
-            assert_eq!(encode_cursor_move(&grid, 1, 10), None);
+            assert_eq!(encode_cursor_move(&grid, 1, 10, false), None);
         }
         grid.modes = modes();
-        assert_eq!(encode_cursor_move(&grid, 1, 40), None);
-        assert_eq!(encode_cursor_move(&grid, 3, 10), None);
-        assert_eq!(encode_cursor_move(&grid, u16::MAX, u16::MAX), None);
+        assert_eq!(encode_cursor_move(&grid, 1, 40, false), None);
+        assert_eq!(encode_cursor_move(&grid, 3, 10, false), None);
+        assert_eq!(encode_cursor_move(&grid, u16::MAX, u16::MAX, false), None);
         grid.cursor.visible = false;
-        assert_eq!(encode_cursor_move(&grid, 1, 10), None);
+        assert_eq!(encode_cursor_move(&grid, 1, 10, false), None);
+    }
+
+    #[test]
+    fn agent_prompt_clicks_work_in_alternate_screen_without_stealing_program_mouse() {
+        let mut grid = cursor_grid(10, 3, 2, 3);
+        grid.modes.alt_screen = true;
+        assert_eq!(encode_cursor_move(&grid, 2, 1, false), None);
+        assert_eq!(
+            encode_cursor_move(&grid, 2, 1, true),
+            Some(b"\x1b[D".repeat(2))
+        );
+        assert_eq!(encode_cursor_move(&grid, 1, 8, true), None);
+        grid.visible[1].wrapped = true;
+        assert_eq!(
+            encode_cursor_move(&grid, 1, 8, true),
+            Some(b"\x1b[D".repeat(5))
+        );
+        grid.modes.mouse_mode = MouseMode::Normal;
+        assert_eq!(encode_cursor_move(&grid, 2, 1, true), None);
     }
 
     #[test]
@@ -381,10 +430,10 @@ mod tests {
             row.wrapped = true;
         }
         assert_eq!(
-            encode_cursor_move(&grid, 16, 0),
+            encode_cursor_move(&grid, 16, 0, false),
             Some(b"\x1b[C".repeat(MAX_CURSOR_STEPS))
         );
-        assert_eq!(encode_cursor_move(&grid, 16, 1), None);
+        assert_eq!(encode_cursor_move(&grid, 16, 1, false), None);
     }
 
     /// The editor's document budget refuses an oversize paste only once the

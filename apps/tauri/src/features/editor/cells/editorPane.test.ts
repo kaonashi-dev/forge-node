@@ -110,4 +110,10 @@ describe("the terminal editor pane", () => {
     expect(pane()).toContain("editorKeyForMeta");
     expect(pane()).toContain("event.metaKey");
   });
+
+  /* An SGR mouse report has no Command bit. Command-click is the definition
+     gesture, so the pane reports it as control and the editor reads that. */
+  it("reports a command click as control", () => {
+    expect(pane()).toContain("event.ctrlKey || event.metaKey");
+  });
 });

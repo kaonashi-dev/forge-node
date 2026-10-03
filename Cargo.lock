@@ -755,6 +755,7 @@ dependencies = [
  "notify",
  "persistence",
  "protocol",
+ "rmp-serde",
  "serde",
  "serde_json",
  "tempfile",

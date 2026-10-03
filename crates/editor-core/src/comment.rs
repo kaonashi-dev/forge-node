@@ -7,8 +7,9 @@ pub(crate) fn toggle(document: &mut Document) -> Result<Option<Applied>, EditErr
         return Err(EditError::ReadOnly);
     }
     let prefix = match document.input_style().grammar {
-        Grammar::Rust | Grammar::CLike => "//",
-        Grammar::Python | Grammar::Shell | Grammar::Keyed => "#",
+        Grammar::Rust | Grammar::CLike | Grammar::Prisma => "//",
+        Grammar::Sql => "--",
+        Grammar::Python | Grammar::Shell | Grammar::Keyed | Grammar::Hcl => "#",
         Grammar::Json | Grammar::Markdown | Grammar::Html | Grammar::None => return Ok(None),
     };
     let selection = document.selection();
@@ -133,6 +134,13 @@ mod tests {
         });
         toggle(&mut document).unwrap();
         assert_eq!(document.as_str(), "# print(1)");
+        let mut sql = Document::from_string("SELECT 1".into(), false);
+        sql.set_input_style(InputStyle {
+            grammar: Grammar::Sql,
+            ..InputStyle::default()
+        });
+        toggle(&mut sql).unwrap();
+        assert_eq!(sql.as_str(), "-- SELECT 1");
         let mut plain = Document::from_string("text".into(), false);
         assert!(toggle(&mut plain).unwrap().is_none());
         let mut html = Document::from_string("<div></div>".into(), false);

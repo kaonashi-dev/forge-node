@@ -43,20 +43,30 @@ Plan references: §10.4, §10.5, §11. ADRs: 005 (PTY owned by the daemon),
 ### Cursor navigation in the desktop terminal
 
 A plain left click without dragging moves the shell cursor along its current
-logical line, including visible soft-wrapped continuations. Dragging selects;
-double/triple clicks select a word/line. Shift-click remains selection-only.
+logical line, including visible soft-wrapped continuations. Agent sessions also
+allow this within their alternate-screen prompt when they have not enabled mouse
+reporting. Dragging selects; double/triple clicks select a word/line. Shift-click
+remains selection-only.
 While dragging, holding the pointer at the top or bottom edge scrolls through
 history and extends the selection, even while the pointer stays still. The
 selection clears on a terminal/tab change; release or loss of focus stops the
 drag. Copy includes selected cached rows outside the viewport, with a 5,000-line
 and 8 MiB limit; unavailable history or oversized copies are refused whole.
 Alt/Option + Left/Right sends the shell's backward/forward-word bindings
-(`Esc b` / `Esc f`). Programs using the alternate screen or mouse reporting
-retain their ordinary keyboard and mouse input.
+(`Esc b` / `Esc f`). Programs using mouse reporting receive clicks directly;
+non-agent alternate-screen programs retain their ordinary input.
+
+File references and URLs in terminal output open with Cmd + click on macOS,
+or Ctrl + click elsewhere. Their hover underline and pointer cursor appear only
+while that modifier is held. Plain clicks and drags keep the terminal's cursor,
+selection and mouse-reporting behavior.
 
 The host translates a click into one bounded batch of horizontal arrow keys,
 using the passive grid to count wide glyphs once. It never sends up/down to
-reach another output line, since shells interpret those as history navigation.
+reach another output line, since shells and agent TUIs may interpret those as
+history or menu navigation. Agent prompts with hard line breaks can only be
+navigated within the cursor's current logical line unless their program enables
+mouse reporting.
 Clicks in scrollback and clicks whose terminal or frame changed are ignored.
 The shell still owns the editable buffer, its boundaries and its key bindings;
 there is no prompt-boundary metadata or local editor overlay.

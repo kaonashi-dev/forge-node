@@ -1,9 +1,10 @@
-// A press on a link, told apart from a drag.
-//
-// The slop matches a cursor click: a twitch must not both open the link and
-// leave a selection, and a drag is how the address gets copied.
+import { isMac } from "../../actions/keys";
 
 const SLOP = 4;
+
+export function canFollowLink(event: Pick<MouseEvent, "metaKey" | "ctrlKey">): boolean {
+  return isMac() ? event.metaKey : event.ctrlKey;
+}
 
 export class LinkPress {
   private origin: { x: number; y: number } | null = null;

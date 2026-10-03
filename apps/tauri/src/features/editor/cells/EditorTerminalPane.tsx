@@ -113,14 +113,17 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     }
   });
 
-  /*
-   * The pane's own menu. Copy and paste go through the *terminal's* selection
-   * and the system clipboard, not the editor's internal register: what the
-   * person sees highlighted is what a copy should take, and the register is
-   * the editor's own scratch space.
-   */
+  function copy(): void {
+    void sendEditorKey(
+      props.session,
+      { key: "c", ctrl: true, alt: false, shift: false },
+      probe.send(),
+    ).catch(() => undefined);
+  }
+
   function menuItems(): MenuItem[] {
     return [
+      { kind: "item", label: "Copy", run: copy },
       {
         kind: "item",
         label: "Paste",
@@ -350,7 +353,9 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
       kind,
       col,
       row,
-      ctrl: event.ctrlKey,
+      // SGR reports shift, alt and control, and no Command bit. Command-click
+      // is the definition gesture, so it travels as control.
+      ctrl: event.ctrlKey || event.metaKey,
       alt: event.altKey,
       shift: event.shiftKey,
     }).catch(() => undefined);
@@ -500,7 +505,10 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
               x={at().x}
               y={at().y}
               items={menuItems()}
-              onDismiss={() => setMenuAt(null)}
+              onDismiss={() => {
+                setMenuAt(null);
+                keys.focus({ preventScroll: true });
+              }}
             />
           )}
         </Show>
@@ -511,6 +519,11 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
           autocapitalize="off"
           spellcheck={false}
           onKeyDown={onKeyDown}
+          onCopy={(event) => {
+            // Native Edit > Copy can arrive without a keydown in WKWebView.
+            event.preventDefault();
+            copy();
+          }}
           onPaste={onPaste}
           onCompositionEnd={onCompositionEnd}
           onInput={() => {
