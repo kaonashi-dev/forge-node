@@ -68,6 +68,7 @@ const LANGUAGES: Readonly<Record<string, string>> = {
   toml: "ini",
   ini: "ini",
   cfg: "ini",
+  conf: "ini",
   env: "ini",
   sh: "bash",
   bash: "bash",
@@ -84,6 +85,14 @@ const LANGUAGES: Readonly<Record<string, string>> = {
   md: "markdown",
   markdown: "markdown",
   sql: "sql",
+  psql: "sql",
+  pgsql: "sql",
+  mysql: "sql",
+  // highlight.js has no HCL grammar; ini covers # comments and key = value.
+  tf: "ini",
+  tfvars: "ini",
+  hcl: "ini",
+  tpl: "yaml",
 };
 
 const SCOPES: Readonly<Record<string, keyof EditorScopes>> = {

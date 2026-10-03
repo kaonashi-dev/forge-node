@@ -497,7 +497,7 @@ Carry these forward; they are real, verified, and not yet fixed.
 | Whole-grid delta on a line feed | `DeltaBuilder::delta` | Mid-screen edits now travel as column patches. A line feed can still report `TermDamage::Full` (see Alacritty `Term::damage()`), so that path still repaints the viewport. |
 | WAL write under the core lock | `Daemon::pump_terminal` | fsync is gone (`synchronous = NORMAL`) but the write still holds the global mutex on the delta rung. |
 | `resolved_env` under the core lock | `Daemon::resolved_env` | 796 ms measured before `-i`; `warm_env` resolves off the lock at startup, but a reader that wins that race still captures under it, up to the 5 s deadline plus 500 ms reap grace. |
-| Unbounded process-output capture | `git-service::diff`, `fs-service` content/definition search | Response limits are applied after complete subprocess output has been captured. |
+| Unbounded process-output capture | `git-service::diff`, `fs-service` content search | Response limits are applied after complete subprocess output has been captured; definition grep uses a 4 MiB bounded capture. |
 | Unbounded analytics records and enumeration | `agents::usage::analytics` | Candidate retention is bounded, but `BufReader::lines()` allocates a complete record and directory enumeration has no entry budget. |
 | Full fold rescanning and undo-string copying | `editor-cli::App::rescan_edited`, `editor-core::history` | Edits still rebuild fold regions; coalesced typing clones growing undo strings. |
 | Eager diff rows | `DiffFiles.tsx`, `PatchView.tsx`, `SplitPatchView.tsx` | Files start expanded and all patch rows mount without viewport windowing. |

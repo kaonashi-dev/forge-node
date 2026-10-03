@@ -361,8 +361,13 @@ fn handle_control(
             Err(reason) => control.send(&EditorMessage::Refused { request_id, reason })?,
         },
         DaemonMessage::GitMarks { marks, .. } => app.set_marks(&marks),
-        DaemonMessage::Definitions { symbol, places, .. } => {
-            app.definitions_arrived(symbol, places);
+        DaemonMessage::Definitions {
+            symbol,
+            places,
+            truncated,
+            ..
+        } => {
+            app.definitions_arrived(symbol, places, truncated);
         }
         DaemonMessage::Diagnostics { command, items, .. } => {
             app.diagnostics_arrived(command, items);

@@ -277,20 +277,29 @@ while a session is on screen — the two sizes do not move together.
 **On a Mac the platform chords reach the editor.** `editorChords.ts` maps ⌘S/C/X,
 ⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys. ⌘G is
 find-next and not "go to line" — a Mac user pressing it after a search wants the
-next match — so go-to-line is ⌥⌘L. ⌘V is deliberately unclaimed: the WebView's
+next match — so go-to-line is ⌥⌘L. On the cell surface, native Edit → Copy events
+and the pane's right-click **Copy** send the same Ctrl-C to the editor, which owns
+the selection even when it extends beyond the visible rows. Dismissing the
+context menu returns keyboard focus to the editor. ⌘V is deliberately unclaimed:
+the WebView's
 `paste` event is what carries the clipboard into the pane. `--read-only` refuses every edit at the transaction
 entry and says so instead of silently dropping keys.
 
-**The mouse moves the caret.** A left click places the caret; a Shift-click
-extends the selection to the click; a left drag selects; an Alt-click adds a
-caret and an Alt-drag makes a column of them; a click on the gutter's fold
-marker folds that block; a click on the overview ruler jumps to the line it
-stands for; the wheel scrolls the viewport without moving the caret. The editor turns on mouse capture on entry
+**The mouse moves the caret.** A left click places the caret; a second click on
+the same cell selects the identifier under it (`PayinEvents` is one selection,
+a dot is a boundary) and a third selects the line, terminator included. A drag
+after either grows by that same unit. A Shift-click extends the selection to
+the click; a left drag selects; an Alt-click adds a caret and an Alt-drag makes
+a column of them; a click on the gutter's fold marker folds that block; a click
+on the overview ruler jumps to the line it stands for; the wheel scrolls the
+viewport without moving the caret. Command-click and Ctrl-click ask where the
+identifier under the pointer is declared, the same request as Alt-D. The cell
+surface reports Command as Control, because an SGR mouse report has no Command
+bit. The editor turns on mouse capture on entry
 (`EnableMouseCapture`), so a real terminal reports the events and the Code pane
 forwards them as the same SGR reports the main terminal sends — the editor reads
-the mouse itself either way. Out of scope for now: go-to-definition on click,
-middle-click paste, and a native right-click menu (the Code pane keeps its own
-HTML context menu).
+the mouse itself either way. Out of scope for now: middle-click paste, and a
+native right-click menu (the Code pane keeps its own HTML context menu).
 
 ## What the core guarantees
 
@@ -459,7 +468,7 @@ HTML context menu).
 
 ## Language
 
-Eight grammars, chosen by the file name: its extension, plus a few basenames
+Eleven grammars, chosen by the file name: its extension, plus a few basenames
 that have none (`.env`, `.env.*`, `Makefile`, `GNUmakefile`). Never by content:
 sniffing it would have to be undone the moment a person types, and a shebang is
 a guess.
@@ -467,16 +476,19 @@ a guess.
 | Grammar | Extensions | What it knows |
 | --- | --- | --- |
 | Rust | `rs` | line and block comments, attributes, strings and char literals (a lifetime is not a string), numbers, keywords, `Type` by leading capital, `name(` as a call |
-| C-like | `ts` `tsx` `js` `jsx` `mjs` `cjs` `go` `java` `kt` `kts` `c` `h` `cc` `cpp` `hpp` `cs` `swift` `scala` `php` `dart` `prisma` | the same, without Rust's attributes and lifetimes |
+| C-like | `ts` `tsx` `js` `jsx` `mjs` `cjs` `go` `java` `kt` `kts` `c` `h` `cc` `cpp` `hpp` `cs` `swift` `scala` `php` `dart` | the same, without Rust's attributes and lifetimes |
+| Prisma | `prisma` | C-like tokens with schema keywords (`model`, `enum`, `datasource`, `generator`, `view`) |
+| SQL | `sql` `psql` `pgsql` `mysql` | `--` and `/* */` comments, quotes, numbers, case-insensitive keywords, `name(` as a call |
+| HCL | `tf` `tfvars` `hcl` | `#`/`//`/`/* */` comments, quotes, Terraform block keywords, `key =` properties, `name(` as a call |
 | Python | `py` `pyi` | `#` comments, triple-quoted strings, numbers, keywords, calls |
 | JSON | `json` | keys apart from values, numbers, `true`/`false`/`null` |
-| Keyed | `toml` `yaml` `yml` `ini` `cfg` `conf` `env`, `.env`, `.env.*` | `[section]`, `key =` / `key:`, dotenv's `export KEY=`, quoted values, `#`/`;` comments |
+| Keyed | `toml` `yaml` `yml` `ini` `cfg` `conf` `env` `tpl`, `.env`, `.env.*` | `[section]`, `key =` / `key:`, dotenv's `export KEY=`, quoted values, `#`/`;` comments, Helm `{{ … }}` actions |
 | Shell | `sh` `bash` `zsh` `fish` `mk` `make`, `Makefile`, `GNUmakefile` | `#` comments, quotes, `$VAR` and `${...}`, keywords |
 | Markdown | `md` `markdown` `mdx` | headings, quotes, fenced and inline code, links, list bullets |
 | HTML | `html` `htm` `xhtml` `xml` `svg` | comments, doctype and processing instructions, tags, attributes, quoted values, entities; `script`/`style`/`textarea`/`title` bodies stay plain so a `<` there is not a tag |
 
 Everything else is plain, which is the honest answer rather than a wrong colour.
-Against CodeMirror's language packs the gaps are CSS/SCSS, SQL, Ruby, Lua,
+Against CodeMirror's language packs the gaps are CSS/SCSS, Ruby, Lua,
 Haskell and the rest of the long tail; each is a scanner arm here, not a
 dependency.
 
@@ -527,7 +539,8 @@ question is asked says so, since the working tree may have moved since the
 gutter was drawn.
 
 **Go to definition is a request, not a lookup.** The editor never opens the
-checkout, so `Alt-D` sends the word at the caret to the daemon, which greps the
+checkout, so `Alt-D` — and Command-click or Ctrl-click on the identifier —
+sends the word at the caret to the daemon, which greps the
 tree through `fs-service`. The symbol is validated as an identifier on both
 sides before it reaches `git grep` — a name that arrives from a caret must never
 be able to become a regex (`SearchKind::Definition`). What comes back is
@@ -538,6 +551,20 @@ outcomes. Following one is another request — one buffer per process means the
 editor cannot open a second — and the daemon opens it as an ordinary editor
 session, the same path a click in the file tree takes. The search runs on the
 editor's control thread, off the core lock and off the PTY's paint thread.
+
+TypeScript and JavaScript editors also search installed declaration files
+(`.d.ts`, `.d.mts`, `.d.cts`) in packages imported by the current file. This covers
+NestJS services calling dependency methods such as
+`this.queue.upsertJobScheduler`: the candidate is BullMQ's `Queue` declaration,
+even though `node_modules` is ignored by Git and hidden in the file tree.
+Package lookup uses the nearest installation inside the checkout, including
+internal package symlinks; it never follows a package outside that boundary.
+This remains a candidate search, without receiver-type resolution or an LSP.
+
+Multiline signatures use up to twelve following lines and 4 KiB per signature.
+Dependency scans are bounded to 32 imported packages, 8,192 directory entries,
+16 MiB total and the ordinary 2 MiB file cap. An exhausted budget is shown as a
+partial search, including when it found no candidates.
 
 **Completion is the buffer's own vocabulary.** `Ctrl-Space` offers the words
 already in the file that continue the identifier at the caret — no language

@@ -112,6 +112,8 @@ pub enum DaemonMessage {
         /// Echoed, because the editor may have moved on.
         symbol: String,
         places: Vec<WirePlace>,
+        #[serde(default)]
+        truncated: bool,
     },
     /// What the changed block at a line replaced.
     ///

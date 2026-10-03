@@ -241,6 +241,31 @@ mod tests {
         assert_eq!(word_left(&body, 9), 5);
     }
 
+    /// Humps and underscores stay inside the word. A dot is a boundary.
+    #[test]
+    fn a_camel_case_identifier_is_one_word() {
+        let body =
+            text("export enum PayinEvents {\n  CHECKOUT_INFO_UPDATED = 'payin.processing',\n");
+        let name = body.as_str().find("PayinEvents").unwrap();
+        let between = name + "Payin".len();
+        assert_eq!(
+            word_span(&body, between),
+            (name, name + "PayinEvents".len())
+        );
+        let constant = body.as_str().find("CHECKOUT_INFO_UPDATED").unwrap();
+        assert_eq!(
+            word_span(&body, constant + 8),
+            (constant, constant + "CHECKOUT_INFO_UPDATED".len())
+        );
+        let dotted = body.as_str().find("payin.processing").unwrap();
+        let after_dot = dotted + "payin.".len();
+        assert_eq!(word_span(&body, dotted), (dotted, dotted + "payin".len()));
+        assert_eq!(
+            word_span(&body, after_dot),
+            (after_dot, after_dot + "processing".len())
+        );
+    }
+
     #[test]
     fn home_toggles_between_the_indent_and_the_margin() {
         let body = text("    value");

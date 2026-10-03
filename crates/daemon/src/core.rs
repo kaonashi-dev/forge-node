@@ -5747,46 +5747,37 @@ impl Daemon {
 
     /// Where a symbol is declared, for the editor's go-to-definition.
     ///
-    /// `git grep -w -F` through `fs-service`, which validates the symbol as an
-    /// identifier first: a name that arrives from a caret in a buffer must
-    /// never be able to become a regex (`SearchKind::Definition`). Candidates
-    /// and not a resolution — the ranking is a heuristic, so the editor offers
-    /// the list. Runs on the editor's own control thread, off the core lock,
-    /// which is only taken to read the workspace id.
+    /// Runs on the editor control thread, with filesystem work outside the core lock.
     pub(crate) fn editor_definitions(
         self: &Arc<Self>,
         session_id: SessionId,
         symbol: &str,
-    ) -> Vec<editor_control::WirePlace> {
-        let Some(workspace_id) = ({
-            let inner = self.lock();
-            inner.sessions.get(&session_id).map(|s| s.workspace_id)
-        }) else {
-            return Vec::new();
+    ) -> (Vec<editor_control::WirePlace>, bool) {
+        let Ok((workspace_id, relative)) = self.editor_target(session_id) else {
+            return (Vec::new(), false);
         };
         let Ok(root) = self.workspace_path(workspace_id) else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
-        let found = fs_service::search_files(
-            &root,
-            symbol,
-            fs_service::SearchKind::Definition,
-            editor_control::MAX_PLACES,
-        );
+        let found =
+            fs_service::search_definitions(&root, &relative, symbol, editor_control::MAX_PLACES);
         match found {
-            Ok(results) => results
-                .matches
-                .into_iter()
-                .take(editor_control::MAX_PLACES)
-                .map(|hit| editor_control::WirePlace {
-                    path: hit.path,
-                    line: hit.line,
-                    text: hit.text,
-                })
-                .collect(),
+            Ok(results) => (
+                results
+                    .matches
+                    .into_iter()
+                    .take(editor_control::MAX_PLACES)
+                    .map(|hit| editor_control::WirePlace {
+                        path: hit.path,
+                        line: hit.line,
+                        text: hit.text,
+                    })
+                    .collect(),
+                results.truncated,
+            ),
             Err(error) => {
                 tracing::debug!(%session_id, %error, "definition search failed");
-                Vec::new()
+                (Vec::new(), true)
             }
         }
     }

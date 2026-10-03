@@ -10,6 +10,7 @@ describe("search syntax", () => {
     ["src/main.py", 'return "hello" # note', "return"],
     ["build.gradle.kts", 'val message = "hello" // note', "val"],
     ["Makefile", 'include "hello" # note', "include"],
+    ["seed.sql", "SELECT 'hello' -- note", "SELECT"],
   ])("colours %s without changing its text", (path, source, keyword) => {
     const [tokens] = highlightExcerpt(path, [source]);
     expect(textOf(tokens)).toBe(source);
@@ -21,6 +22,22 @@ describe("search syntax", () => {
       true,
     );
   });
+
+  it.each(["values.yaml", "Chart.yml", "nginx.conf", "main.tf", "prod.tfvars"])(
+    "colours infra config %s",
+    (path) => {
+      const source =
+        path.endsWith("yaml") || path.endsWith("yml")
+          ? 'image: "hello" # note'
+          : 'name = "hello" # note';
+      const [tokens] = highlightExcerpt(path, [source]);
+      expect(textOf(tokens)).toBe(source);
+      expect(tokens.some((token) => token.scope === "string")).toBe(true);
+      expect(tokens.some((token) => token.scope === "comment" && token.text.includes("note"))).toBe(
+        true,
+      );
+    },
+  );
 
   it.each(["index.html", "page.htm", "app.xhtml", "data.xml", "icon.svg"])(
     "colours markup tags in %s",

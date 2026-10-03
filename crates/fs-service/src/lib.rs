@@ -14,6 +14,7 @@ use thiserror::Error;
 
 mod entry_move;
 mod name_search;
+mod typescript_definitions;
 
 pub use name_search::search_names;
 
@@ -81,6 +82,9 @@ fn path_under_dependency_dir(rel: &str) -> bool {
 /// and none of the first two hundred need be a declaration. This bounds the
 /// parse instead, and the excess is reported as `truncated`.
 const MAX_DEFINITION_SCAN: usize = 5_000;
+const DEFINITION_CONTEXT_LINES: usize = 12;
+const MAX_DEFINITION_SIGNATURE_BYTES: usize = 4096;
+const MAX_DEFINITION_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Bytes inspected for a `NUL` when deciding whether a file is binary.
 const BINARY_PROBE: usize = 8 * 1024;
@@ -875,6 +879,25 @@ pub fn search_files(
     }
 }
 
+/// Declaration candidates, including installed types from the current file's npm imports.
+/// Dependency reads stay inside the checkout and report exhausted budgets as `truncated`.
+pub fn search_definitions(
+    root: &Path,
+    relative: &str,
+    symbol: &str,
+    limit: usize,
+) -> Result<SearchResults, FsError> {
+    let root = canonicalize_root(root)?;
+    resolve_inside(&root, relative)?;
+    let limit = limit.clamp(1, MAX_SEARCH_RESULTS);
+    let symbol = symbol.trim();
+    let mut results = search_files(&root, symbol, SearchKind::Definition, limit)?;
+    if is_identifier(symbol) {
+        typescript_definitions::append(&root, relative, symbol, limit, &mut results);
+    }
+    Ok(results)
+}
+
 /// Content hash used as an optimistic-concurrency token.
 #[must_use]
 pub fn revision_of(bytes: &[u8]) -> String {
@@ -901,6 +924,12 @@ pub fn language_for(path: &str) -> &'static str {
         "json" => "json",
         "toml" => "toml",
         "md" | "markdown" => "markdown",
+        "sql" | "psql" | "pgsql" | "mysql" => "sql",
+        "prisma" => "prisma",
+        "yaml" | "yml" => "yaml",
+        "conf" | "cfg" | "ini" => "ini",
+        "tf" | "tfvars" | "hcl" => "hcl",
+        "tpl" => "yaml",
         _ => "",
     }
 }
@@ -1233,6 +1262,15 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
 const CONTEXT_ARG: &str = "3";
 
 fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchResults, FsError> {
+    search_content_walk_with_context(root, query, limit, SEARCH_CONTEXT_LINES)
+}
+
+fn search_content_walk_with_context(
+    root: &Path,
+    query: &str,
+    limit: usize,
+    context_lines: usize,
+) -> Result<SearchResults, FsError> {
     let tree = list_via_walk(root)?;
     let mut matches = Vec::new();
     let mut truncated = tree.truncated;
@@ -1254,8 +1292,8 @@ fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchR
                     truncated = true;
                     break;
                 }
-                let above = idx.saturating_sub(SEARCH_CONTEXT_LINES);
-                let below = (idx + 1 + SEARCH_CONTEXT_LINES).min(lines.len());
+                let above = idx.saturating_sub(context_lines);
+                let below = (idx + 1 + context_lines).min(lines.len());
                 matches.push(SearchMatch {
                     path: entry.path.clone(),
                     line: (idx + 1) as u32,
@@ -1290,6 +1328,15 @@ fn context_line(line: &str) -> String {
 /// on, so `query` is what tells them apart: the grep was `-F`, so a line is a
 /// hit exactly when it contains the needle. `None` takes every record as a hit.
 fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResults {
+    parse_grep_z_with_context(stdout, query, limit, SEARCH_CONTEXT_LINES)
+}
+
+fn parse_grep_z_with_context(
+    stdout: &[u8],
+    query: Option<&str>,
+    limit: usize,
+    context_lines: usize,
+) -> SearchResults {
     // Records are path\0line\0text\n; `--\n` separates non-adjacent groups.
     let mut matches: Vec<SearchMatch> = Vec::new();
     let mut truncated = false;
@@ -1324,7 +1371,7 @@ fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResul
             // context or proof that another hit follows.
             let trailing = !hit
                 && last.path == path_norm
-                && line as usize <= last.line as usize + SEARCH_CONTEXT_LINES;
+                && line as usize <= last.line as usize + context_lines;
             if !trailing {
                 truncated = true;
                 break;
@@ -1335,7 +1382,7 @@ fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResul
                 break;
             }
             let next = earlier.line as usize + earlier.after.len() + 1;
-            if next > earlier.line as usize + SEARCH_CONTEXT_LINES {
+            if next > earlier.line as usize + context_lines {
                 break;
             }
             if next == line as usize {
@@ -1345,9 +1392,7 @@ fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResul
         if hit && matches.len() < limit {
             let before = recent
                 .iter()
-                .filter(|(at, _)| {
-                    *at < line && (*at as usize) + SEARCH_CONTEXT_LINES >= line as usize
-                })
+                .filter(|(at, _)| *at < line && (*at as usize) + context_lines >= line as usize)
                 .map(|(_, text)| context_line(text))
                 .collect();
             matches.push(SearchMatch {
@@ -1360,7 +1405,7 @@ fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResul
             });
         }
         recent.push_back((line, line_text));
-        if recent.len() > SEARCH_CONTEXT_LINES {
+        if recent.len() > context_lines {
             recent.pop_front();
         }
     }
@@ -1430,14 +1475,6 @@ const RANK_DECLARING: u8 = 0;
 const RANK_BINDING: u8 = 1;
 const RANK_HEAD: u8 = 2;
 
-/// Search for the lines that *declare* `symbol`.
-///
-/// One `git grep -w -F` for the bare word, then a filter in this process. The
-/// grep is asked for a fixed string rather than a pattern for two reasons: a
-/// symbol that arrives from a click in the editor must never be able to become
-/// a regex, and `\b` is a GNU extension that git's bundled regex engine does
-/// not portably have — so the word boundary is git's own `-w` and the language
-/// heuristic is [`definition_rank`], which a test can read.
 fn search_by_definition(root: &Path, symbol: &str, limit: usize) -> Result<SearchResults, FsError> {
     if !is_identifier(symbol) {
         return Ok(SearchResults {
@@ -1449,7 +1486,12 @@ fn search_by_definition(root: &Path, symbol: &str, limit: usize) -> Result<Searc
     let raw = if is_git_repo(&root) {
         grep_word(&root, symbol)?
     } else {
-        search_content_walk(&root, symbol, MAX_DEFINITION_SCAN)?
+        search_content_walk_with_context(
+            &root,
+            symbol,
+            MAX_DEFINITION_SCAN,
+            DEFINITION_CONTEXT_LINES,
+        )?
     };
     Ok(declarations(raw, symbol, limit))
 }
@@ -1475,7 +1517,8 @@ fn is_identifier(symbol: &str) -> bool {
 
 fn grep_word(root: &Path, symbol: &str) -> Result<SearchResults, FsError> {
     // `git grep` exits 1 when there are no matches — that is success.
-    let out = run_git(
+    let context = DEFINITION_CONTEXT_LINES.to_string();
+    let out = run_git_bounded(
         Some(root),
         &[
             "grep",
@@ -1486,11 +1529,14 @@ fn grep_word(root: &Path, symbol: &str) -> Result<SearchResults, FsError> {
             "-z",
             "-w",
             "-F",
+            "-A",
+            &context,
             "-e",
             symbol,
             "--",
             ".",
         ],
+        MAX_DEFINITION_OUTPUT_BYTES,
     )?;
     if out.status != 0 && out.status != 1 {
         return Err(FsError::Git(GitError::CommandFailed {
@@ -1505,19 +1551,26 @@ fn grep_word(root: &Path, symbol: &str) -> Result<SearchResults, FsError> {
             truncated: false,
         });
     }
-    Ok(parse_grep_z(
+    Ok(parse_grep_z_with_context(
         out.stdout.as_bytes(),
-        None,
+        Some(symbol),
         MAX_DEFINITION_SCAN,
+        DEFINITION_CONTEXT_LINES,
     ))
 }
 
 /// Keep the hits that declare `symbol`, best kind of declaration first.
 fn declarations(raw: SearchResults, symbol: &str, limit: usize) -> SearchResults {
-    let scanned = raw.truncated;
+    let mut scanned = raw.truncated;
     let mut scored: Vec<(u8, usize, SearchMatch)> = Vec::new();
     for (order, hit) in raw.matches.into_iter().enumerate() {
-        let Some((column, rank)) = definition_rank(&hit.text, symbol) else {
+        if hit.text.len() > MAX_DEFINITION_SIGNATURE_BYTES {
+            scanned = true;
+            continue;
+        }
+        let Some((column, rank)) =
+            definition_rank_with_context(&hit.text, hit.after.iter().map(String::as_str), symbol)
+        else {
             continue;
         };
         scored.push((
@@ -1546,15 +1599,45 @@ fn declarations(raw: SearchResults, symbol: &str, limit: usize) -> SearchResults
 
 /// Returns the 1-based column and rank of a declaration candidate.
 fn definition_rank(line: &str, symbol: &str) -> Option<(u32, u8)> {
+    definition_rank_in_signature(line, line.len(), symbol)
+}
+
+fn definition_rank_with_context<'a>(
+    line: &str,
+    following: impl Iterator<Item = &'a str>,
+    symbol: &str,
+) -> Option<(u32, u8)> {
+    if line.len() > MAX_DEFINITION_SIGNATURE_BYTES {
+        return None;
+    }
+    if let Some(rank) = definition_rank(line, symbol) {
+        return Some(rank);
+    }
+    let mut signature = line.to_string();
+    for next in following.take(DEFINITION_CONTEXT_LINES) {
+        if signature.len() + next.len() + 1 > MAX_DEFINITION_SIGNATURE_BYTES {
+            break;
+        }
+        signature.push('\n');
+        signature.push_str(next);
+    }
+    definition_rank_in_signature(&signature, line.len(), symbol)
+}
+
+fn definition_rank_in_signature(
+    signature: &str,
+    first_line_bytes: usize,
+    symbol: &str,
+) -> Option<(u32, u8)> {
     let mut best: Option<(u32, u8)> = None;
-    for (index, _) in line.match_indices(symbol) {
-        if !is_whole_word(line, index, symbol.len()) {
+    for (index, _) in signature[..first_line_bytes].match_indices(symbol) {
+        if !is_whole_word(signature, index, symbol.len()) {
             continue;
         }
-        let Some(rank) = rank_at(&line[..index], &line[index + symbol.len()..]) else {
+        let Some(rank) = rank_at(&signature[..index], &signature[index + symbol.len()..]) else {
             continue;
         };
-        let column = line[..index].chars().count() as u32 + 1;
+        let column = signature[..index].chars().count() as u32 + 1;
         if best.is_none_or(|(_, previous)| rank < previous) {
             best = Some((column, rank));
         }
@@ -2249,6 +2332,28 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         assert!(!results.truncated);
     }
 
+    #[test]
+    fn nestjs_definition_search_keeps_multiline_methods_and_rejects_calls() {
+        let tmp = git_repo();
+        fs::write(
+            tmp.path().join("service.ts"),
+            "@Injectable()\nexport class SettlementSchedulerService implements OnModuleInit {\n  @Cron('0 * * * *')\n  async schedule(\n    job: string,\n    options: { repeat: boolean },\n  ): Promise<void> {\n    await this.queue.schedule(job, options);\n  }\n}\nschedule(\n  job,\n  options,\n);\n",
+        )
+        .unwrap();
+        let methods = search_files(tmp.path(), "schedule", SearchKind::Definition, 50).unwrap();
+        assert_eq!(methods.matches.len(), 1);
+        assert_eq!(methods.matches[0].line, 4);
+        let classes = search_files(
+            tmp.path(),
+            "SettlementSchedulerService",
+            SearchKind::Definition,
+            50,
+        )
+        .unwrap();
+        assert_eq!(classes.matches.len(), 1);
+        assert_eq!(classes.matches[0].line, 2);
+    }
+
     fn hit(path: &str, line: u32, text: &str) -> SearchMatch {
         SearchMatch {
             path: path.to_string(),
@@ -2260,7 +2365,7 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         }
     }
 
-    fn git_repo() -> tempfile::TempDir {
+    pub(super) fn git_repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
         assert!(Command::new("git")
             .args(["init"])
@@ -2501,6 +2606,24 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         for path in ["src/main.py", "types/models.pyi", "desktop/app.pyw"] {
             assert_eq!(language_for(path), "python", "{path}");
         }
+    }
+
+    #[test]
+    fn recognizes_sql_and_prisma_extensions() {
+        assert_eq!(language_for("migrations/001.sql"), "sql");
+        assert_eq!(language_for("query.PSQL"), "sql");
+        assert_eq!(language_for("schema.prisma"), "prisma");
+    }
+
+    #[test]
+    fn recognizes_infra_extensions() {
+        assert_eq!(language_for("values.yaml"), "yaml");
+        assert_eq!(language_for("Chart.yml"), "yaml");
+        assert_eq!(language_for("nginx.conf"), "ini");
+        assert_eq!(language_for("main.tf"), "hcl");
+        assert_eq!(language_for("prod.tfvars"), "hcl");
+        assert_eq!(language_for("shared.hcl"), "hcl");
+        assert_eq!(language_for("templates/_helpers.tpl"), "yaml");
     }
 
     #[test]
