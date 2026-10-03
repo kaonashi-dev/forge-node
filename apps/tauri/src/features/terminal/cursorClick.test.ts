@@ -89,4 +89,19 @@ describe("terminal cursor clicks", () => {
     gesture.begin(click, point, viewport);
     expect(gesture.finish(click, point, viewport)).toBeNull();
   });
+
+  it("arms a click in an agent's alternate screen without mouse reporting", () => {
+    const { gesture, viewport } = fixture();
+    viewport.modes.alt_screen = true;
+    gesture.begin(click, point, viewport, true);
+    expect(gesture.finish(click, point, viewport)).toEqual({
+      terminal_id: "terminal-A",
+      seq: 7,
+      row: 1,
+      col: 8,
+    });
+    viewport.modes.mouse_mode = "Normal";
+    gesture.begin(click, point, viewport, true);
+    expect(gesture.finish(click, point, viewport)).toBeNull();
+  });
 });

@@ -1171,7 +1171,10 @@ fn run_command(
             else {
                 return Ok(Effect::nothing());
             };
-            let Some(bytes) = input::encode_cursor_move(grid, row, col) else {
+            let agent = store.sessions.iter().any(|session| {
+                session.terminal_id == Some(terminal_id) && session.agent_provider_id.is_some()
+            });
+            let Some(bytes) = input::encode_cursor_move(grid, row, col, agent) else {
                 return Ok(Effect::nothing());
             };
             write_input(client, store, pane, bytes, id)

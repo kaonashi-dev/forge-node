@@ -1,4 +1,4 @@
-import { createEffect, createSignal, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from "solid-js";
 import { TERMINAL } from "../../actions/actions";
 import { enterContext, registerAction } from "../../actions/dispatch";
 import {
@@ -39,7 +39,7 @@ import type { CellsPayload } from "../../contracts/terminal";
 import { Viewport } from "../../shared/cell-grid/viewport";
 import { CursorBlink, prefersReducedMotion } from "../../shared/cell-grid/cursorBlink";
 import { indexOfCell, lineTextAt, spansOfRange } from "./links";
-import { LinkPress } from "./linkPress";
+import { canFollowLink, LinkPress } from "./linkPress";
 import { linksOnLine, openScreenLink, warmPathIndex } from "../files/references/pathLinks";
 import { linkAt, type ScreenLink } from "../files/references/screenLinks";
 import { clipboardPaste } from "../../shared/input/clipboard";
@@ -57,6 +57,8 @@ import { acceptsPointer as pointerAccepted } from "./pointerGate";
 import { SelectionDrag } from "./selectionDrag";
 import { clearQuestion, markQuestion } from "./questions";
 import { forgeStore } from "../../state/forgeStore";
+
+type LinkHit = { link: ScreenLink; spans: LinkSpan[] };
 
 /** Breathing room between the grid and the pane edges (`TERMINAL_PAD`). */
 const PAD = 8;
@@ -200,7 +202,8 @@ export function TerminalPane(props: {
    * The link under the pointer, and the caret's blink phase — both
    * presentation, so both live on this side of the wire.
    */
-  let hovered: { link: ScreenLink; spans: LinkSpan[] } | null = null;
+  let hovered: LinkHit | null = null;
+  let pointerLink: LinkHit | null = null;
   let hoveredCell = { row: -1, col: -1 };
   /** The link a press landed on, opened if the press does not become a drag. */
   let armedLink: ScreenLink | null = null;
@@ -234,6 +237,14 @@ export function TerminalPane(props: {
     }
     return connectionStore.activeTerminal;
   }
+
+  const isAgent = createMemo(() => {
+    const session = boundSession();
+    return (
+      !!session &&
+      forgeStore.sessions.some((item) => item.id === session && item.agent_provider_id != null)
+    );
+  });
 
   function noteBell(terminal: string): void {
     const session = boundSession();
@@ -644,6 +655,11 @@ export function TerminalPane(props: {
     wheelRemainder = 0;
   }
 
+  function onWindowBlur(): void {
+    stopDrag();
+    clearLink();
+  }
+
   function pointAt(event: MouseEvent): CellPoint {
     const rect = canvas.getBoundingClientRect();
     return cellAtPoint(
@@ -674,13 +690,11 @@ export function TerminalPane(props: {
     if (!acceptsPointer()) return;
     props.onActivate?.();
     stopDrag();
-    // A click opens the link. Shift stays a selection, and a second click in a
-    // double-click stays a word select. The press is not reported to a program
-    // that asked for the mouse; a drag past the slop hands that gesture back.
     const hit = event.button === 0 && !event.shiftKey && event.detail < 2 ? linkUnder(event) : null;
-    if (hit) {
+    if (hit && canFollowLink(event)) {
       event.preventDefault();
       keys.focus({ preventScroll: true });
+      pointerLink = hit;
       setHover(hit);
       armedLink = hit.link;
       linkOrigin = {
@@ -690,6 +704,7 @@ export function TerminalPane(props: {
         altKey: event.altKey,
         shiftKey: event.shiftKey,
       };
+      // Defer the program's mouse press until the link gesture becomes a drag.
       linkToProgram = reportsMouse(event);
       linkPress.arm(event.clientX, event.clientY);
       return;
@@ -715,7 +730,7 @@ export function TerminalPane(props: {
     keys.focus({ preventScroll: true });
     const point = pointAt(event);
     const row = point.line + viewport.scrollOffset;
-    cursorClick.begin(event, point, viewport);
+    cursorClick.begin(event, point, viewport, isAgent());
     const span = (from: number, to: number): Selection => ({
       anchor: { line: point.line, col: from },
       head: { line: point.line, col: to },
@@ -739,15 +754,37 @@ export function TerminalPane(props: {
    * string and re-scan it.
    */
   function trackLink(event: MouseEvent): void {
+    if (!(event.target instanceof Node) || !host.contains(event.target)) {
+      clearLink();
+      return;
+    }
     const point = pointAt(event);
     const row = point.line + viewport.scrollOffset;
-    if (hoveredCell.row === row && hoveredCell.col === point.col) return;
-    hoveredCell = { row, col: point.col };
-    setHover(linkUnder(event));
+    if (hoveredCell.row !== row || hoveredCell.col !== point.col) {
+      hoveredCell = { row, col: point.col };
+      pointerLink = linkUnder(event);
+    }
+    syncLinkHover(event);
   }
 
-  function linkUnder(event: MouseEvent): { link: ScreenLink; spans: LinkSpan[] } | null {
+  function syncLinkHover(event: Pick<MouseEvent, "metaKey" | "ctrlKey">): void {
+    setHover(pointerLink && canFollowLink(event) ? pointerLink : null);
+  }
+
+  function onLinkModifierChange(event: KeyboardEvent): void {
+    if (event.key !== "Meta" && event.key !== "Control") return;
+    if (acceptsPointer()) syncLinkHover(event);
+  }
+
+  function linkUnder(event: MouseEvent): LinkHit | null {
     const point = pointAt(event);
+    if (
+      viewport.modes.alt_screen &&
+      viewport.modes.mouse_mode === "Off" &&
+      point.line === viewport.cursor.line &&
+      isAgent()
+    )
+      return null;
     const row = point.line + viewport.scrollOffset;
     if (row < 0 || row >= viewport.rows.length) return null;
     const line = lineTextAt(viewport.rows, row, viewport.cols);
@@ -758,11 +795,11 @@ export function TerminalPane(props: {
     return { link, spans: spansOfRange(line, link.from, link.to) };
   }
 
-  function setHover(next: { link: ScreenLink; spans: LinkSpan[] } | null): void {
+  function setHover(next: LinkHit | null): void {
     const previous = hovered;
+    if (previous === next) return;
     hovered = next;
     host.classList.toggle("terminal-link", next !== null);
-    if (previous === next) return;
     markLink(previous, next);
   }
 
@@ -785,6 +822,7 @@ export function TerminalPane(props: {
   }
 
   function clearLink(): void {
+    pointerLink = null;
     hoveredCell = { row: -1, col: -1 };
     setHover(null);
   }
@@ -835,7 +873,7 @@ export function TerminalPane(props: {
       stopDrag();
       return;
     }
-    if (activate && armed && event.button === 0) {
+    if (activate && armed && event.button === 0 && canFollowLink(event)) {
       openScreenLink(armed);
       return;
     }
@@ -974,7 +1012,9 @@ export function TerminalPane(props: {
     // A drag that leaves the pane still belongs to the pane.
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
-    window.addEventListener("blur", stopDrag);
+    window.addEventListener("blur", onWindowBlur);
+    window.addEventListener("keydown", onLinkModifierChange, true);
+    window.addEventListener("keyup", onLinkModifierChange, true);
 
     // A theme change moves every color, and a base switch can move the font.
     const themes = new MutationObserver(remeasure);
@@ -990,7 +1030,9 @@ export function TerminalPane(props: {
       themes.disconnect();
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
-      window.removeEventListener("blur", stopDrag);
+      window.removeEventListener("blur", onWindowBlur);
+      window.removeEventListener("keydown", onLinkModifierChange, true);
+      window.removeEventListener("keyup", onLinkModifierChange, true);
       stopDrag();
       window.clearTimeout(resizeTimer);
       blink.dispose();
@@ -1007,6 +1049,7 @@ export function TerminalPane(props: {
       aria-label="Terminal"
       ref={host}
       onMouseDown={onMouseDown}
+      onMouseLeave={clearLink}
       onWheel={onWheel}
       // A right-click that a program asked for must not also raise the
       // WebView's own menu over the grid it was aimed at.
