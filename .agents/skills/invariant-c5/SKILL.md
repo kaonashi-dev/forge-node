@@ -18,6 +18,7 @@ description: Runtime invariant checklist (C5). Use when the diff touches daemon 
 - [ ] `SessionKind::Editor` is exempt from idle stop by kind, unconditionally.
 - [ ] `PRAGMA synchronous = NORMAL` stays: deliberate under WAL.
 - [ ] `GetWorkspaceDiff` / file ops / `GetUsageAnalytics`: local sync reads.
+- [ ] "Resolve with AI" launches an ordinary agent session. Its rebase prompt permits `--continue` only after staging reviewed resolutions and running relevant checks; ambiguous intent or failed verification stops for a human decision. Merge and cherry-pick prompts leave paths unstaged and continuation to the person.
 
 Example:
 
