@@ -8,9 +8,10 @@ use domain::orchestration::{
 };
 use domain::{
     ActivityState, AgentProfile, AgentProfileId, AgentProviderId, AttemptId, ChildWorkspacePolicy,
-    ContextEnvelope, ContextKind, EditorFindCommand, EditorInputEvent, JuvaKind, ProjectGroupId,
-    ProjectId, PtySize, RunId, SessionId, SessionKind, SessionRole, ShareCleanup, ShareRule,
-    ShareRuleId, TaskId, TerminalId, WorkspaceId, WorktreeIgnore,
+    CommitPlan, ContextEnvelope, ContextKind, EditorFindCommand, EditorInputEvent, JuvaKind,
+    ProjectGroupId, ProjectId, PtySize, PullRequestDraft, RunId, SessionId, SessionKind,
+    SessionRole, ShareCleanup, ShareRule, ShareRuleId, TaskId, TerminalId, WorkspaceId,
+    WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -305,6 +306,20 @@ pub enum Request {
         /// Context lines around each hunk. `None` takes the service default.
         context_lines: Option<u32>,
     },
+    /// One checkout's branch against the branch a pull request would target
+    /// → [`crate::response::Response::BranchCompare`].
+    ///
+    /// Local and synchronous like [`Request::GetWorkspaceDiff`]: it compares
+    /// refs already on disk and never fetches, so a stale remote-tracking ref
+    /// is compared as it stands. Committed work only, from the merge base.
+    GetBranchCompare {
+        workspace_id: WorkspaceId,
+        /// Ref to compare against. `None` takes `origin`'s default branch,
+        /// then a local `main` or `master`.
+        base: Option<String>,
+        /// Context lines around each hunk. `None` takes the service default.
+        context_lines: Option<u32>,
+    },
     /// Plain text off a session's terminal →
     /// [`crate::response::Response::SessionTranscript`].
     ///
@@ -542,6 +557,29 @@ pub enum Request {
         body: String,
         /// Base branch, or `None` for the repository default / `gh` default.
         base: Option<String>,
+    },
+    /// Commit every uncommitted change once, on a new branch when the checkout
+    /// is on its default, then push and open the pull request → `Ack`
+    /// immediately; [`crate::event::DaemonEvent::PullRequestOpened`] when done.
+    ///
+    /// Refused through that event, never by committing to the default branch.
+    CommitAndOpenPullRequest {
+        workspace_id: WorkspaceId,
+        commit: CommitPlan,
+        title: String,
+        /// Markdown.
+        body: String,
+        /// Base branch, or `None` for the repository default / `gh` default.
+        base: Option<String>,
+    },
+    /// An agent session hands back the pull request it was asked to write →
+    /// `Ack`; [`crate::event::DaemonEvent::PullRequestDraftReady`] follows.
+    ///
+    /// `session_id` is the caller's own `FORGE_SESSION_ID`; the daemon answers
+    /// with the session's workspace, so a draft cannot name another checkout.
+    SubmitPullRequestDraft {
+        session_id: SessionId,
+        draft: PullRequestDraft,
     },
 
     // ----- Sessions -----

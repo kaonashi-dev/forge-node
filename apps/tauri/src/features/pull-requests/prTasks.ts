@@ -15,34 +15,61 @@ export type PrTask = {
 
 const MAX_PROMPT_PATCH = 24 * 1024;
 
+const DESCRIBE_INTRO = `Write the pull request for the uncommitted changes in this checkout, summarised below with their diff. Say what changed and why; do not list the files, the diff already does.
+
+`;
+
+const REVIEW_INTRO = `Read the diff below as a reviewer would before writing anything. If you find something that would block a merge — a bug, a missing test, a leak — say so plainly at the top of the body, under a \`## Concerns\` heading. Then write the pull request for these uncommitted changes.
+
+`;
+
+const DRAFT_HANDOVER = `Do not edit files, commit, push or open the pull request: Forge Node does that once the user has read your text.
+
+Write it the way this team does. Read what the repository says — CONTRIBUTING, AGENTS.md or CLAUDE.md, any commit or PR guide under docs/, \`.github/pull_request_template.md\` — and its recent history: \`git log -n 20\` and \`gh pr list --state merged --limit 5 --json title,body\`. If this repository has too little history to show a convention, read recent merged pull requests in other repositories of the same owner. A convention you already remember for this repository or team counts too; the repository's written rules win.
+
+All the changes go into one commit, so the commit message describes them all, in this repository's commit style. The branch is used only when this checkout is on its default branch; name it the way this repository names branches.
+
+Hand the result over with this command, quoting each value for the shell, and stop:
+
+\`\`\`sh
+forgectl pr draft --title '<title>' --branch '<new-branch>' --commit '<commit subject>' [--commit-body '<commit body>'] <<'EOF'
+<pull request body in Markdown>
+EOF
+\`\`\``;
+
 export function builtinTasks(): PrTask[] {
   return [
     {
       id: "describe",
       name: "Describe the change",
-      detail: "The agent writes the title and body; Forge Node opens the PR.",
+      detail:
+        "The agent writes the PR and commit text; you edit it, Forge Node commits and opens the PR.",
       mode: "Draft",
-      body: `Read the diff below and write a pull request for it.
-
-Answer with the title on the first line, then a blank line, then the body in Markdown. Say what changed and why; do not list the files, the diff already does. Do not write anything else — no preamble, no closing remark.`,
+      body: DESCRIBE_INTRO + DRAFT_HANDOVER,
     },
     {
       id: "review",
       name: "Review, then describe",
-      detail: "The agent reads the diff critically first, then writes the PR.",
+      detail:
+        "The agent reviews the diff first, then writes the text; Forge Node commits and opens the PR.",
       mode: "Draft",
-      body: `Read the diff below as a reviewer would. If you find something that would block a merge — a bug, a missing test, a leak — say so plainly at the top of the body, under a \`## Concerns\` heading.
-
-Then write the pull request: title on the first line, a blank line, then the body in Markdown.`,
+      body: REVIEW_INTRO + DRAFT_HANDOVER,
     },
     {
       id: "finish",
       name: "Finish and open the PR",
-      detail: "The agent works in this checkout, commits, pushes and opens the PR.",
+      detail:
+        "The agent reviews, commits in few groups, pushes and opens the PR in the repo's style.",
       mode: "Implement",
-      body: `You are working in a git checkout that already has uncommitted changes, summarised below.
+      body: `You are working in a git checkout that already has uncommitted changes, summarised below. Take them to an open pull request.
 
-Finish the work: make it build and pass its tests, then commit it, push the branch, and open a pull request with \`gh\`. Report the pull request URL when you are done. Do not force-push and do not touch any branch other than the one checked out here.`,
+1. Learn how this team writes commits and pull requests before writing either. Read what the repository says — CONTRIBUTING, AGENTS.md or CLAUDE.md, any commit or PR guide under docs/, \`.github/pull_request_template.md\` — then the recent history: \`git log -n 20\` and \`gh pr list --state merged --limit 5 --json title,body\`. If this repository has too little history to show a convention, read recent merged pull requests in other repositories of the same owner (\`gh repo list <owner> --limit 5\`, then \`gh pr list -R <owner>/<repo> --state merged --limit 3 --json title,body\`). A convention you already remember for this repository or team counts too. Where these disagree, the repository's own written rules win.
+2. Review the changes as a reviewer would. Fix what would block a merge — a bug, a broken build, a failing test — and nothing else: do not refactor or extend the work. Run the project's checks.
+3. If the checked-out branch is the default branch, create a branch for this work first, named the way this repository names its branches. Never commit or push to the default branch.
+4. Commit in as few commits as tell the story honestly: related changes together, one commit per independent concern, never one commit per file. Follow the commit convention from step 1.
+5. Push with \`git push -u origin HEAD\`, then open the pull request with \`gh pr create --assignee @me\` so it is assigned to whoever \`gh\` is signed in as. Its title and body follow the convention from step 1; fill the repository's template when it has one. Report the pull request URL when you are done.
+
+Do not force-push and do not touch any other branch. If something stops you — a check that fails for reasons outside these changes, a convention you cannot satisfy — stop and say so instead of working around it.`,
     },
   ];
 }
@@ -72,7 +99,7 @@ export function launchHint(
   if (loading) return "";
   if (!diff || diff.files.length === 0) return "Nothing uncommitted here.";
   if (forgeOpensThePr(task.mode)) {
-    return "Forge Node pushes the branch and opens the PR with what the agent writes.";
+    return "You edit what the agent writes; Forge Node then commits, pushes and opens the PR.";
   }
   return "The agent works in this checkout and opens the PR itself.";
 }

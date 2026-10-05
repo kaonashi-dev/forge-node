@@ -38,6 +38,19 @@ pub(super) fn load_workspace_review(
     }
 }
 
+pub(super) fn load_branch_compare(
+    app: &AppHandle,
+    client: &Client,
+    workspace: WorkspaceId,
+    base: Option<String>,
+    context_lines: Option<u32>,
+) {
+    match client.branch_compare(workspace, base, context_lines) {
+        Ok(compare) => emit(app, "workbench:compare", &(workspace, compare)),
+        Err(error) => fail(app, "workbench:compare_failed", Some(workspace), &error),
+    }
+}
+
 pub(super) fn load_rebase_state(app: &AppHandle, client: &Client, workspace: WorkspaceId) {
     rebase(app, client.rebase_state(workspace), workspace)
 }
@@ -133,10 +146,6 @@ pub(super) fn apply_juva_draft(
                 Err(error) => fail(app, "workbench:juva_failed", Some(workspace), &error),
             }
         }
-        JuvaKind::PullRequest => match client.create_pull_request(workspace, &title, &body, None) {
-            Ok(()) => emit(app, "workbench:juva_applied", &workspace),
-            Err(error) => fail(app, "workbench:juva_failed", Some(workspace), &error),
-        },
         _ => {
             let _ = app.emit(
                 "workbench:juva_failed",

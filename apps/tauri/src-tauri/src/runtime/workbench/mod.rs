@@ -76,6 +76,11 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             workspace,
             context_lines,
         } => git::load_workspace_review(app, client, workspace, context_lines),
+        WorkbenchCommand::LoadBranchCompare {
+            workspace,
+            base,
+            context_lines,
+        } => git::load_branch_compare(app, client, workspace, base, context_lines),
         WorkbenchCommand::LoadEditorConflict { session } => {
             editor::load_editor_conflict(app, client, session)
         }
@@ -210,6 +215,29 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             title,
             body,
         } => git::apply_juva_draft(app, client, workspace, kind, title, body),
+        WorkbenchCommand::CommitAndOpenPullRequest {
+            workspace,
+            branch,
+            commit_message,
+            title,
+            body,
+        } => {
+            let commit = domain::CommitPlan {
+                branch,
+                message: commit_message,
+            };
+            // Acks when the work starts; the outcome is `runtime:pull_request_opened`.
+            if let Err(error) =
+                client.commit_and_open_pull_request(workspace, commit, &title, &body)
+            {
+                fail(
+                    app,
+                    "workbench:pull_request_failed",
+                    Some(workspace),
+                    &error,
+                );
+            }
+        }
     }
 }
 

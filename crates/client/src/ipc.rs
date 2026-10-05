@@ -603,6 +603,28 @@ impl Client {
         }
     }
 
+    /// The checkout's branch against the branch a pull request would target.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn branch_compare(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        base: Option<String>,
+        context_lines: Option<u32>,
+    ) -> Result<domain::BranchCompare, ClientError> {
+        match self.request(Request::GetBranchCompare {
+            workspace_id,
+            base,
+            context_lines,
+        })? {
+            Response::BranchCompare(compare) => Ok(*compare),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "BranchCompare",
+            }),
+        }
+    }
+
     /// The tail of a session's terminal as plain text, for a handoff.
     ///
     /// # Errors
@@ -1050,6 +1072,23 @@ impl Client {
             title: title.to_owned(),
             body: body.to_owned(),
             base,
+        })
+    }
+
+    /// Start commit + push + open PR; outcome arrives as `PullRequestOpened`.
+    pub fn commit_and_open_pull_request(
+        &self,
+        workspace_id: WorkspaceId,
+        commit: domain::CommitPlan,
+        title: &str,
+        body: &str,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::CommitAndOpenPullRequest {
+            workspace_id,
+            commit,
+            title: title.to_owned(),
+            body: body.to_owned(),
+            base: None,
         })
     }
 

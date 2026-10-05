@@ -47,6 +47,11 @@ export type WorkbenchView =
    */
   | { kind: "review"; workspace: string }
   /**
+   * The branch against the branch its pull request would target, before the
+   * pull request exists. Keyed on the workspace, like `review`.
+   */
+  | { kind: "compare"; workspace: string }
+  /**
    * The Files sidebar's content search, with room to read it: every hit in its
    * surrounding lines, file by file.
    *
@@ -96,6 +101,7 @@ export function viewKey(view: WorkbenchView): string {
   if (view.kind === "pr_detail") return `pr:${view.key}`;
   if (view.kind === "pr_review") return `pr-review:${view.key}`;
   if (view.kind === "review") return `review:${view.workspace}`;
+  if (view.kind === "compare") return `compare:${view.workspace}`;
   if (view.kind === "pr_compose") return "pr_compose";
   return view.kind;
 }
@@ -120,6 +126,8 @@ export function viewLabel(view: WorkbenchView): string {
       return "PR Review";
     case "review":
       return "Review";
+    case "compare":
+      return "PR Preview";
     case "pr_compose":
       return "Open PR";
     case "search":

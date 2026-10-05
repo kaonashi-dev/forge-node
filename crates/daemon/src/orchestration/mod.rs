@@ -2070,7 +2070,7 @@ fn close_run(
         let workspace = integration.ok_or_else(|| {
             ProtocolError::precondition_failed("run has no integration workspace to open a PR from")
         })?;
-        daemon.create_pull_request(workspace, pr.title, pr.body, pr.base, pr.draft)?;
+        daemon.create_pull_request(workspace, pr.title, pr.body, pr.base, pr.draft, None)?;
     }
     let now = Timestamp::now();
     let mut inner = daemon.lock();

@@ -109,6 +109,8 @@ enum Command {
         file: Option<PathBuf>,
     },
     #[command(subcommand)]
+    Pr(PrCmd),
+    #[command(subcommand)]
     State(StateCmd),
     #[command(subcommand)]
     Session(SessionCmd),
@@ -287,6 +289,26 @@ enum ReportShow {
 }
 
 #[derive(Subcommand)]
+enum PrCmd {
+    /// Hand this session's pull-request text to Forge Node. The body is stdin.
+    Draft {
+        #[arg(long)]
+        title: String,
+        /// Created only when the checkout is on its default branch.
+        #[arg(long)]
+        branch: String,
+        /// Commit subject.
+        #[arg(long)]
+        commit: String,
+        #[arg(long)]
+        commit_body: Option<String>,
+        /// Read the body from this file instead of stdin.
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum StateCmd {
     List {
         #[arg(long)]
@@ -419,6 +441,13 @@ impl App {
                 self.print_ok(flatten(&response));
                 Ok(())
             }
+            Command::Pr(PrCmd::Draft {
+                title,
+                branch,
+                commit,
+                commit_body,
+                body_file,
+            }) => self.pr_draft(client, title, branch, commit, commit_body, body_file),
             Command::Run(cmd) => self.run_cmd(client, cmd),
             Command::Task(cmd) => self.task_cmd(client, cmd),
             Command::Context => self.context_cmd(client),
@@ -1014,6 +1043,44 @@ impl App {
                         .to_string_lossy()
                         .into_owned()
                 }),
+            },
+            true,
+        )?;
+        self.print_ok(flatten(&response));
+        Ok(())
+    }
+
+    fn pr_draft(
+        &self,
+        client: &Client,
+        title: String,
+        branch: String,
+        commit: String,
+        commit_body: Option<String>,
+        body_file: Option<PathBuf>,
+    ) -> Result<(), u8> {
+        let help = ["forgectl", "pr", "draft", "--help"];
+        let session_id =
+            env_session().ok_or_else(|| usage_code(self, "FORGE_SESSION_ID is not set", &help))?;
+        let body = match body_file {
+            Some(path) => read_capped_text(&path, domain::MAX_DRAFT_FIELD_BYTES)?,
+            None => read_capped_stdin(domain::MAX_DRAFT_FIELD_BYTES)
+                .map_err(|message| usage_code(self, &message, &help))?,
+        };
+        let commit_message = match commit_body.as_deref().map(str::trim) {
+            Some(extra) if !extra.is_empty() => format!("{}\n\n{extra}", commit.trim()),
+            _ => commit.trim().to_string(),
+        };
+        let response = self.call(
+            client,
+            Request::SubmitPullRequestDraft {
+                session_id,
+                draft: domain::PullRequestDraft {
+                    title: title.trim().to_string(),
+                    body: body.trim().to_string(),
+                    branch: branch.trim().to_string(),
+                    commit_message,
+                },
             },
             true,
         )?;
@@ -2024,6 +2091,20 @@ fn read_text(text: Option<String>, file: Option<PathBuf>) -> Result<String, Stri
         return read_capped_text(&path, 1024 * 1024).map_err(|code| format!("exit {code}"));
     }
     Err("pass the text or a file".into())
+}
+
+fn read_capped_stdin(cap: usize) -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(cap as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read stdin: {error}"))?;
+    if bytes.len() > cap {
+        return Err(format!("the body exceeds {cap} bytes"));
+    }
+    String::from_utf8(bytes).map_err(|_| "the body is not UTF-8".into())
 }
 
 fn read_capped_text(path: &Path, cap: usize) -> Result<String, u8> {

@@ -18,7 +18,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   Hello: {
-    protocol_version: 27,
+    protocol_version: 30,
     client_version: "0.1.0",
     client_kind: "Gui",
   },
@@ -77,13 +77,18 @@ export const daemon_message_event = {
       last_activity_at: "2026-08-30T12:00:00Z",
       ended_at: null,
       base_commit: "4f2b1ac",
+      activity: {
+        state: "unknown",
+        since: "1970-01-01T00:00:00Z",
+        evidence: null,
+      },
     },
   },
 } as const;
 
 export const daemon_message_hello_ack = {
   HelloAck: {
-    protocol_version: 27,
+    protocol_version: 30,
     daemon_version: "0.1.0",
     instance_id: "forge-daemon-0001",
     started_at: "2026-08-30T12:00:00Z",
@@ -93,7 +98,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   HelloReject: {
-    daemon_protocol_version: 27,
+    daemon_protocol_version: 30,
     reason: "protocol version mismatch",
   },
 } as const;
@@ -347,6 +352,11 @@ export const event_session_created = {
     last_activity_at: "2026-08-30T12:00:00Z",
     ended_at: null,
     base_commit: "4f2b1ac",
+    activity: {
+      state: "unknown",
+      since: "1970-01-01T00:00:00Z",
+      evidence: null,
+    },
   },
 } as const;
 
@@ -378,6 +388,11 @@ export const event_session_updated = {
     last_activity_at: "2026-08-30T12:00:00Z",
     ended_at: null,
     base_commit: "4f2b1ac",
+    activity: {
+      state: "unknown",
+      since: "1970-01-01T00:00:00Z",
+      evidence: null,
+    },
   },
 } as const;
 
@@ -657,13 +672,13 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  protocol_version: 27,
+  protocol_version: 30,
   client_version: "0.1.0",
   client_kind: "Gui",
 } as const;
 
 export const hello_ack = {
-  protocol_version: 27,
+  protocol_version: 30,
   daemon_version: "0.1.0",
   instance_id: "forge-daemon-0001",
   started_at: "2026-08-30T12:00:00Z",
@@ -671,7 +686,7 @@ export const hello_ack = {
 } as const;
 
 export const hello_reject = {
-  daemon_protocol_version: 27,
+  daemon_protocol_version: 30,
   reason: "protocol version mismatch",
 } as const;
 
@@ -771,6 +786,14 @@ export const request_fetch_scrollback = {
     terminal_id: "00000000-0000-7000-8000-000000000005",
     from_line: 5,
     count: 64,
+  },
+} as const;
+
+export const request_get_branch_compare = {
+  GetBranchCompare: {
+    workspace_id: "00000000-0000-7000-8000-000000000003",
+    base: "origin/main",
+    context_lines: null,
   },
 } as const;
 
@@ -975,6 +998,47 @@ export const response_attach_ack = {
         focus_events: false,
       },
       title: "vim",
+    },
+  },
+} as const;
+
+export const response_branch_compare = {
+  BranchCompare: {
+    workspace_id: "00000000-0000-7000-8000-000000000003",
+    base_ref: "origin/main",
+    merge_base: "3f2a9c1",
+    commits: [
+      {
+        short_id: "9b1e4d0",
+        subject: "Greet the world",
+      },
+    ],
+    commit_count: 1,
+    diff: {
+      workspace_id: "00000000-0000-7000-8000-000000000003",
+      branch: "main",
+      files: [
+        {
+          path: "src/main.rs",
+          status: "Modified",
+          additions: 2,
+          deletions: 1,
+          patch:
+            '@@ -1,3 +1,4 @@\n fn main() {\n-    println!("hi");\n+    println!("hello");\n+    println!("world");\n }\n',
+          binary: false,
+          truncated: false,
+        },
+        {
+          path: "assets/logo.png",
+          status: "Added",
+          additions: 0,
+          deletions: 0,
+          patch: "",
+          binary: true,
+          truncated: true,
+        },
+      ],
+      truncated: true,
     },
   },
 } as const;
@@ -1203,6 +1267,11 @@ export const response_snapshot = {
         last_activity_at: "2026-08-30T12:00:00Z",
         ended_at: null,
         base_commit: "4f2b1ac",
+        activity: {
+          state: "unknown",
+          since: "1970-01-01T00:00:00Z",
+          evidence: null,
+        },
       },
     ],
     providers: [],
@@ -1219,6 +1288,7 @@ export const response_snapshot = {
       error: null,
       refreshed_at: null,
     },
+    runs: [],
     usage: [],
   },
 } as const;
@@ -1285,6 +1355,11 @@ export const response_snapshot_populated = {
         last_activity_at: "2026-08-30T12:00:00Z",
         ended_at: null,
         base_commit: "4f2b1ac",
+        activity: {
+          state: "unknown",
+          since: "1970-01-01T00:00:00Z",
+          evidence: null,
+        },
       },
     ],
     providers: [
@@ -1420,6 +1495,7 @@ export const response_snapshot_populated = {
       error: null,
       refreshed_at: "2026-08-30T12:00:00Z",
     },
+    runs: [],
     usage: [
       {
         provider_id: "claude",
@@ -1577,6 +1653,11 @@ export const session = {
   last_activity_at: "2026-08-30T12:00:00Z",
   ended_at: null,
   base_commit: "4f2b1ac",
+  activity: {
+    state: "unknown",
+    since: "1970-01-01T00:00:00Z",
+    evidence: null,
+  },
 } as const;
 
 export const session_editor = {
@@ -1626,6 +1707,11 @@ export const session_editor = {
   last_activity_at: "2026-08-30T12:00:00Z",
   ended_at: null,
   base_commit: "4f2b1ac",
+  activity: {
+    state: "unknown",
+    since: "1970-01-01T00:00:00Z",
+    evidence: null,
+  },
 } as const;
 
 export const session_role_custom = {
@@ -2392,6 +2478,7 @@ export const FIXTURE_NAMES = [
   "request_editor_find.json",
   "request_factory_reset.json",
   "request_fetch_scrollback.json",
+  "request_get_branch_compare.json",
   "request_get_snapshot.json",
   "request_get_workspace_diff.json",
   "request_list_directory.json",
@@ -2406,6 +2493,7 @@ export const FIXTURE_NAMES = [
   "request_write_terminal_input.json",
   "response_ack.json",
   "response_attach_ack.json",
+  "response_branch_compare.json",
   "response_directory_listing.json",
   "response_file_contents.json",
   "response_file_tree.json",

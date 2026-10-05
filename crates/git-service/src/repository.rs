@@ -355,6 +355,28 @@ pub fn default_branch(repo: &Path) -> Result<Option<String>, GitError> {
     }
 }
 
+/// The branch a pull request from this checkout would target, as a ref git
+/// resolves: `requested` when given, else `origin`'s default branch, else a
+/// local `main` or `master`. `None` when none of those name a commit.
+///
+/// A requested ref starting with `-` is refused rather than handed to git,
+/// where it would read as an option.
+#[must_use]
+pub fn compare_base(repo: &Path, requested: Option<&str>) -> Option<String> {
+    if let Some(requested) = requested {
+        let usable = !requested.is_empty() && !requested.starts_with('-');
+        return (usable && commit_exists(repo, requested)).then(|| requested.to_string());
+    }
+    let remote = default_branch(repo)
+        .ok()
+        .flatten()
+        .map(|branch| format!("origin/{branch}"));
+    remote
+        .into_iter()
+        .chain(["main".to_string(), "master".to_string()])
+        .find(|candidate| commit_exists(repo, candidate))
+}
+
 /// Parsed working-tree status of `repo` via `status --porcelain=v2 --branch`.
 ///
 /// # Errors

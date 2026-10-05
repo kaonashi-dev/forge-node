@@ -3,9 +3,9 @@
 use domain::orchestration::{Attempt, Run, Task};
 use domain::{
     AgentProfile, DetectionResult, EditorFrame, JuvaDraft, Project, ProjectGroup, ProjectGroupId,
-    ProjectId, ProviderUsage, PullRequestState, RunId, Session, SessionId, ShareAction, ShareRule,
-    ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot, Workspace, WorkspaceId,
-    WorktreeIgnore,
+    ProjectId, ProviderUsage, PullRequestDraft, PullRequestState, RunId, Session, SessionId,
+    ShareAction, ShareRule, ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot, Workspace,
+    WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -178,6 +178,16 @@ pub enum DaemonEvent {
         url: Option<String>,
         /// Failure message when `url` is `None`.
         error: Option<String>,
+    },
+    /// An agent submitted a pull-request draft with `forgectl pr draft`.
+    ///
+    /// A read with its own event, like [`Self::JuvaDraftReady`]: nothing is
+    /// stored, and a client that missed it asks the agent again.
+    PullRequestDraftReady {
+        workspace_id: WorkspaceId,
+        /// The agent session that wrote it.
+        session_id: SessionId,
+        draft: PullRequestDraft,
     },
     /// A `DraftWithJuva` finished.
     ///

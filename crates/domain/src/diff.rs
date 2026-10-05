@@ -218,6 +218,24 @@ pub struct WorkspaceReview {
     pub diff: WorkspaceDiff,
 }
 
+/// One checkout's branch against the branch a pull request would target,
+/// committed work only: a pull request before it is opened.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchCompare {
+    pub workspace_id: WorkspaceId,
+    /// The ref compared against, as resolved (`origin/main`). `None` when
+    /// nothing named a commit, in which case the diff is empty.
+    pub base_ref: Option<String>,
+    /// Where the branch left `base_ref`, abbreviated: the diff is from here,
+    /// so commits that landed on the base since do not appear as removals.
+    pub merge_base: Option<String>,
+    /// Commits between the merge base and `HEAD`, newest first, capped.
+    pub commits: Vec<CommitLine>,
+    /// How many commits there are, which can exceed `commits.len()`.
+    pub commit_count: u32,
+    pub diff: WorkspaceDiff,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

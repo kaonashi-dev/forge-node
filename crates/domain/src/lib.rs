@@ -39,8 +39,8 @@ pub use context::{
     ContextArtifactKind, ContextArtifactRef, ContextEnvelope, ContextKind, GitContextRef,
 };
 pub use diff::{
-    BaseOrigin, ChangeSummary, ChangeSummaryFile, CommitLine, DiffFile, DiffStatus, ReviewSession,
-    SessionChanges, WorkspaceDiff, WorkspaceReview,
+    BaseOrigin, BranchCompare, ChangeSummary, ChangeSummaryFile, CommitLine, DiffFile, DiffStatus,
+    ReviewSession, SessionChanges, WorkspaceDiff, WorkspaceReview,
 };
 pub use editor_frame::{
     editor_modifiers, EditorDecoration, EditorDecorationKind, EditorFold, EditorFrame,
@@ -59,7 +59,10 @@ pub use ids::{
 pub use pr_review::{
     builtin_recipes, compose_review_prompt, recipe_or_default, ReviewRecipe, CUSTOM_RECIPE,
 };
-pub use pr_task::{builtin_tasks, task_or_default, PrTask, TaskMode};
+pub use pr_task::{
+    branch_step, builtin_tasks, task_or_default, BranchStep, CommitPlan, PrTask, PullRequestDraft,
+    TaskMode, MAX_DRAFT_FIELD_BYTES,
+};
 pub use project::{is_valid_icon, InvalidIcon, Project, ProjectGroup, MAX_ICON_CHARS};
 pub use pull_request::{
     PullRequest, PullRequestFailure, PullRequestFailureKind, PullRequestLabel,

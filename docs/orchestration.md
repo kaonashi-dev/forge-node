@@ -74,5 +74,15 @@ with `details.uncertain: true`.
 not write SQLite. A CLI connection is not sent terminal activity, bell,
 clipboard, editor-frame, or usage broadcasts.
 
+`pr draft` is outside the run ledger. It is how a session that the GUI's
+Open PR tab launched in a *draft* task hands back its pull request: title,
+branch, commit subject (plus optional `--commit-body`) as flags, the body on
+stdin or `--body-file`. The daemon checks that `FORGE_SESSION_ID` names a live
+session, caps each field at 64 KiB, and broadcasts `PullRequestDraftReady` for
+that session's workspace; it stores nothing. The GUI shows the text for editing
+and only then sends `CommitAndOpenPullRequest`, which commits everything once
+on a new branch when the checkout is on its default (never on the default
+itself), pushes, and runs `gh pr create --assignee @me`.
+
 `forge-daemon session` and `forge-daemon context` still run and print a
 deprecation hint pointing at `forgectl`.

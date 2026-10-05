@@ -14,6 +14,7 @@ export function ViewGlyph(props: { view: WorkbenchView; size?: number }) {
         return { icon: "list-checks", tone: "forge-icon-accent" } as const;
       case "pr_detail":
       case "pr_compose":
+      case "compare":
         return { icon: "git-pull-request", tone: "forge-icon-accent" } as const;
       case "pr_review":
         return { icon: "list-checks", tone: "forge-icon-amber" } as const;

@@ -13,7 +13,6 @@ export type JuvaDraftDialogProps = {
 
 function labels(kind: JuvaKind): { title: string; confirm: string } {
   if (kind === "CommitMessage") return { title: "Commit", confirm: "Create commit" };
-  if (kind === "PullRequest") return { title: "Open PR", confirm: "Push & open PR" };
   return { title: "Draft", confirm: "Apply" };
 }
 

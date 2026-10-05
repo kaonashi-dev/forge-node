@@ -26,7 +26,7 @@ import { sessionWork } from "../sessions/work";
 import { setAppState } from "../settings/commands";
 import { refreshWorkspaceStatus } from "../sessions/commands";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
-import { centerMode, showCode } from "../../navigation/viewsStore";
+import { centerMode, openCompare, showCode } from "../../navigation/viewsStore";
 import { focusSession, launchAgent, launchShell } from "../sessions/sessionActions";
 import { Button, ContextMenu, Dialog, IconButton, Tooltip, type MenuItem } from "../../ui/index";
 import {
@@ -60,7 +60,7 @@ import { gitStore } from "../git/state";
 import { BrandIcon, Icon } from "../../theme/icons/index";
 import { AttentionMarker, StateMarker, WorkMarker } from "../sessions/markers";
 import { SessionGlyph } from "../sessions/SessionGlyph";
-import { draftWithJuva } from "../git/commands";
+import { draftWithJuva, loadBranchCompare } from "../git/commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
 
 const COLLAPSED_KEY = "ui.sidebar.collapsed";
@@ -323,11 +323,12 @@ export function ProjectsView() {
       },
       {
         kind: "item",
-        label: "Open PR with Juva…",
+        label: "Preview PR",
         icon: "git-pull-request",
         run: () => {
           focusWorkspace(node.id);
-          void draftWithJuva(node.id, "PullRequest").catch(() => undefined);
+          openCompare(node.id);
+          void loadBranchCompare(node.id).catch(() => undefined);
         },
       },
       {

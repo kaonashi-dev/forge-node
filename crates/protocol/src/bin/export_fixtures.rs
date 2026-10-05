@@ -710,6 +710,15 @@ fn main() {
     );
     write(
         &out,
+        "request_get_branch_compare",
+        &Request::GetBranchCompare {
+            workspace_id: workspace_id(),
+            base: Some("origin/main".to_string()),
+            context_lines: None,
+        },
+    );
+    write(
+        &out,
         "request_list_files",
         &Request::ListFiles {
             workspace_id: workspace_id(),
@@ -779,6 +788,21 @@ fn main() {
         &out,
         "response_workspace_diff",
         &Response::WorkspaceDiff(sample_workspace_diff()),
+    );
+    write(
+        &out,
+        "response_branch_compare",
+        &Response::BranchCompare(Box::new(domain::BranchCompare {
+            workspace_id: workspace_id(),
+            base_ref: Some("origin/main".to_string()),
+            merge_base: Some("3f2a9c1".to_string()),
+            commits: vec![domain::CommitLine {
+                short_id: "9b1e4d0".to_string(),
+                subject: "Greet the world".to_string(),
+            }],
+            commit_count: 1,
+            diff: sample_workspace_diff(),
+        })),
     );
     write(
         &out,

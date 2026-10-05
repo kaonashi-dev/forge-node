@@ -30,6 +30,7 @@ pub fn schema_value() -> Value {
             "context", "report", "report show", "ask", "inbox", "send",
             "state list", "state get", "state set", "state del", "state watch",
             "session list", "session show", "session read", "session kill",
+            "pr draft",
             "hook"
         ],
         "rules": [

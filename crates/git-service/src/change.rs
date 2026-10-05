@@ -80,6 +80,19 @@ pub fn commit(repo: &Path, message: &str) -> Result<String, GitError> {
     Ok(sha)
 }
 
+/// Create `branch` at `HEAD` and switch to it, carrying uncommitted changes.
+///
+/// # Errors
+/// [`GitError::InvalidBranchName`] for a name git would not accept;
+/// [`GitError::CommandFailed`] when the branch already exists.
+pub fn switch_new_branch(repo: &Path, branch: &str) -> Result<(), GitError> {
+    crate::worktree::validate_branch_name(branch)?;
+    let args = ["switch", "-c", branch];
+    run_git(Some(repo), &args)?.ok(&args)?;
+    tracing::debug!(target: "git", %branch, "change.switch_new_branch");
+    Ok(())
+}
+
 /// Push the current branch to `remote`, setting upstream when missing.
 ///
 /// # Errors

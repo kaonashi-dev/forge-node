@@ -3,6 +3,7 @@ import type {
   Branches,
   JuvaDraft,
   RebaseState,
+  BranchCompare,
   WorkspaceDiff,
   WorkspaceReview,
 } from "../../contracts/workbench";
@@ -15,6 +16,8 @@ export const [gitStore, setGitStore] = createStore({
   review: null as WorkspaceReview | null,
   reviewError: null as string | null,
   reviewAt: null as number | null,
+  compare: null as BranchCompare | null,
+  compareError: null as string | null,
   rebase: null as RebaseState | null,
   rebaseError: null as string | null,
   /** The conflicted path the three-way view is showing. */
@@ -32,6 +35,8 @@ export function resetGitAnswers(): void {
     review: null,
     reviewError: null,
     reviewAt: null,
+    compare: null,
+    compareError: null,
     rebase: null,
     rebaseError: null,
     conflictFocus: null,

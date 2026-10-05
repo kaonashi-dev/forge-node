@@ -50,11 +50,17 @@ describe("prTasks", () => {
     const draft = taskOrDefault("describe");
     const implement = taskOrDefault("finish");
     expect(launchHint(draft, sampleDiff(), false, false, null, false)).toContain(
-      "Forge Node pushes",
+      "Forge Node then commits",
     );
     expect(launchHint(implement, sampleDiff(), false, false, null, false)).toContain(
       "opens the PR itself",
     );
     expect(launchHint(draft, sampleDiff(), true, false, null, false)).toContain("already running");
+  });
+
+  it("has every draft task hand its text to forgectl, and only those", () => {
+    for (const task of builtinTasks()) {
+      expect(task.body.includes("forgectl pr draft")).toBe(task.mode === "Draft");
+    }
   });
 });

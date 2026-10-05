@@ -333,3 +333,172 @@ fn successful_creation_uses_configured_gh_and_immediately_refreshes() {
         "configured gh created the PR"
     );
 }
+
+fn git_stdout(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .expect("run git");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn draft(branch: &str) -> domain::PullRequestDraft {
+    domain::PullRequestDraft {
+        title: "Draft title".into(),
+        body: "Draft body".into(),
+        branch: branch.into(),
+        commit_message: "Add the draft file".into(),
+    }
+}
+
+/// A checkout on `main` with one uncommitted file and a bare `origin`.
+fn dirty_main_with_remote(harness: &common::Harness) -> test_support::TempRepo {
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("draft.txt"), "drafted\n").expect("write change");
+    let bare = harness.root().join("draft-remote.git");
+    command_ok(Command::new("git").args(["init", "--bare"]).arg(&bare));
+    command_ok(
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["remote", "add", "origin"])
+            .arg(&bare),
+    );
+    repo
+}
+
+#[test]
+fn an_agent_draft_is_committed_on_a_new_branch_and_opened() {
+    let harness = common::Harness::new();
+    let gh = harness.root().join("draft-gh");
+    let counter = harness.root().join("draft-count");
+    write_gh(
+        &gh,
+        &counter,
+        "https://github.com/Acme/Drafted/pull/11",
+        0,
+        false,
+    );
+    let repo = dirty_main_with_remote(&harness);
+    let daemon = harness.boot_with(|config| {
+        config.github.executable = gh.to_string_lossy().into_owned();
+    });
+    let client = daemon.connect("scenario-pr-draft");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (session_id, _) = common::create_shell_session(&client, &events, workspace);
+
+    assert_eq!(
+        client
+            .request(Request::SubmitPullRequestDraft {
+                session_id,
+                draft: draft("agent/draft"),
+            })
+            .expect("draft ack"),
+        Response::Ack
+    );
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(
+            event,
+            DaemonEvent::PullRequestDraftReady { workspace_id, session_id: from, draft }
+                if *workspace_id == workspace && *from == session_id && draft.title == "Draft title"
+        )
+    })
+    .expect("PullRequestDraftReady");
+
+    let stranger = client.request(Request::SubmitPullRequestDraft {
+        session_id: domain::SessionId::new(),
+        draft: draft("x"),
+    });
+    assert!(
+        matches!(&stranger, Err(client::ClientError::Protocol(error)) if error.code == protocol::ErrorCode::NotFound),
+        "a draft names its own session: {stranger:?}"
+    );
+
+    client
+        .request(Request::CommitAndOpenPullRequest {
+            workspace_id: workspace,
+            commit: domain::CommitPlan {
+                branch: Some("agent/draft".into()),
+                message: "Add the draft file".into(),
+            },
+            title: "Draft title".into(),
+            body: "Draft body".into(),
+            base: None,
+        })
+        .expect("open ack");
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(
+            event,
+            DaemonEvent::PullRequestOpened { url: Some(url), .. } if url.ends_with("/pull/11")
+        )
+    })
+    .expect("PullRequestOpened");
+
+    assert_eq!(common::checked_out_branch(repo.path()), "agent/draft");
+    assert_eq!(
+        git_stdout(repo.path(), &["log", "-1", "--format=%s"]),
+        "Add the draft file"
+    );
+    assert_eq!(git_stdout(repo.path(), &["status", "--porcelain"]), "");
+    assert_eq!(
+        git_stdout(repo.path(), &["rev-parse", "main"]),
+        git_stdout(repo.path(), &["rev-parse", "agent/draft~1"]),
+        "main did not move"
+    );
+    assert_eq!(invocation_count(&counter), 1, "gh created the pull request");
+}
+
+#[test]
+fn a_draft_is_never_committed_to_the_default_branch() {
+    let harness = common::Harness::new();
+    let gh = harness.root().join("never-gh");
+    let counter = harness.root().join("never-count");
+    write_gh(
+        &gh,
+        &counter,
+        "https://github.com/Acme/Never/pull/1",
+        0,
+        false,
+    );
+    let repo = dirty_main_with_remote(&harness);
+    let daemon = harness.boot_with(|config| {
+        config.github.executable = gh.to_string_lossy().into_owned();
+    });
+    let client = daemon.connect("scenario-pr-default");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let before = git_stdout(repo.path(), &["rev-parse", "HEAD"]);
+
+    client
+        .request(Request::CommitAndOpenPullRequest {
+            workspace_id: workspace,
+            commit: domain::CommitPlan {
+                branch: None,
+                message: "Add the draft file".into(),
+            },
+            title: "Draft title".into(),
+            body: String::new(),
+            base: None,
+        })
+        .expect("open ack");
+    let refused = common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::PullRequestOpened { .. })
+    })
+    .expect("PullRequestOpened");
+    let DaemonEvent::PullRequestOpened { url, error, .. } = refused else {
+        unreachable!()
+    };
+    assert_eq!(url, None);
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|text| text.contains("default branch")),
+        "{error:?}"
+    );
+    assert_eq!(git_stdout(repo.path(), &["rev-parse", "HEAD"]), before);
+    assert_eq!(common::checked_out_branch(repo.path()), "main");
+    assert_eq!(invocation_count(&counter), 0, "gh never ran");
+}

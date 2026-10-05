@@ -372,7 +372,7 @@ pub enum RuntimeCommand {
     RepaintEditor {
         session_id: SessionId,
     },
-    /// Detach the Code pane; the editor process survives.
+    /// Detach the Code pane and end the editor process.
     CloseEditor {
         session_id: SessionId,
     },

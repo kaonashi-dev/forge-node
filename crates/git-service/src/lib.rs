@@ -15,15 +15,17 @@ pub mod remote;
 pub mod repository;
 pub mod worktree;
 
-pub use change::{change_context, commit, push, ChangeSnapshot, MAX_FILES, MAX_PATCH_BYTES};
+pub use change::{
+    change_context, commit, push, switch_new_branch, ChangeSnapshot, MAX_FILES, MAX_PATCH_BYTES,
+};
 pub use command::{
     run_git, run_git_bounded, run_git_network, GitError, GitOutput, GIT_NETWORK_TIMEOUT,
     GIT_TIMEOUT,
 };
 pub use diff::{
-    change_summary, commit_count, commits_since, working_tree_diff, ChangeSummaryLine, CommitEntry,
-    FileChange, FileDiff, SummaryOfChanges, WorkingTreeDiff, DIFF_CONTEXT_LINES, MAX_DIFF_BYTES,
-    MAX_DIFF_FILES, MAX_FILE_PATCH_BYTES, MAX_SUMMARY_COMMITS,
+    change_summary, commit_count, commit_range_diff, commits_since, working_tree_diff,
+    ChangeSummaryLine, CommitEntry, FileChange, FileDiff, SummaryOfChanges, WorkingTreeDiff,
+    DIFF_CONTEXT_LINES, MAX_DIFF_BYTES, MAX_DIFF_FILES, MAX_FILE_PATCH_BYTES, MAX_SUMMARY_COMMITS,
 };
 pub use github::{
     create_pull_request, create_pull_request_with_cli, list_pull_requests,
@@ -40,9 +42,10 @@ pub use rebase::{
 };
 pub use remote::{default_remote, fetch, has_remote, FetchOutcome};
 pub use repository::{
-    commit_exists, common_dir, current_branch, default_branch, discover_root, head_commit,
-    ignored_paths, is_tracked, list_branches, list_refs, list_remotes, list_worktrees, merge_base,
-    set_local_excludes, short_commit, status, IgnoredPath, RefEntry, RepoStatus, WorktreeEntry,
+    commit_exists, common_dir, compare_base, current_branch, default_branch, discover_root,
+    head_commit, ignored_paths, is_tracked, list_branches, list_refs, list_remotes, list_worktrees,
+    merge_base, set_local_excludes, short_commit, status, IgnoredPath, RefEntry, RepoStatus,
+    WorktreeEntry,
 };
 pub use worktree::{
     create, precheck_remove, prune, remove, slugify, unique_slug, validate_branch_name,

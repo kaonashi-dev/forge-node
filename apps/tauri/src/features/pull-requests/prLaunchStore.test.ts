@@ -1,7 +1,18 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { sessionFixture } from "../../contracts/sessions.fixture";
 import { applyShellSnapshot, emptySnapshot, forgeStore } from "../../state/forgeStore";
-import { adoptPendingCompose, beginCompose, clearCompose, composeRun } from "./prComposeStore";
+import {
+  adoptPendingCompose,
+  beginCompose,
+  beginOpening,
+  clearCompose,
+  clearDraft,
+  composeBusy,
+  composeRun,
+  finishOpening,
+  prComposeStore,
+  receiveDraft,
+} from "./prComposeStore";
 import { adoptPendingReviews, beginReview, clearReview, reviewRun } from "./prReviewStore";
 
 beforeEach(() => {
@@ -75,5 +86,43 @@ describe("prComposeStore adoption", () => {
     adoptPendingCompose(forgeStore.sessions);
 
     expect(composeRun()?.session).toBe("agent");
+  });
+
+  it("frees the checkout once the adopted agent exits or is closed", () => {
+    const run = { startedAt: "2026-01-01T00:00:00Z", session: "agent", workspace: "w1" };
+    const agent = (state: "Running" | { Exited: { code: number; signal: null } }) => [
+      sessionFixture({ id: "agent", workspace_id: "w1", agent_provider_id: "claude", state }),
+    ];
+    expect(composeBusy(run, agent("Running"))).toBe(true);
+    expect(composeBusy(run, agent({ Exited: { code: 0, signal: null } }))).toBe(false);
+    expect(composeBusy(run, [])).toBe(false);
+    expect(composeBusy({ ...run, session: null }, [])).toBe(true);
+  });
+});
+
+describe("prComposeStore drafts", () => {
+  const received = {
+    workspace: "w1",
+    session: "agent",
+    draft: { title: "T", body: "B", branch: "fix-x", commit_message: "Fix x" },
+  };
+
+  it("keeps the draft when opening fails so the user can retry", () => {
+    receiveDraft(received);
+    beginOpening("w1");
+    finishOpening("w1", false);
+    expect(prComposeStore.opening).toBeNull();
+    expect(prComposeStore.draft).not.toBeNull();
+    clearDraft();
+  });
+
+  it("consumes the draft once its pull request opens", () => {
+    receiveDraft(received);
+    beginOpening("w1");
+    finishOpening("w2", true);
+    expect(prComposeStore.draft).not.toBeNull();
+    finishOpening("w1", true);
+    expect(prComposeStore.opening).toBeNull();
+    expect(prComposeStore.draft).toBeNull();
   });
 });

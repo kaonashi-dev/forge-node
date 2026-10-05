@@ -89,6 +89,18 @@ export type ReviewSession = {
   ended_at: string | null;
 };
 
+/** A branch against its pull request's base: committed work only, from the merge base. */
+export type BranchCompare = {
+  workspace_id: string;
+  /** The ref compared against (`origin/main`); `null` when nothing resolved. */
+  base_ref: string | null;
+  merge_base: string | null;
+  commits: CommitLine[];
+  /** Can exceed `commits.length`: the list is capped, the count is not. */
+  commit_count: number;
+  diff: WorkspaceDiff;
+};
+
 export type WorkspaceReview = {
   workspace_id: string;
   base: string | null;

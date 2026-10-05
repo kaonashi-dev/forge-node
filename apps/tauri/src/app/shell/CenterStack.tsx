@@ -97,6 +97,9 @@ const ProjectSearchView = lazy(() =>
 const ReviewView = lazy(() =>
   import("../../features/git/ReviewView").then((module) => ({ default: module.ReviewView })),
 );
+const CompareView = lazy(() =>
+  import("../../features/git/CompareView").then((module) => ({ default: module.CompareView })),
+);
 const PrReviewView = lazy(() =>
   import("../../features/pull-requests/PrReviewView").then((module) => ({
     default: module.PrReviewView,
@@ -410,6 +413,11 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
       <Show when={onCode() && active().kind === "diff"}>
         <div class="center-view">
           <DiffView />
+        </div>
+      </Show>
+      <Show when={onCode() && active().kind === "compare"}>
+        <div class="center-view">
+          <CompareView workspace={(active() as { workspace: string }).workspace} />
         </div>
       </Show>
       <Show when={onCode() && active().kind === "review"}>

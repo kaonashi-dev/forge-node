@@ -9,13 +9,13 @@
 
 use domain::orchestration::{BoardEntry, RunView};
 use domain::{
-    AgentDescriptor, AgentProfile, AttemptId, BranchRef, ChangeContext, ContextEnvelope, ContextId,
-    DetectionResult, DiffFile, ExternalAgentSession, ExternalTranscript, FileContents, FileTree,
-    ImageContents, JuvaDraft, Project, ProjectGroup, ProjectId, ProviderUsage, PullRequestState,
-    RebaseState, Remote, RunId, ScrollbackRows, SearchResults, Session, SessionChanges, SessionId,
-    SessionTranscript, ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TaskId,
-    TerminalId, TerminalSnapshot, UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId,
-    WorkspaceReview, WorktreeIgnore,
+    AgentDescriptor, AgentProfile, AttemptId, BranchCompare, BranchRef, ChangeContext,
+    ContextEnvelope, ContextId, DetectionResult, DiffFile, ExternalAgentSession,
+    ExternalTranscript, FileContents, FileTree, ImageContents, JuvaDraft, Project, ProjectGroup,
+    ProjectId, ProviderUsage, PullRequestState, RebaseState, Remote, RunId, ScrollbackRows,
+    SearchResults, Session, SessionChanges, SessionId, SessionTranscript, ShareAction,
+    ShareCandidate, ShareRule, ShareStatusEntry, TaskId, TerminalId, TerminalSnapshot,
+    UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceReview, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -205,6 +205,9 @@ pub enum Response {
     /// carries a whole diff and would otherwise set the size of every
     /// `Response` on the wire path.
     WorkspaceReview(Box<WorkspaceReview>),
+    /// A branch against its pull request's base, answering
+    /// `GetBranchCompare`. Boxed like `WorkspaceReview`.
+    BranchCompare(Box<BranchCompare>),
     /// Plain text off a session's terminal, answering
     /// `GetSessionTranscript`.
     SessionTranscript(SessionTranscript),

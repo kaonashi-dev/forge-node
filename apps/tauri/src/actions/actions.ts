@@ -111,6 +111,7 @@ export type ActionId =
   | "session_send_context"
   | "toggle_session_changes"
   | "review_checkout"
+  | "preview_pull_request"
   | "close_other_views"
   | "close_views_to_right"
   | "previous_code_view"
@@ -377,6 +378,12 @@ export const ACTIONS: Action[] = [
     id: "review_checkout",
     label: "Review This Checkout",
     detail: "Everything its sessions changed, with a summary",
+    palette: true,
+  },
+  {
+    id: "preview_pull_request",
+    label: "Preview Pull Request",
+    detail: "This branch against its base, file by file, before opening the PR",
     palette: true,
   },
   {

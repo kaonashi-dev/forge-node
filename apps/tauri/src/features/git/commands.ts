@@ -27,6 +27,21 @@ export async function loadWorkspaceReview(
   });
 }
 
+/** The PR preview's read; a `null` base lets the daemon pick the default branch. */
+export async function loadBranchCompare(
+  workspace: string,
+  base: string | null = null,
+  contextLines: number | null = null,
+): Promise<void> {
+  setLoading("compare", true);
+  await sendWorkbenchCommand({
+    type: "load_branch_compare",
+    workspace,
+    base,
+    context_lines: contextLines,
+  });
+}
+
 export async function loadRebaseState(workspace: string): Promise<void> {
   await sendWorkbenchCommand({ type: "load_rebase_state", workspace });
 }

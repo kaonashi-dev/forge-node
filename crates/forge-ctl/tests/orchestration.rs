@@ -2181,3 +2181,63 @@ fn json_shape(value: &Value) -> Value {
         Value::Null => Value::Null,
     }
 }
+
+#[test]
+fn pr_draft_hands_the_text_to_every_client() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    let workspace_id = add_project(&client, &repo);
+    let Response::SessionCreated { session_id, .. } = client
+        .request(Request::CreateShellSession {
+            workspace_id,
+            parent: None,
+            role: domain::SessionRole::Generic,
+        })
+        .expect("CreateShellSession")
+    else {
+        panic!("expected SessionCreated");
+    };
+    let ctl = Ctl::new(&running.socket);
+    let body = harness.tmp.path().join("body.md");
+    fs::write(&body, "## Why\n\nBecause.\n").unwrap();
+    let args = [
+        "pr",
+        "draft",
+        "--title",
+        "Ship it",
+        "--branch",
+        "ship-it",
+        "--commit",
+        "Ship it",
+        "--commit-body",
+        "All of it.",
+        "--body-file",
+        body.to_str().unwrap(),
+    ];
+
+    let anonymous = err(&ctl.run(&args, &[]), 2);
+    assert_eq!(anonymous["error"]["code"], "usage");
+
+    let events = client.events();
+    let session = session_id.to_string();
+    ok(&ctl.run(&args, &[("FORGE_SESSION_ID", session.as_str())]));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let draft = loop {
+        assert!(Instant::now() < deadline, "no PullRequestDraftReady");
+        if let Ok(DaemonEvent::PullRequestDraftReady {
+            workspace_id: from,
+            draft,
+            ..
+        }) = events.recv_timeout(Duration::from_millis(200))
+        {
+            assert_eq!(from, workspace_id);
+            break draft;
+        }
+    };
+    assert_eq!(draft.title, "Ship it");
+    assert_eq!(draft.body, "## Why\n\nBecause.");
+    assert_eq!(draft.branch, "ship-it");
+    assert_eq!(draft.commit_message, "Ship it\n\nAll of it.");
+}

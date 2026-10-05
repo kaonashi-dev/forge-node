@@ -18,5 +18,10 @@
   "launch_command": null,
   "last_activity_at": "2026-08-30T12:00:00Z",
   "ended_at": null,
-  "base_commit": "4f2b1ac"
+  "base_commit": "4f2b1ac",
+  "activity": {
+    "state": "unknown",
+    "since": "1970-01-01T00:00:00Z",
+    "evidence": null
+  }
 }

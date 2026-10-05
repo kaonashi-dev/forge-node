@@ -107,6 +107,7 @@ import {
   splitPane,
   restoreWorkspace,
   openCheckoutReview,
+  openPullRequestPreview,
   startHandoff,
   startSendContext,
   startSpawnChild,
@@ -515,6 +516,7 @@ export function AppShell() {
       registerAction("session_send_context", startSendContext),
       registerAction("toggle_session_changes", toggleSessionChanges),
       registerAction("review_checkout", openCheckoutReview),
+      registerAction("preview_pull_request", openPullRequestPreview),
       // U10, on the Code strip. All three are no-ops with nothing open, which
       // is why they check rather than assume: a chord that throws is worse
       // than one that does nothing.
