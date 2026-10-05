@@ -49,6 +49,7 @@ pub enum Grammar {
     Shell,
     Markdown,
     Html,
+    Css,
     /// No colouring: an extension this build does not know.
     #[default]
     None,
@@ -89,6 +90,7 @@ impl Grammar {
             "sh" | "bash" | "zsh" | "fish" | "mk" | "make" => Self::Shell,
             "md" | "markdown" | "mdx" => Self::Markdown,
             "html" | "htm" | "xhtml" | "xml" | "svg" => Self::Html,
+            "css" => Self::Css,
             _ => Self::None,
         }
     }
@@ -291,6 +293,7 @@ impl<'a> Scanner<'a> {
             Grammar::Shell => self.shell(),
             Grammar::Markdown => self.markdown(),
             Grammar::Html => self.html(),
+            Grammar::Css => self.css(),
             Grammar::None => {}
         }
     }
@@ -648,6 +651,23 @@ fn is_markup_name_start(byte: u8) -> bool {
 
 fn is_markup_name(byte: u8) -> bool {
     is_markup_name_start(byte) || byte.is_ascii_digit() || byte == b'-' || byte == b'.'
+}
+
+fn is_css_name_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'-' || byte >= 0x80
+}
+
+fn is_css_name(byte: u8) -> bool {
+    is_css_name_start(byte) || byte.is_ascii_digit()
+}
+
+/// Which part of a CSS statement the scanner is in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CssPart {
+    Selector,
+    Property,
+    Value,
+    AtRule,
 }
 
 fn raw_text_tag(name: &str) -> Option<&'static str> {
@@ -1346,6 +1366,226 @@ impl Scanner<'_> {
         }
     }
 
+    /// CSS: comments, at-rules, selectors and `property: value` declarations.
+    ///
+    /// A line inside a rule is coloured by the `{` above it, so a checkpoint is
+    /// taken only between statements at depth zero. Inside a block, a statement
+    /// that reaches `{` before `;` or `}` is a nested rule, not a declaration.
+    fn css(&mut self) {
+        let mut depth = 0_usize;
+        let mut part = CssPart::Selector;
+        let mut fresh = true;
+        let mut in_attr = false;
+        while !self.done() {
+            if depth == 0 && fresh && self.checkpoint() {
+                break;
+            }
+            let byte = self.byte(self.at);
+            let mark = self.mark();
+            if self.at_pair(b'/', b'*') {
+                self.bump();
+                self.bump();
+                self.take_until(b"*/");
+                self.emit(mark, Scope::Comment);
+                continue;
+            }
+            if byte.is_ascii_whitespace() {
+                self.bump();
+                continue;
+            }
+            match byte {
+                b'{' | b'}' | b';' => {
+                    self.bump();
+                    match byte {
+                        b'{' => depth += 1,
+                        b'}' => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
+                    part = CssPart::Selector;
+                    fresh = true;
+                    in_attr = false;
+                    continue;
+                }
+                _ => {}
+            }
+            if fresh {
+                fresh = false;
+                part = if byte == b'@' {
+                    CssPart::AtRule
+                } else if depth == 0 || self.css_opens_block() {
+                    CssPart::Selector
+                } else {
+                    CssPart::Property
+                };
+            }
+            if byte == b'"' || byte == b'\'' {
+                self.take_css_string(byte);
+                self.emit(mark, Scope::String);
+                continue;
+            }
+            if self.css_number_at() && part != CssPart::Property {
+                self.take_css_number();
+                self.emit(mark, Scope::Number);
+                continue;
+            }
+            match (part, byte) {
+                (CssPart::AtRule, b'@') => {
+                    self.bump();
+                    self.take_css_name();
+                    self.emit(mark, Scope::Keyword);
+                }
+                (CssPart::Selector, b'.' | b'#') if is_css_name_start(self.byte(self.at + 1)) => {
+                    self.bump();
+                    self.take_css_name();
+                    self.emit(mark, Scope::Type);
+                }
+                (CssPart::Selector, b':') => {
+                    self.bump();
+                    if self.byte(self.at) == b':' {
+                        self.bump();
+                    }
+                    self.take_css_name();
+                    self.emit(mark, Scope::Keyword);
+                }
+                (CssPart::Selector, b'[' | b']') => {
+                    in_attr = byte == b'[';
+                    self.bump();
+                }
+                (CssPart::Property, b':') => {
+                    self.bump();
+                    part = CssPart::Value;
+                }
+                (CssPart::Value, b'!') if self.byte(self.at + 1).is_ascii_alphabetic() => {
+                    self.bump();
+                    self.take_css_name();
+                    self.emit(mark, Scope::Keyword);
+                }
+                (CssPart::Value, b'#') if is_css_name(self.byte(self.at + 1)) => {
+                    self.bump();
+                    self.take_css_name();
+                    self.emit(mark, Scope::Constant);
+                }
+                (_, b) if is_css_name_start(b) => {
+                    self.take_css_name();
+                    let scope = match part {
+                        CssPart::Selector if in_attr => Scope::Property,
+                        CssPart::Selector => Scope::Type,
+                        CssPart::Property => Scope::Property,
+                        _ if self.byte(self.at) == b'(' => Scope::Function,
+                        CssPart::AtRule if self.peek_nonspace() == b':' => Scope::Property,
+                        _ => Scope::Plain,
+                    };
+                    self.emit(mark, scope);
+                    if scope == Scope::Function
+                        && self.text[mark.at..self.at].eq_ignore_ascii_case("url")
+                    {
+                        self.take_css_url();
+                    }
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    /// Whether the statement starting here opens a block before it ends.
+    fn css_opens_block(&self) -> bool {
+        let mut at = self.at;
+        loop {
+            match self.byte(at) {
+                0 if at >= self.bytes.len() => return false,
+                b'{' => return true,
+                b';' | b'}' => return false,
+                quote @ (b'"' | b'\'') => {
+                    at += 1;
+                    while !matches!(self.byte(at), b'\n' | 0) && self.byte(at) != quote {
+                        at += if self.byte(at) == b'\\' { 2 } else { 1 };
+                    }
+                    at += 1;
+                }
+                b'/' if self.byte(at + 1) == b'*' => {
+                    at += 2;
+                    while at < self.bytes.len()
+                        && !(self.byte(at) == b'*' && self.byte(at + 1) == b'/')
+                    {
+                        at += 1;
+                    }
+                    at += 2;
+                }
+                _ => at += 1,
+            }
+        }
+    }
+
+    fn css_number_at(&self) -> bool {
+        let digit = |at: usize| self.byte(at).is_ascii_digit();
+        let unsigned = |at: usize| digit(at) || (self.byte(at) == b'.' && digit(at + 1));
+        match self.byte(self.at) {
+            b'-' | b'+' => unsigned(self.at + 1),
+            _ => unsigned(self.at),
+        }
+    }
+
+    /// A number and its unit: `-1.5em`, `50%`, `.5s`.
+    fn take_css_number(&mut self) {
+        if matches!(self.byte(self.at), b'-' | b'+') {
+            self.bump();
+        }
+        while self.byte(self.at).is_ascii_digit() || self.byte(self.at) == b'.' {
+            self.bump();
+        }
+        if self.byte(self.at) == b'%' {
+            self.bump();
+        } else {
+            while self.byte(self.at).is_ascii_alphabetic() {
+                self.bump();
+            }
+        }
+    }
+
+    fn take_css_name(&mut self) {
+        while !self.done() && is_css_name(self.byte(self.at)) {
+            self.bump();
+        }
+    }
+
+    /// Like [`Self::take_quoted`] but without its checkpoint: an escaped
+    /// newline inside a rule must not mark the next line as top level.
+    fn take_css_string(&mut self, quote: u8) {
+        self.bump();
+        while !self.done() {
+            let byte = self.byte(self.at);
+            if byte == b'\\' {
+                self.bump();
+                self.bump();
+                continue;
+            }
+            if byte == b'\n' {
+                return;
+            }
+            self.bump();
+            if byte == quote {
+                return;
+            }
+        }
+    }
+
+    /// An unquoted `url(...)` body is one string: a data URI carries `;` and
+    /// `,`, which would otherwise end the declaration.
+    fn take_css_url(&mut self) {
+        self.bump();
+        while matches!(self.byte(self.at), b' ' | b'\t') {
+            self.bump();
+        }
+        if matches!(self.byte(self.at), b'"' | b'\'') {
+            return;
+        }
+        let mark = self.mark();
+        while !self.done() && !matches!(self.byte(self.at), b')' | b'\n') {
+            self.bump();
+        }
+        self.emit(mark, Scope::String);
+    }
+
     // --- shared scanning helpers ---
 
     fn take_line(&mut self) {
@@ -1515,6 +1755,7 @@ mod tests {
         assert_eq!(Grammar::for_path("app.xhtml"), Grammar::Html);
         assert_eq!(Grammar::for_path("data.xml"), Grammar::Html);
         assert_eq!(Grammar::for_path("icon.svg"), Grammar::Html);
+        assert_eq!(Grammar::for_path("styles/app.CSS"), Grammar::Css);
         // A dotfile's name is not an extension, and neither is a directory's.
         assert_eq!(Grammar::for_path(".gitignore"), Grammar::None);
         assert_eq!(Grammar::for_path("docs.md/main.rs"), Grammar::Rust);
@@ -1794,6 +2035,76 @@ mod tests {
         assert!(!tag.iter().any(|(_, scope)| *scope == Scope::Comment));
     }
 
+    #[test]
+    fn css_colours_selectors_properties_and_values() {
+        let text = "/* note */\n.card > a:hover, #main {\n  --gap: 4px;\n  color: #fff !important;\n  margin: -1.5em 0 calc(100% - 2px);\n}\n";
+        assert_eq!(
+            spans(text, Grammar::Css, 0),
+            [("/* note */", Scope::Comment)]
+        );
+        let selector = spans(text, Grammar::Css, 1);
+        assert!(selector.contains(&(".card", Scope::Type)), "{selector:?}");
+        assert!(selector.contains(&("a", Scope::Type)), "{selector:?}");
+        assert!(
+            selector.contains(&(":hover", Scope::Keyword)),
+            "{selector:?}"
+        );
+        assert!(selector.contains(&("#main", Scope::Type)), "{selector:?}");
+        let custom = spans(text, Grammar::Css, 2);
+        assert_eq!(custom, [("--gap", Scope::Property), ("4px", Scope::Number)]);
+        let colour = spans(text, Grammar::Css, 3);
+        assert!(colour.contains(&("color", Scope::Property)), "{colour:?}");
+        assert!(colour.contains(&("#fff", Scope::Constant)), "{colour:?}");
+        assert!(
+            colour.contains(&("!important", Scope::Keyword)),
+            "{colour:?}"
+        );
+        let margin = spans(text, Grammar::Css, 4);
+        assert!(margin.contains(&("-1.5em", Scope::Number)), "{margin:?}");
+        assert!(margin.contains(&("calc", Scope::Function)), "{margin:?}");
+        assert!(margin.contains(&("100%", Scope::Number)), "{margin:?}");
+    }
+
+    /// Inside `@media` a statement that reaches `{` is a rule, so its name is a
+    /// selector rather than a property.
+    #[test]
+    fn css_at_rules_nest_rules_and_keep_data_uris_whole() {
+        let text = "@media (min-width: 40em) {\n  a { color: red }\n}\n.i { background: url(data:image/png;base64,AA==) }\n";
+        let at = spans(text, Grammar::Css, 0);
+        assert!(at.contains(&("@media", Scope::Keyword)), "{at:?}");
+        assert!(at.contains(&("min-width", Scope::Property)), "{at:?}");
+        assert!(at.contains(&("40em", Scope::Number)), "{at:?}");
+        let nested = spans(text, Grammar::Css, 1);
+        assert!(nested.contains(&("a", Scope::Type)), "{nested:?}");
+        assert!(nested.contains(&("color", Scope::Property)), "{nested:?}");
+        let url = spans(text, Grammar::Css, 3);
+        assert!(url.contains(&("url", Scope::Function)), "{url:?}");
+        assert!(
+            url.contains(&("data:image/png;base64,AA==", Scope::String)),
+            "{url:?}"
+        );
+        assert!(!url.iter().any(|(text, _)| *text == "base64"), "{url:?}");
+    }
+
+    /// A declaration's line depends on the `{` above it, so an edit inside a
+    /// rule may not resume on the line under the caret.
+    #[test]
+    fn a_css_edit_inside_a_rule_restarts_above_it() {
+        let text = "a {}\n.b {\n  color: red;\n  margin: 0;\n}\nc {}\n";
+        let edited = "a {}\n.b {\n  color: blue;\n  margin: 0;\n}\nc {}\n";
+        let next = Syntax::parse(text, Grammar::Css).edited(edited, Grammar::Css, 2, 2, 0);
+        assert!(
+            next.scanned_lines().start <= 1,
+            "resumed inside the rule: {:?}",
+            next.scanned_lines()
+        );
+        assert_eq!(
+            all_spans(&next, 7),
+            all_spans(&Syntax::parse(edited, Grammar::Css), 7)
+        );
+        assert_eq!(next.scope_at(3, 2), Scope::Property);
+    }
+
     /// Offsets index the line they are on, and never run past it.
     #[test]
     fn every_span_is_inside_its_line() {
@@ -1827,6 +2138,7 @@ mod tests {
             Grammar::Shell,
             Grammar::Markdown,
             Grammar::Html,
+            Grammar::Css,
         ] {
             for text in [
                 "",
@@ -1842,6 +2154,10 @@ mod tests {
                 "<!--",
                 "<script>",
                 "&",
+                "a{b:url(",
+                "@",
+                "#",
+                "-.",
                 "\u{1f600} é 漢字\n",
                 "a\u{0}b\n",
             ] {
@@ -2079,6 +2395,10 @@ mod tests {
             (
                 Grammar::Html,
                 "<div class=\"x\">\n<!-- c -->\n<span>y</span>\n",
+            ),
+            (
+                Grammar::Css,
+                "/* c */\n.a,\n.b {\n  color: red;\n}\n@media (x: 1px) {\n  p { margin: 0 }\n}\n",
             ),
         ];
         for (grammar, text) in cases {
