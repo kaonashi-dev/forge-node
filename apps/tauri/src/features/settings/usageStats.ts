@@ -181,7 +181,32 @@ export function compactTokens(value: number): string {
 
 /** Micro-dollars as money. Two decimals, because it is money. */
 export function money(micros: number): string {
-  return `$${(micros / MICROS_PER_USD).toFixed(2)}`;
+  return `$${(micros / MICROS_PER_USD).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/** `12,309`. */
+export function count(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+/** A whole percent that never claims `0%` for something that happened. */
+export function percentLabel(part: number, total: number): string {
+  if (total <= 0 || part <= 0) return "0%";
+  const percent = (part * 100) / total;
+  if (percent < 1) return "<1%";
+  return `${Math.round(percent)}%`;
+}
+
+/** `resets in 3h 12m`, or `null` when the provider gave no reset or it has passed. */
+export function resetsIn(stamp: string | null, now: Date): string | null {
+  if (!stamp) return null;
+  const at = new Date(stamp).getTime();
+  if (Number.isNaN(at)) return null;
+  const secs = Math.floor((at - now.getTime()) / 1000);
+  return secs > 0 ? `resets in ${workedLabel(secs)}` : null;
 }
 
 /** `35d 4h`, `4h 20m`, `12m`, `—` for nothing at all. */

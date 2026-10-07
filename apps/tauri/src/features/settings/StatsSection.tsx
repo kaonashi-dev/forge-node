@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
-import type { ProviderUsage } from "../../contracts/runtime";
+import { providerId, providerName, type ProviderUsage } from "../../contracts/runtime";
 import { forgeStore } from "../../state/forgeStore";
 import { Button } from "../../ui/index";
 import { Group, Page } from "./SettingsLayout";
@@ -14,11 +14,14 @@ import {
 import {
   busiestDay,
   compactTokens,
+  count,
   dayLabel,
   heatmap,
   money,
   overview,
+  percentLabel,
   providerShare,
+  resetsIn,
   shortDay,
   statsProviders,
   tokenMix,
@@ -80,83 +83,75 @@ export function StatsSection() {
 
 function StatsBody(props: { analytics: UsageAnalytics }) {
   const providers = createMemo(() => statsProviders(props.analytics, forgeStore.providers));
+  const reporting = () => providers().filter((provider) => provider.analytics);
+  const silent = () => providers().filter((provider) => !provider.analytics);
   const summary = () => overview(props.analytics);
-  const mix = () => tokenMix(totals(props.analytics));
+  const sum = () => totals(props.analytics);
+  const mix = () => tokenMix(sum());
   const cells = () => heatmap(props.analytics.daily, props.analytics.window_days, new Date());
   const best = () => busiestDay(props.analytics.daily);
-  const reasoning = () => totals(props.analytics).reasoning;
 
   return (
     <div class="stats-body">
       <div class="stats-headline">
         <StatTile
-          label="Agent runs"
-          value={String(analyticsSessions(props.analytics))}
-          note={`${analyticsTurns(props.analytics)} turns`}
-        />
-        <StatTile
-          label="Time agents worked"
-          value={workedLabel(analyticsWorkedSecs(props.analytics))}
-          note="parallel agents counted twice"
-        />
-        <StatTile
-          label="Transcripts read"
-          value={String(props.analytics.scanned)}
-          note={props.analytics.skipped > 0 ? `${props.analytics.skipped} skipped` : undefined}
-        />
-      </div>
-      <p class="settings-hint stats-since">
-        Tracking since {dayLabel(trackingSince(props.analytics))} · updated{" "}
-        {dayLabel(props.analytics.collected_at)}
-      </p>
-
-      <div class="stats-overview">
-        <StatTile label="Total tokens" value={compactTokens(summary().tokens)} />
-        <StatTile
           label="Est. cost"
           value={money(summary().costMicros)}
           note={
             summary().unpricedTurns > 0
-              ? `floor — ${summary().unpricedTurns} unpriced turns`
+              ? `floor · ${count(summary().unpricedTurns)} unpriced turns`
               : undefined
           }
         />
-        <StatTile label="Active days" value={String(summary().activeDays)} />
-        <StatTile label="Cache share" value={`${summary().cachePercent}%`} />
+        <StatTile
+          label="Tokens"
+          value={compactTokens(summary().tokens)}
+          note={`${summary().cachePercent}% from cache`}
+        />
+        <StatTile
+          label="Agent runs"
+          value={count(analyticsSessions(props.analytics))}
+          note={`${count(analyticsTurns(props.analytics))} turns`}
+        />
+        <StatTile
+          label="Agent time"
+          value={workedLabel(analyticsWorkedSecs(props.analytics))}
+          note="parallel runs add up"
+        />
+        <StatTile
+          label="Active days"
+          value={String(summary().activeDays)}
+          note={`of ${props.analytics.window_days}`}
+        />
       </div>
+
+      <section class="stats-panel">
+        <header class="stats-panel-head">
+          <h4>Daily tokens</h4>
+          <Show when={best()}>
+            {(day) => (
+              <span class="stats-badge">
+                Peak {shortDay(day().date)} · {compactTokens(day().tokens)}
+              </span>
+            )}
+          </Show>
+        </header>
+        <DailyBars cells={cells()} />
+      </section>
 
       <div class="stats-panels">
         <section class="stats-panel">
           <header class="stats-panel-head">
-            <h4>Daily intensity</h4>
-            <Show when={best()}>
-              {(day) => <span class="stats-badge">Best: {shortDay(day().date)}</span>}
-            </Show>
-          </header>
-          <p class="settings-hint">Billed tokens per day, across every provider.</p>
-          <Heatmap cells={cells()} />
-        </section>
-
-        <section class="stats-panel">
-          <header class="stats-panel-head">
             <h4>Token mix</h4>
-            <Show when={reasoning() > 0}>
-              <span class="stats-badge">{compactTokens(reasoning())} reasoning</span>
-            </Show>
           </header>
-          {/* Reasoning is not a segment: it is already inside output, and a bar
-              that shows it alongside sums past the total it is dividing. */}
-          <p class="settings-hint">
-            Input, output and both halves of the cache. Reasoning is counted inside output.
-          </p>
           <div class="stats-mix" role="img" aria-label="Token mix by kind">
             <For each={mix()}>
               {(segment) => (
-                <Show when={segment.percent > 0}>
+                <Show when={segment.tokens > 0}>
                   <span
                     class={`stats-mix-part kind-${segment.key}`}
-                    style={{ width: `${segment.percent}%` }}
-                    title={`${segment.label}: ${compactTokens(segment.tokens)} (${segment.percent}%)`}
+                    style={{ "flex-grow": segment.tokens }}
+                    title={`${segment.label}: ${compactTokens(segment.tokens)}`}
                   />
                 </Show>
               )}
@@ -165,99 +160,160 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
           <ul class="stats-legend">
             <For each={mix()}>
               {(segment) => (
-                <li>
-                  <span class={`stats-swatch kind-${segment.key}`} />
-                  <span class="stats-legend-label">{segment.label}</span>
-                  <span class="stats-legend-value">{compactTokens(segment.tokens)}</span>
-                </li>
+                <>
+                  <li>
+                    <span class={`stats-swatch kind-${segment.key}`} />
+                    <span class="stats-legend-label">{segment.label}</span>
+                    <span class="stats-legend-value">{compactTokens(segment.tokens)}</span>
+                    <span class="stats-legend-share">
+                      {percentLabel(segment.tokens, summary().tokens)}
+                    </span>
+                  </li>
+                  {/* Reasoning is already inside output, so it is a sub-row and
+                      never a segment that would sum past the total. */}
+                  <Show when={segment.key === "output" && sum().reasoning > 0}>
+                    <li class="stats-legend-sub">
+                      <span class="stats-legend-label">incl. reasoning</span>
+                      <span class="stats-legend-value">{compactTokens(sum().reasoning)}</span>
+                      <span class="stats-legend-share" />
+                    </li>
+                  </Show>
+                </>
               )}
             </For>
           </ul>
         </section>
+
+        <Show
+          when={forgeStore.usage.length > 0}
+          fallback={
+            <Show when={forgeStore.providers.length > 0}>
+              <section class="stats-panel">
+                <header class="stats-panel-head">
+                  <h4>Plan limits</h4>
+                </header>
+                <p class="settings-hint">No provider has reported a subscription allowance yet.</p>
+              </section>
+            </Show>
+          }
+        >
+          <section class="stats-panel">
+            <header class="stats-panel-head">
+              <h4>Plan limits</h4>
+            </header>
+            {/* The provider's word on an allowance, a different reading from
+                the counts beside it, which are what was spent. */}
+            <div class="stats-meters">
+              <For each={forgeStore.usage}>{(reading) => <MeterGroup reading={reading} />}</For>
+            </div>
+          </section>
+        </Show>
       </div>
 
       <section class="stats-panel">
         <header class="stats-panel-head">
-          <h4>Providers</h4>
-          <span class="stats-badge">
-            {props.analytics.providers.length} of {providers().length} with data
-          </span>
+          <h4>By provider</h4>
         </header>
-        <div class="stats-providers">
-          <For
-            each={providers()}
-            fallback={<p class="empty-copy">No transcript in the window carried a usage record.</p>}
-          >
-            {(provider) => (
-              <ProviderCard
-                provider={provider}
-                share={provider.analytics ? providerShare(provider.analytics, props.analytics) : 0}
-              />
-            )}
-          </For>
-        </div>
+        <Show
+          when={reporting().length > 0}
+          fallback={<p class="empty-copy">No transcript in the window carried a usage record.</p>}
+        >
+          <div class="stats-providers">
+            <For each={reporting()}>
+              {(provider) => (
+                <ProviderCard
+                  provider={provider}
+                  share={
+                    provider.analytics ? providerShare(provider.analytics, props.analytics) : 0
+                  }
+                />
+              )}
+            </For>
+          </div>
+        </Show>
+        <Show when={silent().length > 0}>
+          <p class="settings-hint">
+            No token data from{" "}
+            {silent()
+              .map((provider) => provider.name)
+              .join(", ")}
+            .
+          </p>
+        </Show>
       </section>
 
-      <Show when={forgeStore.usage.length > 0}>
-        <section class="stats-panel">
-          <header class="stats-panel-head">
-            <h4>Subscription meters</h4>
-          </header>
-          {/* The provider's word on an allowance, which is a different reading
-              from the one above: that one counts what was spent. */}
-          <For each={forgeStore.usage}>
-            {(reading) => (
-              <div class="stats-meter-row">
-                <span>{meterAccount(reading)}</span>
-                <For each={reading.windows}>
-                  {(window) => (
-                    <span class="settings-row-note">
-                      {window.window}: {window.used_percent}%
-                    </span>
-                  )}
-                </For>
-              </div>
-            )}
-          </For>
-        </section>
-      </Show>
-      <Show when={forgeStore.usage.length === 0 && forgeStore.providers.length > 0}>
-        <p class="settings-hint">No provider has reported a subscription allowance yet.</p>
-      </Show>
+      <p class="settings-hint stats-since">
+        {count(props.analytics.scanned)} transcripts read
+        {props.analytics.skipped > 0 ? ` (${count(props.analytics.skipped)} skipped)` : ""} ·
+        tracking since {dayLabel(trackingSince(props.analytics))} · updated{" "}
+        {dayLabel(props.analytics.collected_at)}
+      </p>
     </div>
   );
 }
 
-/** A calendar of the window, one cell per day, quiet days included. */
-function Heatmap(props: { cells: HeatCell[] }) {
+/** One bar per day of the window, quiet days drawn as a stub so gaps read as gaps. */
+function DailyBars(props: { cells: HeatCell[] }) {
+  const peak = () => props.cells.reduce((max, cell) => Math.max(max, cell.tokens), 0);
   const first = () => props.cells[0];
+  const middle = () => props.cells[Math.floor(props.cells.length / 2)];
   const last = () => props.cells[props.cells.length - 1];
 
   return (
-    <div class="stats-heatmap">
-      <div class="stats-heat-grid">
+    <div class="stats-daily">
+      <div class="stats-daily-bars" role="img" aria-label="Tokens per day">
         <For each={props.cells}>
           {(cell) => (
             <span
-              class={`stats-heat-cell level-${cell.level}`}
+              class="stats-daily-day"
               title={`${shortDay(cell.date)} · ${compactTokens(cell.tokens)} tokens`}
-            />
+            >
+              <span
+                class="stats-daily-bar"
+                classList={{
+                  quiet: cell.tokens === 0,
+                  peak: cell.tokens > 0 && cell.tokens === peak(),
+                }}
+                style={{
+                  height: cell.tokens === 0 ? undefined : `${(cell.tokens * 100) / peak()}%`,
+                }}
+              />
+            </span>
           )}
         </For>
       </div>
-      <div class="stats-heat-foot">
+      <div class="stats-daily-axis">
         <span>{first() ? shortDay(first().date) : ""}</span>
-        <span class="stats-heat-scale">
-          Less
-          <span class="stats-heat-cell level-0" />
-          <span class="stats-heat-cell level-1" />
-          <span class="stats-heat-cell level-2" />
-          <span class="stats-heat-cell level-3" />
-          <span class="stats-heat-cell level-4" />
-          More
-        </span>
+        <span>{middle() ? shortDay(middle().date) : ""}</span>
         <span>{last() ? shortDay(last().date) : ""}</span>
       </div>
+    </div>
+  );
+}
+
+function MeterGroup(props: { reading: ProviderUsage }) {
+  return (
+    <div class="stats-meter-group">
+      <span class="stats-meter-account">{meterAccount(props.reading)}</span>
+      <For each={props.reading.windows}>
+        {(window) => (
+          <div class="stats-meter">
+            <span class="stats-meter-window">{window.window}</span>
+            <span class="stats-meter-track">
+              <span
+                class="stats-meter-fill"
+                classList={{
+                  warn: window.used_percent >= 75 && window.used_percent < 90,
+                  full: window.used_percent >= 90,
+                }}
+                style={{ width: `${Math.min(100, Math.max(0, window.used_percent))}%` }}
+              />
+            </span>
+            <span class="stats-meter-value">{Math.round(window.used_percent)}%</span>
+            <span class="stats-meter-reset">{resetsIn(window.resets_at, new Date()) ?? ""}</span>
+          </div>
+        )}
+      </For>
     </div>
   );
 }
@@ -265,8 +321,8 @@ function Heatmap(props: { cells: HeatCell[] }) {
 function StatTile(props: { label: string; value: string; note?: string }) {
   return (
     <div class="stats-tile">
-      <span class="stats-tile-value">{props.value}</span>
       <span class="stats-tile-label">{props.label}</span>
+      <span class="stats-tile-value">{props.value}</span>
       <Show when={props.note}>{(note) => <span class="stats-tile-note">{note()}</span>}</Show>
     </div>
   );
@@ -277,18 +333,9 @@ function ProviderCard(props: { provider: StatsProvider; share: number }) {
     <article class="stats-provider">
       <header class="stats-provider-head">
         <span class="stats-provider-name">{props.provider.name}</span>
-        <span class="stats-badge">
-          {props.provider.analytics ? `${props.share}%` : "No token data"}
-        </span>
+        <span class="stats-badge">{props.share}%</span>
       </header>
-      <Show
-        when={props.provider.analytics}
-        fallback={
-          <p class="settings-hint stats-provider-model">
-            Token analytics are unavailable for this provider in the current scan.
-          </p>
-        }
-      >
+      <Show when={props.provider.analytics}>
         {(analytics) => <ProviderMetrics provider={analytics()} share={props.share} />}
       </Show>
     </article>
@@ -301,18 +348,23 @@ function ProviderMetrics(props: { provider: ProviderAnalytics; share: number }) 
       <p class="settings-hint stats-provider-model">
         {props.provider.top_model ?? "no model recorded"}
       </p>
-      <div class="stats-provider-facts">
-        <span>{compactTokens(tokenTotal(props.provider.tokens))} tokens</span>
-        <span>
-          {props.provider.sessions} runs · {props.provider.turns} turns
+      <div class="stats-provider-figures">
+        <span class="stats-provider-tokens">
+          {compactTokens(tokenTotal(props.provider.tokens))}
+          <small>tokens</small>
         </span>
-        <span>
+        <span class="stats-provider-cost">
           {money(props.provider.cost_micros)}
-          {props.provider.unpriced_turns > 0 ? " floor" : ""}
+          <Show when={props.provider.unpriced_turns > 0}>
+            <small>floor</small>
+          </Show>
         </span>
       </div>
       <span class="stats-provider-bar">
         <span class="stats-provider-fill" style={{ width: `${props.share}%` }} />
+      </span>
+      <span class="stats-provider-facts">
+        {count(props.provider.sessions)} runs · {count(props.provider.turns)} turns
       </span>
     </>
   );
@@ -326,5 +378,7 @@ function meterAccount(reading: ProviderUsage): string {
   const profile = reading.profile_id
     ? forgeStore.agent_profiles.find((item) => item.id === reading.profile_id)
     : null;
-  return profile ? `${reading.provider_id} · ${profile.name}` : reading.provider_id;
+  const provider = forgeStore.providers.find((item) => providerId(item) === reading.provider_id);
+  const name = provider ? providerName(provider) : reading.provider_id;
+  return profile ? `${name} · ${profile.name}` : name;
 }
