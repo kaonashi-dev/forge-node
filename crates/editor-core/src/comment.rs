@@ -10,7 +10,9 @@ pub(crate) fn toggle(document: &mut Document) -> Result<Option<Applied>, EditErr
         Grammar::Rust | Grammar::CLike | Grammar::Prisma => "//",
         Grammar::Sql => "--",
         Grammar::Python | Grammar::Shell | Grammar::Keyed | Grammar::Hcl => "#",
-        Grammar::Json | Grammar::Markdown | Grammar::Html | Grammar::None => return Ok(None),
+        Grammar::Json | Grammar::Markdown | Grammar::Html | Grammar::Css | Grammar::None => {
+            return Ok(None)
+        }
     };
     let selection = document.selection();
     let text = document.text();

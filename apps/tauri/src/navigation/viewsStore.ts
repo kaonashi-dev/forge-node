@@ -124,6 +124,10 @@ export function openReview(workspace: string): void {
   open({ kind: "review", workspace });
 }
 
+export function openCompare(workspace: string): void {
+  open({ kind: "compare", workspace });
+}
+
 export function focus(view: WorkbenchView): void {
   update((views) => focusView(views, view));
   setMode("code");

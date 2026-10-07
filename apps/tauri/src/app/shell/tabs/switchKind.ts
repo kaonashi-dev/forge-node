@@ -13,6 +13,7 @@ export function viewKindWord(view: WorkbenchView): string {
       return "preview";
     case "pr_detail":
     case "pr_compose":
+    case "compare":
       return "pull request";
     case "pr_review":
     case "review":

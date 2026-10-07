@@ -945,6 +945,35 @@ fn emit_side_event(app: &AppHandle, event: &DaemonEvent) {
                 },
             );
         }
+        DaemonEvent::PullRequestDraftReady {
+            workspace_id,
+            session_id,
+            draft,
+        } => {
+            let _ = app.emit(
+                "runtime:pr_draft",
+                PrDraftPayload {
+                    workspace: *workspace_id,
+                    session: *session_id,
+                    draft: draft.clone(),
+                },
+            );
+        }
+        // Nothing else reports a push or `gh` failure to the user.
+        DaemonEvent::PullRequestOpened {
+            workspace_id,
+            url,
+            error,
+        } => {
+            let _ = app.emit(
+                "runtime:pull_request_opened",
+                PullRequestOpenedPayload {
+                    workspace: *workspace_id,
+                    url: url.clone(),
+                    error: error.clone(),
+                },
+            );
+        }
         // Juva acks when the draft starts (its endpoint opens a socket), so
         // the text arrives here rather than as a response. Not shell state:
         // a draft is a read, like a diff, and rides its own event.
@@ -964,6 +993,20 @@ fn emit_side_event(app: &AppHandle, event: &DaemonEvent) {
         }
         _ => {}
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PrDraftPayload {
+    workspace: WorkspaceId,
+    session: domain::SessionId,
+    draft: domain::PullRequestDraft,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PullRequestOpenedPayload {
+    workspace: WorkspaceId,
+    url: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -999,7 +1042,7 @@ struct Effect {
     split_opened: Option<SplitOpened>,
     /// The extra column's grid, keyed so it does not merge with the main pane.
     split_damage: Option<(TerminalId, Damage)>,
-    /// The Code pane let an editor go; the process is still running.
+    /// The Code pane let an editor go.
     editor_detached: Option<SessionId>,
     /// An unforced worktree removal needs a second confirmation.
     worktree_blocked: Option<(WorkspaceId, String)>,
@@ -1638,30 +1681,7 @@ fn run_command(
             Ok(Effect::nothing())
         }
         RuntimeCommand::CloseSession { session_id } => {
-            let live = store
-                .sessions
-                .iter()
-                .find(|session| session.id == session_id)
-                .is_some_and(|session| session.state.is_active());
-            if live {
-                if let Err(error) = client.kill_session(session_id) {
-                    tracing::warn!(%error, "failed to kill session before closing");
-                }
-                // Kill is async: CloseSession is refused until the process is
-                // terminal, so remember the id and remove the row on exit.
-                Ok(Effect {
-                    pending_close: Some(session_id),
-                    ..Effect::nothing()
-                })
-            } else {
-                if let Err(error) = client.close_session(session_id) {
-                    tracing::warn!(%error, "failed to close session");
-                }
-                Ok(Effect {
-                    forget_pending_close: Some(session_id),
-                    ..Effect::nothing()
-                })
-            }
+            Ok(close_session_effect(client, store, session_id))
         }
         RuntimeCommand::CreateWorktree {
             project,
@@ -1960,8 +1980,14 @@ fn run_command(
                 ..Effect::nothing()
             })
         }
+        // The view only closes once the buffer is saved or the user chose to
+        // discard it, so nothing is left for the process to hold.
         RuntimeCommand::CloseEditor { session_id } => {
-            Ok(detach_editor(client, editors, at.terminal, session_id))
+            let detached = detach_editor(client, editors, at.terminal, session_id);
+            Ok(Effect {
+                editor_detached: detached.editor_detached,
+                ..close_session_effect(client, store, session_id)
+            })
         }
 
         // The daemon going away is the connection going away, so the loop
@@ -1972,6 +1998,33 @@ fn run_command(
                 .stop_daemon(kill_sessions)
                 .map_err(CommandError::from_client)?;
             Ok(Effect::nothing())
+        }
+    }
+}
+
+fn close_session_effect(client: &Client, store: &Store, session_id: SessionId) -> Effect {
+    let live = store
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .is_some_and(|session| session.state.is_active());
+    if live {
+        if let Err(error) = client.kill_session(session_id) {
+            tracing::warn!(%error, "failed to kill session before closing");
+        }
+        // Kill is async: CloseSession is refused until the process is
+        // terminal, so remember the id and remove the row on exit.
+        Effect {
+            pending_close: Some(session_id),
+            ..Effect::nothing()
+        }
+    } else {
+        if let Err(error) = client.close_session(session_id) {
+            tracing::warn!(%error, "failed to close session");
+        }
+        Effect {
+            forget_pending_close: Some(session_id),
+            ..Effect::nothing()
         }
     }
 }
@@ -2084,9 +2137,9 @@ fn open_editor(
     // already has it: a rival editor would be a second process, a second PTY
     // and a second draft of one file.
     if let Some((session_id, terminal_id)) = live_editor_for(store, editors, workspace, &path) {
-        // A closed view detached the terminal, not the editor: the process
-        // still holds the draft. Re-attach rather than open the disk state
-        // under it, which would strand the draft in a process nothing shows.
+        // A detached editor (after a reconnect, say) still holds its draft.
+        // Re-attach rather than open the disk state under it, which would
+        // strand the draft in a process nothing shows.
         attach_editor(client, store, editors, session_id)?;
         client
             .set_editor_autosave(session_id, autosave)
@@ -2642,6 +2695,7 @@ fn changes_shell(event: &DaemonEvent, store: &Store) -> bool {
         DaemonEvent::SharesApplied { .. } => false,
         // A draft is a read with its own event, for the same reason.
         DaemonEvent::JuvaDraftReady { .. } => false,
+        DaemonEvent::PullRequestDraftReady { .. } => false,
         // Terminal output is not shell state. Attached frames became `damage`
         // above; an unattached terminal's frames must not republish the
         // snapshot on the delta rung either.

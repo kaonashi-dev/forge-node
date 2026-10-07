@@ -114,21 +114,52 @@ pub fn working_tree_diff(
     context: u32,
 ) -> Result<WorkingTreeDiff, GitError> {
     let context = context.min(MAX_DIFF_CONTEXT_LINES);
-    let branch = current_branch(repo).ok().flatten();
     // A recorded base is itself a commit, so it proves there is history to
     // diff against even where `HEAD` alone would not.
     let head = base.is_some() || has_head(repo);
+    let revs = [base.unwrap_or("HEAD")];
     let entries = changed_paths(repo, base)?;
+    assemble(repo, entries, &revs, head, context)
+}
+
+/// Collect the committed diff from `base` to `head`, ignoring the working tree.
+///
+/// What a pull request would show: two commits, so uncommitted and untracked
+/// paths are not part of it. Callers wanting GitHub's three-dot view pass the
+/// merge base as `base`.
+///
+/// # Errors
+/// [`GitError::CommandFailed`] when git cannot be run.
+pub fn commit_range_diff(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    context: u32,
+) -> Result<WorkingTreeDiff, GitError> {
+    let context = context.min(MAX_DIFF_CONTEXT_LINES);
+    let revs = [base, head];
+    let entries = named_paths(repo, &revs)?;
+    assemble(repo, entries, &revs, true, context)
+}
+
+fn assemble(
+    repo: &Path,
+    entries: Vec<Entry>,
+    revs: &[&str],
+    head: bool,
+    context: u32,
+) -> Result<WorkingTreeDiff, GitError> {
+    let branch = current_branch(repo).ok().flatten();
     let mut truncated = entries.len() > MAX_DIFF_FILES;
     let entries: Vec<Entry> = entries.into_iter().take(MAX_DIFF_FILES).collect();
 
     let stats = if head {
-        numstat(repo, base)?
+        numstat(repo, revs)?
     } else {
         HashMap::new()
     };
     let mut patches = if head {
-        batch_patches(repo, base, context)
+        batch_patches(repo, revs, context)
     } else {
         HashMap::new()
     };
@@ -141,7 +172,7 @@ pub fn working_tree_diff(
             (false, Some(patch)) => patch,
             // git listed the path but the batch did not describe it: ask for
             // that one file rather than showing the user an empty diff.
-            (false, None) => tracked_patch(repo, base, &entry.path, context),
+            (false, None) => tracked_patch(repo, revs, &entry.path, context),
         };
 
         let stat = stats.get(&entry.path).copied();
@@ -203,7 +234,7 @@ fn changed_paths(repo: &Path, base: Option<&str>) -> Result<Vec<Entry>, GitError
         // `status` only ever describes the working tree against `HEAD`.
         // Against an older base it would miss every path a commit changed
         // and left clean, which is most of what a session did.
-        Some(base) => named_paths(repo, base)?,
+        Some(base) => named_paths(repo, &[base])?,
         None => Vec::new(),
     };
     let seen: std::collections::HashSet<String> =
@@ -223,18 +254,14 @@ fn changed_paths(repo: &Path, base: Option<&str>) -> Result<Vec<Entry>, GitError
     Ok(entries)
 }
 
-/// Everything that differs from `base`, committed or not, in git's order.
-fn named_paths(repo: &Path, base: &str) -> Result<Vec<Entry>, GitError> {
-    let args = [
-        "diff",
-        "--no-ext-diff",
-        "--no-renames",
-        "--name-status",
-        "-z",
-        base,
-        "--",
+/// Everything that differs between `revs`, in git's order: one rev compares
+/// with the working tree, two compare commits.
+fn named_paths(repo: &Path, revs: &[&str]) -> Result<Vec<Entry>, GitError> {
+    let args = diff_args(
+        &["--no-ext-diff", "--no-renames", "--name-status", "-z"],
+        revs,
         ".",
-    ];
+    );
     let out = run_git(Some(repo), &args)?;
     if !out.success() {
         // An unreachable base is the caller's problem to report, not a
@@ -332,17 +359,12 @@ fn classify(code: &str) -> FileChange {
 }
 
 /// `path -> (additions, deletions, binary)` for everything tracked.
-fn numstat(repo: &Path, base: Option<&str>) -> Result<HashMap<String, (u32, u32, bool)>, GitError> {
-    let args = [
-        "diff",
-        "--no-ext-diff",
-        "--no-renames",
-        "--numstat",
-        "-z",
-        base.unwrap_or("HEAD"),
-        "--",
+fn numstat(repo: &Path, revs: &[&str]) -> Result<HashMap<String, (u32, u32, bool)>, GitError> {
+    let args = diff_args(
+        &["--no-ext-diff", "--no-renames", "--numstat", "-z"],
+        revs,
         ".",
-    ];
+    );
     let out = run_git(Some(repo), &args)?;
     if !out.success() {
         return Ok(HashMap::new());
@@ -378,18 +400,13 @@ fn numstat(repo: &Path, base: Option<&str>) -> Result<HashMap<String, (u32, u32,
 ///
 /// Best effort on purpose: when the batch fails the caller falls back to one
 /// command per file, which is slower but still correct.
-fn batch_patches(repo: &Path, base: Option<&str>, context: u32) -> HashMap<String, String> {
+fn batch_patches(repo: &Path, revs: &[&str], context: u32) -> HashMap<String, String> {
     let unified = format!("--unified={context}");
-    let args = [
-        "diff",
-        "--patch",
-        "--no-ext-diff",
-        "--no-renames",
-        &unified,
-        base.unwrap_or("HEAD"),
-        "--",
+    let args = diff_args(
+        &["--patch", "--no-ext-diff", "--no-renames", &unified],
+        revs,
         ".",
-    ];
+    );
     let Ok(out) = run_git(Some(repo), &args) else {
         return HashMap::new();
     };
@@ -397,6 +414,15 @@ fn batch_patches(repo: &Path, base: Option<&str>, context: u32) -> HashMap<Strin
         return HashMap::new();
     }
     split_patch(&out.stdout)
+}
+
+fn diff_args<'a>(flags: &[&'a str], revs: &[&'a str], path: &'a str) -> Vec<&'a str> {
+    let mut args = Vec::with_capacity(flags.len() + revs.len() + 3);
+    args.push("diff");
+    args.extend_from_slice(flags);
+    args.extend_from_slice(revs);
+    args.extend(["--", path]);
+    args
 }
 
 /// Split a multi-file patch on its `diff --git ` markers.
@@ -472,18 +498,13 @@ fn strip_prefix(path: &str) -> String {
 }
 
 /// One tracked file's patch, for when the batch did not cover it.
-fn tracked_patch(repo: &Path, base: Option<&str>, path: &str, context: u32) -> String {
+fn tracked_patch(repo: &Path, revs: &[&str], path: &str, context: u32) -> String {
     let unified = format!("--unified={context}");
-    let args = [
-        "diff",
-        "--patch",
-        "--no-ext-diff",
-        "--no-renames",
-        &unified,
-        base.unwrap_or("HEAD"),
-        "--",
+    let args = diff_args(
+        &["--patch", "--no-ext-diff", "--no-renames", &unified],
+        revs,
         path,
-    ];
+    );
     match run_git(Some(repo), &args) {
         Ok(out) if out.success() => out.stdout,
         _ => String::new(),
@@ -600,7 +621,7 @@ pub fn change_summary(repo: &Path, base: Option<&str>) -> Result<SummaryOfChange
     let entries: Vec<Entry> = entries.into_iter().take(MAX_DIFF_FILES).collect();
 
     let stats = if head {
-        numstat(repo, base)?
+        numstat(repo, &[base.unwrap_or("HEAD")])?
     } else {
         HashMap::new()
     };
@@ -768,6 +789,29 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
         git(repo, &["add", "a.txt"]);
         git(repo, &["commit", "-m", "init"]);
+    }
+
+    #[test]
+    fn a_commit_range_ignores_the_working_tree() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        repo_with_commit(repo);
+        git(repo, &["branch", "-M", "main"]);
+        git(repo, &["checkout", "-b", "feature"]);
+        std::fs::write(repo.join("b.txt"), "new\n").unwrap();
+        git(repo, &["add", "b.txt"]);
+        git(repo, &["commit", "-m", "add b"]);
+        std::fs::write(repo.join("a.txt"), "uncommitted\n").unwrap();
+        std::fs::write(repo.join("c.txt"), "untracked\n").unwrap();
+
+        let base = crate::repository::compare_base(repo, None).expect("main resolves");
+        assert_eq!(base, "main");
+        let diff = commit_range_diff(repo, &base, "HEAD", 3).unwrap();
+        let paths: Vec<&str> = diff.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["b.txt"]);
+        assert_eq!(diff.files[0].status, FileChange::Added);
+        assert_eq!(diff.files[0].additions, 1);
+        assert!(diff.files[0].patch.contains("+new"));
     }
 
     #[test]

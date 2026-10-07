@@ -480,6 +480,64 @@
   gap: var(--space-10);
   padding: var(--space-10) var(--space-12);
 }
+/* The rail and the diff scroll on their own, so picking a file deep in the
+   list does not scroll the list away. */
+.compare-view {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  height: 100%;
+  min-height: 0;
+}
+.compare-header {
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+  padding: var(--space-8) var(--space-12);
+}
+.compare-branch {
+  color: var(--fg-default);
+  font-family: var(--font-mono);
+}
+.compare-base {
+  min-width: 160px;
+}
+.compare-body {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+  min-height: 0;
+}
+.compare-rail {
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: var(--space-6);
+}
+.compare-file {
+  border-radius: var(--radius-xs);
+  font-size: var(--text-sm);
+  gap: var(--space-6);
+  min-height: var(--row-h);
+  padding: 0 var(--space-6);
+  text-align: left;
+  width: 100%;
+}
+.compare-file:hover {
+  background: var(--bg-hover);
+}
+.compare-file.active {
+  background: var(--bg-selected);
+}
+.compare-file .tree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compare-diff {
+  min-height: 0;
+  overflow: auto;
+}
 .diff-header {
   align-items: center;
   color: var(--fg-muted);
@@ -1033,6 +1091,15 @@
   font-size: var(--text-sm);
   white-space: pre-wrap;
   width: 100%;
+}
+.pr-compose-draft {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-12);
+  border: 1px solid var(--card-select-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
 }
 .pr-compose-launch {
   display: flex;

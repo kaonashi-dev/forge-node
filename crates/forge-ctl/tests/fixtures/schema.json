@@ -62,6 +62,7 @@
     "session show",
     "session read",
     "session kill",
+    "pr draft",
     "hook"
   ],
   "rules": [

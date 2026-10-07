@@ -1,12 +1,12 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
-import { openDiff } from "../../navigation/viewsStore";
+import { openCompare, openDiff } from "../../navigation/viewsStore";
 import { loading, setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
 import { diffTotals } from "../../contracts/workbench";
 import { Icon } from "../../theme/icons/index";
 import { Button, IconButton } from "../../ui/index";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
-import { applyJuvaDraft, draftWithJuva, loadDiff } from "./commands";
+import { applyJuvaDraft, draftWithJuva, loadBranchCompare, loadDiff } from "./commands";
 import { commitLabel, commitMessage, firstHunk, statusLetter, statusWord } from "./gitView";
 import { refreshGit } from "./rebaseActions";
 import { gitStore } from "./state";
@@ -216,6 +216,19 @@ export function WorkingTreeRail(props: { committable: boolean }) {
       <div class="git-actions">
         <Button variant="secondary" size="sm" disabled={files().length === 0} onClick={openDiff}>
           Open patch
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            const workspace = activeWorkspace();
+            if (workspace) {
+              openCompare(workspace);
+              void loadBranchCompare(workspace).catch(() => undefined);
+            }
+          }}
+        >
+          Preview PR
         </Button>
         <Show when={files().length > 0}>
           <Button

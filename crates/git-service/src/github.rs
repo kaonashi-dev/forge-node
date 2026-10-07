@@ -159,7 +159,8 @@ pub struct PullRequestPage {
     pub failures: Vec<(String, String)>,
 }
 
-/// Create a pull request from the current branch in `repo`.
+/// Create a pull request from the current branch in `repo`, assigned to the
+/// account `gh` is authenticated as.
 ///
 /// # Errors
 /// [`GitError::CommandFailed`] when `gh` is missing, unauthenticated, or the
@@ -202,6 +203,8 @@ pub fn create_pull_request_with_cli(
         title.to_string(),
         "--body".to_string(),
         body.to_string(),
+        "--assignee".to_string(),
+        "@me".to_string(),
     ];
     if let Some(base) = base.filter(|base| !base.is_empty()) {
         args.push("--base".to_string());
@@ -1375,6 +1378,26 @@ while :; do sleep 1; done
         };
         let output = run_gh(&cli, None, &[]).unwrap();
         assert_eq!(output.stdout, bin.path().to_string_lossy());
+    }
+
+    #[test]
+    fn a_created_pull_request_is_assigned_to_the_authenticated_user() {
+        let bin = TempDir::new().unwrap();
+        let script = write_script(
+            bin.path(),
+            "gh",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\necho https://github.com/acme/widgets/pull/7\n",
+        );
+        let cli = GitHubCli {
+            executable: script.clone(),
+            timeout: Duration::from_secs(2),
+            path_entries: Vec::new(),
+        };
+        let pr =
+            create_pull_request_with_cli(&cli, bin.path(), "Ship it", "", None, false).unwrap();
+        assert_eq!(pr.url, "https://github.com/acme/widgets/pull/7");
+        let args = fs::read_to_string(script.with_extension("args")).unwrap();
+        assert!(args.contains("--assignee\n@me\n"), "{args}");
     }
 
     fn write_script(dir: &Path, name: &str, contents: &str) -> PathBuf {

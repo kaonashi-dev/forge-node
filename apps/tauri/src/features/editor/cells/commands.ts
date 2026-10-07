@@ -89,7 +89,7 @@ export async function repaintEditor(session: string): Promise<void> {
   await sendRuntimeCommand({ type: "repaint_editor", session_id: session });
 }
 
-/** Detach the Code pane; the editor process survives. */
+/** Detach the Code pane and end the editor process; callers confirm unsaved changes first. */
 export async function closeEditor(session: string): Promise<void> {
   await sendRuntimeCommand({ type: "close_editor", session_id: session });
 }

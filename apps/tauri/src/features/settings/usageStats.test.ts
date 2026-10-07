@@ -7,7 +7,9 @@ import {
   heatmap,
   money,
   overview,
+  percentLabel,
   providerShare,
+  resetsIn,
   tokenMix,
   totals,
   trackingSince,
@@ -221,8 +223,22 @@ describe("formatting", () => {
   });
 
   it("prints money with both decimals", () => {
-    expect(money(1_526_250_000)).toBe("$1526.25");
+    expect(money(1_526_250_000)).toBe("$1,526.25");
     expect(money(0)).toBe("$0.00");
+  });
+
+  it("never rounds real activity down to 0%", () => {
+    expect(percentLabel(2, 1000)).toBe("<1%");
+    expect(percentLabel(0, 1000)).toBe("0%");
+    expect(percentLabel(5, 0)).toBe("0%");
+    expect(percentLabel(996, 1000)).toBe("100%");
+  });
+
+  it("says when a meter resets, and nothing once it has", () => {
+    const now = new Date("2026-10-05T12:00:00Z");
+    expect(resetsIn("2026-10-05T15:12:00Z", now)).toBe("resets in 3h 12m");
+    expect(resetsIn("2026-10-05T11:00:00Z", now)).toBeNull();
+    expect(resetsIn(null, now)).toBeNull();
   });
 
   it("reads worked time at the scale it happened", () => {

@@ -68,6 +68,9 @@ const MAX_TRANSCRIPT_BYTES: u32 = 96_000;
 /// which is the only cost here that scales with the session list.
 const MAX_REVIEW_SESSIONS: usize = 20;
 
+/// Longest ref name `GetBranchCompare` accepts off the wire.
+const MAX_COMPARE_REF_BYTES: usize = 256;
+
 pub(crate) struct Inner {
     pub(crate) db: Db,
     project_groups: HashMap<ProjectGroupId, ProjectGroup>,
@@ -787,6 +790,11 @@ impl Daemon {
                 workspace_id,
                 context_lines,
             } => self.get_workspace_review(workspace_id, context_lines),
+            Request::GetBranchCompare {
+                workspace_id,
+                base,
+                context_lines,
+            } => self.get_branch_compare(workspace_id, base, context_lines),
             Request::GetSessionTranscript {
                 session_id,
                 max_lines,
@@ -863,7 +871,17 @@ impl Daemon {
                 title,
                 body,
                 base,
-            } => self.create_pull_request(workspace_id, title, body, base, false),
+            } => self.create_pull_request(workspace_id, title, body, base, false, None),
+            Request::CommitAndOpenPullRequest {
+                workspace_id,
+                commit,
+                title,
+                body,
+                base,
+            } => self.create_pull_request(workspace_id, title, body, base, false, Some(commit)),
+            Request::SubmitPullRequestDraft { session_id, draft } => {
+                self.submit_pull_request_draft(session_id, draft)
+            }
 
             Request::CreateShellSession {
                 workspace_id,
@@ -2250,6 +2268,63 @@ impl Daemon {
         )))
     }
 
+    fn get_branch_compare(
+        &self,
+        workspace_id: WorkspaceId,
+        base: Option<String>,
+        context_lines: Option<u32>,
+    ) -> Result<Response, ProtocolError> {
+        let path = self.workspace_path(workspace_id)?;
+        if base
+            .as_ref()
+            .is_some_and(|base| base.len() > MAX_COMPARE_REF_BYTES)
+        {
+            return Err(ProtocolError::invalid_request("base ref too long"));
+        }
+        let base_ref = git_service::compare_base(&path, base.as_deref());
+        if base.is_some() && base_ref.is_none() {
+            return Err(ProtocolError::invalid_request(
+                "base ref does not name a commit",
+            ));
+        }
+        let merge_base = base_ref
+            .as_ref()
+            .and_then(|base| git_service::merge_base(&path, &[base.clone(), "HEAD".into()]));
+
+        let context = context_lines.unwrap_or(git_service::DIFF_CONTEXT_LINES);
+        let (diff, commits, commit_count) = match merge_base.as_deref() {
+            Some(from) => {
+                let diff = git_service::commit_range_diff(&path, from, "HEAD", context)
+                    .map_err(git_err)?;
+                let (commits, count) = git_service::commits_since(&path, from);
+                (diff, commits, count)
+            }
+            None => (
+                git_service::WorkingTreeDiff {
+                    branch: git_service::current_branch(&path).ok().flatten(),
+                    files: Vec::new(),
+                    truncated: false,
+                },
+                Vec::new(),
+                0,
+            ),
+        };
+
+        Ok(Response::BranchCompare(Box::new(domain::BranchCompare {
+            workspace_id,
+            base_ref,
+            merge_base: merge_base.as_deref().map(git_service::short_commit),
+            commits: commits.into_iter().map(commit_line).collect(),
+            commit_count,
+            diff: domain::WorkspaceDiff {
+                workspace_id,
+                branch: diff.branch,
+                files: diff.files.into_iter().map(diff_file).collect(),
+                truncated: diff.truncated,
+            },
+        })))
+    }
+
     /// The tail of a session's terminal as plain text.
     ///
     /// The rows are decoded cells, so this is a fold and not a parse: the VT
@@ -2797,7 +2872,54 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
-    /// Ack when the push+`gh` *starts*.
+    /// Broadcast an agent's pull-request text to the clients; Forge stores none of it.
+    fn submit_pull_request_draft(
+        &self,
+        session_id: SessionId,
+        draft: domain::PullRequestDraft,
+    ) -> Result<Response, ProtocolError> {
+        let fields = [
+            &draft.title,
+            &draft.body,
+            &draft.branch,
+            &draft.commit_message,
+        ];
+        if fields
+            .iter()
+            .any(|field| field.len() > domain::MAX_DRAFT_FIELD_BYTES)
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "a draft field exceeds {} bytes",
+                    domain::MAX_DRAFT_FIELD_BYTES
+                ),
+            ));
+        }
+        if draft.title.trim().is_empty() || draft.commit_message.trim().is_empty() {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                "a draft needs a title and a commit message",
+            ));
+        }
+        let workspace_id = self
+            .lock()
+            .sessions
+            .get(&session_id)
+            .map(|session| session.workspace_id)
+            .ok_or_else(|| {
+                ProtocolError::new(ErrorCode::NotFound, format!("no session {session_id}"))
+            })?;
+        self.registry
+            .broadcast_domain(DaemonEvent::PullRequestDraftReady {
+                workspace_id,
+                session_id,
+                draft,
+            });
+        Ok(Response::Ack)
+    }
+
+    /// Ack when the commit+push+`gh` *starts*.
     pub(crate) fn create_pull_request(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
@@ -2805,6 +2927,7 @@ impl Daemon {
         body: String,
         base: Option<String>,
         draft: bool,
+        commit: Option<domain::CommitPlan>,
     ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
         let path_entries = {
@@ -2826,6 +2949,9 @@ impl Daemon {
                     workspace_id,
                 };
                 let result = (|| -> Result<String, git_service::GitError> {
+                    if let Some(plan) = &commit {
+                        commit_for_pull_request(&path, plan)?;
+                    }
                     let remote = git_service::default_remote(&path)?.ok_or_else(|| {
                         git_service::GitError::CommandFailed {
                             args: vec!["push".into()],
@@ -2870,6 +2996,11 @@ impl Daemon {
                         }
                     }
                     Err(error) => {
+                        // A commit or a new branch may have landed before the
+                        // push failed; the GUI must not keep showing them as dirty.
+                        if let Ok(status) = git_service::status(&path) {
+                            daemon.apply_workspace_status(workspace_id, &status);
+                        }
                         daemon
                             .registry
                             .broadcast_domain(DaemonEvent::PullRequestOpened {
@@ -7058,6 +7189,44 @@ fn upsert_var(vars: &mut Vec<(String, String)>, key: &str, value: &str) {
     }
 }
 
+/// Commit everything uncommitted once, on the branch [`domain::branch_step`] picks.
+///
+/// A clean tree on a branch that already exists is success. The commit may
+/// have landed on an earlier attempt whose push failed, and refusing here
+/// would leave that commit unpushed.
+fn commit_for_pull_request(
+    path: &Path,
+    plan: &domain::CommitPlan,
+) -> Result<(), git_service::GitError> {
+    let current = git_service::current_branch(path)?;
+    let default = git_service::default_branch(path)?;
+    let step = domain::branch_step(
+        current.as_deref(),
+        default.as_deref(),
+        plan.branch.as_deref(),
+    )
+    .map_err(|reason| git_service::GitError::CommandFailed {
+        args: vec!["switch".into()],
+        status: -1,
+        stderr: reason.into(),
+    })?;
+    let dirty = git_service::status(path)?.dirty;
+    if let domain::BranchStep::Create(branch) = &step {
+        if !dirty {
+            return Err(git_service::GitError::CommandFailed {
+                args: vec!["commit".into()],
+                status: -1,
+                stderr: "nothing to commit".into(),
+            });
+        }
+        git_service::switch_new_branch(path, branch)?;
+    }
+    if dirty {
+        git_service::commit(path, &plan.message)?;
+    }
+    Ok(())
+}
+
 /// Put the running `forge-daemon` binary's directory first on PATH.
 fn prepend_daemon_bin_to_path(vars: &mut Vec<(String, String)>) {
     let Ok(exe) = std::env::current_exe() else {
@@ -8801,6 +8970,111 @@ mod tests {
         assert!(transcript.text.contains("line 39"));
         assert!(!transcript.text.contains("line 0\n"));
         backend.set_exited(terminal_core::ExitStatus::default());
+    }
+
+    #[test]
+    fn a_branch_compare_diffs_from_the_merge_base_and_ignores_the_working_tree() {
+        let (daemon, tmp, _backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .is_ok_and(|status| status.success());
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        git(&["add", "a.txt"]);
+        git(&["commit", "-m", "init"]);
+        git(&["checkout", "-b", "feature"]);
+        std::fs::write(repo.join("b.txt"), "new\n").expect("write");
+        git(&["add", "b.txt"]);
+        git(&["commit", "-m", "add b"]);
+        // Work that landed on the base after the branch left it must not read
+        // as a removal on the branch.
+        git(&["checkout", "main"]);
+        std::fs::write(repo.join("c.txt"), "later\n").expect("write");
+        git(&["add", "c.txt"]);
+        git(&["commit", "-m", "add c"]);
+        git(&["checkout", "feature"]);
+        std::fs::write(repo.join("a.txt"), "dirty\n").expect("write");
+        let workspace = seeded_workspace(&daemon, &repo);
+
+        let Response::BranchCompare(compare) = daemon
+            .get_branch_compare(workspace, None, None)
+            .expect("compare")
+        else {
+            panic!("expected BranchCompare");
+        };
+        assert_eq!(compare.base_ref.as_deref(), Some("main"));
+        assert_eq!(compare.commit_count, 1);
+        let paths: Vec<&str> = compare.diff.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["b.txt"]);
+
+        assert!(daemon
+            .get_branch_compare(workspace, Some("--output=x".into()), None)
+            .is_err());
+    }
+
+    /// A push can fail after the commit. The next attempt has a clean tree and
+    /// must still succeed so the push can run.
+    #[test]
+    fn a_pull_request_commit_retries_when_the_tree_is_already_clean() {
+        let repo = tempfile::tempdir().expect("tmp");
+        let repo = repo.path();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .is_ok_and(|status| status.success());
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        git(&["add", "a.txt"]);
+        git(&["commit", "-m", "init"]);
+
+        let plan = domain::CommitPlan {
+            branch: Some("feature".into()),
+            message: "Add the change".into(),
+        };
+        let clean = commit_for_pull_request(repo, &plan);
+        assert!(
+            clean.is_err(),
+            "a clean default branch has nothing to commit"
+        );
+        assert_eq!(
+            git_service::current_branch(repo).ok().flatten().as_deref(),
+            Some("main")
+        );
+
+        std::fs::write(repo.join("b.txt"), "two\n").expect("write");
+        commit_for_pull_request(repo, &plan).expect("commit on a new branch");
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .expect("rev-parse");
+        let head = String::from_utf8(head.stdout).expect("utf8");
+        commit_for_pull_request(repo, &plan).expect("retry after the commit landed");
+        let again = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .expect("rev-parse");
+        assert_eq!(head, String::from_utf8(again.stdout).expect("utf8"));
+        assert_eq!(
+            git_service::current_branch(repo).ok().flatten().as_deref(),
+            Some("feature")
+        );
     }
 
     /// A session records the commit it started from, and its own commits then

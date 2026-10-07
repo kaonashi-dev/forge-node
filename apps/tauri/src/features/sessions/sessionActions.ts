@@ -8,7 +8,13 @@ import { forgeStore } from "../../state/forgeStore";
 import { beginSessionLaunch, connectionStore } from "../../state/connection";
 import { requestHandoff, requestSendContext, requestSpawnChild } from "./dialogs";
 import { setSplitOpen, splitOpen } from "../git/sessionChangesStore";
-import { centerMode, currentViews, openReview, showSession } from "../../navigation/viewsStore";
+import {
+  centerMode,
+  currentViews,
+  openCompare,
+  openReview,
+  showSession,
+} from "../../navigation/viewsStore";
 import {
   centerSplit,
   closeSplit,
@@ -31,7 +37,7 @@ import { hasExited } from "./exited";
 import { type ExternalAgentSession, type Session, type Workspace } from "../../contracts/runtime";
 import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "../../state/preferences";
 import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
-import { draftWithJuva, loadWorkspaceReview } from "../git/commands";
+import { draftWithJuva, loadBranchCompare, loadWorkspaceReview } from "../git/commands";
 import { loadExternalTranscript, loadSessionTranscript } from "./commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
 
@@ -281,6 +287,17 @@ export function openCheckoutReview(): void {
   openReview(checkout.id);
   void loadWorkspaceReview(checkout.id).catch(() => undefined);
   void draftWithJuva(checkout.id, "ChangeReview").catch(() => undefined);
+}
+
+/** Open this checkout's PR preview: its branch against the default branch. */
+export function openPullRequestPreview(): void {
+  const checkout = currentCheckout();
+  if (!checkout) return;
+  // Pointed first, for the same reason as the review: the answer is dropped
+  // unless it belongs to the focused workspace.
+  focusWorkspace(checkout.id);
+  openCompare(checkout.id);
+  void loadBranchCompare(checkout.id).catch(() => undefined);
 }
 
 /**

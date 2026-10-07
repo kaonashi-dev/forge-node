@@ -41,6 +41,12 @@ pub enum WorkbenchCommand {
         workspace: WorkspaceId,
         context_lines: Option<u32>,
     },
+    /// The branch against its pull request's base, for the PR preview tab.
+    LoadBranchCompare {
+        workspace: WorkspaceId,
+        base: Option<String>,
+        context_lines: Option<u32>,
+    },
     /// The tail of a session's terminal, for a handoff prompt.
     LoadSessionTranscript {
         session: SessionId,
@@ -207,6 +213,13 @@ pub enum WorkbenchCommand {
     ApplyJuvaDraft {
         workspace: WorkspaceId,
         kind: JuvaKind,
+        title: String,
+        body: String,
+    },
+    CommitAndOpenPullRequest {
+        workspace: WorkspaceId,
+        branch: Option<String>,
+        commit_message: String,
         title: String,
         body: String,
     },

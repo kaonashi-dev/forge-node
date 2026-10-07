@@ -1,10 +1,20 @@
-import { Show, createMemo, createSignal, onMount } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, on, onMount } from "solid-js";
 import { newAgent, selectSession } from "../sessions/commands";
 import { sessionStateLabel, sessionTitle, type PullRequest } from "../../contracts/runtime";
 import { defaultAgentFrom } from "../settings/defaultAgent";
 import { agentVisible } from "../../state/agentVisibility";
 import { forgeStore } from "../../state/forgeStore";
-import { beginCompose, clearCompose, composeRun } from "./prComposeStore";
+import {
+  beginCompose,
+  beginOpening,
+  clearCompose,
+  clearDraft,
+  composeBusy,
+  composeRun,
+  finishOpening,
+  prComposeStore,
+} from "./prComposeStore";
+import { commitAndOpenPullRequest } from "./commands";
 import { setNotice } from "../../state/connection";
 import { close } from "../editor/tabs";
 import { focus, openDiff, openPrCompose, showTerminal } from "../../navigation/viewsStore";
@@ -20,7 +30,7 @@ import {
 } from "./prTasks";
 import type { WorkspaceDiff } from "../../contracts/workbench";
 import { TERMINAL_VIEW } from "../../navigation/views";
-import { Button, RadioGroup, TextArea, Tooltip } from "../../ui/index";
+import { Button, RadioGroup, TextArea, TextField, Tooltip } from "../../ui/index";
 import { loadDiff } from "../git/commands";
 import { gitStore } from "../git/state";
 import { loading, setLoading } from "../../state/loading";
@@ -52,6 +62,7 @@ export function PrComposeView() {
   };
   const awaiting = () => run() !== null && run()?.session == null;
   const launchedSession = () => run()?.session ?? null;
+  const busy = () => composeBusy(run(), forgeStore.sessions);
 
   onMount(() => {
     const ws = workspace();
@@ -118,9 +129,49 @@ export function PrComposeView() {
     focus(TERMINAL_VIEW);
   }
 
+  const draft = () => {
+    const received = prComposeStore.draft;
+    return received && received.workspace === workspace() ? received : null;
+  };
+  const opening = () => {
+    const ws = workspace();
+    return ws !== null && prComposeStore.opening === ws;
+  };
+  const [title, setTitle] = createSignal("");
+  const [body, setBody] = createSignal("");
+  const [branch, setBranch] = createSignal("");
+  const [commitMessage, setCommitMessage] = createSignal("");
+  // Reset the fields only when a new draft arrives, not on every store read.
+  createEffect(
+    on(draft, (received) => {
+      if (!received) return;
+      setTitle(received.draft.title);
+      setBody(received.draft.body);
+      setBranch(received.draft.branch);
+      setCommitMessage(received.draft.commit_message);
+    }),
+  );
+  const canOpen = () =>
+    !opening() && title().trim() !== "" && commitMessage().trim() !== "" && !diffIsEmpty(diff());
+
+  function openPullRequest(): void {
+    const ws = workspace();
+    if (!ws || !canOpen()) return;
+    beginOpening(ws);
+    void commitAndOpenPullRequest(ws, {
+      branch: branch(),
+      commit_message: commitMessage(),
+      title: title(),
+      body: body(),
+    }).catch(() => {
+      finishOpening(ws, false);
+      setNotice("The daemon refused to open the pull request.");
+    });
+  }
+
   const ready = () => {
     const d = diff();
-    return d && !diffIsEmpty(d) && !awaiting() && !launchedSession();
+    return d && !diffIsEmpty(d) && !busy();
   };
 
   const headerLine = () => {
@@ -136,7 +187,7 @@ export function PrComposeView() {
     launchHint(
       task(),
       diff(),
-      launchedSession() != null,
+      busy() && !awaiting(),
       awaiting(),
       error(),
       diffLoading() && !diff(),
@@ -215,12 +266,55 @@ export function PrComposeView() {
             {awaiting() ? "Launching…" : taskAction(task().mode)}
           </Button>
           <p class="settings-hint pr-compose-hint">{hint()}</p>
-          <Show when={launchedSession()}>
+          <Show when={launched()}>
             <Button variant="secondary" onClick={showLaunched}>
               Show agent session
             </Button>
           </Show>
         </section>
+
+        <Show when={draft()}>
+          <section class="pr-compose-draft" aria-label="Pull request draft">
+            <TextField class="pr-compose-field" label="Title" value={title()} onChange={setTitle} />
+            <TextArea
+              class="pr-compose-field"
+              label="Description"
+              rows={10}
+              value={body()}
+              onChange={setBody}
+            />
+            <TextArea
+              class="pr-compose-field"
+              label="Commit message"
+              rows={3}
+              value={commitMessage()}
+              onChange={setCommitMessage}
+            />
+            <TextField
+              class="pr-compose-field"
+              label="Branch"
+              value={branch()}
+              onChange={setBranch}
+            />
+            <p class="settings-hint">
+              Everything uncommitted goes into one commit. The branch is created only when this
+              checkout is on its default branch.
+            </p>
+            <div class="pr-compose-launch">
+              <Button
+                variant="primary"
+                loading={opening()}
+                disabled={!canOpen()}
+                onClick={openPullRequest}
+              >
+                Commit, push & open PR
+              </Button>
+              <Button variant="secondary" disabled={opening()} onClick={clearDraft}>
+                Discard draft
+              </Button>
+            </div>
+          </section>
+        </Show>
 
         <Show when={sessionStatus()}>
           {(status) => (

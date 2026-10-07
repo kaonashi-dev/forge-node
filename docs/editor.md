@@ -468,7 +468,7 @@ native right-click menu (the Code pane keeps its own HTML context menu).
 
 ## Language
 
-Eleven grammars, chosen by the file name: its extension, plus a few basenames
+Twelve grammars, chosen by the file name: its extension, plus a few basenames
 that have none (`.env`, `.env.*`, `Makefile`, `GNUmakefile`). Never by content:
 sniffing it would have to be undone the moment a person types, and a shebang is
 a guess.
@@ -486,9 +486,10 @@ a guess.
 | Shell | `sh` `bash` `zsh` `fish` `mk` `make`, `Makefile`, `GNUmakefile` | `#` comments, quotes, `$VAR` and `${...}`, keywords |
 | Markdown | `md` `markdown` `mdx` | headings, quotes, fenced and inline code, links, list bullets |
 | HTML | `html` `htm` `xhtml` `xml` `svg` | comments, doctype and processing instructions, tags, attributes, quoted values, entities; `script`/`style`/`textarea`/`title` bodies stay plain so a `<` there is not a tag |
+| CSS | `css` | `/* */` comments, at-rules, selectors (tags, `.class`, `#id`, pseudo-classes), properties apart from values, numbers with units, hex colours, `!important`, `name(` as a call, an unquoted `url(...)` as one string; a line inside a rule is coloured by the `{` above it, so an edit there rescans from the rule's start |
 
 Everything else is plain, which is the honest answer rather than a wrong colour.
-Against CodeMirror's language packs the gaps are CSS/SCSS, Ruby, Lua,
+Against CodeMirror's language packs the gaps are SCSS/Less, Ruby, Lua,
 Haskell and the rest of the long tail; each is a scanner arm here, not a
 dependency.
 

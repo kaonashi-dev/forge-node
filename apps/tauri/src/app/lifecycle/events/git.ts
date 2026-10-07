@@ -9,6 +9,7 @@ import {
 } from "../../../features/editor/conflict/editorConflictStore";
 import type {
   Branches,
+  BranchCompare,
   JuvaDraft,
   RebaseState,
   SessionChanges,
@@ -22,6 +23,12 @@ import { setGitStore } from "../../../features/git/state";
 import { setSettingsStore } from "../../../features/settings/state";
 import { setLoading } from "../../../state/loading";
 import { toast } from "../../../ui/index";
+import {
+  finishOpening,
+  receiveDraft,
+  type ReceivedDraft,
+} from "../../../features/pull-requests/prComposeStore";
+import { openComposeForWorkspace } from "../../../features/pull-requests/PrComposeView";
 
 type SessionFailure = { session: string; error: string };
 
@@ -41,6 +48,10 @@ export function bindGitEvents(): Promise<UnlistenFn[]> {
       setGitStore({ review, reviewError: null, reviewAt: Date.now() }),
     ),
     failure("workbench:review_failed", "review", (error) => setGitStore("reviewError", error)),
+    answer<BranchCompare>("workbench:compare", "compare", (compare) =>
+      setGitStore({ compare, compareError: null }),
+    ),
+    failure("workbench:compare_failed", "compare", (error) => setGitStore("compareError", error)),
     sessionAnswer<SessionChanges>("workbench:session_changes", applySessionChanges),
     listen<SessionFailure>("workbench:session_changes_failed", ({ payload }) =>
       failSessionChanges(payload.session, payload.error),
@@ -117,6 +128,34 @@ export function bindGitEvents(): Promise<UnlistenFn[]> {
       setLoading("juva", false);
       setGitStore("juvaError", payload.error);
     }),
+    // `forgectl pr draft` from an agent; the compose tab is where it is edited.
+    listen<ReceivedDraft>("runtime:pr_draft", ({ payload }) => {
+      receiveDraft(payload);
+      if (forCurrent(payload.workspace)) openComposeForWorkspace(payload.workspace);
+      toast({ title: "Pull request draft ready", detail: payload.draft.title, tone: "success" });
+    }),
+    listen<{ workspace: string; url: string | null; error: string | null }>(
+      "runtime:pull_request_opened",
+      ({ payload }) => {
+        finishOpening(payload.workspace, payload.url !== null);
+        if (payload.url) {
+          toast({ title: "Pull request opened", detail: payload.url, tone: "success" });
+        } else {
+          toast({
+            title: "Could not open the pull request",
+            detail: payload.error ?? undefined,
+            tone: "danger",
+          });
+        }
+      },
+    ),
+    listen<{ workspace: string | null; error: string }>(
+      "workbench:pull_request_failed",
+      ({ payload }) => {
+        if (payload.workspace) finishOpening(payload.workspace, false);
+        toast({ title: "Could not open the pull request", detail: payload.error, tone: "danger" });
+      },
+    ),
     listen<string>("workbench:juva_applied", () => {
       setGitStore({ juvaDraft: null, juvaError: null });
     }),
