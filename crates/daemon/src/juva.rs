@@ -85,7 +85,6 @@ pub fn draft_remote(
 fn completion_request(model: &str, kind: JuvaKind, context: &ChangeContext) -> Option<String> {
     let system = match kind {
         JuvaKind::CommitMessage => COMMIT_SYSTEM_PROMPT,
-        JuvaKind::PullRequest => PR_SYSTEM_PROMPT,
         JuvaKind::ChangeReview => REVIEW_SYSTEM_PROMPT,
         _ => return None,
     };
@@ -163,20 +162,6 @@ Rules:
 - One logical change per message; if the diff mixes concerns, name the dominant one
 ";
 
-/// System prompt for pull-request title and body.
-pub const PR_SYSTEM_PROMPT: &str = "\
-You write GitHub pull request titles and descriptions for Forge Node.
-
-Rules:
-- Title: short, imperative, matches the dominant change
-- Body sections:
-  ## Summary
-  - 1–3 bullets of what changed and why
-  ## Test plan
-  - Checklist of how to verify
-- No filler, no marketing tone, no emoji
-";
-
 /// System prompt for a change review — the Review tab's standard.
 pub const REVIEW_SYSTEM_PROMPT: &str = "\
 You write change reviews for Forge Node.
@@ -194,7 +179,6 @@ Rules:
 pub fn draft(kind: JuvaKind, context: &ChangeContext) -> JuvaDraft {
     match kind {
         JuvaKind::CommitMessage => draft_commit(context),
-        JuvaKind::PullRequest => draft_pr(context),
         JuvaKind::ChangeReview => draft_review(context),
         JuvaKind::Unknown | _ => JuvaDraft {
             kind,
@@ -227,39 +211,6 @@ fn draft_commit(context: &ChangeContext) -> JuvaDraft {
     };
     JuvaDraft {
         kind: JuvaKind::CommitMessage,
-        title,
-        body,
-        context: context.clone(),
-    }
-}
-
-fn draft_pr(context: &ChangeContext) -> JuvaDraft {
-    let _ = PR_SYSTEM_PROMPT;
-    let title = conventional_subject(&context.files);
-    let branch = context.branch.as_deref().unwrap_or("this branch");
-    let mut summary: Vec<String> = Vec::new();
-    if let Some(ahead) = context.ahead {
-        summary.push(format!("- {ahead} commit(s) on `{branch}` ready to review"));
-    } else if context.dirty {
-        summary.push(format!(
-            "- Uncommitted work on `{branch}` (commit before opening)"
-        ));
-    } else {
-        summary.push(format!("- Changes on `{branch}`"));
-    }
-    for file in context.files.iter().take(8) {
-        summary.push(format!("- `{}` ({})", file.path, file.status));
-    }
-    if context.files.len() > 8 {
-        summary.push(format!("- …and {} more files", context.files.len() - 8));
-    }
-
-    let body = format!(
-        "## Summary\n{}\n\n## Test plan\n- [ ] Exercise the touched paths\n- [ ] Confirm CI is green\n",
-        summary.join("\n")
-    );
-    JuvaDraft {
-        kind: JuvaKind::PullRequest,
         title,
         body,
         context: context.clone(),
@@ -425,13 +376,6 @@ mod tests {
             &ctx(&[("crates/client/src/a.rs", "M")]),
         );
         assert!(d.title.starts_with("chore(client):") || d.title.starts_with("fix(client):"));
-    }
-
-    #[test]
-    fn pr_draft_has_summary_and_test_plan() {
-        let d = draft(JuvaKind::PullRequest, &ctx(&[("README.md", "M")]));
-        assert!(d.body.contains("## Summary"));
-        assert!(d.body.contains("## Test plan"));
     }
 
     #[test]

@@ -283,7 +283,7 @@ export function analyticsWorkedSecs(analytics: UsageAnalytics): number {
   return analytics.providers.reduce((sum, provider) => sum + provider.worked_secs, 0);
 }
 
-export type JuvaKind = "CommitMessage" | "PullRequest" | "ChangeReview" | "Unknown";
+export type JuvaKind = "CommitMessage" | "ChangeReview" | "Unknown";
 
 export type ChangeFile = {
   path: string;
