@@ -33,10 +33,11 @@ persist_history = false         # true = keep session rows across a daemon
 # the session started, however busy it has been.
 idle_warn_after_secs = 1800     # report a quiet session once per quiet spell
 idle_stop_after_secs = 0        # 0 = never stop one. When set, the session is
-                                # ended through the normal kill path (SIGTERM to
-                                # the process group, SIGKILL after
-                                # kill_grace_ms) and stays restartable. Raised
-                                # to idle_warn_after_secs if set below it.
+                                # ended through the normal kill path (SIGHUP to
+                                # a shell's process group, SIGTERM to an agent's,
+                                # SIGKILL after kill_grace_ms) and stays
+                                # restartable. Raised to idle_warn_after_secs if
+                                # set below it.
 idle_stop_attached = false      # true = stop even a terminal you have open
 idle_include_shells = false     # true = apply the rules to shells too; a shell
                                 # sitting at a prompt is normally not a leak
@@ -62,12 +63,13 @@ ignore = []                     # subtree exclusions from adoption; relative to
 # inherited entry.
 copy = []                       # e.g. [".env", ".env.local"] — copied from the
                                 # main checkout after `git worktree add`.
-                                # Relative to the repository root, no "..",
-                                # plain files only (never directories: this is
-                                # for secrets and settings, not node_modules —
-                                # a per-project `clone` rule is what handles
-                                # those). A file that is not there is skipped
-                                # silently.
+                                # Relative to the repository root, no "..".
+                                # A path may be a file or a directory; a
+                                # directory is copied recursively under the copy
+                                # budget (250 MB / 50,000 entries), so a
+                                # per-project `clone` rule is what handles
+                                # node_modules. A file that is not there is
+                                # skipped silently.
 setup_script = ""               # e.g. "npm ci" — run through `sh -c` from the
                                 # worktree root once, after `copy`. A failure is
                                 # a skipped step with a note in the provisioning
@@ -133,3 +135,14 @@ timeout_secs = 0                # 0 = the built-in 30 s budget
 
 [daemon]
 log_level = "info"             # trace | debug | info | warn | error (RUST_LOG overrides)
+
+[orchestration]
+# Rails for `forgectl`. On by default; the one-writer rule is not a key.
+enabled = true                  # false refuses orchestration requests
+max_active_attempts_per_run = 4
+max_tasks_per_run = 32
+max_run_depth = 2
+max_attempts_per_task = 3
+stall_after_secs = 900          # an attempt quiet this long raises attention
+agent_may_integrate = "pr"      # none | merge | pr; anything else is treated as pr
+keep_closed_runs_days = 30      # reserved: accepted, not read yet

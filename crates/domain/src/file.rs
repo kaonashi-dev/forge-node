@@ -164,8 +164,10 @@ pub struct SearchMatch {
 pub struct SearchResults {
     /// Which checkout was searched.
     pub workspace_id: WorkspaceId,
-    /// What was searched for. Answers carry no request id, so this is what
-    /// tells a caller whether the hits on screen are the ones it asked for.
+    /// What was searched for. The daemon answers with the correlated
+    /// `Response::SearchResults`; the GUI re-broadcasts it without a request id,
+    /// so this is what tells a caller whether the hits on screen are the ones it
+    /// asked for.
     pub query: String,
     /// Hits, capped by the service.
     pub matches: Vec<SearchMatch>,

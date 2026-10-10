@@ -95,7 +95,7 @@ its cost times its rung.
 | per cell | ~10 000 / frame | `runtime/cells.rs` (`cell_style`), `shared/cell-grid/` | **zero allocations, zero lock acquisitions** |
 | per row | ~50 / frame, ~50 / delta | `DeltaBuilder::delta`, `CellGrid::apply_delta` | one `Vec` at most |
 | per PTY batch | input-driven; not capped by `FRAME` | `Daemon::pump_terminal_batch` | no blocking syscall or grid-sized clone under the core lock |
-| per emitted delta | ≤125 /s **per attached terminal** (`FRAME` = 8 ms) | `route_terminal_delta`, `runtime_loop` | no syscall that can block, no clone that scales with the grid |
+| per emitted delta | ≤125 /s **per attached terminal** on the daemon (`FRAME` = 8 ms); the host coalesces terminal cells at `CELL_SEND_FLOOR` (16 ms, 33 ms scrolled) | `route_terminal_delta`, `runtime_loop` | no syscall that can block, no clone that scales with the grid |
 | per frame | every repaint | Tauri frontend render | nothing derivable from the store |
 | per store change | user actions and daemon broadcasts | `applyShellSnapshot`, `createMemo` | this is where per-frame work belongs |
 | per request | user-initiated | daemon request handlers | subprocesses and disk are fine, **outside the core lock** |
@@ -191,10 +191,12 @@ owner remove."
 
 ### Drain conditions must be reachable
 
-`pending_echoes` is drained only when the active terminal's sequence advanced.
-If that terminal has no replica — it exited, or is detached — both sides are
-`None`, the condition is false forever, and the `Vec<Instant>` grows one entry
-per keystroke.
+The original Rust GUI's `pending_echoes` was drained only when the active
+terminal's sequence advanced. If that terminal had no replica — it exited, or
+was detached — both sides were `None`, the condition was false forever, and the
+`Vec<Instant>` grew one entry per keystroke. The Tauri host keeps a single `u64`
+high-water mark instead (`pending_echo` in
+`apps/tauri/src-tauri/src/runtime/bridge.rs`), which cannot grow.
 
 **Rule.** An accumulator whose drain is conditional needs a second,
 unconditional bound: a cap, a clear on session switch, or both.
@@ -469,8 +471,8 @@ budgets for changes to `apps/tauri`.
 | Surface | Budget | How it is held |
 |---|---|---|
 | Editor (`surface = cells`) | keystroke → paint p95 ≤ 16 ms on a 20 000-line file; open ≤ 100 ms after `ReadFile` returns | `forge-editor` under a PTY, painted by the same canvas renderer as a terminal (`docs/editor.md`). The cost is a frame of cells: the editor damages the rows an edit reached and the loop paints at most once per 8 ms. |
-| Editor (`surface = dom`) | one window per input burst, ≤125/s; a window is what is on screen plus 2×24 overscan, never the file | The rung is **visible DOM rows**, not VT cells. A headless host publishes `ViewFrame`s and the browser composites the scroll, so scrolling costs the rows that entered the window and nothing repaints. Frames are clamped while they are built (`VIEW_ROW_BUDGET`), because the per-row caps do not compose into a frame budget. A window of 88 syntax-coloured Rust rows measures ~19 KB; the whole window is resent on every frame, so a sustained scroll tops out near 2.4 MB/s over a local Unix socket — the per-row `stale` delta in the plan is the fix if that ever shows up in a profile. Rows ship behind an `Arc`, so broadcasting to a second client is a refcount. |
-| Diff | expand a 2 000-line patch ≤ 50 ms | Patch rows are DOM (`apps/tauri/src/features/git/diff/PatchView.tsx`), mounted only while a file section is open. |
+| Editor (`surface = dom`) | one window per input burst, ≤125/s; a window is what is on screen plus 2×24 overscan, never the file | The rung is **visible DOM rows**, not VT cells. A headless host publishes `ViewFrame`s and the browser composites the scroll, so scrolling costs the rows that entered the window and nothing repaints. Frames are clamped while they are built (`VIEW_ROW_BUDGET`), because the per-row caps do not compose into a frame budget. A window of 88 syntax-coloured Rust rows measures ~19 KB; the whole window is resent on every frame, so a sustained scroll tops out near 2.4 MB/s over a local Unix socket — a per-row `stale` delta would be the fix if that ever shows up in a profile. Rows ship behind an `Arc`, so broadcasting to a second client is a refcount. |
+| Diff | expand a 2 000-line patch ≤ 50 ms | Unified and split patches mount viewport rows plus 24 rows of overscan on either side; closed and distant patches mount no rows. |
 | File tree | 50 000 paths at 60 fps; filter keystroke ≤ 8 ms | Windowed rows with an overscan; the filter narrows the daemon's listing rather than re-scoring it. |
 | Bundle | initial JS ≤ 350 kB gz; editor chunk ≤ 250 kB gz | `apps/tauri/scripts/check-bundle.ts`, run by `bun run build`. Fails the build when either is exceeded. |
 
@@ -488,6 +490,56 @@ Two costs on this side are deliberate and documented rather than fixed:
   slot and a bounded map for truecolour. Before it, a full-screen 256-colour TUI
   rebuilt a string per run per frame — per-cell work on the frame rung.
 
+### Diff viewport windowing
+
+`features/git/diff/WindowedPatchRows.tsx` reserves the full patch height from
+theme font metrics while mounting only the visible row slice. Each vertical
+scroller owns one passive scroll listener, one intersection observer and one
+resize observer (`patchViewport.ts`). A scroll burst schedules at most one
+animation frame; that frame reads positions only for nearby patches before
+publishing any DOM changes. Parsing and intra-line marks remain memoized against
+the patch, not the scroll position. The final subscription removes the listeners,
+disconnects the observers and cancels its pending frame.
+
+Split rows share the outer vertical scroller instead of synchronizing two nested
+scrollbars. Hunk navigation scrolls by document row coordinates, so its target
+need not be mounted. Stable reserved heights prevent row-window changes from
+moving the scrollbar. Native text selection covers mounted rows, not an entire
+offscreen patch.
+
+This follows the visible-block/placeholder approach in Rebased's IntelliJ-based
+[`CombinedDiffViewer`](https://github.com/DetachHead/rebased/blob/master/platform/diff-impl/src/com/intellij/diff/tools/combined/CombinedDiffViewer.kt),
+not its JVM editor implementation. Unlike that loader, Forge still parses every
+expanded patch on a diff change; parsing itself is not lazy or off-thread.
+
+A local Chromium headless smoke used twenty files, each with 2,005 unified rows,
+in a 1,200 × 600 px scroller. Before/after: **40,100 → 84 mounted rows** and
+**240,734 → 778 DOM elements**, reserving the full document height (**704,560 →
+704,685 px**; fractional row rounding differs). Across 120 animation-frame scroll
+steps of 140 px, the measured frame-interval p95 was **22.0 → 17.1 ms** (median
+16.7 ms in both runs). These are
+synthetic browser measurements, not a Tauri WebView latency or FPS guarantee.
+Unit tests cover window bounds, inactive-block costs, shared/coalesced scheduling,
+font/patch changes, unmounted hunk targets and teardown. Browser smokes also
+checked a jump deep into the file list, intra-line marks, line activation and
+split alignment.
+
+Syntax colouring shares `shared/syntax/highlight.ts` with project-search excerpts.
+`patchSyntax.ts` tokenizes a file lazily when a row first mounts and retains the
+result against the path and parsed-row identity. Scrolling reuses those tokens;
+theme changes update scope colours without re-tokenizing. Each hunk starts fresh,
+and old/new source has independent lexer state. Intra-line marks wrap coloured
+tokens rather than replace them, and source stays text rather than HTML.
+
+Syntax work is capped before excerpt/token arrays: 4,096 patch rows and 262,144
+UTF-16 units across both sides, plus the shared 32,768-unit excerpt limit per
+hunk side. Over-budget and unknown-language fragments stay readable as complete
+plain text. The earlier measurements above predate syntax colouring. A subsequent
+syntax-enabled Chromium smoke of the same twenty-file workload retained **83
+rows / 978 DOM elements**, with a **18.4 ms** frame-interval p95; expanding a
+2,005-row patch and waiting for its next frame measured **29.3 ms**. These remain
+synthetic browser checks, not native WebView guarantees.
+
 ## Known open
 
 Carry these forward; they are real, verified, and not yet fixed.
@@ -500,7 +552,7 @@ Carry these forward; they are real, verified, and not yet fixed.
 | Unbounded process-output capture | `git-service::diff`, `fs-service` content search | Response limits are applied after complete subprocess output has been captured; definition grep uses a 4 MiB bounded capture. |
 | Unbounded analytics records and enumeration | `agents::usage::analytics` | Candidate retention is bounded, but `BufReader::lines()` allocates a complete record and directory enumeration has no entry budget. |
 | Full fold rescanning and undo-string copying | `editor-cli::App::rescan_edited`, `editor-core::history` | Edits still rebuild fold regions; coalesced typing clones growing undo strings. |
-| Eager diff rows | `DiffFiles.tsx`, `PatchView.tsx`, `SplitPatchView.tsx` | Files start expanded and all patch rows mount without viewport windowing. |
+| Eager diff parsing | `PatchView.tsx`, `SplitPatchView.tsx` | Files start expanded and all expanded patches are parsed on a diff change; row DOM is viewport-windowed. |
 | Git work before PR cache lookup | `Daemon::refresh_pull_requests` | Remote resolution still spawns Git per project before consulting the cache. |
 | Removed workspace file indexes | `daemon::file_index::Cache` | Project/workspace removal has no eviction path for retained listings. |
 
@@ -533,7 +585,8 @@ would have caught any finding on this page.
 ## Orchestration traffic
 
 `forgectl hook` fires once per turn, not per tool call, and the handler does
-not touch SQLite. A `ClientKind::Cli` connection skips `TerminalActivity`,
+not touch SQLite. (No built-in provider installs a hook yet, so on a stock
+machine the states that depend on it stay `Starting`.) A `ClientKind::Cli` connection skips `TerminalActivity`,
 `TerminalBell`, `ClipboardStore`, `EditorFrame`, and `ProviderUsageChanged`,
 so a controller blocked in `run wait` is not queued behind a terminal burst.
 Message bodies are not written into a PTY. Result files and board values are

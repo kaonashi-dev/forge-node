@@ -362,12 +362,12 @@ fn handle_control(
         },
         DaemonMessage::GitMarks { marks, .. } => app.set_marks(&marks),
         DaemonMessage::Definitions {
+            request_id,
             symbol,
             places,
             truncated,
-            ..
         } => {
-            app.definitions_arrived(symbol, places, truncated);
+            app.definitions_arrived(request_id, symbol, places, truncated);
         }
         DaemonMessage::Diagnostics { command, items, .. } => {
             app.diagnostics_arrived(command, items);

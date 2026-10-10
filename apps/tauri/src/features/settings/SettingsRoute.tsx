@@ -101,7 +101,7 @@ const LINE_HEIGHTS = [
   { value: 1.8, label: "Loose" },
 ] as const;
 
-/** Sections, in `apps/tauri order. */
+/** Sections, in tab order. */
 const SECTIONS = [
   "General",
   "Agents",

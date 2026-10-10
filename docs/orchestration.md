@@ -77,7 +77,7 @@ clipboard, editor-frame, or usage broadcasts.
 `pr draft` is outside the run ledger. It is how a session that the GUI's
 Open PR tab launched in a *draft* task hands back its pull request: title,
 branch, commit subject (plus optional `--commit-body`) as flags, the body on
-stdin or `--body-file`. The daemon checks that `FORGE_SESSION_ID` names a live
+stdin or `--body-file`. The daemon checks that `FORGE_SESSION_ID` names a known
 session, caps each field at 64 KiB, and broadcasts `PullRequestDraftReady` for
 that session's workspace; it stores nothing. The GUI shows the text for editing
 and only then sends `CommitAndOpenPullRequest`, which commits everything once

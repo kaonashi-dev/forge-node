@@ -101,8 +101,8 @@ stays in `terminal-input` / the host bridge, not in Solid.
 `Cmd+=` / `Cmd+-` / `Cmd+0` (`Ctrl` on Linux) zoom whichever content is on
 screen, as two independent preferences: the open file (`ui.editor.font_size`)
 while Code is up, every terminal and agent (`ui.terminal.zoom`) while a
-session is up. Chrome type size is Settings → Personalization → Interface
-size (`ui.font_size`) and does not follow those chords. Unmatched, the same
+session is up. Chrome type size is Settings → Appearance → Type size → Chrome
+(`ui.font_size`) and does not follow those chords. Unmatched, the same
 chords are swallowed so WKWebView cannot scale the whole window.
 
 `Cmd+D` (`Ctrl+Shift+D` on Linux) splits the centre into two columns: a new

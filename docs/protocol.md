@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 29` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 30` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -74,7 +74,9 @@ daemon → HelloAck { protocol_version, daemon_version, instance_id, started_at,
 
 The MVP requires `protocol_version` **equality**; N/N-1 compatibility is
 deferred. `instance_id` comes from `daemon.lock` and lets a client notice a
-daemon restart. `ClientKind` is `Gui` (the debug CLI also uses it) or `Unknown`.
+daemon restart. `ClientKind` is `Gui` (the desktop GUI; the daemon's own session
+CLI also uses it), `Cli` (`forgectl`, which is not sent terminal chatter), or
+`Unknown`.
 
 ## Message model (§10.1)
 
@@ -98,7 +100,7 @@ DaemonMessage::Event    (DaemonEvent)
 
 | Group | Request | Answer / side effect |
 |-------|---------|----------------------|
-| Global | `GetSnapshot` | `Response::Snapshot { project_groups, projects, workspaces, sessions, providers, agent_profiles, worktree_shares, worktree_ignores, app_state, external_agents, pull_requests, usage }` — the full initial state. `pull_requests` is served from the daemon's cache and is **never** a network read: a snapshot is the first thing a reconnecting GUI asks for, and it must not wait on GitHub. |
+| Global | `GetSnapshot` | `Response::Snapshot { project_groups, projects, workspaces, sessions, providers, agent_profiles, worktree_shares, worktree_ignores, app_state, external_agents, pull_requests, runs, usage }` — the full initial state. `pull_requests` is served from the daemon's cache and is **never** a network read: a snapshot is the first thing a reconnecting GUI asks for, and it must not wait on GitHub. `runs` carries only active runs, with their tasks and current attempts. |
 | | `StopDaemon { kill_sessions }` | Refuses if sessions run and `kill_sessions = false`; else `DaemonShuttingDown` to all. |
 | | `FactoryReset` | Stops every session, transactionally clears the Forge metadata database, force-removes worktrees created by Forge, and broadcasts `FactoryReset` so clients bootstrap again. Repository files, branches, commits, `config.toml` and logs are retained. |
 | | `GetAppState { key }` / `SetAppState { key, value }` | Opaque key/value for GUI layout etc. `GetAppState` answers `Response::AppState { value }`. |
@@ -119,11 +121,11 @@ DaemonMessage::Event    (DaemonEvent)
 | | `RenameWorkspace { workspace_id, display_name }` | `WorkspaceUpdated`. `None` clears the human label so the rail falls back to the branch. |
 | | `RefreshWorkspaceStatus { workspace_id }` | `WorkspaceUpdated` carrying branch + `WorkspaceStatus { dirty, head, ahead, behind }` — `head` is the commit oid, the signal the GUI re-reads the file tree and diff on. Throttled to one `git status` every 2 s per workspace (ADR-008). |
 | Branches | `ListBranches { project_id }` | `Response::Branches { branches, remotes, default_branch }`. A **local**, synchronous ref read; the GUI runs it on the workbench worker because Git can block terminal input even without network access. Each `BranchRef` says which workspace already has it checked out. |
-| | `FetchRemote { project_id, remote }` | `Ack` **as soon as the fetch starts**, then `RemoteRefsUpdated` when it finishes. One of the asynchronous requests (with `CreatePullRequest` and `RefreshPullRequests`): a fetch can take minutes and the GUI's command channel also carries terminal input. A fetch already in flight for that project is coalesced, not queued. `remote: None` = `origin`, falling back to the only remote configured; `GitError` when there is none. |
+| | `FetchRemote { project_id, remote }` | `Ack` **as soon as the fetch starts**, then `RemoteRefsUpdated` when it finishes. One of the asynchronous requests (with `CreatePullRequest`, `CommitAndOpenPullRequest` and `RefreshPullRequests`): a fetch can take minutes and the GUI's command channel also carries terminal input. A fetch already in flight for that project is coalesced, not queued. `remote: None` = `origin`, falling back to the first remote configured when `origin` is absent; `GitError` when there is none. |
 | | `GetWorkspaceDiff { workspace_id, context_lines }` | `Response::WorkspaceDiff(WorkspaceDiff)` — the checkout's uncommitted changes, one unified patch per file (§16.7). Local and **synchronous**, like `ListBranches`: `git diff` opens no socket, so there is nothing to ack early and report through an event. Not broadcast either: a diff is a view one client asked for, not shared state. `context_lines: None` takes the service default (12, wider than git's 3 — this feeds a window, not a pager). |
 | | `ListFiles { workspace_id }` | `Response::FileTree(FileTree)` — tracked and untracked-but-not-ignored paths, plus opaque ignored directories (ADR-012). Language dependency directories (`node_modules`, `vendor`, …) are omitted. Local and **synchronous** like `GetWorkspaceDiff`. Paths are relative and stay inside the checkout. |
 | | `ListDirectory { workspace_id, path }` | `Response::DirectoryListing { path, entries, truncated }` — immediate real disk children; `path: ""` reads root. Includes empty/hidden/ignored directories; `.git` and dependency directories are omitted. Optional `FileEntry.symlink` distinguishes internal file/directory links from external, broken and unavailable targets. Internal aliases retain their logical paths. Bounded to 2000 entries and 1 MiB per answer, with 4096-byte paths; partial results are explicit and read errors propagate. Local and **synchronous** like `ListFiles`. |
-| | `ReadFile { workspace_id, path }` | `Response::FileContents(FileContents)` — text plus a `revision` the next write must present. Refuses binaries and oversize files without truncating. |
+| | `ReadFile { workspace_id, path }` | `Response::FileContents(FileContents)` — text plus a `revision` the next write must present. A binary or oversize file is not an error: it answers with empty `text` and `binary`/`too_large` set, never a truncated read. |
 | | `ReadImage { workspace_id, path }` | `Response::ImageContents(ImageContents)` — one image's bytes as base64 plus its media type, for the Markdown preview. `InvalidRequest` for a path without an image extension (checked before the path is touched) and for a file over `fs_service::MAX_IMAGE_BYTES` (8 MiB), which is refused rather than cut. |
 | | `WriteFile { workspace_id, path, text, expected_revision }` | `Ack`. `PreconditionFailed` when the on-disk content no longer matches the revision (an agent wrote the same path); the GUI re-reads with `ReadFile`. |
 | | `CreatePath { workspace_id, path, directory }` | `Ack` after creating an empty entry and missing parents; refuses occupied paths and escapes. |
@@ -181,15 +183,18 @@ DaemonMessage::Event    (DaemonEvent)
 | `GetChangeContext { workspace_id }` | Synchronous `Response::ChangeContext`: status and patch context for drafting. |
 | `GetSessionChanges { session_id }` | Synchronous `Response::SessionChanges`: summary since the recorded baseline, without patches. |
 | `GetWorkspaceReview { workspace_id, context_lines }` | Synchronous `Response::WorkspaceReview`: one checkout diff against the common baseline of its sessions. |
+| `GetBranchCompare { workspace_id, base, context_lines }` | Synchronous `Response::BranchCompare(Box<BranchCompare>)`: committed work only — HEAD against the ref a pull request would target, diffed from their merge base. `base: None` resolves `origin`'s default branch, then a local `main` or `master`; an explicit base that names no commit is `InvalidRequest`. |
 | `GetExternalTranscript { session_id, provider, profile_id, max_turns, max_bytes }` | Synchronous `Response::ExternalTranscript`; resolves a discovered run by identity rather than accepting an arbitrary path. |
 | `DeleteExternalSession { session_id, provider, profile_id }` | `Ack` after deleting that run's transcript/artifacts; refuses stores that cannot safely remove one run. |
 | `DraftWithJuva { workspace_id, kind }` | `Ack` on start, then `JuvaDraftReady`; coalesced per workspace. Remote drafting falls back to deterministic local text. |
+| `SubmitPullRequestDraft { session_id, draft }` | `Ack`; an agent session hands back the pull request it was asked to write (`forgectl pr draft`), each field capped at 64 KiB and the title/commit message non-blank. The daemon answers with that session's own workspace as `PullRequestDraftReady`; stored nowhere. |
 | `GetRebaseState { workspace_id }` | Synchronous `Response::RebaseState` read from Git's current sequencer/index state. |
 | `ContinueRebase { workspace_id }` | Synchronous `Response::RebaseState`, including a replay that stopped at its next conflict. |
 | `AbortRebase { workspace_id }` | Local mutation, `Ack`; refreshes workspace status. Discards resolutions made during the stopped operation. |
 | `MarkConflictResolved { workspace_id, paths }` | Stages literal checkout-relative paths, then answers `Response::RebaseState`. |
 | `CreateCommit { workspace_id, message }` | Stages all changes and creates a local commit, then `Ack` and workspace status refresh. Does not push. |
 | `CreatePullRequest { workspace_id, title, body, base }` | `Ack` on start, then `PullRequestOpened`; explicitly pushes before opening through `gh`, coalesced per workspace. |
+| `CommitAndOpenPullRequest { workspace_id, commit, title, body, base }` | `Ack` on start, then `PullRequestOpened`; commits every uncommitted change once — on a new branch when the checkout is on its default — then pushes and opens through `gh`. Coalesced per workspace, like `CreatePullRequest`. |
 | `SendEditorInput { session_id, events }` | `Ack` after queueing bounded structured input for the DOM editor; `PreconditionFailed` on a saturated editor queue. |
 | `SetEditorView { session_id, first_line, line_count }` | `Ack` after queueing a bounded line-window request; rendered content arrives in `EditorFrame`. |
 | `EditorFind { session_id, command }` | `Ack` after queueing a find-panel gesture (`Set`, `Next`, `Previous`, `Close`); the result arrives as `EditorState.find`. A `Set` pattern over 1 024 bytes is `InvalidRequest`. |
@@ -214,6 +219,7 @@ Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 | `EditorFrame { session_id, frame }` | A bounded line window for the passive DOM editor surface. |
 | `ProviderUsageChanged { usage }` | Replaces all account allowance readings; never merge with the old set. |
 | `JuvaDraftReady { workspace_id, draft, fell_back }` | Completion of `DraftWithJuva`, with editable text and whether a configured remote endpoint fell back. |
+| `PullRequestDraftReady { workspace_id, session_id, draft }` | An agent handed back a pull-request draft through `SubmitPullRequestDraft`; editable text, stored nowhere. |
 | `ProjectAdded` / `ProjectUpdated` / `ProjectRemoved { project_id }` | Full object on add/update. |
 | `ProjectGroupCreated` / `ProjectGroupUpdated` / `ProjectGroupRemoved { project_group_id }` | Organizational metadata only. |
 | `WorkspaceCreated` / `WorkspaceUpdated` / `WorkspaceRemoved { workspace_id }` | |
@@ -270,7 +276,10 @@ progress, remove a project with `KeepEverything` while sessions run.
 - The enums that appear as *fields* rather than as message discriminants
   (`ErrorCode`, `ClientKind`, `Signal`, `NoticeLevel`) each carry an `Unknown`
   variant with `#[serde(other)]`, so a newer daemon naming a value an older
-  client has never heard of does not break its decoder.
+  client has never heard of does not break its decoder. `EditorSurface`, which
+  the handshake carries, is the exception: it has no `Unknown` arm, so a surface
+  name this build does not know would fail the handshake decode — unreachable
+  today only because versions must match.
 
 ## The `client` crate
 
@@ -283,8 +292,8 @@ reader thread, `flume` channels — no tokio, no GUI toolkit):
   `connect_as(..., ClientKind::Cli)` is what `forgectl` uses. A CLI connection
   is not sent `TerminalActivity`, `TerminalBell`, `ClipboardStore`,
   `EditorFrame`, or `ProviderUsageChanged`. Orchestration requests and events
-  (runs, tasks, attempts, the board, inbox) are version 28; see
-  [orchestration.md](./orchestration.md).
+  (runs, tasks, attempts, the board, inbox) are documented with the run ledger
+  in [orchestration.md](./orchestration.md).
 - `request(body)` / `request_timeout(body, dur)` block until the matching
   response arrives. They must be bridged off the UI thread.
 - `events()` returns a bounded receiver (64 events). The reader uses nonblocking

@@ -46,6 +46,12 @@ export function rowClass(kind: PatchRowKind): string {
 /** A range of one row's text that differs from its counterpart. */
 export type Segment = { from: number; to: number };
 
+function splitsSurrogate(text: string, index: number): boolean {
+  const previous = text.charCodeAt(index - 1);
+  const next = text.charCodeAt(index);
+  return previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
+}
+
 /**
  * The part of two lines that actually differs.
  *
@@ -67,6 +73,7 @@ export function intraLine(
 
   let prefix = 0;
   while (prefix < limit && before[prefix] === after[prefix]) prefix += 1;
+  if (splitsSurrogate(before, prefix) || splitsSurrogate(after, prefix)) prefix -= 1;
 
   let suffix = 0;
   while (
@@ -75,6 +82,11 @@ export function intraLine(
   ) {
     suffix += 1;
   }
+  if (
+    splitsSurrogate(before, before.length - suffix) ||
+    splitsSurrogate(after, after.length - suffix)
+  )
+    suffix -= 1;
 
   // The two lines have to be more alike than different for "the same line,
   // edited" to be a true description of them. `alpha` and `beta` share a

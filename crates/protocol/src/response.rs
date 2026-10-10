@@ -346,6 +346,18 @@ mod tests {
                 worked_secs: 90,
                 first_activity: domain::Timestamp::from_unix_secs(1_000),
                 last_activity: domain::Timestamp::from_unix_secs(2_000),
+                accounts: vec![domain::AccountAnalytics {
+                    profile_id: Some(domain::AgentProfileId::new()),
+                    tokens: domain::TokenTotals::default(),
+                    sessions: 1,
+                    turns: 2,
+                    cost_micros: 42,
+                    unpriced_turns: 0,
+                }],
+                daily: vec![domain::DailyUsage {
+                    date: "2026-08-26".to_owned(),
+                    tokens: 10,
+                }],
             }],
             daily: vec![domain::DailyUsage {
                 date: "2026-08-26".to_owned(),

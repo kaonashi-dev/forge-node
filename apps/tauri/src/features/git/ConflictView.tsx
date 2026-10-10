@@ -193,7 +193,11 @@ export function ConflictView() {
                 </Button>
               </div>
               <div class="diff-body">
-                <PatchView patch={file()?.patch ?? ""} onOpenLine={(line) => openAt(line)} />
+                <PatchView
+                  path={current().path}
+                  patch={file()?.patch ?? ""}
+                  onOpenLine={(line) => openAt(line)}
+                />
               </div>
             </div>
           </Show>

@@ -1,15 +1,9 @@
 //! Files a project shares between its workspaces.
 //!
-//! A managed worktree lives under `worktrees.root`, away from the repository,
-//! so it starts without the untracked files a project needs to run: `.env`, a
-//! local settings file, a certificate, an installed `node_modules`. A
-//! [`ShareRule`] says how one path reaches every workspace of the project, and
-//! the rules are the project's own — the global `[worktrees] copy` list is only
-//! the default for a project that has none.
-//!
-//! Only [`ShareRule`] is persisted. [`ShareCandidate`], [`ShareAction`] and
+//! [`ShareRule`] is the persisted policy; [`ShareCandidate`], [`ShareAction`] and
 //! [`ShareStatusEntry`] are runtime state, like [`crate::WorkspaceStatus`] and
-//! [`crate::WorkspaceDiff`]: read on demand, never a column.
+//! [`crate::WorkspaceDiff`]: read on demand, never a column. Details:
+//! `docs/worktrees.md`.
 
 use crate::ids::{ProjectId, ShareRuleId, Timestamp};
 use serde::{Deserialize, Serialize};

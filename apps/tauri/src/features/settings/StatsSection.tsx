@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { providerId, providerName, type ProviderUsage } from "../../contracts/runtime";
 import { forgeStore } from "../../state/forgeStore";
-import { Button } from "../../ui/index";
+import { Button, Select } from "../../ui/index";
 import { Group, Page } from "./SettingsLayout";
 import {
   analyticsSessions,
@@ -15,6 +15,7 @@ import {
   busiestDay,
   compactTokens,
   count,
+  dailySeries,
   dayLabel,
   heatmap,
   money,
@@ -23,6 +24,7 @@ import {
   providerShare,
   resetsIn,
   shortDay,
+  statsAccounts,
   statsProviders,
   tokenMix,
   totals,
@@ -88,8 +90,14 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
   const summary = () => overview(props.analytics);
   const sum = () => totals(props.analytics);
   const mix = () => tokenMix(sum());
-  const cells = () => heatmap(props.analytics.daily, props.analytics.window_days, new Date());
-  const best = () => busiestDay(props.analytics.daily);
+  const [dailyProvider, setDailyProvider] = createSignal<string | null>(null);
+  const daily = () => dailySeries(props.analytics, dailyProvider());
+  const cells = () => heatmap(daily(), props.analytics.window_days, new Date());
+  const best = () => busiestDay(daily());
+  const dailyOptions = () => [
+    { value: null, label: "All agents" },
+    ...reporting().map((provider) => ({ value: provider.id, label: provider.name })),
+  ];
 
   return (
     <div class="stats-body">
@@ -128,13 +136,24 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
       <section class="stats-panel">
         <header class="stats-panel-head">
           <h4>Daily tokens</h4>
-          <Show when={best()}>
-            {(day) => (
-              <span class="stats-badge">
-                Peak {shortDay(day().date)} · {compactTokens(day().tokens)}
-              </span>
-            )}
-          </Show>
+          <div class="stats-panel-tools">
+            <Show when={best()}>
+              {(day) => (
+                <span class="stats-badge">
+                  Peak {shortDay(day().date)} · {compactTokens(day().tokens)}
+                </span>
+              )}
+            </Show>
+            <Show when={reporting().length > 1}>
+              <Select<string | null>
+                aria-label="Agent shown in the daily bars"
+                class="stats-daily-filter"
+                value={dailyProvider()}
+                options={dailyOptions()}
+                onChange={setDailyProvider}
+              />
+            </Show>
+          </div>
         </header>
         <DailyBars cells={cells()} />
       </section>
@@ -343,6 +362,7 @@ function ProviderCard(props: { provider: StatsProvider; share: number }) {
 }
 
 function ProviderMetrics(props: { provider: ProviderAnalytics; share: number }) {
+  const accounts = createMemo(() => statsAccounts(props.provider, forgeStore.agent_profiles));
   return (
     <>
       <p class="settings-hint stats-provider-model">
@@ -366,6 +386,28 @@ function ProviderMetrics(props: { provider: ProviderAnalytics; share: number }) 
       <span class="stats-provider-facts">
         {count(props.provider.sessions)} runs · {count(props.provider.turns)} turns
       </span>
+      <Show when={accounts().length > 0}>
+        <ul class="stats-accounts" aria-label="By account">
+          <For each={accounts()}>
+            {(account) => (
+              <li>
+                <span class="stats-account-name">{account.name}</span>
+                <span class="stats-account-tokens">
+                  {compactTokens(tokenTotal(account.analytics.tokens))}
+                </span>
+                <span class="stats-account-cost">
+                  {money(account.analytics.cost_micros)}
+                  {account.analytics.unpriced_turns > 0 ? " floor" : ""}
+                </span>
+                <span class="stats-account-share">{account.share}%</span>
+                <span class="stats-account-facts">
+                  {count(account.analytics.sessions)} runs · {count(account.analytics.turns)} turns
+                </span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
     </>
   );
 }

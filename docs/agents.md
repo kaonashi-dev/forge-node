@@ -132,7 +132,7 @@ end
 A profile is *not* a provider: it borrows the descriptor's icon, detection,
 binary candidates and usage source, and overrides only how the process starts.
 `domain::AgentProfile` carries `{ provider_id, name, executable, config_dir,
-args }` — four fields, because a profile that could set anything was a second,
+args }` — five fields, because a profile that could set anything was a second,
 worse copy of the agent's own configuration file. The bare provider is the
 implicit profile (`profile_id: None`).
 
@@ -244,9 +244,10 @@ until that account is signed in.
   `InvalidRequest`: a directory nothing is ever told about would look saved and
   change nothing.
 - `domain::RESERVED_PROFILE_VARS` (`TERM`, `TERMINFO`, `COLORTERM`,
-  `FORGE_SESSION_ID`, `FORGE_WORKSPACE`) is what Forge owns of the child's
-  environment. A profile can no longer name a variable at all; the constant is
-  the contract every descriptor's `ConfigDirSpec` is tested against.
+  `FORGE_SESSION_ID`, `FORGE_WORKSPACE`, `FORGE_SOCKET`, `FORGE_RUN_ID`,
+  `FORGE_TASK_ID`, `FORGE_ATTEMPT_ID`, `FORGECTL_JSON`) is what Forge owns of the
+  child's environment. A profile can no longer name a variable at all; the
+  constant is the contract every descriptor's `ConfigDirSpec` is tested against.
 - Inside a Forge-launched PTY, `forge-daemon` is on `PATH` and
   `FORGE_SESSION_ID` is set. Agents cite or spawn other sessions through Forge,
   not peer-to-peer: `forge-daemon session list|read|spawn-child` and
@@ -371,7 +372,7 @@ user looks somewhere else. See [terminal.md](./terminal.md#the-pty-loop-daemonsr
 |----------|-----------|--------|
 | `opencode` | `OPENCODE_CONFIG_CONTENT` → `forge-attention.js` | `permission.asked` / `question.asked` → BEL |
 | `claude` | `--settings` → Forge JSON (does **not** rewrite `~/.claude`) | `PermissionRequest` + `Notification(permission_prompt\|…)` → `forge-ring-bell.sh` |
-| `codex` | `-c tui.notifications=["approval-requested"]` + `notification_method="bel"` + `condition="always"` | TUI BEL on approval only |
+| `codex` | `-c tui.notifications=["approval-requested"]` + `tui.notification_method="bel"` + `tui.notification_condition="always"` | TUI BEL on approval only |
 | `cursor` | Merge `beforeShellExecution` / `beforeMCPExecution` into `~/.cursor/hooks.json` (FORGE-gated) | Best-effort — Cursor has no permission-prompt hook |
 | `grok` | Write `~/.grok/hooks/forge-attention.json` (FORGE-gated), and set `GROK_CURSOR_HOOKS_ENABLED=false` | `Notification(permission_prompt)` → BEL |
 
@@ -543,8 +544,9 @@ The same four rules as discovery apply, with different constants:
   the window, so re-rendering the page re-reads nothing and asking a *different*
   question is not answered with the previous one's numbers.
 - **Cheap where it can be.** Only files modified inside the window are opened,
-  and only lines containing `"usage"` (or `"token_count"`) are parsed — most of
-  a transcript is user turns and tool traffic.
+  and only lines containing `"usage"`, `"token_count"`, or `"turn_context"` are
+  parsed — the last to carry Codex's model into the next turn; most of a
+  transcript is user turns and tool traffic.
 
 Two counting rules are worth stating because getting either wrong silently
 doubles a number:
@@ -581,7 +583,9 @@ installed on the machine, so workspace tests are not fully hermetic.
 
 A provider hook calls `forgectl hook --state working|waiting|idle`. The command
 always exits 0, even when the daemon is unreachable, and it does not write
-SQLite. Silence does not change activity. A provider with no working hook stays
-`Unknown`; reports still settle. Forge injects `FORGE_SOCKET` plus the run,
+SQLite. Silence does not change activity. No built-in provider installs such a
+hook yet: the command is the channel, and until something calls it — a provider
+hook Forge installs, a wrapper, or the agent itself — a session stays `Starting`
+(never `Idle`). Reports still settle. Forge injects `FORGE_SOCKET` plus the run,
 task, and attempt ids into the PTY environment. It does not write `AGENTS.md`
 or `CLAUDE.md`. See [orchestration.md](./orchestration.md).

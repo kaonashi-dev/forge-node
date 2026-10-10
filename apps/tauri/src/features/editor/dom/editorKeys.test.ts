@@ -64,6 +64,18 @@ describe("modifiersOf", () => {
 });
 
 describe("inputFor", () => {
+  it("delivers Alt-slash as a comment command instead of Option text", () => {
+    for (const key of ["/", "÷"]) {
+      expect(inputFor(press({ key, code: "Slash", altKey: true }))).toEqual({
+        Key: { key: { Char: "_" }, modifiers: MOD_CONTROL },
+      });
+    }
+    expect(
+      inputFor(press({ key: "÷", code: "Slash", altKey: true, isComposing: true })),
+    ).toBeNull();
+    expect(inputFor(press({ key: "Process", code: "Slash", altKey: true }))).toBeNull();
+  });
+
   it("uses the same Mac save and comment chords as the terminal surface", () => {
     expect(inputFor(press({ key: "s", metaKey: true }))).toEqual({
       Key: { key: { Char: "s" }, modifiers: MOD_CONTROL },

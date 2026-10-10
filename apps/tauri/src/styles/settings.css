@@ -904,6 +904,15 @@
   padding: var(--space-2) var(--space-8);
 }
 
+.stats-panel-tools {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+}
+.stats-daily-filter {
+  min-width: 140px;
+}
+
 /* Daily bars: one column per day, so the width of the panel is the window. */
 .stats-daily {
   display: flex;
@@ -1135,6 +1144,41 @@
   background: var(--accent-solid);
   display: block;
   height: 100%;
+}
+
+/* One row per config directory; a transcript does not say which profile launched it. */
+.stats-accounts {
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  list-style: none;
+  margin: 0;
+  padding: var(--space-8) 0 0;
+}
+.stats-accounts li {
+  align-items: baseline;
+  display: grid;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  gap: var(--space-2) var(--space-8);
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+}
+.stats-account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stats-account-share {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  min-width: 3ch;
+  text-align: right;
+}
+.stats-account-facts {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  grid-column: 1 / -1;
 }
 
 /* --- Settings: launch profiles ------------------------------------------- */

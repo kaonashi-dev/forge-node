@@ -548,10 +548,8 @@
 .diff-file {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
+  flex-shrink: 0;
 }
-/* The header stays put while its patch scrolls under it, so the file a
-   hunk belongs to never leaves the screen. `.diff-view` is the scroller, and
-   the header sticks to its top edge. */
 .diff-file-head {
   background: var(--bg-raised);
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
@@ -563,6 +561,25 @@
   width: 100%;
   z-index: var(--z-raised);
 }
+.diff-file-toggle {
+  border-radius: var(--radius-xs);
+  flex: none;
+  height: var(--control-xs);
+  justify-content: center;
+  padding: 0;
+  width: var(--control-xs);
+}
+.diff-file-toggle:hover {
+  background: var(--bg-hover);
+}
+.diff-file-name {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+}
+.diff-file-name:hover .tree-label {
+  text-decoration: underline;
+}
 .diff-body {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -570,17 +587,27 @@
   overflow-x: auto;
   padding: var(--space-4) 0;
 }
-/* Patch rows are plain DOM; washes and gutters live here. */
-.diff-patch {
+.diff-patch,
+.diff-split {
+  --diff-row-height: calc(var(--forge-mono-size) * var(--forge-mono-lh));
   font-family: var(--font-mono);
   font-size: var(--forge-mono-size);
   line-height: var(--forge-mono-lh);
-  overflow: auto;
   background: var(--forge-editor);
 }
+.diff-window {
+  position: relative;
+  overflow-anchor: none;
+}
+.diff-window-rows {
+  position: absolute;
+  width: 100%;
+}
 .diff-row {
+  background: var(--forge-editor);
   display: grid;
   grid-template-columns: 3.5ch 3.5ch 1.5ch minmax(0, 1fr);
+  height: var(--diff-row-height);
   white-space: pre;
 }
 .diff-split .diff-row {
@@ -622,22 +649,13 @@
   text-align: center;
   opacity: 0.8;
 }
-.diff-split {
+.diff-split-row {
   display: grid;
   gap: var(--space-1);
   /* Two equal columns whose contents may both overflow: `minmax(0, 1fr)` and
      not `1fr`, or a long line in either pane widens the whole grid. */
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   background: var(--border-subtle);
-}
-.diff-split-side {
-  background: var(--forge-editor);
-  min-width: 0;
-  overflow: auto;
-  max-height: 60vh;
-  font-family: var(--font-mono);
-  font-size: var(--forge-mono-size);
-  line-height: var(--forge-mono-lh);
 }
 
 .editor-conflict {

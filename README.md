@@ -127,15 +127,17 @@ crates/
   test-support/   fake PTYs, agents and temporary Git repositories
   client/         protocol client + cell-grid replica
   daemon/         the runtime: services, PTYs, sessions, IPC → `forge-daemon`
+  forge-ctl/      forgectl argv client (runs, tasks, context) → binary forgectl
 apps/tauri/       Tauri 2 + Solid shell; the Rust host is under `src-tauri/`
 ```
 
 Dependency direction (enforced by `Cargo.toml`): `forge-tauri → {client, domain}`,
 `client → {protocol, terminal-input, domain}`, `daemon → {agents, client,
 editor-control, fs-service, git-service, persistence, protocol, terminal-core,
-domain}`, `fs-service → git-service`, `editor-cli → {editor-core, editor-control}`;
-every other crate depends on `domain` alone or on nothing. The host depends on
-neither `protocol` nor `terminal-core` directly.
+terminal-input, domain}`, `fs-service → git-service`, `editor-cli → {editor-core,
+editor-control}` and `test-support → {domain, terminal-core}`; every other crate
+depends on `domain` alone or on nothing. The host depends on neither `protocol`
+nor `terminal-core` directly.
 
 Rust · Tauri 2 + Solid/Vite · Unix domain socket + MessagePack · Git CLI ·
 SQLite · `alacritty_terminal`.
@@ -177,8 +179,10 @@ a deliberate daemon restart because that would terminate its PTYs.
 
 ### Releasing
 
-The version has one source — `[workspace.package]` in `Cargo.toml`. Bump it,
-tag it, push the tag; `.github/workflows/release.yml` runs the gate, builds and
+The release version comes from `[workspace.package]` in `Cargo.toml`, and
+`.github/workflows/release.yml` refuses a tag that disagrees with it
+(`apps/tauri/package.json` keeps its own copy; the workflow never reads it).
+Bump it, tag it, push the tag; the workflow runs the gate, builds and
 signs the bundle, writes the updater manifest and publishes the release.
 
 ```sh

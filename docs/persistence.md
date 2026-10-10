@@ -5,7 +5,7 @@ their graph, context envelopes, provider overrides and opaque app state. It
 never stores the terminal stream — scrollback lives in bounded daemon memory —
 and never stores runtime-only identifiers such as `terminal_id`.
 
-Crate: `crates/persistence`. Plan references: §15.
+Crate: `crates/persistence`.
 
 ## Database
 
@@ -28,11 +28,14 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
 
 - **Append only.** Add a new `M::up(...)` to `migrations()`; never edit or
   reorder an existing one, or already-migrated databases will diverge.
-- Twelve migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
+- Thirteen migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
   `PROJECT_GROUPS`, `AGENT_PROFILES`, `PROJECT_ICONS`,
   `WORKSPACE_DISPLAY_NAMES`, `SESSION_LAUNCH_COMMAND`, `WORKTREE_SHARES`,
-  `SESSION_BASE_COMMIT`, `PROFILE_CONFIG_DIR`, `WORKTREE_IGNORES`, and
-  `ORCHESTRATION` (runs, tasks, attempts, the board, idempotency receipts).
+  `SESSION_BASE_COMMIT`, `PROFILE_CONFIG_DIR`, `WORKTREE_IGNORES`,
+  `ORCHESTRATION` (runs, tasks, attempts, the board, idempotency receipts, and the
+  run/task/kind/reply/ack columns on `context_envelopes`), and
+  `RUN_ENVELOPE_HISTORY` (run messages outlive the sessions that wrote and
+  received them; plain handoffs keep their lifecycle through triggers).
   Session activity is not a column. A restart reconciles live attempts to lost
   and an active run to interrupted before the socket is bound. Factory reset
   deletes those tables with the rest of the application rows.
@@ -162,8 +165,8 @@ impossible to remove an inherited entry.
 
 One repository per table, obtained from the handle: `db.projects()`,
 `db.project_groups()`, `db.workspaces()`, `db.sessions()`, `db.context()`,
-`db.provider_overrides()`, `db.agent_profiles()`, `db.shares()`, `db.ignores()`,
-`db.app_state()`. Each maps every domain field to
+`db.orchestration()`, `db.provider_overrides()`, `db.agent_profiles()`,
+`db.shares()`, `db.ignores()`, `db.app_state()`. Each maps every domain field to
 and from its columns; the daemon loads all rows into memory at startup and
 writes through on every mutation (`upsert`/`delete`).
 
@@ -183,8 +186,10 @@ WHERE last_state IN ('Starting', 'Running')
 ```
 
 The default drops the history: without it the tree grows a pile of dead
-sessions nobody restarts, one per app run. Envelopes cascade with their source
-session; projects, workspaces, provider overrides and app state are untouched.
+sessions nobody restarts, one per app run. Handoff envelopes (`run_id IS NULL`)
+go with their source session and lose their target; run messages survive the
+sessions that wrote or received them and are removed with their run. Projects,
+workspaces, provider overrides and app state are untouched.
 
 With the flag on, a session that was live comes back `Orphaned` and the user can
 `RestartSession` it (fresh terminal, no scrollback) or close it. Reconciliation
@@ -199,6 +204,7 @@ is the only legitimate writer of `Orphaned`.
 | Detection results | in-memory daemon cache (`Inner.detections`); recomputed at startup |
 | Resolved login-shell environment | cached in the daemon for its lifetime |
 | Client subscriptions, "behind" flags | `daemon/src/registry.rs` |
+| Workspace status, editor metadata, session activity, pull-request state, diffs, rebase state, file/search views | computed on demand; `Default`/`None` on load (see [domain.md](./domain.md)) |
 | GUI layout | opaque `app_state` key/values (the daemon never interprets them) |
 
 ## Tests

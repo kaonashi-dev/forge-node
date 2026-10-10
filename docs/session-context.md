@@ -123,8 +123,10 @@ Exactly one of `target_session_id` or `spawn` on `SendContext`. At least one of
   OS process tree. See [domain.md](./domain.md).
 - **ContextEnvelope** — append-only row (`context_envelopes`): source, optional
   target, summary, instructions, artifacts (e.g. `TerminalExcerpt`), optional
-  git context. Survives a closed target (`SET NULL`); deleting the source
-  cascades.
+  git context, and, for run mail, `run_id` / `task_id` / `kind` / `in_reply_to` /
+  `acked_at`. A handoff envelope (`run_id IS NULL`) survives a closed target
+  (`SET NULL`) and is deleted with its source; a run envelope survives both
+  sessions and goes with its run.
 
 Discovered (external) agent runs are **not** graph nodes: handoff from History
 starts a Forge session with a prompt, but there is no `parent_session_id`.

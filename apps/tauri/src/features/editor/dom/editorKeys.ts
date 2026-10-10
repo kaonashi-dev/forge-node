@@ -1,5 +1,4 @@
-// Browser input translated for the shared editor command table.
-import { editorKeyForMeta } from "../cells/editorChords";
+import { editorKeyForChord } from "../cells/editorChords";
 import type { EditorInputEvent, EditorKey } from "../../../contracts/editor";
 
 /** Mirrors `domain::editor_modifiers`; a bitfield, as every event source reports. */
@@ -61,12 +60,11 @@ export function keyOf(event: KeyboardEvent): EditorKey | null {
   return null;
 }
 
-/** One key press as the editor's input, or `null` when it carries nothing. */
 export function inputFor(event: KeyboardEvent): EditorInputEvent | null {
+  const chord = editorKeyForChord(event);
+  if (chord) return { Key: { key: { Char: chord.key }, modifiers: MOD_CONTROL } };
   const key = keyOf(event);
   if (key === null) return null;
-  const chord = editorKeyForMeta(event);
-  if (chord) return { Key: { key: { Char: chord.key }, modifiers: MOD_CONTROL } };
   if (event.metaKey) return null;
   return { Key: { key, modifiers: modifiersOf(event) } };
 }

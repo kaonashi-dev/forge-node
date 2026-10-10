@@ -1,30 +1,8 @@
 //! Token analytics read from the transcripts the agent CLIs already write.
 //!
-//! [`super::collect`] asks a provider what its *allowance* looks like. This
-//! reads what actually happened: every billed turn a provider recorded on this
-//! machine, summed into tokens, turns, days and an estimated cost. Both are
-//! provider-specific facts, so both live in this crate (principle P2); nothing
-//! outside it knows that Claude writes JSONL under `~/.claude/projects` or that
-//! Codex writes rollouts under `~/.codex/sessions`.
-//!
-//! Two stores are read today:
-//!
-//! - **Claude Code** — `~/.claude/projects/<slug>/*.jsonl` (and the
-//!   `<sessionId>/subagents/*.jsonl` beside them). Every assistant record
-//!   carries `message.usage`, which is where all five token counts come from,
-//!   including the five-minute/one-hour split that prices a cache write.
-//! - **Codex CLI** — `~/.codex/sessions/<y>/<m>/<d>/rollout-*.jsonl`. Its
-//!   `token_count` events carry a *cumulative* `total_token_usage`, so a turn
-//!   is the difference between consecutive events, never the event itself.
-//!
-//! OpenCode and Cursor are absent for the same reason they declare no
-//! [`domain::UsageSource`]: OpenCode bills through whichever model provider it
-//! is configured with, and Cursor records nothing locally to count.
-//!
-//! Everything is best effort, like transcript discovery: an unreadable file, a
-//! malformed line or a missing directory yields a smaller number, never an
-//! error. The one thing it will not do is under-report silently — a scan that
-//! hits its cap says how many transcripts it left unread.
+//! Billing facts stay in this crate (principle P2): Claude's `message.usage`,
+//! deduped on `message.id`, and Codex's cumulative `total_token_usage`.
+//! Stores and counting rules: `docs/agents.md`.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
@@ -35,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use domain::{
-    AgentProfile, AgentProviderId, DailyUsage, ProviderAnalytics, ResolvedEnvironment, Timestamp,
-    TokenTotals, UsageAnalytics,
+    AccountAnalytics, AgentProfile, AgentProfileId, AgentProviderId, DailyUsage, ProviderAnalytics,
+    ResolvedEnvironment, Timestamp, TokenTotals, UsageAnalytics,
 };
 use serde_json::Value;
 
@@ -62,7 +40,8 @@ const SCAN_LIMIT: usize = 500;
 /// config directory moves its transcripts with it, so a machine whose work runs
 /// under a `Personal` profile would otherwise report an empty month. Every
 /// account is read and the totals are the sum — this page is what the machine
-/// spent, not what one login did.
+/// spent, not what one login did — with the per-account split in
+/// [`ProviderAnalytics::accounts`].
 #[must_use]
 pub fn collect(
     window_days: u16,
@@ -86,16 +65,21 @@ pub fn collect(
         ("codex", codex_transcripts(env, profiles, cutoff)),
     ] {
         skipped += files.skipped;
-        let mut totals = Totals::default();
-        for path in &files.paths {
+        let mut totals = Totals::new(&files.stores);
+        for (path, store) in &files.paths {
+            totals.account = *store;
             let counted = match provider {
-                "claude" => scan_claude(path, cutoff, &mut totals, &mut daily),
-                _ => scan_codex(path, cutoff, &mut totals, &mut daily),
+                "claude" => scan_claude(path, cutoff, &mut totals),
+                _ => scan_codex(path, cutoff, &mut totals),
             };
             scanned += 1;
             if counted {
                 totals.sessions += 1;
+                totals.accounts[*store].sessions += 1;
             }
+        }
+        for (date, tokens) in &totals.daily {
+            *daily.entry(date.clone()).or_default() += tokens;
         }
         if let Some(analytics) = totals.finish(AgentProviderId::new(provider)) {
             providers.push(analytics);
@@ -106,10 +90,7 @@ pub fn collect(
 
     UsageAnalytics {
         providers,
-        daily: daily
-            .into_iter()
-            .map(|(date, tokens)| DailyUsage { date, tokens })
-            .collect(),
+        daily: daily_series(daily),
         window_days,
         scanned,
         skipped,
@@ -122,7 +103,6 @@ pub fn collect(
 // ---------------------------------------------------------------------
 
 /// One provider's running totals while its transcripts are read.
-#[derive(Default)]
 struct Totals {
     tokens: TokenTotals,
     sessions: u32,
@@ -138,16 +118,59 @@ struct Totals {
     /// earlier records into the new transcript, so without this every resumed
     /// conversation would be billed twice.
     seen: HashSet<u64>,
+    daily: BTreeMap<String, u64>,
+    /// One entry per [`Store`], indexed like [`Transcripts::stores`].
+    accounts: Vec<AccountAnalytics>,
+    /// The account the transcript being read belongs to.
+    account: usize,
 }
 
 impl Totals {
+    fn new(stores: &[Store]) -> Self {
+        Self {
+            tokens: TokenTotals::default(),
+            sessions: 0,
+            turns: 0,
+            cost_micros: 0,
+            unpriced_turns: 0,
+            per_model: HashMap::new(),
+            worked_secs: 0,
+            first: None,
+            last: None,
+            seen: HashSet::new(),
+            daily: BTreeMap::new(),
+            accounts: stores
+                .iter()
+                .map(|store| AccountAnalytics {
+                    profile_id: store.profile_id,
+                    tokens: TokenTotals::default(),
+                    sessions: 0,
+                    turns: 0,
+                    cost_micros: 0,
+                    unpriced_turns: 0,
+                })
+                .collect(),
+            account: 0,
+        }
+    }
+
     /// Record one billed turn.
-    fn turn(&mut self, turn: &Turn, at: Option<Timestamp>, daily: &mut BTreeMap<String, u64>) {
+    fn turn(&mut self, turn: &Turn, at: Option<Timestamp>) {
+        let account = &mut self.accounts[self.account];
         self.tokens.add(&turn.tokens);
+        account.tokens.add(&turn.tokens);
         self.turns += 1;
+        account.turns += 1;
         match turn.model.as_deref().and_then(price_for) {
-            Some(price) => self.cost_micros += turn.cost_micros(price),
-            None => self.unpriced_turns += 1,
+            Some(price) => {
+                let cost = turn.cost_micros(price);
+                self.cost_micros += cost;
+                account.cost_micros += cost;
+            }
+            None => {
+                self.unpriced_turns += 1;
+                account.unpriced_turns += 1;
+            }
         }
         if let Some(model) = &turn.model {
             *self.per_model.entry(model.clone()).or_default() += turn.tokens.total();
@@ -155,7 +178,7 @@ impl Totals {
         if let Some(at) = at {
             self.first = Some(self.first.map_or(at, |first| first.min(at)));
             self.last = Some(self.last.map_or(at, |last| last.max(at)));
-            *daily.entry(date_key(at)).or_default() += turn.tokens.total();
+            *self.daily.entry(date_key(at)).or_default() += turn.tokens.total();
         }
     }
 
@@ -183,6 +206,12 @@ impl Totals {
             .iter()
             .max_by_key(|(model, tokens)| (**tokens, std::cmp::Reverse(model.as_str())))
             .map(|(model, _)| model.clone());
+        let mut accounts: Vec<_> = self
+            .accounts
+            .into_iter()
+            .filter(|account| account.turns > 0)
+            .collect();
+        accounts.sort_by(|a, b| b.tokens.total().cmp(&a.tokens.total()));
         Some(ProviderAnalytics {
             provider_id,
             tokens: self.tokens,
@@ -194,8 +223,17 @@ impl Totals {
             worked_secs: self.worked_secs,
             first_activity: self.first,
             last_activity: self.last,
+            accounts,
+            daily: daily_series(self.daily),
         })
     }
+}
+
+fn daily_series(daily: BTreeMap<String, u64>) -> Vec<DailyUsage> {
+    daily
+        .into_iter()
+        .map(|(date, tokens)| DailyUsage { date, tokens })
+        .collect()
 }
 
 /// One billed turn, normalized across providers.
@@ -237,12 +275,7 @@ impl Turn {
 // ---------------------------------------------------------------------
 
 /// Read one Claude transcript. Returns whether it carried a billed turn.
-fn scan_claude(
-    path: &Path,
-    cutoff: time::OffsetDateTime,
-    totals: &mut Totals,
-    daily: &mut BTreeMap<String, u64>,
-) -> bool {
+fn scan_claude(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -> bool {
     let Ok(file) = fs::File::open(path) else {
         return false;
     };
@@ -313,7 +346,7 @@ fn scan_claude(
                 None => (at, at),
             });
         }
-        totals.turn(&turn, at, daily);
+        totals.turn(&turn, at);
         counted = true;
     }
     totals.worked(span);
@@ -329,12 +362,7 @@ fn scan_claude(
 /// `total_token_usage` is cumulative over the session, so a turn is the
 /// *difference* between consecutive events. Summing the events themselves would
 /// multiply a long session by its own length.
-fn scan_codex(
-    path: &Path,
-    cutoff: time::OffsetDateTime,
-    totals: &mut Totals,
-    daily: &mut BTreeMap<String, u64>,
-) -> bool {
+fn scan_codex(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -> bool {
     let Ok(file) = fs::File::open(path) else {
         return false;
     };
@@ -396,7 +424,7 @@ fn scan_codex(
                 None => (at, at),
             });
         }
-        totals.turn(&turn, at, daily);
+        totals.turn(&turn, at);
         counted = true;
     }
     totals.worked(span);
@@ -420,21 +448,29 @@ fn codex_totals(usage: &Value) -> TokenTotals {
 // Transcript discovery
 // ---------------------------------------------------------------------
 
-/// The transcripts one provider offers, and how many the cap left out.
+/// One directory a provider's transcripts live in, and whose account it is.
+struct Store {
+    root: PathBuf,
+    profile_id: Option<AgentProfileId>,
+}
+
+/// The transcripts one provider offers, each with the index of its
+/// [`Store`], and how many the cap left out.
 struct Transcripts {
-    paths: Vec<PathBuf>,
+    stores: Vec<Store>,
+    paths: Vec<(PathBuf, usize)>,
     skipped: u32,
 }
 
 #[derive(Default)]
 struct TranscriptCandidates {
-    newest: BinaryHeap<Reverse<(SystemTime, PathBuf)>>,
+    newest: BinaryHeap<Reverse<(SystemTime, PathBuf, usize)>>,
     skipped: u32,
 }
 
 impl TranscriptCandidates {
-    fn insert(&mut self, modified: SystemTime, path: PathBuf) {
-        let candidate = Reverse((modified, path));
+    fn insert(&mut self, modified: SystemTime, path: PathBuf, store: usize) {
+        let candidate = Reverse((modified, path, store));
         if self.newest.len() < SCAN_LIMIT {
             self.newest.push(candidate);
             return;
@@ -447,13 +483,14 @@ impl TranscriptCandidates {
         }
     }
 
-    fn finish(self) -> Transcripts {
+    fn finish(self, stores: Vec<Store>) -> Transcripts {
         Transcripts {
+            stores,
             paths: self
                 .newest
                 .into_sorted_vec()
                 .into_iter()
-                .map(|Reverse((_, path))| path)
+                .map(|Reverse((_, path, store))| (path, store))
                 .collect(),
             skipped: self.skipped,
         }
@@ -471,10 +508,7 @@ fn claude_transcripts(
         env.get("HOME")
             .map(|home| PathBuf::from(home).join(".claude"))
     });
-    recent_transcripts(
-        &stores(default, "claude", profiles, env, "projects"),
-        cutoff,
-    )
+    recent_transcripts(stores(default, "claude", profiles, env, "projects"), cutoff)
 }
 
 /// `$CODEX_HOME/sessions` and every profile's, falling back to
@@ -488,41 +522,48 @@ fn codex_transcripts(
         env.get("HOME")
             .map(|home| PathBuf::from(home).join(".codex"))
     });
-    recent_transcripts(&stores(default, "codex", profiles, env, "sessions"), cutoff)
+    recent_transcripts(stores(default, "codex", profiles, env, "sessions"), cutoff)
 }
 
-/// Every directory `provider`'s transcripts may live in: the account the
-/// resolved environment points at, plus one per launch profile that moved it
+/// Every directory `provider`'s transcripts may live in: one per launch
+/// profile that moved it, plus the account the resolved environment points at,
 /// with `leaf` appended to each directory.
 ///
 /// Duplicates are dropped by canonical path, because a profile pointing at the
 /// default account would otherwise have every one of its turns counted twice.
+/// Profiles come first so such an account is labelled by the profile's name.
 fn stores(
     default: Option<PathBuf>,
     provider: &str,
     profiles: &[AgentProfile],
     env: &ResolvedEnvironment,
     leaf: &str,
-) -> Vec<PathBuf> {
+) -> Vec<Store> {
     let home = env.get("HOME").map(PathBuf::from);
-    let dirs = default.into_iter().chain(profiles.iter().filter_map(|p| {
-        let dir = p.config_dir.as_deref()?;
-        (p.provider_id.as_str() == provider).then(|| match home.as_deref() {
-            Some(home) => AgentProfile::resolve_config_dir(dir, home),
-            None => dir.to_path_buf(),
+    let dirs = profiles
+        .iter()
+        .filter_map(|p| {
+            let dir = p.config_dir.as_deref()?;
+            (p.provider_id.as_str() == provider).then(|| {
+                let dir = match home.as_deref() {
+                    Some(home) => AgentProfile::resolve_config_dir(dir, home),
+                    None => dir.to_path_buf(),
+                };
+                (dir, Some(p.id))
+            })
         })
-    }));
+        .chain(default.map(|dir| (dir, None)));
 
-    let mut seen = std::collections::HashSet::new();
-    let mut roots = Vec::new();
-    for dir in dirs {
+    let mut seen = HashSet::new();
+    let mut stores = Vec::new();
+    for (dir, profile_id) in dirs {
         let root = dir.join(leaf);
         let key = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
         if seen.insert(key) {
-            roots.push(root);
+            stores.push(Store { root, profile_id });
         }
     }
-    roots
+    stores
 }
 
 /// Every `.jsonl` under `roots` touched since `cutoff`, newest first, capped.
@@ -532,12 +573,12 @@ fn stores(
 /// Modification time is the filter, not the records: a transcript last written
 /// before the window opened cannot contain a turn inside it, and skipping it
 /// costs nothing. Records *inside* a kept file are still checked one by one.
-fn recent_transcripts(roots: &[PathBuf], cutoff: time::OffsetDateTime) -> Transcripts {
+fn recent_transcripts(stores: Vec<Store>, cutoff: time::OffsetDateTime) -> Transcripts {
     let mut found = TranscriptCandidates::default();
-    for root in roots {
-        collect_jsonl(root, 0, cutoff, &mut found);
+    for (index, store) in stores.iter().enumerate() {
+        collect_jsonl(&store.root, index, 0, cutoff, &mut found);
     }
-    found.finish()
+    found.finish(stores)
 }
 
 /// Depth-bounded walk. Claude nests two levels (`<slug>/<session>/subagents`)
@@ -545,6 +586,7 @@ fn recent_transcripts(roots: &[PathBuf], cutoff: time::OffsetDateTime) -> Transc
 /// know, and recursing into it would only buy IO.
 fn collect_jsonl(
     dir: &Path,
+    store: usize,
     depth: usize,
     cutoff: time::OffsetDateTime,
     found: &mut TranscriptCandidates,
@@ -560,7 +602,7 @@ fn collect_jsonl(
         };
         if metadata.is_dir() {
             if depth < MAX_DEPTH {
-                collect_jsonl(&path, depth + 1, cutoff, found);
+                collect_jsonl(&path, store, depth + 1, cutoff, found);
             }
             continue;
         }
@@ -574,7 +616,7 @@ fn collect_jsonl(
         if modified_at < cutoff {
             continue;
         }
-        found.insert(modified, path);
+        found.insert(modified, path, store);
     }
 }
 
@@ -631,11 +673,12 @@ mod tests {
             for i in 0..candidates.len() {
                 let index = if reverse { candidates.len() - i - 1 } else { i };
                 let (modified, path) = &candidates[index];
-                found.insert(*modified, path.clone());
+                found.insert(*modified, path.clone(), 0);
                 assert!(found.newest.len() <= SCAN_LIMIT);
             }
-            let found = found.finish();
-            assert_eq!(found.paths, expected);
+            let found = found.finish(Vec::new());
+            let paths: Vec<_> = found.paths.into_iter().map(|(path, _)| path).collect();
+            assert_eq!(paths, expected);
             assert_eq!(found.skipped as usize, candidates.len() - SCAN_LIMIT);
         }
     }
@@ -662,8 +705,16 @@ mod tests {
         expected.reverse();
         expected.truncate(SCAN_LIMIT);
 
-        let found = recent_transcripts(&roots, cutoff.into());
-        assert_eq!(found.paths, expected);
+        let stores = roots
+            .iter()
+            .map(|root| Store {
+                root: root.clone(),
+                profile_id: None,
+            })
+            .collect();
+        let found = recent_transcripts(stores, cutoff.into());
+        let paths: Vec<_> = found.paths.into_iter().map(|(path, _)| path).collect();
+        assert_eq!(paths, expected);
         assert_eq!(found.skipped, 5);
     }
 
@@ -751,6 +802,7 @@ mod tests {
         let analytics = collect(30, &env(home.path()), &[]);
         let claude = &analytics.providers[0];
         assert_eq!(claude.provider_id.to_string(), "claude");
+        assert_eq!(claude.daily, analytics.daily);
         assert_eq!(claude.turns, 2);
         assert_eq!(claude.sessions, 1);
         assert_eq!(claude.tokens.input, 1_000_000);
@@ -805,6 +857,17 @@ mod tests {
         assert_eq!(claude.turns, 2, "both accounts are summed");
         assert_eq!(claude.tokens.input, 1_100);
         assert_eq!(claude.sessions, 2);
+
+        let split: Vec<_> = claude
+            .accounts
+            .iter()
+            .map(|account| (account.profile_id, account.tokens.input, account.sessions))
+            .collect();
+        assert_eq!(
+            split,
+            [(Some(profiles[0].id), 1_000, 1), (None, 100, 1)],
+            "each account keeps its own share, busiest first"
+        );
     }
 
     /// The same directory named twice — a profile pointing at the default
@@ -819,9 +882,16 @@ mod tests {
             &[claude_turn("msg_1", &ago(1), 100, 50, 0)],
         );
 
-        let claude = &collect(30, &env(home.path()), &[profile("claude", ".claude")]).providers[0];
+        let named = profile("claude", ".claude");
+        let claude = &collect(30, &env(home.path()), std::slice::from_ref(&named)).providers[0];
         assert_eq!(claude.turns, 1);
         assert_eq!(claude.tokens.input, 100);
+        assert_eq!(claude.accounts.len(), 1);
+        assert_eq!(
+            claude.accounts[0].profile_id,
+            Some(named.id),
+            "the account carries the profile's name rather than \"default\""
+        );
     }
 
     #[test]

@@ -132,9 +132,9 @@ worker so the initiating request does not wait for it.
 A fetch already in flight for the same project is **coalesced, not queued**
 (`Inner::fetching`): the second request acks and rides the first one's result.
 
-`remote: None` resolves to `origin`, falling back to the only remote configured
-when it is named something else (`upstream`, a fork's `me`). A project with no
-remote is refused rather than guessed at.
+`remote: None` resolves to `origin`, falling back to the first remote
+`git remote -v` lists when `origin` is absent (`upstream`, a fork's `me`). A
+project with no remote is refused rather than guessed at.
 
 ### Network commands deviate from ADR-008, deliberately
 
@@ -260,8 +260,10 @@ read as dirty.
 
 **Never fatal.** By the time this runs the worktree is on disk and checked out;
 refusing to hand it over because a script exited 1 would leave the user worse
-off than handing over a checkout that needs a second look. A rule that cannot
-be applied becomes a `Skip` with a note, and problems become `DaemonNotice`s.
+off than handing over a checkout that needs a second look. A rule that cannot be
+applied becomes a `Skip` with a note in `SharesApplied`; a `Clone` that could not
+clone and fell back to a full copy is reported (the action's `fallback` flag and
+a `DaemonNotice`) rather than passing as a clone.
 
 `CreateChildSession` also accepts `ChildWorkspacePolicy::NewManagedWorktree`:
 the daemon creates the workspace before the child, using `branch_hint` and

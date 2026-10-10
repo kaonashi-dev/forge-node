@@ -1,7 +1,6 @@
 //! Finds the daemon socket and binary and connects, starting the adjacent
-//! `forge-daemon` if needed. The socket rules duplicate
-//! `crates/daemon/src/paths.rs` because the host does not depend on that crate;
-//! keep them in step.
+//! `forge-daemon` if needed. Socket resolution comes from `client::resolve_socket`,
+//! the same rule the daemon uses; only the daemon binary lookup is local.
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};

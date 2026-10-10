@@ -83,6 +83,8 @@ pub use terminal::{
     Cell, CellFlags, CellPatch, Color, Cursor, CursorShape, Damage, MouseMode, Row, ScrollbackRows,
     TermModes, TerminalDelta, TerminalSnapshot, DEFAULT_SCROLLBACK_TAIL,
 };
-pub use usage::{DailyUsage, ProviderAnalytics, TokenTotals, UsageAnalytics, MICROS_PER_USD};
+pub use usage::{
+    AccountAnalytics, DailyUsage, ProviderAnalytics, TokenTotals, UsageAnalytics, MICROS_PER_USD,
+};
 pub use workspace::{Workspace, WorkspaceKind, WorkspaceStatus};
 pub use worktree_ignore::{IgnoreScope, WorktreeIgnore, MAX_WORKTREE_IGNORES};

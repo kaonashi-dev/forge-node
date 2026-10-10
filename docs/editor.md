@@ -37,7 +37,7 @@ cells route below uses a PTY; see the DOM surface section for its headless route
 
 What happens then:
 
-- `CreateEditorSession { workspace_id, path, line, read_only }` reads the file
+- `CreateEditorSession { workspace_id, path, line, read_only, autosave }` reads the file
   through `fs-service` — off the core lock, and refused for a directory, a
   binary file or one past the 2 MiB budget — then spawns `forge-editor` under
   the daemon's PTY as a `SessionKind::Editor` session. `[editor] executable`
@@ -221,7 +221,7 @@ the host's.
 | Ctrl or Alt + arrows | move by word |
 | printable characters, Enter, Tab | insert; Tab advances to the next stop of the buffer's own indent unit |
 | Backspace, Delete | grapheme-aware deletion; Alt-Backspace deletes a word |
-| Ctrl-/ (Ctrl-_ in a legacy terminal), ⌘/ or ⇧⌘/ | toggle line comments for the selection or current line (Rust/C-like use `//`; Python/shell/keyed files use `#`) |
+| Alt-/, Ctrl-/ (Ctrl-_ in a legacy terminal), ⌘/ or ⇧⌘/ | toggle line comments for the selection or current line (Rust, C-like and Prisma use `//`; Python, shell, keyed and HCL files use `#`; SQL uses `--`; JSON, Markdown, HTML and CSS have no line comment to toggle) |
 | Ctrl-S | save (exclusive temp file in the same directory, then rename) |
 | Ctrl-Z / Ctrl-Y | undo / redo |
 | Ctrl-C / Ctrl-X / Ctrl-V | copy / cut / paste through an internal register |
@@ -277,7 +277,10 @@ while a session is on screen — the two sizes do not move together.
 **On a Mac the platform chords reach the editor.** `editorChords.ts` maps ⌘S/C/X,
 ⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys. ⌘G is
 find-next and not "go to line" — a Mac user pressing it after a search wants the
-next match — so go-to-line is ⌥⌘L. On the cell surface, native Edit → Copy events
+next match — so go-to-line is ⌥⌘L. Both surfaces recognize Alt-/ by the `/`
+character or the physical Slash key, because Option can produce `÷` on macOS,
+and send Ctrl-_ to toggle comments without inserting that character.
+On the cell surface, native Edit → Copy events
 and the pane's right-click **Copy** send the same Ctrl-C to the editor, which owns
 the selection even when it extends beyond the visible rows. Dismissing the
 context menu returns keyboard focus to the editor. ⌘V is deliberately unclaimed:
@@ -292,7 +295,8 @@ after either grows by that same unit. A Shift-click extends the selection to
 the click; a left drag selects; an Alt-click adds a caret and an Alt-drag makes
 a column of them; a click on the gutter's fold marker folds that block; a click
 on the overview ruler jumps to the line it stands for; the wheel scrolls the
-viewport without moving the caret. Command-click and Ctrl-click ask where the
+viewport — on the cell surface the caret follows only when the scroll would push
+it off screen, and scrolling the DOM surface never moves it. Command-click and Ctrl-click ask where the
 identifier under the pointer is declared, the same request as Alt-D. The cell
 surface reports Command as Control, because an SGR mouse report has no Command
 bit. The editor turns on mouse capture on entry
@@ -553,19 +557,74 @@ editor cannot open a second — and the daemon opens it as an ordinary editor
 session, the same path a click in the file tree takes. The search runs on the
 editor's control thread, off the core lock and off the PTY's paint thread.
 
+The cell surface shows up to five locations and a separate selected signature,
+leaving Enter/Escape instructions visible even with a long path. Up/Down or
+Tab/Shift-Tab chooses a candidate; Enter follows it and Escape cancels. The DOM
+surface publishes the selected candidate through editor status, with the same
+keys. Replies must match the pending request; typing, moving, cancelling or
+retargeting the file invalidates the lookup so a late reply cannot steal input.
+Candidates from the current file rank first, then the same language family,
+before the result cap is applied. This improves locality, not type resolution.
+
 TypeScript and JavaScript editors also search installed declaration files
 (`.d.ts`, `.d.mts`, `.d.cts`) in packages imported by the current file. This covers
 NestJS services calling dependency methods such as
-`this.queue.upsertJobScheduler`: the candidate is BullMQ's `Queue` declaration,
-even though `node_modules` is ignored by Git and hidden in the file tree.
+`this.queue.upsertJobScheduler`: the candidate is that method's declaration on
+BullMQ's `Queue` class, even though `node_modules` is ignored by Git and hidden
+in the file tree.
 Package lookup uses the nearest installation inside the checkout, including
 internal package symlinks; it never follows a package outside that boundary.
 This remains a candidate search, without receiver-type resolution or an LSP.
+
+Directly named npm imports restrict dependency reads to the declaring package;
+aliases (`import { Queue as Jobs }`) search the exported name.
+Signature matching ignores quoted delimiters and same-line comments; qualified
+calls and other non-signature heads do not build a multiline signature. The best K candidates are selected
+before sorting, and a full list stops dependency traversal without reading more
+types. Canonically identical dependency paths are scanned only once per request.
+
+Python (`.py`, `.pyi`) candidates include async functions, annotated assignments
+and `self`/`cls` attribute bindings. Kotlin (`.kt`, `.kts`) candidates include
+`fun`, generic and extension functions, extension properties and `typealias`.
+Neither resolves imports, inheritance or overloads semantically. Multiline
+comment/docstring bodies can still resemble declarations: the grep context is
+not a whole-file parse. Searches read saved files, not the unsaved editor buffer.
 
 Multiline signatures use up to twelve following lines and 4 KiB per signature.
 Dependency scans are bounded to 32 imported packages, 8,192 directory entries,
 16 MiB total and the ordinary 2 MiB file cap. An exhausted budget is shown as a
 partial search, including when it found no candidates.
+
+### Definition backend alternatives
+
+Research checked on 2026-10-08; these backends are not installed or enabled by
+Forge. LSP is a protocol, not a performance guarantee. Relative cost below is
+architectural, not an RSS or latency benchmark.
+
+| Backend | What it buys | Cost / limitation |
+|---|---|---|
+| Current bounded grep | TS/Python/Kotlin declaration candidates, no persistent index or extra runtime | No scope or receiver types; saved files only. |
+| [Universal Ctags](https://docs.ctags.io/en/latest/man/ctags.1.html) / tree-sitter | A syntax-aware symbol index; fewer comment false positives and richer language coverage | Ctags adds an external executable and index invalidation; tree-sitter adds grammars. Neither is a semantic resolver. Verify the installed parsers with `--list-languages`. |
+| [TypeScript language server](https://github.com/typescript-language-server/typescript-language-server) / direct tsserver | `tsconfig` aliases, imports, overloads, receiver types and live buffers | The LSP wrapper sits over tsserver; using tsserver directly removes the wrapper, not the project graph or its memory cost. |
+| [Native TypeScript LSP](https://github.com/microsoft/typescript-go) | The same semantic direction with a native runtime and LSP transport | Best TS candidate to benchmark. Preview and release CLI names differ; pin and verify the installed version, project references and source-definition behavior. |
+| [Jedi API](https://jedi.readthedocs.io/en/stable/docs/api.html#jedi.Script.goto) / [Jedi LSP](https://github.com/pappasam/jedi-language-server) | Python `Script.goto(..., follow_imports=True)` with the selected virtualenv and unsaved source | A narrow Python-only option; direct API needs a managed worker. Jedi LSP is in maintenance mode. Its suggested Rust successor [Zuban](https://github.com/zubanls/zuban) also supports goto, but has AGPL/commercial licensing to review before distribution. |
+| [Official Kotlin LSP](https://kotlinlang.org/docs/kotlin-lsp.html) | IntelliJ-backed Kotlin semantics and Gradle/Maven project models | JVM, project import and indexing; the current standalone distribution requires JDK 25. Not the lightweight default. |
+
+Prefer the current fallback by default and an **opt-in, lazy semantic backend**
+for a workspace that needs it. A production LSP client belongs in a daemon-owned
+worker, never in the WebView, core lock or PTY paint loop. One bounded queue and
+one server per workspace/language, coalesced lookups, idle eviction, deadlines,
+bounded frames/stderr and group kill/reaping are prerequisites, not follow-ups.
+The editor control request must first carry the buffer version, caret position
+and unsaved contents (or edits): a word alone cannot resolve `this.release`.
+Negotiate UTF-8/UTF-16 positions, support both `Location` and `LocationLink`,
+correlate/cancel replies, and revalidate every returned file URI inside the
+checkout before opening it. Do not auto-install tools or execute a repository's
+configuration. Benchmark cold start, warm definition p95, RSS and idle CPU on
+real TS, Python and Kotlin projects before choosing a backend or claiming it is
+lighter.
+
+### Local completion and syntax
 
 **Completion is the buffer's own vocabulary.** `Ctrl-Space` offers the words
 already in the file that continue the identifier at the caret — no language

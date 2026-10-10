@@ -184,8 +184,10 @@ pub struct GithubConfig {
 
 /// The integrated terminal editor, `forge-editor` under the daemon's PTY.
 ///
-/// H1 is read-only: the integrated buffer is opened so its save is refused
-/// rather than let a draft exist that nothing could persist.
+/// The buffer travels to the editor over its control socket and a save travels
+/// back the same way, so the daemon writes it through `fs-service` with the
+/// revision check; `read_only` refuses that path for the session that asked for
+/// it, and is a choice rather than the only supported mode.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorConfig {
@@ -267,6 +269,7 @@ pub struct OrchestrationConfig {
     pub stall_after_secs: u64,
     /// `none`, `merge`, or `pr`. Anything else is treated as `pr`.
     pub agent_may_integrate: String,
+    /// Reserved: accepted, not read yet.
     pub keep_closed_runs_days: u32,
 }
 

@@ -255,6 +255,19 @@ export type ProviderAnalytics = {
   worked_secs: number;
   first_activity: string | null;
   last_activity: string | null;
+  /** Absent from a daemon older than the per-account split. */
+  accounts?: AccountAnalytics[];
+  daily?: DailyUsage[];
+};
+
+export type AccountAnalytics = {
+  /** `null` is the account the daemon's own environment points at. */
+  profile_id: string | null;
+  tokens: TokenTotals;
+  sessions: number;
+  turns: number;
+  cost_micros: number;
+  unpriced_turns: number;
 };
 
 export type DailyUsage = {

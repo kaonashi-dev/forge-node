@@ -14,9 +14,8 @@ const [now, setNow] = createSignal(Date.now());
  * times as often for one answer. Fifteen seconds is well inside
  * `WORKING_WINDOW_MS`, so a marker turns over within a tick of being due.
  *
- * Never cleared, and it does not need to be: it outlives every view in a
- * single-window app, and a `setInterval` on a signal nobody reads costs one
- * timer callback that assigns a number.
+ * Started at import and currently without a disposer — a known lifecycle gap
+ * (`docs/frontend-architecture.md`), not a decision.
  */
 if (typeof window !== "undefined") {
   window.setInterval(() => setNow(Date.now()), TICK_MS);

@@ -875,7 +875,7 @@ pub fn search_files(
     match kind {
         SearchKind::Name => search_by_name(root, query, limit),
         SearchKind::Content => search_by_content(root, query, limit),
-        SearchKind::Definition => search_by_definition(root, query, limit),
+        SearchKind::Definition => search_by_definition(root, query, limit, None),
     }
 }
 
@@ -888,10 +888,15 @@ pub fn search_definitions(
     limit: usize,
 ) -> Result<SearchResults, FsError> {
     let root = canonicalize_root(root)?;
-    resolve_inside(&root, relative)?;
+    let source = resolve_inside(&root, relative)?;
+    let relative = source
+        .strip_prefix(&root)
+        .ok()
+        .and_then(Path::to_str)
+        .unwrap_or(relative);
     let limit = limit.clamp(1, MAX_SEARCH_RESULTS);
     let symbol = symbol.trim();
-    let mut results = search_files(&root, symbol, SearchKind::Definition, limit)?;
+    let mut results = search_by_definition(&root, symbol, limit, Some(relative))?;
     if is_identifier(symbol) {
         typescript_definitions::append(&root, relative, symbol, limit, &mut results);
     }
@@ -918,9 +923,10 @@ pub fn language_for(path: &str) -> &'static str {
         "rs" => "rust",
         "js" | "mjs" | "cjs" => "javascript",
         "py" | "pyi" | "pyw" => "python",
-        "ts" => "typescript",
+        "ts" | "mts" | "cts" => "typescript",
         "tsx" => "tsx",
         "jsx" => "javascript",
+        "kt" | "kts" => "kotlin",
         "json" => "json",
         "toml" => "toml",
         "md" | "markdown" => "markdown",
@@ -1414,7 +1420,6 @@ fn parse_grep_z_with_context(
 
 /* --------------------------------------------------------- definitions --- */
 
-/// Keywords that make the word after them a declaration beyond doubt.
 const DECLARING_KEYWORDS: &[&str] = &[
     "fn",
     "func",
@@ -1428,6 +1433,8 @@ const DECLARING_KEYWORDS: &[&str] = &[
     "type",
     "typedef",
     "def",
+    "fun",
+    "typealias",
     "defn",
     "mod",
     "module",
@@ -1468,6 +1475,17 @@ const MODIFIERS: &[&str] = &[
     "unsafe",
     "get",
     "set",
+    "suspend",
+    "operator",
+    "infix",
+    "tailrec",
+    "expect",
+    "actual",
+    "open",
+    "sealed",
+    "data",
+    "lateinit",
+    "external",
 ];
 
 /// Ranks, best first. A sort key, never sent over the wire.
@@ -1475,7 +1493,12 @@ const RANK_DECLARING: u8 = 0;
 const RANK_BINDING: u8 = 1;
 const RANK_HEAD: u8 = 2;
 
-fn search_by_definition(root: &Path, symbol: &str, limit: usize) -> Result<SearchResults, FsError> {
+fn search_by_definition(
+    root: &Path,
+    symbol: &str,
+    limit: usize,
+    preferred: Option<&str>,
+) -> Result<SearchResults, FsError> {
     if !is_identifier(symbol) {
         return Ok(SearchResults {
             matches: Vec::new(),
@@ -1493,7 +1516,7 @@ fn search_by_definition(root: &Path, symbol: &str, limit: usize) -> Result<Searc
             DEFINITION_CONTEXT_LINES,
         )?
     };
-    Ok(declarations(raw, symbol, limit))
+    Ok(declarations_from(raw, symbol, limit, preferred))
 }
 
 /// Whether `symbol` is a name a language could have declared.
@@ -1560,20 +1583,34 @@ fn grep_word(root: &Path, symbol: &str) -> Result<SearchResults, FsError> {
 }
 
 /// Keep the hits that declare `symbol`, best kind of declaration first.
+#[cfg(test)]
 fn declarations(raw: SearchResults, symbol: &str, limit: usize) -> SearchResults {
+    declarations_from(raw, symbol, limit, None)
+}
+
+fn declarations_from(
+    raw: SearchResults,
+    symbol: &str,
+    limit: usize,
+    preferred: Option<&str>,
+) -> SearchResults {
     let mut scanned = raw.truncated;
-    let mut scored: Vec<(u8, usize, SearchMatch)> = Vec::new();
+    let mut scored: Vec<(u8, u8, usize, SearchMatch)> = Vec::new();
     for (order, hit) in raw.matches.into_iter().enumerate() {
         if hit.text.len() > MAX_DEFINITION_SIGNATURE_BYTES {
             scanned = true;
             continue;
         }
-        let Some((column, rank)) =
-            definition_rank_with_context(&hit.text, hit.after.iter().map(String::as_str), symbol)
-        else {
+        let Some((column, rank)) = definition_rank_for_path(
+            &hit.path,
+            &hit.text,
+            hit.after.iter().map(String::as_str),
+            symbol,
+        ) else {
             continue;
         };
         scored.push((
+            definition_proximity(&hit.path, preferred),
             rank,
             order,
             SearchMatch {
@@ -1586,15 +1623,76 @@ fn declarations(raw: SearchResults, symbol: &str, limit: usize) -> SearchResults
             },
         ));
     }
-    // Ties keep grep's order, which is path then line: a reshuffle between two
-    // equally good answers would move the one under the cursor.
-    scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let compare = |a: &(u8, u8, usize, SearchMatch), b: &(u8, u8, usize, SearchMatch)| {
+        (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2))
+    };
     let truncated = scanned || scored.len() > limit;
+    if scored.len() > limit {
+        scored.select_nth_unstable_by(limit, compare);
+    }
     scored.truncate(limit);
+    scored.sort_unstable_by(compare);
     SearchResults {
-        matches: scored.into_iter().map(|(_, _, hit)| hit).collect(),
+        matches: scored.into_iter().map(|(_, _, _, hit)| hit).collect(),
         truncated,
     }
+}
+
+fn definition_proximity(path: &str, preferred: Option<&str>) -> u8 {
+    match preferred {
+        Some(source) if path == source => 0,
+        Some(source) if definition_language(path) == definition_language(source) => 1,
+        _ => 2,
+    }
+}
+
+fn definition_language(path: &str) -> &'static str {
+    match language_for(path) {
+        "typescript" | "tsx" | "javascript" => "typescript",
+        language => language,
+    }
+}
+
+fn definition_rank_for_path<'a>(
+    path: &str,
+    line: &str,
+    following: impl Iterator<Item = &'a str>,
+    symbol: &str,
+) -> Option<(u32, u8)> {
+    if line.len() > MAX_DEFINITION_SIGNATURE_BYTES {
+        return None;
+    }
+    let language = definition_language(path);
+    if !matches!(language, "python" | "kotlin") {
+        return definition_rank_with_context(line, following, symbol);
+    }
+    for (index, _) in line.match_indices(symbol) {
+        if !is_whole_word(line, index, symbol.len()) {
+            continue;
+        }
+        let before = line[..index].trim();
+        let after = line[index + symbol.len()..].trim_start();
+        let binding = language == "python"
+            && matches!(before, "" | "self." | "cls.")
+            && (after.starts_with('=') && !after.starts_with("==")
+                || after.starts_with(':') && !after.starts_with(":="));
+        let kotlin = language == "kotlin"
+            && before
+                .split_whitespace()
+                .find(|word| !MODIFIERS.contains(word))
+                .is_some_and(|word| matches!(word, "fun" | "val" | "var"))
+            && !before.contains(['=', ';', '{', '(', ')'])
+            && (after.starts_with('(') || after.starts_with(':') || after.starts_with('='));
+        if (binding || kotlin) && code_at(line, index) {
+            let rank = if kotlin && before.split_whitespace().any(|word| word == "fun") {
+                RANK_DECLARING
+            } else {
+                RANK_BINDING
+            };
+            return Some((line[..index].chars().count() as u32 + 1, rank));
+        }
+    }
+    definition_rank_with_context(line, following, symbol)
 }
 
 /// Returns the 1-based column and rank of a declaration candidate.
@@ -1613,6 +1711,16 @@ fn definition_rank_with_context<'a>(
     if let Some(rank) = definition_rank(line, symbol) {
         return Some(rank);
     }
+    if !line.match_indices(symbol).any(|(index, _)| {
+        is_whole_word(line, index, symbol.len())
+            && signature_head_rank(&line[..index]).is_some()
+            && line[index + symbol.len()..]
+                .trim_start()
+                .starts_with(['(', '<', '?'])
+            && code_at(line, index)
+    }) {
+        return None;
+    }
     let mut signature = line.to_string();
     for next in following.take(DEFINITION_CONTEXT_LINES) {
         if signature.len() + next.len() + 1 > MAX_DEFINITION_SIGNATURE_BYTES {
@@ -1620,6 +1728,9 @@ fn definition_rank_with_context<'a>(
         }
         signature.push('\n');
         signature.push_str(next);
+        if let Some(rank) = definition_rank_in_signature(&signature, line.len(), symbol) {
+            return Some(rank);
+        }
     }
     definition_rank_in_signature(&signature, line.len(), symbol)
 }
@@ -1637,6 +1748,9 @@ fn definition_rank_in_signature(
         let Some(rank) = rank_at(&signature[..index], &signature[index + symbol.len()..]) else {
             continue;
         };
+        if !code_at(signature, index) {
+            continue;
+        }
         let column = signature[..index].chars().count() as u32 + 1;
         if best.is_none_or(|(_, previous)| rank < previous) {
             best = Some((column, rank));
@@ -1663,16 +1777,21 @@ fn rank_at(before: &str, after: &str) -> Option<u8> {
         return Some(RANK_BINDING);
     }
 
-    // The remaining two shapes are both "a name that opens a signature".
+    let rank = signature_head_rank(head)?;
     let after = after.trim_start();
     let after = after.strip_prefix('?').unwrap_or(after);
     let signature = signature_tail(after)?;
     if !signature.starts_with('(') {
         return None;
     }
-    // A head that already assigned, called or ended a statement is a body, not
-    // a signature: `function outer() { return foo(` must not read as a
-    // declaration of `foo`.
+    if rank == RANK_DECLARING || method_declaration(signature) {
+        return Some(rank);
+    }
+    None
+}
+
+fn signature_head_rank(head: &str) -> Option<u8> {
+    let head = head.trim();
     if head.contains(['{', '=', '.', ';']) {
         return None;
     }
@@ -1683,7 +1802,7 @@ fn rank_at(before: &str, after: &str) -> Option<u8> {
     }
     let bare =
         first.is_empty() || MODIFIERS.contains(&first) && words.all(|w| MODIFIERS.contains(&w));
-    if bare && method_declaration(signature) {
+    if bare {
         return Some(RANK_HEAD);
     }
     None
@@ -1692,7 +1811,7 @@ fn rank_at(before: &str, after: &str) -> Option<u8> {
 // A call ends at `)`; a method continues with a body or a return type.
 fn method_declaration(signature: &str) -> bool {
     let mut depth = 0usize;
-    for (index, character) in signature.char_indices() {
+    for (index, character) in code_chars(signature) {
         match character {
             '(' => depth += 1,
             ')' => {
@@ -1718,7 +1837,7 @@ fn signature_tail(after: &str) -> Option<&str> {
         return Some(after);
     }
     let mut depth = 0usize;
-    for (index, character) in after.char_indices() {
+    for (index, character) in code_chars(after) {
         match character {
             '<' => depth += 1,
             '>' if !after[..index].ends_with('=') => {
@@ -1751,6 +1870,60 @@ fn is_whole_word(line: &str, index: usize, len: usize) -> bool {
     let before = line[..index].chars().next_back();
     let after = line[index + len..].chars().next();
     !before.is_some_and(word) && !after.is_some_and(word)
+}
+
+fn code_at(text: &str, index: usize) -> bool {
+    code_chars(text)
+        .take_while(|(at, _)| *at <= index)
+        .any(|(at, _)| at == index)
+}
+
+fn code_chars(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+    let mut characters = text.char_indices().peekable();
+    std::iter::from_fn(move || {
+        while let Some((index, character)) = characters.next() {
+            match character {
+                '\'' | '"' | '`' => {
+                    let mut escaped = false;
+                    for (_, next) in characters.by_ref() {
+                        if escaped {
+                            escaped = false;
+                        } else if next == '\\' {
+                            escaped = true;
+                        } else if next == character {
+                            break;
+                        }
+                    }
+                }
+                // `#[inline] fn f()` is a Rust attribute, not a comment.
+                '#' if !text[index + 1..].starts_with(['[', '!']) => {
+                    for (_, next) in characters.by_ref() {
+                        if next == '\n' {
+                            break;
+                        }
+                    }
+                }
+                '/' if characters.peek().is_some_and(|(_, next)| *next == '/') => {
+                    for (_, next) in characters.by_ref() {
+                        if next == '\n' {
+                            break;
+                        }
+                    }
+                }
+                '/' if characters.peek().is_some_and(|(_, next)| *next == '*') => {
+                    characters.next();
+                    while let Some((_, next)) = characters.next() {
+                        if next == '*' && characters.peek().is_some_and(|(_, next)| *next == '/') {
+                            characters.next();
+                            break;
+                        }
+                    }
+                }
+                _ => return Some((index, character)),
+            }
+        }
+        None
+    })
 }
 
 fn is_binary(buf: &[u8]) -> bool {
@@ -2295,6 +2468,9 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
             "  lookup(value: string) { return value; }",
             "  public async lookup<T>(value: T): Promise<T> { return value; }",
             "  get lookup(): string { return this.value; }",
+            "  private async lookup(value: string = ')'): Promise<void> {",
+            "  lookup<T extends '>('>(value: T): T {",
+            "#[inline] pub fn lookup() {}",
         ] {
             assert!(definition_rank(line, "lookup").is_some(), "{line}");
         }
@@ -2307,6 +2483,10 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
             "import { lookup } from './service';",
             "export { lookup };",
             "const value = condition ? lookup(value) : other;",
+            "// export function lookup() {}",
+            "/* const lookup = () => {}; */",
+            "const example = 'function lookup() {}';",
+            "const example = `class lookup {}`;",
         ] {
             assert_eq!(definition_rank(line, "lookup"), None, "{line}");
         }
@@ -2354,7 +2534,105 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         assert_eq!(classes.matches[0].line, 2);
     }
 
-    fn hit(path: &str, line: u32, text: &str) -> SearchMatch {
+    #[test]
+    fn definition_mentions_do_not_read_or_allocate_following_context() {
+        for line in [
+            "this.release(payin, tx);",
+            "await release(payin);",
+            "// function release() {}",
+        ] {
+            let following =
+                std::iter::from_fn(|| -> Option<&str> { panic!("a mention read following lines") });
+            assert_eq!(
+                definition_rank_with_context(line, following, "release"),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn python_and_kotlin_declaration_matrix() {
+        for (path, line) in [
+            ("service.py", "async def release(self, payin):"),
+            ("service.pyi", "def release(payin: Payin) -> None: ..."),
+            ("service.py", "release = lambda payin: payin"),
+            ("service.py", "release: Callable[[Payin], None]"),
+            ("service.py", "  self.release = handler"),
+            ("service.kt", "private suspend fun release(payin: Payin) {}"),
+            ("service.kt", "private fun <T> release(payin: T): T = payin"),
+            ("service.kt", "fun Payin.release(): Unit {}"),
+            ("service.kt", "inline fun <T> List<T>.release() = size"),
+            ("service.kts", "val Payin.release: Boolean get() = settled"),
+            ("service.kt", "typealias release = (Payin) -> Unit"),
+        ] {
+            assert!(
+                definition_rank_for_path(path, line, std::iter::empty(), "release").is_some(),
+                "{path}: {line}"
+            );
+        }
+        for (path, line) in [
+            ("service.py", "await release(payin)"),
+            ("service.py", "from other import release"),
+            ("service.py", "if release == handler:"),
+            ("service.py", "release == handler"),
+            ("service.py", "# def release(payin):"),
+            ("service.py", "example = 'def release(payin):'"),
+            ("service.kt", "payin.release()"),
+            ("service.kt", "val result = payin.release()"),
+            ("service.kt", "import api.release"),
+            ("service.kt", "// fun Payin.release() {}"),
+        ] {
+            assert_eq!(
+                definition_rank_for_path(path, line, std::iter::empty(), "release"),
+                None,
+                "{path}: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn definition_search_prioritizes_current_file_before_the_result_cap() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join("a.py"), "def release(): pass\n").unwrap();
+        fs::write(
+            tmp.path().join("a.ts"),
+            "export function release() {}\n".repeat(70),
+        )
+        .unwrap();
+        fs::write(tmp.path().join("service.ts"), "class Service {\n  private async release(payin: Payin, tx: Prisma.TransactionClient) {\n  }\n}\n").unwrap();
+        let found = search_definitions(tmp.path(), "service.ts", "release", 1).unwrap();
+        assert_eq!(found.matches.len(), 1);
+        assert_eq!(found.matches[0].path, "service.ts");
+        assert_eq!(found.matches[0].line, 2);
+        assert!(found.truncated);
+        let all = search_definitions(tmp.path(), "service.ts", "release", 100).unwrap();
+        assert_eq!(all.matches[0].path, "service.ts");
+        assert_eq!(all.matches[1].path, "a.ts");
+        assert_eq!(all.matches.last().unwrap().path, "a.py");
+    }
+
+    #[test]
+    fn python_and_kotlin_definition_search_uses_real_git() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join("service.py"), "# def release(): pass\nasync def release(\n  payin: Payin,\n):\n  await other.release(payin)\nrelease = handler\n").unwrap();
+        fs::write(tmp.path().join("service.kt"), "// fun release() {}\nprivate suspend fun Payin.release(\n  tx: Transaction,\n): Unit {}\nval result = payin.release(tx)\n").unwrap();
+        let py = search_definitions(tmp.path(), "service.py", "release", 64).unwrap();
+        assert_eq!(
+            py.matches
+                .iter()
+                .map(|hit| (hit.path.as_str(), hit.line))
+                .collect::<Vec<_>>(),
+            [("service.py", 2), ("service.py", 6), ("service.kt", 2)]
+        );
+        let kt = search_definitions(tmp.path(), "service.kt", "release", 64).unwrap();
+        assert_eq!(kt.matches[0].path, "service.kt");
+        assert_eq!(kt.matches[0].line, 2);
+        assert_eq!(language_for("service.kt"), "kotlin");
+        assert_eq!(language_for("build.gradle.kts"), "kotlin");
+        assert_eq!(language_for("module.mts"), "typescript");
+    }
+
+    pub(super) fn hit(path: &str, line: u32, text: &str) -> SearchMatch {
         SearchMatch {
             path: path.to_string(),
             line,

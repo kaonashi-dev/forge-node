@@ -10,7 +10,7 @@ must match the code.
 | Page | Read it when you need… |
 |------|------------------------|
 | [architecture.md](./architecture.md) | the two-process model, the crate map and dependency direction |
-| [decisions.md](./decisions.md) | ADR numbers cited in code (`ADR-003` … `ADR-012`) |
+| [decisions.md](./decisions.md) | ADR numbers cited in code (`ADR-002` … `ADR-012`) |
 | [domain.md](./domain.md) | the glossary, entities, session state machine and graph rules, wire types |
 | [session-context.md](./session-context.md) | cite/handoff/spawn across providers — Forge mediation, GUI, `forgectl` |
 | [orchestration.md](./orchestration.md) | runs, tasks, attempts, the board, and the `forgectl` contract |

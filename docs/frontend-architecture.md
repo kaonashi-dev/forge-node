@@ -41,6 +41,9 @@ src/
 `projects`, `settings`. Commands and answer state belong with their
 capability; names include `commands.ts`, `state.ts` and feature-specific stores.
 There is no required `components/` + `services/` split inside a feature.
+`contracts/generated/` is not hand-edited: regenerate it from the Rust wire
+types with `cargo run -p protocol --bin export-fixtures`, then
+`bun run codegen` in `apps/tauri`.
 
 ## Dependency rules
 
@@ -64,6 +67,10 @@ The table describes the current checker's allowances for direct imports within
 | `navigation/` | contracts, navigation, shared, state, theme | features, app |
 | `features/<name>/` | the foundations above, its own files, and the peer features listed below | `app/`, other features not listed |
 | `app/` | anything | — |
+
+`styles/` is a foundation too, though it has no row above: the checker lists it
+in `FOUNDATIONS`, so a feature may import a stylesheet (for example
+`features/settings/SettingsRoute.tsx` imports `styles/settings.css`).
 
 Peer feature allowances are enumerated in
 [`scripts/boundaries.ts`](../apps/tauri/scripts/boundaries.ts) (`PEER_EDGES`): `editor → files`;
@@ -113,6 +120,7 @@ the gate alongside this check.
 | `features/settings/state.ts` | usage analytics |
 | `features/projects/dialogs.ts`, `features/sessions/dialogs.ts`, `state/dialogs.ts` | dialog request slots by owner |
 | `navigation/viewsStore.ts` | parked centre views, centre mode, reveals; passive only |
+| `navigation/centerSplitStore.ts`, `navigation/centerSplit.ts` | the Cmd+D centre split: kind, extra session and terminal, focused pane, stored ratio |
 | `navigation/sidebarStore.ts`, `navigation/tabOrder.ts`, `navigation/tabMru.ts`, `navigation/tabSwitcher.ts` | sidebar view choice, strip order, focus ring over every pane (Code views and sessions), switcher gesture |
 | `navigation/switcherRing.ts` | reads the three stores above the ring and installs the focus-tracking effect; `navigation/tabTargets.ts` beside it is pure and owns nothing |
 | `features/terminal/terminalStore.ts` | terminal pane state |
@@ -193,11 +201,13 @@ input queue. Workspace filesystem and Git effects remain daemon-owned.
 | previews, images, markdown routing | `features/files/preview/`, `shared/markdown/` |
 | path links in terminal/transcript/markdown | `features/files/references/` |
 | diff, review, rebase, branches, decorations | `features/git/` |
+| bounded source highlighting for diffs and search excerpts | `shared/syntax/`; patch-side/hunk state in `features/git/diff/patchSyntax.ts` |
 | pull request list/detail/compose/review | `features/pull-requests/` |
 | session launch, menus, context, history, attention | `features/sessions/` |
 | projects, worktrees, ignores, share rules | `features/projects/` |
 | settings sections, profiles, usage | `features/settings/` |
 | window composition, tabs, palette, dialogs | `app/shell/`, `app/palette/` |
+| centre split (Cmd+D panes) | `navigation/centerSplitStore.ts`, `navigation/centerSplit.ts`, `features/sessions/sessionActions.ts`, `app/shell/CenterStack.tsx` |
 | workspace transitions and confirmed path retargeting | `state/workspace.ts`, `app/integrations/workspaceFocus.ts`, `app/integrations/retarget.ts` |
 | listener startup and event application | `app/lifecycle/`, `app/shell/AppShell.tsx` |
 | keybindings and actions | `actions/` |
