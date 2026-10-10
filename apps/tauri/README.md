@@ -19,7 +19,7 @@ project exists, and attaches a live shell.
 ## Checks
 
 ```sh
-bun run check              # canonical: lint + fmt + vitest + bun:test + boundaries + build
+bun run verify             # canonical: lint + fmt + vitest + bun:test + boundaries + build
 bun run test               # Vitest + Bun tooling/package tests
 bun run build              # typecheck + vite build + bundle budgets
 bun run boundaries         # detected ownership edges and import cycles (limitations in architecture doc)

@@ -87,7 +87,7 @@ arbitrary peer imports. Review each new dependency against a named public API.
 
 ### What the boundary check verifies
 
-`bun run boundaries`, also part of `bun run check`, builds a graph from production
+`bun run boundaries`, also part of `bun run verify`, builds a graph from production
 `.ts` and `.tsx` files. It excludes `.test.ts`/`.test.tsx` files and
 `contracts/generated/`, checks detected imports against the allowances above,
 and rejects multi-module cycles among edges classified as runtime imports.
@@ -218,7 +218,7 @@ input queue. Workspace filesystem and Git effects remain daemon-owned.
 From `apps/tauri`:
 
 ```sh
-bun run check          # lint, format, vitest, bun tests, boundaries, build, bundle budgets
+bun run verify         # lint, format, vitest, bun tests, boundaries, build, bundle budgets
 bun run boundaries     # detected ownership edges and multi-module cycles; limits above
 ```
 

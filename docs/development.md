@@ -4,8 +4,8 @@
 
 - Rust 1.89 (pinned in `rust-toolchain.toml`; `rustup show` installs it).
 - `git` and a C toolchain (bundled SQLite compiles from source).
-- [Bun](https://bun.sh) **1.4.1** (pinned in [`.bun-version`](../.bun-version)
-  and `apps/tauri` `engines`). Runs the frontend gate. No other JS runtime is needed.
+- [Bun](https://bun.sh) **latest**, at least 1.4.3 for `bun check` ([`.bun-version`](../.bun-version)
+  tracks `latest`; `apps/tauri` `engines` holds the floor). Runs the frontend gate. No other JS runtime is needed.
 - macOS or Linux. The code uses Unix sockets, PTYs and signals directly;
   Windows is not a target.
 - On macOS, `xcrun --show-sdk-path` can point at an SDK newer than the
@@ -33,7 +33,7 @@ cargo deny check                 # license/advisory policy (deny.toml); install 
 ```
 
 CI (`.github/workflows/ci.yml`) runs `scripts/dev check` on `macos-latest` and
-the frontend's `bun run check` in a parallel job; Linux is not in the matrix
+the frontend's `bun run verify` in a parallel job; Linux is not in the matrix
 while no Linux artifact is published. `cargo deny check` is not part of
 `scripts/dev check`, so run it locally after touching dependencies (and before
 distributing; ADR-002).
@@ -93,7 +93,7 @@ compilation nor Tauri system-library installation.
 
 For a build-time investigation, add `--timings` to the Cargo command being
 measured and open `target/cargo-timings/cargo-timing.html`. For example, after
-building the frontend with the Bun version in `.bun-version`:
+building the frontend with the current Bun:
 
 ```sh
 cargo build --release --locked -p daemon -p forge-tauri \

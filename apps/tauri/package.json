@@ -12,8 +12,8 @@
     "build": "bun run typecheck && vite build && bun run bundle",
     "preview": "vite preview",
     "test": "bun run build:file-workbench && bun scripts/runtime.ts && vitest run && bun test && bun test ./packages/file-workbench/tests",
-    "typecheck": "bun run build:file-workbench && bun scripts/runtime.ts && tsc --noEmit && tsc -p tsconfig.scripts.json",
-    "check": "bun run build:file-workbench && bun run lint && bun run fmt:check && bun run test && bun run boundaries && bun run build",
+    "typecheck": "bun run build:file-workbench && bun scripts/runtime.ts && bun check && bun check -p tsconfig.scripts.json",
+    "verify": "bun run build:file-workbench && bun run lint && bun run fmt:check && bun run test && bun run boundaries && bun run build",
     "boundaries": "bun scripts/boundaries.ts",
     "codegen": "bun scripts/codegen-types.ts && oxfmt --write src/contracts/generated/fixtures.ts",
     "tokens": "bun scripts/generate-tokens.ts && oxfmt --write src/theme/tokens.css",
@@ -40,18 +40,17 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
-    "@types/bun": "1.4.1",
+    "@types/bun": "latest",
     "oxfmt": "^0.65.0",
     "oxlint": "^1.80.0",
-    "typescript": "^5.6.0",
+    "typescript": "^7.0.2",
     "vite": "^6.0.0",
     "vite-plugin-solid": "^2.11.0",
     "vitest": "^2.1.0"
   },
   "engines": {
-    "bun": "1.4.1"
+    "bun": ">=1.4.3"
   },
-  "packageManager": "bun@1.4.1",
   "trustedDependencies": [
     "esbuild"
   ]

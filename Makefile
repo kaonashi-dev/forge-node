@@ -141,11 +141,11 @@ test-tauri: test-frontend ## Frontend checks + Tauri host tests
 	cargo test -p forge-tauri
 
 # The typecheck is here and not only in `test-tauri` because vitest only sees
-# the modules a test imports: a rename that misses a caller is a tsc error and
+# the modules a test imports: a rename that misses a caller is a type error and
 # a green test run.
 check: ## Full gate: Rust checks + frontend lint, format, tests, types and bundle
 	"$(ROOT)/scripts/dev" check
-	cd "$(TAURI_APP)" && bun run check
+	cd "$(TAURI_APP)" && bun run verify
 
 check-fast: ## Rust fmt + clippy + tests only (no frontend)
 	"$(ROOT)/scripts/dev" check
