@@ -22,6 +22,12 @@
 > break what the last one did. Read it, fork it, take ideas from it; depend on
 > it only with that in mind.
 
+<img width="1680" height="1050" alt="image" src="https://github.com/user-attachments/assets/dcdc511f-9587-438f-ba4e-17954a58f1f3" />
+<img width="1680" height="1050" alt="image" src="https://github.com/user-attachments/assets/39639740-45db-4429-9bde-e4e38428e0ba" />
+<img width="1680" height="1050" alt="image" src="https://github.com/user-attachments/assets/993c0dfd-a6d7-4ddd-81da-6e2e848dc5fa" />
+
+
+
 ## Install
 
 macOS 11 or newer, Apple Silicon. `git` on `PATH`.
