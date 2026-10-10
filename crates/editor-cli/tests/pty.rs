@@ -596,6 +596,88 @@ mod integrated {
     }
 
     #[test]
+    fn definition_picker_preserves_controls_and_opens_the_chosen_location() {
+        let mut editor = IntegratedEditor::start("first\nrelease(payin, tx);\n", "service.ts");
+        editor.expect("release");
+        editor.send(b"\x1bd");
+        let deadline = Instant::now() + WAIT;
+        let (request_id, symbol) = loop {
+            match editor
+                .daemon
+                .next(deadline.saturating_duration_since(Instant::now()))
+            {
+                Some(EditorMessage::FindDefinition { request_id, symbol }) => {
+                    break (request_id, symbol)
+                }
+                Some(_) => continue,
+                None => panic!("no definition request"),
+            }
+        };
+        assert_eq!(symbol, "release");
+        let path = "src/payins/services/payin-settlement.service.ts";
+        editor.daemon.send(DaemonMessage::Definitions {
+            request_id,
+            symbol,
+            places: vec![editor_control::WirePlace {
+                path: path.into(),
+                line: 204,
+                text: "private async release(payin: Payin, tx: Prisma.TransactionClient) {".into(),
+            }],
+            truncated: false,
+        });
+        editor.expect("Enter opens");
+        editor.expect("Esc cancels");
+        editor.expect("payin-settlement.service.ts:204");
+        editor.send(b"\r");
+        let deadline = Instant::now() + WAIT;
+        loop {
+            match editor
+                .daemon
+                .next(deadline.saturating_duration_since(Instant::now()))
+            {
+                Some(EditorMessage::OpenPath {
+                    path: wanted, line, ..
+                }) => {
+                    assert_eq!(wanted, path);
+                    assert_eq!(line, 204);
+                    break;
+                }
+                Some(_) => continue,
+                None => panic!("no open after accepting the definition"),
+            }
+        }
+    }
+
+    #[test]
+    fn comment_shortcuts_toggle_the_caret_line_and_selection_under_a_real_pty() {
+        let original = "one\ntwo\n";
+        let cases: &[(&[u8], &str)] = &[
+            (b"\x1b/\x13", "one\n// two\n"),
+            (b"\x1b/\x1b/\x13", original),
+            // The GUI translates Alt-/ to the legacy Ctrl-_ byte.
+            (b"\x1f\x13", "one\n// two\n"),
+            (b"\x1f\x1f\x13", original),
+            (b"\x01\x1f\x13", "// one\n// two\n"),
+            (b"\x01\x1f\x1f\x13", original),
+        ];
+        for (keys, expected) in cases {
+            let mut editor = IntegratedEditor::start_writable(original, "display/only.ts");
+            editor.expect("two");
+            editor.send(keys);
+            let deadline = Instant::now() + WAIT;
+            let saved = loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match editor.daemon.next(remaining) {
+                    Some(EditorMessage::SaveRequest { text, .. }) => break text,
+                    Some(_) => continue,
+                    None => panic!("no save after comment shortcut {keys:?}"),
+                }
+            };
+            assert_eq!(saved, *expected, "shortcut bytes {keys:?}");
+        }
+    }
+
+    #[test]
     fn a_reveal_request_moves_the_caret() {
         let mut editor = IntegratedEditor::start("alpha\nworld\nthird\n", "harness/tsconfig.json");
         editor.expect("world");

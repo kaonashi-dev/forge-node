@@ -78,7 +78,7 @@ impl Signal {
 }
 
 ///
-/// Variants are grouped as in the plan: Global, Projects, Workspaces, Sessions,
+/// Variants are grouped by scope: Global, Projects, Workspaces, Sessions,
 /// Terminals, Agents.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]

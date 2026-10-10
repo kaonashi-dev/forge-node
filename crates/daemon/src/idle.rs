@@ -1,29 +1,8 @@
 //! Idle-session policy: what to do with a session nobody is using.
 //!
-//! An agent CLI left running is not free. It holds a PTY, an OS thread, a VT
-//! engine with up to `terminal.scrollback_lines` rows of grid behind it, and —
-//! for the agents that poll — a live provider connection. A day of work leaves
-//! a tail of sessions that finished their task hours ago and that nothing is
-//! attached to. This module decides which ones to say something about and,
-//! when the user has opted in, which ones to stop.
-//!
-//! The policy is deliberately a pure function of four inputs — the session, the
-//! current time, whether a client is attached, and whether it was already
-//! warned — so the interesting behaviour is unit-testable without a PTY. The
-//! daemon's sweeper ([`crate::core::Daemon`]) supplies those inputs and
-//! performs the effects.
-//!
-//! Two distinct clocks feed it, and conflating them would be wrong:
-//!
-//! - **Inactivity** ([`Session::idle_for`]) — no terminal output and no input.
-//!   This is "nobody is using it". It resets whenever the session does
-//!   anything.
-//! - **Age** ([`Session::age`]) — time since the session was created. This is
-//!   "it has been open for too long", and it keeps growing while the session is
-//!   busy. A week-old orchestrator that is working right now is worth
-//!   mentioning, but it is emphatically not worth killing.
-//!
-//! Only inactivity can lead to [`IdleAction::Stop`]; age never does.
+//! A pure function of (session, now, attached, warned); `core.rs` supplies the
+//! inputs and runs the effects. Only inactivity can stop — age only warns.
+//! Details: `docs/agents.md`.
 
 use std::time::Duration;
 

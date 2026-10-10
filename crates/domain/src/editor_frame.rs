@@ -224,7 +224,8 @@ pub enum EditorInputEvent {
         kind: EditorPointer,
         /// 0-based line.
         line: u32,
-        /// 0-based display column within the line.
+        /// 0-based UTF-16 column within the line (the control wire and both
+        /// surfaces count in UTF-16).
         column: u32,
         #[serde(default)]
         modifiers: u8,

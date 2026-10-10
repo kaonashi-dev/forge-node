@@ -568,10 +568,9 @@ export type Binding = {
 /**
  * The tabs a chord can reach, counted the way the user counts them.
  *
- * Cmd+N on macOS, Ctrl+N elsewhere. The sidebar views take Option+N
- * (Ctrl+Alt+N off macOS, because Linux readline owns Alt+N as a numeric
- * argument), matched on `event.code` so Option turning `1` into `¡` does not
- * move the key.
+ * Option+N on macOS, because Cmd+N is the sidebar. Ctrl+Alt+N elsewhere:
+ * Linux readline owns Alt+N as a numeric argument. Matched on `event.code`,
+ * so Option turning `1` into `¡` does not move the key.
  */
 export const FOCUSABLE_SESSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
@@ -617,6 +616,9 @@ export function defaultBindings(): Binding[] {
     bind(`${MOD}-w`, "close_session", APP),
     // MOD-3 cycles the views that have no dedicated number chord.
     bind(`${MOD}-b`, "toggle_sidebar", APP),
+    bind(`${MOD}-1`, "toggle_projects", APP),
+    bind(`${MOD}-2`, "toggle_files", APP),
+    bind(`${MOD}-3`, "cycle_sidebar_views", APP),
     bind(`${MOD}-shift-r`, "toggle_pull_requests", APP),
     bind(`${MOD}-shift-f`, "find_in_project", APP),
     bind(`${MOD}-p`, "open_file_palette", APP),
@@ -722,16 +724,11 @@ export function defaultBindings(): Binding[] {
     bind("backspace", "file_tree_delete", FILES),
   ];
 
-  for (const index of FOCUSABLE_SESSIONS) {
-    bindings.push(bind(`${MOD}-${index}`, "focus_session", APP, index));
-  }
   // macOS: Option+N. Linux: Ctrl+Alt+N — Alt+N is readline's M-N.
-  const sidebarMod = isMac() ? "alt" : `${MOD}-alt`;
-  bindings.push(
-    bind(`${sidebarMod}-1`, "toggle_projects", APP),
-    bind(`${sidebarMod}-2`, "toggle_files", APP),
-    bind(`${sidebarMod}-3`, "cycle_sidebar_views", APP),
-  );
+  const tabMod = isMac() ? "alt" : `${MOD}-alt`;
+  for (const index of FOCUSABLE_SESSIONS) {
+    bindings.push(bind(`${tabMod}-${index}`, "focus_session", APP, index));
+  }
   return bindings;
 }
 

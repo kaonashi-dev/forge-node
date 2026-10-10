@@ -46,6 +46,17 @@ describe("intraLine", () => {
     expect(spans).toEqual({ before: { from: 1, to: 1 }, after: { from: 1, to: 2 } });
   });
 
+  it("keeps surrogate pairs intact at either boundary of a changed span", () => {
+    expect(intraLine("prefix 😀 suffix", "prefix 😃 suffix")).toEqual({
+      before: { from: 7, to: 9 },
+      after: { from: 7, to: 9 },
+    });
+    expect(intraLine("prefix \ud83d\ude00 suffix", "prefix \ud83e\ude00 suffix")).toEqual({
+      before: { from: 7, to: 9 },
+      after: { from: 7, to: 9 },
+    });
+  });
+
   it("says nothing for identical lines", () => {
     expect(intraLine("same", "same")).toBeNull();
   });

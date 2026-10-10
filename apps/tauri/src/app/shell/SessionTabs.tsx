@@ -215,7 +215,7 @@ export function SessionTabs(props: SessionTabsProps) {
           onScroll={onScroll}
         >
           <div class="tab-strip" role="tablist" aria-label="Sessions">
-            {/* Code leads so Cmd+1 reaches the files. Sessions follow it. */}
+            {/* Code leads so Option+1 reaches the files. Sessions follow it. */}
             <Show when={props.codeOpen}>
               <div
                 class="session-tab-wrap code-tab-wrap"

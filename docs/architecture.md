@@ -79,9 +79,11 @@ terminal-input} → domain`).
 Dependency direction is one-way and enforced by `Cargo.toml`:
 `forge-tauri → {client, domain}`, `client → {protocol, terminal-input, domain}`,
 `daemon → {agents, client, editor-control, fs-service, git-service, persistence,
-protocol, terminal-core, domain}`, `fs-service → git-service` and
-`editor-cli → {editor-core, editor-control}`. `forgectl` is
-`forge-ctl → client → protocol → domain` and must not depend on `daemon`.
+protocol, terminal-core, terminal-input, domain}`, `fs-service → git-service`,
+`editor-cli → {editor-core, editor-control}` and `test-support → {domain,
+terminal-core}`. `forgectl` is `forge-ctl → client → protocol → domain`; its
+binary and library never depend on `daemon` (only its integration tests boot
+one).
 Every other crate depends on `domain` alone or on nothing (`editor-core`,
 `editor-control`), there is no cycle, and the host depends on neither
 `protocol` nor `terminal-core` directly. The GUI renders `domain::terminal` wire types, it does

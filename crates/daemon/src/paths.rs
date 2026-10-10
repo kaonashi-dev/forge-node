@@ -1,16 +1,14 @@
-//! Filesystem paths: socket + lockfile (ADR-004) and data/config/runtime dirs
+//! Filesystem paths: lockfile, data/config/runtime dirs (ADR-004).
 //!
-//! The socket path is the delicate one: a Unix domain socket path must fit in
-//! `sun_path` (104 bytes on macOS, 108 on Linux). We require the *full* path to
-//! be under 100 bytes and fall back to `/tmp/forge-$UID/…` when the preferred
-//! location would be too long, failing explicitly rather than silently
-//! truncating (ADR-004).
+//! The daemon socket resolves through `client::resolve_socket`, the shared
+//! 100-byte `sun_path` rule; this module's own length check covers the lock and
+//! editor control sockets named from the runtime dir.
 
 use std::path::PathBuf;
 
 /// Filesystem namespace for ProjectDirs (not the display name "Forge Node").
 pub const APP_NAME: &str = "Forge";
-/// Directory / socket namespace (resolves the plan's `{app}`).
+/// Directory and socket namespace.
 pub const APP_DIR: &str = "forge";
 /// Conservative cap on the socket path length (ADR-004: sun_path ≤ 104 on macOS).
 pub const MAX_SOCKET_PATH_LEN: usize = 100;

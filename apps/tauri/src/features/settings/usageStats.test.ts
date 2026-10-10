@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderAnalytics, UsageAnalytics } from "../../contracts/workbench";
+import type { AgentProfile } from "../../contracts/runtime";
+import type {
+  AccountAnalytics,
+  ProviderAnalytics,
+  UsageAnalytics,
+} from "../../contracts/workbench";
 import {
   busiestDay,
   compactTokens,
+  dailySeries,
   dayLabel,
   heatmap,
   money,
@@ -10,6 +16,7 @@ import {
   percentLabel,
   providerShare,
   resetsIn,
+  statsAccounts,
   tokenMix,
   totals,
   trackingSince,
@@ -251,5 +258,77 @@ describe("formatting", () => {
   it("says — for a date it cannot read", () => {
     expect(dayLabel(null)).toBe("—");
     expect(dayLabel("not a date")).toBe("—");
+  });
+});
+
+function account(profile_id: string | null, input: number): AccountAnalytics {
+  return {
+    profile_id,
+    tokens: { input, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
+    sessions: 1,
+    turns: 2,
+    cost_micros: 0,
+    unpriced_turns: 0,
+  };
+}
+
+function profile(id: string, name: string): AgentProfile {
+  return {
+    id,
+    provider_id: "claude",
+    name,
+    executable: null,
+    config_dir: `.claude-${id}`,
+    args: [],
+    created_at: "2026-08-01T00:00:00Z",
+  };
+}
+
+describe("dailySeries", () => {
+  const data = analytics({
+    daily: [{ date: "2026-08-25", tokens: 15 }],
+    providers: [
+      provider({ provider_id: "claude", daily: [{ date: "2026-08-25", tokens: 10 }] }),
+      provider({ provider_id: "codex", daily: [{ date: "2026-08-25", tokens: 5 }] }),
+    ],
+  });
+
+  it("draws every provider by default", () => {
+    expect(dailySeries(data, null)).toEqual([{ date: "2026-08-25", tokens: 15 }]);
+  });
+
+  it("draws one provider's own series when filtered", () => {
+    expect(dailySeries(data, "codex")).toEqual([{ date: "2026-08-25", tokens: 5 }]);
+  });
+
+  it("never falls back to the total for a provider that sent no series", () => {
+    expect(dailySeries(data, "grok")).toEqual([]);
+    expect(dailySeries(analytics(), "claude")).toEqual([]);
+  });
+});
+
+describe("statsAccounts", () => {
+  it("names each account by its profile and the default one as Default", () => {
+    const rows = statsAccounts(
+      provider({
+        tokens: { input: 1000, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
+        accounts: [account("work", 750), account(null, 250)],
+      }),
+      [profile("work", "Work")],
+    );
+    expect(rows.map((row) => [row.name, row.share])).toEqual([
+      ["Work", 75],
+      ["Default", 25],
+    ]);
+  });
+
+  it("shows nothing for a lone default account", () => {
+    expect(statsAccounts(provider({ accounts: [account(null, 10)] }), [])).toEqual([]);
+    expect(statsAccounts(provider(), [])).toEqual([]);
+  });
+
+  it("keeps a lone named account and labels one whose profile was removed", () => {
+    const rows = statsAccounts(provider({ accounts: [account("gone", 10)] }), []);
+    expect(rows.map((row) => row.name)).toEqual(["Removed profile"]);
   });
 });

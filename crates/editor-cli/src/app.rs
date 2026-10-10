@@ -78,6 +78,20 @@ pub enum Prompt {
     },
 }
 
+pub(crate) fn definition_header(
+    symbol: &str,
+    selected: usize,
+    count: usize,
+    truncated: bool,
+) -> String {
+    let cut = if truncated { " (partial search)" } else { "" };
+    format!(
+        "Enter opens · Esc cancels · ↑/↓  {}/{}{cut}  {symbol}",
+        selected + 1,
+        count
+    )
+}
+
 /// Largest copy that travels as an OSC 52.
 ///
 /// Matches `terminal_core::MAX_CLIPBOARD_BYTES`: the terminal drops anything
@@ -229,6 +243,7 @@ pub struct App {
     outbox: Option<(u64, String, u64)>,
     /// A definition lookup the control loop has not sent yet.
     lookup: Option<(u64, String)>,
+    pending_lookup: Option<(u64, u64, usize)>,
     /// A file the control loop has to ask the daemon to open.
     open_request: Option<(u64, String, u32)>,
     /// A change-details request the control loop has not sent yet.
@@ -406,6 +421,7 @@ impl App {
             in_flight_save: None,
             outbox: None,
             lookup: None,
+            pending_lookup: None,
             open_request: None,
             details_request: None,
             diagnostics_request: None,
@@ -1138,7 +1154,16 @@ impl App {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
         self.lookup = Some((request_id, symbol));
+        self.pending_lookup = Some((request_id, self.document.version().0, self.document.caret()));
         self.status = Some("looking…".to_string());
+    }
+
+    fn cancel_definition_lookup(&mut self) {
+        if self.pending_lookup.take().is_some() && self.status.as_deref() == Some("looking…") {
+            self.status = None;
+            self.damage_all = true;
+        }
+        self.lookup = None;
     }
 
     /// Ask the daemon what the change at the caret replaced.
@@ -1197,7 +1222,23 @@ impl App {
     }
 
     /// The daemon answered a definition lookup.
-    pub fn definitions_arrived(&mut self, symbol: String, places: Vec<WirePlace>, truncated: bool) {
+    pub fn definitions_arrived(
+        &mut self,
+        request_id: u64,
+        symbol: String,
+        places: Vec<WirePlace>,
+        truncated: bool,
+    ) {
+        let Some((pending, version, caret)) = self.pending_lookup else {
+            return;
+        };
+        if pending != request_id {
+            return;
+        }
+        self.cancel_definition_lookup();
+        if version != self.document.version().0 || caret != self.document.caret() {
+            return;
+        }
         self.damage_all = true;
         if places.is_empty() {
             self.status = Some(if truncated {
@@ -1470,6 +1511,10 @@ impl App {
 
     /// Retain the document, selection, undo and in-flight save across a move.
     pub fn retarget(&mut self, path: PathBuf) {
+        self.cancel_definition_lookup();
+        if matches!(self.prompt, Some(Prompt::Definitions { .. })) {
+            self.prompt = None;
+        }
         self.path = path;
         self.grammar = Grammar::for_path(&self.path.to_string_lossy());
         self.rescan();
@@ -1579,11 +1624,7 @@ impl App {
 
     /// The one-line prompt, as a surface with no status row can show it.
     ///
-    /// The same string `render::status_text` paints, built here so there is
-    /// one formatter and not two: a headless host has no row to paint it on,
-    /// and a person typing into find has to see what they typed. `None` for
-    /// the prompts that are overlays rather than a line — those are a panel
-    /// the DOM surface owes, not a sentence.
+    /// Definition candidates also travel here so the headless surface can offer them.
     #[must_use]
     pub fn prompt_line(&self) -> Option<String> {
         let flags = self.query_flags();
@@ -1602,7 +1643,24 @@ impl App {
             Prompt::ConfirmClose => {
                 Some("unsaved changes — (s)ave, (d)iscard, any other key cancels".to_string())
             }
-            Prompt::ChangeDetails { .. } | Prompt::Definitions { .. } => None,
+            Prompt::Definitions {
+                symbol,
+                places,
+                selected,
+                truncated,
+            } => {
+                let header = definition_header(symbol, *selected, places.len(), *truncated);
+                Some(match places.get(*selected) {
+                    Some(place) => format!(
+                        "{header}: {}:{}  {}",
+                        place.path,
+                        place.line,
+                        place.text.trim()
+                    ),
+                    None => header,
+                })
+            }
+            Prompt::ChangeDetails { .. } => None,
         }
     }
 
@@ -1811,6 +1869,7 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        self.cancel_definition_lookup();
         self.status = None;
         if self.help {
             self.help = false;
@@ -1832,6 +1891,7 @@ impl App {
     }
 
     pub fn paste(&mut self, text: &str) {
+        self.cancel_definition_lookup();
         match &mut self.prompt {
             Some(Prompt::Find { input }) => {
                 input.push_str(&text.replace('\n', " "));
@@ -1864,6 +1924,9 @@ impl App {
     /// declared, and the wheel moves the viewport. The middle button and motion
     /// with no button are not gestures this editor has.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        if matches!(event.kind, MouseEventKind::Down(_)) {
+            self.cancel_definition_lookup();
+        }
         let alt = event.modifiers.contains(KeyModifiers::ALT);
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) if alt => {
@@ -2491,7 +2554,7 @@ impl App {
                 mut selected,
                 truncated,
             } => match key.code {
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::BackTab => {
                     selected = (selected + places.len() - 1) % places.len();
                     self.prompt = Some(Prompt::Definitions {
                         symbol,
@@ -2500,7 +2563,18 @@ impl App {
                         truncated,
                     });
                 }
-                KeyCode::Down => {
+                // The DOM surface cannot name BackTab; Shift-Tab arrives as
+                // `Tab` with SHIFT (`editorKeys.ts`), so it means previous too.
+                KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    selected = (selected + places.len() - 1) % places.len();
+                    self.prompt = Some(Prompt::Definitions {
+                        symbol,
+                        places,
+                        selected,
+                        truncated,
+                    });
+                }
+                KeyCode::Down | KeyCode::Tab => {
                     selected = (selected + 1) % places.len();
                     self.prompt = Some(Prompt::Definitions {
                         symbol,
@@ -2984,9 +3058,9 @@ impl App {
         let page = self.content_height().max(1);
 
         let action = match (key.code, control, alt) {
-            (KeyCode::Char('/' | '?' | '_'), true, false) => {
-                Action::Command(Command::ToggleLineComment)
-            }
+            // Crossterm decodes the legacy Ctrl-_ byte (0x1f) as Ctrl-7.
+            (KeyCode::Char('/' | '?' | '_' | '7'), true, false)
+            | (KeyCode::Char('/'), false, true) => Action::Command(Command::ToggleLineComment),
             (KeyCode::Char('s'), true, _) => Action::Editor(EditorAction::Save),
             (KeyCode::Char('q'), true, _) => Action::Editor(EditorAction::Close),
             (KeyCode::Char('f'), true, _) => Action::Editor(EditorAction::OpenFind),
@@ -3172,7 +3246,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("arrows, Home/End, PgUp/PgDn", "move; hold Shift to select"),
     ("Ctrl/Alt + arrows", "move by word"),
     ("Ctrl-S", "save"),
-    ("Ctrl-_", "toggle line comments"),
+    ("Alt-/ / Ctrl-_", "toggle line comments"),
     ("Ctrl-Z / Ctrl-Y", "undo / redo"),
     ("Ctrl-C / Ctrl-X / Ctrl-V", "copy / cut / paste"),
     (
@@ -3878,15 +3952,72 @@ mod tests {
 
     #[test]
     fn comment_keys_toggle_the_current_line() {
-        for chord in ['/', '?', '_'] {
+        for chord in [
+            control('/'),
+            control('?'),
+            control('_'),
+            control('7'),
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::ALT),
+        ] {
             let document = Document::from_string("let x = 1;".into(), false);
             let mut app = App::new(document, PathBuf::from("fixture.ts"), None);
             app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-            app.handle_key(KeyEvent::new(KeyCode::Char(chord), KeyModifiers::CONTROL));
+            app.handle_key(chord);
             assert_eq!(app.document().as_str(), "// let x = 1;");
-            app.handle_key(KeyEvent::new(KeyCode::Char(chord), KeyModifiers::CONTROL));
+            app.handle_key(chord);
             assert_eq!(app.document().as_str(), "let x = 1;");
         }
+    }
+
+    #[test]
+    fn alt_slash_toggles_only_the_caret_line() {
+        for column in [0, 6, 12] {
+            let original = "before\n  let x = 1;\nafter";
+            let document = Document::from_string(original.into(), false);
+            let mut app = App::new(document, PathBuf::from("fixture.ts"), None);
+            let caret = app.document.text().line_start(1) + column;
+            app.document.set_selection(Selection::caret(caret));
+            let chord = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::ALT);
+
+            app.handle_key(chord);
+            assert_eq!(app.document().as_str(), "before\n  // let x = 1;\nafter");
+            assert!(app.document().selection().is_empty());
+            app.handle_key(chord);
+            assert_eq!(app.document().as_str(), original);
+            assert_eq!(app.document().caret(), caret);
+        }
+    }
+
+    #[test]
+    fn alt_slash_toggles_selected_lines_and_undo_restores_the_selection() {
+        let original = "before\n  one\r\n\r\n\ttwo\r\nafter";
+        let document = Document::from_string(original.into(), false);
+        let mut app = App::new(document, PathBuf::from("fixture.ts"), None);
+        let start = app.document.text().line_start(1);
+        let end = app.document.text().line_start(4);
+        let selection = Selection::new(end, start);
+        app.document.set_selection(selection.clone());
+        let chord = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::ALT);
+
+        app.handle_key(chord);
+        assert_eq!(
+            app.document().as_str(),
+            "before\n  // one\r\n\r\n\t// two\r\nafter"
+        );
+        let commented_selection = app.document().selection();
+        app.handle_key(chord);
+        assert_eq!(app.document().as_str(), original);
+        assert_eq!(app.document().selection(), selection);
+        app.handle_key(control('z'));
+        assert_eq!(
+            app.document().as_str(),
+            "before\n  // one\r\n\r\n\t// two\r\nafter"
+        );
+        assert_eq!(app.document().selection(), commented_selection);
+        app.handle_key(control('z'));
+        assert_eq!(app.document().as_str(), original);
+        assert_eq!(app.document().selection(), selection);
+        assert!(!app.document().is_dirty());
     }
 
     #[test]
@@ -5102,8 +5233,6 @@ mod tests {
         }
     }
 
-    /// The editor never opens the checkout, so the symbol travels and the
-    /// answer comes back as candidates to choose between.
     #[test]
     fn go_to_definition_asks_the_daemon_and_offers_the_answers() {
         let mut app = app("let x = answer();\n", false);
@@ -5114,10 +5243,11 @@ mod tests {
             app.handle_key(key(KeyCode::Right));
         }
         app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
-        let (_, symbol) = app.take_definition_request().expect("a lookup");
+        let (request_id, symbol) = app.take_definition_request().expect("a lookup");
         assert_eq!(symbol, "answer");
 
         app.definitions_arrived(
+            request_id,
             symbol,
             vec![
                 place("lib.rs", 1, "pub fn answer() -> u8 {"),
@@ -5159,7 +5289,9 @@ mod tests {
         let mut app = app("answer\n", false);
         app.set_integrated();
         app.resize(60, 10);
-        app.definitions_arrived("answer".to_string(), Vec::new(), false);
+        app.find_definition();
+        let (request_id, symbol) = app.take_definition_request().unwrap();
+        app.definitions_arrived(request_id, symbol, Vec::new(), false);
         assert!(app.prompt().is_none());
         assert_eq!(
             app.status(),
@@ -5168,17 +5300,124 @@ mod tests {
     }
 
     #[test]
+    fn definition_answers_are_correlated_and_cancelled_by_input() {
+        let mut app = app("release\n", false);
+        app.set_integrated();
+        app.find_definition();
+        let (old, symbol) = app.take_definition_request().unwrap();
+        app.find_definition();
+        let (current, _) = app.take_definition_request().unwrap();
+        let places = vec![place(
+            "service.ts",
+            204,
+            "private async release(payin: Payin) {",
+        )];
+        app.definitions_arrived(old, symbol.clone(), places.clone(), false);
+        assert!(app.prompt().is_none());
+        app.definitions_arrived(current, symbol.clone(), places.clone(), false);
+        assert!(matches!(app.prompt(), Some(Prompt::Definitions { .. })));
+        app.handle_key(key(KeyCode::Esc));
+
+        for input in [
+            key(KeyCode::Esc),
+            key(KeyCode::Right),
+            key(KeyCode::Char('x')),
+            control('f'),
+        ] {
+            app.find_definition();
+            let (request_id, _) = app.take_definition_request().unwrap();
+            app.handle_key(input);
+            app.definitions_arrived(request_id, symbol.clone(), places.clone(), false);
+            assert!(!matches!(app.prompt(), Some(Prompt::Definitions { .. })));
+        }
+    }
+
+    #[test]
+    fn definition_answers_do_not_replace_a_changed_buffer() {
+        let mut app = app("release\n", false);
+        app.set_integrated();
+        app.find_definition();
+        let (request_id, symbol) = app.take_definition_request().unwrap();
+        app.run(Command::InsertText("x".into()));
+        app.definitions_arrived(
+            request_id,
+            symbol,
+            vec![place("service.ts", 204, "release() {}")],
+            false,
+        );
+        assert!(app.prompt().is_none());
+        assert_ne!(app.status(), Some("looking…"));
+    }
+
+    #[test]
+    fn headless_definition_candidates_are_visible_and_keyboard_accessible() {
+        let mut app = app("release\n", false);
+        app.set_headless();
+        app.find_definition();
+        let (request_id, symbol) = app.take_definition_request().unwrap();
+        app.definitions_arrived(
+            request_id,
+            symbol,
+            vec![
+                place("service.py", 2, "def release():"),
+                place("service.kt", 3, "fun release() {}"),
+            ],
+            true,
+        );
+        let status = app.wire_state().status;
+        assert!(status.contains("Enter opens"));
+        assert!(status.contains("partial search"));
+        assert!(status.contains("service.py:2"));
+        app.handle_key(key(KeyCode::Tab));
+        assert!(app.wire_state().status.contains("service.kt:3"));
+        app.handle_key(key(KeyCode::BackTab));
+        app.handle_key(key(KeyCode::Enter));
+        let (_, path, line) = app.take_open_request().unwrap();
+        assert_eq!((path.as_str(), line), ("service.py", 2));
+    }
+
+    /// Three candidates on purpose: with two, "previous" and "next" land on the
+    /// same place and the assertion cannot tell the surfaces apart.
+    #[test]
+    fn a_shift_tab_selects_the_previous_definition_candidate() {
+        let mut app = app("release\n", false);
+        app.set_headless();
+        app.find_definition();
+        let (request_id, symbol) = app.take_definition_request().unwrap();
+        app.definitions_arrived(
+            request_id,
+            symbol,
+            vec![
+                place("service.rs", 1, "fn release() {}"),
+                place("service.py", 2, "def release():"),
+                place("service.kt", 3, "fun release() {}"),
+            ],
+            false,
+        );
+        app.handle_key(key(KeyCode::Tab));
+        app.handle_key(key(KeyCode::Tab));
+        assert!(app.wire_state().status.contains("service.kt:3"));
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
+        assert!(app.wire_state().status.contains("service.py:2"));
+    }
+
+    #[test]
     fn an_incomplete_definition_search_stays_visible_while_choosing() {
         let mut app = app("upsertJobScheduler\n", false);
         app.set_integrated();
         app.resize(80, 10);
-        app.definitions_arrived("upsertJobScheduler".to_string(), Vec::new(), true);
+        app.find_definition();
+        let (request_id, symbol) = app.take_definition_request().unwrap();
+        app.definitions_arrived(request_id, symbol, Vec::new(), true);
         assert_eq!(
             app.status(),
             Some("upsertJobScheduler: no declaration found (search incomplete)")
         );
+        app.find_definition();
+        let (request_id, symbol) = app.take_definition_request().unwrap();
         app.definitions_arrived(
-            "upsertJobScheduler".to_string(),
+            request_id,
+            symbol,
             vec![place(
                 "node_modules/bullmq/queue.d.ts",
                 12,

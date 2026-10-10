@@ -5,17 +5,6 @@ import { SplitPatchView } from "./SplitPatchView";
 import type { DiffFile } from "../../../contracts/workbench";
 import { statusLetter, statusWord } from "../gitView";
 
-/**
- * A list of files, each with its patch under a header that stays put.
- *
- * Shared by the Diff tab and the Review tab rather than copied into both: the
- * collapsible section, the budget notes and the double-click-to-open are the
- * same contract in each, and a second copy is a second thing to keep right.
- *
- * Each patch is rendered only while its section is open, so a checkout with
- * forty changed files costs the DOM of the ones being read rather than of all
- * of them.
- */
 export function DiffFiles(props: {
   files: DiffFile[];
   split: boolean;
@@ -36,25 +25,36 @@ export function DiffFiles(props: {
         const open = () => !collapsed().has(file.path);
         return (
           <section class="diff-file">
-            <button
-              type="button"
-              class="forge-row diff-file-head"
-              aria-expanded={open()}
-              onClick={() => toggle(file.path)}
-            >
-              <span class="tree-twisty" classList={{ open: open() }}>
-                ›
-              </span>
+            <header class="forge-row diff-file-head">
+              <button
+                type="button"
+                class="forge-row diff-file-toggle"
+                aria-label={`${open() ? "Collapse" : "Expand"} diff for ${file.path}`}
+                aria-expanded={open()}
+                onClick={() => toggle(file.path)}
+              >
+                <span class="tree-twisty" classList={{ open: open() }} aria-hidden="true">
+                  ›
+                </span>
+              </button>
               <LangIcon path={file.path} size={13} />
               <span class="git-status" data-status={file.status} title={statusWord(file.status)}>
                 {statusLetter(file.status)}
               </span>
-              <span class="tree-label">{file.path}</span>
+              <button
+                type="button"
+                class="forge-row diff-file-name"
+                aria-label={`Open ${file.path} in Code`}
+                title={`Open ${file.path} in Code`}
+                onClick={() => props.onOpenLine(file.path, 1)}
+              >
+                <span class="tree-label">{file.path}</span>
+              </button>
               <span class="git-counts">
                 <span class="added">+{file.additions}</span>
                 <span class="deleted">−{file.deletions}</span>
               </span>
-            </button>
+            </header>
             <Show when={open()}>
               {/* A patch over budget is dropped whole and flagged, never cut:
                   half a patch is not a patch. */}
@@ -70,12 +70,14 @@ export function DiffFiles(props: {
                     when={props.split}
                     fallback={
                       <PatchView
+                        path={file.path}
                         patch={file.patch}
                         onOpenLine={(line) => props.onOpenLine(file.path, line)}
                       />
                     }
                   >
                     <SplitPatchView
+                      path={file.path}
                       patch={file.patch}
                       onOpenLine={(line) => props.onOpenLine(file.path, line)}
                     />

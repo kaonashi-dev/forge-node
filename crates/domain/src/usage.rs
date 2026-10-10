@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentProviderId, Timestamp};
+use crate::{AgentProfileId, AgentProviderId, Timestamp};
 
 /// One dollar, in the micro-dollar unit costs are counted in.
 pub const MICROS_PER_USD: u64 = 1_000_000;
@@ -93,6 +93,27 @@ pub struct ProviderAnalytics {
     pub worked_secs: u64,
     pub first_activity: Option<Timestamp>,
     pub last_activity: Option<Timestamp>,
+    /// The same totals split by the config directory the transcripts were
+    /// read from, in descending token order. Profiles that share a directory
+    /// share an account: a transcript does not record which profile launched it.
+    #[serde(default)]
+    pub accounts: Vec<AccountAnalytics>,
+    /// This provider's share of [`UsageAnalytics::daily`], same shape.
+    #[serde(default)]
+    pub daily: Vec<DailyUsage>,
+}
+
+/// One account's part of a [`ProviderAnalytics`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountAnalytics {
+    /// The profile whose config directory this is; `None` is the account the
+    /// daemon's own environment points at.
+    pub profile_id: Option<AgentProfileId>,
+    pub tokens: TokenTotals,
+    pub sessions: u32,
+    pub turns: u32,
+    pub cost_micros: u64,
+    pub unpriced_turns: u32,
 }
 
 /// One day's token total, keyed by its UTC calendar date (`YYYY-MM-DD`).
@@ -249,6 +270,8 @@ mod tests {
                     worked_secs: 60,
                     first_activity: Timestamp::from_unix_secs(1_000),
                     last_activity: Timestamp::from_unix_secs(2_000),
+                    accounts: Vec::new(),
+                    daily: Vec::new(),
                 },
                 ProviderAnalytics {
                     provider_id: AgentProviderId::new("codex"),
@@ -261,6 +284,8 @@ mod tests {
                     worked_secs: 30,
                     first_activity: Timestamp::from_unix_secs(500),
                     last_activity: Timestamp::from_unix_secs(900),
+                    accounts: Vec::new(),
+                    daily: Vec::new(),
                 },
             ],
             daily: vec![

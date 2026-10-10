@@ -41,34 +41,36 @@ describe("default bindings (actions.rs port)", () => {
   });
 
   /**
-   * The bare number row is the tabs' and the sidebar views are on Option (Alt
+   * The bare number row is the sidebar's and the tabs are on Option (Alt
    * alone on macOS, Ctrl+Alt elsewhere), so the test pins the modifiers and
-   * not just the key. A stale sidebar binding left on the bare row would win
-   * or lose the dispatch by table order, so it has to be gone, not outranked.
+   * not just the key. Both halves matter: a stale focus binding left behind
+   * would win or lose the dispatch by table order, so the tab side has to be
+   * gone rather than outranked.
    */
-  it("gives the bare number row to the tabs", () => {
-    for (const index of FOCUSABLE_SESSIONS) {
-      const bare = defaultBindings().filter(
+  it("gives the bare number row to the rail", () => {
+    const bareDigit = (key: string) =>
+      defaultBindings().filter(
         (binding) =>
-          binding.chord.key === String(index) &&
+          binding.chord.key === key &&
           !binding.chord.alt &&
           !binding.chord.shift &&
           binding.chord.ctrl === (MOD === "ctrl") &&
           binding.chord.meta === (MOD === "cmd"),
       );
-      expect(bare.map((binding) => [binding.action, binding.argument])).toEqual([
-        ["focus_session", index],
-      ]);
-    }
+    expect(bareDigit("1").map((binding) => binding.action)).toEqual(["toggle_projects"]);
+    expect(bareDigit("2").map((binding) => binding.action)).toEqual(["toggle_files"]);
+    expect(bareDigit("3").map((binding) => binding.action)).toEqual(["cycle_sidebar_views"]);
+    expect(FOCUSABLE_SESSIONS).toContain(1);
   });
 
-  it("puts the sidebar views on Option, because Cmd+N is the tabs", () => {
-    const spec = (index: number) => (MOD === "cmd" ? `alt-${index}` : `${MOD}-alt-${index}`);
-    const chordOf = (action: string) =>
-      defaultBindings().find((binding) => binding.action === action)?.chord;
-    expect(chordOf("toggle_projects")).toEqual(parseChord(spec(1)));
-    expect(chordOf("toggle_files")).toEqual(parseChord(spec(2)));
-    expect(chordOf("cycle_sidebar_views")).toEqual(parseChord(spec(3)));
+  it("puts the tabs on Option, because Cmd+N is the rail", () => {
+    for (const index of FOCUSABLE_SESSIONS) {
+      const binding = defaultBindings().find(
+        (item) => item.action === "focus_session" && item.argument === index,
+      );
+      const spec = MOD === "cmd" ? `alt-${index}` : `${MOD}-alt-${index}`;
+      expect(binding?.chord).toEqual(parseChord(spec));
+    }
   });
 
   it("names a numbered tab in Settings by the index it reaches", () => {

@@ -1,5 +1,11 @@
-import { providerId, providerName, type ProviderInfo } from "../../contracts/runtime";
+import {
+  providerId,
+  providerName,
+  type AgentProfile,
+  type ProviderInfo,
+} from "../../contracts/runtime";
 import type {
+  AccountAnalytics,
   DailyUsage,
   ProviderAnalytics,
   TokenTotals,
@@ -33,6 +39,51 @@ export function statsProviders(
     if (id && !included.has(id)) rows.push({ id, name, analytics: null });
   }
   return rows;
+}
+
+/**
+ * The daily series the bars draw: every provider by default, or one.
+ *
+ * A provider absent from the scan draws an empty window rather than falling
+ * back to the total, which would put another agent's tokens under its name.
+ */
+export function dailySeries(analytics: UsageAnalytics, provider: string | null): DailyUsage[] {
+  if (provider === null) return analytics.daily;
+  return analytics.providers.find((item) => item.provider_id === provider)?.daily ?? [];
+}
+
+export type StatsAccount = {
+  key: string;
+  name: string;
+  analytics: AccountAnalytics;
+  /** Whole percent of the provider's tokens. */
+  share: number;
+};
+
+/**
+ * One row per account a provider's transcripts came from, or none when the
+ * only one is the unnamed default — a split of one is not a split.
+ */
+export function statsAccounts(
+  provider: ProviderAnalytics,
+  profiles: AgentProfile[],
+): StatsAccount[] {
+  const accounts = provider.accounts ?? [];
+  if (accounts.length === 0 || (accounts.length === 1 && accounts[0]?.profile_id === null)) {
+    return [];
+  }
+  const total = tokenTotal(provider.tokens);
+  return accounts.map((account) => {
+    const profile = account.profile_id
+      ? profiles.find((item) => item.id === account.profile_id)
+      : undefined;
+    return {
+      key: account.profile_id ?? "default",
+      name: account.profile_id ? (profile?.name ?? "Removed profile") : "Default",
+      analytics: account,
+      share: total === 0 ? 0 : Math.round((tokenTotal(account.tokens) * 100) / total),
+    };
+  });
 }
 
 export type Overview = {

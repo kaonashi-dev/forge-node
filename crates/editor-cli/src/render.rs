@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use crossterm::{cursor, queue, style, terminal, SynchronizedUpdate};
 
-use crate::app::{App, Prompt, HELP};
+use crate::app::{definition_header, App, Prompt, HELP};
 use crate::view;
 
 pub fn draw(app: &mut App, out: &mut impl Write) -> io::Result<()> {
@@ -33,6 +33,7 @@ fn draw_frame(app: &mut App, out: &mut impl Write) -> io::Result<()> {
         draw_status(app, out, height)?;
     }
     draw_change_details(app, out, height)?;
+    draw_definitions(app, out, height)?;
     draw_completion(app, out, height)?;
     place_caret(app, out, height)?;
     // A copy leaves an OSC 52 for the terminal that owns the clipboard. Written
@@ -269,12 +270,62 @@ fn draw_change_details(app: &App, out: &mut impl Write, height: usize) -> io::Re
     Ok(())
 }
 
-/// The completion list, under the caret when there is room and over it when
-/// there is not.
-///
-/// Painted after the rows and before the caret, so it sits on top of the text
-/// and the caret still shows where the word is being typed. The whole viewport
-/// is damaged while a list is open, so it never leaves a strip behind.
+fn draw_definitions(app: &App, out: &mut impl Write, height: usize) -> io::Result<()> {
+    let Some(Prompt::Definitions {
+        places, selected, ..
+    }) = app.prompt()
+    else {
+        return Ok(());
+    };
+    let preview_rows = usize::from(height > 1);
+    let rows = places.len().min(5).min(height.saturating_sub(preview_rows));
+    if rows == 0 {
+        return Ok(());
+    }
+    let width = app.width() as usize;
+    let first = selected.saturating_sub(rows / 2).min(places.len() - rows);
+    let top = height - rows - preview_rows;
+    for (index, place) in places.iter().enumerate().skip(first).take(rows) {
+        let prefix = if index == *selected { "> " } else { "  " };
+        let location = format!("{}:{}", place.path, place.line);
+        let text = format!(
+            "{prefix}{}",
+            elide_front(&location, width.saturating_sub(2))
+        );
+        draw_candidate_row(out, top + index - first, &text, width, index == *selected)?;
+    }
+    if preview_rows != 0 {
+        if let Some(place) = places.get(*selected) {
+            draw_candidate_row(out, height - 1, place.text.trim(), width, false)?;
+        }
+    }
+    Ok(())
+}
+
+fn draw_candidate_row(
+    out: &mut impl Write,
+    row: usize,
+    text: &str,
+    width: usize,
+    selected: bool,
+) -> io::Result<()> {
+    let text = view::cell_window(text, 0, width);
+    queue!(
+        out,
+        cursor::MoveTo(0, row as u16),
+        style::SetAttribute(style::Attribute::Reverse),
+        style::SetAttribute(if selected {
+            style::Attribute::Bold
+        } else {
+            style::Attribute::NormalIntensity
+        }),
+        style::Print(&text),
+        style::Print(" ".repeat(width.saturating_sub(display_cells(&text)))),
+        style::SetAttribute(style::Attribute::NormalIntensity),
+        style::SetAttribute(style::Attribute::NoReverse)
+    )
+}
+
 fn draw_completion(app: &App, out: &mut impl Write, height: usize) -> io::Result<()> {
     let Some(open) = app.completion() else {
         return Ok(());
@@ -422,8 +473,10 @@ fn status_text(app: &App) -> String {
         // which is which in `App::prompt_line` — the one formatter, shared with
         // the headless host, which has no row to paint but the same words to
         // say. Only the overlays are built here.
-        if let Some(line) = app.prompt_line() {
-            return view::cell_window(&line, 0, width);
+        if !matches!(prompt, Prompt::Definitions { .. }) {
+            if let Some(line) = app.prompt_line() {
+                return view::cell_window(&line, 0, width);
+            }
         }
         return match prompt {
             Prompt::Find { .. }
@@ -449,20 +502,7 @@ fn status_text(app: &App) -> String {
                 places,
                 selected,
                 truncated,
-            } => {
-                let at = selected + 1;
-                let count = places.len();
-                let cut = if *truncated { " (partial search)" } else { "" };
-                match places.get(*selected) {
-                    Some(place) => format!(
-                        "{symbol} {at}/{count}{cut}: {}:{}  {}   (Up/Down, Enter opens, Esc cancels)",
-                        place.path,
-                        place.line,
-                        place.text.trim()
-                    ),
-                    None => format!("{symbol}: {count} places{cut}"),
-                }
-            }
+            } => definition_header(symbol, *selected, places.len(), *truncated),
         };
     }
     if let Some(message) = app.status() {
@@ -613,6 +653,57 @@ mod tests {
         assert_eq!(text.matches("\x1b[?2026h").count(), 1);
         assert_eq!(text.matches("\x1b[?2026l").count(), 1);
         assert!(text.len() > 16, "the frame must contain paint commands");
+    }
+
+    #[test]
+    fn definition_picker_keeps_controls_and_filename_visible_in_narrow_panes() {
+        for (width, height) in [(60, 10), (60, 2), (100, 10)] {
+            let document = Document::from_string("release\n".into(), false);
+            let mut app = App::new(document, "service.ts".into(), None);
+            app.set_integrated();
+            app.resize(width, height);
+            app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+            let (request_id, symbol) = app.take_definition_request().unwrap();
+            app.definitions_arrived(
+                request_id,
+                symbol,
+                vec![editor_control::WirePlace {
+                    path: "src/a-very-long-directory/payins/services/payin-settlement.service.ts"
+                        .into(),
+                    line: 204,
+                    text: "private async release(payin: Payin, tx: Prisma.TransactionClient) {"
+                        .into(),
+                }],
+                false,
+            );
+            let status = status_text(&app);
+            assert!(status.contains("Enter opens"));
+            assert!(status.contains("Esc cancels"));
+            assert!(!status.contains("Prisma"));
+            let mut output = Vec::new();
+            draw(&mut app, &mut output).unwrap();
+            let painted = String::from_utf8(output).unwrap();
+            assert!(
+                painted.contains("payin-settlement.service.ts:204"),
+                "{painted}"
+            );
+            if height > 2 {
+                assert!(painted.contains("private async release"));
+            }
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert!(app.prompt().is_none());
+            assert!(!app.take_frame().rows.is_empty());
+        }
+    }
+
+    #[test]
+    fn definition_header_preserves_partial_search_before_a_long_symbol() {
+        let text = definition_header(&"x".repeat(128), 0, 64, true);
+        let visible = view::cell_window(&text, 0, 60);
+        assert!(visible.contains("Enter opens"));
+        assert!(visible.contains("Esc cancels"));
+        assert!(visible.contains("1/64"));
+        assert!(visible.contains("partial search"));
     }
 
     #[test]

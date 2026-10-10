@@ -37,7 +37,7 @@ Do not regenerate as part of the build — an auto-updated fixture asserts nothi
 ## Runtime switch
 
 `ThemeProvider` applies `data-theme` / `color-scheme` and CSS variables from
-`toCssVariables` / `applyTheme`. The in-app selector (Settings → Personalization, and
+`toCssVariables` / `applyTheme`. The in-app selector (Settings → Appearance, and
 the `?gallery` surface) changes the running preference; persistence goes through
 app state like any other UI preference.
 
@@ -109,7 +109,8 @@ OS setting.
 The type scale is 28/1.2/600 section title (`--text-2xl`), 20/1.3/600 panel
 heading, 15/1.45/600 card and dialog heading, 13/1.6 body, 12.5 row label, 11.5/1.5
 caption and a 10px bold uppercase mono section label (`--text-label`); nothing is
-set below 10px. Space steps are 4/8/12/16/22/32/44 (`--space-*`, pixel-named);
+set below 10px. Space steps run 1/2/3/4/6/8/10/12/14/16/20/22/24/28/32/44
+(`--space-*`, pixel-named);
 radii are 5 badge, 7 button and row, 9 card, 12 panel, 14 palette and a pill;
 depth runs 0–3 (only menus, tooltips, dialogs and the palette cast a shadow);
 motion is 0/90/120/160ms. Neither
@@ -143,7 +144,7 @@ disagree about which artwork a name gets.
 
 ## Custom JSON themes
 
-Settings → Personalization includes a live code diff and terminal preview, a
+Settings → Appearance includes a live code diff and terminal preview, a
 theme selector, editable accent/background/foreground colors, and a 0–100
 contrast slider. Colors accept a native picker or a six-digit hex value.
 Contrast defaults to 60, preserves those three colors, and adjusts panel

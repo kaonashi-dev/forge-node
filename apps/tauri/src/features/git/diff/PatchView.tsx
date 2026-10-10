@@ -1,17 +1,25 @@
-import { For, createMemo } from "solid-js";
+import { createMemo, onCleanup } from "solid-js";
 import type { PatchRow } from "./patch";
 import { intraLine, pairedRows, patchDocument, rowClass } from "./patchDocument";
+import { WindowedPatchRows } from "./WindowedPatchRows";
+import { nextHunk } from "./patchWindow";
+import { scrollPatchRow } from "./patchViewport";
+import { cachedPatchSyntax } from "./patchSyntax";
+import { PatchText, patchSyntaxColors } from "./PatchText";
 
-/**
- * One file's patch as a read-only row list.
- *
- * Mounted only while the section is open (`DiffFiles`), so a checkout with
- * many changed files costs the DOM of the ones being read.
- */
-export function PatchView(props: { patch: string; onOpenLine: (line: number) => void }) {
+export function PatchView(props: {
+  path: string;
+  patch: string;
+  onOpenLine: (line: number) => void;
+}) {
   let host!: HTMLDivElement;
 
   const doc = createMemo(() => patchDocument(props.patch));
+  const tokens = cachedPatchSyntax(
+    () => props.path,
+    () => doc().rows,
+  );
+  const colors = patchSyntaxColors();
 
   const intra = createMemo(() => {
     const rows = doc().rows;
@@ -26,14 +34,9 @@ export function PatchView(props: { patch: string; onOpenLine: (line: number) => 
   });
 
   function jumpHunk(forward: boolean): void {
-    const starts = doc().hunkStarts;
-    if (starts.length === 0) return;
-    const current = Number(host.dataset.cursor ?? "0");
-    const target = forward
-      ? starts.find((index) => index > current)
-      : [...starts].reverse().find((index) => index < current);
-    if (target === undefined) return;
-    host.querySelector(`[data-index="${target}"]`)?.scrollIntoView({ block: "start" });
+    const target = nextHunk(doc().hunkStarts, Number(host.dataset.cursor ?? "-1"), forward);
+    if (target === null) return;
+    scrollPatchRow(host, target);
     host.dataset.cursor = String(target);
   }
 
@@ -42,25 +45,15 @@ export function PatchView(props: { patch: string; onOpenLine: (line: number) => 
     props.onOpenLine(row.after);
   }
 
-  function renderText(index: number, text: string) {
-    const span = intra().get(index);
-    if (!span) return text;
-    return (
-      <>
-        {text.slice(0, span.from)}
-        <mark class="forge-diff-intra">{text.slice(span.from, span.to)}</mark>
-        {text.slice(span.to)}
-      </>
-    );
-  }
-
   let pending: "]" | "[" | null = null;
   let pendingTimer = 0;
+  onCleanup(() => window.clearTimeout(pendingTimer));
 
   return (
     <div
       ref={host}
       class="diff-patch"
+      style={colors()}
       tabIndex={0}
       onClick={(event) => {
         const row = (event.target as HTMLElement).closest("[data-index]");
@@ -81,7 +74,7 @@ export function PatchView(props: { patch: string; onOpenLine: (line: number) => 
         pending = null;
       }}
     >
-      <For each={doc().rows}>
+      <WindowedPatchRows rows={doc().rows}>
         {(row, index) => (
           <div
             class={`diff-row ${rowClass(row.kind)}`}
@@ -93,10 +86,12 @@ export function PatchView(props: { patch: string; onOpenLine: (line: number) => 
             <span class="forge-diff-gutter forge-diff-gutter-marker">
               {row.kind === "added" ? "+" : row.kind === "removed" ? "−" : ""}
             </span>
-            <span class="diff-row-text">{renderText(index(), row.text)}</span>
+            <span class="diff-row-text">
+              <PatchText tokens={tokens(row)} mark={intra().get(index())} />
+            </span>
           </div>
         )}
-      </For>
+      </WindowedPatchRows>
     </div>
   );
 }

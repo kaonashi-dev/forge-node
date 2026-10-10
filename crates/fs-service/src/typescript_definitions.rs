@@ -35,6 +35,14 @@ pub(super) fn append(
     }
     let (packages, truncated) = imported_packages(&contents.text);
     results.truncated |= truncated;
+    if packages.is_empty() {
+        return;
+    }
+    if results.matches.len() >= limit {
+        results.truncated = true;
+        return;
+    }
+    let binding = imported_binding(&contents.text, symbol);
     let Ok(source) = resolve_inside(root, relative) else {
         return;
     };
@@ -51,6 +59,10 @@ pub(super) fn append(
         visited: HashSet::new(),
     };
     for package in packages {
+        if binding.is_some_and(|(imported_package, _)| imported_package != package) {
+            continue;
+        }
+        scanner.symbol = binding.map_or(symbol, |(_, exported)| exported);
         match package_root(root, parent, package) {
             Some(Ok(path)) => scanner.scan(path),
             Some(Err(_)) => scanner.results.truncated = true,
@@ -89,7 +101,10 @@ impl Scanner<'_> {
     fn scan(&mut self, package: PathBuf) {
         let mut pending = vec![package];
         while let Some(directory) = pending.pop() {
-            if self.entries >= MAX_ENTRIES || self.bytes_left == 0 {
+            if self.entries >= MAX_ENTRIES
+                || self.bytes_left == 0
+                || self.results.matches.len() >= self.limit
+            {
                 self.results.truncated = true;
                 return;
             }
@@ -115,6 +130,10 @@ impl Scanner<'_> {
             }
             paths.sort();
             for path in paths {
+                if self.results.matches.len() >= self.limit || self.bytes_left == 0 {
+                    self.results.truncated = true;
+                    return;
+                }
                 let Some(relative) = path.strip_prefix(self.root).ok().and_then(Path::to_str)
                 else {
                     self.results.truncated = true;
@@ -138,6 +157,7 @@ impl Scanner<'_> {
                 } else if [".d.ts", ".d.mts", ".d.cts"]
                     .iter()
                     .any(|suffix| relative.ends_with(suffix))
+                    && self.visited.insert(resolved.clone())
                 {
                     self.read_declarations(relative, &resolved);
                 }
@@ -279,6 +299,56 @@ fn package_name(specifier: &str) -> Option<&str> {
     } else {
         valid(first).then_some(first)
     }
+}
+
+fn imported_binding<'a>(text: &'a str, symbol: &str) -> Option<(&'a str, &'a str)> {
+    let mut tokens = Tokens(text).peekable();
+    while let Some(token) = tokens.next() {
+        if !matches!(token, Token::Word("import"))
+            || matches!(tokens.peek(), Some(Token::Punctuation('(')))
+        {
+            continue;
+        }
+        let mut named = false;
+        let mut original = None;
+        let mut alias = None;
+        while let Some(token) = tokens.next() {
+            match token {
+                Token::Punctuation('{') => named = true,
+                Token::Punctuation('}') => named = false,
+                Token::Punctuation(',' | ';') => {
+                    original = None;
+                    if matches!(token, Token::Punctuation(';')) {
+                        break;
+                    }
+                }
+                Token::Word("from") if !named => {
+                    if let (Some(exported), Some(Token::Literal(specifier))) =
+                        (alias, tokens.next())
+                    {
+                        if let Some(package) = package_name(specifier) {
+                            return Some((package, exported));
+                        }
+                    }
+                    break;
+                }
+                Token::Word("as") if named => {
+                    if matches!(tokens.next(), Some(Token::Word(local)) if local == symbol) {
+                        alias = original;
+                    }
+                }
+                Token::Word(word) if named => {
+                    original = Some(word);
+                    if word == symbol && !matches!(tokens.peek(), Some(Token::Word("as"))) {
+                        alias = Some(word);
+                    }
+                }
+                Token::Literal(_) | Token::Punctuation('(') if !named => break,
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 enum Token<'a> {
@@ -444,6 +514,80 @@ mod tests {
             ]
         );
         assert!(!truncated);
+    }
+
+    #[test]
+    fn named_import_aliases_search_the_exported_declaration() {
+        let tmp = fixture();
+        fs::write(
+            tmp.path().join(SOURCE),
+            "import type { Queue as Jobs } from 'bullmq';\nconst queue: Jobs = makeQueue();\n",
+        )
+        .unwrap();
+        let found = search_definitions(tmp.path(), SOURCE, "Jobs", 64).unwrap();
+        assert_eq!(found.matches.len(), 1);
+        assert_eq!(found.matches[0].path, TYPES);
+        assert_eq!(found.matches[0].line, 1);
+        assert!(!found.truncated);
+        assert_eq!(imported_binding("// import { Queue as Jobs } from 'fake';\nimport { Other, Queue as Jobs, Third } from 'bullmq/subpath';", "Jobs"), Some(("bullmq", "Queue")));
+        assert_eq!(
+            imported_binding("import { Queue as Jobs } from './local';", "Jobs"),
+            None
+        );
+        assert_eq!(
+            imported_binding("import { Queue } from 'bullmq';", "Queue"),
+            Some(("bullmq", "Queue"))
+        );
+        assert_eq!(
+            imported_binding("import { Queue as Jobs } from 'bullmq';", "Queue"),
+            None
+        );
+        assert_eq!(
+            imported_binding("import { from as Source } from 'package';", "Source"),
+            Some(("package", "from"))
+        );
+    }
+
+    #[test]
+    fn directly_imported_names_do_not_scan_other_packages() {
+        let tmp = fixture();
+        File::create(
+            tmp.path()
+                .join("node_modules/@nestjs/common/oversized.d.ts"),
+        )
+        .unwrap()
+        .set_len(MAX_FILE_BYTES as u64 + 1)
+        .unwrap();
+        let found = search_definitions(tmp.path(), SOURCE, "Queue", 64).unwrap();
+        assert_eq!(found.matches.len(), 1);
+        assert_eq!(found.matches[0].path, TYPES);
+        assert!(!found.truncated);
+    }
+
+    #[test]
+    fn a_full_candidate_list_does_not_read_dependency_files() {
+        let tmp = fixture();
+        let mut found = SearchResults {
+            matches: vec![super::super::tests::hit(
+                SOURCE,
+                8,
+                "async onModuleInit() {}",
+            )],
+            truncated: false,
+        };
+        let mut scanner = Scanner {
+            root: tmp.path(),
+            symbol: "Queue",
+            limit: 1,
+            results: &mut found,
+            entries: 0,
+            bytes_left: MAX_SCAN_BYTES,
+            visited: HashSet::new(),
+        };
+        scanner.scan(tmp.path().join("node_modules/bullmq"));
+        assert_eq!(scanner.entries, 0);
+        assert_eq!(scanner.bytes_left, MAX_SCAN_BYTES);
+        assert!(scanner.results.truncated);
     }
 
     #[test]

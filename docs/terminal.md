@@ -5,7 +5,7 @@ How a session's process becomes cells on screen. Crates involved:
 `daemon` (`terminal.rs`, `registry.rs`, parts of `core.rs`), `client`
 (`CellGrid` and input re-exports), `domain::terminal` (wire types).
 
-Plan references: §10.4, §10.5, §11. ADRs: 005 (PTY owned by the daemon),
+ADRs: 005 (PTY owned by the daemon),
 011 (daemon is the single source of truth for the grid).
 
 ## Layers (§11.1)
@@ -101,8 +101,12 @@ The daemon builds one `SpawnSpec` per session:
 - `cwd` — the workspace path.
 - `env` — the **complete** environment: the resolved login-shell environment
   (see below) plus `TERM`, `COLORTERM=truecolor`, `FORGE_SESSION_ID=<uuid>`,
-  `FORGE_WORKSPACE=<path>`. The PTY launch clears the inherited environment
-  before applying it, so these are the only variables the child sees. Agents
+  `FORGE_WORKSPACE=<path>` and, when the daemon has a bound socket,
+  `FORGE_SOCKET=<daemon socket>`, with the daemon binary's directory prepended to
+  `PATH`; an orchestration-owned session also gets `FORGE_RUN_ID`,
+  `FORGE_TASK_ID`, `FORGE_ATTEMPT_ID` and `FORGECTL_JSON=1`. The PTY launch
+  clears the inherited environment before applying it, so these are the only
+  variables the child sees. Agents
   always get `TERM=xterm-256color` (`agents/src/descriptor.rs`); shells get
   `sessions.term` (default `xterm-ghostty`), resolved once per daemon by
   `daemon/src/terminfo.rs`.
@@ -113,8 +117,8 @@ The daemon builds one `SpawnSpec` per session:
 unknown `TERM` leaves ncurses programs with no capabilities at all. Terminals
 that ship a non-standard entry usually keep it in their app bundle and export
 `TERMINFO` themselves, which a daemon started from the GUI never inherits, so
-the lookup searches `sessions.terminfo_dir`, the session's own
-`TERMINFO`/`TERMINFO_DIRS`, `~/.terminfo`, the system databases and the known
+the lookup searches `sessions.terminfo_dir`, the session's own `TERMINFO`,
+`~/.terminfo`, its `TERMINFO_DIRS`, the system databases and the known
 app bundles, in that order. An entry found outside what ncurses searches on its
 own is exported as `TERMINFO` next to `TERM`; a name found nowhere falls back to
 `xterm-256color` with a `DaemonNotice`.
@@ -206,9 +210,9 @@ a terminal delta cannot be enqueued:
 - once the queue drains, the client receives a single `TerminalResync` with a
   fresh snapshot instead of a replayed backlog.
 
-The PTY loop never blocks on a slow client and daemon memory stays bounded
-(scenario H in the plan). Domain events are never dropped — they are
-low-volume.
+The PTY loop never blocks on a slow client and daemon memory stays bounded.
+Domain events are best-effort too: a momentarily full queue drops one, and the
+client resyncs domain state on reconnect or its next `GetSnapshot`.
 
 ## Resize
 
@@ -247,7 +251,8 @@ history, and `RestartSession` starts a fresh terminal.
 - The core lock is taken once per processed PTY batch and released before any
   blocking I/O; lock order is `inner → registry`.
 - `SpawnSpec.env` is complete; keep the daemon-injected `TERM`, `COLORTERM`,
-  `FORGE_SESSION_ID`, `FORGE_WORKSPACE` when changing spawn construction.
+  `FORGE_SESSION_ID`, `FORGE_WORKSPACE`, `FORGE_SOCKET` and the daemon-bin
+  `PATH` entry when changing spawn construction.
 
 ## Tests
 

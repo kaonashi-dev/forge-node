@@ -1,11 +1,8 @@
 //! Live terminal runtime and the per-terminal PTY read loop.
 //!
-//! One [`TerminalRuntime`] exists per live PTY, owned by the daemon core behind
-//! its lock. A dedicated OS thread ([`pty_loop`]) reads 64 KiB buffers from the
-//! master, feeds the authoritative engine under the lock, writes any device
-//! replies back to the PTY, and emits a coalesced [`TerminalDelta`] to
-//! subscribers at most every [`FRAME`] (≤125/s). EOF notifies the core to reap
-//! outside its lock; EOF does not establish that the child has exited.
+//! `pty_loop` drains bounded batches and pumps them through
+//! `Daemon::pump_terminal_batch`; EOF notifies the core but does not establish
+//! that the child exited. Read/emit budgets: `docs/terminal.md`.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};

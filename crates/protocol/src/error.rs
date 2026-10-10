@@ -9,9 +9,9 @@ use std::fmt;
 
 /// Machine-readable error category.
 ///
-/// The variants mirror the plan exactly. `Unknown` is the forward-compatible
-/// catch-all: an older peer decoding a code introduced by a newer peer maps it
-/// here instead of failing to decode the whole message.
+/// `Unknown` is the forward-compatible catch-all: an older peer decoding a code
+/// introduced by a newer peer maps it here instead of failing to decode the
+/// whole message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ErrorCode {

@@ -36,7 +36,7 @@ import { TerminalRenderer } from "../../../shared/cell-grid/renderer";
 import { Viewport } from "../../../shared/cell-grid/viewport";
 import { clipboardPaste } from "../../../shared/input/clipboard";
 import { CursorBlink, prefersReducedMotion } from "../../../shared/cell-grid/cursorBlink";
-import { editorKeyForMeta } from "./editorChords";
+import { editorKeyForChord } from "./editorChords";
 import type { CellsPayload } from "../../../contracts/terminal";
 import { LatencyProbe } from "../../../shared/cell-grid/latency";
 import {
@@ -283,15 +283,14 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     // Typing restarts the phase *shown*, so a burst of keys never spends half
     // its frames with the caret hidden under the character about to be placed.
     blink.wake();
-    if (event.metaKey) {
-      const chord = editorKeyForMeta(event);
-      // ⌘V and every chord the editor does not own keep their default: the
-      // platform's `paste` event is what carries the clipboard into the pane.
-      if (!chord) return;
+    const chord = editorKeyForChord(event);
+    if (chord) {
       event.preventDefault();
       void sendEditorKey(props.session, chord, probe.send()).catch(() => undefined);
       return;
     }
+    // Unclaimed ⌘ chords must keep native defaults, including paste.
+    if (event.metaKey) return;
     event.preventDefault();
     void sendEditorKey(
       props.session,

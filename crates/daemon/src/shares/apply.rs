@@ -220,8 +220,18 @@ fn perform(ctx: &ShareContext, rule: &ShareRule, mut action: ShareAction) -> Sha
 
     let outcome = match action.verb {
         ShareVerb::Copy | ShareVerb::Clone => {
+            let cloning = action.verb == ShareVerb::Clone;
             let source = ctx.source.join(&relative);
-            write_into(ctx, &source, &target, action.verb == ShareVerb::Clone)
+            match write_into(ctx, &source, &target, cloning) {
+                Ok(true) => Ok(()),
+                Ok(false) => {
+                    if cloning {
+                        action.fallback = true;
+                    }
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
         }
         ShareVerb::Link => ctx.store_path(&relative).map_or_else(
             || Err(io::Error::other("the project has no shared store")),
@@ -253,7 +263,11 @@ fn perform(ctx: &ShareContext, rule: &ShareRule, mut action: ShareAction) -> Sha
 }
 
 /// Copy or clone `source` onto `target`, backing up whatever is in the way.
-fn write_into(ctx: &ShareContext, source: &Path, target: &Path, cloning: bool) -> io::Result<()> {
+///
+/// Reports whether the clone path was actually taken: a clone that fails at
+/// apply time falls back to the recursive copy, and that must be visible rather
+/// than passing as a clone (`ShareAction::fallback`).
+fn write_into(ctx: &ShareContext, source: &Path, target: &Path, cloning: bool) -> io::Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
 
     let source_meta = std::fs::symlink_metadata(source)?;
@@ -275,9 +289,10 @@ fn write_into(ctx: &ShareContext, source: &Path, target: &Path, cloning: bool) -
         remove_any(target)?;
     }
     if cloning && clone_path(source, target).is_ok() {
-        return Ok(());
+        return Ok(true);
     }
-    copy_tree(source, target, &mut Budget::default())
+    copy_tree(source, target, &mut Budget::default())?;
+    Ok(false)
 }
 
 /// Replace `target` with a symlink to `store`.

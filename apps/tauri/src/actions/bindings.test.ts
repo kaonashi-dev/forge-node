@@ -65,8 +65,8 @@ describe("the binding table", () => {
   });
 
   it.each([
-    { platform: "MacIntel", spec: "cmd-1", meta: true, ctrl: false },
-    { platform: "Linux x86_64", spec: "ctrl-1", meta: false, ctrl: true },
+    { platform: "MacIntel", spec: "alt-1", meta: false, ctrl: false },
+    { platform: "Linux x86_64", spec: "ctrl-alt-1", meta: false, ctrl: true },
   ])("binds tab 1 as $spec on $platform", async ({ platform, spec, meta, ctrl }) => {
     vi.stubGlobal("navigator", { platform, userAgent: "" });
     vi.resetModules();
@@ -94,11 +94,15 @@ describe("the binding table", () => {
       );
       expect(binding, `no chord for tab ${index}`).toBeDefined();
       expect(binding?.chord.key).toBe(String(index));
-      // The sidebar views own Option (and Ctrl+Alt off macOS).
-      expect(binding?.chord.alt, `tab ${index} must not carry alt`).toBe(false);
+      // Option (and Ctrl+Alt off macOS): the bare number row is the sidebar.
+      expect(binding?.chord.alt, `tab ${index} must carry alt`).toBe(true);
       expect(binding?.chord.shift).toBe(false);
-      expect(binding?.chord.meta).toBe(MOD === "cmd");
-      expect(binding?.chord.ctrl).toBe(MOD === "ctrl");
+      if (MOD === "cmd") {
+        expect(binding?.chord.meta, `tab ${index} must not also require cmd`).toBe(false);
+        expect(binding?.chord.ctrl).toBe(false);
+      } else {
+        expect(binding?.chord.ctrl, `tab ${index} must keep ctrl off macOS`).toBe(true);
+      }
     }
   });
 });

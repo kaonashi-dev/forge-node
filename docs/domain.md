@@ -1,7 +1,7 @@
 # Domain model
 
 The `domain` crate is the contract every other crate builds on. It depends only
-on `serde`, `uuid`, `time`, `thiserror` and `compact_str`. It does validation
+on `serde`, `serde_json`, `uuid`, `time`, `thiserror` and `compact_str`. It does validation
 and the pure orchestration policy, and no I/O: no Git, no PTY. Everything in it is
 `Serialize + Deserialize` so the same values travel over IPC, live in the
 daemon's memory and map to SQLite columns.
@@ -30,7 +30,7 @@ Source: `crates/domain/src/`.
 ## Identifiers (`ids.rs`)
 
 - `ProjectGroupId`, `ProjectId`, `WorkspaceId`, `SessionId`, `TerminalId`, `ClientId`,
-  `ContextId`, `RunId`, `TaskId`, `AttemptId` are newtypes over **UUID v7**. v7 is time-ordered, so sorting by
+  `ContextId`, `RunId`, `TaskId`, `AttemptId`, `ShareRuleId` are newtypes over **UUID v7**. v7 is time-ordered, so sorting by
   id gives creation order for free (sidebar ordering, session lists).
 - `AgentProfileId` is a UUID v7 too: a launch profile (§13.4) is a saved row
   the user can rename, so its identity cannot be its name.
@@ -107,7 +107,11 @@ upstream by itself.
 | `agent_profile_id` | `Some` when the session was launched from a profile (§13.4). Kept even after that profile is deleted: the row is history, and the GUI falls back to the provider's name. |
 | `title` | `SessionTitle { user, terminal }`; see the title rule below. |
 | `state` | The state machine below. |
-| `last_activity_at` | Last PTY output or input. **Runtime-only**, like `terminal_id`: never a column, and reconstructed as `ended_at` (else `created_at`) on load. `idle_for(now)` and `age(now)` read it; see the idle policy below. |
+| `last_activity_at` | Last PTY output or input. **Runtime-only**, like `terminal_id`: never a column, and reconstructed as `ended_at` (else `created_at`) on load. `idle_for(now)` reads it; `age(now)` reads `created_at`; see the idle policy below. |
+| `editor` | Buffer metadata for an `Editor` session (`EditorState`: path, caret, dirty/read-only, viewport, find, `conflict` flag); `None` for every other kind. **Runtime-only**: never a column, `None` on load. |
+| `launch_command` | Foreground command a shell session was running, so a restart re-runs it; `None` is a fresh shell. |
+| `base_commit` | The commit the session started from, resolved once with `git rev-parse HEAD` at creation; `None` when there was no HEAD. Persisted (migration 9), unlike `terminal_id`. |
+| `activity` | `AgentActivity { state, since, evidence }`: the last word from a provider hook or typed input. **Runtime-only**, like `last_activity_at`; `ActivityState` is `Unknown` / `Starting` / `Working` / `Waiting` / `Idle`. Silence does not change it. |
 
 #### State machine
 
@@ -179,10 +183,14 @@ Where a child created via `CreateChildSession` runs:
 
 ### `ContextEnvelope` (§8.3)
 
-`source_session_id`, optional `target_session_id`, `summary`, `instructions`,
+`source_session_id: Option<SessionId>` (`None` when a human with no session sent
+it), optional `target_session_id`, `summary`, `instructions`,
 `artifacts: Vec<ContextArtifactRef>` (kinds: `Text`, `Plan`, `Review`,
 `FileReference`, `DiffReference`, `CommitReference`, `TerminalExcerpt`,
 `StructuredJson`) and an optional `GitContextRef { repo_path, branch, commit }`.
+A run-scoped envelope also carries `run_id`, `task_id`, `kind` (`Message` /
+`Question` / `Answer` / `Feedback` / `Pointer`), `in_reply_to` and `acked_at`;
+all absent on a plain handoff.
 
 How envelopes are created, delivered, listed, and how agents call the same
 surface from a PTY: [session-context.md](./session-context.md).
@@ -207,6 +215,8 @@ can be stale until expiry or invalidation; see
 | `message_count` / `subagent_count` | conversation turns (tool traffic excluded) and subagent runs spawned |
 | `transcript_path` | the file, for the GUI to open when the run cannot be resumed |
 | `started_at` / `last_activity` | first and last recorded activity, falling back to the file's mtime |
+| `profile_id` | the account whose config directory the transcript was read from; `None` is the provider's default account, and a resume must launch with it |
+| `store` | `File` or `SharedDatabase` (opencode ≥ 1.17): whether `transcript_path` belongs to this run alone, which is what makes deleting one run safe |
 
 ### `PullRequest` (`pull_request.rs`)
 
@@ -275,15 +285,31 @@ view one client asked for, not shared state.
 | `files` | changed paths in git's own order |
 | `truncated` | files, or one file's patch, were left out of the answer |
 
+### `RebaseState` (`rebase.rs`)
+
+What one checkout's stopped rebase, merge, cherry-pick or revert looks like right
+now. **Runtime-only** like `WorkspaceDiff`: no column, no migration, no `Store`
+field — which paths are still unmerged is a question only the index can answer,
+and an answer out of a database would describe a resolution the user finished ten
+minutes ago. Fields: `operation: Option<SequencerOp>` (`Rebase` / `Merge` /
+`CherryPick` / `Revert`), `head`, `branch`, `onto`, `step` / `total`,
+`conflicts: Vec<ConflictFile>` (`path` plus git's porcelain `XY`, empty once every
+path is staged) and `truncated`. Answers `GetRebaseState`, `ContinueRebase` and
+`MarkConflictResolved`.
+
 ### `FileTree` / `FileContents` / `ImageContents` / `SearchResults` (`file.rs`)
 
 Workspace filesystem views for the in-app editor (ADR-012). Runtime-only like
-`WorkspaceDiff`: computed on demand by `ListFiles` / `ReadFile` / `ReadImage` /
-`SearchFiles`, never stored, never broadcast. `ImageContents.data` is base64
+`WorkspaceDiff`: computed on demand by `ListFiles` / `ListDirectory` / `ReadFile` /
+`ReadImage` / `SearchFiles`, never stored, never broadcast. `DirectoryListing` is
+the immediate-children answer (`path`, `entries`, `truncated`) and follows the
+same rule. `ImageContents.data` is base64
 because the last hop is JSON into the WebView. `FileContents.revision` is the optimistic-
 concurrency token `WriteFile` must present back. `SearchResults.query` echoes
-what was asked: the answer arrives as an event with no request id, so it is the
-only thing that tells a second lookup from the first one's answer.
+what was asked: the daemon answers with the correlated
+`Response::SearchResults`, but the GUI's workbench re-broadcasts it as
+`workbench:search` with no request id, so `query` is the only thing that tells a
+second lookup from the first one's answer.
 
 `SearchKind::Content` is a fixed-string find (`git grep -F`): typed project
 search, not a regex. `SearchKind::Definition` is not a content search with a
@@ -294,9 +320,10 @@ declaring keyword before the name, a binding keyword, or a bare signature that
 opens a block. It is a heuristic, and the GUI presents several answers rather
 than choosing one.
 
-Each `DiffFile` carries `path`, `status` (`Added` / `Modified` / `Deleted`,
-decided by the *worktree* column of `git status` so a staged-then-deleted path
-reads as gone), `additions` / `deletions`, `binary`, and the `patch` itself.
+Each `DiffFile` carries `path`, `status` (`Added` / `Modified` / `Deleted` /
+`Conflicted`, the last one unmerged; `Added`/`Deleted` are decided by the
+*worktree* column of `git status` so a staged-then-deleted path reads as gone),
+`additions` / `deletions`, `binary`, and the `patch` itself.
 A patch that breaks a budget is dropped **whole** and flagged `truncated`: half a
 patch is not a patch, and a viewer that rendered one would show a lie.
 
@@ -308,11 +335,11 @@ patch is not a patch, and a viewer that rendered one would show a lie.
 | `AgentProfile` | A named way to start a provider (§13.4): `provider_id`, `name`, optional `executable`, optional `config_dir`, `args`. `resolve_config_dir` is what makes a relative directory absolute — against the launching user's `$HOME`, never the daemon's working directory. |
 | `ConfigDirSpec` | How a provider is pointed at a profile's directory, as data: the variables it is written to (two for OpenCode, which splits configuration from credentials) and one line of help. `None` on a descriptor means the provider has no such switch. |
 | `VersionProbe` | `args` (`--version`), optional `expect_substring` to reject look-alike binaries, `timeout_ms`. |
-| `AgentCapabilities` | `interactive_tui`, `supports_initial_prompt` — informational. `supports_resume` restates whether the descriptor carries a `ResumeStyle`. |
+| `AgentCapabilities` | `interactive_tui`, `supports_initial_prompt` — informational. `supports_resume` restates whether the descriptor carries a `ResumeStyle`; `supports_review` whether it carries a `ReviewStyle`. |
 | `ResumeStyle` | How a provider re-enters an earlier session of its own (§13.5): `Flag { flag }` (`claude --resume <id>`) or `Subcommand { command }` (`codex resume <id>`). `None` on the descriptor means its history is read-only. |
 | `DetectionResult` / `DetectionStatus` | `Installed { executable, version }`, `NotFound`, `Rejected { candidate, reason }`, `ProbeTimeout`. |
 | `ResolvedEnvironment` | The login-shell environment resolved once by the daemon (`EnvSource::LoginShell` or `ProcessFallback`). |
-| `LaunchAgentRequest` | `provider_id`, `cwd`, `extra_args`, `executable_override`, `resume_session_id`. |
+| `LaunchAgentRequest` | `provider_id`, `cwd`, `extra_args`, `executable_override`, `resume_session_id`, `initial_prompt`, `read_only`. |
 | `SpawnSpec` | Fully resolved `program`, `args`, `cwd`, and a **complete** `env` (not an overlay — the PTY launch clears the inherited environment first). |
 | `PtySize` | `cols`, `rows` plus pixel dimensions; default 80×24. |
 
@@ -327,8 +354,8 @@ answers neither question.
 |------|------|
 | `UsageSource` / `UsageProbe` | Where a provider's *allowance* reading comes from: a CLI printing one documented JSON document, its existing local OAuth credentials (`ClaudeOauth`, `CodexOAuth`), or its own ACP entry (`GrokAcp`). |
 | `ProviderUsage` / `UsageWindow` | The provider's own word on how much of a rolling window is gone: a whole `used_percent` (no float in a wire type), a human `window` label, an optional `resets_at`, and `collected_at` so a stale reading can be shown as stale. Empty `windows` means "reported nothing", rendered as no meter — never as 0%. A reading belongs to one *account*: `profile_id` names the launch profile whose login it describes, `None` being the provider's default one (§13.4). |
-| `UsageAnalytics` | *Our* count, from the transcripts the CLIs write to disk: `providers`, activity-only `daily` buckets, the `window_days` scanned, and `scanned`/`skipped` so a bounded scan never looks exhaustive. |
-| `ProviderAnalytics` | One provider's totals: `tokens`, `sessions`, `turns`, `cost_micros`, `unpriced_turns` (a non-zero count means the cost is a floor), `top_model`, `worked_secs`, and the first/last activity seen. |
+| `UsageAnalytics` | *Our* count, from the transcripts the CLIs write to disk: `providers`, activity-only `daily` buckets, the `window_days` scanned, `scanned`/`skipped` so a bounded scan never looks exhaustive, and `collected_at`. |
+| `ProviderAnalytics` | One provider's totals: `tokens`, `sessions`, `turns`, `cost_micros`, `unpriced_turns` (a non-zero count means the cost is a floor), `top_model`, `worked_secs`, the first/last activity seen, `daily`, and `accounts: Vec<AccountAnalytics>` splitting the same totals by config directory (`profile_id`, `tokens`, `sessions`, `turns`, `cost_micros`, `unpriced_turns`). Profiles that share a directory share an account. |
 | `TokenTotals` | `input`, `output`, `cache_write`, `cache_read`, `reasoning`. `reasoning` is a subset of `output` and is *not* in `total()`; the other four are disjoint. |
 | `DailyUsage` | One UTC day's token total, keyed `YYYY-MM-DD`. A day with no activity is absent rather than zero — the series is a list of facts and the view fills the gaps. |
 

@@ -61,7 +61,7 @@ Useful exact invocations:
 ```sh
 cargo test -p client --lib ipc::tests::connect_request_and_event_round_trip -- --exact
 cargo test -p daemon --test integration end_to_end_shell_session -- --exact
-cargo test -p daemon --test integration                    # all non-ignored E2E cases
+cargo test -p daemon                                        # integration.rs and every scenario_*.rs
 cargo test -p daemon --test integration installed_agent_tuis_render_and_accept_input -- --exact --ignored
 cargo test -p daemon --test integration key_byte_to_grid_delta_p95_is_under_33ms -- --exact --ignored
 cargo test -p daemon --test integration macos_vim_htop_color_and_alt_screen_smoke -- --exact --ignored
@@ -80,9 +80,9 @@ fixture exporter.
 typechecks. `make test-tauri` checks only the frontend and its Rust host;
 `make test-frontend` avoids Rust compilation entirely.
 
-The packagers select `forge-daemon`, `forge-editor` and `forge-tauri`, in one Cargo
-invocation per architecture. This lets Cargo share dependency features and
-schedule their graphs together. The frontend must finish first because
+The packagers select `forge-daemon`, `forge-editor`, `forgectl` and
+`forge-tauri`, in one Cargo invocation per architecture. This lets Cargo share
+dependency features and schedule their graphs together. The frontend must finish first because
 `forge-tauri/custom-protocol` embeds its output. Universal macOS packages still
 need a separate native build for each architecture.
 
@@ -175,8 +175,10 @@ restart (no hot reload). See [`config.example.toml`](./config.example.toml).
 Dependency direction is one-way and enforced by `Cargo.toml`:
 `forge-tauri → {client, domain}`, `client → {protocol, terminal-input, domain}`,
 `daemon → {agents, client, editor-control, fs-service, git-service, persistence,
-protocol, terminal-core, domain}`, `fs-service → git-service`,
-`editor-cli → {editor-core, editor-control}`; every other crate depends on
+protocol, terminal-core, terminal-input, domain}`, `fs-service → git-service`,
+`editor-cli → {editor-core, editor-control}`, `forgectl → client → protocol →
+domain` (its tests boot a daemon; the binary does not), and
+`test-support → {domain, terminal-core}`; every other crate depends on
 `domain` alone or on nothing. The host depends on neither `protocol` nor
 `terminal-core` directly.
 

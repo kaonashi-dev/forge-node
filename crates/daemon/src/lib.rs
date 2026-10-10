@@ -40,7 +40,7 @@ pub fn info() -> anyhow::Result<()> {
     println!("socket:      {}", paths::socket_path()?.display());
     println!("lockfile:    {}", paths::lock_path()?.display());
     println!("db:          {}", paths::db_path()?.display());
-    println!("worktrees:   {}", paths::worktrees_root()?.display());
+    println!("worktrees:   {}", effective_worktrees_root(&cfg)?.display());
     println!("logs:        {}", paths::logs_dir()?.display());
     println!("scrollback:  {}", cfg.effective_scrollback());
     println!("kill grace:  {:?}", cfg.kill_grace());
@@ -53,6 +53,16 @@ pub fn info() -> anyhow::Result<()> {
         }
     );
     Ok(())
+}
+
+/// The worktrees root the daemon will actually use: `[worktrees] root` when set,
+/// the default under the data directory otherwise.
+fn effective_worktrees_root(cfg: &config::Config) -> anyhow::Result<PathBuf> {
+    if cfg.worktrees.root.is_empty() {
+        Ok(paths::worktrees_root()?)
+    } else {
+        Ok(PathBuf::from(&cfg.worktrees.root))
+    }
 }
 
 /// Ask a running daemon for runtime statistics and print them.
@@ -111,11 +121,7 @@ pub fn run() -> anyhow::Result<()> {
     let db =
         persistence::Db::open(&paths::db_path()?).map_err(|e| anyhow::anyhow!("open db: {e}"))?;
 
-    let worktrees_root = if cfg.worktrees.root.is_empty() {
-        paths::worktrees_root()?
-    } else {
-        PathBuf::from(&cfg.worktrees.root)
-    };
+    let worktrees_root = effective_worktrees_root(&cfg)?;
 
     let daemon = core::Daemon::start(db, cfg, worktrees_root, instance_id, version)
         .map_err(|e| anyhow::anyhow!("start daemon: {e}"))?;

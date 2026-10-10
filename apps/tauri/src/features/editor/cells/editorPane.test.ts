@@ -96,19 +96,15 @@ describe("the terminal editor pane", () => {
     expect(pane()).not.toContain("viewport.rows[");
   });
 
-  /*
-   * The platform's edit chords cannot reach the editor as keys: its save,
-   * copy and cut are Ctrl-S/C/X, and a Mac keyboard sends the gestures as ⌘.
-   * The pane translates them through `editorChords`; without that, `Cmd-S`
-   * saves nothing and closing loses the draft.
-   */
   it("enters the editor keymap for as long as the pane is on screen", () => {
     expect(pane()).toContain("enterContext(EDITOR)");
   });
 
   it("the_editor_pane_delivers_the_platform_chords", () => {
-    expect(pane()).toContain("editorKeyForMeta");
-    expect(pane()).toContain("event.metaKey");
+    expect(pane()).toContain("const chord = editorKeyForChord(event)");
+    expect(pane()).toContain("if (chord)");
+    expect(pane()).toContain("sendEditorKey(props.session, chord, probe.send())");
+    expect(pane()).toContain("if (event.metaKey) return");
   });
 
   /* An SGR mouse report has no Command bit. Command-click is the definition

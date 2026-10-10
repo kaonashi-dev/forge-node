@@ -18,7 +18,7 @@ Orchestration: [`docs/orchestration.md`](docs/orchestration.md).
 |------|------|
 | System map, crate graph, two processes | [`docs/architecture.md`](docs/architecture.md) |
 | Invariants agents must preserve | [`AGENTS.md`](AGENTS.md) |
-| ADR numbers cited in code (`ADR-003` …) | [`docs/decisions.md`](docs/decisions.md) |
+| ADR numbers cited in code (`ADR-002` …) | [`docs/decisions.md`](docs/decisions.md) |
 | Cost rungs (per cell / delta / frame / request) | [`docs/performance.md`](docs/performance.md) |
 | Commands and "where to change X" | [`docs/development.md`](docs/development.md) |
 | GUI layout, tokens, keymap | [`docs/ui.md`](docs/ui.md) |
