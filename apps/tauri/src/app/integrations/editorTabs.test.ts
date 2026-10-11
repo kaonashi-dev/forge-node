@@ -51,4 +51,38 @@ describe("editor tabs", () => {
     expect(currentViews().open).toHaveLength(1);
     expect(centerMode()).toBe("session");
   });
+
+  it("removes an editor tab after its process exits, including parked workspaces", () => {
+    const parked = `parked-${workspace}`;
+    openEditorTerminal("deleted", "removed.ts", parked);
+    syncEditorViewPaths([
+      sessionFixture({ id: "dirty", kind: "Editor", editor }),
+      sessionFixture({
+        id: "deleted",
+        kind: "Editor",
+        state: { Exited: { code: 0, signal: null } },
+      }),
+    ]);
+    expect(currentViews().open).toHaveLength(1);
+    setActiveWorkspace(parked);
+    expect(currentViews().open).toHaveLength(0);
+  });
+
+  it("keeps dirty live editors and removes sessions missing from an authoritative snapshot", () => {
+    openEditorTerminal("removed", "removed.ts");
+    syncEditorViewPaths([
+      sessionFixture({ id: "dirty", kind: "Editor", editor }),
+      sessionFixture({ id: "removed", kind: "Editor", editor: { ...editor, path: "removed.ts" } }),
+    ]);
+    syncEditorViewPaths([sessionFixture({ id: "dirty", kind: "Editor", editor })]);
+    expect(currentViews().open).toEqual([
+      { kind: "editor-terminal", session: "dirty", path: "draft.ts" },
+    ]);
+  });
+
+  it("does not retire a newly opened editor before its first session snapshot", () => {
+    openEditorTerminal("just-opened", "new.ts");
+    syncEditorViewPaths([sessionFixture({ id: "dirty", kind: "Editor", editor })]);
+    expect(currentViews().open).toHaveLength(2);
+  });
 });

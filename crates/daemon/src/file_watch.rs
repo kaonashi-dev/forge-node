@@ -23,6 +23,8 @@ type Directories = BTreeMap<PathBuf, BTreeSet<PathBuf>>;
 
 pub(crate) struct Subscription {
     _watcher: notify::RecommendedWatcher,
+    workspace: WorkspaceId,
+    interests: Vec<String>,
 }
 
 impl Subscription {
@@ -33,7 +35,9 @@ impl Subscription {
         root: &Path,
         directories: &[String],
     ) -> Result<Self, ProtocolError> {
-        let (root, directories) = resolve_directories(root, directories)?;
+        let (root, resolved) = resolve_directories(root, directories)?;
+        let interests = directories.to_vec();
+        let directories = resolved;
         let (tx, rx) = flume::bounded::<Vec<PathBuf>>(16);
         let overflow = Arc::new(AtomicBool::new(false));
         let exceeded = Arc::clone(&overflow);
@@ -106,6 +110,7 @@ impl Subscription {
                     daemon.invalidate_file_index(workspace);
                     owed = false;
                     for path in pending {
+                        daemon.invalidate_editor_files(workspace, &path);
                         if !daemon.registry.send_to(
                             client,
                             DaemonMessage::Event(DaemonEvent::FileChanged {
@@ -130,7 +135,20 @@ impl Subscription {
                 }
             })
             .map_err(watch_error)?;
-        Ok(Self { _watcher: watcher })
+        Ok(Self {
+            _watcher: watcher,
+            workspace,
+            interests,
+        })
+    }
+
+    pub(crate) fn reconcile_editors(&self, daemon: &Daemon, previous: Option<&Self>) {
+        let previous = previous.filter(|watch| watch.workspace == self.workspace);
+        for path in &self.interests {
+            if previous.is_none_or(|watch| !watch.interests.contains(path)) {
+                daemon.invalidate_editor_files(self.workspace, path);
+            }
+        }
     }
 }
 

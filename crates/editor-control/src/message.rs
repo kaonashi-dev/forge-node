@@ -86,6 +86,15 @@ pub enum DaemonMessage {
         text: String,
         revision: Option<String>,
     },
+    /// Reconcile on the editor's input thread; `None` means the file was deleted.
+    DiskChanged {
+        request_id: u64,
+        path: String,
+        text: Option<String>,
+        revision: Option<String>,
+    },
+    /// The person chose the missing disk side of a conflict; discard the draft.
+    DiscardDeleted { request_id: u64, path: String },
     /// Which lines the working tree changed, for the gutter.
     ///
     /// Computed by the daemon from `git diff --unified=0`, because the editor
@@ -240,6 +249,8 @@ pub enum EditorMessage {
     },
     /// A request was understood and refused; `reason` is display text.
     Refused { request_id: u64, reason: String },
+    /// A disk update raced local edits; keep the draft and suspend autosave.
+    DiskConflict { request_id: u64, text: String },
     /// Write the buffer to the checkout.
     ///
     /// The editor never opens the file itself in integrated mode, so a save is

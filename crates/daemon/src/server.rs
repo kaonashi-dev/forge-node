@@ -276,6 +276,9 @@ async fn read_loop(
                             &directories,
                         )?)
                     };
+                    if let Some(next) = &next {
+                        next.reconcile_editors(&dispatch, watch.as_ref());
+                    }
                     *watch = next;
                     Ok(protocol::Response::Ack)
                 } else {

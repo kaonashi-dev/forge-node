@@ -361,6 +361,26 @@ fn handle_control(
             Err(reason) => control.send(&EditorMessage::Refused { request_id, reason })?,
         },
         DaemonMessage::GitMarks { marks, .. } => app.set_marks(&marks),
+        DaemonMessage::DiskChanged {
+            request_id,
+            path,
+            text,
+            revision,
+        } => match app.disk_changed(&path, text.as_deref(), revision) {
+            Ok(Some(text)) => control.send(&EditorMessage::DiskConflict { request_id, text })?,
+            Ok(None) => control.send(&EditorMessage::Applied {
+                request_id,
+                document_version: app.wire_state().document_version,
+            })?,
+            Err(reason) => control.send(&EditorMessage::Refused { request_id, reason })?,
+        },
+        DaemonMessage::DiscardDeleted { request_id, path } => match app.discard_deleted(&path) {
+            Ok(document_version) => control.send(&EditorMessage::Applied {
+                request_id,
+                document_version,
+            })?,
+            Err(reason) => control.send(&EditorMessage::Refused { request_id, reason })?,
+        },
         DaemonMessage::Definitions {
             request_id,
             symbol,

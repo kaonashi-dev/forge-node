@@ -1810,24 +1810,15 @@ impl Daemon {
 
     /// Persist `branch` (a column); [`WorkspaceStatus`] is runtime-only.
     fn apply_workspace_status(&self, workspace_id: WorkspaceId, status: &git_service::RepoStatus) {
-        let updated = {
+        let (updated, moved) = {
             let mut inner = self.lock();
             let Some(mut ws) = inner.workspaces.get(&workspace_id).cloned() else {
                 return;
             };
-            /*
-             * Assigned, not merged in.
-             *
-             * This was `status.branch.clone().or(ws.branch)`, which reads as
-             * caution and is not: `parse_status_v2` returns `None` for exactly
-             * one reason — `# branch.head (detached)` — and a failed read
-             * never reaches here at all, because `status()` returning `Err` is
-             * handled by the callers. So the `or` could only ever fire on a
-             * genuine detached HEAD, where it kept naming the branch the
-             * worktree had left. `Workspace::label` already falls back to the
-             * directory name when there is no branch, which is the true thing
-             * to say.
-             */
+            let moved = ws.status.head != status.head
+                || ws.branch != status.branch
+                || ws.status.dirty != status.dirty;
+            // `None` is a measured detached HEAD, not a failed branch read.
             ws.branch = status.branch.clone();
             ws.status = WorkspaceStatus {
                 dirty: status.dirty,
@@ -1841,8 +1832,11 @@ impl Daemon {
                 return;
             }
             inner.workspaces.insert(workspace_id, ws.clone());
-            ws
+            (ws, moved)
         };
+        if moved {
+            self.invalidate_editor_files(workspace_id, "");
+        }
         self.registry
             .broadcast_domain(DaemonEvent::WorkspaceUpdated(updated));
     }
@@ -2687,9 +2681,16 @@ impl Daemon {
         workspace_id: WorkspaceId,
         relative: &str,
     ) -> Result<Response, ProtocolError> {
+        let operation = self.editor_file_operation();
         let root = self.workspace_path(workspace_id)?;
         fs_service::delete_path(&root, relative).map_err(fs_err)?;
+        drop(operation);
         self.invalidate_file_index(workspace_id);
+        self.invalidate_editor_files(workspace_id, relative);
+        self.registry.broadcast_domain(DaemonEvent::FileChanged {
+            workspace_id,
+            path: relative.to_owned(),
+        });
         Ok(Response::Ack)
     }
 
@@ -4183,7 +4184,20 @@ impl Daemon {
         let _operation = self.editor_file_operation();
         let (workspace_id, relative) = self.editor_target(session_id)?;
         let root = self.workspace_path(workspace_id)?;
-        let opened = fs_service::read_file(&root, &relative).map_err(fs_err)?;
+        let opened = match fs_service::read_file(&root, &relative) {
+            Ok(opened) => opened,
+            Err(fs_service::FsError::NotFound(_)) => {
+                self.send_editor_command(
+                    session_id,
+                    crate::editor::Outgoing::DiscardDeleted {
+                        request_id: self.next_editor_request_id(),
+                        path: relative,
+                    },
+                )?;
+                return Ok(Response::Ack);
+            }
+            Err(error) => return Err(fs_err(error)),
+        };
         if opened.binary || opened.too_large {
             return Err(ProtocolError::new(
                 ErrorCode::InvalidRequest,
@@ -5833,7 +5847,7 @@ impl Daemon {
     ///
     /// The handshake uses 1 and the editor's own requests start at 1_000, so
     /// this counter starts above both: an id in a log names one side.
-    fn next_editor_request_id(&self) -> u64 {
+    pub(crate) fn next_editor_request_id(&self) -> u64 {
         use std::sync::atomic::Ordering;
         self.editor_requests.fetch_add(1, Ordering::Relaxed)
     }
@@ -5991,6 +6005,36 @@ impl Daemon {
 
     pub(crate) fn take_editor_retarget(&self, session_id: SessionId) -> Option<String> {
         self.lock().editors.get(&session_id)?.take_retarget()
+    }
+
+    pub(crate) fn take_editor_disk_refresh(&self, session_id: SessionId) -> bool {
+        self.lock()
+            .editors
+            .get(&session_id)
+            .is_some_and(|port| port.take_disk_refresh())
+    }
+
+    pub(crate) fn refresh_editor_disk(&self, session_id: SessionId) {
+        if let Some(port) = self.lock().editors.get(&session_id) {
+            port.refresh_disk();
+        }
+    }
+
+    pub(crate) fn invalidate_editor_files(&self, workspace_id: WorkspaceId, path: &str) {
+        let inner = self.lock();
+        for session in inner.sessions.values() {
+            if session.workspace_id != workspace_id {
+                continue;
+            }
+            let Some(editor) = &session.editor else {
+                continue;
+            };
+            if path.is_empty() || Path::new(&editor.path).starts_with(path) {
+                if let Some(port) = inner.editors.get(&session.id) {
+                    port.refresh_disk();
+                }
+            }
+        }
     }
 
     /// Remember the two sides of a refused save, so they can be compared.
@@ -10996,7 +11040,7 @@ mod tests {
                         && session
                             .editor
                             .as_ref()
-                            .is_some_and(|state| state.conflict == conflict)
+                            .is_some_and(|state| state.dirty && state.conflict == conflict)
                     {
                         return;
                     }
@@ -11082,6 +11126,247 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(),
             "edited after reload"
         );
+    }
+
+    #[test]
+    fn editor_disk_sync_follows_watches_checkout_changes_and_confirmed_deletes() {
+        use editor_control::{read_frame, write_frame, DaemonMessage as ControlOut, EditorMessage};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _worktrees, _) = editor_daemon(tmp.path(), FakePtyBackend::empty());
+        let repo = test_support::init_repo().unwrap();
+        repo.commit_file("a.rs", "original").unwrap();
+        repo.create_branch("other").unwrap();
+        repo.commit_file("a.rs", "different branch").unwrap();
+        let checkout = |branch: &str| {
+            let output = std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(["checkout", branch])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        checkout("main");
+        let ws = seeded_workspace(&daemon, repo.path());
+        daemon.apply_workspace_status(ws, &git_service::status(repo.path()).unwrap());
+        let Response::SessionCreated { session_id, .. } = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "a.rs".into(),
+                line: None,
+                autosave: true,
+                read_only: false,
+            })
+            .unwrap()
+        else {
+            panic!("expected editor")
+        };
+        let socket = crate::editor::control_socket_path(session_id).unwrap();
+        let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &EditorMessage::Hello {
+                version: editor_control::CONTROL_VERSION,
+                session_id: session_id.to_string(),
+                pid: 1,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            read_frame::<ControlOut>(&mut stream).unwrap(),
+            ControlOut::Welcome { .. }
+        ));
+        let ControlOut::Open { request_id, .. } = read_frame::<ControlOut>(&mut stream).unwrap()
+        else {
+            panic!("expected open")
+        };
+        write_frame(
+            &mut stream,
+            &EditorMessage::Opened {
+                request_id,
+                document_version: 0,
+            },
+        )
+        .unwrap();
+        fn next(stream: &mut std::os::unix::net::UnixStream) -> ControlOut {
+            loop {
+                match read_frame::<ControlOut>(stream).unwrap() {
+                    ControlOut::GitMarks { .. } => {}
+                    ControlOut::GetState { request_id } => {
+                        write_frame(
+                            stream,
+                            &EditorMessage::State {
+                                request_id: Some(request_id),
+                                state: editor_control::EditorStateWire {
+                                    path: "a.rs".into(),
+                                    ..Default::default()
+                                },
+                            },
+                        )
+                        .unwrap();
+                    }
+                    message => return message,
+                }
+            }
+        }
+        let client = ClientId::new();
+        let _events = daemon.registry.register(client);
+        let root = repo.path();
+        let watch = crate::file_watch::Subscription::start(&daemon, client, ws, root, &["".into()])
+            .unwrap();
+        std::fs::write(root.join("a.rs"), "external write").unwrap();
+        let ControlOut::DiskChanged {
+            request_id,
+            text,
+            revision,
+            ..
+        } = next(&mut stream)
+        else {
+            panic!("expected watched update")
+        };
+        assert_eq!(text.as_deref(), Some("external write"));
+        assert_eq!(revision, Some(fs_service::revision_of(b"external write")));
+        write_frame(
+            &mut stream,
+            &EditorMessage::Applied {
+                request_id,
+                document_version: 1,
+            },
+        )
+        .unwrap();
+        write_frame(
+            &mut stream,
+            &EditorMessage::SaveRequest {
+                request_id: 1000,
+                text: "saved after reload".into(),
+                document_version: 2,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            next(&mut stream),
+            ControlOut::Saved {
+                request_id: 1000,
+                ..
+            }
+        ));
+        drop(watch);
+
+        repo.commit_file("a.rs", "saved after reload").unwrap();
+        checkout("other");
+        let status = git_service::status(root).unwrap();
+        assert_eq!(status.branch.as_deref(), Some("other"));
+        daemon.apply_workspace_status(ws, &status);
+        let ControlOut::DiskChanged {
+            request_id, text, ..
+        } = next(&mut stream)
+        else {
+            panic!("expected checkout update")
+        };
+        assert_eq!(text.as_deref(), Some("different branch"));
+        write_frame(
+            &mut stream,
+            &EditorMessage::DiskConflict {
+                request_id,
+                text: "unsaved draft".into(),
+            },
+        )
+        .unwrap();
+        // A reply after the conflict acts as a barrier on the supervisor's reader.
+        write_frame(
+            &mut stream,
+            &EditorMessage::SaveRequest {
+                request_id: 1001,
+                text: "unsaved draft".into(),
+                document_version: 3,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            next(&mut stream),
+            ControlOut::Saved {
+                request_id: 1001,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.rs")).unwrap(),
+            "unsaved draft"
+        );
+
+        daemon.delete_path(ws, "a.rs").unwrap();
+        let ControlOut::DiskChanged {
+            request_id,
+            text,
+            revision,
+            ..
+        } = next(&mut stream)
+        else {
+            panic!("expected deletion")
+        };
+        assert!(text.is_none());
+        assert!(revision.is_none());
+        write_frame(
+            &mut stream,
+            &EditorMessage::DiskConflict {
+                request_id,
+                text: "retained draft".into(),
+            },
+        )
+        .unwrap();
+        write_frame(
+            &mut stream,
+            &EditorMessage::SaveRequest {
+                request_id: 1002,
+                text: "retained draft".into(),
+                document_version: 4,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            next(&mut stream),
+            ControlOut::Saved {
+                request_id: 1002,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.rs")).unwrap(),
+            "retained draft"
+        );
+        daemon.delete_path(ws, "a.rs").unwrap();
+        let ControlOut::DiskChanged { request_id, .. } = next(&mut stream) else {
+            panic!("expected deletion")
+        };
+        write_frame(
+            &mut stream,
+            &EditorMessage::DiskConflict {
+                request_id,
+                text: "discarded draft".into(),
+            },
+        )
+        .unwrap();
+        daemon.reload_editor_buffer(session_id).unwrap();
+        let ControlOut::DiscardDeleted { request_id, path } = next(&mut stream) else {
+            panic!("expected discard")
+        };
+        assert_eq!(path, "a.rs");
+        write_frame(
+            &mut stream,
+            &EditorMessage::Applied {
+                request_id,
+                document_version: 4,
+            },
+        )
+        .unwrap();
+        assert!(!root.join("a.rs").exists());
     }
 
     #[test]

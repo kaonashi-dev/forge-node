@@ -188,6 +188,62 @@ fn start(text: &str, display_path: &str) -> Host {
 }
 
 #[test]
+fn disk_updates_refresh_dom_frames_and_preserve_local_edits() {
+    let host = start("old branch\n", "file.txt");
+    let before = host.frame();
+    host.send(DaemonMessage::DiskChanged {
+        request_id: 800,
+        path: "file.txt".into(),
+        text: Some("new branch\n".into()),
+        revision: Some("new".into()),
+    });
+    let frame = host.frame_at_version(before.doc_version + 1);
+    let text: String = frame.rows[0]
+        .spans
+        .iter()
+        .map(|span| span.text.as_str())
+        .collect();
+    assert_eq!(text, "new branch");
+    host.input(vec![EditorInput::Text("draft ".into())]);
+    let edited = host.frame_at_version(frame.doc_version + 1);
+    host.send(DaemonMessage::DiskChanged {
+        request_id: 801,
+        path: "file.txt".into(),
+        text: None,
+        revision: None,
+    });
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let message = host
+            .messages
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if let EditorMessage::DiskConflict { request_id, text } = message {
+            assert_eq!(request_id, 801);
+            assert_eq!(text, "draft new branch\n");
+            break;
+        }
+    }
+    host.send(DaemonMessage::GetState { request_id: 802 });
+    loop {
+        let message = host
+            .messages
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if let EditorMessage::State {
+            request_id: Some(802),
+            state,
+        } = message
+        {
+            assert!(state.dirty);
+            assert_eq!(state.document_version, edited.doc_version);
+            assert!(state.status.contains("deleted"));
+            break;
+        }
+    }
+}
+
+#[test]
 fn retarget_over_control_keeps_the_live_document_and_undo() {
     let host = start("hello", "old.txt");
     let before = host.frame();
