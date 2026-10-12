@@ -596,6 +596,71 @@ mod integrated {
     }
 
     #[test]
+    fn disk_sync_reloads_preserves_drafts_and_closes_only_clean_deleted_files() {
+        let mut editor =
+            IntegratedEditor::start_writable("first\nold branch\n", "display/only.txt");
+        editor.expect("old branch");
+        editor.seen.clear();
+        editor.daemon.send(DaemonMessage::DiskChanged {
+            request_id: 200,
+            path: "display/only.txt".into(),
+            text: Some("first\nnew branch\n".into()),
+            revision: Some("branch-2".into()),
+        });
+        editor.expect("new branch");
+        let wait_reply = |daemon: &FakeDaemon, id: u64| {
+            let deadline = Instant::now() + WAIT;
+            loop {
+                match daemon.next(deadline.saturating_duration_since(Instant::now())) {
+                    Some(message @ EditorMessage::Applied { request_id, .. })
+                    | Some(message @ EditorMessage::DiskConflict { request_id, .. })
+                        if request_id == id =>
+                    {
+                        return message
+                    }
+                    Some(_) => {}
+                    None => panic!("no disk sync reply for {id}"),
+                }
+            }
+        };
+        assert!(matches!(
+            wait_reply(&editor.daemon, 200),
+            EditorMessage::Applied { .. }
+        ));
+        editor.send(b"X");
+        editor.expect("Xnew branch");
+        for (id, text) in [(201, Some("first\nthird branch\n".into())), (202, None)] {
+            editor.daemon.send(DaemonMessage::DiskChanged {
+                request_id: id,
+                path: "display/only.txt".into(),
+                revision: text.as_ref().map(|_| "branch-3".into()),
+                text,
+            });
+            assert!(
+                matches!(wait_reply(&editor.daemon, id), EditorMessage::DiskConflict { text, .. } if text == "first\nXnew branch\n")
+            );
+            assert!(editor.child.0.try_wait().unwrap().is_none());
+        }
+        editor.daemon.send(DaemonMessage::Reload {
+            request_id: 203,
+            text: "first\nrestored\n".into(),
+            revision: Some("restored".into()),
+        });
+        wait_reply(&editor.daemon, 203);
+        editor.daemon.send(DaemonMessage::DiskChanged {
+            request_id: 204,
+            path: "display/only.txt".into(),
+            text: None,
+            revision: None,
+        });
+        assert!(matches!(
+            wait_reply(&editor.daemon, 204),
+            EditorMessage::Applied { .. }
+        ));
+        assert!(wait_for_exit(&mut *editor.child.0, WAIT));
+    }
+
+    #[test]
     fn definition_picker_preserves_controls_and_opens_the_chosen_location() {
         let mut editor = IntegratedEditor::start("first\nrelease(payin, tx);\n", "service.ts");
         editor.expect("release");

@@ -23,7 +23,7 @@ use super::{
 pub enum ActivityTrigger {
     /// Provider hook. Only `Working`, `Waiting`, and `Idle` are applied.
     Hook(ActivityState),
-    /// Bytes written to the PTY while the session was idle.
+    /// Bytes written to the PTY while the session was idle or waiting.
     Input,
     /// Time passed with no hook and no input.
     Silence,
@@ -42,7 +42,7 @@ pub fn apply_activity(
         ActivityTrigger::Silence => return current.clone(),
         ActivityTrigger::ProcessExit => return current.clone(),
         ActivityTrigger::Input => {
-            if current.state != ActivityState::Idle {
+            if !matches!(current.state, ActivityState::Idle | ActivityState::Waiting) {
                 return current.clone();
             }
             ActivityState::Working
@@ -1003,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn silence_does_not_change_activity_and_input_only_leaves_idle() {
+    fn silence_preserves_activity_and_input_leaves_idle_or_waiting() {
         let start = AgentActivity::starting(now());
         let later = now();
         let quiet = apply_activity(&start, ActivityTrigger::Silence, later);
@@ -1019,6 +1019,11 @@ mod tests {
         let typed = apply_activity(&idle, ActivityTrigger::Input, later);
         assert_eq!(typed.state, ActivityState::Working);
         assert_eq!(typed.evidence, Some(ActivityEvidence::Input));
+        let waiting = apply_activity(&idle, ActivityTrigger::Hook(ActivityState::Waiting), later);
+        assert_eq!(
+            apply_activity(&waiting, ActivityTrigger::Input, later).state,
+            ActivityState::Working
+        );
         let still = apply_activity(&start, ActivityTrigger::Input, later);
         assert_eq!(still.state, ActivityState::Starting);
 

@@ -618,6 +618,19 @@ fn report_activity(
     session_id: SessionId,
     state: ActivityState,
 ) -> Result<Response, ProtocolError> {
+    let writer = {
+        let inner = daemon.lock();
+        inner
+            .sessions
+            .get(&session_id)
+            .and_then(|s| s.terminal_id)
+            .and_then(|id| inner.terminals.get(&id))
+            .map(|rt| std::sync::Arc::clone(&rt.writer))
+    };
+    // Hook state and cross-session submission share the writer's ordering, never an I/O-held core lock.
+    let writer_guard = writer
+        .as_ref()
+        .map(|w| w.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
     let mut inner = daemon.lock();
     let Some(current) = inner
         .sessions
@@ -633,7 +646,7 @@ fn report_activity(
     if let Some(session) = inner.sessions.get_mut(&session_id) {
         session.activity = next;
     }
-    if became_working {
+    if became_working || became_idle {
         inner
             .ledger
             .pointer
@@ -653,13 +666,16 @@ fn report_activity(
             .registry
             .broadcast_domain(protocol::DaemonEvent::SessionUpdated(snapshot));
     }
-    if became_idle && queued {
-        deliver::deliver_pointer(daemon, session_id);
+    drop(writer_guard);
+    if became_idle {
+        crate::prompts::deliver_pending(daemon, session_id);
+        if queued {
+            deliver::deliver_pointer(daemon, session_id);
+        }
     }
     Ok(Response::Ack)
 }
 
-/// Keystrokes after Idle count as Working. Silence does not come through here.
 pub fn note_user_input(daemon: &Daemon, session_id: SessionId) {
     let mut inner = daemon.lock();
     let Some(current) = inner

@@ -57,7 +57,7 @@ function workLabel(work: SessionWork): string {
     case "working":
       return "Working";
     case "idle":
-      return "Finished — waiting for you";
+      return "Idle — not proof of completed work";
     case "running":
       return "Running";
     case "needs-you":

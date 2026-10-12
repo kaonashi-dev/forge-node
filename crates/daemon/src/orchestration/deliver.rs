@@ -43,7 +43,42 @@ pub fn deliver_pointer(daemon: &Daemon, session_id: SessionId) {
         return;
     }
     let prepared = {
+        let inner = daemon.lock();
+        inner
+            .sessions
+            .get(&session_id)
+            .and_then(|session| session.terminal_id)
+            .and_then(|id| {
+                inner
+                    .terminals
+                    .get(&id)
+                    .map(|rt| (id, std::sync::Arc::clone(&rt.writer)))
+            })
+    };
+    let Some((terminal, writer)) = prepared else {
+        return;
+    };
+    let unread = daemon
+        .context_writer
+        .unread_count(session_id)
+        .unwrap_or(0)
+        .max(1);
+    // A pointer's paste and CR share the prompt/input/hook ordering, not two separate writes.
+    let mut writer = writer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let update = {
         let mut inner = daemon.lock();
+        if daemon.registry().session_inbox_watched(session_id) {
+            return;
+        }
+        if inner
+            .sessions
+            .get(&session_id)
+            .is_none_or(|s| s.terminal_id != Some(terminal))
+        {
+            return;
+        }
         let state = inner
             .sessions
             .get(&session_id)
@@ -70,24 +105,6 @@ pub fn deliver_pointer(daemon: &Daemon, session_id: SessionId) {
         {
             return;
         }
-        let terminal = inner
-            .sessions
-            .get(&session_id)
-            .and_then(|session| session.terminal_id);
-        let writer = terminal.and_then(|id| {
-            inner
-                .terminals
-                .get(&id)
-                .map(|rt| std::sync::Arc::clone(&rt.writer))
-        });
-        let unread = inner
-            .db
-            .context()
-            .list_for_target(session_id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|message| message.kind.is_some() && message.acked_at.is_none())
-            .count();
         if let Some(slot) = inner.ledger.pointer.get_mut(&session_id) {
             slot.typed_this_idle = true;
             slot.queued = false;
@@ -100,15 +117,27 @@ pub fn deliver_pointer(daemon: &Daemon, session_id: SessionId) {
                 },
             );
         }
-        writer.map(|writer| (writer, unread.max(1)))
+        inner.sessions.get_mut(&session_id).map(|session| {
+            session.activity = domain::orchestration::apply_activity(
+                &session.activity,
+                domain::orchestration::ActivityTrigger::Input,
+                domain::Timestamp::now(),
+            );
+            session.clone()
+        })
     };
-    let Some((writer, unread)) = prepared else {
-        return;
-    };
+    if let Some(session) = update {
+        daemon
+            .registry()
+            .broadcast_domain(protocol::DaemonEvent::SessionUpdated(session));
+    }
     let line = pointer_line(unread);
-    let mut bytes = line.into_bytes();
-    let _ = crate::terminal::write_pty(&writer, &bytes);
-    bytes.clear();
-    bytes.push(b'\r');
-    let _ = crate::terminal::write_pty(&writer, &bytes);
+    use std::io::Write;
+    if writer
+        .write_all(line.as_bytes())
+        .and_then(|_| writer.flush())
+        .is_ok()
+    {
+        let _ = writer.write_all(b"\r").and_then(|_| writer.flush());
+    }
 }

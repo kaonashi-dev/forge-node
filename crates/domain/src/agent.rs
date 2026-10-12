@@ -94,6 +94,33 @@ pub struct LaunchAgentRequest {
     /// Refused rather than downgraded if the provider declares no [`ReviewStyle`].
     #[serde(default)]
     pub read_only: bool,
+    #[serde(default)]
+    pub options: AgentLaunchOptions,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentLaunchOptions {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlagSpec {
+    pub flag: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum EffortSpelling {
+    Flag(String),
+    Config { flag: String, key: String },
+    ModelSuffix,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffortSpec {
+    pub spelling: EffortSpelling,
+    pub allowed: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,6 +335,10 @@ pub struct AgentDescriptor {
     pub capabilities: AgentCapabilities,
     /// `None` forbids profile-specific config directories.
     pub config_dir: Option<ConfigDirSpec>,
+    #[serde(default)]
+    pub model: Option<FlagSpec>,
+    #[serde(default)]
+    pub effort: Option<EffortSpec>,
 }
 
 /// All declared variables point to the same profile directory.

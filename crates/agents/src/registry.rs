@@ -197,6 +197,7 @@ mod tests {
             resume_session_id: None,
             initial_prompt: None,
             read_only: false,
+            options: Default::default(),
         };
         let spec = reg.build_launch(&req, &env).unwrap();
         assert_eq!(spec.program, over);
@@ -221,6 +222,7 @@ mod tests {
             resume_session_id: None,
             initial_prompt: None,
             read_only: false,
+            options: Default::default(),
         };
         assert!(matches!(
             reg.build_launch(&req, &env),

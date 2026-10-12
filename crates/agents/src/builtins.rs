@@ -1,8 +1,8 @@
 //! Static descriptors for the built-in providers, in picker order.
 
 use domain::{
-    AcpSpec, AgentCapabilities, AgentDescriptor, AgentProviderId, ConfigDirSpec, PromptStyle,
-    ResumeStyle, ReviewStyle, UsageSource, VersionProbe,
+    AcpSpec, AgentCapabilities, AgentDescriptor, AgentProviderId, ConfigDirSpec, EffortSpec,
+    EffortSpelling, FlagSpec, PromptStyle, ResumeStyle, ReviewStyle, UsageSource, VersionProbe,
 };
 
 /// `claude --resume <session-id>`: the id its transcripts record, resumed from
@@ -133,9 +133,8 @@ pub fn builtins() -> Vec<AgentDescriptor> {
                 flag: "--prompt".to_owned(),
             }),
             None,
-            // OpenCode ships a `plan` agent whose tools cannot write; naming
-            // it is how a launch asks for one.
-            review("plan agent", &["--agent", "plan"]),
+            // V2 has no interactive --agent flag; refuse rather than silently run a writable review.
+            None,
         ),
         descriptor(
             "cursor",
@@ -254,6 +253,35 @@ fn descriptor(
         prompt,
         acp,
         review,
+        model: match id {
+            "claude" | "cursor" => Some(FlagSpec {
+                flag: "--model".into(),
+            }),
+            "codex" | "grok" => Some(FlagSpec { flag: "-m".into() }),
+            _ => None,
+        },
+        effort: match id {
+            "claude" => Some(effort(
+                EffortSpelling::Flag("--effort".into()),
+                &["low", "medium", "high", "xhigh", "max"],
+            )),
+            "codex" => Some(effort(
+                EffortSpelling::Config {
+                    flag: "-c".into(),
+                    key: "model_reasoning_effort".into(),
+                },
+                &["none", "minimal", "low", "medium", "high", "xhigh"],
+            )),
+            "cursor" => Some(effort(
+                EffortSpelling::ModelSuffix,
+                &["low", "medium", "high", "xhigh", "max"],
+            )),
+            "grok" => Some(effort(
+                EffortSpelling::Flag("--reasoning-effort".into()),
+                &["low", "medium", "high"],
+            )),
+            _ => None,
+        },
         capabilities: AgentCapabilities {
             // Built-ins are interactive TUIs. Neither flag below is a
             // second source of truth: each restates whether the matching
@@ -263,6 +291,13 @@ fn descriptor(
             supports_resume,
             supports_review,
         },
+    }
+}
+
+fn effort(spelling: EffortSpelling, allowed: &[&str]) -> EffortSpec {
+    EffortSpec {
+        spelling,
+        allowed: allowed.iter().map(|s| (*s).to_owned()).collect(),
     }
 }
 
@@ -298,8 +333,13 @@ mod tests {
     /// A pull-request review starts in a checkout the user is working in, so
     /// a provider with no read-only posture would be one that could edit it.
     #[test]
-    fn every_builtin_declares_a_read_only_mode() {
+    fn read_only_capabilities_match_supported_launch_flags() {
         for descriptor in builtins() {
+            if descriptor.id.as_str() == "opencode" {
+                assert!(descriptor.review.is_none());
+                assert!(!descriptor.capabilities.supports_review);
+                continue;
+            }
             let style = descriptor
                 .review
                 .as_ref()

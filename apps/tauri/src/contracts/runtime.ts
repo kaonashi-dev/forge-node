@@ -108,6 +108,11 @@ export type Session = {
   created_at: string;
   /** Bumped by the daemon on activity; used for attention duration labels. */
   last_activity_at?: string;
+  activity?: {
+    state: "starting" | "working" | "waiting" | "idle" | "unknown" | "unrecognized";
+    since: string;
+    evidence: "hook" | "input" | "exit" | "unrecognized" | null;
+  };
   /**
    * The commit this session started from, for reading back what it changed.
    *

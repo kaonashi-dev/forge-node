@@ -1,16 +1,45 @@
 # Sourced by package-macos / package-linux.
 # Puts the bun named in .bun-version first on PATH, fetching a copy if PATH's
 # bun is a different build. Does not touch ~/.bun.
+# `.bun-version` may be `latest` (CI / floating pin); that is resolved to a
+# concrete GitHub release tag before download or equality checks.
 
 forge_bun_version() {
   local bin="${1:-bun}"
   "$bin" -e 'process.stdout.write(String(process.versions.bun || ""))' 2>/dev/null || true
 }
 
+# Map a floating pin to bun-vX.Y.Z's X.Y.Z. Exact pins pass through.
+forge_resolve_bun_pin() {
+  local pin="$1" loc tag
+  if [ "$pin" != "latest" ]; then
+    printf '%s' "$pin"
+    return 0
+  fi
+  require_cmd curl
+  # releases/latest redirects to .../tag/bun-vX.Y.Z; url_effective is enough
+  # without parsing the API JSON body.
+  loc="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+    "https://github.com/oven-sh/bun/releases/latest")" || return 1
+  case "$loc" in
+    */bun-v[0-9]*) tag="${loc##*/bun-v}" ;;
+    *) return 1 ;;
+  esac
+  [ -n "$tag" ] || return 1
+  printf '%s' "$tag"
+}
+
 forge_require_bun() {
-  local pin current platform cache dest tmp archive url
+  local pin current platform cache dest tmp archive url resolved
   pin="$(tr -d '[:space:]' < "$repo_root/.bun-version")"
   [ -n "$pin" ] || die ".bun-version is missing or empty"
+
+  if [ "$pin" = "latest" ]; then
+    resolved="$(forge_resolve_bun_pin "$pin")" \
+      || die "failed to resolve bun latest from GitHub releases"
+    note "resolved .bun-version latest -> $resolved"
+    pin="$resolved"
+  fi
 
   if command -v bun >/dev/null 2>&1; then
     current="$(forge_bun_version)"

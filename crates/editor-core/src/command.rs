@@ -193,7 +193,9 @@ fn refusal_for(error: EditError) -> Refusal {
         EditError::TooLarge { size, limit } => Refusal::TooLarge { size, limit },
         // A range the document rejected is a caller bug, not a person's; the
         // honest report is that nothing happened.
-        EditError::Overlapping | EditError::OutOfBounds { .. } => Refusal::NoMatch,
+        EditError::UnsavedChanges | EditError::Overlapping | EditError::OutOfBounds { .. } => {
+            Refusal::NoMatch
+        }
     }
 }
 

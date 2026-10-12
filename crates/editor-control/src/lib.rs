@@ -30,7 +30,7 @@ pub use view::{
 
 /// Version of the control wire. The handshake refuses any other value, the way
 /// `protocol::PROTOCOL_VERSION` does for the client wire.
-pub const CONTROL_VERSION: u16 = 5;
+pub const CONTROL_VERSION: u16 = 6;
 
 /// Hard cap for one decoded control frame.
 ///
@@ -249,6 +249,22 @@ mod tests {
                 request_id: 6,
                 reason: "the file changed on disk".into(),
             },
+            DaemonMessage::DiskChanged {
+                request_id: 9,
+                path: "src/main.rs".into(),
+                text: Some("new branch".into()),
+                revision: Some("new".into()),
+            },
+            DaemonMessage::DiskChanged {
+                request_id: 10,
+                path: "src/main.rs".into(),
+                text: None,
+                revision: None,
+            },
+            DaemonMessage::DiscardDeleted {
+                request_id: 11,
+                path: "src/main.rs".into(),
+            },
             DaemonMessage::ApplyPreviewEdit {
                 request_id: 4,
                 expected_document_version: 5,
@@ -267,6 +283,10 @@ mod tests {
         }
 
         let editor_messages = vec![
+            EditorMessage::DiskConflict {
+                request_id: 9,
+                text: "draft".into(),
+            },
             EditorMessage::Hello {
                 version: CONTROL_VERSION,
                 session_id: "s-1".into(),

@@ -4,7 +4,9 @@
 //! The daemon keeps the ledger and enforces the rails. This process does not.
 
 mod guide;
+mod mcp;
 mod schema;
+mod sessions;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -37,7 +39,7 @@ struct Cli {
     /// Request budget, for example `30s` or `5m`.
     #[arg(long, global = true)]
     timeout: Option<String>,
-    /// Idempotency key. A repeat returns the stored result.
+    /// Ledger idempotency key; session dispatch is not deduplicated.
     #[arg(long, global = true)]
     request_id: Option<String>,
     #[command(subcommand)]
@@ -46,6 +48,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Serve session tools over MCP stdio; does not start a daemon.
+    Mcp,
     /// Protocol version, caller identity, and orchestration limits.
     Status,
     /// Print a guide served by this binary.
@@ -339,6 +343,34 @@ enum StateCmd {
 
 #[derive(Subcommand)]
 enum SessionCmd {
+    Spawn(sessions::SpawnArgs),
+    Rename {
+        session: String,
+        title: String,
+    },
+    #[command(group(clap::ArgGroup::new("prompt").args(["text", "file", "stdin"]).required(true)))]
+    Send {
+        session: String,
+        #[arg(long, conflicts_with_all = ["file", "stdin"])]
+        text: Option<String>,
+        #[arg(long, conflicts_with = "stdin")]
+        file: Option<PathBuf>,
+        #[arg(value_parser = ["-"])]
+        stdin: Option<String>,
+        #[arg(long)]
+        no_submit: bool,
+        #[arg(long, conflicts_with = "now")]
+        queue: bool,
+        #[arg(long)]
+        now: bool,
+    },
+    Wait {
+        session: String,
+        #[arg(long, value_parser = ["idle", "waiting", "working"])]
+        r#for: String,
+        #[arg(long)]
+        timeout: Option<String>,
+    },
     List,
     Show {
         session: String,
@@ -358,6 +390,7 @@ struct App {
     socket: Option<PathBuf>,
     timeout: Duration,
     request_id: Option<String>,
+    capture: Option<std::cell::RefCell<Value>>,
 }
 
 fn main() -> ExitCode {
@@ -373,6 +406,7 @@ fn main() -> ExitCode {
             .unwrap_or_else(|message| usage_exit(&message, &["forgectl", "--help"]))
             .unwrap_or(Duration::from_secs(30)),
         request_id: cli.request_id,
+        capture: None,
     };
     match app.execute(cli.command) {
         Ok(()) => ExitCode::SUCCESS,
@@ -383,6 +417,7 @@ fn main() -> ExitCode {
 impl App {
     fn execute(&self, command: Command) -> Result<(), u8> {
         match command {
+            Command::Mcp => mcp::serve(self),
             Command::Guide { topic } => {
                 let topic = topic.unwrap_or_else(|| "controller".into());
                 let text = guide_text(&topic).ok_or_else(|| {
@@ -505,7 +540,7 @@ impl App {
             } => self.send(client, to, kind, text, file),
             Command::State(cmd) => self.state_cmd(client, cmd),
             Command::Session(cmd) => self.session_cmd(client, cmd),
-            Command::Guide { .. } | Command::Schema | Command::Hook { .. } => Ok(()),
+            Command::Guide { .. } | Command::Schema | Command::Hook { .. } | Command::Mcp => Ok(()),
         }
     }
 
@@ -1441,62 +1476,7 @@ impl App {
     }
 
     fn session_cmd(&self, client: &Client, cmd: SessionCmd) -> Result<(), u8> {
-        match cmd {
-            SessionCmd::List => {
-                let store = client
-                    .load_store()
-                    .map_err(|error| self.client_error(error, false))?;
-                self.print_ok(json!({
-                    "sessions": store.sessions.iter().map(|session| json!({
-                        "id": session.id,
-                        "state": format!("{:?}", session.state),
-                        "kind": format!("{:?}", session.kind),
-                        "activity": session.activity.state,
-                        "title": session.title.resolve("session"),
-                    })).collect::<Vec<_>>(),
-                }));
-            }
-            SessionCmd::Show { session } => {
-                let id = self.resolve_session(client, &session)?;
-                let store = client
-                    .load_store()
-                    .map_err(|error| self.client_error(error, false))?;
-                let found = store.sessions.into_iter().find(|session| session.id == id);
-                match found {
-                    Some(session) => {
-                        self.print_ok(serde_json::to_value(session).unwrap_or(Value::Null))
-                    }
-                    None => {
-                        return Err(self.fail(
-                            4,
-                            "not_found",
-                            "session not found",
-                            json!({}),
-                            vec![vec!["forgectl".into(), "session".into(), "list".into()]],
-                        ))
-                    }
-                }
-            }
-            SessionCmd::Read { session, max_bytes } => {
-                let id = self.resolve_session(client, &session)?;
-                let response = self.call(
-                    client,
-                    Request::GetSessionTranscript {
-                        session_id: id,
-                        max_lines: None,
-                        max_bytes,
-                    },
-                    false,
-                )?;
-                self.print_ok(flatten(&response));
-            }
-            SessionCmd::Kill { session } => {
-                let id = self.resolve_session(client, &session)?;
-                let response = self.call(client, Request::KillSession { session_id: id }, true)?;
-                self.print_ok(flatten(&response));
-            }
-        }
-        Ok(())
+        sessions::dispatch(self, client, cmd)
     }
 
     fn run_wait(
@@ -1630,7 +1610,7 @@ impl App {
             Err(ClientError::Timeout | ClientError::Disconnected) if mutation => Err(self.fail(
                 3,
                 "unreachable",
-                "the outcome is uncertain; retry with the same --request-id",
+                "the outcome is uncertain; inspect state before retrying",
                 json!({ "uncertain": true }),
                 vec![vec!["forgectl".into(), "status".into()]],
             )),
@@ -1687,6 +1667,10 @@ impl App {
     }
 
     fn print_ok(&self, result: Value) {
+        if let Some(capture) = &self.capture {
+            *capture.borrow_mut() = json!({ "ok": true, "result": result });
+            return;
+        }
         if self.json {
             println!("{}", json!({ "ok": true, "result": result }));
         } else {
@@ -1705,6 +1689,10 @@ impl App {
         details: Value,
         next: Vec<Vec<String>>,
     ) -> u8 {
+        if let Some(capture) = &self.capture {
+            *capture.borrow_mut() = json!({ "ok": false, "error": { "code": name, "message": message, "details": details, "next": next } });
+            return code;
+        }
         if self.json {
             println!(
                 "{}",
@@ -1870,16 +1858,7 @@ impl App {
         let store = client
             .load_store()
             .map_err(|error| self.client_error(error, false))?;
-        let ids: Vec<SessionId> = store.sessions.iter().map(|session| session.id).collect();
-        resolve_prefix(ids.iter(), raw).copied().map_err(|_| {
-            self.fail(
-                4,
-                "not_found",
-                "session not found",
-                json!({}),
-                vec![vec!["forgectl".into(), "session".into(), "list".into()]],
-            )
-        })
+        sessions::resolve(self, &store, raw).map(|session| session.id)
     }
 }
 

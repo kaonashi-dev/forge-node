@@ -1,9 +1,7 @@
 //! One open document: text, selection, history, versions and the dirty flag.
 //!
-//! [`Document::apply`] is the only way the text changes, so read-only, the
-//! byte budget, the version counter and undo cannot be bypassed. The document
-//! never touches a disk: an adapter reads the bytes, hands them to
-//! [`Document::from_bytes`], and asks for [`Document::text`] back to write.
+//! User edits and clean disk reloads use validated transactions. The document
+//! owns no I/O; adapters supply bytes and confirm saved snapshots.
 
 use crate::history::{History, HistoryStats};
 use crate::limits::MAX_DOCUMENT_BYTES;
@@ -243,15 +241,82 @@ impl Document {
         self.disk_revision = Some(revision.into());
     }
 
+    /// Reconcile saved disk text, including read-only buffers, without discarding undo.
+    pub fn reload_clean(
+        &mut self,
+        text: &str,
+        revision: impl Into<String>,
+    ) -> Result<Option<Applied>, EditError> {
+        if self.is_dirty() {
+            return Err(EditError::UnsavedChanges);
+        }
+        if text.len() > MAX_DOCUMENT_BYTES {
+            return Err(EditError::TooLarge {
+                size: text.len(),
+                limit: MAX_DOCUMENT_BYTES,
+            });
+        }
+        let old = self.as_str();
+        if old == text {
+            self.set_disk_revision(revision);
+            return Ok(None);
+        }
+        let mut start = old
+            .bytes()
+            .zip(text.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !old.is_char_boundary(start) || !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let suffix = old[start..]
+            .bytes()
+            .rev()
+            .zip(text[start..].bytes().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let mut old_end = old.len() - suffix;
+        let mut new_end = text.len() - suffix;
+        while !old.is_char_boundary(old_end) || !text.is_char_boundary(new_end) {
+            old_end += 1;
+            new_end += 1;
+        }
+        let after = self.selection.mapped(|cursor| {
+            let map = |offset: usize| {
+                if offset < start {
+                    offset
+                } else if offset >= old_end {
+                    new_end + offset - old_end
+                } else {
+                    start + (offset - start).min(new_end - start)
+                }
+            };
+            crate::Cursor::new(map(cursor.anchor), map(cursor.head))
+        });
+        let transaction = Transaction::new(
+            vec![Edit::replace(
+                Range::new(start, old_end),
+                &text[start..new_end],
+            )],
+            Origin::Reload,
+            self.selection.clone(),
+        )?
+        .with_selection_after(after);
+        self.validate(&transaction)?;
+        self.history.seal();
+        // Read-only blocks user edits, not updates to the file being read.
+        let applied = self.apply_validated(transaction, true);
+        self.saved_state = Some(self.state);
+        self.set_disk_revision(revision);
+        Ok(Some(applied))
+    }
+
     /// Start a new undo entry, whatever comes next.
     pub fn break_undo_group(&mut self) {
         self.history.seal();
     }
 
-    /// The single entry every mutation goes through.
-    ///
-    /// Validates the whole transaction before touching a byte: a rejected
-    /// transaction leaves the document exactly as it was.
+    /// Apply user edits atomically, enforcing read-only and the byte budget.
     pub fn apply(&mut self, transaction: Transaction) -> Result<Applied, EditError> {
         if self.read_only {
             return Err(EditError::ReadOnly);

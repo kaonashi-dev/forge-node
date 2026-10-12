@@ -17,7 +17,7 @@ pub fn schema_value() -> Value {
             {"code": 2, "meaning": "usage"},
             {"code": 3, "meaning": "unreachable, protocol mismatch, or sandbox_denied"},
             {"code": 4, "meaning": "not found"},
-            {"code": 5, "meaning": "conflict or precondition failed"},
+            {"code": 5, "meaning": "conflict, precondition failed, or ambiguous reference"},
             {"code": 6, "meaning": "policy rail"},
             {"code": 124, "meaning": "wait timed out"}
         ],
@@ -29,7 +29,8 @@ pub fn schema_value() -> Value {
             "task reject", "task cancel", "task integrate", "task cleanup",
             "context", "report", "report show", "ask", "inbox", "send",
             "state list", "state get", "state set", "state del", "state watch",
-            "session list", "session show", "session read", "session kill",
+            "session list", "session show", "session read", "session kill", "session spawn",
+            "session rename", "session send", "session wait", "mcp",
             "pr draft",
             "hook"
         ],
@@ -37,7 +38,10 @@ pub fn schema_value() -> Value {
             "state set requires --if-version; 0 is create-only",
             "run wait is level-triggered and returns the triggering items",
             "only an explicit report settles an attempt",
-            "a repeated --request-id returns the stored result"
+            "ledger mutations deduplicate --request-id; session dispatch does not",
+            "session references accept UUID, unique UUID prefix, title or project/title",
+            "session send submits only with hook-confirmed idle; queue rejects replacement",
+            "session wait uses events; idle is not proof of completed work"
         ]
     })
 }

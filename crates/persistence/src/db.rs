@@ -1,7 +1,8 @@
 //! The database handle, connection setup, error type and daemon-startup
 //! reconciliation (ADR-009).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use domain::Timestamp;
 use rusqlite::{params, Connection};
@@ -62,6 +63,28 @@ impl DbError {
 /// each borrows the underlying connection for the duration of the call.
 pub struct Db {
     conn: Connection,
+    location: PathBuf,
+}
+
+#[derive(Clone)]
+pub struct ContextWriter(Arc<Mutex<Connection>>);
+
+impl ContextWriter {
+    pub fn insert(&self, envelope: &domain::ContextEnvelope) -> Result<(), DbError> {
+        let conn = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ContextRepo::new(&conn).insert(envelope)
+    }
+
+    pub fn unread_count(&self, session: domain::SessionId) -> Result<usize, DbError> {
+        let conn = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(conn.query_row("SELECT count(*) FROM context_envelopes WHERE target_session_id = ?1 AND kind IS NOT NULL AND acked_at IS NULL", params![session.to_string()], |row| row.get(0))?)
+    }
 }
 
 impl Db {
@@ -72,23 +95,27 @@ impl Db {
     /// set, or a migration fails.
     pub fn open(path: &Path) -> Result<Db, DbError> {
         let conn = Connection::open(path)?;
-        Self::init(conn)
+        Self::init(conn, path.to_path_buf())
     }
 
     /// Open a fresh in-memory database and migrate it. Intended for tests; the
-    /// database vanishes when the [`Db`] is dropped.
+    /// database vanishes when its last connection is dropped.
     ///
     /// # Errors
     /// Returns [`DbError`] if the pragmas cannot be set or a migration fails.
     pub fn open_in_memory() -> Result<Db, DbError> {
-        let conn = Connection::open_in_memory()?;
-        Self::init(conn)
+        let location = PathBuf::from(format!(
+            "file:forge-{}?mode=memory&cache=shared",
+            domain::ContextId::new()
+        ));
+        let conn = Connection::open(&location)?;
+        Self::init(conn, location)
     }
 
     /// Apply connection pragmas (WAL + `foreign_keys = ON` +
     /// `busy_timeout`) and run migrations. Foreign keys are enforced from the
     /// first application write; see the note on the migration window below.
-    fn init(mut conn: Connection) -> Result<Db, DbError> {
+    fn init(mut conn: Connection, location: PathBuf) -> Result<Db, DbError> {
         // `journal_mode = WAL` returns a row ("wal"), so it must not go through
         // `execute`; `execute_batch` discards result rows and runs each pragma
         // outside a transaction, which `foreign_keys` requires.
@@ -119,7 +146,16 @@ impl Db {
         // fully enforced.
         migrations().to_latest(&mut conn)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        Ok(Db { conn })
+        Ok(Db { conn, location })
+    }
+
+    /// Open a metadata writer before entering the daemon's core lock.
+    pub fn context_writer(&self) -> Result<ContextWriter, DbError> {
+        let conn = Connection::open(&self.location)?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;",
+        )?;
+        Ok(ContextWriter(Arc::new(Mutex::new(conn))))
     }
 
     /// The raw connection, for callers that need bespoke queries.
@@ -258,6 +294,57 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::Db;
+
+    #[test]
+    fn context_writer_shares_metadata_without_sharing_the_core_connection() {
+        for memory in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = if memory {
+                Db::open_in_memory().unwrap()
+            } else {
+                Db::open(&dir.path().join("metadata.db")).unwrap()
+            };
+            let other = Db::open_in_memory().unwrap();
+            let writer = db.context_writer().unwrap();
+            let envelope = domain::ContextEnvelope {
+                id: domain::ContextId::new(),
+                source_session_id: None,
+                target_session_id: None,
+                summary: Some("audit".into()),
+                instructions: Some("bounded prompt".into()),
+                artifacts: vec![],
+                git_context: None,
+                created_at: domain::Timestamp::now(),
+                run_id: None,
+                task_id: None,
+                kind: None,
+                in_reply_to: None,
+                acked_at: None,
+            };
+            std::thread::spawn(move || writer.insert(&envelope))
+                .join()
+                .unwrap()
+                .unwrap();
+            let count = |db: &Db| {
+                db.conn()
+                    .query_row("SELECT count(*) FROM context_envelopes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap()
+            };
+            assert_eq!(count(&db), 1);
+            assert_eq!(count(&other), 0);
+            let keys: i64 = db
+                .context_writer()
+                .unwrap()
+                .0
+                .lock()
+                .unwrap()
+                .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(keys, 1);
+        }
+    }
 
     #[test]
     fn connection_pragmas_are_applied() {

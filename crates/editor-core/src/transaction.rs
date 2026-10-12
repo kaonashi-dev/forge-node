@@ -1,9 +1,7 @@
 //! The one shape a mutation may take.
 //!
-//! Typing, paste, replace-all and a Markdown block edit are the same kind of
-//! thing: a set of range replacements applied together or not at all. A path
-//! that edits the buffer without building one of these escapes undo and the
-//! version counter, which is why `Document` exposes no other entry.
+//! User edits and disk reloads are range replacements applied atomically,
+//! with selections on both sides so undo restores the gesture.
 
 use crate::selection::{Range, Selection};
 
@@ -140,6 +138,8 @@ impl Transaction {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum EditError {
+    #[error("the buffer has unsaved changes")]
+    UnsavedChanges,
     #[error("the buffer is read-only")]
     ReadOnly,
     #[error("edit ranges overlap")]

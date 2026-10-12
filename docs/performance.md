@@ -584,11 +584,19 @@ would have caught any finding on this page.
 
 ## Orchestration traffic
 
-`forgectl hook` fires once per turn, not per tool call, and the handler does
-not touch SQLite. (No built-in provider installs a hook yet, so on a stock
-machine the states that depend on it stay `Starting`.) A `ClientKind::Cli` connection skips `TerminalActivity`,
+`forgectl hook` fires at turn boundaries or attention events, not every tool
+call, and activity reports do not touch SQLite. Claude installs turn/question/
+permission hooks, Codex installs a turn-complete notify command, and OpenCode
+V2 installs a terminal-local event plugin. Its reporter keeps at most one child
+and one pending state, bounds execution, kills the process group on timeout,
+and removes subscriptions on unload. A `ClientKind::Cli` connection skips `TerminalActivity`,
 `TerminalBell`, `ClipboardStore`, `EditorFrame`, and `ProviderUsageChanged`,
 so a controller blocked in `run wait` is not queued behind a terminal burst.
-Message bodies are not written into a PTY. Result files and board values are
+Ledger message bodies are not written into a PTY. Explicit `SendSessionPrompt`
+is separate: one 8 KiB slot per target, a per-session admission gate, and a PTY
+writer lock revalidated against hook activity before any submission. Audit I/O
+uses a second SQLite connection outside the core lock. Session names use one
+cached snapshot; `session wait` and worktree creation wait on events, not disk
+or snapshot polling. Result files and board values are
 clamped with `metadata` plus `Read::take` before the rest of the bytes are
 resident. See [orchestration.md](./orchestration.md).

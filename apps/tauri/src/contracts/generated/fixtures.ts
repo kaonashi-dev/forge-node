@@ -18,7 +18,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   Hello: {
-    protocol_version: 30,
+    protocol_version: 31,
     client_version: "0.1.0",
     client_kind: "Gui",
   },
@@ -88,7 +88,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   HelloAck: {
-    protocol_version: 30,
+    protocol_version: 31,
     daemon_version: "0.1.0",
     instance_id: "forge-daemon-0001",
     started_at: "2026-08-30T12:00:00Z",
@@ -98,7 +98,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   HelloReject: {
-    daemon_protocol_version: 30,
+    daemon_protocol_version: 31,
     reason: "protocol version mismatch",
   },
 } as const;
@@ -672,13 +672,13 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  protocol_version: 30,
+  protocol_version: 31,
   client_version: "0.1.0",
   client_kind: "Gui",
 } as const;
 
 export const hello_ack = {
-  protocol_version: 30,
+  protocol_version: 31,
   daemon_version: "0.1.0",
   instance_id: "forge-daemon-0001",
   started_at: "2026-08-30T12:00:00Z",
@@ -686,7 +686,7 @@ export const hello_ack = {
 } as const;
 
 export const hello_reject = {
-  daemon_protocol_version: 30,
+  daemon_protocol_version: 31,
   reason: "protocol version mismatch",
 } as const;
 
@@ -738,6 +738,21 @@ export const request_attach_terminal = {
       pixel_width: 0,
       pixel_height: 0,
     },
+  },
+} as const;
+
+export const request_create_agent_session = {
+  CreateAgentSession: {
+    workspace_id: "00000000-0000-7000-8000-000000000003",
+    provider_id: "claude",
+    profile_id: null,
+    parent: null,
+    role: "Generic",
+    resume: null,
+    initial_prompt: "Review this checkout",
+    read_only: true,
+    model: "opus",
+    effort: "high",
   },
 } as const;
 
@@ -855,6 +870,16 @@ export const request_resize_terminal = {
       pixel_width: 0,
       pixel_height: 0,
     },
+  },
+} as const;
+
+export const request_send_session_prompt = {
+  SendSessionPrompt: {
+    caller_session_id: null,
+    session_id: "00000000-0000-7000-8000-000000000004",
+    text: "Inspect the failing test",
+    submit: true,
+    when: "Queue",
   },
 } as const;
 
@@ -1096,6 +1121,15 @@ export const response_file_tree = {
       },
     ],
     truncated: false,
+  },
+} as const;
+
+export const response_prompt_delivery = {
+  PromptDelivery: {
+    delivered: false,
+    queued: true,
+    submitted: false,
+    context_id: "00000000-0000-7000-8000-000000000005",
   },
 } as const;
 
@@ -1393,6 +1427,8 @@ export const response_snapshot_populated = {
             supports_review: true,
           },
           config_dir: null,
+          model: null,
+          effort: null,
         },
         detection: {
           provider_id: "claude",
@@ -2472,6 +2508,7 @@ export const FIXTURE_NAMES = [
   "pty_size.json",
   "request_apply_shares.json",
   "request_attach_terminal.json",
+  "request_create_agent_session.json",
   "request_create_editor_session.json",
   "request_create_shell_session.json",
   "request_detach_terminal.json",
@@ -2488,6 +2525,7 @@ export const FIXTURE_NAMES = [
   "request_refresh_workspace_status.json",
   "request_remove_share_rule.json",
   "request_resize_terminal.json",
+  "request_send_session_prompt.json",
   "request_set_project_shares.json",
   "request_write_file.json",
   "request_write_terminal_input.json",
@@ -2497,6 +2535,7 @@ export const FIXTURE_NAMES = [
   "response_directory_listing.json",
   "response_file_contents.json",
   "response_file_tree.json",
+  "response_prompt_delivery.json",
   "response_scrollback_rows.json",
   "response_session_created.json",
   "response_share_candidates.json",

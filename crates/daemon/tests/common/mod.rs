@@ -630,6 +630,8 @@ pub fn create_agent_session(
             resume: None,
             initial_prompt: None,
             read_only: false,
+            model: None,
+            effort: None,
         })
         .unwrap_or_else(|e| panic!("CreateAgentSession({provider_id}) failed: {e}"));
     assert!(

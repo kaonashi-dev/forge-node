@@ -499,6 +499,466 @@ fn show(ctl: &Ctl) -> Value {
     ok(&ctl.run(&["run", "show"], &[]))
 }
 
+#[test]
+fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    let controller_workspace = add_project(&client, &repo);
+    let (controller, _) = client.create_shell_session(controller_workspace).unwrap();
+    let other = harness.tmp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let alias = harness.tmp.path().join("other-alias");
+    std::os::unix::fs::symlink(&other, &alias).unwrap();
+    client
+        .request(Request::AddProject {
+            path: other.clone(),
+        })
+        .unwrap();
+    let profile = domain::AgentProfile {
+        id: domain::AgentProfileId::new(),
+        provider_id: domain::AgentProviderId::new("claude"),
+        name: "Work".into(),
+        executable: None,
+        config_dir: None,
+        args: vec![],
+        created_at: domain::Timestamp::now(),
+    };
+    client
+        .request(Request::SaveAgentProfile { profile })
+        .unwrap();
+    let ctl = Ctl::new(&running.socket);
+    let caller = controller.to_string();
+    let spawned = ok(&ctl.run(
+        &[
+            "session",
+            "spawn",
+            "--project",
+            &alias.to_string_lossy(),
+            "--provider",
+            "claude",
+            "--profile",
+            "wOrK",
+            "--name",
+            "worker",
+            "--model",
+            "opus",
+            "--effort",
+            "high",
+            "--prompt",
+            "do work",
+        ],
+        &[("FORGE_SESSION_ID", &caller)],
+    ));
+    assert_eq!(spawned["spawned_by"], caller);
+    let id = field(&spawned, "session_id");
+    let session = ok(&ctl.run(&["session", "show", "OTHER/WORKER"], &[]));
+    assert_eq!(session["id"], id);
+    assert!(session["parent_session_id"].is_null());
+    assert_eq!(session["root_session_id"], id);
+    ok(&ctl.run(&["session", "rename", &id, "  renamed  "], &[]));
+    assert_eq!(
+        ok(&ctl.run(&["session", "show", "other/renamed"], &[]))["title"]["user"],
+        "renamed"
+    );
+    err(
+        &ctl.run(
+            &["session", "wait", &id, "--for", "idle", "--timeout", "0s"],
+            &[],
+        ),
+        124,
+    );
+    let observer = Client::connect_as(&running.socket, "test", ClientKind::Cli).unwrap();
+    let events = observer.events();
+    let waiter_socket = running.socket.clone();
+    let waiter_id = id.clone();
+    let waiter = std::thread::spawn(move || {
+        Ctl::new(&waiter_socket).run(
+            &[
+                "session",
+                "wait",
+                &waiter_id,
+                "--for",
+                "idle",
+                "--timeout",
+                "10s",
+            ],
+            &[],
+        )
+    });
+    hook_state(&ctl, &id, "idle");
+    assert_eq!(ok(&waiter.join().unwrap())["activity"]["state"], "idle");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let event = events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if matches!(event, DaemonEvent::SessionUpdated(ref s) if s.id.to_string() == id && s.activity.state == domain::ActivityState::Idle)
+        {
+            break;
+        }
+    }
+    let sent = ok(&ctl.run(
+        &["session", "send", "renamed", "--text", "dispatch-proof"],
+        &[],
+    ));
+    assert_eq!(sent["submitted"], true);
+    hook_state(&ctl, &id, "working");
+    assert_eq!(
+        ok(&ctl.run(
+            &["session", "send", &id, "--queue", "--text", "queued-proof"],
+            &[]
+        ))["queued"],
+        true
+    );
+    err(
+        &ctl.run(
+            &["session", "send", &id, "--queue", "--text", "replacement"],
+            &[],
+        ),
+        5,
+    );
+    hook_state(&ctl, &id, "idle");
+    poll("prompt in transcript", || {
+        let read = ok(&ctl.run(&["session", "read", &id], &[]));
+        read["text"]
+            .as_str()
+            .filter(|text| text.contains("queued-proof"))
+            .map(|_| ())
+    });
+    ok(&ctl.run(
+        &[
+            "session",
+            "spawn",
+            "--project",
+            &repo.to_string_lossy(),
+            "--provider",
+            "claude",
+            "--name",
+            "renamed",
+            "--worktree",
+            "dispatch-test",
+            "--base",
+            "main",
+        ],
+        &[],
+    ));
+    let ambiguity = err(&ctl.run(&["session", "show", "renamed"], &[]), 5);
+    assert_eq!(ambiguity["error"]["code"], "ambiguous");
+    assert_eq!(
+        ambiguity["error"]["details"]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let mut server = Command::new(&ctl.bin)
+        .arg("--socket")
+        .arg(&running.socket)
+        .arg("mcp")
+        .env_remove("FORGE_SESSION_ID")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = server.stdin.take().unwrap();
+    for request in [
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"rename_session","arguments":{"session":id,"title":"mcp worker"}}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_session","arguments":{"session":id}}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"send_prompt","arguments":{"session":id,"text":"mcp-proof","now":true,"no_submit":true}}}),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"wait_session","arguments":{"session":id,"for":"working","timeout":1}}}),
+        json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"spawn_session","arguments":{"project":other.to_string_lossy(),"provider":"claude","name":"mcp root","prompt":"mcp task","model":"opus","effort":"high"}}}),
+    ] {
+        writeln!(stdin, "{request}").unwrap();
+    }
+    drop(stdin);
+    let output = server.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let responses: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(responses.len(), 8);
+    assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(responses[2]["result"]["structuredContent"]["ok"], true);
+    for response in &responses[2..] {
+        assert_eq!(response["result"]["isError"], false, "{response}");
+    }
+    assert_eq!(
+        responses[5]["result"]["structuredContent"]["result"]["submitted"],
+        false
+    );
+    assert_eq!(
+        responses[5]["result"]["structuredContent"]["result"]["delivered"],
+        true
+    );
+    let spawned = &responses[7]["result"]["structuredContent"]["result"];
+    assert!(spawned["spawned_by"].is_null());
+    let mcp_session = field(spawned, "session_id");
+    let root = ok(&ctl.run(&["session", "show", &mcp_session], &[]));
+    assert!(root["parent_session_id"].is_null());
+    assert_eq!(root["root_session_id"], mcp_session);
+    assert_eq!(
+        ok(&ctl.run(&["session", "show", &id], &[]))["title"]["user"],
+        "mcp worker"
+    );
+}
+
+#[test]
+#[ignore = "launches authenticated Claude, spends a turn, and answers only synthetic scratch prompts"]
+fn real_claude_reports_question_permission_and_idle_with_tty_diagnostics() {
+    let diagnostics = PathBuf::from(
+        std::env::var("FORGE_ACTIVITY_DIAGNOSTICS")
+            .expect("set a private scratch directory for diagnostics"),
+    );
+    fs::create_dir_all(&diagnostics).unwrap();
+    fs::set_permissions(&diagnostics, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut harness = Harness::new();
+    harness.shell = PathBuf::from("/bin/zsh");
+    let repo = harness.tmp.path().join("activity-probe");
+    fs::create_dir(&repo).unwrap();
+    let ctl = sh_quote(env!("CARGO_BIN_EXE_forgectl"));
+    let logdir = sh_quote(&diagnostics.to_string_lossy());
+    let script = write_executable(&diagnostics, "hook.sh", &format!(
+        "#!/bin/sh\n/usr/bin/head -c 65536 > {logdir}/\"$1-$$.json\"\ncat >/dev/null\nprintf '%s %s %s\\n' \"$1\" \"$(tty 2>&1)\" \"$([ -w /dev/tty ] && echo tty-ok)\" >> {logdir}/hooklog\n{ctl} hook --state \"$2\" --source claude >/dev/null 2>&1\nexit 0\n"
+    ));
+    let mut hooks = serde_json::Map::new();
+    for (event, state) in [
+        ("UserPromptSubmit", "working"),
+        ("PreToolUse", "waiting"),
+        ("PermissionRequest", "waiting"),
+        ("Notification", "waiting"),
+        ("Stop", "idle"),
+    ] {
+        let mut entry = json!({"hooks":[{"type":"command","command":format!("{} {event} {state}", sh_quote(&script.to_string_lossy())),"timeout":5}]});
+        if event == "PreToolUse" {
+            entry["matcher"] = json!("AskUserQuestion");
+        }
+        hooks.insert(event.into(), json!([entry]));
+    }
+    let settings = diagnostics.join("settings.json");
+    fs::write(
+        &settings,
+        json!({"hooks":hooks,"permissions":{"ask":["Bash"]}}).to_string(),
+    )
+    .unwrap();
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    let events = client.events();
+    let workspace = add_project(&client, &repo);
+    let profile = domain::AgentProfile {
+        id: domain::AgentProfileId::new(),
+        provider_id: domain::AgentProviderId::new("claude"),
+        name: "isolated activity diagnostics".into(),
+        executable: None,
+        config_dir: None,
+        args: vec![
+            "--settings".into(),
+            settings.to_string_lossy().into_owned(),
+            "--setting-sources".into(),
+            "".into(),
+            "--strict-mcp-config".into(),
+            "--disable-slash-commands".into(),
+            "--tools".into(),
+            "AskUserQuestion,Bash".into(),
+            "--permission-mode".into(),
+            "manual".into(),
+            "--model".into(),
+            "sonnet".into(),
+        ],
+        created_at: domain::Timestamp::now(),
+    };
+    let profile_id = profile.id;
+    client
+        .request(Request::SaveAgentProfile { profile })
+        .unwrap();
+    let (session, terminal) = match client.request(Request::CreateAgentSession {
+        workspace_id: workspace, provider_id: domain::AgentProviderId::new("claude"), profile_id: Some(profile_id), parent: None,
+        role: domain::SessionRole::Generic, resume: None, read_only: false, model: None, effort: None,
+        initial_prompt: Some("This is an isolated activity smoke test. First call AskUserQuestion with the question 'Activity smoke: choose Continue', with options Continue and Stop. After Continue, use Bash to run exactly: printf 'activity-smoke-ok\\n' > probe.txt . Then respond SMOKE_DONE and stop. Do not inspect files, use other tools, or do any other work.".into()),
+    }).unwrap() {
+        Response::SessionCreated { session_id, terminal_id } => (session_id, terminal_id),
+        other => panic!("launch: {other:?}"),
+    };
+    let attach = || match client
+        .request(Request::AttachTerminal {
+            terminal_id: terminal,
+            size: domain::PtySize {
+                cols: 120,
+                rows: 40,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        })
+        .unwrap()
+    {
+        Response::AttachAck { snapshot } => snapshot,
+        other => panic!("attach: {other:?}"),
+    };
+    let snapshot = attach();
+    let mut grid = client::CellGrid::from_snapshot(&snapshot);
+    let mut trusted = false;
+    let mut trust_selecting = false;
+    let mut trust_confirmations = 0;
+    let mut answered = false;
+    let mut confirmed = false;
+    let mut permission = false;
+    let mut idle = false;
+    let mut screen = String::new();
+    let deadline = Instant::now() + Duration::from_secs(180);
+    while !idle {
+        let event = events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_else(|error| {
+                fs::write(diagnostics.join("last-screen.txt"), &screen).unwrap();
+                if let Ok(Response::SessionTranscript(transcript)) =
+                    client.request(Request::GetSessionTranscript {
+                        session_id: session,
+                        max_lines: None,
+                        max_bytes: Some(8_192),
+                    })
+                {
+                    fs::write(diagnostics.join("last-transcript.txt"), transcript.text).unwrap();
+                }
+                panic!(
+                    "Claude smoke: {error}; trusted={trusted}, selecting={trust_selecting}, trust_confirmations={trust_confirmations}, answered={answered}, confirmed={confirmed}, permission={permission}; inspect {}",
+                    diagnostics.display()
+                );
+            });
+        let mut painted = false;
+        match event {
+            DaemonEvent::TerminalDelta { terminal_id, delta } if terminal_id == terminal => {
+                let outcome = grid.apply_delta(&delta);
+                painted = outcome != client::DeltaOutcome::Stale;
+                if outcome == client::DeltaOutcome::NeedsResync {
+                    // The initial resize can race queued deltas, just as it can in the GUI.
+                    grid = client::CellGrid::from_snapshot(&attach());
+                }
+            }
+            DaemonEvent::TerminalResync {
+                terminal_id,
+                snapshot,
+            } if terminal_id == terminal && snapshot.seq > grid.last_seq => {
+                grid = client::CellGrid::from_snapshot(&snapshot);
+                painted = true;
+            }
+            DaemonEvent::SessionUpdated(s) if s.id == session => {
+                if s.state.is_terminal() {
+                    fs::write(diagnostics.join("last-screen.txt"), &screen).unwrap();
+                    panic!("Claude ended during the smoke: {:?}", s.state);
+                }
+                idle = s.activity.state == domain::ActivityState::Idle
+                    && repo.join("probe.txt").exists();
+            }
+            _ => {}
+        }
+        if !painted {
+            continue;
+        }
+        screen.clear();
+        for row in &grid.visible {
+            for cell in row.cells.iter() {
+                screen.push_str(&cell.text);
+            }
+            screen.push('\n');
+        }
+        if screen.contains("Yes, I trust this folder") && screen.contains("No, exit") {
+            let yes_selected = screen.lines().any(|line| {
+                line.trim_start().starts_with('❯') && line.contains("Yes, I trust this folder")
+            });
+            let no_selected = screen
+                .lines()
+                .any(|line| line.trim_start().starts_with('❯') && line.contains("No, exit"));
+            // Wait for the selection's repaint: batching Down+Enter can confirm the old choice.
+            if yes_selected && !no_selected && trust_confirmations < 3 {
+                fs::write(diagnostics.join("trust-confirm.txt"), &screen).unwrap();
+                client
+                    .request(Request::WriteTerminalInput {
+                        terminal_id: terminal,
+                        bytes: b"\r".to_vec(),
+                    })
+                    .unwrap();
+                trusted = true;
+                trust_selecting = false;
+                trust_confirmations += 1;
+            } else if !trust_selecting {
+                fs::write(diagnostics.join("trust-select.txt"), &screen).unwrap();
+                client
+                    .request(Request::WriteTerminalInput {
+                        terminal_id: terminal,
+                        bytes: b"\x1b[B".to_vec(),
+                    })
+                    .unwrap();
+                trust_selecting = true;
+            }
+        } else if !answered
+            && screen.contains("Activity smoke")
+            && screen.contains("Continue")
+            && screen.contains("Stop")
+            && screen.contains("Enter to select")
+        {
+            client
+                .request(Request::WriteTerminalInput {
+                    terminal_id: terminal,
+                    bytes: b"\r".to_vec(),
+                })
+                .unwrap();
+            answered = true;
+        } else if answered && !confirmed && screen.contains("Submit") {
+            client
+                .request(Request::WriteTerminalInput {
+                    terminal_id: terminal,
+                    bytes: b"\r".to_vec(),
+                })
+                .unwrap();
+            confirmed = true;
+        } else if !permission
+            && screen.contains("probe.txt")
+            && screen.contains("Do you want to proceed")
+        {
+            client
+                .request(Request::WriteTerminalInput {
+                    terminal_id: terminal,
+                    bytes: b"\r".to_vec(),
+                })
+                .unwrap();
+            permission = true;
+        }
+    }
+    let log = fs::read_to_string(diagnostics.join("hooklog")).unwrap();
+    for event in [
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PermissionRequest",
+        "Stop",
+    ] {
+        assert!(log.contains(event), "missing {event}: {log}");
+    }
+    assert_eq!(
+        fs::read_to_string(repo.join("probe.txt")).unwrap(),
+        "activity-smoke-ok\n"
+    );
+    println!(
+        "Claude activity diagnostics: {}\n{log}",
+        diagnostics.display()
+    );
+    client
+        .request(Request::KillSession {
+            session_id: session,
+        })
+        .unwrap();
+}
+
 fn transcript(ctl: &Ctl, session: &str) -> String {
     ok(&ctl.run(&["session", "read", session, "--max-bytes", "200000"], &[]))["text"]
         .as_str()
@@ -507,10 +967,18 @@ fn transcript(ctl: &Ctl, session: &str) -> String {
 }
 
 fn wait_text(ctl: &Ctl, session: &str, needle: &str) -> String {
-    poll(&format!("transcript {needle}"), || {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
         let text = transcript(ctl, session);
-        text.contains(needle).then_some(text)
-    })
+        if text.contains(needle) {
+            return text;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for transcript {needle} in session {session}; last transcript: {text:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn assert_stays_out(ctl: &Ctl, session: &str, needle: &str) {
@@ -2125,8 +2593,17 @@ fn scenario_providers_hand_work_to_each_other() {
     ));
 
     let reviewer = add_task_in(&ctl, &run_id, "opencode reads", "OPENCODE_TOKEN", true);
+    let refused = err(
+        &ctl.run(
+            &["task", "start", &reviewer, "--provider", "opencode"],
+            &[("FORGE_SESSION_ID", controller.as_str())],
+        ),
+        1,
+    );
+    assert_eq!(refused["error"]["code"], "invalid_request");
+    let opencode_task = add_task_in(&ctl, &run_id, "opencode works", "OPENCODE_TOKEN", false);
     let opencode = ok(&ctl.run(
-        &["task", "start", &reviewer, "--provider", "opencode"],
+        &["task", "start", &opencode_task, "--provider", "opencode"],
         &[("FORGE_SESSION_ID", controller.as_str())],
     ));
     let opencode_capture = await_ready(&ctl, &harness, &opencode);
@@ -2138,12 +2615,8 @@ fn scenario_providers_hand_work_to_each_other() {
         opencode_capture.contains("--prompt") && opencode_capture.contains("OPENCODE_TOKEN"),
         "opencode did not take the prompt as --prompt: {opencode_capture}"
     );
-    assert!(
-        opencode_capture.contains("--agent") && opencode_capture.contains("plan"),
-        "read-only opencode was not put in its plan agent: {opencode_capture}"
-    );
-    assert_eq!(field(&opencode, "workspace_id"), integration);
-    notes.line("reviewer provider=opencode args=--agent plan --prompt placement=integration");
+    assert!(!opencode_capture.contains("--agent"));
+    notes.line("opencode read-only refused; ordinary launch uses --prompt");
 
     let cursor_task = add_task_in(&ctl, &run_id, "cursor reads", "CURSOR_TOKEN", true);
     let cursor = ok(&ctl.run(

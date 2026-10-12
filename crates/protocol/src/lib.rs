@@ -24,7 +24,8 @@ pub use framing::{
 };
 pub use hello::{ClientKind, EditorSurface, Hello, HelloAck, HelloReject};
 pub use request::{
-    CloseRunPullRequest, IntegrateHow, RemoveProjectPolicy, Request, SendContextSpawn, Signal,
+    CloseRunPullRequest, IntegrateHow, PromptDelivery, RemoveProjectPolicy, Request,
+    SendContextSpawn, Signal,
 };
 pub use response::OrchestrationLimitsView;
 pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
@@ -37,7 +38,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// every new request with an undecodable frame and no `Response` — the caller
 /// waits on a reply that never comes. Equality at connect turns that stall
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -301,6 +302,8 @@ mod tests {
                 },
                 usage_source: None,
                 config_dir: None,
+                model: None,
+                effort: None,
                 resume: Some(domain::ResumeStyle::Flag {
                     flag: "--resume".to_string(),
                 }),

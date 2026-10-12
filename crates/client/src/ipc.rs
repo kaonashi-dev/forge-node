@@ -1154,6 +1154,8 @@ impl Client {
             resume,
             initial_prompt,
             read_only,
+            model: None,
+            effort: None,
         })
     }
 

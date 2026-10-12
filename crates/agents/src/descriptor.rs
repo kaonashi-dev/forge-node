@@ -16,6 +16,8 @@ use crate::detection;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AgentError {
+    #[error("invalid launch options: {0}")]
+    InvalidLaunchOptions(String),
     /// No candidate binary (and no usable override) was found for the provider.
     #[error("agent provider `{0}` is not installed: no candidate binary was found")]
     NotInstalled(AgentProviderId),
@@ -126,7 +128,8 @@ impl AgentAdapter for DescriptorAdapter {
 ///   `executable_override` if present, else the first candidate found on
 ///   `env.path_entries`.
 /// - `args` is `descriptor.default_args`, then the resume arguments when
-///   `req.resume_session_id` is set, then `req.extra_args`.
+///   `req.resume_session_id` is set, then `req.extra_args`, explicit model/effort,
+///   read-only flags and the initial prompt.
 /// - `env` is the complete resolved environment plus the terminal hints
 ///   `TERM=xterm-256color` and `COLORTERM=truecolor`.
 ///
@@ -190,9 +193,8 @@ pub fn build_launch_with_config_dir(
         args.extend(style.args(session_id));
     }
     args.extend(req.extra_args.iter().cloned());
-    // The read-only flags go *after* the profile's own, so they win: a profile
-    // that names OpenCode's `build` agent must not quietly turn a review into
-    // a session that can edit the checkout it was started in.
+    crate::launch_options::append(descriptor, &req.options, &mut args)?;
+    // Read-only flags follow profile/model overrides so a review cannot silently become writable.
     if req.read_only {
         let style = descriptor
             .review
@@ -367,6 +369,7 @@ mod tests {
             resume_session_id: None,
             initial_prompt: None,
             read_only: false,
+            options: Default::default(),
         }
     }
 
@@ -686,7 +689,7 @@ mod tests {
     #[test]
     fn opencode_names_its_prompt_instead_of_passing_it_positionally() {
         let dir = tempfile::tempdir().unwrap();
-        write_script(dir.path(), "opencode", &echo_script("opencode 1.0"));
+        write_script(dir.path(), "opencode", &echo_script("opencode 2.0"));
         let env = env_with_path(vec![dir.path().to_path_buf()]);
 
         let mut req = launch_req(dir.path().to_path_buf());
@@ -713,30 +716,25 @@ mod tests {
         assert!(matches!(err, AgentError::PromptUnsupported(_)));
     }
 
-    /// The review flags come after the profile's own so they win: a profile
-    /// that named OpenCode's `build` agent must not turn a review into a
-    /// session that can edit the checkout it started in.
     #[test]
     fn a_read_only_launch_appends_the_providers_flags_after_the_profiles() {
         let dir = tempfile::tempdir().unwrap();
-        write_script(dir.path(), "opencode", &echo_script("opencode 1.0"));
+        write_script(dir.path(), "claude", &echo_script("claude 1.0"));
         let env = env_with_path(vec![dir.path().to_path_buf()]);
 
         let mut req = launch_req(dir.path().to_path_buf());
-        req.provider_id = AgentProviderId::new("opencode");
-        req.extra_args = vec!["--agent".to_owned(), "build".to_owned()];
+        req.extra_args = vec!["--permission-mode".to_owned(), "default".to_owned()];
         req.read_only = true;
         req.initial_prompt = Some("review it".to_owned());
 
-        let spec = build_launch(&builtins::builtin("opencode").unwrap(), &req, &env).unwrap();
+        let spec = build_launch(&builtins::builtin("claude").unwrap(), &req, &env).unwrap();
         assert_eq!(
             spec.args,
             [
-                "--agent",
-                "build",
-                "--agent",
+                "--permission-mode",
+                "default",
+                "--permission-mode",
                 "plan",
-                "--prompt",
                 "review it"
             ]
         );
