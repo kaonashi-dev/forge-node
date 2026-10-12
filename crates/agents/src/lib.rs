@@ -9,6 +9,7 @@ pub mod builtins;
 pub mod descriptor;
 pub mod detection;
 pub mod history;
+pub mod launch_options;
 pub mod registry;
 pub mod usage;
 

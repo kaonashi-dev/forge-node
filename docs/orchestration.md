@@ -86,3 +86,119 @@ itself), pushes, and runs `gh pr create --assignee @me`.
 
 `forge-daemon session` and `forge-daemon context` still run and print a
 deprecation hint pointing at `forgectl`.
+
+## Dispatch between sessions and projects
+
+Session dispatch does not create a run or a task. It launches independent graph
+roots, including in another project; `FORGE_SESSION_ID` is reported as
+`spawned_by`, never used as a cross-project parent.
+
+```sh
+forgectl --json session list
+forgectl --json session spawn --project api --provider claude --profile Work \
+  --name auth-impl --worktree auth-impl --base main \
+  --model opus --effort high --prompt-file plan/auth.md
+forgectl session rename api/auth-impl auth-review
+forgectl session wait api/auth-review --for idle --timeout 600
+forgectl session read api/auth-review
+forgectl session send api/auth-review --queue --text 'Review the failing test.'
+```
+
+`--project` accepts an exact name (case-insensitive), root path or UUID.
+Paths resolve canonically, so symlinks and platform aliases name the same project.
+`--workspace <uuid>` uses an existing checkout and conflicts with `--worktree`.
+Creating a worktree waits for `WorkspaceCreated` with the ordinary request
+timeout; it does not reload a snapshot in a loop. `--base` requires `--worktree`.
+`--prompt` and `--prompt-file <path|->` are exclusive, bounded to 8 KiB.
+`--profile` accepts a case-insensitive name or UUID for the selected provider.
+`--read-only`, `--model`, and `--effort` require descriptor support
+([agents.md](./agents.md)). A restart retains model, effort and read-only mode
+for the daemon's lifetime; it never re-sends the initial prompt.
+
+Spawn returns `result: {session_id, terminal_id, project, workspace, title,
+provider, spawned_by}` without reloading a snapshot to guess the ids. Names
+are trimmed and cannot be empty. Session references in `show`, `read`, `kill`,
+`rename`, `send`, and `wait` accept a UUID, at least eight UUID-prefix characters,
+an exact case-insensitive title, or `project/title`. Titles need not be unique.
+An ambiguous reference exits 5 with candidate ids/prefixes, project, title,
+provider, state and activity. Resolving names reads one cached snapshot per
+command. Use returned UUIDs for unattended scripts.
+`session list` keeps `kind` and `state` as display strings (including exit
+details); `session show` returns the structured domain session.
+
+`session wait --for idle|waiting|working` checks the initial snapshot and then
+blocks on `SessionUpdated`, not polling. The default deadline is 600 seconds;
+`--timeout` accepts seconds or a duration such as `10s`. Timeout exits 124,
+removal exits 4, and an ended session exits 5. **Idle is a turn boundary, not
+proof of success**: inspect the transcript, diff and verification before acting.
+Silence alone never changes the daemon's activity state.
+
+### Safe prompt delivery
+
+`session send <ref> --text <text>`, `--file <path|->`, or a positional `-`
+accepts at most 8 KiB and removes control characters except LF/TAB. It always
+uses paste framing, never arbitrary keys. Without bracketed paste, LF and TAB
+become spaces so they cannot approve a permission dialog. `--no-submit` omits
+Enter even when the target is idle.
+
+| Policy | Behavior |
+|--------|----------|
+| Default (`IfIdle`) | Refuse unless the live agent is `idle` with hook evidence. |
+| `--queue` | Keep one bounded prompt until hook-confirmed idle; deliver immediately if already idle. A second prompt is `Conflict` (exit 5), never a replacement. |
+| `--now` | Paste in any activity state; submit only in hook-confirmed idle. **Never approve permissions or answer questions with this command.** |
+
+The result contains `{context_id, delivered, queued, submitted}`. `delivered`
+means the PTY write succeeded, not that the agent accepted or completed the
+work. Text entered into an idle prompt changes it to `working`, including a
+non-submitted draft, preventing a second automatic submission. A queue belongs
+to the exact terminal generation and is discarded on exit, restart or removal.
+An uncertain write is consumed and never automatically replayed. The context
+envelope audits accepted, sanitized text, not proof of delivery; SQLite writes
+use a separate connection outside the core lock. Explicit retry after a
+timeout can duplicate input: inspect the terminal first. Unlike ledger
+mutations, session dispatch is not deduplicated by `--request-id`.
+
+`forgectl guide sessions` serves this contract to an agent. A parent-folder
+planner and a Raycast example live in [multi-repo.md](./multi-repo.md).
+
+### MCP stdio
+
+`forgectl mcp` exposes `list_sessions`, `spawn_session`, `send_prompt`,
+`wait_session`, `read_session`, and `rename_session`. It invokes the same CLI
+handlers in-process, not a child `forgectl`. Input lines are capped at 64 KiB;
+tool schemas reject extra arguments and key-injection options. Requests are
+processed sequentially: a long `wait_session` occupies the server until its
+deadline (maximum 600 s); use a short timeout compatible with the host.
+
+Configure it explicitly; launching an agent does not silently grant dispatch
+tools, especially to a pull-request reviewer. Use the absolute installed
+`forgectl` path and pass `--socket <path>` before `mcp` if the host does not
+inherit `FORGE_SOCKET`. For Claude, a launch-local file supplied with
+`--mcp-config <file>` can contain:
+
+```json
+{"mcpServers":{"forge":{"command":"/absolute/path/forgectl","args":["mcp"]}}}
+```
+
+`--mcp-config` is variadic, like Claude's `--add-dir`: do not leave it as the
+last option in a profile before Forge's positional prompt. Follow it with a
+separate option, or use Claude's ordinary project MCP configuration instead.
+
+Codex's own `config.toml` accepts:
+
+```toml
+[mcp_servers.forge]
+command = "/absolute/path/forgectl"
+args = ["mcp"]
+```
+
+OpenCode V2's server configuration (not `cli.json`) accepts:
+
+```json
+{"mcp":{"servers":{"forge":{"type":"local","command":["/absolute/path/forgectl","mcp"]}}}}
+```
+
+An OpenCode shared service may not inherit a Forge PTY's environment; specify
+the daemon socket explicitly in its command. This server has no filesystem
+write tool, but dispatching a writing agent is itself a mutation: review the
+provider's MCP permissions before exposing it to a read-only planner.

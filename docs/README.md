@@ -14,6 +14,7 @@ must match the code.
 | [domain.md](./domain.md) | the glossary, entities, session state machine and graph rules, wire types |
 | [session-context.md](./session-context.md) | cite/handoff/spawn across providers — Forge mediation, GUI, `forgectl` |
 | [orchestration.md](./orchestration.md) | runs, tasks, attempts, the board, and the `forgectl` contract |
+| [multi-repo.md](./multi-repo.md) | a read-only planner across independent repositories and Raycast dispatch |
 | [protocol.md](./protocol.md) | every request/response/event, error codes, the `client` crate |
 | [terminal.md](./terminal.md) | PTY → engine → delta pipeline, sequence/resync, backpressure, kill semantics, shell environment |
 | [editor.md](./editor.md) | document engine, daemon control wire, cells/DOM surfaces and previews |

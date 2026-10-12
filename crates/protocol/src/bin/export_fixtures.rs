@@ -30,7 +30,7 @@ use domain::{
 };
 use protocol::{
     ClientKind, ClientMessage, DaemonEvent, DaemonMessage, ErrorCode, Hello, HelloAck, HelloReject,
-    NoticeLevel, ProtocolError, ProviderInfo, Request, Response, PROTOCOL_VERSION,
+    NoticeLevel, PromptDelivery, ProtocolError, ProviderInfo, Request, Response, PROTOCOL_VERSION,
 };
 use serde::Serialize;
 
@@ -326,6 +326,8 @@ fn sample_provider() -> ProviderInfo {
             },
             usage_source: None,
             config_dir: None,
+            model: None,
+            effort: None,
             resume: Some(domain::ResumeStyle::Flag {
                 flag: "--resume".to_string(),
             }),
@@ -640,6 +642,33 @@ fn main() {
             autosave: false,
         },
     );
+    write(
+        &out,
+        "request_create_agent_session",
+        &Request::CreateAgentSession {
+            workspace_id: workspace_id(),
+            provider_id: AgentProviderId::new("claude"),
+            profile_id: None,
+            parent: None,
+            role: SessionRole::Generic,
+            resume: None,
+            initial_prompt: Some("Review this checkout".into()),
+            read_only: true,
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+        },
+    );
+    write(
+        &out,
+        "request_send_session_prompt",
+        &Request::SendSessionPrompt {
+            caller_session_id: None,
+            session_id: session_id(),
+            text: "Inspect the failing test".into(),
+            submit: true,
+            when: PromptDelivery::Queue,
+        },
+    );
     write(&out, "session_editor", &{
         let mut session = sample_session();
         session.kind = SessionKind::Editor;
@@ -753,6 +782,16 @@ fn main() {
 
     // ---- Responses ----
     write(&out, "response_ack", &Response::Ack);
+    write(
+        &out,
+        "response_prompt_delivery",
+        &Response::PromptDelivery {
+            context_id: id("05"),
+            delivered: false,
+            queued: true,
+            submitted: false,
+        },
+    );
     write(
         &out,
         "response_workspaces",

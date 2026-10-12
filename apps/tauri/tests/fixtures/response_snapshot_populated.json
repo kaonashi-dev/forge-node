@@ -104,7 +104,9 @@
             "supports_resume": true,
             "supports_review": true
           },
-          "config_dir": null
+          "config_dir": null,
+          "model": null,
+          "effort": null
         },
         "detection": {
           "provider_id": "claude",

@@ -13,7 +13,7 @@ ADR-007 (declarative provider registry).
 |----|--------------|------------------------------|-------|--------|------------------|--------|--------|-----------|
 | `claude` | Claude Code | `claude` | `--version`, 3 s | — | `CLAUDE_CONFIG_DIR` | `--resume <id>` | positional | `--permission-mode plan` |
 | `codex` | Codex CLI | `codex` | `--version`, 3 s | — | `CODEX_HOME` | `resume <id>` (subcommand) | positional | `-s read-only` |
-| `opencode` | OpenCode | `opencode`, `opencode2` | `--version`, 3 s | — | `OPENCODE_CONFIG_DIR` + `XDG_DATA_HOME` | `--session <id>` | `--prompt <text>` | `--agent plan` |
+| `opencode` | OpenCode | `opencode`, `opencode2` | `--version`, 3 s | — | `OPENCODE_CONFIG_DIR` + `XDG_DATA_HOME` | `--session <id>` | `--prompt <text>` | unsupported in V2 |
 | `cursor` | Cursor CLI | `agent`, `cursor-agent` | `--version`, 3 s | output or unambiguous basename must contain `cursor` | — | `--resume <id>` | positional | `--mode ask` |
 | `grok` | Grok | `grok` | `--version`, 3 s | output must contain `grok` | `GROK_HOME` | `--resume <id>` | positional | `--permission-mode plan` |
 
@@ -42,11 +42,15 @@ of four different postures the user is picking.
 
 It exists because an automatic pull-request review starts in a checkout the
 user is working in. `build_launch` appends those flags **after** a profile's own
-arguments so they win — a profile naming OpenCode's `build` agent must not turn
-a review into a session that can edit the checkout — and refuses with
+arguments so they win — a profile must not turn a review into a session that
+can edit the checkout — and refuses with
 `AgentError::ReviewUnsupported` when a read-only launch is asked of a provider
 that declares none. Refused, never downgraded: a review that can write is not a
 weaker review, it is a different thing.
+
+OpenCode V2's installed interactive command does not expose `--agent plan`.
+Forge therefore refuses read-only OpenCode launches rather than advertising
+flags that do not enforce a read-only posture.
 
 The daemon remembers which sessions were launched this way (`Inner::read_only`,
 runtime-only like `resumed_from`) and re-applies the flags on a restart. That is
@@ -338,7 +342,7 @@ registry state.
   first candidate found on `env.path_entries`. `AgentError::NotInstalled`
   otherwise (surfaced as `ErrorCode::ProviderNotInstalled`).
 - `args` — `descriptor.default_args`, the resume arguments, `req.extra_args`
-  (the profile's arguments), the provider's read-only flags for a review, then
+  (the profile's arguments), explicit model/effort options, read-only flags, then
   the initial prompt last. The read-only flags follow the profile's so they win,
   and the prompt follows every flag so a positional one is not read as part of
   a flag. A resume, review or prompt the provider does not declare is
@@ -355,10 +359,32 @@ function with no directory, so there is one code path.
 the crate has no `SessionId`. The daemon injects them when it spawns the PTY
 (`core.rs`), keeping this builder pure.
 
+### Model and effort
+
+`AgentDescriptor.model` and `.effort` declare supported spellings and allowed
+levels. `CreateAgentSession` accepts optional `model` and `effort`; validation
+and argument construction stay in `crates/agents`. Unsupported capabilities
+or levels are `InvalidRequest`, never silently ignored.
+
+| Provider | Model | Effort |
+|----------|-------|--------|
+| Claude | `--model <id>` | `--effort low\|medium\|high\|xhigh\|max` |
+| Codex | `-m <id>` | `-c model_reasoning_effort="<level>"` |
+| Cursor | `--model <id>` | `--model <id>[effort=<level>]`; requires an explicit model |
+| Grok | `-m <id>` | `--reasoning-effort <level>` |
+| OpenCode | unsupported | unsupported |
+
+The exact allowed levels are the descriptor's `EffortSpec.allowed`, not a
+promise that every model accepts every level. Model ids are 1–128 ASCII bytes
+from letters, digits and `._:/-`, and cannot begin with `-`. Explicit options
+override singleton model/effort flags in a profile. Read-only flags still
+follow those options and win. The daemon retains options across a session
+restart in memory, not across a daemon restart.
+
 ## Attention (needs-you)
 
-The rail's `needs-you` marker is driven by ASCII BEL. Providers that do not
-emit BEL on a permission / question prompt get a Forge-owned adapter at launch
+The rail's `needs-you` marker combines ASCII BEL with reported `waiting`
+activity. Providers that do not emit BEL on a permission / question prompt get a Forge-owned adapter at launch
 (`crates/agents/src/attention.rs`). Assets live under
 `<data_dir>/agent-plugins/` (idempotent, content-hashed).
 
@@ -370,9 +396,9 @@ user looks somewhere else. See [terminal.md](./terminal.md#the-pty-loop-daemonsr
 
 | Provider | Injection | Signal |
 |----------|-----------|--------|
-| `opencode` | `OPENCODE_CONFIG_CONTENT` → `forge-attention.js` | `permission.asked` / `question.asked` → BEL |
-| `claude` | `--settings` → Forge JSON (does **not** rewrite `~/.claude`) | `PermissionRequest` + `Notification(permission_prompt\|…)` → `forge-ring-bell.sh` |
-| `codex` | `-c tui.notifications=["approval-requested"]` + `tui.notification_method="bel"` + `tui.notification_condition="always"` | TUI BEL on approval only |
+| `opencode` | `OPENCODE_CLI_CONFIG_CONTENT` → CLI-only V2 `forge-attention.js` | execution events → working/idle; permission/form events → waiting, with BEL fallback |
+| `claude` | `--settings` → Forge JSON (does **not** rewrite `~/.claude`) | turn/question/permission hooks → `forge-activity.sh`, with BEL fallback |
+| `codex` | turn-complete `notify` command + TUI BEL settings | notify → idle; TUI BEL on approval only |
 | `cursor` | Merge `beforeShellExecution` / `beforeMCPExecution` into `~/.cursor/hooks.json` (FORGE-gated) | Best-effort — Cursor has no permission-prompt hook |
 | `grok` | Write `~/.grok/hooks/forge-attention.json` (FORGE-gated), and set `GROK_CURSOR_HOOKS_ENABLED=false` | `Notification(permission_prompt)` → BEL |
 
@@ -396,7 +422,7 @@ never fails the agent. Editing OpenCode's `attention` config or Claude's
 `preferredNotifChannel` does nothing here — Forge does not go through those
 channels. `OPENCODE_PURE=1` / `--pure` disables the OpenCode plugin.
 
-`OPENCODE_CONFIG_CONTENT` is a launch detail, not a terminal-contract variable:
+`OPENCODE_CLI_CONFIG_CONTENT` is a launch detail, not a terminal-contract variable:
 it is not in `RESERVED_PROFILE_VARS`, and it composes with a profile's
 `OPENCODE_CONFIG_DIR`. Provider-shaped knowledge stays in `crates/agents`; the
 daemon only supplies the asset directory (P2).
@@ -582,10 +608,57 @@ installed on the machine, so workspace tests are not fully hermetic.
 ## Activity hooks
 
 A provider hook calls `forgectl hook --state working|waiting|idle`. The command
-always exits 0, even when the daemon is unreachable, and it does not write
-SQLite. Silence does not change activity. No built-in provider installs such a
-hook yet: the command is the channel, and until something calls it — a provider
-hook Forge installs, a wrapper, or the agent itself — a session stays `Starting`
-(never `Idle`). Reports still settle. Forge injects `FORGE_SOCKET` plus the run,
-task, and attempt ids into the PTY environment. It does not write `AGENTS.md`
-or `CLAUDE.md`. See [orchestration.md](./orchestration.md).
+always exits 0, even when the daemon is unreachable, and activity reports do not
+write SQLite. Silence does not change activity. `forge-activity.sh` drains
+stdin, exits 0 outside Forge, and uses the absolute sibling `forgectl` installed
+by the daemon, falling back to `command -v` only when that executable is absent.
+`waiting` also attempts BEL, but activity does not depend on `/dev/tty` being
+writable. Input changes both `idle` and `waiting` to `working`.
+
+Claude installs `UserPromptSubmit → working`, `PreToolUse(AskUserQuestion)`,
+`PermissionRequest`, and matching `Notification → waiting`, and `Stop → idle`.
+There is no `SubagentStop` hook: a child's completion must not idle its parent.
+There is no unrestricted `PostToolUse` hook. An explicit profile `--settings`
+or `--settings=…` suppresses Forge's entire settings injection, including
+activity; copy the generated hooks into that settings file if desired.
+
+Codex installs a notify command for turn completion unless the profile supplies
+one already. Working resumes on input; it does not report permission waiting,
+so approval attention still uses BEL. OpenCode's V2 terminal-local plugin uses
+typed execution/permission/form events, filters other session families, and
+never applies a child's completion as the root's idle. It keeps one reporting
+child and one coalesced pending state; timeout kills the process group and
+unload removes subscriptions. An explicit `OPENCODE_CLI_CONFIG_CONTENT`
+overlay suppresses injection. Cursor and Grok retain attention-only adapters.
+
+The GUI's activity markers prefer reported state over the output-age heuristic;
+idle means a turn boundary, not successful work. Needs-you remains hidden for
+the terminal on screen and is recomputed on `SessionUpdated`. BEL remains
+latched until the user responds, while `waiting` clears when activity changes.
+Forge injects `FORGE_SOCKET` plus any run, task, and attempt ids into the PTY
+environment. It does not write `AGENTS.md` or `CLAUDE.md`.
+See [orchestration.md](./orchestration.md).
+
+### Real-Claude diagnostic
+
+The ignored CLI scenario runs an authenticated Claude in a scratch Forge
+project, logs hook stdin and TTY availability, answers a synthetic question,
+and authorizes only `printf ... > probe.txt` in that scratch checkout. It uses
+launch-local settings and never changes the daily daemon's profiles. It spends
+one real agent turn; run it explicitly with a private diagnostics directory:
+
+```sh
+FORGE_ACTIVITY_DIAGNOSTICS=/absolute/private/scratch \
+  cargo test -p forge-ctl --test orchestration \
+  real_claude_reports_question_permission_and_idle_with_tty_diagnostics \
+  -- --exact --ignored --nocapture
+```
+
+`hooklog` records the event, `tty` result and `/dev/tty` writable check;
+hook stdin is piped, so `not a tty` does not imply `/dev/tty` is unavailable.
+`<event>-<pid>.json` retains the bounded input. Question attention comes from
+`PreToolUse(AskUserQuestion)` rather than relying on `Notification`. Keep the
+payload files private: a hook can contain task text and local paths. On a timeout,
+`last-screen.txt` and `last-transcript.txt` preserve bounded terminal evidence.
+`trust-select.txt` and `trust-confirm.txt` show which scratch-folder trust choice
+the driver saw before sending input.

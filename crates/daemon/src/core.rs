@@ -93,6 +93,9 @@ pub(crate) struct Inner {
     /// initial prompt is forgotten: a restarted review that came back able to
     /// write would be a different session wearing the same name.
     read_only: HashSet<SessionId>,
+    launch_options: HashMap<SessionId, domain::AgentLaunchOptions>,
+    pub(crate) pending_prompts: HashMap<SessionId, crate::prompts::PendingPrompt>,
+    pub(crate) prompt_gates: HashMap<SessionId, Arc<Mutex<()>>>,
     /// Coalesces `FetchRemote` per project. The worker clears this on exit.
     fetching: HashSet<ProjectId>,
     /// Coalesces `CreatePullRequest` per workspace (push + `gh`).
@@ -131,6 +134,7 @@ pub(crate) struct Inner {
 
 /// Shared as `Arc<Daemon>` across the accept loop and PTY threads.
 pub struct Daemon {
+    pub(crate) context_writer: persistence::db::ContextWriter,
     inner: Mutex<Inner>,
     pub(crate) registry: crate::registry::ClientRegistry,
     config: Config,
@@ -326,6 +330,7 @@ impl Daemon {
                 .push(rule);
         }
 
+        let context_writer = db.context_writer().map_err(|e| e.to_string())?;
         let inner = Inner {
             db,
             project_groups,
@@ -340,6 +345,9 @@ impl Daemon {
             idle_warned: HashSet::new(),
             resumed_from: HashMap::new(),
             read_only: HashSet::new(),
+            launch_options: HashMap::new(),
+            pending_prompts: HashMap::new(),
+            prompt_gates: HashMap::new(),
             fetching: HashSet::new(),
             pr_opening: HashSet::new(),
             drafting: HashSet::new(),
@@ -359,6 +367,7 @@ impl Daemon {
         let attention_assets = install_attention_assets(&worktrees_root);
 
         Ok(Arc::new(Daemon {
+            context_writer,
             inner: Mutex::new(inner),
             registry: crate::registry::ClientRegistry::new(),
             config,
@@ -907,7 +916,9 @@ impl Daemon {
                 resume,
                 initial_prompt,
                 read_only,
-            } => self.create_session(
+                model,
+                effort,
+            } => self.create_session_with_options(
                 workspace_id,
                 SessionKind::Agent,
                 Some(provider_id),
@@ -917,7 +928,15 @@ impl Daemon {
                 resume,
                 initial_prompt,
                 read_only,
+                domain::AgentLaunchOptions { model, effort },
             ),
+            Request::SendSessionPrompt {
+                caller_session_id,
+                session_id,
+                text,
+                submit,
+                when,
+            } => crate::prompts::send(self, caller_session_id, session_id, text, submit, when),
             Request::CreateEditorSession {
                 workspace_id,
                 path,
@@ -1314,6 +1333,9 @@ impl Daemon {
             inner.idle_warned.clear();
             inner.resumed_from.clear();
             inner.read_only.clear();
+            inner.launch_options.clear();
+            inner.pending_prompts.clear();
+            inner.prompt_gates.clear();
             inner.fetching.clear();
             inner.pr_opening.clear();
             inner.drafting.clear();
@@ -1810,24 +1832,15 @@ impl Daemon {
 
     /// Persist `branch` (a column); [`WorkspaceStatus`] is runtime-only.
     fn apply_workspace_status(&self, workspace_id: WorkspaceId, status: &git_service::RepoStatus) {
-        let updated = {
+        let (updated, moved) = {
             let mut inner = self.lock();
             let Some(mut ws) = inner.workspaces.get(&workspace_id).cloned() else {
                 return;
             };
-            /*
-             * Assigned, not merged in.
-             *
-             * This was `status.branch.clone().or(ws.branch)`, which reads as
-             * caution and is not: `parse_status_v2` returns `None` for exactly
-             * one reason — `# branch.head (detached)` — and a failed read
-             * never reaches here at all, because `status()` returning `Err` is
-             * handled by the callers. So the `or` could only ever fire on a
-             * genuine detached HEAD, where it kept naming the branch the
-             * worktree had left. `Workspace::label` already falls back to the
-             * directory name when there is no branch, which is the true thing
-             * to say.
-             */
+            let moved = ws.status.head != status.head
+                || ws.branch != status.branch
+                || ws.status.dirty != status.dirty;
+            // `None` is a measured detached HEAD, not a failed branch read.
             ws.branch = status.branch.clone();
             ws.status = WorkspaceStatus {
                 dirty: status.dirty,
@@ -1841,8 +1854,11 @@ impl Daemon {
                 return;
             }
             inner.workspaces.insert(workspace_id, ws.clone());
-            ws
+            (ws, moved)
         };
+        if moved {
+            self.invalidate_editor_files(workspace_id, "");
+        }
         self.registry
             .broadcast_domain(DaemonEvent::WorkspaceUpdated(updated));
     }
@@ -2687,9 +2703,16 @@ impl Daemon {
         workspace_id: WorkspaceId,
         relative: &str,
     ) -> Result<Response, ProtocolError> {
+        let operation = self.editor_file_operation();
         let root = self.workspace_path(workspace_id)?;
         fs_service::delete_path(&root, relative).map_err(fs_err)?;
+        drop(operation);
         self.invalidate_file_index(workspace_id);
+        self.invalidate_editor_files(workspace_id, relative);
+        self.registry.broadcast_domain(DaemonEvent::FileChanged {
+            workspace_id,
+            path: relative.to_owned(),
+        });
         Ok(Response::Ack)
     }
 
@@ -3898,6 +3921,45 @@ impl Daemon {
         initial_prompt: Option<String>,
         read_only: bool,
     ) -> Result<Response, ProtocolError> {
+        self.create_session_with_options(
+            workspace_id,
+            kind,
+            provider_id,
+            profile_id,
+            parent,
+            role,
+            resume,
+            initial_prompt,
+            read_only,
+            Default::default(),
+        )
+    }
+
+    // Existing internal callers have no model overrides; IPC resolves them explicitly.
+    #[allow(clippy::too_many_arguments)]
+    fn create_session_with_options(
+        self: &Arc<Self>,
+        workspace_id: WorkspaceId,
+        kind: SessionKind,
+        provider_id: Option<AgentProviderId>,
+        profile_id: Option<AgentProfileId>,
+        parent: Option<SessionId>,
+        role: SessionRole,
+        resume: Option<String>,
+        initial_prompt: Option<String>,
+        read_only: bool,
+        options: domain::AgentLaunchOptions,
+    ) -> Result<Response, ProtocolError> {
+        if let Some(provider) = &provider_id {
+            let descriptor = self
+                .lock()
+                .agents
+                .descriptor(provider)
+                .cloned()
+                .ok_or_else(|| ProtocolError::invalid_request("unknown provider"))?;
+            agents::launch_options::validate(&descriptor, &options)
+                .map_err(|e| ProtocolError::invalid_request(e.to_string()))?;
+        }
         let extra_env = crate::orchestration::take_spawn_env();
         let _span = tracing::info_span!("session.create", %workspace_id, ?kind).entered();
 
@@ -3942,7 +4004,8 @@ impl Daemon {
                     resume.clone(),
                     initial_prompt.clone(),
                     read_only,
-                ),
+                )
+                .map(|launch| launch.with_options(options.clone())),
                 None,
                 &cwd,
                 id,
@@ -3981,6 +4044,9 @@ impl Daemon {
             }
             if read_only {
                 inner.read_only.insert(id);
+            }
+            if options != domain::AgentLaunchOptions::default() {
+                inner.launch_options.insert(id, options);
             }
             (cwd, spec, session)
         };
@@ -4183,7 +4249,20 @@ impl Daemon {
         let _operation = self.editor_file_operation();
         let (workspace_id, relative) = self.editor_target(session_id)?;
         let root = self.workspace_path(workspace_id)?;
-        let opened = fs_service::read_file(&root, &relative).map_err(fs_err)?;
+        let opened = match fs_service::read_file(&root, &relative) {
+            Ok(opened) => opened,
+            Err(fs_service::FsError::NotFound(_)) => {
+                self.send_editor_command(
+                    session_id,
+                    crate::editor::Outgoing::DiscardDeleted {
+                        request_id: self.next_editor_request_id(),
+                        path: relative,
+                    },
+                )?;
+                return Ok(Response::Ack);
+            }
+            Err(error) => return Err(fs_err(error)),
+        };
         if opened.binary || opened.too_large {
             return Err(ProtocolError::new(
                 ErrorCode::InvalidRequest,
@@ -4617,10 +4696,17 @@ impl Daemon {
             session.ended_at = ended_at;
             if restarting {
                 session.last_activity_at = now;
+                if session.kind == SessionKind::Agent {
+                    session.activity = AgentActivity::starting(now);
+                }
             }
             session.clone()
         };
         inner.idle_warned.remove(&session_id);
+        if restarting || snapshot.state.is_terminal() {
+            inner.pending_prompts.remove(&session_id);
+            inner.prompt_gates.remove(&session_id);
+        }
         let _ = inner
             .db
             .sessions()
@@ -4887,6 +4973,9 @@ impl Daemon {
         inner.idle_warned.remove(&session_id);
         inner.resumed_from.remove(&session_id);
         inner.read_only.remove(&session_id);
+        inner.launch_options.remove(&session_id);
+        inner.pending_prompts.remove(&session_id);
+        inner.prompt_gates.remove(&session_id);
         // Runtime is reaped on PTY EOF. Dropping it here races that and leaks a zombie (P1).
     }
 
@@ -4977,6 +5066,11 @@ impl Daemon {
             let cwd = ws.path.clone();
             let resume = inner.resumed_from.get(&session_id).cloned();
             let read_only = inner.read_only.contains(&session_id);
+            let options = inner
+                .launch_options
+                .get(&session_id)
+                .cloned()
+                .unwrap_or_default();
             let spec = self.build_spawn_spec(
                 &mut inner,
                 session.kind,
@@ -4987,7 +5081,8 @@ impl Daemon {
                     resume,
                     None,
                     read_only,
-                ),
+                )
+                .map(|launch| launch.with_options(options)),
                 None,
                 &cwd,
                 session_id,
@@ -5151,6 +5246,7 @@ impl Daemon {
                     resume,
                     initial_prompt,
                     read_only,
+                    options,
                 } = agent.ok_or_else(|| {
                     ProtocolError::new(ErrorCode::InvalidRequest, "agent session needs a provider")
                 })?;
@@ -5206,6 +5302,7 @@ impl Daemon {
                     resume_session_id: resume,
                     initial_prompt,
                     read_only,
+                    options,
                 };
                 let mut spec = inner
                     .agents
@@ -5217,6 +5314,9 @@ impl Daemon {
                         agents::AgentError::ResumeUnsupported(_)
                         | agents::AgentError::PromptUnsupported(_)
                         | agents::AgentError::ReviewUnsupported(_) => {
+                            ProtocolError::new(ErrorCode::InvalidRequest, e.to_string())
+                        }
+                        agents::AgentError::InvalidLaunchOptions(_) => {
                             ProtocolError::new(ErrorCode::InvalidRequest, e.to_string())
                         }
                         _ => ProtocolError::new(ErrorCode::SpawnError, e.to_string()),
@@ -5443,11 +5543,10 @@ impl Daemon {
                 .map(|rt| Arc::clone(&rt.writer))
                 .ok_or_else(|| ProtocolError::not_found("terminal"))?
         };
-        crate::terminal::write_pty(&writer, bytes)
-            .map_err(|e| ProtocolError::new(ErrorCode::IoError, e.to_string()))?;
-        self.note_client_activity(terminal_id);
-        // The guard must not cover `note_user_input`: that takes the same lock,
-        // and a temporary in `if let` lives for the whole statement.
+        // User input invalidates idle before a competing prompt can decide to submit.
+        let mut writer = writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session_id = {
             let inner = self.lock();
             inner.terminals.get(&terminal_id).map(|rt| rt.session_id)
@@ -5455,6 +5554,12 @@ impl Daemon {
         if let Some(session_id) = session_id {
             crate::orchestration::note_user_input(self, session_id);
         }
+        writer
+            .write_all(bytes)
+            .and_then(|_| writer.flush())
+            .map_err(|e| ProtocolError::new(ErrorCode::IoError, e.to_string()))?;
+        drop(writer);
+        self.note_client_activity(terminal_id);
         Ok(Response::Ack)
     }
 
@@ -5833,7 +5938,7 @@ impl Daemon {
     ///
     /// The handshake uses 1 and the editor's own requests start at 1_000, so
     /// this counter starts above both: an id in a log names one side.
-    fn next_editor_request_id(&self) -> u64 {
+    pub(crate) fn next_editor_request_id(&self) -> u64 {
         use std::sync::atomic::Ordering;
         self.editor_requests.fetch_add(1, Ordering::Relaxed)
     }
@@ -5991,6 +6096,36 @@ impl Daemon {
 
     pub(crate) fn take_editor_retarget(&self, session_id: SessionId) -> Option<String> {
         self.lock().editors.get(&session_id)?.take_retarget()
+    }
+
+    pub(crate) fn take_editor_disk_refresh(&self, session_id: SessionId) -> bool {
+        self.lock()
+            .editors
+            .get(&session_id)
+            .is_some_and(|port| port.take_disk_refresh())
+    }
+
+    pub(crate) fn refresh_editor_disk(&self, session_id: SessionId) {
+        if let Some(port) = self.lock().editors.get(&session_id) {
+            port.refresh_disk();
+        }
+    }
+
+    pub(crate) fn invalidate_editor_files(&self, workspace_id: WorkspaceId, path: &str) {
+        let inner = self.lock();
+        for session in inner.sessions.values() {
+            if session.workspace_id != workspace_id {
+                continue;
+            }
+            let Some(editor) = &session.editor else {
+                continue;
+            };
+            if path.is_empty() || Path::new(&editor.path).starts_with(path) {
+                if let Some(port) = inner.editors.get(&session.id) {
+                    port.refresh_disk();
+                }
+            }
+        }
     }
 
     /// Remember the two sides of a refused save, so they can be compared.
@@ -7281,7 +7416,11 @@ fn install_attention_assets(worktrees_root: &Path) -> Option<agents::AttentionAs
         .parent()
         .unwrap_or(worktrees_root)
         .join("agent-plugins");
-    match agents::install_assets(&dir) {
+    let ctl = std::env::current_exe()
+        .ok()
+        .map(|exe| exe.with_file_name("forgectl"))
+        .filter(|path| is_executable_file(path));
+    match agents::attention::install_assets_with_ctl(&dir, ctl.as_deref()) {
         Ok(assets) => Some(assets),
         Err(error) => {
             tracing::warn!(
@@ -7324,6 +7463,7 @@ struct AgentLaunch {
     /// Fresh launch only. A restart must not re-send the original prompt.
     initial_prompt: Option<String>,
     read_only: bool,
+    options: domain::AgentLaunchOptions,
 }
 
 impl AgentLaunch {
@@ -7344,7 +7484,13 @@ impl AgentLaunch {
             resume,
             initial_prompt,
             read_only,
+            options: Default::default(),
         })
+    }
+
+    fn with_options(mut self, options: domain::AgentLaunchOptions) -> Self {
+        self.options = options;
+        self
     }
 }
 
@@ -8199,6 +8345,496 @@ mod tests {
         all.remove(0)
     }
 
+    fn dispatch_agent(daemon: &Arc<Daemon>, dir: &Path, read_only: bool) -> Session {
+        let workspace = seeded_workspace(daemon, dir);
+        let provider = AgentProviderId::new("claude");
+        let executable = test_support::write_fake_agent(dir, "claude", "1.0.0");
+        daemon.lock().detections.insert(
+            provider.clone(),
+            DetectionResult {
+                provider_id: provider.clone(),
+                status: DetectionStatus::Installed {
+                    executable,
+                    version: None,
+                },
+                checked_at: Timestamp::now(),
+            },
+        );
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Agent,
+                Some(provider),
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                read_only,
+            )
+            .unwrap();
+        only_session(daemon)
+    }
+
+    fn hook_activity(daemon: &Arc<Daemon>, id: SessionId, state: domain::ActivityState) {
+        daemon
+            .handle_request(Request::ReportAgentActivity {
+                session_id: id,
+                state,
+                source: "test".into(),
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn dispatch_prompt_requires_idle_evidence_and_audits_sanitized_text() {
+        use domain::ActivityState;
+        use protocol::PromptDelivery;
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let session = dispatch_agent(&daemon, tmp.path(), true);
+        let send = |text: &str, when| {
+            daemon.handle_request(Request::SendSessionPrompt {
+                caller_session_id: None,
+                session_id: session.id,
+                text: text.into(),
+                submit: true,
+                when,
+            })
+        };
+        assert_eq!(
+            send("work", PromptDelivery::IfIdle).unwrap_err().code,
+            ErrorCode::PreconditionFailed
+        );
+        {
+            let mut inner = daemon.lock();
+            let activity = &mut inner.sessions.get_mut(&session.id).unwrap().activity;
+            activity.state = ActivityState::Idle;
+            activity.evidence = None;
+        }
+        assert_eq!(
+            send("work", PromptDelivery::IfIdle).unwrap_err().code,
+            ErrorCode::PreconditionFailed
+        );
+        hook_activity(&daemon, session.id, ActivityState::Working);
+        hook_activity(&daemon, session.id, ActivityState::Idle);
+        let response = send("hello\r\x1b[Z\nworld", PromptDelivery::IfIdle).unwrap();
+        assert!(matches!(
+            response,
+            Response::PromptDelivery {
+                delivered: true,
+                submitted: true,
+                queued: false,
+                ..
+            }
+        ));
+        assert_eq!(backend.written(), b"hello[Z world\r");
+        assert_eq!(only_session(&daemon).activity.state, ActivityState::Working);
+        let envelopes = daemon
+            .lock()
+            .db
+            .context()
+            .list_for_target(session.id)
+            .unwrap();
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0].instructions.as_deref(), Some("hello[Z\nworld"));
+        let before = backend.written();
+        hook_activity(&daemon, session.id, ActivityState::Waiting);
+        assert_eq!(
+            send("permission", PromptDelivery::IfIdle).unwrap_err().code,
+            ErrorCode::PreconditionFailed
+        );
+        assert_eq!(backend.written(), before);
+        let response = send("text\n\tno-approval", PromptDelivery::Now).unwrap();
+        assert!(matches!(
+            response,
+            Response::PromptDelivery {
+                submitted: false,
+                ..
+            }
+        ));
+        assert!(backend.written().ends_with(b"text  no-approval"));
+        assert_eq!(only_session(&daemon).activity.state, ActivityState::Waiting);
+        assert_eq!(
+            send(&"x".repeat(8_193), PromptDelivery::Now)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidRequest
+        );
+        assert_eq!(
+            send("future", PromptDelivery::Unknown).unwrap_err().code,
+            ErrorCode::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn dispatch_queue_is_one_slot_delivered_on_hook_and_cleared_on_exit() {
+        use domain::ActivityState;
+        use protocol::PromptDelivery;
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let session = dispatch_agent(&daemon, tmp.path(), false);
+        hook_activity(&daemon, session.id, ActivityState::Working);
+        let send = |text: &str| {
+            daemon.handle_request(Request::SendSessionPrompt {
+                caller_session_id: None,
+                session_id: session.id,
+                text: text.into(),
+                submit: true,
+                when: PromptDelivery::Queue,
+            })
+        };
+        assert!(matches!(
+            send("queued").unwrap(),
+            Response::PromptDelivery {
+                queued: true,
+                delivered: false,
+                ..
+            }
+        ));
+        assert_eq!(send("replacement").unwrap_err().code, ErrorCode::Conflict);
+        assert!(backend.written().is_empty());
+        hook_activity(&daemon, session.id, ActivityState::Waiting);
+        assert!(backend.written().is_empty());
+        hook_activity(&daemon, session.id, ActivityState::Idle);
+        assert_eq!(backend.written(), b"queued\r");
+        assert!(daemon.lock().pending_prompts.is_empty());
+        assert_eq!(
+            daemon
+                .lock()
+                .db
+                .context()
+                .list_for_target(session.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(matches!(
+            send("do-not-replay").unwrap(),
+            Response::PromptDelivery { queued: true, .. }
+        ));
+        backend.set_exited(terminal_core::ExitStatus::default());
+        daemon.on_terminal_exited(session.terminal_id.unwrap());
+        assert!(daemon.lock().pending_prompts.is_empty());
+        daemon.restart_session(session.id).unwrap();
+        assert_eq!(
+            only_session(&daemon).activity.state,
+            ActivityState::Starting
+        );
+        hook_activity(&daemon, session.id, ActivityState::Idle);
+        assert_eq!(backend.written(), b"queued\r");
+    }
+
+    #[test]
+    fn dispatch_bracketed_paste_preserves_newlines_without_submit_when_requested() {
+        use domain::ActivityState;
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let session = dispatch_agent(&daemon, tmp.path(), true);
+        daemon
+            .lock()
+            .terminals
+            .get_mut(&session.terminal_id.unwrap())
+            .unwrap()
+            .engine
+            .feed(b"\x1b[?2004h");
+        hook_activity(&daemon, session.id, ActivityState::Idle);
+        let response = daemon
+            .handle_request(Request::SendSessionPrompt {
+                caller_session_id: None,
+                session_id: session.id,
+                text: "line one\nline two\tend".into(),
+                submit: false,
+                when: protocol::PromptDelivery::IfIdle,
+            })
+            .unwrap();
+        assert!(matches!(
+            response,
+            Response::PromptDelivery {
+                submitted: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            backend.written(),
+            b"\x1b[200~line one\nline two\tend\x1b[201~"
+        );
+        assert_eq!(only_session(&daemon).activity.state, ActivityState::Working);
+    }
+
+    #[test]
+    fn inbox_pointer_can_resume_after_an_automatically_submitted_turn() {
+        use domain::ActivityState;
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let session = dispatch_agent(&daemon, tmp.path(), false);
+        daemon.lock().ledger.pointer.insert(
+            session.id,
+            crate::orchestration::PointerSlot {
+                queued: true,
+                typed_this_idle: false,
+            },
+        );
+        hook_activity(&daemon, session.id, ActivityState::Idle);
+        assert_eq!(only_session(&daemon).activity.state, ActivityState::Working);
+        assert_eq!(backend.written().iter().filter(|b| **b == b'\r').count(), 1);
+        daemon
+            .lock()
+            .ledger
+            .pointer
+            .get_mut(&session.id)
+            .unwrap()
+            .queued = true;
+        hook_activity(&daemon, session.id, ActivityState::Working);
+        hook_activity(&daemon, session.id, ActivityState::Idle);
+        assert_eq!(backend.written().iter().filter(|b| **b == b'\r').count(), 2);
+        assert_eq!(only_session(&daemon).activity.state, ActivityState::Working);
+    }
+
+    #[test]
+    fn dispatch_concurrent_senders_cannot_replace_a_queue_or_submit_twice() {
+        for queued in [true, false] {
+            let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+            let session = dispatch_agent(&daemon, tmp.path(), false);
+            hook_activity(
+                &daemon,
+                session.id,
+                if queued {
+                    domain::ActivityState::Working
+                } else {
+                    domain::ActivityState::Idle
+                },
+            );
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let senders: Vec<_> = (0..2)
+                .map(|n| {
+                    let daemon = Arc::clone(&daemon);
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        daemon.handle_request(Request::SendSessionPrompt {
+                            caller_session_id: None,
+                            session_id: session.id,
+                            text: format!("sender-{n}"),
+                            submit: true,
+                            when: if queued {
+                                protocol::PromptDelivery::Queue
+                            } else {
+                                protocol::PromptDelivery::IfIdle
+                            },
+                        })
+                    })
+                })
+                .collect();
+            barrier.wait();
+            let results: Vec<_> = senders.into_iter().map(|t| t.join().unwrap()).collect();
+            assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+            let error = results.into_iter().find_map(Result::err).unwrap();
+            assert_eq!(
+                error.code,
+                if queued {
+                    ErrorCode::Conflict
+                } else {
+                    ErrorCode::PreconditionFailed
+                }
+            );
+            assert_eq!(
+                daemon
+                    .lock()
+                    .db
+                    .context()
+                    .list_for_target(session.id)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            if queued {
+                hook_activity(&daemon, session.id, domain::ActivityState::Idle);
+            }
+            assert_eq!(backend.written().iter().filter(|b| **b == b'\r').count(), 1);
+        }
+    }
+
+    #[test]
+    fn dispatch_failed_queued_write_is_consumed_without_replay() {
+        struct BrokenWriter;
+        impl std::io::Write for BrokenWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let session = dispatch_agent(&daemon, tmp.path(), false);
+        daemon
+            .handle_request(Request::SendSessionPrompt {
+                caller_session_id: None,
+                session_id: session.id,
+                text: "queued".into(),
+                submit: true,
+                when: protocol::PromptDelivery::Queue,
+            })
+            .unwrap();
+        let writer = {
+            let inner = daemon.lock();
+            Arc::clone(
+                &inner
+                    .terminals
+                    .get(&session.terminal_id.unwrap())
+                    .unwrap()
+                    .writer,
+            )
+        };
+        let original = std::mem::replace(&mut *writer.lock().unwrap(), Box::new(BrokenWriter));
+        hook_activity(&daemon, session.id, domain::ActivityState::Idle);
+        assert!(daemon.lock().pending_prompts.is_empty());
+        *writer.lock().unwrap() = original;
+        hook_activity(&daemon, session.id, domain::ActivityState::Idle);
+        assert!(backend.written().is_empty());
+    }
+
+    #[test]
+    fn dispatch_blocked_pty_does_not_hold_the_core_lock_and_orders_hooks_after_submit() {
+        struct BlockingWriter {
+            original: Box<dyn std::io::Write + Send>,
+            entered: std::sync::mpsc::Sender<()>,
+            release: Option<std::sync::mpsc::Receiver<()>>,
+        }
+        impl std::io::Write for BlockingWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if let Some(release) = self.release.take() {
+                    self.entered.send(()).unwrap();
+                    release.recv().unwrap();
+                }
+                self.original.write(bytes)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.original.flush()
+            }
+        }
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let session = dispatch_agent(&daemon, tmp.path(), false);
+        hook_activity(&daemon, session.id, domain::ActivityState::Idle);
+        let writer = {
+            let inner = daemon.lock();
+            Arc::clone(
+                &inner
+                    .terminals
+                    .get(&session.terminal_id.unwrap())
+                    .unwrap()
+                    .writer,
+            )
+        };
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let original = std::mem::replace(&mut *writer.lock().unwrap(), Box::new(std::io::sink()));
+        *writer.lock().unwrap() = Box::new(BlockingWriter {
+            original,
+            entered: entered_tx,
+            release: Some(release_rx),
+        });
+        let sending = Arc::clone(&daemon);
+        let sender = std::thread::spawn(move || {
+            sending.handle_request(Request::SendSessionPrompt {
+                caller_session_id: None,
+                session_id: session.id,
+                text: "ordered".into(),
+                submit: true,
+                when: protocol::PromptDelivery::IfIdle,
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let reading = Arc::clone(&daemon);
+        let reader =
+            std::thread::spawn(move || read_tx.send(reading.lock().sessions.len()).unwrap());
+        let reporting = Arc::clone(&daemon);
+        let hook = std::thread::spawn(move || {
+            hook_activity(&reporting, session.id, domain::ActivityState::Waiting)
+        });
+        let core_read = read_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        reader.join().unwrap();
+        assert!(
+            core_read.is_ok(),
+            "a blocked PTY must not serialize core reads"
+        );
+        assert!(matches!(
+            sender.join().unwrap().unwrap(),
+            Response::PromptDelivery {
+                submitted: true,
+                ..
+            }
+        ));
+        hook.join().unwrap();
+        assert_eq!(backend.written(), b"ordered\r");
+        assert_eq!(
+            only_session(&daemon).activity.state,
+            domain::ActivityState::Waiting
+        );
+    }
+
+    #[test]
+    fn dispatch_model_effort_and_read_only_survive_session_restart() {
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let workspace = seeded_workspace(&daemon, tmp.path());
+        let provider = AgentProviderId::new("claude");
+        let executable = test_support::write_fake_agent(tmp.path(), "claude", "1.0.0");
+        daemon.lock().detections.insert(
+            provider.clone(),
+            DetectionResult {
+                provider_id: provider.clone(),
+                status: DetectionStatus::Installed {
+                    executable,
+                    version: None,
+                },
+                checked_at: Timestamp::now(),
+            },
+        );
+        daemon
+            .handle_request(Request::CreateAgentSession {
+                workspace_id: workspace,
+                provider_id: provider,
+                profile_id: None,
+                parent: None,
+                role: SessionRole::Reviewer,
+                resume: None,
+                initial_prompt: Some("fresh prompt".into()),
+                read_only: true,
+                model: Some("opus".into()),
+                effort: Some("high".into()),
+            })
+            .unwrap();
+        let spec = backend.last_spawn().unwrap();
+        assert_eq!(
+            spec.args[..7],
+            [
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "plan",
+                "fresh prompt"
+            ]
+        );
+        let session = only_session(&daemon);
+        backend.set_exited(terminal_core::ExitStatus::default());
+        daemon.on_terminal_exited(session.terminal_id.unwrap());
+        daemon.restart_session(session.id).unwrap();
+        let spec = backend.last_spawn().unwrap();
+        assert_eq!(
+            spec.args[..6],
+            [
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "plan"
+            ]
+        );
+        assert!(!spec.args.iter().any(|arg| arg == "fresh prompt"));
+    }
+
     /// A `[sessions].term` with no terminfo entry must not reach the child: an
     /// unknown `TERM` leaves every ncurses program without capabilities.
     #[test]
@@ -8533,9 +9169,9 @@ mod tests {
         let content = spec
             .env
             .iter()
-            .find(|(k, _)| k == "OPENCODE_CONFIG_CONTENT")
+            .find(|(k, _)| k == "OPENCODE_CLI_CONFIG_CONTENT")
             .map(|(_, v)| v.as_str())
-            .expect("OPENCODE_CONFIG_CONTENT");
+            .expect("OPENCODE_CLI_CONFIG_CONTENT");
         assert!(
             content.contains(&assets.opencode_plugin.to_string_lossy().into_owned()),
             "plugin path missing from {content}"
@@ -10996,7 +11632,7 @@ mod tests {
                         && session
                             .editor
                             .as_ref()
-                            .is_some_and(|state| state.conflict == conflict)
+                            .is_some_and(|state| state.dirty && state.conflict == conflict)
                     {
                         return;
                     }
@@ -11082,6 +11718,247 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(),
             "edited after reload"
         );
+    }
+
+    #[test]
+    fn editor_disk_sync_follows_watches_checkout_changes_and_confirmed_deletes() {
+        use editor_control::{read_frame, write_frame, DaemonMessage as ControlOut, EditorMessage};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _worktrees, _) = editor_daemon(tmp.path(), FakePtyBackend::empty());
+        let repo = test_support::init_repo().unwrap();
+        repo.commit_file("a.rs", "original").unwrap();
+        repo.create_branch("other").unwrap();
+        repo.commit_file("a.rs", "different branch").unwrap();
+        let checkout = |branch: &str| {
+            let output = std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(["checkout", branch])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        checkout("main");
+        let ws = seeded_workspace(&daemon, repo.path());
+        daemon.apply_workspace_status(ws, &git_service::status(repo.path()).unwrap());
+        let Response::SessionCreated { session_id, .. } = daemon
+            .handle_request(Request::CreateEditorSession {
+                workspace_id: ws,
+                path: "a.rs".into(),
+                line: None,
+                autosave: true,
+                read_only: false,
+            })
+            .unwrap()
+        else {
+            panic!("expected editor")
+        };
+        let socket = crate::editor::control_socket_path(session_id).unwrap();
+        let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &EditorMessage::Hello {
+                version: editor_control::CONTROL_VERSION,
+                session_id: session_id.to_string(),
+                pid: 1,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            read_frame::<ControlOut>(&mut stream).unwrap(),
+            ControlOut::Welcome { .. }
+        ));
+        let ControlOut::Open { request_id, .. } = read_frame::<ControlOut>(&mut stream).unwrap()
+        else {
+            panic!("expected open")
+        };
+        write_frame(
+            &mut stream,
+            &EditorMessage::Opened {
+                request_id,
+                document_version: 0,
+            },
+        )
+        .unwrap();
+        fn next(stream: &mut std::os::unix::net::UnixStream) -> ControlOut {
+            loop {
+                match read_frame::<ControlOut>(stream).unwrap() {
+                    ControlOut::GitMarks { .. } => {}
+                    ControlOut::GetState { request_id } => {
+                        write_frame(
+                            stream,
+                            &EditorMessage::State {
+                                request_id: Some(request_id),
+                                state: editor_control::EditorStateWire {
+                                    path: "a.rs".into(),
+                                    ..Default::default()
+                                },
+                            },
+                        )
+                        .unwrap();
+                    }
+                    message => return message,
+                }
+            }
+        }
+        let client = ClientId::new();
+        let _events = daemon.registry.register(client);
+        let root = repo.path();
+        let watch = crate::file_watch::Subscription::start(&daemon, client, ws, root, &["".into()])
+            .unwrap();
+        std::fs::write(root.join("a.rs"), "external write").unwrap();
+        let ControlOut::DiskChanged {
+            request_id,
+            text,
+            revision,
+            ..
+        } = next(&mut stream)
+        else {
+            panic!("expected watched update")
+        };
+        assert_eq!(text.as_deref(), Some("external write"));
+        assert_eq!(revision, Some(fs_service::revision_of(b"external write")));
+        write_frame(
+            &mut stream,
+            &EditorMessage::Applied {
+                request_id,
+                document_version: 1,
+            },
+        )
+        .unwrap();
+        write_frame(
+            &mut stream,
+            &EditorMessage::SaveRequest {
+                request_id: 1000,
+                text: "saved after reload".into(),
+                document_version: 2,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            next(&mut stream),
+            ControlOut::Saved {
+                request_id: 1000,
+                ..
+            }
+        ));
+        drop(watch);
+
+        repo.commit_file("a.rs", "saved after reload").unwrap();
+        checkout("other");
+        let status = git_service::status(root).unwrap();
+        assert_eq!(status.branch.as_deref(), Some("other"));
+        daemon.apply_workspace_status(ws, &status);
+        let ControlOut::DiskChanged {
+            request_id, text, ..
+        } = next(&mut stream)
+        else {
+            panic!("expected checkout update")
+        };
+        assert_eq!(text.as_deref(), Some("different branch"));
+        write_frame(
+            &mut stream,
+            &EditorMessage::DiskConflict {
+                request_id,
+                text: "unsaved draft".into(),
+            },
+        )
+        .unwrap();
+        // A reply after the conflict acts as a barrier on the supervisor's reader.
+        write_frame(
+            &mut stream,
+            &EditorMessage::SaveRequest {
+                request_id: 1001,
+                text: "unsaved draft".into(),
+                document_version: 3,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            next(&mut stream),
+            ControlOut::Saved {
+                request_id: 1001,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.rs")).unwrap(),
+            "unsaved draft"
+        );
+
+        daemon.delete_path(ws, "a.rs").unwrap();
+        let ControlOut::DiskChanged {
+            request_id,
+            text,
+            revision,
+            ..
+        } = next(&mut stream)
+        else {
+            panic!("expected deletion")
+        };
+        assert!(text.is_none());
+        assert!(revision.is_none());
+        write_frame(
+            &mut stream,
+            &EditorMessage::DiskConflict {
+                request_id,
+                text: "retained draft".into(),
+            },
+        )
+        .unwrap();
+        write_frame(
+            &mut stream,
+            &EditorMessage::SaveRequest {
+                request_id: 1002,
+                text: "retained draft".into(),
+                document_version: 4,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            next(&mut stream),
+            ControlOut::Saved {
+                request_id: 1002,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.rs")).unwrap(),
+            "retained draft"
+        );
+        daemon.delete_path(ws, "a.rs").unwrap();
+        let ControlOut::DiskChanged { request_id, .. } = next(&mut stream) else {
+            panic!("expected deletion")
+        };
+        write_frame(
+            &mut stream,
+            &EditorMessage::DiskConflict {
+                request_id,
+                text: "discarded draft".into(),
+            },
+        )
+        .unwrap();
+        daemon.reload_editor_buffer(session_id).unwrap();
+        let ControlOut::DiscardDeleted { request_id, path } = next(&mut stream) else {
+            panic!("expected discard")
+        };
+        assert_eq!(path, "a.rs");
+        write_frame(
+            &mut stream,
+            &EditorMessage::Applied {
+                request_id,
+                document_version: 4,
+            },
+        )
+        .unwrap();
+        assert!(!root.join("a.rs").exists());
     }
 
     #[test]

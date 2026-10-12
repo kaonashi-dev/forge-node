@@ -617,6 +617,21 @@ pub enum Request {
         /// way `resume` and `initial_prompt` are.
         #[serde(default)]
         read_only: bool,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        effort: Option<String>,
+    },
+    /// Paste bounded text into an agent; automatic submission requires hook-confirmed idle.
+    SendSessionPrompt {
+        #[serde(default)]
+        caller_session_id: Option<SessionId>,
+        session_id: SessionId,
+        text: String,
+        #[serde(default = "default_submit")]
+        submit: bool,
+        #[serde(default)]
+        when: PromptDelivery,
     },
     /// Open a file in a daemon-supervised `forge-editor` process
     /// → `SessionCreated`; buffer state arrives as `SessionUpdated`.
@@ -1169,6 +1184,21 @@ pub enum Request {
     },
 }
 
+fn default_submit() -> bool {
+    true
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum PromptDelivery {
+    Now,
+    #[default]
+    IfIdle,
+    Queue,
+    #[serde(other)]
+    Unknown,
+}
+
 /// Pull request opened from `run close`, after cleanup is decided.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CloseRunPullRequest {
@@ -1195,6 +1225,65 @@ pub enum IntegrateHow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_defaults_and_unknown_policy_survive_named_messagepack() {
+        let request = serde_json::json!({"SendSessionPrompt": {
+            "session_id": SessionId::new(), "text": "work"
+        }});
+        let bytes = rmp_serde::to_vec_named(&request).unwrap();
+        let back: Request = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(matches!(
+            back,
+            Request::SendSessionPrompt {
+                caller_session_id: None,
+                submit: true,
+                when: PromptDelivery::IfIdle,
+                ..
+            }
+        ));
+        let mut future = request;
+        future["SendSessionPrompt"]["when"] = serde_json::json!("AfterReview");
+        let bytes = rmp_serde::to_vec_named(&future).unwrap();
+        let back: Request = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(matches!(
+            back,
+            Request::SendSessionPrompt {
+                when: PromptDelivery::Unknown,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn agent_launch_without_model_or_effort_keeps_default_options() {
+        let request = Request::CreateAgentSession {
+            workspace_id: WorkspaceId::new(),
+            provider_id: AgentProviderId::new("claude"),
+            profile_id: None,
+            parent: None,
+            role: SessionRole::Generic,
+            resume: None,
+            initial_prompt: None,
+            read_only: false,
+            model: None,
+            effort: None,
+        };
+        let mut old = serde_json::to_value(request).unwrap();
+        let fields = old["CreateAgentSession"].as_object_mut().unwrap();
+        fields.remove("model");
+        fields.remove("effort");
+        let bytes = rmp_serde::to_vec_named(&old).unwrap();
+        let back: Request = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(matches!(
+            back,
+            Request::CreateAgentSession {
+                model: None,
+                effort: None,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn signal_numbers_match_posix() {

@@ -28,10 +28,11 @@ pub mod worktree_ignore;
 
 // Re-export the most commonly used types at the crate root.
 pub use agent::{
-    AcpSpec, AgentCapabilities, AgentDescriptor, AgentProfile, ChildWorkspacePolicy, ConfigDirSpec,
-    DetectionResult, DetectionStatus, EnvSource, LaunchAgentRequest, PromptStyle, ProviderUsage,
-    PtySize, ResolvedEnvironment, ResumeStyle, ReviewStyle, SpawnSpec, UsageProbe, UsageSource,
-    UsageWindow, VersionProbe, RESERVED_PROFILE_VARS,
+    AcpSpec, AgentCapabilities, AgentDescriptor, AgentLaunchOptions, AgentProfile,
+    ChildWorkspacePolicy, ConfigDirSpec, DetectionResult, DetectionStatus, EffortSpec,
+    EffortSpelling, EnvSource, FlagSpec, LaunchAgentRequest, PromptStyle, ProviderUsage, PtySize,
+    ResolvedEnvironment, ResumeStyle, ReviewStyle, SpawnSpec, UsageProbe, UsageSource, UsageWindow,
+    VersionProbe, RESERVED_PROFILE_VARS,
 };
 pub use branch::{BranchRef, RefScope, Remote};
 pub use change::{ChangeContext, ChangeFile, JuvaDraft, JuvaKind};

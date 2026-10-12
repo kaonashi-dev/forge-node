@@ -3,11 +3,23 @@ import type { Session } from "./runtime";
 import {
   FIXTURE_NAMES,
   request_create_editor_session,
+  request_create_agent_session,
+  request_send_session_prompt,
+  response_prompt_delivery,
   response_snapshot_populated,
   session_editor,
 } from "./generated/fixtures";
 
 describe("generated fixtures", () => {
+  it("covers model overrides and bounded prompt delivery", () => {
+    expect(request_create_agent_session.CreateAgentSession.model).toBe("opus");
+    expect(request_send_session_prompt.SendSessionPrompt.when).toBe("Queue");
+    expect(response_prompt_delivery.PromptDelivery).toMatchObject({
+      delivered: false,
+      queued: true,
+      submitted: false,
+    });
+  });
   it("lists every JSON fixture", () => {
     expect(FIXTURE_NAMES.length).toBeGreaterThan(50);
   });

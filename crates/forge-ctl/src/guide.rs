@@ -8,9 +8,27 @@ pub fn guide_text(topic: &str) -> Option<&'static str> {
         "board" => BOARD,
         "integration" => INTEGRATION,
         "errors" => ERRORS,
+        "sessions" => SESSIONS,
         _ => return None,
     })
 }
+
+const SESSIONS: &str = "\
+# forgectl guide sessions
+
+Launch across projects: forgectl --json session spawn --project <name|path|id> --provider <id> --name <title> --prompt-file plan.md
+Use --worktree <branch> [--base <ref>] for isolation, or --workspace <id> for an existing checkout.
+Use --profile <name|uuid>, --model <id>, --effort <level>, and --read-only when supported by the provider.
+Resolve a session by UUID, UUID prefix (at least 8 characters), exact case-insensitive title, or project/title. Ambiguity exits 5 and lists candidates.
+Wait by events: forgectl session wait project/title --for idle|waiting|working [--timeout 600]
+Read evidence: forgectl session read project/title
+Send: forgectl session send project/title --text '...' [--queue|--now] [--no-submit]
+Default send requires hook-confirmed idle. Queue has one slot and refuses a second message. Now pastes but never submits in waiting, working, starting or unknown.
+Prompts are capped at 8 KiB and controls are stripped. Non-bracketed pastes flatten LF/TAB to spaces.
+Idle only means the agent stopped its turn: inspect the transcript, diff and tests before declaring completion.
+Only an explicit report settles an orchestration attempt. Session dispatch does not choose tasks or integrate branches.
+forgectl mcp exposes the same session commands over stdio; configure it explicitly in the provider's own MCP settings.
+";
 
 const CONTROLLER: &str = "\
 # forgectl guide controller

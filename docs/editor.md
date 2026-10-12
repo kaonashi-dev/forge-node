@@ -4,8 +4,9 @@ Three crates build the editor:
 
 - `crates/editor-core` is the document model — text, selection, transactions,
   history, versions, search. It owns no terminal, no filesystem and no Forge
-  type, and every mutation goes through `Document::apply`, so read-only, the
-  byte budget, the version counter and undo cannot be bypassed.
+  type. Mutations are validated transactions: `Document::apply` enforces
+  read-only for user edits; `reload_clean` lets read-only views follow disk
+  while refusing unsaved changes. Both enforce the byte budget, versions and undo.
 - `crates/editor-cli` builds `forge-editor`, the standalone binary: argument
   parsing, a bounded read, raw mode, key bindings and the viewport.
 - `crates/editor-control` owns the independent daemon–editor control wire,
@@ -133,6 +134,37 @@ A second open of a file that already has a live editor session becomes a
 there. A rival editor would be a second process, a second PTY and a second
 draft of one file. Closing the Code view detaches it: the process survives and
 the session stays in the rail until it is killed.
+
+### Disk and checkout synchronization
+
+Native file watches and measured checkout changes invalidate live editor buffers,
+including inactive tabs. Installing new watch interests reconciles those paths;
+reconnecting reconciles the watched surface. Each editor retains one refresh flag
+and one pending disk snapshot, so a full command queue or a write during a reload
+leaves refresh debt rather than dropping the update. Reads use `fs-service` outside
+the core lock and file-operation coordination never includes control-socket writes.
+Unchanged revisions do not send document contents or rebuild syntax.
+
+`DiskChanged` is separate from the explicit, destructive `Reload`. The editor
+checks its own buffer on its serialized input thread, not the daemon's coalesced
+dirty bit. Clean buffers apply one UTF-8-safe replacement between the shared prefix
+and suffix, preserving undo and mapping selections into unchanged text. Dirty
+buffers keep their draft, suspend autosave and expose the existing disk/mine
+conflict actions. A save still in flight postpones reconciliation. Replies are
+correlated and a path that moved invalidates the old observation.
+
+A confirmed missing file closes a clean editor process and its Code tab. Unsaved
+buffers remain open with a deletion notice; *keep mine* can recreate the file,
+while *take disk* discards the draft and closes it. Read failures, binary files
+and oversized files are not deletion evidence.
+Deleting a folder uses the same path for every editor below it.
+
+This adapts Zed's separation of file identity, disk state and buffer state in
+[`LocalBufferStore::local_worktree_entry_changed`](https://github.com/zed-industries/zed/blob/main/crates/project/src/buffer_store.rs)
+and [`Buffer::file_updated` / `reload_impl`](https://github.com/zed-industries/zed/blob/main/crates/language/src/buffer.rs).
+Zed marks deleted buffers rather than necessarily closing them; Forge closes only
+clean missing buffers. Forge uses a bounded prefix/suffix splice, not Zed's full
+asynchronous text diff or CRDT representation.
 
 **An editor is a file, not a window tab.** One `SessionKind::Editor` session per
 open file lives in the daemon, but the GUI never lists it in the window's
@@ -341,8 +373,8 @@ native right-click menu (the Code pane keeps its own HTML context menu).
   the same transaction, and each one lands past *its own* insertion rather than
   past the ones above it. So one gesture is one history entry, and Ctrl-Z puts
   back all of it — with the carets it was made with.
-- **One mutation entry.** Typing, paste, replace-all and a reload are all
-  transactions with a selection on both sides. Undo restores text *and*
+- **Transactional mutations.** Typing, paste, replace-all and an automatic reload
+  carry a selection on both sides. Undo restores text *and*
   selection; a run of typing coalesces into one entry, a paste or a
   replace-all never does.
 - **Indentation is the file's, not a setting's.** The unit is read off the

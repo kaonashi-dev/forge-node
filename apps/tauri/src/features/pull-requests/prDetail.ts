@@ -62,7 +62,7 @@ export function relationChips(relations: PullRequestRelations): Chip[] {
   return chips;
 }
 
-/** `hellopay-tech/hellopay-backend` → its two halves, for the trail. */
+/** `owner/repo` → its two halves, for the trail. */
 export function splitRepository(repository: string): { owner: string | null; name: string } {
   const at = repository.lastIndexOf("/");
   if (at === -1) return { owner: null, name: repository };

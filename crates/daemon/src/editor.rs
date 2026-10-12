@@ -16,6 +16,7 @@ use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,10 @@ use editor_control::{
 };
 
 use crate::core::{Daemon, SaveOutcome};
+
+mod disk;
+
+const DISK_STATE_REQUEST: u64 = u64::MAX;
 
 /// How long the daemon waits for the editor to connect, handshake and take the
 /// buffer. A spawn that never reaches the handshake is a failed session, not a
@@ -54,6 +59,10 @@ pub enum Outgoing {
         request_id: u64,
         text: String,
         revision: Option<String>,
+    },
+    DiscardDeleted {
+        request_id: u64,
+        path: String,
     },
     /// Keep mine: ask for the draft again, now that the revision is the disk's.
     Save {
@@ -108,6 +117,9 @@ impl Outgoing {
                 revision,
             },
             Self::Save { request_id } => DaemonMessage::Save { request_id },
+            Self::DiscardDeleted { request_id, path } => {
+                DaemonMessage::DiscardDeleted { request_id, path }
+            }
             Self::GitMarks { request_id, marks } => DaemonMessage::GitMarks { request_id, marks },
             Self::SetAutosave {
                 request_id,
@@ -142,6 +154,7 @@ pub struct CommandPort {
     tx: flume::Sender<Outgoing>,
     reload: Arc<Mutex<Option<PendingReload>>>,
     retarget: Arc<Mutex<Option<String>>>,
+    disk_refresh: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
@@ -157,6 +170,7 @@ impl CommandPort {
             tx,
             reload: Arc::new(Mutex::new(None)),
             retarget: Arc::new(Mutex::new(None)),
+            disk_refresh: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -174,6 +188,17 @@ impl CommandPort {
             .take()
     }
 
+    pub fn refresh_disk(&self) {
+        if !self.disk_refresh.swap(true, Ordering::AcqRel) {
+            // A full queue already wakes the writer, which consumes the refresh slot.
+            let _ = self.tx.try_send(Outgoing::GetState { request_id: 0 });
+        }
+    }
+
+    pub fn take_disk_refresh(&self) -> bool {
+        self.disk_refresh.swap(false, Ordering::AcqRel)
+    }
+
     /// Enqueue, or say busy. Never drops a `request_id` on the floor.
     pub fn try_send(&self, mut command: Outgoing) -> Result<(), Busy> {
         if let Outgoing::GitMarks { marks, .. } = &mut command {
@@ -185,19 +210,23 @@ impl CommandPort {
                 marks.clear();
             }
         }
-        if let Outgoing::Reload {
-            request_id,
-            revision,
-            ..
-        } = &command
-        {
+        let reload = match &command {
+            Outgoing::Reload {
+                request_id,
+                revision,
+                ..
+            } => Some((*request_id, revision.clone())),
+            Outgoing::DiscardDeleted { request_id, .. } => Some((*request_id, None)),
+            _ => None,
+        };
+        if let Some((request_id, revision)) = reload {
             let mut pending = self.reload.lock().unwrap_or_else(|e| e.into_inner());
             if pending.is_some() {
                 return Err(Busy);
             }
             *pending = Some(PendingReload {
-                request_id: *request_id,
-                revision: revision.clone(),
+                request_id,
+                revision,
             });
             if self.tx.try_send(command).is_err() {
                 *pending = None;
@@ -423,6 +452,21 @@ fn serve(
                             break;
                         }
                     }
+                    let refreshing = daemon.take_editor_disk_refresh(session_id);
+                    if refreshing
+                        && send(
+                            &writer,
+                            &DaemonMessage::GetState {
+                                request_id: DISK_STATE_REQUEST,
+                            },
+                        )
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if refreshing && matches!(command, Outgoing::GetState { request_id: 0 }) {
+                        continue;
+                    }
                     let optional = matches!(command, Outgoing::GitMarks { .. });
                     match send(&writer, &command.into_message()) {
                         Ok(()) => {}
@@ -452,6 +496,14 @@ fn serve(
     }
 
     let mut revision = buffer.revision.clone();
+    drop(buffer);
+    let mut disk_sync = disk::Sync::default();
+    if disk_sync
+        .refresh(&daemon, session_id, &revision, &writer)
+        .is_err()
+    {
+        return;
+    }
     // Whether the last save was refused because the file moved. Held here
     // rather than on the session, because this thread is what learns it.
     let mut conflict = false;
@@ -468,7 +520,13 @@ fn serve(
         });
         let _ = stream.set_read_timeout(wait.map(|wait| wait.max(Duration::from_millis(1))));
         match decoder.read::<EditorMessage>(&mut stream) {
-            Ok(EditorMessage::State { state, .. }) => {
+            Ok(EditorMessage::State { state, request_id }) => {
+                if request_id == Some(DISK_STATE_REQUEST) {
+                    if let Err(error) = disk_sync.refresh(&daemon, session_id, &revision, &writer) {
+                        tracing::debug!(%session_id, %error, "editor disk sync failed");
+                        return;
+                    }
+                }
                 pending = Some(state);
                 if due(last_broadcast) {
                     flush(&daemon, session_id, pending.take(), conflict);
@@ -523,9 +581,6 @@ fn serve(
                         tracing::debug!(%session_id, "editor save refused: the file moved");
                         revision = current;
                         conflict = true;
-                        // Kept so the person can see both sides. This is the
-                        // only moment the daemon holds the draft, so it is the
-                        // only moment it can offer the comparison at all.
                         daemon.record_editor_conflict(
                             session_id,
                             crate::core::EditorConflict {
@@ -562,6 +617,22 @@ fn serve(
                     });
             }
             Ok(EditorMessage::Applied { request_id, .. }) => {
+                if let Some(loaded) = disk_sync.finish(&daemon, session_id, request_id) {
+                    if daemon
+                        .editor_target(session_id)
+                        .is_ok_and(|(_, path)| path == loaded.path)
+                    {
+                        revision = loaded.revision.unwrap_or_default();
+                        conflict = false;
+                        pending = None;
+                        daemon.clear_editor_conflict(session_id);
+                        if let Some(text) = loaded.text {
+                            push_marks(&daemon, &loaded.path, &text);
+                        }
+                    } else {
+                        daemon.refresh_editor_disk(session_id);
+                    }
+                }
                 if let Some(loaded) = daemon.finish_editor_reload(session_id, request_id) {
                     if let Some(loaded) = loaded {
                         revision = loaded;
@@ -571,7 +642,40 @@ fn serve(
                     daemon.clear_editor_conflict(session_id);
                 }
             }
+            Ok(EditorMessage::DiskConflict { request_id, text }) => {
+                if text.len() > editor_control::MAX_DOCUMENT_BYTES {
+                    fail(
+                        &daemon,
+                        session_id,
+                        "editor draft exceeds the document budget".into(),
+                    );
+                    return;
+                }
+                if let Some(loaded) = disk_sync.finish(&daemon, session_id, request_id) {
+                    let _operation = daemon.editor_file_operation();
+                    if daemon
+                        .editor_target(session_id)
+                        .is_ok_and(|(_, path)| path == loaded.path)
+                    {
+                        revision = loaded.revision.unwrap_or_default();
+                        conflict = true;
+                        daemon.record_editor_conflict(
+                            session_id,
+                            crate::core::EditorConflict {
+                                path: loaded.path,
+                                disk: loaded.text.unwrap_or_default(),
+                                mine: text,
+                            },
+                        );
+                    } else {
+                        daemon.refresh_editor_disk(session_id);
+                    }
+                }
+            }
             Ok(EditorMessage::Refused { request_id, .. }) => {
+                if disk_sync.finish(&daemon, session_id, request_id).is_some() {
+                    daemon.refresh_editor_disk(session_id);
+                }
                 daemon.finish_editor_reload(session_id, request_id);
             }
             Ok(EditorMessage::FindDefinition { request_id, symbol }) => {
@@ -966,6 +1070,23 @@ mod tests {
         assert_eq!(port.finish_reload(10), Some(Some("new".into())));
         rx.recv().unwrap();
         port.try_send(reload(11)).unwrap();
+    }
+
+    #[test]
+    fn disk_refresh_debt_is_coalesced_and_survives_a_full_queue() {
+        let (tx, rx) = flume::bounded(1);
+        let port = CommandPort::new(tx);
+        port.try_send(Outgoing::GetState { request_id: 1 }).unwrap();
+        for _ in 0..100 {
+            port.refresh_disk();
+        }
+        assert_eq!(rx.len(), 1);
+        assert!(port.take_disk_refresh());
+        assert!(!port.take_disk_refresh());
+        rx.recv().unwrap();
+        port.refresh_disk();
+        assert_eq!(rx.len(), 1);
+        assert!(port.take_disk_refresh());
     }
 
     #[test]

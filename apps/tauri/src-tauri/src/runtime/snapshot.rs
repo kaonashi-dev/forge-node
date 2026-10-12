@@ -118,7 +118,9 @@ fn session_wants_you(store: &Store, session: &Session, attached: Option<Terminal
     session.agent_provider_id.is_some()
         && session.state.is_active()
         && session.terminal_id.is_some_and(|terminal_id| {
-            Some(terminal_id) != attached && store.wants_attention(&terminal_id)
+            Some(terminal_id) != attached
+                && (store.wants_attention(&terminal_id)
+                    || session.activity.state == domain::ActivityState::Waiting)
         })
 }
 
@@ -289,5 +291,50 @@ mod tests {
         assert_eq!(snapshot.launchables.len(), 1);
         assert_eq!(snapshot.launchables[0].kind, LaunchKind::Shell);
         assert!(snapshot.launchables[0].enabled);
+    }
+
+    #[test]
+    fn waiting_requires_an_active_background_agent_and_idle_clears_it() {
+        let terminal = TerminalId::new();
+        let id = SessionId::new();
+        let now = domain::Timestamp::now();
+        let mut session = Session {
+            id,
+            workspace_id: domain::WorkspaceId::new(),
+            kind: domain::SessionKind::Agent,
+            role: domain::SessionRole::Generic,
+            parent_session_id: None,
+            root_session_id: id,
+            terminal_id: Some(terminal),
+            editor: None,
+            agent_provider_id: Some(domain::AgentProviderId::new("claude")),
+            agent_profile_id: None,
+            title: Default::default(),
+            state: domain::SessionState::Running,
+            created_at: now,
+            last_activity_at: now,
+            ended_at: None,
+            launch_command: None,
+            base_commit: None,
+            activity: domain::AgentActivity {
+                state: domain::ActivityState::Waiting,
+                since: now,
+                evidence: Some(domain::ActivityEvidence::Hook),
+            },
+        };
+        let store = Store::new();
+        assert!(session_wants_you(&store, &session, None));
+        assert!(!session_wants_you(&store, &session, Some(terminal)));
+        session.activity.state = domain::ActivityState::Idle;
+        assert!(!session_wants_you(&store, &session, None));
+        session.activity.state = domain::ActivityState::Waiting;
+        session.state = domain::SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        };
+        assert!(!session_wants_you(&store, &session, None));
+        session.state = domain::SessionState::Running;
+        session.agent_provider_id = None;
+        assert!(!session_wants_you(&store, &session, None));
     }
 }

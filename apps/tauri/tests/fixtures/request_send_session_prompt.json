@@ -1,0 +1,9 @@
+{
+  "SendSessionPrompt": {
+    "caller_session_id": null,
+    "session_id": "00000000-0000-7000-8000-000000000004",
+    "text": "Inspect the failing test",
+    "submit": true,
+    "when": "Queue"
+  }
+}

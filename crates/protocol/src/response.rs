@@ -66,6 +66,12 @@ pub struct DaemonStats {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Response {
+    PromptDelivery {
+        delivered: bool,
+        queued: bool,
+        submitted: bool,
+        context_id: ContextId,
+    },
     /// Generic success for a request that returns no data.
     Ack,
     /// The two sides of a refused editor save, for `GetEditorConflict`.

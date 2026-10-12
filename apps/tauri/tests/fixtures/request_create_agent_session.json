@@ -1,0 +1,14 @@
+{
+  "CreateAgentSession": {
+    "workspace_id": "00000000-0000-7000-8000-000000000003",
+    "provider_id": "claude",
+    "profile_id": null,
+    "parent": null,
+    "role": "Generic",
+    "resume": null,
+    "initial_prompt": "Review this checkout",
+    "read_only": true,
+    "model": "opus",
+    "effort": "high"
+  }
+}

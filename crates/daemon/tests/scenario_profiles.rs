@@ -325,6 +325,8 @@ fn a_profile_cannot_be_applied_to_a_different_provider() {
             resume: None,
             initial_prompt: None,
             read_only: false,
+            model: None,
+            effort: None,
         })
         .expect_err("a Claude profile cannot launch Codex");
     assert_eq!(protocol_code(&refused), ErrorCode::InvalidRequest);
@@ -339,6 +341,8 @@ fn a_profile_cannot_be_applied_to_a_different_provider() {
             resume: None,
             initial_prompt: None,
             read_only: false,
+            model: None,
+            effort: None,
         })
         .expect_err("an unknown profile id is not silently ignored");
     assert_eq!(protocol_code(&unknown), ErrorCode::NotFound);
@@ -360,6 +364,8 @@ fn launch(
             resume: None,
             initial_prompt: None,
             read_only: false,
+            model: None,
+            effort: None,
         })
         .expect("CreateAgentSession with a profile");
     match response {

@@ -16,6 +16,20 @@ function agent(lastActivity: string | undefined, partial = {}) {
 }
 
 describe("sessionWork", () => {
+  it("prefers reported activity over output age and never infers completion from a hook", () => {
+    for (const [state, work] of [
+      ["working", "working"],
+      ["idle", "idle"],
+      ["waiting", "running"],
+      ["starting", "starting"],
+      ["unknown", "running"],
+    ] as const) {
+      const session = agent("2026-08-30T09:00:00Z", {
+        activity: { state, since: "2026-08-30T12:00:00Z", evidence: "hook" },
+      });
+      expect(sessionWork(session, quiet, NOW)).toBe(work);
+    }
+  });
   it("is working while the agent is still producing output", () => {
     const recent = new Date(NOW - WORKING_WINDOW_MS + 5_000).toISOString();
     expect(sessionWork(agent(recent), quiet, NOW)).toBe("working");

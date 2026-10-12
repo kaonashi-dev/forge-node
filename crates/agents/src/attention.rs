@@ -1,8 +1,4 @@
-//! Agent attention: make the rail's `needs-you` marker fire when a TUI agent asks.
-//!
-//! Forge listens for ASCII BEL. Providers that do not emit it get a Forge-owned
-//! adapter at launch (env, CLI flags, or a FORGE-gated hook). Provider-shaped
-//! knowledge stays here (P2); the daemon only supplies the on-disk asset dir.
+//! Provider-shaped activity and attention adapters; launches leave explicit user settings alone.
 
 use std::path::{Path, PathBuf};
 
@@ -12,10 +8,11 @@ use domain::{AgentDescriptor, SpawnSpec};
 pub const OPENCODE_PLUGIN_FILENAME: &str = "forge-attention.js";
 /// Shared BEL script used by Claude / Cursor / Grok hooks.
 pub const RING_BELL_FILENAME: &str = "forge-ring-bell.sh";
-/// Claude `--settings` fragment naming [`RING_BELL_FILENAME`].
+/// Claude `--settings` fragment naming the activity script.
 pub const CLAUDE_SETTINGS_FILENAME: &str = "forge-claude-attention.json";
+pub const ACTIVITY_FILENAME: &str = "forge-activity.sh";
 
-const OPENCODE_CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
+const OPENCODE_CLI_CONFIG_CONTENT: &str = "OPENCODE_CLI_CONFIG_CONTENT";
 const FORGE_HOOK_MARKER: &str = "forge-ring-bell.sh";
 /// Grok's opt-out of the Cursor hook compatibility scan (PTY hints are unaffected:
 /// this is a launch detail, not a terminal-contract variable).
@@ -27,6 +24,7 @@ pub struct AttentionAssets {
     pub opencode_plugin: PathBuf,
     pub ring_bell: PathBuf,
     pub claude_settings: PathBuf,
+    pub activity: PathBuf,
 }
 
 /// Embedded OpenCode plugin source.
@@ -44,6 +42,13 @@ pub fn ring_bell_source() -> &'static str {
 /// # Errors
 /// Propagates filesystem failures from create/write/chmod.
 pub fn install_assets(dir: &Path) -> std::io::Result<AttentionAssets> {
+    install_assets_with_ctl(dir, None)
+}
+
+pub fn install_assets_with_ctl(
+    dir: &Path,
+    forgectl: Option<&Path>,
+) -> std::io::Result<AttentionAssets> {
     ensure_private_dir(dir)?;
 
     let opencode_plugin = write_if_changed(
@@ -51,28 +56,36 @@ pub fn install_assets(dir: &Path) -> std::io::Result<AttentionAssets> {
         opencode_plugin_source().as_bytes(),
     )?;
     let ring_bell = write_if_changed(dir.join(RING_BELL_FILENAME), ring_bell_source().as_bytes())?;
+    let activity_body = include_str!("forge-activity.sh").replace(
+        "__FORGECTL__",
+        &shell_quote(&forgectl.map(|p| p.to_string_lossy()).unwrap_or_default()),
+    );
+    let activity = write_if_changed(dir.join(ACTIVITY_FILENAME), activity_body.as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&ring_bell, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(&activity, std::fs::Permissions::from_mode(0o700))?;
     }
 
+    let hook = |state: &str| {
+        serde_json::json!([{
+            "type": "command",
+            "command": format!("{} {state}", shell_quote(&activity.to_string_lossy())),
+            "timeout": 5
+        }])
+    };
     let claude_settings_body = serde_json::json!({
         "hooks": {
+            "UserPromptSubmit": [{ "hooks": hook("working") }],
+            "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": hook("waiting") }],
+            "Stop": [{ "hooks": hook("idle") }],
             "PermissionRequest": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": ring_bell.to_string_lossy(),
-                    "timeout": 5
-                }]
+                "hooks": hook("waiting")
             }],
             "Notification": [{
                 "matcher": "permission_prompt|elicitation_dialog|agent_needs_input",
-                "hooks": [{
-                    "type": "command",
-                    "command": ring_bell.to_string_lossy(),
-                    "timeout": 5
-                }]
+                "hooks": hook("waiting")
             }]
         }
     });
@@ -85,6 +98,7 @@ pub fn install_assets(dir: &Path) -> std::io::Result<AttentionAssets> {
         opencode_plugin,
         ring_bell,
         claude_settings,
+        activity,
     })
 }
 
@@ -101,7 +115,7 @@ pub fn inject_attention(
     match descriptor.id.as_str() {
         "opencode" => inject_opencode(spec, assets),
         "claude" => inject_claude(spec, assets),
-        "codex" => inject_codex(spec),
+        "codex" => inject_codex(spec, assets),
         "cursor" => inject_cursor(spec, assets),
         "grok" => inject_grok(spec, assets),
         _ => false,
@@ -109,17 +123,24 @@ pub fn inject_attention(
 }
 
 fn inject_opencode(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
-    if spec.env.iter().any(|(k, _)| k == OPENCODE_CONFIG_CONTENT) {
-        tracing::info!("OPENCODE_CONFIG_CONTENT already set; leaving Forge attention plugin unset");
+    if spec
+        .env
+        .iter()
+        .any(|(k, _)| k == OPENCODE_CLI_CONFIG_CONTENT)
+    {
+        tracing::info!(
+            "OPENCODE_CLI_CONFIG_CONTENT already set; leaving Forge attention plugin unset"
+        );
         return false;
     }
     let path = assets.opencode_plugin.to_string_lossy();
     let value = serde_json::json!({
         "$schema": "https://opencode.ai/config.json",
-        "plugin": [path.as_ref()],
+        "plugins": [{ "package": path.as_ref(), "options": { "activity": assets.activity } }],
     })
     .to_string();
-    spec.env.push((OPENCODE_CONFIG_CONTENT.to_owned(), value));
+    spec.env
+        .push((OPENCODE_CLI_CONFIG_CONTENT.to_owned(), value));
     true
 }
 
@@ -134,14 +155,21 @@ fn inject_claude(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
     true
 }
 
-fn inject_codex(spec: &mut SpawnSpec) -> bool {
+fn inject_codex(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
+    let mut changed = false;
+    if !args_contain_config_key(&spec.args, "notify") {
+        let command = serde_json::json!([assets.activity, "idle", "codex"]);
+        spec.args
+            .extend(["-c".to_owned(), format!("notify={command}")]);
+        changed = true;
+    }
     if args_contain_config_key(&spec.args, "tui.notification_method")
         || args_contain_config_key(&spec.args, "tui.notifications")
     {
         tracing::info!(
             "codex launch already overrides TUI notifications; leaving Forge attention unset"
         );
-        return false;
+        return changed;
     }
     // approval-requested only — agent-turn-complete would paint needs-you on every idle turn.
     // condition=always: Forge's PTY has no focus state, so "unfocused" never fires.
@@ -316,7 +344,12 @@ fn push_hook_command(
 }
 
 fn args_contain(args: &[String], needle: &str) -> bool {
-    args.iter().any(|a| a == needle)
+    args.iter()
+        .any(|a| a == needle || a.starts_with(&format!("{needle}=")))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn args_contain_config_key(args: &[String], key: &str) -> bool {
@@ -377,7 +410,6 @@ fn write_if_changed(path: PathBuf, source: &[u8]) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-// Compatibility aliases used by older call sites / re-exports.
 pub const PLUGIN_FILENAME: &str = OPENCODE_PLUGIN_FILENAME;
 
 /// Install assets and return the OpenCode plugin path (legacy helper).
@@ -404,6 +436,7 @@ pub fn inject_attention_plugin(
         opencode_plugin: plugin_path.to_path_buf(),
         ring_bell: PathBuf::new(),
         claude_settings: PathBuf::new(),
+        activity: plugin_path.with_file_name(ACTIVITY_FILENAME),
     };
     let changed = inject_opencode(&mut spec, &assets);
     *vars = spec.env;
@@ -468,9 +501,9 @@ mod tests {
         let value = spec
             .env
             .iter()
-            .find(|(k, _)| k == OPENCODE_CONFIG_CONTENT)
+            .find(|(k, _)| k == OPENCODE_CLI_CONFIG_CONTENT)
             .map(|(_, v)| v.as_str())
-            .expect("OPENCODE_CONFIG_CONTENT");
+            .expect("OPENCODE_CLI_CONFIG_CONTENT");
         assert!(value.contains("forge-attention.js"));
     }
 
@@ -494,6 +527,116 @@ mod tests {
         spec.args = vec!["--settings".into(), "/mine.json".into()];
         assert!(!inject_attention(&descriptor, &mut spec, &assets));
         assert_eq!(spec.args, ["--settings", "/mine.json"]);
+    }
+
+    #[test]
+    fn claude_hooks_report_turns_questions_and_permissions_not_subagents() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets =
+            install_assets_with_ctl(dir.path(), Some(Path::new("/a path/forgectl"))).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&assets.claude_settings).unwrap()).unwrap();
+        for (event, state) in [
+            ("UserPromptSubmit", "working"),
+            ("PreToolUse", "waiting"),
+            ("PermissionRequest", "waiting"),
+            ("Notification", "waiting"),
+            ("Stop", "idle"),
+        ] {
+            assert!(settings["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .ends_with(state));
+        }
+        assert_eq!(
+            settings["hooks"]["PreToolUse"][0]["matcher"],
+            "AskUserQuestion"
+        );
+        assert!(settings["hooks"]["SubagentStop"].is_null());
+        assert!(settings["hooks"]["PostToolUse"].is_null());
+        assert!(std::fs::read_to_string(assets.activity)
+            .unwrap()
+            .contains("ctl='/a path/forgectl'"));
+    }
+
+    #[test]
+    fn legacy_opencode_injection_names_the_installed_activity_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = install_plugin(dir.path()).unwrap();
+        let mut vars = vec![];
+        assert!(inject_attention_plugin(
+            &builtins::builtin("opencode").unwrap(),
+            &mut vars,
+            &plugin
+        ));
+        let overlay: serde_json::Value = serde_json::from_str(&vars[0].1).unwrap();
+        assert_eq!(
+            overlay["plugins"][0]["options"]["activity"],
+            dir.path()
+                .join(ACTIVITY_FILENAME)
+                .to_string_lossy()
+                .as_ref()
+        );
+    }
+
+    #[test]
+    fn activity_script_reports_with_an_absolute_ctl_and_always_exits_zero() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ctl = dir.path().join("ctl with ' quote");
+        let capture = dir.path().join("args");
+        std::fs::write(
+            &ctl,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nexit 7\n",
+                shell_quote(&capture.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let assets = install_assets_with_ctl(dir.path(), Some(&ctl)).unwrap();
+        let status = std::process::Command::new(&assets.activity)
+            .args(["idle", "claude"])
+            .env("FORGE_SESSION_ID", "s")
+            .stdin(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read_to_string(&capture).unwrap(),
+            "hook\n--state\nidle\n--source\nclaude\n"
+        );
+        std::fs::remove_file(&capture).unwrap();
+        assert!(std::process::Command::new(assets.activity)
+            .arg("idle")
+            .env_remove("FORGE_SESSION_ID")
+            .stdin(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+        assert!(!capture.exists());
+    }
+
+    #[test]
+    fn claude_keeps_equals_settings_and_codex_keeps_custom_notify() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = install_assets(dir.path()).unwrap();
+        let mut spec = empty_spec();
+        spec.args = vec!["--settings=/mine.json".into()];
+        assert!(!inject_attention(
+            &builtins::builtin("claude").unwrap(),
+            &mut spec,
+            &assets
+        ));
+        spec.args = vec!["-c".into(), "notify=[\"/mine\"]".into()];
+        inject_attention(&builtins::builtin("codex").unwrap(), &mut spec, &assets);
+        assert_eq!(
+            spec.args
+                .iter()
+                .filter(|arg| arg.starts_with("notify="))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -673,16 +816,16 @@ mod tests {
         let descriptor = builtins::builtin("opencode").unwrap();
         let mut spec = empty_spec();
         spec.env.push((
-            OPENCODE_CONFIG_CONTENT.into(),
-            r#"{"plugin":["/mine.js"]}"#.into(),
+            OPENCODE_CLI_CONFIG_CONTENT.into(),
+            r#"{"plugins":["/mine.js"]}"#.into(),
         ));
         assert!(!inject_attention(&descriptor, &mut spec, &assets));
         assert_eq!(
             spec.env
                 .iter()
-                .find(|(k, _)| k == OPENCODE_CONFIG_CONTENT)
+                .find(|(k, _)| k == OPENCODE_CLI_CONFIG_CONTENT)
                 .map(|(_, v)| v.as_str()),
-            Some(r#"{"plugin":["/mine.js"]}"#)
+            Some(r#"{"plugins":["/mine.js"]}"#)
         );
     }
 

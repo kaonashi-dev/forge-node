@@ -1551,6 +1551,59 @@ impl App {
         Ok(self.document.version().0)
     }
 
+    pub fn disk_changed(
+        &mut self,
+        path: &str,
+        text: Option<&str>,
+        revision: Option<String>,
+    ) -> Result<Option<String>, String> {
+        if self.path != Path::new(path) {
+            return Err("the buffer moved before the disk update arrived".into());
+        }
+        if self.in_flight_save.is_some() {
+            return Err("a save is still in flight".into());
+        }
+        if self.document.is_dirty() {
+            self.autosave_suspended = true;
+            self.autosave_at = None;
+            self.status = Some(if text.is_some() {
+                "the file changed on disk — unsaved changes preserved".into()
+            } else {
+                "the file was deleted — unsaved changes preserved".into()
+            });
+            return Ok(Some(self.document.as_str().to_owned()));
+        }
+        let Some(text) = text else {
+            self.quit = true;
+            return Ok(None);
+        };
+        let applied = self
+            .document
+            .reload_clean(text, revision.unwrap_or_default())
+            .map_err(|error| error.to_string())?;
+        if let Some(applied) = applied {
+            self.cancel_definition_lookup();
+            self.adopt_input_style();
+            self.rescan_edited(applied);
+            self.marks.clear();
+            self.diagnostics.clear();
+            self.ensure_visible();
+            self.damage_all = true;
+        }
+        self.autosave_suspended = false;
+        self.autosave_at = None;
+        self.status = None;
+        Ok(None)
+    }
+
+    pub fn discard_deleted(&mut self, path: &str) -> Result<u64, String> {
+        if self.path != Path::new(path) {
+            return Err("the buffer moved before the close request arrived".into());
+        }
+        self.quit = true;
+        Ok(self.document.version().0)
+    }
+
     /// Send the buffer again, whatever the daemon last said about the disk.
     ///
     /// The *keep mine* gesture, arriving from the GUI instead of a key press:
@@ -3450,6 +3503,91 @@ mod tests {
     fn a_clean_buffer_closes_without_a_prompt() {
         let mut app = app("hello", false);
         app.handle_key(control('q'));
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn disk_changes_reload_clean_buffers_without_losing_the_caret_or_undo() {
+        let mut app = app("first\ntarget\n", false);
+        app.set_integrated();
+        app.reveal(2, Some(3));
+        let path = app.path.to_string_lossy().into_owned();
+        assert_eq!(
+            app.disk_changed(&path, Some("longer first\ntarget\n"), Some("new".into()))
+                .unwrap(),
+            None
+        );
+        assert_eq!(app.caret_position(), (2, 2));
+        assert!(!app.document.is_dirty());
+        app.handle_key(control('z'));
+        assert_eq!(app.document.as_str(), "first\ntarget\n");
+        assert!(app.document.is_dirty());
+    }
+
+    #[test]
+    fn deletion_only_closes_a_buffer_that_is_clean_on_the_input_thread() {
+        let mut clean = app("original", false);
+        let path = clean.path.to_string_lossy().into_owned();
+        clean.disk_changed(&path, None, None).unwrap();
+        assert!(clean.should_quit());
+        let mut dirty = app("original", false);
+        dirty.set_integrated();
+        dirty.set_autosave(true);
+        dirty.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(
+            dirty.disk_changed(&path, None, None).unwrap(),
+            Some("Xoriginal".into())
+        );
+        assert!(!dirty.should_quit());
+        assert!(dirty.document.is_dirty());
+        assert!(dirty.autosave_deadline().is_none());
+        dirty.handle_key(key(KeyCode::Char('Y')));
+        assert!(dirty.autosave_deadline().is_none());
+        assert!(dirty.take_save_request().is_none());
+    }
+
+    #[test]
+    fn edits_that_race_a_disk_update_are_preserved_and_autosave_is_suspended() {
+        let mut app = app("original", false);
+        app.set_integrated();
+        app.set_autosave(true);
+        app.handle_key(key(KeyCode::Char('X')));
+        let path = app.path.to_string_lossy().into_owned();
+        let version = app.document.version();
+        assert_eq!(
+            app.disk_changed(&path, Some("other branch"), Some("new".into()))
+                .unwrap(),
+            Some("Xoriginal".into())
+        );
+        assert_eq!(app.document.version(), version);
+        assert!(app.autosave_deadline().is_none());
+        app.handle_key(control('z'));
+        assert_eq!(app.document.as_str(), "original");
+    }
+
+    #[test]
+    fn a_stale_path_or_an_in_flight_save_refuses_disk_reconciliation() {
+        let mut app = app("original", false);
+        app.set_integrated();
+        assert!(app.disk_changed("wrong-path", None, None).is_err());
+        app.request_save();
+        let path = app.path.to_string_lossy().into_owned();
+        assert!(app
+            .disk_changed(&path, Some("external"), Some("new".into()))
+            .is_err());
+        assert!(app.in_flight_save.is_some());
+        assert_eq!(app.document.as_str(), "original");
+        assert!(!app.should_quit());
+    }
+
+    #[test]
+    fn taking_the_deleted_disk_side_requires_the_current_path() {
+        let mut app = app("draft", false);
+        app.handle_key(key(KeyCode::Char('X')));
+        assert!(app.discard_deleted("old-path").is_err());
+        assert!(!app.should_quit());
+        let path = app.path.to_string_lossy().into_owned();
+        app.discard_deleted(&path).unwrap();
         assert!(app.should_quit());
     }
 

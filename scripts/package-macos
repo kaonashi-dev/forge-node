@@ -260,7 +260,8 @@ fi
 # The frontend is architecture-independent and is compiled INTO the host binary
 # by tauri-build, so it must exist before the first cargo build and only needs
 # building once.
-# PATH bun can be a canary; apps/tauri's preinstall requires .bun-version exactly.
+# PATH bun can be a canary; pin to the concrete build .bun-version names (or
+# the release `latest` resolves to) before bun install / build.
 # shellcheck source=require-bun
 . "$repo_root/scripts/require-bun"
 forge_require_bun

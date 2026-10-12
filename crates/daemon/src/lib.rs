@@ -19,6 +19,7 @@ pub mod lockfile;
 pub mod logging;
 pub mod orchestration;
 pub mod paths;
+mod prompts;
 pub mod pull_requests;
 pub mod registry;
 pub mod server;

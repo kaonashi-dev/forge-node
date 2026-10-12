@@ -14,6 +14,7 @@ Read `docs/performance.md` if any box is unclear.
 - [ ] Wire/subprocess/file sizes bounded **before** allocation. Result files and board values included.
 - [ ] `ClientKind::Cli` skips terminal-activity, bell, clipboard, editor-frame, and usage broadcasts.
 - [ ] New `Inner` maps: one owner, one deletion path on close.
+- [ ] Cross-session prompts are capped at 8 KiB before cleaning; one queued slot rejects replacement, belongs to a terminal generation, clears on exit/restart/removal, and never replays an uncertain write.
 - [ ] No sleep-and-check unless waiting on non-wakeable condition.
 - [ ] Timeout commands: `.process_group(0)`, kill negative pgid.
 - [ ] Every `spawn()` reaped; coalescing flags cleared on `Drop` failure paths.
