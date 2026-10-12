@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildPathIndex } from "./pathref";
 import { assembleLinks, linkAt } from "./screenLinks";
 
-const ROOT = "/Users/kaonashi/hellopay/repos/hellopay-backend";
-const WORKTREE = "/Users/kaonashi/hellopay/repos/hellopay-backend-portal-balance";
+const ROOT = "/Users/dev/workspace/repos/backend";
+const WORKTREE = "/Users/dev/workspace/repos/backend-feature";
 
 const paths = (text: string, root: string | null = ROOT, extras: string[] = []) =>
   assembleLinks(text, root, extras, null).flatMap((link) =>
@@ -46,7 +46,7 @@ describe("assembleLinks", () => {
 
   it("opens a ~/ path in the worktree it names, not the checkout beside it", () => {
     const text =
-      "Update(~/hellopay/repos/hellopay-backend-portal-balance/test/provider-balances.postgres-spec.ts)";
+      "Update(~/workspace/repos/backend-feature/test/provider-balances.postgres-spec.ts)";
     const links = assembleLinks(text, ROOT, [WORKTREE], null);
     expect(links).toEqual([
       {

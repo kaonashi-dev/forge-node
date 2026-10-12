@@ -52,13 +52,13 @@ describe("findPathRefs", () => {
   });
 
   it("follows a ~/ path into another checkout when that one matches further", () => {
-    const parent = "/Users/kaonashi/hellopay/repos";
-    const worktree = "/Users/kaonashi/hellopay/repos/hellopay-backend-portal-balance";
+    const parent = "/Users/dev/workspace/repos";
+    const worktree = "/Users/dev/workspace/repos/backend-feature";
     const text =
-      "Update(~/hellopay/repos/hellopay-backend-portal-balance/test/provider-balances.postgres-spec.ts)";
+      "Update(~/workspace/repos/backend-feature/test/provider-balances.postgres-spec.ts)";
     const away = findPathRefs(text, parent, [worktree])[0];
     expect(text.slice(away?.from ?? 0, away?.to ?? 0)).toBe(
-      "~/hellopay/repos/hellopay-backend-portal-balance/test/provider-balances.postgres-spec.ts",
+      "~/workspace/repos/backend-feature/test/provider-balances.postgres-spec.ts",
     );
     expect(away).toMatchObject({
       path: "test/provider-balances.postgres-spec.ts",
