@@ -48,6 +48,7 @@ import { SharedFiles } from "./SharedFiles";
 import { WorktreeIgnoresDialog } from "./WorktreeIgnoresDialog";
 import { sharesStore } from "./sharesStore";
 import { orderFromWorkspaces, parseWorkspaceOrder, type WorkspaceOrderMap } from "./workspaceOrder";
+import { tabOrder } from "../sessions/tabOrderState";
 /** A DOM id for a rail row, so `aria-activedescendant` can name it. */
 function railRowId(id: string): string {
   return `rail-${encodeURIComponent(id)}`;
@@ -469,7 +470,7 @@ export function ProjectsView() {
    * title change and replayed `ws-list-in`. `applyRailTree` reconciles by `id`.
    */
   const [tree, setTree] = createStore<GroupNode[]>([]);
-  createComputed(() => applyRailTree(setTree, buildTree(forgeStore, workspaceOrder())));
+  createComputed(() => applyRailTree(setTree, buildTree(forgeStore, workspaceOrder(), tabOrder())));
 
   function persistProjectOrder(projectId: string, ids: string[]): void {
     const next = { ...workspaceOrder(), [projectId]: ids };

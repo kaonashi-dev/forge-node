@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sessionFixture } from "../../contracts/sessions.fixture";
-import { sessionWork, WORKING_WINDOW_MS } from "./work";
+import { sessionWork, STARTING_WINDOW_MS, WORKING_WINDOW_MS } from "./work";
 
 const NOW = Date.parse("2026-08-30T12:00:00Z");
 const quiet = { wants_you: false };
@@ -30,6 +30,14 @@ describe("sessionWork", () => {
       expect(sessionWork(session, quiet, NOW)).toBe(work);
     }
   });
+  it("stops claiming starting once an agent has sat at its prompt without a hook", () => {
+    const at = (ms: number) => new Date(NOW - ms).toISOString();
+    const launched = (since: string) =>
+      agent(at(0), { activity: { state: "starting", since, evidence: null } });
+    expect(sessionWork(launched(at(STARTING_WINDOW_MS - 1_000)), quiet, NOW)).toBe("starting");
+    expect(sessionWork(launched(at(STARTING_WINDOW_MS)), quiet, NOW)).toBe("running");
+  });
+
   it("is working while the agent is still producing output", () => {
     const recent = new Date(NOW - WORKING_WINDOW_MS + 5_000).toISOString();
     expect(sessionWork(agent(recent), quiet, NOW)).toBe("working");

@@ -7,6 +7,7 @@
 
 import type { PullRequest, ReviewDecision, Session, ShellSnapshot } from "../../contracts/runtime";
 import { sessionIsActive } from "../../contracts/runtime";
+import type { TabOrderMap } from "../sessions/sessionScope";
 import { orderSessionsTree, sessionDisplayTitle } from "../sessions/sessionTree";
 import { orderWorkspaces, type WorkspaceOrderMap } from "./workspaceOrder";
 
@@ -71,6 +72,7 @@ export type GroupNode = {
 export function buildTree(
   store: ShellSnapshot,
   workspaceOrder: WorkspaceOrderMap = {},
+  tabOrder: TabOrderMap = {},
 ): GroupNode[] {
   const groups: GroupNode[] = store.project_groups.map((group) => ({
     id: group.id,
@@ -93,6 +95,7 @@ export function buildTree(
           store.sessions.filter(
             (session) => session.workspace_id === workspace.id && session.kind !== "Editor",
           ),
+          tabOrder[workspace.id] ?? [],
         ).map(({ session, depth }) => ({
           id: session.id,
           session,

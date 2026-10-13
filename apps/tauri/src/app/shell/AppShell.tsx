@@ -14,7 +14,6 @@ import { CommandPalette } from "../palette/CommandPalette";
 import type { PaletteEntry, PaletteScope } from "../palette/entries";
 import { addProjectFromPicker } from "../../features/projects/commands";
 import { closeSession } from "../../features/sessions/commands";
-import { setAppState } from "../../features/settings/commands";
 import { scrollTerminal } from "../../features/terminal/commands";
 import { focusedTerminalId } from "../../features/terminal/focus";
 import { startAppRuntime } from "../lifecycle/index";
@@ -120,12 +119,12 @@ import {
   stripItems,
   type StripItem,
 } from "../../navigation/tabOrder";
+import { projectOfWorkspace, sessionsInWorkspace } from "../../features/sessions/sessionScope";
 import {
-  parseTabOrder,
-  projectOfWorkspace,
-  sessionsInWorkspace,
-  type TabOrderMap,
-} from "../../features/sessions/sessionScope";
+  persistTabOrder as storeTabOrder,
+  seedTabOrder,
+  tabOrder,
+} from "../../features/sessions/tabOrderState";
 import { closeTarget } from "./tabs/closeTarget";
 import {
   cycleSidebarView,
@@ -139,8 +138,6 @@ import { openFile, warmFileTree as warmTree } from "../../features/files/command
 import { gitStore, setGitStore } from "../../features/git/state";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
 
-const TAB_ORDER_KEY = "ui.tab_order";
-
 const NOTICE_DISMISS_MS = 6000;
 
 export function AppShell() {
@@ -149,7 +146,6 @@ export function AppShell() {
   const [settings, setSettings] = createSignal(false);
   const [settingsSection, setSettingsSection] = createSignal<Section | undefined>();
   const [settingsEscArmed, setSettingsEscArmed] = createSignal(false);
-  const [tabOrder, setTabOrder] = createSignal<TabOrderMap>(readTabOrder());
 
   // The daemon answers with the stored layout some milliseconds after the
   // window is already on screen. Seeding once — rather than tracking — keeps a
@@ -160,7 +156,7 @@ export function AppShell() {
     seeded = true;
     restoreSidebar();
     setSidebarWidth(readWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_RANGE));
-    setTabOrder(readTabOrder());
+    seedTabOrder();
     const base = forgeStore.app_state[THEME_BASE_KEY] as ThemePreference | undefined;
     if (base) applyThemeBase(base);
     // Density is written over `tokens.css` as an inline style, so it has to be
@@ -245,17 +241,7 @@ export function AppShell() {
 
   function persistTabOrder(order: string[]): void {
     const workspace = currentWorkspace();
-    if (!workspace) return;
-    // Pruned to the checkouts that still exist on the way out. Keyed per
-    // checkout, this map would otherwise keep a row for every worktree ever
-    // removed, and app state is written back to the daemon on every drag.
-    const live = new Set(forgeStore.workspaces.map((item) => item.id));
-    const next: TabOrderMap = { [workspace]: order };
-    for (const [id, ids] of Object.entries(tabOrder())) {
-      if (id !== workspace && live.has(id)) next[id] = ids;
-    }
-    setTabOrder(next);
-    void setAppState(TAB_ORDER_KEY, JSON.stringify(next)).catch(() => undefined);
+    if (workspace) storeTabOrder(workspace, order);
   }
 
   function activeProject(): { id: string; name: string } | null {
@@ -809,10 +795,6 @@ export function AppShell() {
       </Show>
     </main>
   );
-}
-
-function readTabOrder(): TabOrderMap {
-  return parseTabOrder(forgeStore.app_state[TAB_ORDER_KEY]);
 }
 
 /**
