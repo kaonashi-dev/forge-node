@@ -54,6 +54,16 @@ describe("orderSessionsTree", () => {
     ]);
   });
 
+  it("lists roots in the tab strip's order: shells first, then the dragged order", () => {
+    const agent = { agent_provider_id: "claude", kind: "Agent" } as const;
+    const shell = { agent_provider_id: null, kind: "Terminal" } as const;
+    const rows = orderSessionsTree(
+      [session("a1", agent), session("s2", shell), session("a3", agent), session("s4", shell)],
+      ["a3", "s4", "a1"],
+    );
+    expect(rows.map((row) => row.session.id)).toEqual(["s4", "s2", "a3", "a1"]);
+  });
+
   it("is empty for an empty list", () => {
     expect(orderSessionsTree([])).toEqual([]);
   });

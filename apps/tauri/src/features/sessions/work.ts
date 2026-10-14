@@ -13,6 +13,9 @@ export type SessionWork =
 // Legacy snapshots lack activity; allow two 30 s broadcasts before showing them idle.
 export const WORKING_WINDOW_MS = 60_000;
 
+// No hook fires before an agent's first turn, so a session left at its prompt would report starting forever.
+export const STARTING_WINDOW_MS = 15_000;
+
 export function sessionWork(
   session: Session,
   attention: { wants_you: boolean },
@@ -33,8 +36,10 @@ export function sessionWork(
       return "idle";
     case "waiting":
       return "running";
-    case "starting":
-      return "starting";
+    case "starting": {
+      const since = Date.parse(session.activity.since);
+      return now - since < STARTING_WINDOW_MS ? "starting" : "running";
+    }
     case "unknown":
     case "unrecognized":
       return "running";

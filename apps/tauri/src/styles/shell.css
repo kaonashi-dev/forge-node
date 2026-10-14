@@ -65,13 +65,14 @@
   );
 }
 
+/* Inline padding leaves room for the active tab's flares inside the scrollport. */
 .tab-strip {
+  --tab-radius: var(--radius-md);
   align-items: stretch;
-  border-left: 1px solid var(--border-subtle);
   display: flex;
-  gap: 0;
+  gap: var(--space-2);
   min-width: min-content;
-  padding: 0;
+  padding: var(--space-6) var(--tab-radius) 0;
 }
 /* Every tab already draws its own divider. */
 .tab-strip .tab-divider {
@@ -108,7 +109,7 @@
    inside it, because a button cannot contain another. */
 .session-tab-wrap {
   align-items: center;
-  border-right: 1px solid var(--border-subtle);
+  border-radius: var(--tab-radius) var(--tab-radius) 0 0;
   color: var(--fg-muted);
   cursor: grab;
   display: inline-flex;
@@ -126,11 +127,38 @@
   background: var(--bg-hover);
   color: var(--fg);
 }
-/* Tabs sit on the title bar's bottom edge, so the active one keeps an underline. */
+/* The active tab is the top of the panel under it: same surface, no seam,
+   and concave flares where it meets the bar. */
 .session-tab-wrap.active {
   background: var(--bg-panel);
-  box-shadow: inset 0 -2px var(--accent);
   color: var(--fg);
+  z-index: var(--z-over);
+}
+/* On the inner button: the wrap's own pseudo-elements are the drop markers. */
+.session-tab-wrap.active > .session-tab::before,
+.session-tab-wrap.active > .session-tab::after {
+  bottom: 0;
+  content: "";
+  height: var(--tab-radius);
+  pointer-events: none;
+  position: absolute;
+  width: var(--tab-radius);
+}
+.session-tab-wrap.active > .session-tab::before {
+  background: radial-gradient(
+    circle at 0 0,
+    transparent calc(var(--tab-radius) - 0.5px),
+    var(--bg-panel) var(--tab-radius)
+  );
+  left: calc(-1 * var(--tab-radius));
+}
+.session-tab-wrap.active > .session-tab::after {
+  background: radial-gradient(
+    circle at 100% 0,
+    transparent calc(var(--tab-radius) - 0.5px),
+    var(--bg-panel) var(--tab-radius)
+  );
+  right: calc(-1 * var(--tab-radius));
 }
 .session-tab-wrap.waiting:not(.active) {
   background: var(--attention-bg);

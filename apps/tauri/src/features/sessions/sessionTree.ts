@@ -1,10 +1,12 @@
 import { rolePrefix, sessionTitle, type Session } from "../../contracts/runtime";
+import { openSessions } from "../../navigation/tabOrder";
 
 /**
  * Order sessions as a parent/child tree.
  *
- * Roots (`parent_session_id === null`) come first in creation order; each
- * root's descendants follow depth-first, sorted by `created_at` among siblings.
+ * Roots (`parent_session_id === null`) come first; each root's descendants
+ * follow depth-first. Siblings take the tab strip's order — shells first, then
+ * the checkout's dragged `order` — so the rail and the tabs never disagree.
  *
  * A flat list would hide that a child belongs to the session that started it.
  */
@@ -14,8 +16,12 @@ export type TreeRow = {
   depth: number;
 };
 
-export function orderSessionsTree(sessions: Session[]): TreeRow[] {
+export function orderSessionsTree(sessions: Session[], order: string[] = []): TreeRow[] {
   if (sessions.length === 0) return [];
+
+  const rank = new Map(openSessions(sessions, order).map((session, i) => [session.id, i]));
+  const byTab = (left: Session, right: Session) =>
+    (rank.get(left.id) ?? 0) - (rank.get(right.id) ?? 0);
 
   const byParent = new Map<string | null, Session[]>();
   for (const session of sessions) {
@@ -25,7 +31,7 @@ export function orderSessionsTree(sessions: Session[]): TreeRow[] {
     else byParent.set(key, [session]);
   }
   for (const siblings of byParent.values()) {
-    siblings.sort((left, right) => left.created_at.localeCompare(right.created_at));
+    siblings.sort(byTab);
   }
 
   const out: TreeRow[] = [];
@@ -43,9 +49,7 @@ export function orderSessionsTree(sessions: Session[]): TreeRow[] {
   // or one whose parent has been closed. Flat at the end rather than dropped:
   // a running agent that no longer has a parent is still running.
   const placed = new Set(out.map((row) => row.session.id));
-  const stragglers = sessions
-    .filter((session) => !placed.has(session.id))
-    .sort((left, right) => left.created_at.localeCompare(right.created_at));
+  const stragglers = sessions.filter((session) => !placed.has(session.id)).sort(byTab);
   for (const session of stragglers) out.push({ session, depth: 0 });
 
   return out;
