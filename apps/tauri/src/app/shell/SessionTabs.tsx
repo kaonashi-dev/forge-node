@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { focusSession } from "../../features/sessions/sessionActions";
 import { sessionTabLabel, tabGround, type TabGround } from "../../features/sessions/attention";
 import type { Session } from "../../contracts/runtime";
@@ -60,7 +60,7 @@ export function SessionTabs(props: SessionTabsProps) {
     items: MenuItem[];
   } | null>(null);
 
-  const tabs = () => props.sessions.filter((session) => session.terminal_id != null);
+  const tabs = createMemo(() => props.sessions.filter((session) => session.terminal_id != null));
   /* While Code is up no session is current. Left at `current`, two tabs in the
      same strip would both claim the window. */
   const groundOf = (session: Session) => {
@@ -268,7 +268,7 @@ export function SessionTabs(props: SessionTabsProps) {
             >
               {(session, index) => {
                 const ground = () => groundOf(session);
-                const label = () => sessionTabLabel(session, tabs());
+                const label = createMemo(() => sessionTabLabel(session, tabs()));
                 const emphasis = () =>
                   ground() === "current" || ground() === "needs-you" || hasQuestion(session.id)
                     ? "full"

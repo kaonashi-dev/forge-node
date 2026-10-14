@@ -203,12 +203,17 @@ demand with `FetchScrollback { from_line, count }` and merged into the
 ## Backpressure (`daemon/src/registry.rs`)
 
 Each client has a bounded outbound queue (`CLIENT_QUEUE_CAPACITY = 256`). When
-a terminal delta cannot be enqueued:
+a terminal delta finds `DELTA_HIGH_WATER` (64) messages already queued, or
+cannot be enqueued at all:
 
 - the client is marked *behind* for that terminal and further deltas for it
   are dropped (not queued);
-- once the queue drains, the client receives a single `TerminalResync` with a
-  fresh snapshot instead of a replayed backlog.
+- once the queue drains to `DELTA_LOW_WATER` (8), the client receives a single
+  `TerminalResync` with a fresh snapshot instead of a replayed backlog.
+
+The high-water mark sits well below the capacity because a whole-grid delta
+holds ~400 KB of rows: a full queue of them pinned ~100 MB per lagging client,
+and terminal output could leave no slot for a response.
 
 The PTY loop never blocks on a slow client and daemon memory stays bounded.
 Domain events are best-effort too: a momentarily full queue drops one, and the

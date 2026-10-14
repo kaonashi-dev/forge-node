@@ -96,9 +96,14 @@ impl SessionTitle {
     /// Empty or whitespace OSC 0/2 payloads reset the title to allow a fallback.
     #[must_use]
     pub fn from_osc(raw: Option<&str>) -> Option<String> {
-        raw.map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
+        Self::osc_str(raw).map(str::to_owned)
+    }
+
+    /// [`SessionTitle::from_osc`] without the copy, for a comparison made on
+    /// every emitted delta.
+    #[must_use]
+    pub fn osc_str(raw: Option<&str>) -> Option<&str> {
+        raw.map(str::trim).filter(|value| !value.is_empty())
     }
 
     /// Prefer user, then terminal, then fallback; whitespace-only titles are unset.

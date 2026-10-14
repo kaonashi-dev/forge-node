@@ -205,7 +205,9 @@ impl AlacrittyEngine {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.title = st.title.clone();
+        if self.title != st.title {
+            self.title.clone_from(&st.title);
+        }
         if st.bell {
             self.bell = true;
             st.bell = false;
@@ -322,7 +324,23 @@ fn convert_flags(flags: Flags) -> CellFlags {
 
 /// Convert one emulator cell. Wide-char continuation cells carry no text but
 /// keep the `WIDE_SPACER` flag.
+///
+/// Runs per cell under the core lock, so the common unstyled cell with no
+/// combining marks skips the flag mapping and the character-by-character build.
 fn convert_cell(cell: &AlacCell) -> Cell {
+    if cell.flags.is_empty() && cell.extra.is_none() {
+        let text = if cell.c == ' ' {
+            CompactString::const_new(" ")
+        } else {
+            CompactString::new(cell.c.encode_utf8(&mut [0; 4]))
+        };
+        return Cell {
+            text,
+            fg: convert_color(cell.fg),
+            bg: convert_color(cell.bg),
+            flags: CellFlags::empty(),
+        };
+    }
     let flags = convert_flags(cell.flags);
     let is_spacer = cell
         .flags
@@ -531,6 +549,57 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
     use domain::{CursorShape, PtySize};
+
+    #[test]
+    fn the_plain_cell_shortcut_matches_the_general_conversion() {
+        fn general(cell: &AlacCell) -> Cell {
+            let mut text = CompactString::default();
+            if !cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                text.push(cell.c);
+                for &c in cell.zerowidth().unwrap_or_default() {
+                    text.push(c);
+                }
+            }
+            Cell {
+                text,
+                fg: convert_color(cell.fg),
+                bg: convert_color(cell.bg),
+                flags: convert_flags(cell.flags),
+            }
+        }
+        let mut cells = Vec::new();
+        for c in [' ', 'x', '~', '\u{e9}', '\u{4e2d}', '\u{1f600}'] {
+            for fg in [
+                AnsiColor::Named(ansi::NamedColor::Foreground),
+                AnsiColor::Named(ansi::NamedColor::Red),
+                AnsiColor::Indexed(200),
+                AnsiColor::Spec(ansi::Rgb { r: 1, g: 2, b: 3 }),
+            ] {
+                for flags in [Flags::empty(), Flags::BOLD | Flags::WIDE_CHAR] {
+                    cells.push(AlacCell {
+                        c,
+                        fg,
+                        bg: AnsiColor::Named(ansi::NamedColor::Background),
+                        flags,
+                        extra: None,
+                    });
+                }
+            }
+        }
+        let mut marked = AlacCell {
+            c: 'e',
+            ..AlacCell::default()
+        };
+        marked.push_zerowidth('\u{301}');
+        cells.push(marked);
+        for cell in &cells {
+            assert_eq!(convert_cell(cell), general(cell), "{cell:?}");
+        }
+        assert_eq!(convert_cell(&AlacCell::default()), Cell::default());
+    }
 
     /// OSC 52 writes reach the clipboard; its read never answers.
     #[test]

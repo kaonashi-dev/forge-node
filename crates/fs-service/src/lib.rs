@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
-use git_service::{discover_root, run_git, run_git_bounded, GitError};
+use git_service::{discover_root, run_git, run_git_bounded, run_git_prefix, GitError};
 use thiserror::Error;
 
 mod entry_move;
@@ -85,6 +85,10 @@ const MAX_DEFINITION_SCAN: usize = 5_000;
 const DEFINITION_CONTEXT_LINES: usize = 12;
 const MAX_DEFINITION_SIGNATURE_BYTES: usize = 4096;
 const MAX_DEFINITION_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+/// `git grep` output kept for a content search. The parser stops at
+/// [`MAX_SEARCH_RESULTS`] hits; this bounds what a match-heavy tree or a
+/// minified line costs before it gets there.
+const MAX_CONTENT_OUTPUT_BYTES: usize = 1024 * 1024;
 
 /// Bytes inspected for a `NUL` when deciding whether a file is binary.
 const BINARY_PROBE: usize = 8 * 1024;
@@ -1218,8 +1222,9 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
     }
     // Fixed-string (`-F`): find-in-project takes typed text, not a regex. `-e`
     // still wraps the needle so a query that starts with `-` is not a flag.
-    // `git grep` exits 1 when there are no matches — that is success.
-    let out = run_git(
+    // `git grep` exits 1 when there are no matches — that is success. A cut
+    // grep was killed, so its status says nothing.
+    let (out, cut) = run_git_prefix(
         Some(&root),
         &[
             "grep",
@@ -1236,8 +1241,9 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
             "--",
             ".",
         ],
+        MAX_CONTENT_OUTPUT_BYTES,
     )?;
-    if out.status != 0 && out.status != 1 {
+    if !cut && out.status != 0 && out.status != 1 {
         return Err(FsError::Git(GitError::CommandFailed {
             args: vec![
                 "grep".into(),
@@ -1254,14 +1260,27 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
             status: out.status,
         }));
     }
-    if out.status == 1 || out.stdout.is_empty() {
+    if (!cut && out.status == 1) || out.stdout.is_empty() {
         return Ok(SearchResults {
             matches: Vec::new(),
-            truncated: false,
+            truncated: cut,
         });
     }
 
-    Ok(parse_grep_z(out.stdout.as_bytes(), Some(query), limit))
+    let mut results = parse_grep_z(whole_records(&out.stdout, cut), Some(query), limit);
+    results.truncated |= cut;
+    Ok(results)
+}
+
+/// A cut grep's output without its last, partial record: the parser would
+/// otherwise read a clipped line as a whole hit.
+fn whole_records(stdout: &str, cut: bool) -> &[u8] {
+    let kept = if cut {
+        stdout.rfind('\n').map_or(0, |at| at + 1)
+    } else {
+        stdout.len()
+    };
+    &stdout.as_bytes()[..kept]
 }
 
 /// `-C` for [`SEARCH_CONTEXT_LINES`]; a literal because `run_git` takes `&str`s.
@@ -1370,21 +1389,19 @@ fn parse_grep_z_with_context(
             recent.clear();
             recent_path = path;
         }
-        let path_norm = path.to_owned();
         let hit = query.is_none_or(|needle| line_text.contains(needle));
         if let Some(last) = matches.last().filter(|_| matches.len() >= limit) {
             // Past the cap, a record is either the tail of the last hit's
             // context or proof that another hit follows.
-            let trailing = !hit
-                && last.path == path_norm
-                && line as usize <= last.line as usize + context_lines;
+            let trailing =
+                !hit && last.path == path && line as usize <= last.line as usize + context_lines;
             if !trailing {
                 truncated = true;
                 break;
             }
         }
         for earlier in matches.iter_mut().rev() {
-            if earlier.path != path_norm || earlier.line >= line {
+            if earlier.path != path || earlier.line >= line {
                 break;
             }
             let next = earlier.line as usize + earlier.after.len() + 1;
@@ -1402,7 +1419,7 @@ fn parse_grep_z_with_context(
                 .map(|(_, text)| context_line(text))
                 .collect();
             matches.push(SearchMatch {
-                path: path_norm,
+                path: path.to_owned(),
                 line,
                 column: 0,
                 text: line_text.to_string(),
@@ -1541,7 +1558,7 @@ fn is_identifier(symbol: &str) -> bool {
 fn grep_word(root: &Path, symbol: &str) -> Result<SearchResults, FsError> {
     // `git grep` exits 1 when there are no matches — that is success.
     let context = DEFINITION_CONTEXT_LINES.to_string();
-    let out = run_git_bounded(
+    let (out, cut) = run_git_prefix(
         Some(root),
         &[
             "grep",
@@ -1561,25 +1578,27 @@ fn grep_word(root: &Path, symbol: &str) -> Result<SearchResults, FsError> {
         ],
         MAX_DEFINITION_OUTPUT_BYTES,
     )?;
-    if out.status != 0 && out.status != 1 {
+    if !cut && out.status != 0 && out.status != 1 {
         return Err(FsError::Git(GitError::CommandFailed {
             args: vec!["grep".into(), "-w".into(), "-F".into(), symbol.into()],
             stderr: out.stderr,
             status: out.status,
         }));
     }
-    if out.status == 1 || out.stdout.is_empty() {
+    if (!cut && out.status == 1) || out.stdout.is_empty() {
         return Ok(SearchResults {
             matches: Vec::new(),
-            truncated: false,
+            truncated: cut,
         });
     }
-    Ok(parse_grep_z_with_context(
-        out.stdout.as_bytes(),
+    let mut results = parse_grep_z_with_context(
+        whole_records(&out.stdout, cut),
         Some(symbol),
         MAX_DEFINITION_SCAN,
         DEFINITION_CONTEXT_LINES,
-    ))
+    );
+    results.truncated |= cut;
+    Ok(results)
 }
 
 /// Keep the hits that declare `symbol`, best kind of declaration first.
@@ -3090,6 +3109,30 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         assert!(r.matches[0].text.contains("world"));
         assert_eq!(r.matches[0].before, ["hello"]);
         assert!(r.matches[0].after.is_empty());
+    }
+
+    /// The capture stops before a minified line is resident, and the cut
+    /// record is reported as a truncated search, never as a clipped hit.
+    #[test]
+    fn content_search_output_is_capped_before_a_huge_line_is_held() {
+        let tmp = git_repo();
+        let huge = format!("{}needle\n", "x".repeat(MAX_CONTENT_OUTPUT_BYTES));
+        fs::write(tmp.path().join("a.min.js"), format!("needle\n{huge}")).unwrap();
+        let r = search_files(tmp.path(), "needle", SearchKind::Content, 50).unwrap();
+        assert!(r.truncated);
+        assert_eq!(r.matches.len(), 1);
+        assert_eq!(r.matches[0].line, 1);
+        assert!(r.matches[0].after.is_empty());
+    }
+
+    #[test]
+    fn a_cut_grep_drops_its_partial_last_record() {
+        assert_eq!(
+            whole_records("a\x001\x00x\nb\x002\x00y", true),
+            b"a\x001\x00x\n"
+        );
+        assert_eq!(whole_records("a\x001\x00x\nb", false), b"a\x001\x00x\nb");
+        assert!(whole_records("no newline", true).is_empty());
     }
 
     /// Metacharacters stay literal: Content is find-in-project text, not a regex.

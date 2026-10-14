@@ -24,8 +24,9 @@ fn draw_frame(app: &mut App, out: &mut impl Write) -> io::Result<()> {
         // geometry no longer covers; clearing once is cheaper than tracking it.
         queue!(out, terminal::Clear(terminal::ClearType::All))?;
     }
+    let lines = app.row_lines(height);
     for row in frame.rows {
-        draw_row(app, out, row)?;
+        draw_row(app, out, row, lines.get(row).copied().flatten())?;
     }
     // Integrated mode leaves the idle status bar to the GUI pane and only
     // claims the row for a prompt or a message; standalone always paints it.
@@ -46,13 +47,18 @@ fn draw_frame(app: &mut App, out: &mut impl Write) -> io::Result<()> {
 }
 
 /// Overwrite exactly `width` cells, including padding to erase the previous row.
-fn draw_row(app: &App, out: &mut impl Write, row: usize) -> io::Result<()> {
+fn draw_row(
+    app: &App,
+    out: &mut impl Write,
+    row: usize,
+    shown: Option<(usize, usize)>,
+) -> io::Result<()> {
     queue!(out, cursor::MoveTo(0, row as u16))?;
     let text = app.document().text();
     // A wrapped line spreads across rows; the row names which line and which of
     // its segments. Past the last line the row is blank — written out, not
     // cleared.
-    let Some((line, sub)) = app.row_line_sub(row) else {
+    let Some((line, sub)) = shown else {
         return finish_row(app, out, row, 0);
     };
     if sub == 0 {

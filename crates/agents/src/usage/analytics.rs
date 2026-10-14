@@ -8,7 +8,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -16,9 +16,11 @@ use domain::{
     AccountAnalytics, AgentProfile, AgentProfileId, AgentProviderId, DailyUsage, ProviderAnalytics,
     ResolvedEnvironment, Timestamp, TokenTotals, UsageAnalytics,
 };
+use serde::Deserialize;
 use serde_json::Value;
 
 use super::pricing::{price_for, ModelPrice};
+use crate::jsonl::{self, present, text_of, Object, Text};
 
 /// Default horizon when the caller names none. Thirty days is what the page
 /// draws as a calendar, and long enough that a week off does not empty it.
@@ -30,6 +32,11 @@ pub const MAX_WINDOW_DAYS: u16 = 365;
 /// stays well under this; a machine with more history gets the recent part of
 /// it and is told the rest was skipped.
 const SCAN_LIMIT: usize = 500;
+/// Longest record parsed. Larger than discovery's cap: an assistant record
+/// whose tool call carries a whole file still carries a billed turn.
+const MAX_RECORD_BYTES: u64 = 8 * 1024 * 1024;
+/// Directory entries one store's walk may visit.
+const MAX_ENTRIES: usize = 20_000;
 
 /// Read every supported provider's transcripts and aggregate them.
 ///
@@ -68,11 +75,14 @@ pub fn collect(
         let mut totals = Totals::new(&files.stores);
         for (path, store) in &files.paths {
             totals.account = *store;
-            let counted = match provider {
+            let Scanned { counted, unread } = match provider {
                 "claude" => scan_claude(path, cutoff, &mut totals),
                 _ => scan_codex(path, cutoff, &mut totals),
             };
             scanned += 1;
+            if unread.any() {
+                skipped += 1;
+            }
             if counted {
                 totals.sessions += 1;
                 totals.accounts[*store].sessions += 1;
@@ -274,61 +284,115 @@ impl Turn {
 // Claude Code
 // ---------------------------------------------------------------------
 
-/// Read one Claude transcript. Returns whether it carried a billed turn.
-fn scan_claude(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -> bool {
+/// What one transcript contributed.
+struct Scanned {
+    counted: bool,
+    /// Records the scan could not read, so the transcript is reported skipped
+    /// as well as scanned.
+    unread: jsonl::Unread,
+}
+
+/// The fields a billed Claude turn is read from. Everything else, including
+/// the message `content` that dominates a record, is skipped unallocated.
+#[derive(Deserialize)]
+struct ClaudeRecord<'a> {
+    #[serde(rename = "type", borrow, default)]
+    kind: Text<'a>,
+    #[serde(borrow, default)]
+    timestamp: Text<'a>,
+    #[serde(borrow, default)]
+    message: Object<ClaudeMessage<'a>>,
+}
+
+impl ClaudeRecord<'_> {
+    /// The typed parse refused the line, so it is read as before: a repeated
+    /// key keeps its last value, as `serde_json`'s map does.
+    fn from_value(value: &Value) -> ClaudeRecord<'static> {
+        ClaudeRecord {
+            kind: text_of(value, "type"),
+            timestamp: text_of(value, "timestamp"),
+            message: Object(
+                value
+                    .get("message")
+                    .filter(|message| message.is_object())
+                    .map(|message| ClaudeMessage {
+                        id: text_of(message, "id"),
+                        model: text_of(message, "model"),
+                        usage: message.get("usage").cloned(),
+                    }),
+            ),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ClaudeMessage<'a> {
+    #[serde(borrow, default)]
+    id: Text<'a>,
+    #[serde(borrow, default)]
+    model: Text<'a>,
+    #[serde(default, deserialize_with = "present")]
+    usage: Option<Value>,
+}
+
+/// Read one Claude transcript.
+fn scan_claude(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -> Scanned {
     let Ok(file) = fs::File::open(path) else {
-        return false;
+        return Scanned {
+            counted: false,
+            unread: jsonl::Unread::default(),
+        };
     };
     let mut counted = false;
     let mut span: Option<(Timestamp, Timestamp)> = None;
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    let unread = jsonl::for_each(BufReader::new(file), MAX_RECORD_BYTES, |line| {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return;
+        };
         // The cheap gate first: most lines in a transcript are user turns and
         // tool traffic, and parsing all of them costs more than the read.
         if !line.contains("\"usage\"") {
-            continue;
+            return;
         }
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            continue;
+        let Some(record) = typed_or_value(line, ClaudeRecord::from_value) else {
+            return;
         };
-        if record.get("type").and_then(Value::as_str) != Some("assistant") {
-            continue;
+        if record.kind.as_str() != Some("assistant") {
+            return;
         }
-        let Some(message) = record.get("message") else {
-            continue;
+        let Some(message) = record.message.0 else {
+            return;
         };
-        let Some(usage) = message.get("usage") else {
-            continue;
+        let Some(usage) = message.usage else {
+            return;
         };
         let at = record
-            .get("timestamp")
-            .and_then(Value::as_str)
+            .timestamp
+            .as_str()
             .and_then(|raw| Timestamp::parse_rfc3339(raw).ok());
         // A resumed transcript carries records older than the window; count
         // them only when they fall inside it, so the window means something.
         if at.is_some_and(|at| at.as_offset() < cutoff) {
-            continue;
+            return;
         }
         let id = message
-            .get("id")
-            .and_then(Value::as_str)
+            .id
+            .as_str()
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{}:{line:.120}", path.display()));
         if !totals.is_new(&id) {
-            continue;
+            return;
         }
 
         let mut turn = Turn {
-            model: message
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            model: message.model.as_str().map(str::to_owned),
             ..Turn::default()
         };
         turn.tokens = TokenTotals {
-            input: number(usage, "input_tokens"),
-            output: number(usage, "output_tokens"),
-            cache_write: number(usage, "cache_creation_input_tokens"),
-            cache_read: number(usage, "cache_read_input_tokens"),
+            input: number(&usage, "input_tokens"),
+            output: number(&usage, "output_tokens"),
+            cache_write: number(&usage, "cache_creation_input_tokens"),
+            cache_read: number(&usage, "cache_read_input_tokens"),
             reasoning: usage
                 .get("output_tokens_details")
                 .map_or(0, |details| number(details, "thinking_tokens")),
@@ -338,7 +402,7 @@ fn scan_claude(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -
             turn.cache_write_1h = number(creation, "ephemeral_1h_input_tokens");
         }
         if turn.is_empty() {
-            continue;
+            return;
         }
         if let Some(at) = at {
             span = Some(match span {
@@ -348,52 +412,92 @@ fn scan_claude(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -
         }
         totals.turn(&turn, at);
         counted = true;
-    }
+    });
     totals.worked(span);
-    counted
+    Scanned { counted, unread }
 }
 
 // ---------------------------------------------------------------------
 // Codex CLI
 // ---------------------------------------------------------------------
 
-/// Read one Codex rollout. Returns whether it carried a billed turn.
+#[derive(Deserialize)]
+struct CodexRecord<'a> {
+    #[serde(borrow, default)]
+    timestamp: Text<'a>,
+    #[serde(borrow, default)]
+    payload: Object<CodexPayload<'a>>,
+}
+
+impl CodexRecord<'_> {
+    fn from_value(value: &Value) -> CodexRecord<'static> {
+        CodexRecord {
+            timestamp: text_of(value, "timestamp"),
+            payload: Object(
+                value
+                    .get("payload")
+                    .filter(|payload| payload.is_object())
+                    .map(|payload| CodexPayload {
+                        model: text_of(payload, "model"),
+                        info: payload.get("info").cloned(),
+                    }),
+            ),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CodexPayload<'a> {
+    #[serde(borrow, default)]
+    model: Text<'a>,
+    #[serde(default, deserialize_with = "present")]
+    info: Option<Value>,
+}
+
+/// Read one Codex rollout.
 ///
 /// `total_token_usage` is cumulative over the session, so a turn is the
 /// *difference* between consecutive events. Summing the events themselves would
 /// multiply a long session by its own length.
-fn scan_codex(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -> bool {
+fn scan_codex(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -> Scanned {
     let Ok(file) = fs::File::open(path) else {
-        return false;
+        return Scanned {
+            counted: false,
+            unread: jsonl::Unread::default(),
+        };
     };
     let mut counted = false;
     let mut span: Option<(Timestamp, Timestamp)> = None;
     let mut previous = TokenTotals::default();
     let mut model: Option<String> = None;
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    let unread = jsonl::for_each(BufReader::new(file), MAX_RECORD_BYTES, |line| {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return;
+        };
         let is_usage = line.contains("\"token_count\"");
         if !is_usage && !line.contains("\"turn_context\"") {
-            continue;
+            return;
         }
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            continue;
+        let Some(record) = typed_or_value(line, CodexRecord::from_value) else {
+            return;
         };
-        let Some(payload) = record.get("payload") else {
-            continue;
+        let Some(payload) = record.payload.0 else {
+            return;
         };
         if !is_usage {
             // The model can change mid-session; the latest one before a turn is
             // the one that turn ran on.
-            if let Some(name) = payload.get("model").and_then(Value::as_str) {
+            if let Some(name) = payload.model.as_str() {
                 model = Some(name.to_owned());
             }
-            continue;
+            return;
         }
         let Some(cumulative) = payload
-            .get("info")
+            .info
+            .as_ref()
             .and_then(|info| info.get("total_token_usage"))
         else {
-            continue;
+            return;
         };
         let running = codex_totals(cumulative);
         let turn = Turn {
@@ -409,14 +513,14 @@ fn scan_codex(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) ->
         };
         previous = running;
         if turn.is_empty() {
-            continue;
+            return;
         }
         let at = record
-            .get("timestamp")
-            .and_then(Value::as_str)
+            .timestamp
+            .as_str()
             .and_then(|raw| Timestamp::parse_rfc3339(raw).ok());
         if at.is_some_and(|at| at.as_offset() < cutoff) {
-            continue;
+            return;
         }
         if let Some(at) = at {
             span = Some(match span {
@@ -426,9 +530,22 @@ fn scan_codex(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) ->
         }
         totals.turn(&turn, at);
         counted = true;
-    }
+    });
     totals.worked(span);
-    counted
+    Scanned { counted, unread }
+}
+
+/// One record, typed so the bulk of it is skipped unallocated, or read as a
+/// `Value` when the typed parse refuses it. `None` for a line that is not
+/// JSON, or not an object.
+fn typed_or_value<'a, T: Deserialize<'a>>(line: &'a str, from_value: fn(&Value) -> T) -> Option<T> {
+    match serde_json::from_str::<Object<T>>(line) {
+        Ok(Object(record)) => record,
+        Err(_) => serde_json::from_str::<Value>(line)
+            .ok()
+            .filter(Value::is_object)
+            .map(|value| from_value(&value)),
+    }
 }
 
 /// Codex counts cached input *inside* `input_tokens`; Claude keeps them apart.
@@ -576,9 +693,22 @@ fn stores(
 fn recent_transcripts(stores: Vec<Store>, cutoff: time::OffsetDateTime) -> Transcripts {
     let mut found = TranscriptCandidates::default();
     for (index, store) in stores.iter().enumerate() {
-        collect_jsonl(&store.root, index, 0, cutoff, &mut found);
+        let mut budget = Budget {
+            remaining: MAX_ENTRIES,
+            exhausted: false,
+        };
+        collect_jsonl(&store.root, index, 0, cutoff, &mut budget, &mut found);
+        if budget.exhausted {
+            found.skipped = found.skipped.saturating_add(1);
+        }
     }
     found.finish(stores)
+}
+
+/// Directory entries left to visit in one store.
+struct Budget {
+    remaining: usize,
+    exhausted: bool,
 }
 
 /// Depth-bounded walk. Claude nests two levels (`<slug>/<session>/subagents`)
@@ -589,6 +719,7 @@ fn collect_jsonl(
     store: usize,
     depth: usize,
     cutoff: time::OffsetDateTime,
+    budget: &mut Budget,
     found: &mut TranscriptCandidates,
 ) {
     const MAX_DEPTH: usize = 4;
@@ -596,27 +727,36 @@ fn collect_jsonl(
         return;
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(metadata) = entry.metadata() else {
+        if budget.remaining == 0 {
+            budget.exhausted = true;
+            return;
+        }
+        budget.remaining -= 1;
+        // The entry's own type is free on most file systems; a stat is paid
+        // only for a transcript.
+        let Ok(kind) = entry.file_type() else {
             continue;
         };
-        if metadata.is_dir() {
+        if kind.is_dir() {
             if depth < MAX_DEPTH {
-                collect_jsonl(&path, store, depth + 1, cutoff, found);
+                collect_jsonl(&entry.path(), store, depth + 1, cutoff, budget, found);
             }
             continue;
         }
-        if path.extension().is_none_or(|ext| ext != "jsonl") {
+        if Path::new(&entry.file_name())
+            .extension()
+            .is_none_or(|ext| ext != "jsonl")
+        {
             continue;
         }
-        let Ok(modified) = metadata.modified() else {
+        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
             continue;
         };
         let modified_at = time::OffsetDateTime::from(modified);
         if modified_at < cutoff {
             continue;
         }
-        found.insert(modified, path, store);
+        found.insert(modified, entry.path(), store);
     }
 }
 
@@ -908,6 +1048,163 @@ mod tests {
         let claude = &collect(30, &env(home.path()), &[]).providers[0];
         assert_eq!(claude.turns, 2, "the copied record is counted once");
         assert_eq!(claude.tokens.input, 110);
+    }
+
+    /// The record is skipped before it is resident, and the transcript is
+    /// reported as skipped so the page does not look exhaustive.
+    #[test]
+    fn a_record_over_the_cap_is_skipped_and_reported() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let huge = serde_json::json!({
+            "type": "assistant",
+            "timestamp": ago(1),
+            "message": {
+                "id": "msg_huge",
+                "usage": { "input_tokens": 1 },
+                "content": [{ "type": "text", "text": "x".repeat(MAX_RECORD_BYTES as usize) }]
+            }
+        })
+        .to_string();
+        write(
+            &home
+                .path()
+                .join(".claude/projects/-Users-me-proj/session.jsonl"),
+            &[
+                claude_turn("msg_1", &ago(1), 10, 0, 0),
+                huge,
+                claude_turn("msg_2", &ago(1), 20, 0, 0),
+            ],
+        );
+
+        let analytics = collect(30, &env(home.path()), &[]);
+        let claude = &analytics.providers[0];
+        assert_eq!(claude.turns, 2);
+        assert_eq!(claude.tokens.input, 30);
+        assert_eq!(analytics.scanned, 1);
+        assert_eq!(analytics.skipped, 1);
+    }
+
+    /// Fields are read the way `Value::as_str` reads them: a mistyped one is
+    /// absent, not a reason to drop the turn.
+    #[test]
+    fn a_mistyped_field_reads_as_absent_rather_than_dropping_the_turn() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let numeric_id = serde_json::json!({
+            "type": "assistant",
+            "timestamp": ago(1),
+            "message": {
+                "id": 7,
+                "model": ["not", "a", "name"],
+                "content": { "nested": [1, 2, { "deep": null }] },
+                "usage": { "input_tokens": 5, "output_tokens": 1 }
+            }
+        })
+        .to_string();
+        write(
+            &home
+                .path()
+                .join(".claude/projects/-Users-me-proj/session.jsonl"),
+            &[numeric_id],
+        );
+
+        let claude = &collect(30, &env(home.path()), &[]).providers[0];
+        assert_eq!(claude.turns, 1);
+        assert_eq!(claude.tokens.input, 5);
+        assert_eq!(claude.unpriced_turns, 1, "no model name, so no price");
+    }
+
+    type ClaudeView = (
+        Option<String>,
+        Option<String>,
+        Option<(Option<String>, Option<String>, Option<Value>)>,
+    );
+
+    fn claude_view(record: &ClaudeRecord) -> ClaudeView {
+        let text = |text: &Text| text.as_str().map(str::to_owned);
+        (
+            text(&record.kind),
+            text(&record.timestamp),
+            record.message.0.as_ref().map(|message| {
+                (
+                    text(&message.id),
+                    text(&message.model),
+                    message.usage.clone(),
+                )
+            }),
+        )
+    }
+
+    /// The typed records stand in for `Value`, so every shape — a repeated
+    /// key, a `null`, a mistyped or non-object field — reads the same.
+    #[test]
+    fn typed_records_read_exactly_what_a_value_reads() {
+        for line in [
+            r#"{"type":"assistant","timestamp":"t","message":{"id":"m1","model":"x","usage":{"input_tokens":1},"content":[{"type":"text","text":"big"}]}}"#,
+            r#"{"type":"assistant","message":null,"usage":1}"#,
+            r#"{"type":"assistant","message":"flat \"usage\""}"#,
+            r#"{"type":"assistant","message":[{"usage":{}}]}"#,
+            r#"{"type":"assistant","message":{"usage":null,"id":7,"model":["a"]}}"#,
+            r#"{"type":"assistant","type":"user","message":{"usage":{}}}"#,
+            r#"{"type":"assistant","message":{"id":"a","id":"b","usage":{}}}"#,
+            r#"{"type":"assistant","timestamp":"2026\u002d01","message":{"id":"\u0041","usage":{}}}"#,
+        ] {
+            let value: Value = serde_json::from_str(line).unwrap();
+            let typed = typed_or_value(line, ClaudeRecord::from_value).unwrap();
+            assert_eq!(
+                claude_view(&typed),
+                claude_view(&ClaudeRecord::from_value(&value)),
+                "{line}"
+            );
+        }
+        assert!(typed_or_value(r#"["assistant"]"#, ClaudeRecord::from_value).is_none());
+
+        for line in [
+            r#"{"timestamp":"t","payload":{"type":"token_count","info":{"total_token_usage":{}}}}"#,
+            r#"{"payload":null}"#,
+            r#"{"payload":"turn_context"}"#,
+            r#"{"payload":["model","x"]}"#,
+            r#"{"payload":{"model":3,"info":null}}"#,
+            r#"{"payload":{"model":"a","model":"b"}}"#,
+        ] {
+            let value: Value = serde_json::from_str(line).unwrap();
+            let typed = typed_or_value(line, CodexRecord::from_value).unwrap();
+            let expected = CodexRecord::from_value(&value);
+            let view = |record: &CodexRecord| {
+                (
+                    record.timestamp.as_str().map(str::to_owned),
+                    record.payload.0.as_ref().map(|payload| {
+                        (
+                            payload.model.as_str().map(str::to_owned),
+                            payload.info.clone(),
+                        )
+                    }),
+                )
+            };
+            assert_eq!(view(&typed), view(&expected), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_directory_walk_stops_at_its_entry_budget_and_says_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..5 {
+            fs::write(dir.path().join(format!("{i}.jsonl")), "").expect("write");
+        }
+        let mut budget = Budget {
+            remaining: 3,
+            exhausted: false,
+        };
+        let mut found = TranscriptCandidates::default();
+        collect_jsonl(
+            dir.path(),
+            0,
+            0,
+            time::OffsetDateTime::UNIX_EPOCH,
+            &mut budget,
+            &mut found,
+        );
+        assert!(budget.exhausted);
+        assert_eq!(found.newest.len(), 3);
     }
 
     #[test]

@@ -226,12 +226,12 @@ export function AppShell() {
    * strip that keeps offering the terminals of a worktree the window has
    * walked away from is one click from typing into the wrong branch.
    */
-  function openSessions() {
-    return orderedOpenSessions(
+  const openSessions = createMemo(() =>
+    orderedOpenSessions(
       sessionsInWorkspace(forgeStore.sessions, currentWorkspace()),
       currentTabOrder(),
-    );
-  }
+    ),
+  );
 
   /** The stored order of this checkout's tabs; the strip drags against it. */
   function currentTabOrder(): string[] {

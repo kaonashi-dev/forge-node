@@ -10,8 +10,8 @@ use tokio::net::{UnixListener, UnixStream};
 
 use domain::ClientId;
 use protocol::{
-    decode_payload, encode_frame, ClientMessage, DaemonMessage, Hello, HelloAck, HelloReject,
-    Request, MAX_FRAME_SIZE, PROTOCOL_VERSION,
+    decode_payload, encode_frame, ClientKind, ClientMessage, DaemonMessage, Hello, HelloAck,
+    HelloReject, Request, MAX_FRAME_SIZE, PROTOCOL_VERSION,
 };
 
 use crate::core::Daemon;
@@ -116,8 +116,20 @@ async fn read_frame(reader: &mut (impl AsyncReadExt + Unpin)) -> std::io::Result
     Ok(Some(payload))
 }
 
+/// macOS gives a Unix socket an 8 KiB send buffer, so a whole-grid delta left
+/// in about 25 writes, each a wakeup on both ends. The per-client queue stays
+/// the bound; this only lets a frame go out in one write.
+const SEND_BUFFER_BYTES: usize = 1024 * 1024;
+
 /// Handle a single client connection: handshake, then request/event pumping.
 async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::Result<()> {
+    if let Err(error) = nix::sys::socket::setsockopt(
+        &stream,
+        nix::sys::socket::sockopt::SndBuf,
+        &SEND_BUFFER_BYTES,
+    ) {
+        tracing::debug!(%error, "kept the default socket send buffer");
+    }
     let (mut read_half, mut write_half) = stream.into_split();
 
     let Some(first) = read_frame(&mut read_half).await? else {
@@ -176,7 +188,9 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
             if write_message(&mut write_half, &msg).await.is_err() {
                 break;
             }
-            if writer_daemon.registry().needs_resync(client_id) {
+            if rx.len() <= crate::registry::DELTA_LOW_WATER
+                && writer_daemon.registry().needs_resync(client_id)
+            {
                 let daemon = Arc::clone(&writer_daemon);
                 if tokio::task::spawn_blocking(move || daemon.recover_client(client_id))
                     .await
@@ -189,7 +203,7 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     });
 
     // ---- Read loop: decode requests, dispatch, reply ----
-    let result = read_loop(&daemon, client_id, &mut read_half).await;
+    let result = read_loop(&daemon, client_id, client_kind, &mut read_half).await;
 
     // Dropping the channel ends the writer on disconnect.
     daemon.registry().unregister(client_id);
@@ -206,6 +220,7 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
 async fn read_loop(
     daemon: &Arc<Daemon>,
     client_id: ClientId,
+    client_kind: ClientKind,
     read_half: &mut (impl AsyncReadExt + Unpin),
 ) -> std::io::Result<()> {
     let mut in_flight = tokio::task::JoinSet::new();
@@ -282,7 +297,7 @@ async fn read_loop(
                     *watch = next;
                     Ok(protocol::Response::Ack)
                 } else {
-                    dispatch.handle_request(body)
+                    dispatch.handle_request_from(client_kind, body)
                 }
             })
             .await

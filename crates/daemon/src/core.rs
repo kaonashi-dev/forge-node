@@ -27,7 +27,7 @@ use domain::{
 };
 use persistence::Db;
 use protocol::{
-    DaemonEvent, DaemonStats, ErrorCode, NoticeLevel, ProtocolError, ProviderInfo,
+    ClientKind, DaemonEvent, DaemonStats, ErrorCode, NoticeLevel, ProtocolError, ProviderInfo,
     RemoveProjectPolicy, Request, Response, SendContextSpawn, SessionsByState, Signal,
 };
 use terminal_core::{AlacrittyEngine, DeltaBuilder, PtyBackend, TerminalEngine};
@@ -44,6 +44,12 @@ const GIT_STATUS_THROTTLE: Duration = Duration::from_secs(2);
 
 /// Caps one `FetchScrollback` so a wire `u32` cannot materialise the grid.
 const MAX_SCROLLBACK_FETCH: u32 = 4_096;
+
+/// Caps the cells behind one `FetchScrollback`: 4 096 rows of a wide terminal
+/// would not fit in one frame, and the encoder failing on it drops the
+/// connection after the conversion already ran under the core lock. Fewer rows
+/// than asked is an answer the client already handles.
+const MAX_SCROLLBACK_FETCH_CELLS: u32 = 512 * 1024;
 
 /// Caps notices queued before the first client connects.
 const MAX_PENDING_NOTICES: usize = 64;
@@ -144,6 +150,9 @@ pub struct Daemon {
     pending_notices: Mutex<Vec<DaemonEvent>>,
     /// Own lock: transcript scan is filesystem IO and must not sit on the core lock.
     external_agents: Mutex<crate::external_agents::Cache>,
+    /// Set by an agent exit and spent by the next snapshot, so the PTY thread
+    /// never queues behind a transcript scan holding `external_agents`.
+    external_agents_stale: AtomicBool,
     /// Own lock: `gh` must not serialize PTY work.
     pull_requests: Mutex<crate::pull_requests::Cache>,
     /// Own lock: a month of JSONL must not sit in front of a keystroke.
@@ -163,6 +172,8 @@ pub struct Daemon {
     editor_conflicts: Mutex<HashMap<SessionId, EditorConflict>>,
     // Acquire before inner, never from inside it; serializes editor disk work with moves.
     editor_file_operations: Mutex<()>,
+    // Acquire before inner, never from inside it: one login-shell capture at a time.
+    env_capture: Mutex<()>,
     pub instance_id: String,
     pub version: String,
     pub started_at: Timestamp,
@@ -207,7 +218,7 @@ impl Daemon {
             // the core lock, and its first sweep would read no detections.
             let d = daemon.clone();
             std::thread::spawn(move || {
-                d.warm_env();
+                d.ensure_env();
                 let results = d.detect_agents();
                 d.registry
                     .broadcast_domain(DaemonEvent::AgentDetectionChanged { results });
@@ -375,6 +386,7 @@ impl Daemon {
             worktrees_root,
             pending_notices: Mutex::new(Vec::new()),
             external_agents: Mutex::new(crate::external_agents::Cache::default()),
+            external_agents_stale: AtomicBool::new(false),
             pull_requests: Mutex::new(crate::pull_requests::Cache::default()),
             usage_stats: Mutex::new(crate::usage_stats::Cache::default()),
             file_index: crate::file_index::Cache::default(),
@@ -387,6 +399,7 @@ impl Daemon {
             editor_requests: std::sync::atomic::AtomicU64::new(2_000),
             editor_conflicts: Mutex::new(HashMap::new()),
             editor_file_operations: Mutex::new(()),
+            env_capture: Mutex::new(()),
             attention_assets,
             bound_socket: Mutex::new(None),
         }))
@@ -680,6 +693,7 @@ impl Daemon {
                 crate::orchestration::forget_workspace(&mut inner, *workspace_id);
                 // One owner, one deletion path: the throttle table follows the row.
                 inner.status_checks.remove(workspace_id);
+                self.file_index.forget(*workspace_id);
                 if managed && !explicitly_ignored {
                     keep_notices.push(format!(
                         "worktree {workspace_id} created by Forge was removed outside the app"
@@ -728,11 +742,22 @@ impl Daemon {
     // --- Request dispatch ---
 
     pub fn handle_request(self: &Arc<Self>, request: Request) -> Result<Response, ProtocolError> {
+        self.handle_request_from(ClientKind::Gui, request)
+    }
+
+    /// [`Daemon::handle_request`] for a connection of a known kind. A CLI
+    /// snapshot leaves out discovered agent history: no CLI command reads it,
+    /// and gathering it is a transcript scan once the cache has expired.
+    pub fn handle_request_from(
+        self: &Arc<Self>,
+        client_kind: ClientKind,
+        request: Request,
+    ) -> Result<Response, ProtocolError> {
         if self.resetting.load(Ordering::SeqCst) && !matches!(&request, Request::FactoryReset) {
             return Err(ProtocolError::conflict("factory reset is in progress"));
         }
         match request {
-            Request::GetSnapshot => Ok(self.snapshot()),
+            Request::GetSnapshot => Ok(self.snapshot(client_kind != ClientKind::Cli)),
             Request::StopDaemon { kill_sessions } => self.stop_daemon(kill_sessions),
             Request::FactoryReset => self.factory_reset(),
             Request::GetAppState { key } => self.get_app_state(&key),
@@ -1193,7 +1218,7 @@ impl Daemon {
 
     // --- Global ---
 
-    fn snapshot(&self) -> Response {
+    fn snapshot(&self, with_history: bool) -> Response {
         let (
             project_groups,
             projects,
@@ -1233,11 +1258,18 @@ impl Daemon {
             )
         };
         // Filesystem IO: after the core lock, through the TTL cache.
-        let external_agents = self
-            .external_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .discover(&projects, &workspaces, &agent_profiles);
+        let external_agents = if with_history {
+            let mut cache = self
+                .external_agents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.external_agents_stale.swap(false, Ordering::AcqRel) {
+                cache.invalidate();
+            }
+            cache.discover(&projects, &workspaces, &agent_profiles)
+        } else {
+            Vec::new()
+        };
         // Clone-only: no git/`gh` on this path.
         let pull_requests = self
             .pull_requests
@@ -1764,6 +1796,7 @@ impl Daemon {
         for id in &ws_ids {
             inner.workspaces.remove(id);
             inner.status_checks.remove(id);
+            self.file_index.forget(*id);
         }
         inner.projects.remove(&project_id);
         // The rows cascade in SQLite; the cache is not a table.
@@ -2068,6 +2101,7 @@ impl Daemon {
                 let _guard = PrRefreshingGuard {
                     daemon: Arc::clone(&daemon),
                 };
+                daemon.ensure_env();
                 let (projects, path_entries): (Vec<crate::pull_requests::ProjectSource>, _) = {
                     let mut inner = daemon.lock();
                     let projects = inner
@@ -2953,6 +2987,7 @@ impl Daemon {
         commit: Option<domain::CommitPlan>,
     ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
+        self.ensure_env();
         let path_entries = {
             let mut inner = self.lock();
             if !inner.pr_opening.insert(workspace_id) {
@@ -3804,6 +3839,7 @@ impl Daemon {
         crate::orchestration::forget_workspace(&mut inner, workspace_id);
         // One owner, one deletion path.
         inner.status_checks.remove(&workspace_id);
+        self.file_index.forget(workspace_id);
 
         // Row and tombstone fall together: without the rule the next rescan
         // adopts the worktree right back, since neither its directory nor its
@@ -3950,6 +3986,7 @@ impl Daemon {
         read_only: bool,
         options: domain::AgentLaunchOptions,
     ) -> Result<Response, ProtocolError> {
+        self.ensure_env();
         if let Some(provider) = &provider_id {
             let descriptor = self
                 .lock()
@@ -4080,6 +4117,7 @@ impl Daemon {
         read_only: bool,
         autosave: bool,
     ) -> Result<Response, ProtocolError> {
+        self.ensure_env();
         let _span = tracing::info_span!("editor.create", %workspace_id, path = %relative).entered();
         let _operation = self.editor_file_operation();
 
@@ -5010,6 +5048,7 @@ impl Daemon {
     }
 
     fn restart_session(self: &Arc<Self>, session_id: SessionId) -> Result<Response, ProtocolError> {
+        self.ensure_env();
         let (provider_id, profile_id, kind) = {
             let inner = self.lock();
             let session = inner
@@ -5619,6 +5658,7 @@ impl Daemon {
             .terminals
             .get(&terminal_id)
             .ok_or_else(|| ProtocolError::not_found("terminal"))?;
+        let count = count.min(MAX_SCROLLBACK_FETCH_CELLS / u32::from(rt.size.cols.max(1)));
         let len = rt.engine.scrollback_len() as i64;
         let start = from_line
             .checked_sub(len)
@@ -5709,6 +5749,7 @@ impl Daemon {
         let mut reply = None;
         let bell;
         let mut session_update = None;
+        let mut title_write = None;
         let clipboard;
 
         {
@@ -5755,11 +5796,11 @@ impl Daemon {
                 // Empty OSC 2 is a reset, stored as `None` so resolve falls back.
                 // `is_some()` on the raw string pinned a stale title; `Some("")`
                 // would pin an empty one and blank the rail row.
-                let title = SessionTitle::from_osc(rt.engine.title());
-                let title_changed = title != rt.last_title;
-                if title_changed {
-                    rt.last_title = title.clone();
-                }
+                let title = SessionTitle::osc_str(rt.engine.title());
+                let new_title = (title != rt.last_title.as_deref()).then(|| {
+                    rt.last_title = title.map(str::to_owned);
+                    rt.last_title.clone()
+                });
                 let session_id = rt.session_id;
                 let delta_event = DaemonEvent::TerminalDelta { terminal_id, delta };
 
@@ -5777,13 +5818,14 @@ impl Daemon {
                         });
                 }
 
-                if title_changed {
+                if let Some(title) = new_title {
                     if let Some(session) = inner.sessions.get_mut(&session_id) {
-                        session.title.terminal = title;
-                        let snap = session.clone();
-                        // Known lock/I/O debt: title persistence shares Inner's SQLite connection.
-                        let _ = inner.db.sessions().upsert(&snap);
-                        session_update = Some(snap);
+                        session.title.terminal = title.clone();
+                        session_update = Some(session.clone());
+                        // Rows are purged at the next start unless history persists.
+                        if self.config.sessions.persist_history {
+                            title_write = Some((session_id, title));
+                        }
                     }
                 }
             }
@@ -5804,6 +5846,14 @@ impl Daemon {
 
         if let Some((writer, replies)) = reply {
             let _ = crate::terminal::write_pty(&writer, &replies);
+        }
+        if let Some((session_id, title)) = title_write {
+            if let Err(error) = self
+                .context_writer
+                .set_terminal_title(session_id, title.as_deref())
+            {
+                tracing::debug!(%error, "terminal title not persisted");
+            }
         }
         if bell {
             self.registry
@@ -5885,10 +5935,7 @@ impl Daemon {
             crate::orchestration::note_session_exit(self, session.id);
             // Transcript just finished: invalidate so History does not wait the TTL.
             if session.kind == SessionKind::Agent {
-                self.external_agents
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .invalidate();
+                self.external_agents_stale.store(true, Ordering::Release);
             }
             self.registry
                 .broadcast_domain(DaemonEvent::SessionUpdated(session));
@@ -6301,6 +6348,7 @@ impl Daemon {
 
     /// Core lock released: probes are subprocesses and can take seconds.
     fn detect_agents(&self) -> Vec<DetectionResult> {
+        self.ensure_env();
         let _span = tracing::info_span!("agent.detect").entered();
         let (descriptors, overrides, env) = {
             let mut inner = self.lock();
@@ -6344,6 +6392,7 @@ impl Daemon {
     /// are few and the sweep is every five minutes, so the extra calls are
     /// bounded by what the user configured.
     fn collect_usage(&self) -> Vec<domain::ProviderUsage> {
+        self.ensure_env();
         let (sources, env) = {
             let mut inner = self.lock();
             let env = self.resolved_env(&mut inner);
@@ -6402,6 +6451,7 @@ impl Daemon {
 
     /// Synchronous read behind [`crate::usage_stats::Cache`]. Core lock released.
     fn usage_analytics(&self, window_days: u16) -> domain::UsageAnalytics {
+        self.ensure_env();
         let window_days = match window_days {
             0 => agents::usage::analytics::DEFAULT_WINDOW_DAYS,
             days => days.min(agents::usage::analytics::MAX_WINDOW_DAYS),
@@ -6602,6 +6652,7 @@ impl Daemon {
         &self,
         provider_id: &AgentProviderId,
     ) -> Result<DetectionResult, ProtocolError> {
+        self.ensure_env();
         let (descriptor, over, env) = {
             let mut inner = self.lock();
             let descriptor = inner
@@ -6666,6 +6717,7 @@ impl Daemon {
 
     /// Validate here so a broken profile never looks saved.
     fn save_agent_profile(&self, profile: AgentProfile) -> Result<Response, ProtocolError> {
+        self.ensure_env();
         let descriptor = self
             .lock()
             .agents
@@ -6872,11 +6924,28 @@ impl Daemon {
 
     /// Resolve the shell environment once, off the core lock, so the first
     /// `resolved_env` does not run the capture while holding it.
-    fn warm_env(&self) {
-        let mut env = self.lock().env.clone();
-        if env.is_resolved() {
+    /// Capture the login-shell environment off the core lock, unless it is
+    /// already resolved.
+    ///
+    /// Every path into [`Daemon::resolved_env`] calls this first, so the lazy
+    /// capture behind `&mut Inner` is only a fallback. `env_capture` makes a
+    /// request that arrives during the startup capture wait for it rather than
+    /// start a second shell, or a first one under the lock.
+    fn ensure_env(&self) {
+        if self.lock().env.is_resolved() {
             return;
         }
+        let _capture = self
+            .env_capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut env = {
+            let inner = self.lock();
+            if inner.env.is_resolved() {
+                return;
+            }
+            inner.env.clone()
+        };
         env.get();
         let mut inner = self.lock();
         if !inner.env.is_resolved() {
@@ -6886,6 +6955,10 @@ impl Daemon {
 
     /// Re-capture the shell environment off the core lock.
     fn refresh_env(&self) {
+        let _capture = self
+            .env_capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut env = self.lock().env.clone();
         env.refresh();
         self.lock().env = env;
@@ -9821,7 +9894,7 @@ mod tests {
         assert!(daemon.inner.is_poisoned());
 
         // Every later request used to panic here too, for every client.
-        let Response::Snapshot { sessions, .. } = daemon.snapshot() else {
+        let Response::Snapshot { sessions, .. } = daemon.snapshot(true) else {
             panic!("expected a snapshot");
         };
         assert!(sessions.is_empty());
@@ -10352,7 +10425,7 @@ mod tests {
             project_groups,
             projects,
             ..
-        } = daemon.snapshot()
+        } = daemon.snapshot(true)
         else {
             panic!("expected snapshot");
         };
@@ -11045,7 +11118,7 @@ mod tests {
             agent_profiles,
             app_state,
             ..
-        } = daemon.snapshot()
+        } = daemon.snapshot(true)
         else {
             panic!("expected snapshot");
         };

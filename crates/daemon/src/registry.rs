@@ -1,9 +1,10 @@
 //! Connected-client registry and event routing.
 //!
 //! Domain events broadcast to every client; terminal deltas go only to
-//! subscribers. The outbound queue is bounded (256): when it fills the client
-//! is marked behind for that terminal and, once drained, gets one fresh
-//! `TerminalResync` instead of a backlog — the PTY loop never blocks.
+//! subscribers. The outbound queue is bounded (256); once it holds
+//! [`DELTA_HIGH_WATER`] messages the client is marked behind for that terminal
+//! and, once drained to [`DELTA_LOW_WATER`], gets one fresh `TerminalResync`
+//! instead of a backlog — the PTY loop never blocks.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
@@ -12,6 +13,16 @@ use domain::{ClientId, SessionId, TerminalId};
 use protocol::{ClientKind, DaemonEvent, DaemonMessage};
 
 pub const CLIENT_QUEUE_CAPACITY: usize = 256;
+
+/// Queued messages at which a subscriber stops getting deltas and is marked
+/// behind, well short of the capacity: a whole-grid delta pins ~400 KB, so a
+/// full queue of them held ~100 MB a client then decoded only to be resynced,
+/// and terminal output could leave no slot for a response.
+pub const DELTA_HIGH_WATER: usize = 64;
+
+/// A client marked behind gets its resync once its queue has drained to this,
+/// so recovery does not flap at the high-water mark.
+pub const DELTA_LOW_WATER: usize = 8;
 
 /// One connected client's outbound channel and subscription state.
 struct ClientHandle {
@@ -182,18 +193,20 @@ impl ClientRegistry {
                 continue;
             }
             if c.behind.contains(&terminal_id) {
-                if c.tx.is_full() {
+                if c.tx.len() > DELTA_LOW_WATER {
                     continue;
                 }
-                // Try to recover: only send a fresh snapshot once the queue has room.
+                // Try to recover: only send a fresh snapshot once the queue has drained.
                 let ev = resync_event.get_or_insert_with(&mut resync);
                 if c.tx.try_send(DaemonMessage::Event(ev.clone())).is_ok() {
                     c.behind.remove(&terminal_id);
                 }
                 continue;
             }
-            if c.tx.try_send(DaemonMessage::Event(delta.clone())).is_err() {
-                // Queue full: drop the backlog conceptually and mark for resync.
+            if c.tx.len() >= DELTA_HIGH_WATER
+                || c.tx.try_send(DaemonMessage::Event(delta.clone())).is_err()
+            {
+                // Lagging: drop the backlog conceptually and mark for resync.
                 c.behind.insert(terminal_id);
             }
         }
@@ -218,7 +231,7 @@ impl ClientRegistry {
         };
         let terminals: Vec<_> = client.behind.iter().copied().collect();
         for terminal in terminals {
-            if client.tx.is_full() {
+            if client.tx.len() > DELTA_LOW_WATER {
                 break;
             }
             let event = client

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { LatencyProbe, LATENCY_SAMPLES, PaintProbe } from "./latency";
+import {
+  LatencyProbe,
+  LATENCY_SAMPLES,
+  MAX_OUTSTANDING,
+  PaintProbe,
+  RollingWindow,
+} from "./latency";
 
 describe("LatencyProbe", () => {
   it("has nothing to report before the first echo", () => {
@@ -51,11 +57,42 @@ describe("LatencyProbe", () => {
     expect(stats?.p99).toBe(99);
   });
 
+  // The cells editor never echoes, so nothing settles what it sends.
+  it("keeps a bounded number of keys waiting for an echo", () => {
+    const probe = new LatencyProbe();
+    const first = probe.send(0);
+    for (let index = 0; index < MAX_OUTSTANDING; index += 1) probe.send(0);
+    probe.settle(first, 10);
+    expect(probe.p95()).toBeNull();
+    const kept = probe.send(0);
+    probe.settle(kept, 10);
+    expect(probe.p95()).toBe(10);
+  });
+
   it("forgets everything on reset", () => {
     const probe = new LatencyProbe();
     probe.settle(probe.send(0), 10);
     probe.reset();
     expect(probe.p95()).toBeNull();
+  });
+});
+
+describe("RollingWindow", () => {
+  it("reads the same percentiles as sorting the last samples", () => {
+    const window = new RollingWindow(16);
+    const seen: number[] = [];
+    let seed = 7;
+    for (let index = 0; index < 200; index += 1) {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      const value = seed % 50;
+      window.push(value);
+      seen.push(value);
+      const last = seen.slice(-16).sort((a, b) => a - b);
+      for (const fraction of [0.5, 0.95, 0.99]) {
+        const at = Math.min(Math.max(Math.ceil(last.length * fraction) - 1, 0), last.length - 1);
+        expect(window.at(fraction)).toBe(last[at]);
+      }
+    }
   });
 });
 

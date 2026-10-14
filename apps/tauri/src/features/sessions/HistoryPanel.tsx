@@ -22,6 +22,11 @@ const SCOPES: ReadonlyArray<{ value: Scope }> = [
   { value: "everywhere" },
 ];
 
+/** ISO-8601 stamps of one format order as strings; a locale collation is not needed. */
+function newestFirst(a: string, b: string): number {
+  return a < b ? 1 : a > b ? -1 : 0;
+}
+
 export function HistoryPanel() {
   const [scope, setScope] = createSignal<Scope>("checkout");
   const [query, setQuery] = createSignal("");
@@ -29,27 +34,28 @@ export function HistoryPanel() {
   const workspace = () =>
     forgeStore.workspaces.find((item) => item.id === activeWorkspace()) ?? null;
 
+  /* Sorted and lowered when the store changes, so a filter keystroke only
+     filters. Most recent first: history is read from the top. */
+  const indexed = createMemo(() =>
+    forgeStore.external_agents
+      .map((session) => ({
+        session,
+        haystack: `${session.title} ${session.branch ?? ""} ${session.provider}`.toLowerCase(),
+      }))
+      .sort((a, b) => newestFirst(a.session.last_activity, b.session.last_activity)),
+  );
+
   const sessions = createMemo(() => {
     const needle = query().trim().toLowerCase();
     const current = workspace();
-    return (
-      forgeStore.external_agents
-        .filter((session) => {
-          if (scope() === "checkout") return session.workspace_id === current?.id;
-          if (scope() === "project") return session.project_id === current?.project_id;
-          return true;
-        })
-        .filter((session) =>
-          needle === ""
-            ? true
-            : `${session.title} ${session.branch ?? ""} ${session.provider}`
-                .toLowerCase()
-                .includes(needle),
-        )
-        // Most recent first: history is read from the top.
-        .slice()
-        .sort((a, b) => b.last_activity.localeCompare(a.last_activity))
-    );
+    const within = scope();
+    return indexed()
+      .filter(({ session, haystack }) => {
+        if (within === "checkout" && session.workspace_id !== current?.id) return false;
+        if (within === "project" && session.project_id !== current?.project_id) return false;
+        return needle === "" || haystack.includes(needle);
+      })
+      .map(({ session }) => session);
   });
 
   /** The profile that recorded a run, when it still exists. */

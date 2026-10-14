@@ -92,8 +92,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 13,
-        "thirteen migrations applied => user_version == 13"
+        version, 14,
+        "fourteen migrations applied => user_version == 14"
     );
 
     for table in [
@@ -153,7 +153,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -456,6 +456,22 @@ fn profiles_are_listed_by_provider_then_name() {
             ("codex".to_owned(), "Work".to_owned()),
         ]
     );
+}
+
+#[test]
+fn a_terminal_title_write_updates_a_row_and_never_recreates_one() {
+    let (db, _project_id, workspace_id) = db_with_workspace();
+    let writer = db.context_writer().unwrap();
+    let session = mk_session(workspace_id, SessionState::Running);
+    db.sessions().upsert(&session).unwrap();
+
+    writer.set_terminal_title(session.id, Some("vim")).unwrap();
+    let back = db.sessions().get(session.id).unwrap().unwrap();
+    assert_eq!(back.title.terminal.as_deref(), Some("vim"));
+
+    db.sessions().delete(session.id).unwrap();
+    writer.set_terminal_title(session.id, Some("late")).unwrap();
+    assert!(db.sessions().get(session.id).unwrap().is_none());
 }
 
 #[test]
@@ -1015,7 +1031,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 13, "run envelope history is migration 13");
+    assert_eq!(version, 14, "foreign-key indexes are migration 14");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1165,7 +1181,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 13, "reset retains the migrated schema");
+    assert_eq!(version, 14, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------

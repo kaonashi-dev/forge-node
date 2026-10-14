@@ -1,4 +1,7 @@
+import { createRoot } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { describe, expect, it } from "vitest";
+import type { EditorRow } from "../../../contracts/terminal";
 
 /*
  * Read at transform time, like `editorPane.test.ts` does for the cell pane:
@@ -86,6 +89,42 @@ describe("the DOM editor surface", () => {
     expect(view()).toContain("onCompositionEnd");
     expect(view()).toContain("textInput");
     expect(view()).not.toContain("sendEditorKey");
+  });
+
+  /* Every frame is fresh JSON, so rows matched by identity would rebuild the
+     whole window on each keystroke. */
+  it("reconciles rows by line so a resent line keeps its node", () => {
+    expect(view()).toContain('reconcile(payload.frame.rows, { key: "line" })');
+    expect(view()).toContain("<For each={rows}>");
+  });
+
+  /* Line 0 is a falsy key, which takes reconcile's keyed-map path rather than
+     its common-prefix one; it must still be matched. */
+  it("keeps line 0 and updates what changed in place", () => {
+    const line = (at: number, text: string, mark: EditorRow["mark"] = null): EditorRow => ({
+      line: at,
+      truncated: false,
+      spans: [{ text, scope: "Plain" }],
+      mark,
+      diagnostic: null,
+      fold: null,
+    });
+    createRoot((dispose) => {
+      const [rows, setRows] = createStore<EditorRow[]>([]);
+      setRows(reconcile([line(0, "fn a"), line(1, "x")], { key: "line" }));
+      const [first, second] = [rows[0], rows[1]];
+      setRows(
+        reconcile([line(0, "fn a"), line(1, "xy", "Modified"), line(2, "z")], { key: "line" }),
+      );
+      expect(rows[0]).toBe(first);
+      expect(rows[1]).toBe(second);
+      expect(rows[1].spans[0].text).toBe("xy");
+      expect(rows[1].mark).toBe("Modified");
+      setRows(reconcile([line(1, "xy"), line(2, "z")], { key: "line" }));
+      expect(rows[0]).toBe(second);
+      expect(rows[0].mark).toBeNull();
+      dispose();
+    });
   });
 
   /* A coalesced burst can put two frames on the socket out of the order they

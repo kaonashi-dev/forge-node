@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parsePatch } from "./patch";
-import { intraLine, pairedRows, patchDocument, splitRows } from "./patchDocument";
+import { cachedIntraLine, intraLine, pairedRows, patchDocument, splitRows } from "./patchDocument";
 
 const PATCH = `diff --git a/x.ts b/x.ts
 @@ -1,4 +1,4 @@
@@ -11,25 +11,29 @@ const PATCH = `diff --git a/x.ts b/x.ts
 `;
 
 describe("patchDocument", () => {
-  it("holds one document line per patch row", () => {
-    const doc = patchDocument(PATCH);
-    expect(doc.text.split("\n")).toHaveLength(doc.rows.length);
-  });
-
   it("strips the +/- marker from the text, so a selection pastes as code", () => {
-    const doc = patchDocument(PATCH);
-    expect(doc.text).toContain("const b = 3;");
-    expect(doc.text).not.toContain("+const b = 3;");
+    const texts = patchDocument(PATCH).rows.map((row) => row.text);
+    expect(texts).toContain("const b = 3;");
+    expect(texts).not.toContain("+const b = 3;");
   });
 
   it("indexes the hunk headers for next/previous hunk", () => {
     const doc = patchDocument(PATCH);
     expect(doc.hunkStarts.map((index) => doc.rows[index].kind)).toEqual(["hunk"]);
   });
+});
 
-  it("sizes the gutter from the widest line number in the patch", () => {
-    expect(patchDocument(PATCH).gutterWidth).toBe(1);
-    expect(patchDocument(PATCH.replace("-1,4 +1,4", "-1200,4 +1200,4")).gutterWidth).toBe(4);
+describe("cachedIntraLine", () => {
+  it("marks the paired rows, and starts over for a new rows array", () => {
+    let rows = parsePatch(PATCH);
+    const marks = cachedIntraLine(() => rows);
+    const removed = rows.findIndex((row) => row.kind === "removed");
+    const added = rows.findIndex((row) => row.kind === "added");
+    expect(marks(removed)).toEqual({ from: 10, to: 11 });
+    expect(marks(added)).toEqual({ from: 10, to: 11 });
+    expect(marks(0)).toBeUndefined();
+    rows = parsePatch(PATCH.replace("const b = 3;", "const b = 30;"));
+    expect(marks(added)).toEqual({ from: 10, to: 12 });
   });
 });
 

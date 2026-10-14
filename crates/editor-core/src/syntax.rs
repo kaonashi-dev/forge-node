@@ -11,6 +11,8 @@
 
 use std::collections::HashSet;
 
+use crate::text::Text;
+
 /// What a span of text is. Mirrors the GUI's scope list so one theme covers
 /// both surfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,7 +144,7 @@ impl Syntax {
     #[must_use]
     pub fn edited(
         mut self,
-        text: &str,
+        text: &Text,
         grammar: Grammar,
         first_line: usize,
         last_line: usize,
@@ -153,15 +155,13 @@ impl Syntax {
         }
         // Nothing to resume from: the previous scan is not this document's.
         if self.safe.is_empty() {
-            return Self::parse(text, grammar);
+            return Self::parse(text.as_str(), grammar);
         }
         let from = (0..=first_line.min(self.safe.len().saturating_sub(1)))
             .rev()
             .find(|line| self.safe[*line])
             .unwrap_or(0);
-        // A byte walk for the restart offset, not a lex: finding a newline is
-        // memory bandwidth, and re-lexing the head is the thing being avoided.
-        let mut out = Scanner::new(&text[line_offset(text, from)..], from);
+        let mut out = Scanner::new(&text.as_str()[text.line_start(from)..], from);
         out.resume = Some(Resume {
             after_line: usize::try_from(last_line as isize + line_delta)
                 .map_or(first_line, |line| line.max(first_line)),
@@ -181,7 +181,7 @@ impl Syntax {
         };
         // A bad span must cost a rescan, not the editor process and its draft.
         if old_end < from || old_end > self.lines.len() || old_end > self.safe.len() {
-            return Self::parse(text, grammar);
+            return Self::parse(text.as_str(), grammar);
         }
         self.lines.splice(from..old_end, out.lines);
         self.safe.splice(from..old_end, out.safe);
@@ -214,26 +214,6 @@ impl Syntax {
     pub fn is_empty(&self) -> bool {
         self.lines.iter().all(Vec::is_empty)
     }
-}
-
-/// Byte offset of a 0-based line.
-///
-/// A byte walk and not a lex: a newline search is memory bandwidth, while
-/// re-colouring the head of the file is the cost this exists to avoid.
-fn line_offset(text: &str, line: usize) -> usize {
-    if line == 0 {
-        return 0;
-    }
-    let mut seen = 0;
-    for (index, byte) in text.as_bytes().iter().enumerate() {
-        if *byte == b'\n' {
-            seen += 1;
-            if seen == line {
-                return index + 1;
-            }
-        }
-    }
-    text.len()
 }
 
 /// Where an incremental scan may hand back to the spans it already has.
@@ -1717,6 +1697,26 @@ impl Scanner<'_> {
 mod tests {
     use super::*;
 
+    fn doc(body: &str) -> Text {
+        Text::new(body.to_string())
+    }
+
+    fn line_offset(text: &str, line: usize) -> usize {
+        if line == 0 {
+            return 0;
+        }
+        let mut seen = 0;
+        for (index, byte) in text.as_bytes().iter().enumerate() {
+            if *byte == b'\n' {
+                seen += 1;
+                if seen == line {
+                    return index + 1;
+                }
+            }
+        }
+        text.len()
+    }
+
     /// The text one span covers, so a test names what it sees.
     fn spans(text: &str, grammar: Grammar, line: usize) -> Vec<(&str, Scope)> {
         let syntax = Syntax::parse(text, grammar);
@@ -2092,7 +2092,7 @@ mod tests {
     fn a_css_edit_inside_a_rule_restarts_above_it() {
         let text = "a {}\n.b {\n  color: red;\n  margin: 0;\n}\nc {}\n";
         let edited = "a {}\n.b {\n  color: blue;\n  margin: 0;\n}\nc {}\n";
-        let next = Syntax::parse(text, Grammar::Css).edited(edited, Grammar::Css, 2, 2, 0);
+        let next = Syntax::parse(text, Grammar::Css).edited(&doc(edited), Grammar::Css, 2, 2, 0);
         assert!(
             next.scanned_lines().start <= 1,
             "resumed inside the rule: {:?}",
@@ -2184,7 +2184,7 @@ mod tests {
         // Line 300 gains a keyword; nothing above or below it changes shape.
         let at = line_offset(&text, 300);
         text.insert_str(at, "const Y: u8 = 1;\n");
-        let next = full.edited(&text, Grammar::Rust, 300, 300, 1);
+        let next = full.edited(&doc(&text), Grammar::Rust, 300, 300, 1);
         assert!(
             next.scanned_lines().start >= 299,
             "restarted at {:?}, not just above the edit",
@@ -2209,7 +2209,7 @@ mod tests {
         let text = "fn a() {}\n/* one\ntwo\nthree */\nfn b() {}\n";
         let full = Syntax::parse(text, Grammar::Rust);
         let edited = "fn a() {}\n/* one\ntwoX\nthree */\nfn b() {}\n";
-        let next = full.edited(edited, Grammar::Rust, 2, 2, 0);
+        let next = full.edited(&doc(edited), Grammar::Rust, 2, 2, 0);
         assert!(
             next.scanned_lines().start <= 1,
             "resumed inside the comment: {:?}",
@@ -2228,7 +2228,7 @@ mod tests {
         let text = "fn a() {}\nfn b() {}\nfn c() {}\n";
         let full = Syntax::parse(text, Grammar::Rust);
         let edited = "/* a() {}\nfn b() {}\nfn c() {}\n";
-        let next = full.edited(edited, Grammar::Rust, 0, 0, 0);
+        let next = full.edited(&doc(edited), Grammar::Rust, 0, 0, 0);
         assert_eq!(
             all_spans(&next, 3),
             all_spans(&Syntax::parse(edited, Grammar::Rust), 3)
@@ -2246,7 +2246,7 @@ mod tests {
         let from = line_offset(&edited, 10);
         let to = line_offset(&edited, 13);
         edited.replace_range(from..to, "");
-        let next = full.edited(&edited, Grammar::Rust, 10, 10, -3);
+        let next = full.edited(&doc(&edited), Grammar::Rust, 10, 10, -3);
         assert_eq!(
             all_spans(&next, 37),
             all_spans(&Syntax::parse(&edited, Grammar::Rust), 37)
@@ -2267,7 +2267,7 @@ mod tests {
         line_delta: isize,
     ) {
         let next = Syntax::parse(before, Grammar::Rust).edited(
-            after,
+            &doc(after),
             Grammar::Rust,
             first_line,
             last_line,
@@ -2329,7 +2329,7 @@ mod tests {
         let after = syntax.line(19_999).as_ptr();
         let at = line_offset(&text, 10_000);
         text.insert_str(at, "let inserted = 2;\n");
-        let syntax = syntax.edited(&text, Grammar::Rust, 10_000, 10_000, 1);
+        let syntax = syntax.edited(&doc(&text), Grammar::Rust, 10_000, 10_000, 1);
         assert_eq!(syntax.line(0).as_ptr(), before);
         assert_eq!(syntax.line(20_000).as_ptr(), after);
         // The insert's end sits on the first byte of the line it pushed down, so
@@ -2360,12 +2360,15 @@ mod tests {
     #[test]
     #[ignore = "manual release-mode timing"]
     fn incremental_syntax_timing() {
-        let mut text = "let value = 1;\n".repeat(20_000);
-        let mut syntax = Syntax::parse(&text, Grammar::Rust);
-        let at = line_offset(&text, 10_000) + "let value = ".len();
+        let mut text = doc(&"let value = 1;\n".repeat(20_000));
+        let mut syntax = Syntax::parse(text.as_str(), Grammar::Rust);
+        let at = text.line_start(10_000) + "let value = ".len();
         let start = std::time::Instant::now();
         for step in 0..1_000 {
-            text.replace_range(at..at + 1, if step % 2 == 0 { "2" } else { "1" });
+            text.replace(
+                crate::selection::Range::new(at, at + 1),
+                if step % 2 == 0 { "2" } else { "1" },
+            );
             syntax = syntax.edited(&text, Grammar::Rust, 10_000, 10_000, 0);
             std::hint::black_box(&syntax);
         }
@@ -2404,7 +2407,7 @@ mod tests {
         for (grammar, text) in cases {
             let full = Syntax::parse(text, grammar);
             for line in 0..text.lines().count() {
-                let next = Syntax::parse(text, grammar).edited(text, grammar, line, line, 0);
+                let next = Syntax::parse(text, grammar).edited(&doc(text), grammar, line, line, 0);
                 assert_eq!(
                     all_spans(&next, 8),
                     all_spans(&full, 8),

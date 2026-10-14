@@ -77,34 +77,14 @@ pub(super) fn jsonl(path: &Path, mut visit: impl FnMut(&Value)) -> bool {
     if start > 0 {
         let _ = reader.skip_until(b'\n');
     }
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        match reader
-            .by_ref()
-            .take(MAX_RECORD_BYTES + 1)
-            .read_until(b'\n', &mut line)
-        {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => {
-                truncated = true;
-                break;
-            }
-        }
-        if line.len() as u64 > MAX_RECORD_BYTES {
+    let unread = crate::jsonl::for_each(reader, MAX_RECORD_BYTES, |line| {
+        if let Ok(value) = serde_json::from_slice(line) {
+            visit(&value);
+        } else {
             truncated = true;
-            if line.last() != Some(&b'\n') {
-                let _ = reader.skip_until(b'\n');
-            }
-            continue;
         }
-        match serde_json::from_slice(&line) {
-            Ok(value) => visit(&value),
-            Err(_) => truncated = true,
-        }
-    }
-    truncated
+    });
+    truncated || unread.any()
 }
 
 pub(super) fn root_for<'a>(cwd: &str, roots: &'a [Root]) -> Option<&'a Root> {

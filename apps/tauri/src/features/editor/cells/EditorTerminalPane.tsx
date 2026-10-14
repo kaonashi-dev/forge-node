@@ -32,6 +32,7 @@ import { forgeStore } from "../../../state/forgeStore";
 import { metrics as tokens } from "../../../theme/tokens";
 import { measureCell, gridSize, type CellMetrics } from "../../../shared/cell-grid/metrics";
 import { readPalette } from "../../../shared/cell-grid/palette";
+import { watchPixelRatio } from "../../../shared/cell-grid/pixelRatio";
 import { TerminalRenderer } from "../../../shared/cell-grid/renderer";
 import { Viewport } from "../../../shared/cell-grid/viewport";
 import { clipboardPaste } from "../../../shared/input/clipboard";
@@ -262,6 +263,17 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     const unsubscribe = editorCellsChannel.subscribe(onFrame);
     const observer = new ResizeObserver(() => measurePane());
     observer.observe(host);
+    const stopRatio = watchPixelRatio(measurePane);
+    const themes = new MutationObserver(() => {
+      if (!renderer) return;
+      renderer.palette = readPalette();
+      repaintAll = true;
+      schedule();
+    });
+    themes.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "style"],
+    });
     // A drag that leaves the pane still belongs to it.
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
@@ -270,6 +282,8 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     onCleanup(() => {
       unsubscribe();
       observer.disconnect();
+      stopRatio();
+      themes.disconnect();
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       blink.dispose();

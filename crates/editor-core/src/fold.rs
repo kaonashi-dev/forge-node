@@ -44,10 +44,11 @@ pub fn regions(text: &Text) -> Vec<Region> {
     let mut last_content = 0_usize;
     for line in 0..count {
         let body = text.line(line);
-        if body.trim().is_empty() {
+        let content = body.trim_start();
+        if content.is_empty() {
             continue;
         }
-        let indent = display_column(body, body.len() - body.trim_start().len());
+        let indent = display_column(body, body.len() - content.len());
         while let Some(&(header, level)) = open.last() {
             if indent > level {
                 break;

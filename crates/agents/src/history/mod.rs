@@ -5,9 +5,10 @@
 //! rows, never an error. [`SCAN_LIMIT`] caps how many transcripts are read
 //! per directory so a year of history cannot slow `GetSnapshot`.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -15,9 +16,13 @@ use domain::{
     AgentProfile, AgentProfileId, ExternalAgentSession, ExternalTranscript, Project, ProjectId,
     Timestamp, TranscriptStore, Workspace, WorkspaceId,
 };
+use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::Deserialize;
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+
+use crate::jsonl::{self, Object, Text};
 
 mod bounded;
 mod codex;
@@ -396,13 +401,7 @@ struct Scan {
 /// being scanned (the slug is lossy, so distinct paths can collide onto one
 /// folder).
 fn parse_transcript(path: &Path, root: &Root) -> Option<ExternalAgentSession> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut scan = Scan::default();
-    // Streamed rather than slurped: a long-running session's transcript runs to
-    // megabytes, and only one line of it is ever live at a time.
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        fold_line(line.trim(), &mut scan);
-    }
+    let scan = scan_file(path)?;
 
     // Reject transcripts recorded in a different directory that merely slug to
     // the same folder. A transcript with no recorded cwd is kept (best effort).
@@ -442,6 +441,20 @@ fn parse_transcript(path: &Path, root: &Root) -> Option<ExternalAgentSession> {
     })
 }
 
+fn scan_file(path: &Path) -> Option<Scan> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut scan = Scan::default();
+    let unread = crate::jsonl::for_each(BufReader::new(file), bounded::MAX_RECORD_BYTES, |line| {
+        if let Ok(line) = std::str::from_utf8(line) {
+            fold_line(line.trim(), &mut scan);
+        }
+    });
+    if unread.any() {
+        tracing::debug!(path = %path.display(), ?unread, "transcript records left unread");
+    }
+    Some(scan)
+}
+
 /// Fold one raw transcript line into the running [`Scan`].
 ///
 /// Most of a transcript's bulk is records this scan reads nothing out of —
@@ -464,8 +477,8 @@ fn fold_line(line: &str, scan: &mut Scan) {
     if !is_interesting(line, scan) {
         return;
     }
-    if let Ok(value) = serde_json::from_str::<Value>(line) {
-        scan_record(&value, scan);
+    if let Some(fields) = Fields::of(line) {
+        scan_fields(fields, scan);
     }
 }
 
@@ -491,43 +504,298 @@ fn line_timestamp(line: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(&value[..end], &Rfc3339).ok()
 }
 
-/// Fold one parsed transcript record into the running [`Scan`].
-fn scan_record(value: &Value, scan: &mut Scan) {
-    if scan.cwd.is_none() {
-        if let Some(cwd) = value.get("cwd").and_then(Value::as_str) {
-            scan.cwd = Some(PathBuf::from(cwd));
-        }
-    }
-    if scan.branch.is_none() {
-        if let Some(branch) = value.get("gitBranch").and_then(Value::as_str) {
-            if !branch.is_empty() {
-                scan.branch = Some(branch.to_owned());
-            }
-        }
-    }
-    // The title evolves; keep the latest non-empty one.
-    if let Some(title) = value.get("aiTitle").and_then(Value::as_str) {
-        if !title.trim().is_empty() {
-            scan.ai_title = Some(title.to_owned());
+/// What [`scan_fields`] reads out of one record.
+#[derive(Debug, Default, PartialEq)]
+struct Fields<'a> {
+    kind: Option<Cow<'a, str>>,
+    cwd: Option<Cow<'a, str>>,
+    branch: Option<Cow<'a, str>>,
+    ai_title: Option<Cow<'a, str>>,
+    typed_prompt: bool,
+    model: Option<Cow<'a, str>>,
+    user_text: Option<String>,
+    assistant_text: Option<String>,
+}
+
+impl<'a> Fields<'a> {
+    /// Typed first, because a record's bulk is tool output and tool input the
+    /// scan never reads, and a typed parse skips it without allocating. A
+    /// record that parse refuses — a repeated key, a message that is not an
+    /// object — is read as a `Value` rather than lost.
+    fn of(line: &'a str) -> Option<Self> {
+        match serde_json::from_str::<Object<ClaudeRecord<'a>>>(line) {
+            Ok(Object(record)) => record.map(Self::from),
+            Err(_) => serde_json::from_str::<Value>(line)
+                .ok()
+                .map(|value| Self::from_value(&value)),
         }
     }
 
-    match value.get("type").and_then(Value::as_str) {
-        Some("user") if is_typed_prompt(value) => {
+    fn from_value(value: &Value) -> Self {
+        let text = |found: Option<&Value>| {
+            found
+                .and_then(Value::as_str)
+                .map(|text| Cow::Owned(text.to_owned()))
+        };
+        Self {
+            kind: text(value.get("type")),
+            cwd: text(value.get("cwd")),
+            branch: text(value.get("gitBranch")),
+            ai_title: text(value.get("aiTitle")),
+            typed_prompt: is_typed_prompt(value),
+            model: text(value.pointer("/message/model")),
+            user_text: user_text(value),
+            assistant_text: assistant_text(value),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ClaudeRecord<'a> {
+    #[serde(rename = "type", borrow, default)]
+    kind: Text<'a>,
+    #[serde(borrow, default)]
+    cwd: Text<'a>,
+    #[serde(rename = "gitBranch", borrow, default)]
+    branch: Text<'a>,
+    #[serde(rename = "aiTitle", borrow, default)]
+    ai_title: Text<'a>,
+    #[serde(rename = "toolUseResult", default, deserialize_with = "jsonl::exists")]
+    tool_use_result: bool,
+    #[serde(rename = "isMeta", default, deserialize_with = "jsonl::flag")]
+    is_meta: Option<bool>,
+    #[serde(borrow, default)]
+    message: Object<ClaudeMessage<'a>>,
+}
+
+#[derive(Deserialize)]
+struct ClaudeMessage<'a> {
+    #[serde(borrow, default)]
+    model: Text<'a>,
+    #[serde(borrow, default)]
+    content: Option<Content<'a>>,
+}
+
+impl<'a> From<ClaudeRecord<'a>> for Fields<'a> {
+    fn from(record: ClaudeRecord<'a>) -> Self {
+        let (model, content) = record
+            .message
+            .0
+            .map_or((None, None), |message| (message.model.0, message.content));
+        let content = content.unwrap_or_default();
+        let user_text = content
+            .whole
+            .as_deref()
+            .or(content.first_text.as_deref())
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && !text.starts_with('<'))
+            .map(str::to_owned);
+        let assistant_text = match content.whole.as_deref() {
+            Some(whole) => non_empty(whole),
+            None => content.last_reply,
+        };
+        Self {
+            kind: record.kind.0,
+            cwd: record.cwd.0,
+            branch: record.branch.0,
+            ai_title: record.ai_title.0,
+            typed_prompt: !record.tool_use_result && record.is_meta != Some(true),
+            model,
+            user_text,
+            assistant_text,
+        }
+    }
+}
+
+/// A message's content as [`user_text`] and [`assistant_text`] read it, kept
+/// in one pass that drops every block field but `type` and `text`.
+#[derive(Default)]
+struct Content<'a> {
+    /// The content, when it is a single string.
+    whole: Option<Cow<'a, str>>,
+    /// The first block whose `text` is a string, whatever its type.
+    first_text: Option<Cow<'a, str>>,
+    /// The non-empty text of the last `text` block.
+    last_reply: Option<String>,
+}
+
+impl<'de: 'a, 'a> Deserialize<'de> for Content<'a> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Blocks;
+
+        impl<'de> Visitor<'de> for Blocks {
+            type Value = Content<'de>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("message content")
+            }
+
+            fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E> {
+                Ok(Content {
+                    whole: Some(Cow::Borrowed(value)),
+                    ..Content::default()
+                })
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(Content {
+                    whole: Some(Cow::Owned(value.to_owned())),
+                    ..Content::default()
+                })
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(Content {
+                    whole: Some(Cow::Owned(value)),
+                    ..Content::default()
+                })
+            }
+
+            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(Content::default())
+            }
+
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(Content::default())
+            }
+
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(Content::default())
+            }
+
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(Content::default())
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(Content::default())
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(Content::default())
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut content = Content::default();
+                while let Some(block) = seq.next_element::<Block<'de>>()? {
+                    if block.kind.as_deref() == Some("text") {
+                        if let Some(reply) = block.text.as_deref().and_then(non_empty) {
+                            content.last_reply = Some(reply);
+                        }
+                    }
+                    if content.first_text.is_none() {
+                        content.first_text = block.text;
+                    }
+                }
+                Ok(content)
+            }
+        }
+
+        deserializer.deserialize_any(Blocks)
+    }
+}
+
+/// One content block's `type` and `text`, the way `Value::get` reads them: a
+/// repeated key keeps its last value, and anything but an object has neither.
+#[derive(Default)]
+struct Block<'a> {
+    kind: Option<Cow<'a, str>>,
+    text: Option<Cow<'a, str>>,
+}
+
+impl<'de: 'a, 'a> Deserialize<'de> for Block<'a> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Fields;
+
+        impl<'de> Visitor<'de> for Fields {
+            type Value = Block<'de>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a content block")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut block = Block::default();
+                while let Some(key) = map.next_key::<Text<'de>>()? {
+                    match key.as_str() {
+                        Some("type") => block.kind = map.next_value::<Text<'de>>()?.0,
+                        Some("text") => block.text = map.next_value::<Text<'de>>()?.0,
+                        _ => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(block)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(Block::default())
+            }
+
+            fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(Block::default())
+            }
+
+            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(Block::default())
+            }
+
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(Block::default())
+            }
+
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(Block::default())
+            }
+
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(Block::default())
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(Block::default())
+            }
+        }
+
+        deserializer.deserialize_any(Fields)
+    }
+}
+
+/// Fold one record's [`Fields`] into the running [`Scan`].
+fn scan_fields(fields: Fields, scan: &mut Scan) {
+    if scan.cwd.is_none() {
+        if let Some(cwd) = fields.cwd {
+            scan.cwd = Some(PathBuf::from(cwd.as_ref()));
+        }
+    }
+    if scan.branch.is_none() {
+        if let Some(branch) = fields.branch.filter(|branch| !branch.is_empty()) {
+            scan.branch = Some(branch.into_owned());
+        }
+    }
+    // The title evolves; keep the latest non-empty one.
+    if let Some(title) = fields.ai_title.filter(|title| !title.trim().is_empty()) {
+        scan.ai_title = Some(title.into_owned());
+    }
+
+    match fields.kind.as_deref() {
+        Some("user") if fields.typed_prompt => {
             scan.messages += 1;
             if scan.first_user.is_none() {
-                if let Some(text) = user_text(value) {
+                if let Some(text) = fields.user_text {
                     scan.first_user = Some(text);
                 }
             }
         }
         Some("assistant") => {
             scan.messages += 1;
-            if let Some(text) = assistant_text(value) {
+            if let Some(text) = fields.assistant_text {
                 scan.last_assistant = Some(text);
             }
-            if let Some(model) = value.pointer("/message/model").and_then(Value::as_str) {
-                scan.model = Some(model.to_owned());
+            if let Some(model) = fields.model {
+                scan.model = Some(model.into_owned());
             }
         }
         _ => {}
@@ -947,7 +1215,11 @@ pub fn read_transcript(
             incomplete = true;
             cursor::turns(&session.transcript_path, probe)
         }
-        (CLAUDE_PROVIDER, _) => claude_turns(&session.transcript_path, probe),
+        (CLAUDE_PROVIDER, _) => {
+            let read = claude_turns(&session.transcript_path, probe);
+            incomplete = read.truncated;
+            read.turns
+        }
         (OPENCODE_PROVIDER, TranscriptStore::SharedDatabase) => {
             opencode_db_turns(&session.transcript_path, &session.session_id, probe)
         }
@@ -991,40 +1263,46 @@ pub fn read_transcript(
 }
 
 /// The last `limit` turns of a Claude `.jsonl`, oldest first.
-fn claude_turns(path: &Path, limit: usize) -> Vec<Turn> {
+fn claude_turns(path: &Path, limit: usize) -> bounded::Conversation {
     let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
+        return bounded::Conversation::default();
     };
     let mut turns: VecDeque<Turn> = VecDeque::new();
     // Streamed and bounded to a sliding window: a long run's transcript is
     // megabytes, and only the tail is ever returned.
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    let unread = crate::jsonl::for_each(BufReader::new(file), bounded::MAX_RECORD_BYTES, |line| {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return;
+        };
         let line = line.trim();
         if line.is_empty() {
-            continue;
+            return;
         }
         let speaker = if line.contains(r#""type":"user""#) {
             USER_SPEAKER
         } else if line.contains(r#""type":"assistant""#) {
             AGENT_SPEAKER
         } else {
-            continue;
+            return;
         };
         let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
+            return;
         };
         let text = match speaker {
             USER_SPEAKER if is_typed_prompt(&value) => user_text(&value),
             AGENT_SPEAKER => assistant_text(&value),
             _ => None,
         };
-        let Some(text) = text else { continue };
+        let Some(text) = text else { return };
         turns.push_back(Turn { speaker, text });
         if turns.len() > limit {
             turns.pop_front();
         }
+    });
+    bounded::Conversation {
+        turns: turns.into(),
+        truncated: unread.any(),
     }
-    turns.into()
 }
 
 /// Every readable turn of a legacy opencode session, oldest first.
@@ -1403,6 +1681,31 @@ mod tests {
         }
     }
 
+    /// An oversized record is never resident: it is skipped, the records
+    /// after it still count, and a transcript read says it is incomplete.
+    #[test]
+    fn a_claude_record_over_the_cap_is_skipped_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = claude_run(dir.path(), "ses-1", 1);
+        let huge = "x".repeat(bounded::MAX_RECORD_BYTES as usize);
+        let mut lines = std::fs::read_to_string(&session.transcript_path).unwrap();
+        lines.push_str(&format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{huge}\"}}]}}}}\n"
+        ));
+        lines.push_str(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"after\"}]},\"timestamp\":\"2026-01-01T00:00:02Z\"}\n",
+        );
+        std::fs::write(&session.transcript_path, lines).unwrap();
+
+        let scan = scan_file(&session.transcript_path).unwrap();
+        assert_eq!(scan.messages, 3);
+        assert_eq!(scan.last_assistant.as_deref(), Some("after"));
+
+        let read = read_transcript(&session, 80, 36_000);
+        assert_eq!(read.turns, 3);
+        assert!(read.truncated);
+    }
+
     #[test]
     fn a_claude_transcript_folds_to_labelled_turns_in_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -1568,6 +1871,38 @@ mod tests {
         )
         .unwrap();
         assert!(assistant_text(&only_tools).is_none());
+    }
+
+    /// The typed reader stands in for `Value`, so it must read every shape the
+    /// same way, including ones no transcript writes: a repeated key, a
+    /// mistyped field, a block that is not an object, a message that is an
+    /// array.
+    #[test]
+    fn typed_records_read_exactly_what_a_value_reads() {
+        for line in [
+            r#"{"type":"user","cwd":"/a","gitBranch":"main","message":{"content":"  ship it "}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"x"},{"type":"text","text":" hi "}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"text","text":"<cmd>"},{"type":"text","text":"real"}]}}"#,
+            r#"{"type":"user","message":{"content":[7,"s",[{"text":"in"}],{"text":5},{"text":"x\ny"}]}}"#,
+            r#"{"type":"user","toolUseResult":null,"message":{"content":"x"}}"#,
+            r#"{"type":"user","isMeta":"yes","message":{"content":"x"}}"#,
+            r#"{"type":"user","isMeta":true,"message":{"content":"x"}}"#,
+            r#"{"type":"assistant","message":{"model":"m","content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"answer"},{"type":"tool_use","input":{"a":[1,{"b":null}]}},{"type":"text","text":"   "}]}}"#,
+            r#"{"type":"assistant","message":{"model":5,"content":"  hello\nworld "}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","type":"tool_use","text":"dup"}]}}"#,
+            r#"{"type":"assistant","message":null}"#,
+            r#"{"type":"assistant","message":"flat"}"#,
+            r#"{"type":"assistant","message":["m",[{"type":"text","text":"positional"}]]}"#,
+            r#"{"type":"assistant","message":{"content":null,"model":"m","model":"n"}}"#,
+            r#"{"type":"user","type":"assistant","message":{"content":"last wins"}}"#,
+            r#"{"aiTitle":"  ","cwd":7,"gitBranch":""}"#,
+            r#"{"aiTitle":"T\u00edtulo","type":"ai-title"}"#,
+        ] {
+            let value: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(Fields::of(line), Some(Fields::from_value(&value)), "{line}");
+        }
+        assert!(Fields::of(r#"["user",{"content":"x"}]"#).is_none());
+        assert!(Fields::of("{not json").is_none());
     }
 
     #[test]

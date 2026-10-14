@@ -20,10 +20,12 @@
 //! stays flat even for untracked files: a panel that refreshes itself must not
 //! cost a process per file the agent creates.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::Path;
 
-use crate::command::{run_git, GitError, GitOutput};
+use crate::command::{run_git, run_git_bounded, GitError, GitOutput};
 use crate::repository::current_branch;
 
 /// Context lines around each hunk.
@@ -44,6 +46,11 @@ pub const MAX_FILE_PATCH_BYTES: usize = 256 * 1024;
 
 /// Soft ceiling for how many changed files are described.
 pub const MAX_DIFF_FILES: usize = 500;
+
+/// Most one batched `diff --patch` may write before it is abandoned for
+/// narrower reads. The batch covers every changed path, not only the ones the
+/// budgets keep, so this bounds the peak rather than the answer.
+const MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 /// What happened to one path, as a diff viewer needs to label it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,38 +165,54 @@ fn assemble(
     } else {
         HashMap::new()
     };
-    let mut patches = if head {
-        batch_patches(repo, revs, context)
+    let mut batch = if head {
+        batch_patches(repo, revs, context, &entries, &stats)
     } else {
-        HashMap::new()
+        Batch::default()
     };
 
     let mut total = 0usize;
     let mut files = Vec::with_capacity(entries.len());
     for entry in entries {
-        let patch = match (entry.untracked || !head, patches.remove(&entry.path)) {
-            (true, _) => untracked_patch(repo, &entry.path, context),
-            (false, Some(patch)) => patch,
+        let fetched = if entry.untracked || !head {
+            untracked_patch(repo, &entry.path, context)
+        } else if let Some(ranges) = batch.chunks.remove(&entry.path) {
+            Patch::Text(batch.slice(&ranges))
+        } else if batch.over_budget.contains(&entry.path) || total >= MAX_DIFF_BYTES {
+            Patch::OverBudget
+        } else {
             // git listed the path but the batch did not describe it: ask for
             // that one file rather than showing the user an empty diff.
-            (false, None) => tracked_patch(repo, revs, &entry.path, context),
+            tracked_patch(repo, revs, &entry.path, context)
         };
 
         let stat = stats.get(&entry.path).copied();
-        // `numstat` is the authority when it saw the file; an untracked one it
-        // never saw is judged by what git wrote in the patch itself.
-        let binary = stat.map_or_else(|| is_binary_patch(&patch), |(_, _, binary)| binary);
-
-        let over_budget =
-            patch.len() > MAX_FILE_PATCH_BYTES || total + patch.len() > MAX_DIFF_BYTES;
-        let (additions, deletions) = match stat {
-            Some((additions, deletions, _)) => (additions, deletions),
-            None => count_changed_lines(&patch),
+        let (patch, binary, counted) = match fetched {
+            Patch::Text(patch) => {
+                let over_budget =
+                    patch.len() > MAX_FILE_PATCH_BYTES || total + patch.len() > MAX_DIFF_BYTES;
+                // `numstat` is the authority when it saw the file; an untracked
+                // one it never saw is judged by what git wrote in the patch.
+                let binary = stat.map_or_else(|| is_binary_patch(&patch), |(_, _, b)| b);
+                let counted = stat.map_or_else(|| count_changed_lines(&patch), |(a, d, _)| (a, d));
+                let kept = (!over_budget).then(|| patch.into_owned());
+                (kept, binary, counted)
+            }
+            // Only a text patch outgrows the budget; git's binary notice is a
+            // line. An untracked file's patch adds every line it has.
+            Patch::OverBudget => match stat {
+                Some((additions, deletions, binary)) => (None, binary, (additions, deletions)),
+                None if entry.untracked || !head => {
+                    (None, false, (file_lines(repo, &entry.path), 0))
+                }
+                None => (None, false, (0, 0)),
+            },
         };
-        if !over_budget {
-            total += patch.len();
-        } else {
-            truncated = true;
+        let (additions, deletions) = counted;
+        let over_budget = patch.is_none();
+        match &patch {
+            Some(patch) => total += patch.len(),
+            None => truncated = true,
         }
 
         files.push(FileDiff {
@@ -197,7 +220,7 @@ fn assemble(
             status: entry.status,
             additions,
             deletions,
-            patch: if over_budget { String::new() } else { patch },
+            patch: patch.unwrap_or_default(),
             binary,
             truncated: over_budget,
         });
@@ -396,24 +419,95 @@ fn numstat(repo: &Path, revs: &[&str]) -> Result<HashMap<String, (u32, u32, bool
     Ok(stats)
 }
 
-/// Every tracked patch in one subprocess, keyed by path.
-///
-/// Best effort on purpose: when the batch fails the caller falls back to one
-/// command per file, which is slower but still correct.
-fn batch_patches(repo: &Path, revs: &[&str], context: u32) -> HashMap<String, String> {
-    let unified = format!("--unified={context}");
-    let args = diff_args(
-        &["--patch", "--no-ext-diff", "--no-renames", &unified],
-        revs,
-        ".",
-    );
-    let Ok(out) = run_git(Some(repo), &args) else {
-        return HashMap::new();
-    };
-    if !out.success() {
-        return HashMap::new();
+/// A path's patch, or the proof that it was over budget without holding it.
+enum Patch<'a> {
+    Text(Cow<'a, str>),
+    OverBudget,
+}
+
+/// Every tracked patch git wrote in one subprocess: the text once, and where
+/// each path's chunks sit in it, so only the patches that are kept are copied.
+#[derive(Default)]
+struct Batch {
+    text: String,
+    chunks: HashMap<String, Vec<Range<usize>>>,
+    /// Paths `numstat` already proves over the per-file budget.
+    over_budget: HashSet<String>,
+}
+
+impl Batch {
+    fn slice(&self, ranges: &[Range<usize>]) -> Cow<'_, str> {
+        match ranges {
+            [range] => Cow::Borrowed(&self.text[range.clone()]),
+            _ => Cow::Owned(
+                ranges
+                    .iter()
+                    .map(|range| &self.text[range.clone()])
+                    .collect(),
+            ),
+        }
     }
-    split_patch(&out.stdout)
+}
+
+/// Every tracked patch in as few subprocesses as the budget allows.
+///
+/// Best effort on purpose: a batch that fails leaves the caller one bounded
+/// command per file, which is slower but still correct. A batch that outgrows
+/// [`MAX_BATCH_BYTES`] is retried once over only the listed paths, minus those
+/// whose `numstat` proves them over the per-file budget — a changed line is at
+/// least its sign and its newline, so `2 × (added + deleted)` bytes is a floor
+/// on its patch.
+fn batch_patches(
+    repo: &Path,
+    revs: &[&str],
+    context: u32,
+    entries: &[Entry],
+    stats: &HashMap<String, (u32, u32, bool)>,
+) -> Batch {
+    let unified = format!("--unified={context}");
+    let flags = ["--patch", "--no-ext-diff", "--no-renames", unified.as_str()];
+    match run_batch(repo, &diff_args(&flags, revs, ".")) {
+        Ok(Some(batch)) => return batch,
+        Ok(None) => {}
+        Err(()) => return Batch::default(),
+    }
+
+    let mut over_budget = HashSet::new();
+    let mut paths = Vec::new();
+    for entry in entries.iter().filter(|entry| !entry.untracked) {
+        let lines = stats.get(&entry.path).map_or(0, |(added, deleted, _)| {
+            u64::from(*added) + u64::from(*deleted)
+        });
+        if lines.saturating_mul(2) > MAX_FILE_PATCH_BYTES as u64 {
+            over_budget.insert(entry.path.clone());
+        } else {
+            paths.push(entry.path.as_str());
+        }
+    }
+    let mut batch = if paths.is_empty() {
+        Batch::default()
+    } else {
+        // Named paths are paths, not patterns: a `*` in a file name must not
+        // widen the batch back to the whole tree.
+        let mut args = vec!["--literal-pathspecs", "diff"];
+        args.extend_from_slice(&flags);
+        args.extend_from_slice(revs);
+        args.push("--");
+        args.extend(paths);
+        run_batch(repo, &args).ok().flatten().unwrap_or_default()
+    };
+    batch.over_budget = over_budget;
+    batch
+}
+
+/// `Ok(None)` when the batch outgrew [`MAX_BATCH_BYTES`]; `Err` when git could
+/// not produce it at all.
+fn run_batch(repo: &Path, args: &[&str]) -> Result<Option<Batch>, ()> {
+    match run_git_bounded(Some(repo), args, MAX_BATCH_BYTES) {
+        Ok(out) if out.success() => Ok(Some(split_patch(out.stdout))),
+        Err(GitError::OutputLimit { .. }) => Ok(None),
+        _ => Err(()),
+    }
 }
 
 fn diff_args<'a>(flags: &[&'a str], revs: &[&'a str], path: &'a str) -> Vec<&'a str> {
@@ -426,28 +520,24 @@ fn diff_args<'a>(flags: &[&'a str], revs: &[&'a str], path: &'a str) -> Vec<&'a 
 }
 
 /// Split a multi-file patch on its `diff --git ` markers.
-fn split_patch(text: &str) -> HashMap<String, String> {
-    let mut chunks: Vec<(usize, usize)> = Vec::new();
-    let mut starts: Vec<usize> = Vec::new();
-    for (index, line) in line_offsets(text) {
-        if line.starts_with("diff --git ") {
-            starts.push(index);
-        }
-    }
+fn split_patch(text: String) -> Batch {
+    let starts: Vec<usize> = line_offsets(&text)
+        .filter(|(_, line)| line.starts_with("diff --git "))
+        .map(|(index, _)| index)
+        .collect();
+    let mut chunks: HashMap<String, Vec<Range<usize>>> = HashMap::new();
     for (position, start) in starts.iter().enumerate() {
         let end = starts.get(position + 1).copied().unwrap_or(text.len());
-        chunks.push((*start, end));
-    }
-
-    let mut patches: HashMap<String, String> = HashMap::new();
-    for (start, end) in chunks {
-        let chunk = &text[start..end];
-        let Some(path) = path_from_chunk(chunk) else {
+        let Some(path) = path_from_chunk(&text[*start..end]) else {
             continue;
         };
-        patches.entry(path).or_default().push_str(chunk);
+        chunks.entry(path).or_default().push(*start..end);
     }
-    patches
+    Batch {
+        text,
+        chunks,
+        over_budget: HashSet::new(),
+    }
 }
 
 /// `(byte offset, line)` for every line of `text`.
@@ -498,16 +588,18 @@ fn strip_prefix(path: &str) -> String {
 }
 
 /// One tracked file's patch, for when the batch did not cover it.
-fn tracked_patch(repo: &Path, revs: &[&str], path: &str, context: u32) -> String {
+fn tracked_patch(repo: &Path, revs: &[&str], path: &str, context: u32) -> Patch<'static> {
     let unified = format!("--unified={context}");
-    let args = diff_args(
+    let mut args = vec!["--literal-pathspecs"];
+    args.extend(diff_args(
         &["--patch", "--no-ext-diff", "--no-renames", &unified],
         revs,
         path,
-    );
-    match run_git(Some(repo), &args) {
-        Ok(out) if out.success() => out.stdout,
-        _ => String::new(),
+    ));
+    match run_git_bounded(Some(repo), &args, MAX_FILE_PATCH_BYTES) {
+        Ok(out) if out.success() => Patch::Text(Cow::Owned(out.stdout)),
+        Err(GitError::OutputLimit { .. }) => Patch::OverBudget,
+        _ => Patch::Text(Cow::Borrowed("")),
     }
 }
 
@@ -516,7 +608,7 @@ fn tracked_patch(repo: &Path, revs: &[&str], path: &str, context: u32) -> String
 /// `--no-index` exits **1** when the two inputs differ, which for a new file is
 /// always. That is the success case here, so only a status above 1 — git's own
 /// error range — is treated as a failure.
-fn untracked_patch(repo: &Path, path: &str, context: u32) -> String {
+fn untracked_patch(repo: &Path, path: &str, context: u32) -> Patch<'static> {
     let unified = format!("--unified={context}");
     let args = [
         "diff",
@@ -529,10 +621,47 @@ fn untracked_patch(repo: &Path, path: &str, context: u32) -> String {
         "/dev/null",
         path,
     ];
-    match run_git(Some(repo), &args) {
-        Ok(GitOutput { stdout, status, .. }) if status == 0 || status == 1 => stdout,
-        _ => String::new(),
+    match run_git_bounded(Some(repo), &args, MAX_FILE_PATCH_BYTES) {
+        Ok(GitOutput { stdout, status, .. }) if status == 0 || status == 1 => {
+            Patch::Text(Cow::Owned(stdout))
+        }
+        Err(GitError::OutputLimit { .. }) => Patch::OverBudget,
+        _ => Patch::Text(Cow::Borrowed("")),
     }
+}
+
+/// Lines in a file, read through a fixed buffer: what an over-budget untracked
+/// patch would have counted as additions, without holding the file or patch.
+///
+/// Regular files only: opening a FIFO blocks the request, and a link to a
+/// device would never reach end of file.
+fn file_lines(repo: &Path, path: &str) -> u32 {
+    use std::io::Read;
+
+    let full = repo.join(path);
+    if !std::fs::metadata(&full).is_ok_and(|meta| meta.is_file()) {
+        return 0;
+    }
+    let Ok(mut file) = std::fs::File::open(&full) else {
+        return 0;
+    };
+    let mut buffer = vec![0; 64 * 1024];
+    let mut newlines = 0usize;
+    let mut last = None;
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                newlines += bytecount(&buffer[..read], b'\n');
+                last = buffer[..read].last().copied();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    // A last line with no trailing newline is still a line.
+    let trailing = usize::from(last.is_some_and(|byte| byte != b'\n'));
+    u32::try_from(newlines + trailing).unwrap_or(u32::MAX)
 }
 
 fn is_binary_patch(patch: &str) -> bool {
@@ -832,6 +961,51 @@ mod tests {
         assert!(!diff.truncated);
     }
 
+    /// Over budget is decided by the bounded capture, so the patch is never
+    /// resident, and the count still says how much the file adds.
+    #[test]
+    fn an_untracked_file_over_budget_is_flagged_and_counted_without_its_patch() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        repo_with_commit(repo);
+        let lines = MAX_FILE_PATCH_BYTES / 4;
+        std::fs::write(repo.join("big.log"), "abc\n".repeat(lines) + "tail").unwrap();
+
+        let diff = working_tree_diff(repo, None, DIFF_CONTEXT_LINES).unwrap();
+        let big = diff
+            .files
+            .iter()
+            .find(|file| file.path == "big.log")
+            .unwrap();
+        assert!(big.truncated && diff.truncated);
+        assert!(big.patch.is_empty());
+        assert!(!big.binary);
+        assert_eq!((big.additions, big.deletions), (lines as u32 + 1, 0));
+    }
+
+    /// A batch past its own budget is retried without the file `numstat`
+    /// already proves too big, so the small patch beside it still arrives.
+    #[test]
+    fn a_batch_over_its_budget_keeps_the_patches_that_fit() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        repo_with_commit(repo);
+        std::fs::write(repo.join("huge.txt"), "x\n".repeat(MAX_BATCH_BYTES / 2 + 1)).unwrap();
+        std::fs::write(repo.join("a.txt"), "one\nTWO\nthree\n").unwrap();
+
+        let diff = working_tree_diff(repo, None, DIFF_CONTEXT_LINES).unwrap();
+        let huge = diff
+            .files
+            .iter()
+            .find(|file| file.path == "huge.txt")
+            .unwrap();
+        assert!(huge.truncated && huge.patch.is_empty());
+        assert_eq!(huge.additions as usize, MAX_BATCH_BYTES / 2 + 1);
+        let small = diff.files.iter().find(|file| file.path == "a.txt").unwrap();
+        assert!(small.patch.contains("+TWO"), "{small:?}");
+        assert!(!small.truncated);
+    }
+
     #[test]
     fn a_wire_sized_context_width_is_clamped_before_git_sees_it() {
         let dir = tempdir().unwrap();
@@ -944,10 +1118,10 @@ mod tests {
                     +++ /dev/null\n\
                     @@ -1 +0,0 @@\n\
                     -gone\n";
-        let patches = split_patch(text);
-        assert_eq!(patches.len(), 2);
-        assert!(patches["one.rs"].contains("+b"));
-        assert!(patches["two.rs"].contains("-gone"));
+        let batch = split_patch(text.to_owned());
+        assert_eq!(batch.chunks.len(), 2);
+        assert!(batch.slice(&batch.chunks["one.rs"]).contains("+b"));
+        assert!(batch.slice(&batch.chunks["two.rs"]).contains("-gone"));
     }
 
     #[test]

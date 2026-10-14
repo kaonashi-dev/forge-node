@@ -468,46 +468,45 @@ fn remove_any(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Stderr kept from a setup script: what its last line needs, not what an
+/// `npm install` prints on the way there.
+const STDERR_TAIL_BYTES: usize = 4 * 1024;
+
 /// `sh -c` from the workspace root, in its own process group.
 ///
-/// `wait_with_output` drains both pipes before it waits, so killing only the
-/// direct child would leave a grandchild holding the write ends: the kill goes
-/// to the **negative** pgid first, with the direct pid as a fallback.
+/// Stdout is discarded and only a tail of stderr is kept. A grandchild can
+/// still hold stderr's write end after the shell dies, so the kill goes to the
+/// **negative** pgid first, with the direct pid as a fallback.
 fn run_in(workspace: &Path, command: &str, timeout: Duration) -> io::Result<()> {
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
 
-    let child = Command::new("sh")
+    let mut child = Command::new("sh")
         .arg("-c")
         .arg(command)
         .current_dir(workspace)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .process_group(0)
         .spawn()?;
     let pid = child.id();
+    let stderr = child.stderr.take();
 
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        let tail = stderr.map(read_tail).unwrap_or_default();
+        let _ = tx.send(child.wait().map(|status| (status, tail)));
     });
 
     match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) if output.status.success() => {
-            tracing::debug!(
-                target: "git",
-                stdout = %String::from_utf8_lossy(&output.stdout).trim(),
-                "shares.run"
-            );
-            Ok(())
-        }
-        Ok(Ok(output)) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail = stderr.trim().lines().last().unwrap_or("").to_owned();
+        Ok(Ok((status, _))) if status.success() => Ok(()),
+        Ok(Ok((status, tail))) => {
+            let stderr = String::from_utf8_lossy(&tail);
+            let last = stderr.trim().lines().last().unwrap_or("").to_owned();
             Err(io::Error::other(format!(
-                "the command failed (status {}): {tail}",
-                output.status.code().unwrap_or(-1)
+                "the command failed (status {}): {last}",
+                status.code().unwrap_or(-1)
             )))
         }
         Ok(Err(e)) => Err(e),
@@ -532,6 +531,29 @@ fn run_in(workspace: &Path, command: &str, timeout: Duration) -> io::Result<()> 
             Err(io::Error::other("the command's worker thread disconnected"))
         }
     }
+}
+
+/// The last [`STDERR_TAIL_BYTES`] of a stream, read to its end.
+fn read_tail(mut reader: impl io::Read) -> Vec<u8> {
+    let mut tail = Vec::new();
+    let mut chunk = [0; 8 * 1024];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                tail.extend_from_slice(&chunk[..read]);
+                if tail.len() > 2 * STDERR_TAIL_BYTES {
+                    tail.drain(..tail.len() - STDERR_TAIL_BYTES);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    if tail.len() > STDERR_TAIL_BYTES {
+        tail.drain(..tail.len() - STDERR_TAIL_BYTES);
+    }
+    tail
 }
 
 /// What each rule looks like in this workspace right now.
@@ -778,6 +800,27 @@ pub fn clean_up(ctx: &ShareContext, rule: &ShareRule, mode: ShareCleanup) -> Sha
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chatty script is neither held nor blocked on: stdout goes nowhere,
+    /// and the failure still names the last thing it said.
+    #[test]
+    fn a_setup_script_keeps_only_the_tail_of_what_it_printed() {
+        let dir = tempfile::tempdir().unwrap();
+        run_in(
+            dir.path(),
+            "head -c 20000000 /dev/zero; head -c 20000000 /dev/zero >&2",
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        let error = run_in(
+            dir.path(),
+            "head -c 1000000 /dev/zero >&2; printf '\\nboom\\n' >&2; exit 3",
+            Duration::from_secs(30),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "the command failed (status 3): boom");
+        assert_eq!(read_tail(&[b'x'; 10_000][..]).len(), STDERR_TAIL_BYTES);
+    }
 
     fn context(root: &Path) -> ShareContext {
         let source = root.join("source");

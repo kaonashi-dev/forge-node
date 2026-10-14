@@ -28,14 +28,16 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
 
 - **Append only.** Add a new `M::up(...)` to `migrations()`; never edit or
   reorder an existing one, or already-migrated databases will diverge.
-- Thirteen migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
+- Fourteen migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
   `PROJECT_GROUPS`, `AGENT_PROFILES`, `PROJECT_ICONS`,
   `WORKSPACE_DISPLAY_NAMES`, `SESSION_LAUNCH_COMMAND`, `WORKTREE_SHARES`,
   `SESSION_BASE_COMMIT`, `PROFILE_CONFIG_DIR`, `WORKTREE_IGNORES`,
   `ORCHESTRATION` (runs, tasks, attempts, the board, idempotency receipts, and the
   run/task/kind/reply/ack columns on `context_envelopes`), and
   `RUN_ENVELOPE_HISTORY` (run messages outlive the sessions that wrote and
-  received them; plain handoffs keep their lifecycle through triggers).
+  received them; plain handoffs keep their lifecycle through triggers), and
+  `FOREIGN_KEY_INDEXES` (the child columns a parent delete searches, so the
+  startup session purge does not scan `runs` and `attempts` once per row).
   Session activity is not a column. A restart reconciles live attempts to lost
   and an active run to interrupted before the socket is bound. Factory reset
   deletes those tables with the rest of the application rows.

@@ -141,9 +141,11 @@ pub struct UsageAnalytics {
     pub window_days: u16,
     /// Transcripts actually read.
     pub scanned: u32,
-    /// Transcripts inside the window that the per-provider cap left unread. A
-    /// non-zero count is shown: a bounded scan that looks exhaustive is worse
-    /// than one that admits its bound.
+    /// Transcripts inside the window the scan could not read whole: left unread
+    /// by the per-provider cap or the directory-entry budget, or read with a
+    /// record over the per-record cap skipped. A non-zero count is shown: a
+    /// bounded scan that looks exhaustive is worse than one that admits its
+    /// bound.
     pub skipped: u32,
     pub collected_at: Timestamp,
 }

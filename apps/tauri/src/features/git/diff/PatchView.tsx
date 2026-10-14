@@ -1,6 +1,6 @@
 import { createMemo, onCleanup } from "solid-js";
 import type { PatchRow } from "./patch";
-import { intraLine, pairedRows, patchDocument, rowClass } from "./patchDocument";
+import { cachedIntraLine, patchDocument, rowClass } from "./patchDocument";
 import { WindowedPatchRows } from "./WindowedPatchRows";
 import { nextHunk } from "./patchWindow";
 import { scrollPatchRow } from "./patchViewport";
@@ -21,17 +21,7 @@ export function PatchView(props: {
   );
   const colors = patchSyntaxColors();
 
-  const intra = createMemo(() => {
-    const rows = doc().rows;
-    const marks = new Map<number, { from: number; to: number }>();
-    for (const pair of pairedRows(rows)) {
-      const spans = intraLine(rows[pair.removed]!.text, rows[pair.added]!.text);
-      if (!spans) continue;
-      if (spans.before.to > spans.before.from) marks.set(pair.removed, spans.before);
-      if (spans.after.to > spans.after.from) marks.set(pair.added, spans.after);
-    }
-    return marks;
-  });
+  const intra = cachedIntraLine(() => doc().rows);
 
   function jumpHunk(forward: boolean): void {
     const target = nextHunk(doc().hunkStarts, Number(host.dataset.cursor ?? "-1"), forward);
@@ -87,7 +77,7 @@ export function PatchView(props: {
               {row.kind === "added" ? "+" : row.kind === "removed" ? "−" : ""}
             </span>
             <span class="diff-row-text">
-              <PatchText tokens={tokens(row)} mark={intra().get(index())} />
+              <PatchText tokens={tokens(row)} mark={intra(index())} />
             </span>
           </div>
         )}

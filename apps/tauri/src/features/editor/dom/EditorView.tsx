@@ -1,4 +1,15 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  For,
+  Show,
+  batch,
+  createEffect,
+  createMemo,
+  createSelector,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { EDITOR } from "../../../actions/actions";
 import { enterContext } from "../../../actions/dispatch";
 import { editorChrome } from "../editorChrome";
@@ -175,6 +186,10 @@ function EditorSessionView(props: EditorViewProps) {
   const fontSize = createMemo(() => cell().fontSize);
 
   const [frame, setFrame] = createSignal<EditorFrame | null>(null);
+  /* Rows keyed by line, so a frame that resends an unchanged line keeps its
+     node: the frame itself is fresh JSON every time. */
+  const [rows, setRows] = createStore<EditorRow[]>([]);
+  const isCaretLine = createSelector(() => frame()?.caret.line ?? -1);
   const [focused, setFocused] = createSignal(false);
   const [comparing, setComparing] = createSignal(false);
   /* Where the caret is in pixels, measured off the mounted row rather than
@@ -235,7 +250,10 @@ function EditorSessionView(props: EditorViewProps) {
       // missing.
       if (payload.frame.doc_version < shownVersion) return;
       shownVersion = payload.frame.doc_version;
-      setFrame(payload.frame);
+      batch(() => {
+        setRows(reconcile(payload.frame.rows, { key: "line" }));
+        setFrame(payload.frame);
+      });
     });
     onCleanup(unsubscribe);
     onCleanup(enterContext(EDITOR));
@@ -567,11 +585,11 @@ function EditorSessionView(props: EditorViewProps) {
             </For>
           </div>
           <div ref={rowLayer} class="editor-view-rows">
-            <For each={frame()?.rows ?? []}>
+            <For each={rows}>
               {(row) => (
                 <div
                   class="ed-row"
-                  classList={{ "ed-row-active": row.line === frame()?.caret.line }}
+                  classList={{ "ed-row-active": isCaretLine(row.line) }}
                   data-line={row.line}
                   style={{ top: `${row.line * lineHeight()}px` }}
                 >
