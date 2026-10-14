@@ -72,6 +72,38 @@ not fuzzy matching or IPC. Neither benchmark establishes end-to-end UI latency.
 Regression tests cover ranking equivalence, syntax-cache reuse, transcript
 retention bounds, Unicode decoding and teardown behavior.
 
+## Performance pass: 2026-10-14
+
+A five-area review (daemon terminal path, client and host, WebView, request
+handlers and services, editor) removed these costs. Figures are scratch release-mode
+micro-benchmarks at 200×50 unless stated; none is an end-to-end latency claim.
+
+| Path | Change | Cost reduced |
+|---|---|---|
+| `protocol::framing::FrameWriter` | The write that fits stays inline; growth, the budget check and the error are a cold call. | MessagePack's 1–3 byte writes made a whole-grid delta encode in ~616 µs; ~200 µs after, per subscriber. |
+| `domain::Color` on the binary wire | One integer instead of a variant name (JSON unchanged). `PROTOCOL_VERSION` 32. | A blank cell went from 20 to 5 bytes; a full delta ~204 KB → ~64 KB, and the client decodes it in about half the time. |
+| Daemon socket | `SO_SNDBUF` raised to 1 MiB per accepted connection. | macOS's 8 KiB default split one delta into ~25 sends and reads (221 µs → 12 µs measured). |
+| `convert_cell` (under the core lock) | Unstyled cells with no combining marks skip the flag map and the per-char build. | ~−55% on conversion for deltas, snapshots, scrollback and resyncs. |
+| `Daemon::pump_terminal_batch` | The session title is written after the lock, as a column `UPDATE` on the second connection and only under `persist_history`; the comparison borrows instead of allocating. | No WAL write (or its auto-checkpoint fsync) under the core lock on the delta rung; one fewer allocation per emitted delta and per feed. |
+| `Daemon::ensure_env` | Every path into `resolved_env` captures the login shell first, off the lock, behind `env_capture`. | A request racing the startup capture no longer runs `$SHELL -l -i` under the core lock (up to 5.5 s). |
+| `registry::route_terminal_delta` | A subscriber is marked behind at 64 queued messages and resynced at 8. | A stopped reader pinned up to ~100 MB of stale deltas; now ~25 MB, with room left for responses. |
+| `FetchScrollback` | Clamped to 512 Ki cells as well as 4 096 rows. | A wide fetch no longer overflows the frame and drops the connection after the conversion ran under the lock. |
+| `file_index::Cache` | `forget` on every workspace removal; `invalidate` no longer creates slots. | Removed workspaces kept their listing (up to 10 000 entries) and a lingering watch re-created it. |
+| CLI `GetSnapshot` | Leaves out discovered history; an agent exit marks history stale instead of locking its cache. | `forgectl` calls no longer trigger transcript scans, and an exit broadcast never waits behind one. |
+| `FrameDecoder` | A drained buffer above 1 MiB shrinks to 256 KiB. | One 16 MiB response no longer stays resident per connection. |
+| Host `Batch::settle` | A shell publish is withdrawn when the store reports `EventOutcome::Unchanged`. | Editor frames (≤125/s), orchestration progress and notices each rebuilt, serialized and reconciled the whole shell. |
+| Host `request_scrollback` | Fetches every missing viewport row plus a margin. | A page jump left rows blank and refetched the same block on every frame. |
+| Transcript scans | `agents::jsonl` reads records through one buffer with a 1 MiB (history) / 8 MiB (analytics) cap; typed borrowed parses skip message content; directory walks stat only `.jsonl` files within a 20 000-entry budget. | A whole `String` and `serde_json::Value` per record, tool output included (95 MB of history 20–28 → 13–14 ms; 71 MB of analytics 219–337 → 133–137 ms, synthetic). |
+| `git-service::diff` | Batched patch capped at 8 MiB with a bounded per-file fallback; untracked files capped at the per-file budget; valid UTF-8 output decoded without a copy; split into ranges and only kept patches copied. | Peak memory was ~2× the whole-tree patch plus an unbounded capture per untracked file. |
+| Content search, change context, checkers, setup scripts | Prefix capture or `.take(cap)` with a drain; `grep_word` reports truncation instead of failing. | Whole subprocess output was resident before the response limit applied. |
+| `FOREIGN_KEY_INDEXES` (migration 14) | Indexes the child columns parent deletes search. | Each session/workspace/task delete scanned `runs`, `attempts` or `task_deps`. |
+| Editor wrap scroll | `anchor_above` walks up from the caret once. | A far jump in wrap mode stepped the anchor a row at a time: ~600 ms on 20 000 lines. |
+| Editor folds | Hidden ranges cached and searched; headers binary-searched; folds shift with inserted/removed lines. | `is_hidden` was O(folds × regions) per row (48 ms per wheel notch with 40 folds); Enter above a fold used to unfold or misplace it. |
+| `metrics::display_column` | ASCII prefix counted without grapheme segmentation. | Fold rescan per keystroke ~5 ms → ~1 ms; cheaper `line_rows` everywhere. |
+| Editor painting | One row map per frame instead of one viewport walk per row; ruler matches cached per (version, query, height). | O(height²) row mapping per frame; a whole-document search per frame while find is open. |
+| `Syntax::edited`, `History` | Restart offset from the line index; typing runs extend in place; the undo stack is a `VecDeque`. | A byte walk to the edit (~200 µs at line 10 000); O(run²) copies while typing; a ~0.9 MB shift per edit once 4 096 entries existed. |
+| WebView | Hidden main pane keeps its viewport but does not paint; DOM editor rows and diff files reconcile by key; intra-line marks are lazy; batched snapshot application; keyed external runs and pull requests; memoized tabs/history; renderer skips redundant style assignments and allocations; bounded latency samples on a sorted ring; DPR changes remeasure. | Per-frame paints nobody saw, row/patch remounts per answer, positional rewrites of every later row, and an unbounded `outstanding` list in the editor pane. |
+
 ## Why this page exists
 
 Forge is a terminal multiplexer with a Tauri front end. That combination has a
@@ -166,7 +198,10 @@ the allocation.
 | checked arithmetic on a client-supplied offset | `fetch_scrollback` (`MAX_SCROLLBACK_FETCH`) |
 | bounded scan that reports what it skipped | `analytics::recent_transcripts` |
 | event count and path bytes checked in the watch callback | `daemon::file_watch` (`MAX_PATHS`, `MAX_PATH_BYTES`) |
-| bounded stdout/stderr readers with group kill on overflow | `git_service::run_git_bounded`, used by the global file index |
+| bounded stdout/stderr readers with group kill on overflow | `git_service::run_git_bounded`, used by the global file index and the batched diff |
+| a prefix kept, the group killed, the cut reported | `git_service::run_git_prefix` (content search, change context, `grep_word`) |
+| one reused record buffer that skips an oversized record unheld | `agents::jsonl` (history, analytics) |
+| per-stream `.take(cap)` then drain to a sink so the child still exits | `daemon::diagnostics`, `shares::apply::run_in` |
 
 A bounded scan that silently truncates is worse than one that refuses: report
 `skipped`/`truncated` rather than looking exhaustive.
@@ -421,16 +456,14 @@ carries a comment explaining itself: PTY spawn, version probes, `refresh_project
 git, `get_workspace_diff`, the PR refresh worker, `collect_usage`'s HTTP,
 transcript discovery, the PTY write and the child reap all run outside it.
 
-Two known exceptions remain, both waiting on the same fix shape — collect inside
-the critical section, act after `drop(inner)`:
-
-- the session-title `upsert` in `pump_terminal` (a WAL write, on the delta rung);
-- `resolved_env`, which takes `&mut Inner` and lazily runs `$SHELL -l -i -c 'env -0'`
-  behind it — measured at **796 ms** on a real machine before `-i` also sourced
-  `.zshrc`, with a 5 s timeout. Startup now warms the cache off the lock
-  (`Daemon::warm_env`) before the first detection and `RefreshAgentDetection`
-  re-captures on a worker, so the lazy capture is left to a reader that races
-  the startup warm-up.
+One known exception remains: `resolved_env` takes `&mut Inner` and can lazily
+run `$SHELL -l -i -c 'env -0'` behind it — measured at **796 ms** on a real
+machine before `-i` also sourced `.zshrc`, with a 5 s timeout. Every current
+caller first runs `Daemon::ensure_env`, which captures off the lock behind its
+own `env_capture` gate (a request that races the startup capture waits on the
+gate, not on the core lock), so the lazy branch is only a fallback for a new
+caller that forgets it. The session title, the other former exception, is now
+written after `drop(inner)` as a column `UPDATE` on the second connection.
 
 Note also that `PRAGMA synchronous` is `NORMAL`, not SQLite's `FULL` default.
 That is correct under WAL and it is what removed the fsync from the pump path;
@@ -547,14 +580,16 @@ Carry these forward; they are real, verified, and not yet fixed.
 | Item | Where | Why it still matters |
 |---|---|---|
 | Whole-grid delta on a line feed | `DeltaBuilder::delta` | Mid-screen edits now travel as column patches. A line feed can still report `TermDamage::Full` (see Alacritty `Term::damage()`), so that path still repaints the viewport. |
-| WAL write under the core lock | `Daemon::pump_terminal` | fsync is gone (`synchronous = NORMAL`) but the write still holds the global mutex on the delta rung. |
-| `resolved_env` under the core lock | `Daemon::resolved_env` | 796 ms measured before `-i`; `warm_env` resolves off the lock at startup, but a reader that wins that race still captures under it, up to the 5 s deadline plus 500 ms reap grace. |
-| Unbounded process-output capture | `git-service::diff`, `fs-service` content search | Response limits are applied after complete subprocess output has been captured; definition grep uses a 4 MiB bounded capture. |
-| Unbounded analytics records and enumeration | `agents::usage::analytics` | Candidate retention is bounded, but `BufReader::lines()` allocates a complete record and directory enumeration has no entry budget. |
-| Full fold rescanning and undo-string copying | `editor-cli::App::rescan_edited`, `editor-core::history` | Edits still rebuild fold regions; coalesced typing clones growing undo strings. |
-| Eager diff parsing | `PatchView.tsx`, `SplitPatchView.tsx` | Files start expanded and all expanded patches are parsed on a diff change; row DOM is viewport-windowed. |
+| `resolved_env` lazy fallback | `Daemon::resolved_env` | Only reachable by a caller that skips `ensure_env`; it would still capture under the lock. |
+| Full fold rescanning | `editor-cli::App::rescan_edited` | Edits still rebuild fold regions (now ~1 ms at 20 000 lines); an indent-signature splice would make it incremental. |
+| Eager diff parsing | `PatchView.tsx`, `SplitPatchView.tsx` | Expanded patches are parsed when their text changes; unchanged files keep identity and intra-line marks are lazy. |
 | Git work before PR cache lookup | `Daemon::refresh_pull_requests` | Remote resolution still spawns Git per project before consulting the cache. |
-| Removed workspace file indexes | `daemon::file_index::Cache` | Project/workspace removal has no eviction path for retained listings. |
+| Trailing blank cells on the wire | `domain::Row` | ~70% of a typical full delta is default blanks. Eliding them is a decode-side amplification risk (a 6-byte row can claim 1 000 cells) unless the decoder is budgeted per frame. |
+| Frames as evaluated script | `bridge.rs` `app.emit("runtime:cells")` | Tauri events inline JSON into `eval`; a `tauri::ipc::Channel` with raw bytes would skip the parse and the per-frame object graph. |
+| Whole-shell publishes | `Emitter::shell`, `ShellSnapshot` | One changed section still resends every list (`external_agents` at 600 cards is ~486 KB). |
+| Transcript text under the lock | `Daemon` session transcript read | Builds up to 4 096 rows of cells under the core lock to keep a 36–96 KB text tail. |
+| Filesystem work in `build_spawn_spec` | `core.rs` | `inject_attention`, `ensure_config_dir` and executable resolution run under the core lock. |
+| `GetSnapshot` on the runtime thread | `RefreshSnapshot` in `bridge.rs` | A slow snapshot can overflow the client's 64-slot event queue and force a reconnect. |
 
 The original Rust-GUI observations about `ui::runtime` cloning the whole `Store`
 and one `impl Render` repainting the window are historical, not descriptions of
