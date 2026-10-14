@@ -14,13 +14,82 @@ pub const DEFAULT_SCROLLBACK_TAIL: usize = 200;
 /// A rendered cell color. Named 0–15 colors are folded into `Indexed`.
 /// `Default` means the terminal's default foreground or background, depending
 /// on which slot of the [`Cell`] it occupies.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Color {
     #[default]
     Default,
     Indexed(u8),
     Rgb(u8, u8, u8),
+}
+
+/// The externally tagged form JSON readers see.
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "Color")]
+enum TaggedColor {
+    Default,
+    Indexed(u8),
+    Rgb(u8, u8, u8),
+}
+
+const PACKED_RGB: u32 = 0x0100_0000;
+
+impl Color {
+    /// One integer for the binary wire: a variant name is most of a blank
+    /// cell's bytes, twice per cell. `0` is `Default`, `1..=256` is `Indexed`
+    /// shifted by one, and a high byte of 1 is `Rgb`; other high bytes are left
+    /// for variants this enum may gain.
+    const fn packed(self) -> u32 {
+        match self {
+            Self::Default => 0,
+            Self::Indexed(index) => index as u32 + 1,
+            Self::Rgb(r, g, b) => PACKED_RGB | (r as u32) << 16 | (g as u32) << 8 | b as u32,
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)] // each arm masks or bounds to a byte first
+    const fn unpacked(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Default),
+            1..=256 => Some(Self::Indexed((value - 1) as u8)),
+            _ if value & 0xFF00_0000 == PACKED_RGB => Some(Self::Rgb(
+                (value >> 16) as u8,
+                (value >> 8) as u8,
+                value as u8,
+            )),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for Color {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if !serializer.is_human_readable() {
+            return serializer.serialize_u32(self.packed());
+        }
+        match *self {
+            Self::Default => TaggedColor::Default,
+            Self::Indexed(index) => TaggedColor::Indexed(index),
+            Self::Rgb(r, g, b) => TaggedColor::Rgb(r, g, b),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Color {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if !deserializer.is_human_readable() {
+            let value = u32::deserialize(deserializer)?;
+            return Self::unpacked(value).ok_or_else(|| {
+                serde::de::Error::custom(format_args!("unknown packed color {value:#x}"))
+            });
+        }
+        Ok(match TaggedColor::deserialize(deserializer)? {
+            TaggedColor::Default => Self::Default,
+            TaggedColor::Indexed(index) => Self::Indexed(index),
+            TaggedColor::Rgb(r, g, b) => Self::Rgb(r, g, b),
+        })
+    }
 }
 
 /// Per-cell rendering flags packed into a `u16` bitset. Serialized as the raw
@@ -299,6 +368,44 @@ mod tests {
                 assert_eq!(a.0 & b.0, 0, "flags {a:?} and {b:?} overlap");
             }
         }
+    }
+
+    #[test]
+    fn a_color_packs_into_one_integer_and_back() {
+        let colors = [
+            Color::Default,
+            Color::Indexed(0),
+            Color::Indexed(127),
+            Color::Indexed(255),
+            Color::Rgb(0, 0, 0),
+            Color::Rgb(9, 128, 255),
+        ];
+        for color in colors {
+            assert_eq!(Color::unpacked(color.packed()), Some(color));
+            let bytes = rmp_serde::to_vec_named(&color).expect("encodes");
+            assert!(bytes.len() <= 5, "{color:?} took {} bytes", bytes.len());
+            let back: Color = rmp_serde::from_slice(&bytes).expect("decodes");
+            assert_eq!(back, color);
+        }
+        assert_eq!(Color::unpacked(0x0200_0000), None);
+    }
+
+    #[test]
+    fn a_color_keeps_its_tagged_json_shape() {
+        assert_eq!(
+            serde_json::to_string(&Color::Default).unwrap(),
+            "\"Default\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Color::Indexed(2)).unwrap(),
+            r#"{"Indexed":2}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Color::Rgb(9, 9, 9)).unwrap(),
+            r#"{"Rgb":[9,9,9]}"#
+        );
+        let back: Color = serde_json::from_str(r#"{"Rgb":[1,2,3]}"#).unwrap();
+        assert_eq!(back, Color::Rgb(1, 2, 3));
     }
 
     #[test]

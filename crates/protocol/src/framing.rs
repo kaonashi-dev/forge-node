@@ -81,8 +81,37 @@ struct FrameWriter {
     overflow: Option<usize>,
 }
 
+// MessagePack writes a cell as several one-to-three byte writes, so the write
+// that fits is kept inline and everything else is out of line: measured at
+// roughly a third of the encode time of a whole-grid delta.
 impl Write for FrameWriter {
+    #[inline]
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    #[inline]
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let len = self.bytes.len();
+        if bytes.len() <= self.bytes.capacity() - len
+            && len + bytes.len() <= MAX_FRAME_SIZE + LEN_PREFIX
+        {
+            self.bytes.extend_from_slice(bytes);
+            return Ok(());
+        }
+        self.grow_and_write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl FrameWriter {
+    #[cold]
+    #[inline(never)]
+    fn grow_and_write(&mut self, bytes: &[u8]) -> io::Result<()> {
         let size = (self.bytes.len() - LEN_PREFIX).saturating_add(bytes.len());
         if size > MAX_FRAME_SIZE {
             self.overflow = Some(size);
@@ -96,10 +125,6 @@ impl Write for FrameWriter {
             self.bytes.reserve_exact(capacity - self.bytes.len());
         }
         self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
@@ -179,6 +204,12 @@ pub struct FrameDecoder {
 /// Reclaim the consumed prefix once it exceeds this many bytes.
 const COMPACT_THRESHOLD: usize = 64 * 1024;
 
+/// An emptied buffer larger than this gives memory back down to
+/// [`RETAINED_CAPACITY`]: one 16 MiB response must not stay resident for the
+/// life of the connection.
+const SHRINK_ABOVE: usize = 1024 * 1024;
+const RETAINED_CAPACITY: usize = 256 * 1024;
+
 impl FrameDecoder {
     /// Create an empty decoder.
     #[must_use]
@@ -209,6 +240,9 @@ impl FrameDecoder {
         }
         if self.start == self.buf.len() {
             self.buf.clear();
+            if self.buf.capacity() > SHRINK_ABOVE {
+                self.buf.shrink_to(RETAINED_CAPACITY);
+            }
             self.start = 0;
         } else if self.start >= COMPACT_THRESHOLD {
             self.buf.drain(..self.start);
@@ -367,6 +401,14 @@ mod tests {
             ProtocolCodecError::FrameTooLarge { size, max }
                 if size == u32::MAX as usize && max == MAX_FRAME_SIZE
         ));
+    }
+
+    #[test]
+    fn a_drained_decoder_gives_back_a_large_buffer() {
+        let mut dec = FrameDecoder::new();
+        dec.push(&encode_frame(&"x".repeat(4 * SHRINK_ABOVE)).unwrap());
+        assert!(dec.next_frame().unwrap().is_some());
+        assert!(dec.buf.capacity() <= RETAINED_CAPACITY);
     }
 
     #[test]

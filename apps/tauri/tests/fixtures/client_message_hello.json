@@ -1,6 +1,6 @@
 {
   "Hello": {
-    "protocol_version": 31,
+    "protocol_version": 32,
     "client_version": "0.1.0",
     "client_kind": "Gui"
   }

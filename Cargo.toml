@@ -98,7 +98,7 @@ unicode-segmentation = "1"
 regex = "1"
 
 # System
-nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user", "poll"] }
+nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user", "poll", "socket"] }
 directories = "6"
 notify = "7"
 

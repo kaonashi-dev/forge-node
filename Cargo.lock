@@ -1006,6 +1006,7 @@ name = "domain"
 version = "0.1.5"
 dependencies = [
  "compact_str",
+ "rmp-serde",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2643,6 +2644,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases 0.2.2",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

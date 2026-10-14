@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 30` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 32` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -20,7 +20,15 @@ a Unix domain socket (ADR-004). The GUI-side implementation is
   never a truncated read.
 - `FrameDecoder` is the incremental decoder both sides use; `to_json_string`
   renders any message as JSON for debugging (`forge-daemon dump --json`, not
-  yet wired).
+  yet wired). A drained decoder gives back a buffer over 1 MiB, so one large
+  response does not stay resident for the life of the connection.
+- Grid cells are the exception to named fields: a binary `Cell` is a 4-tuple
+  `(text, fg, bg, flags)` and a binary `Color` is one integer (`0` default,
+  `1..=256` indexed + 1, `0x01rrggbb` RGB). JSON keeps both named and tagged, so
+  `forgectl` and the fixtures still read them as `{"Indexed": 2}`. A blank cell
+  is 5 bytes rather than 20.
+- The daemon raises each accepted socket's send buffer to 1 MiB; the macOS
+  default of 8 KiB split a whole-grid delta into about 25 writes.
 
 ## Tauri workbench envelope
 
