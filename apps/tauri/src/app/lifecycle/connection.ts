@@ -25,32 +25,34 @@ import type { ConnectedPayload, StatePayload } from "../../contracts/runtime";
 const syncEditorAutosave = createEditorAutosaveSync(setEditorAutosave);
 
 export function applyConnected(payload: ConnectedPayload): void {
-  clearSessionSelection();
-  applyShellSnapshot(payload.store);
-  syncEditorViewPaths(forgeStore.sessions);
-  syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false), true);
-  adoptPendingLaunches();
-
-  // A workbench command queued across a drop is answered by nothing, and its
-  // `loading` flag is what every one of these reads is guarded by: left up, the
-  // tree, the file and the decorations are never asked for again. The reads are
-  // idempotent and their surfaces re-ask on the next effect run.
+  // One batch, so nothing derived from both the store and the active session
+  // runs against a store that has moved and a session that has not.
   batch(() => {
+    clearSessionSelection();
+    applyShellSnapshot(payload.store);
+    syncEditorViewPaths(forgeStore.sessions);
+    syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false), true);
+    adoptPendingLaunches();
+
+    // A workbench command queued across a drop is answered by nothing, and its
+    // `loading` flag is what every one of these reads is guarded by: left up, the
+    // tree, the file and the decorations are never asked for again. The reads are
+    // idempotent and their surfaces re-ask on the next effect run.
     setLoading(reconcile({}));
     setFilesStore("treeRequest", null);
     const workspace = activeWorkspace();
     if (workspace) invalidateFileIndex(workspace);
-  });
-  setConnectionStore({
-    connectionGeneration: payload.connection_generation,
-    connection: {
-      kind: "connected",
-      instanceId: payload.daemon.instance_id,
-      version: payload.daemon.daemon_version,
-      editorSurface: payload.daemon.editor_surface,
-    },
-    activeSession: payload.active_session,
-    activeTerminal: payload.active_terminal,
+    setConnectionStore({
+      connectionGeneration: payload.connection_generation,
+      connection: {
+        kind: "connected",
+        instanceId: payload.daemon.instance_id,
+        version: payload.daemon.daemon_version,
+        editorSurface: payload.daemon.editor_surface,
+      },
+      activeSession: payload.active_session,
+      activeTerminal: payload.active_terminal,
+    });
   });
   directories.connection(true);
   reconnectFileWatches();
@@ -75,11 +77,11 @@ function adoptPendingLaunches(): void {
 }
 
 export function applyStatePayload(payload: StatePayload): void {
-  applyShellSnapshot(payload.store);
-  syncEditorViewPaths(forgeStore.sessions);
-  syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false));
-  adoptPendingLaunches();
   batch(() => {
+    applyShellSnapshot(payload.store);
+    syncEditorViewPaths(forgeStore.sessions);
+    syncEditorAutosave(forgeStore.sessions, readFlag(AUTOSAVE_KEY, false));
+    adoptPendingLaunches();
     setConnectionStore("activeSession", payload.active_session);
     setConnectionStore("activeTerminal", payload.active_terminal);
     settleSessionSelection(payload.active_session);

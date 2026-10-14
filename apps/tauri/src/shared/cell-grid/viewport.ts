@@ -99,8 +99,10 @@ export class Viewport {
   cellAt(row: number, col: number): ViewportCell | null {
     const line = this.rows[row];
     if (!line) return null;
+    const runs = line.r;
     let start = 0;
-    for (const [text, cols, fg, bg, flags] of line.r) {
+    for (let index = 0; index < runs.length; index += 1) {
+      const [text, cols, fg, bg, flags] = runs[index];
       if (col < start + cols) {
         return { text: glyphAt(text, cols, col - start), fg, bg, flags };
       }
@@ -129,8 +131,9 @@ export function rowColumns(line: WireRow | null, cols: number): string[] {
   for (const [text, runCols] of line.r) {
     if (start >= out.length) break;
     const codepoints = [...text];
+    const aligned = codepoints.length === runCols;
     for (let offset = 0; offset < runCols && start + offset < out.length; offset += 1) {
-      out[start + offset] = glyphAt(text, runCols, offset, codepoints);
+      out[start + offset] = aligned ? (codepoints[offset] ?? " ") : offset === 0 ? text : "";
     }
     start += runCols;
   }
@@ -138,9 +141,28 @@ export function rowColumns(line: WireRow | null, cols: number): string[] {
 }
 
 // A run whose code-point count differs from its width stays whole in its leading cell.
-function glyphAt(text: string, cols: number, offset: number, codepoints = [...text]): string {
-  if (codepoints.length === cols) return codepoints[offset] ?? " ";
+// Walks code units rather than spreading the run, which a caret blink would pay per read.
+function glyphAt(text: string, cols: number, offset: number): string {
+  let count = 0;
+  let from = -1;
+  let to = -1;
+  for (let index = 0; index < text.length && count <= cols; count += 1) {
+    const next = index + (isSurrogatePair(text, index) ? 2 : 1);
+    if (count === offset) {
+      from = index;
+      to = next;
+    }
+    index = next;
+  }
+  if (count === cols) return from < 0 ? " " : text.slice(from, to);
   return offset === 0 ? text : "";
+}
+
+function isSurrogatePair(text: string, index: number): boolean {
+  const high = text.charCodeAt(index);
+  if (high < 0xd800 || high > 0xdbff || index + 1 >= text.length) return false;
+  const low = text.charCodeAt(index + 1);
+  return low >= 0xdc00 && low <= 0xdfff;
 }
 
 /** Total columns a row's runs cover, for tests and for the trailing clear. */

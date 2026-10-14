@@ -1,4 +1,13 @@
-import { For, Show, createComputed, createEffect, createMemo, createSignal, on } from "solid-js";
+import {
+  For,
+  Show,
+  createComputed,
+  createEffect,
+  createMemo,
+  createSelector,
+  createSignal,
+  on,
+} from "solid-js";
 import { createStore } from "solid-js/store";
 import { applyRailTree } from "./railTree";
 import { SIDEBAR } from "../../actions/actions";
@@ -488,6 +497,7 @@ export function ProjectsView() {
    */
   const rows = createMemo(() => railRows(tree, collapsed()));
   const [selected, setSelected] = createSignal<string | null>(null);
+  const isSelected = createSelector(selected);
   const cursor = createMemo(() => {
     const id = selected();
     const found = rows().findIndex((row) => row.id === id);
@@ -761,9 +771,9 @@ export function ProjectsView() {
                     role="treeitem"
                     aria-level={1}
                     aria-expanded={isOpen(group.id ?? "")}
-                    aria-selected={selected() === `group:${group.id}`}
+                    aria-selected={isSelected(`group:${group.id}`)}
                     classList={{
-                      cursor: selected() === `group:${group.id}`,
+                      cursor: isSelected(`group:${group.id}`),
                     }}
                     onClick={() => {
                       selectRow(`group:${group.id}`);
@@ -800,9 +810,9 @@ export function ProjectsView() {
                           role="treeitem"
                           aria-level={group.name === null ? 1 : 2}
                           aria-expanded={isOpen(project.id)}
-                          aria-selected={selected() === `project:${project.id}`}
+                          aria-selected={isSelected(`project:${project.id}`)}
                           classList={{
-                            cursor: selected() === `project:${project.id}`,
+                            cursor: isSelected(`project:${project.id}`),
                           }}
                           onClick={() => {
                             selectRow(`project:${project.id}`);

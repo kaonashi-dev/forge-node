@@ -1,4 +1,5 @@
-import { createStore, reconcile } from "solid-js/store";
+import { batch } from "solid-js";
+import { createStore, reconcile, unwrap } from "solid-js/store";
 import type { ShellSnapshot } from "../contracts/runtime";
 import { agentVisible } from "./agentVisibility";
 import { setLoading } from "./loading";
@@ -45,24 +46,33 @@ export const [forgeStore, setForgeStore] = createStore<ShellSnapshot>(emptySnaps
  *
  * Rows without an `id` — providers, launchables, usage — fall back to a
  * positional merge, which is the right answer for lists the daemon sends whole
- * and in a stable order.
+ * and in a stable order. Discovered runs and pull requests are neither: one new
+ * transcript or a re-sorted pull request would shift every later row, so they
+ * are keyed by `session_id` and `url` instead.
  */
 export function applyShellSnapshot(snapshot: ShellSnapshot): void {
   const before = forgeStore.pull_requests;
   const answered =
     snapshot.pull_requests.refreshed_at !== before.refreshed_at ||
     snapshot.pull_requests.error !== before.error;
-  setForgeStore(
-    reconcile(
-      {
-        ...snapshot,
-        launchables: snapshot.launchables.filter(
-          (item) => item.kind === "shell" || agentVisible(snapshot.app_state, item.key),
-        ),
-      },
-      { key: "id" },
-    ),
-  );
+  batch(() => {
+    setForgeStore(
+      reconcile(
+        {
+          ...snapshot,
+          launchables: snapshot.launchables.filter(
+            (item) => item.kind === "shell" || agentVisible(snapshot.app_state, item.key),
+          ),
+          // The store's own values, which reconcile skips; they are keyed below.
+          external_agents: unwrap(forgeStore.external_agents),
+          pull_requests: unwrap(forgeStore.pull_requests),
+        },
+        { key: "id" },
+      ),
+    );
+    setForgeStore("external_agents", reconcile(snapshot.external_agents, { key: "session_id" }));
+    setForgeStore("pull_requests", reconcile(snapshot.pull_requests, { key: "url" }));
+  });
   // A refresh acks when it starts and is answered by the next snapshot.
   if (answered) setLoading("pull_requests", false);
 }

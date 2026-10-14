@@ -7,6 +7,7 @@
 // drag fires dozens of events per crossed cell, and none of them should reach
 // the runtime thread.
 
+import { isBlank } from "./blank";
 import { caretRect } from "./caret";
 import type { CellMetrics } from "./metrics";
 import { ColorCache, isDefaultBackground, type TerminalPalette } from "./palette";
@@ -66,6 +67,12 @@ export class TerminalRenderer {
   /** P4: one `#rrggbb` per colour rather than one per run per frame. */
   private colors: ColorCache;
   private current: TerminalPalette;
+  /**
+   * The text style last assigned to the context by `paintRun`, so a run in the
+   * same style skips re-parsing it. Reset before each row's runs.
+   */
+  private runFill: string | null = null;
+  private runFont: string | null = null;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -141,7 +148,7 @@ export class TerminalRenderer {
     const cell = viewport.cellAt(row, col);
     const wide = cell !== null && (cell.flags & FLAG_WIDE_CHAR) !== 0;
     const cols = wide ? 2 : 1;
-    this.paintCells(context, viewport, row, col, cols);
+    this.paintCells(context, viewport, row, col, cols, false);
     this.paintCursor(context, viewport, row);
   }
 
@@ -150,6 +157,8 @@ export class TerminalRenderer {
     if (!context) return null;
     context.setTransform(this.ratio, 0, 0, this.ratio, 0, 0);
     context.textBaseline = "alphabetic";
+    this.runFill = null;
+    this.runFont = null;
     return context;
   }
 
@@ -159,18 +168,22 @@ export class TerminalRenderer {
     // strip past the last column that paintCells would not touch.
     context.fillStyle = this.palette.bg;
     context.fillRect(0, row * cellHeight, this.width, cellHeight);
-    this.paintCells(context, viewport, row, 0, viewport.cols);
+    this.paintCells(context, viewport, row, 0, viewport.cols, true);
     this.paintLink(context, row);
     this.paintCursor(context, viewport, row);
   }
 
-  /** Text, selection and glyphs for `cols` cells starting at `col` on `row`. */
+  /**
+   * Text, selection and glyphs for `cols` cells starting at `col` on `row`.
+   * `cleared` says the caller already filled the row with the background.
+   */
   private paintCells(
     context: CanvasRenderingContext2D,
     viewport: Viewport,
     row: number,
     col: number,
     cols: number,
+    cleared: boolean,
   ): void {
     const { width: cellWidth, height: cellHeight } = this.metrics;
     const top = row * cellHeight;
@@ -178,13 +191,19 @@ export class TerminalRenderer {
     const width = cols * cellWidth;
     const end = col + cols;
 
-    context.fillStyle = this.palette.bg;
-    context.fillRect(left, top, width, cellHeight);
+    if (!cleared) {
+      context.fillStyle = this.palette.bg;
+      context.fillRect(left, top, width, cellHeight);
+    }
 
     const line = viewport.rows[row];
     if (line && col === 0 && cols >= viewport.cols) {
+      const runs = line.r;
       let x = 0;
-      for (const [, runCols, , bg] of line.r) {
+      for (let index = 0; index < runs.length; index += 1) {
+        const run = runs[index];
+        const runCols = run[1];
+        const bg = run[3];
         if (!isDefaultBackground(bg)) {
           context.fillStyle = this.colors.resolve(bg);
           context.fillRect(x * cellWidth, top, runCols * cellWidth, cellHeight);
@@ -216,16 +235,23 @@ export class TerminalRenderer {
       }
     }
 
+    // The fills above moved `fillStyle`, and the cursor and link painters
+    // between rows move both, so the cache only spans the runs of one row.
+    this.runFill = null;
+    this.runFont = null;
     if (line && col === 0 && cols >= viewport.cols) {
+      const runs = line.r;
       let x = 0;
-      for (const [text, runCols, fg, , flags] of line.r) {
-        this.paintRun(context, text, x * cellWidth, top, runCols * cellWidth, fg, flags);
+      for (let index = 0; index < runs.length; index += 1) {
+        const run = runs[index];
+        const runCols = run[1];
+        this.paintRun(context, run[0], x * cellWidth, top, runCols * cellWidth, run[2], run[4]);
         x += runCols;
       }
     } else {
       for (let index = col; index < end; index += 1) {
         const cell = viewport.cellAt(row, index);
-        if (!cell || cell.text.trim() === "") continue;
+        if (!cell || isBlank(cell.text)) continue;
         this.paintRun(context, cell.text, index * cellWidth, top, cellWidth, cell.fg, cell.flags);
       }
     }
@@ -258,17 +284,24 @@ export class TerminalRenderer {
     const decorated = (flags & (FLAG_UNDERLINE | FLAG_STRIKEOUT)) !== 0;
     // Whitespace with no rule under it paints nothing: the background is
     // already down, and a full-screen TUI is mostly this run.
-    if (!decorated && text.trim() === "") return;
+    if (!decorated && isBlank(text)) return;
 
     // P5. `save`/`restore` push and pop the whole 2D state — transform, clip,
     // every style — and this runs per run per frame. `globalAlpha` is the only
     // thing that needs restoring, and only a `DIM` run sets it, so the pair is
-    // scoped to that case; `fillStyle` and `font` are assigned unconditionally
-    // on the next run anyway.
+    // scoped to that case.
     const dim = (flags & FLAG_DIM) !== 0;
     if (dim) context.globalAlpha = DIM_ALPHA;
-    context.fillStyle = this.colors.resolve(fg);
-    context.font = this.font(flags);
+    const fill = this.colors.resolve(fg);
+    if (fill !== this.runFill) {
+      context.fillStyle = fill;
+      this.runFill = fill;
+    }
+    const font = this.font(flags);
+    if (font !== this.runFont) {
+      context.font = font;
+      this.runFont = font;
+    }
     context.fillText(text, x, top + this.metrics.baseline);
     if (flags & FLAG_UNDERLINE) {
       context.fillRect(x, top + this.metrics.height - RULE, width, 1);
@@ -302,7 +335,7 @@ export class TerminalRenderer {
     context.fillRect(rect.x, rect.y, rect.w, rect.h);
     if (cursor.shape === "block") {
       const text = cell?.text ?? "";
-      if (text.trim() !== "") {
+      if (!isBlank(text)) {
         context.fillStyle = this.palette.caretText;
         context.font = this.font(cell?.flags ?? 0);
         context.fillText(text, rect.x, rect.y + this.metrics.baseline);

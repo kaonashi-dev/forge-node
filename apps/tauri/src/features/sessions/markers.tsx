@@ -1,3 +1,4 @@
+import { createMemo } from "solid-js";
 import { Tooltip } from "../../ui/index";
 import { now } from "../../runtime/clock";
 import type { Session } from "../../contracts/runtime";
@@ -114,7 +115,9 @@ type StateMarkerProps = {
  * have to thread the same two values through for one glyph.
  */
 export function StateMarker(props: StateMarkerProps) {
-  const work = () => sessionWork(props.session, sessionAttention(props.session.id), now());
+  const work = createMemo(() =>
+    sessionWork(props.session, sessionAttention(props.session.id), now()),
+  );
 
   return (
     <Marker

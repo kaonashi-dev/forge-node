@@ -1,4 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { batch } from "solid-js";
+import { reconcile } from "solid-js/store";
 import { answer, failure, forCurrent, type Tagged } from "../workbenchAnswer";
 import { applySessionChanges, failSessionChanges } from "../../../features/git/sessionChangesStore";
 import { applyTranscript, failTranscript } from "../../../features/sessions/dialogs";
@@ -32,6 +34,10 @@ import { openComposeForWorkspace } from "../../../features/pull-requests/PrCompo
 
 type SessionFailure = { session: string; error: string };
 
+/* Keyed by path, so a refresh keeps the file objects whose patch it did not
+   change, and with them their parsed rows and mounted DOM. */
+const byPath = <T>(value: T) => reconcile(value, { key: "path" });
+
 export function bindGitEvents(): Promise<UnlistenFn[]> {
   /* Keyed on the session, not the checkout: the split lives beside one
      terminal, and a session's answer is still its own after the workbench has
@@ -41,15 +47,24 @@ export function bindGitEvents(): Promise<UnlistenFn[]> {
 
   return Promise.all([
     answer<WorkspaceDiff>("workbench:diff", "diff", (diff) =>
-      setGitStore({ diff, diffError: null }),
+      batch(() => {
+        setGitStore("diff", byPath(diff));
+        setGitStore("diffError", null);
+      }),
     ),
     failure("workbench:diff_failed", "diff", (error) => setGitStore("diffError", error)),
     answer<WorkspaceReview>("workbench:review", "review", (review) =>
-      setGitStore({ review, reviewError: null, reviewAt: Date.now() }),
+      batch(() => {
+        setGitStore("review", byPath(review));
+        setGitStore({ reviewError: null, reviewAt: Date.now() });
+      }),
     ),
     failure("workbench:review_failed", "review", (error) => setGitStore("reviewError", error)),
     answer<BranchCompare>("workbench:compare", "compare", (compare) =>
-      setGitStore({ compare, compareError: null }),
+      batch(() => {
+        setGitStore("compare", byPath(compare));
+        setGitStore("compareError", null);
+      }),
     ),
     failure("workbench:compare_failed", "compare", (error) => setGitStore("compareError", error)),
     sessionAnswer<SessionChanges>("workbench:session_changes", applySessionChanges),

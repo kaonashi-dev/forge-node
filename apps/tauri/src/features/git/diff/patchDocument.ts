@@ -8,32 +8,22 @@
 import { parsePatch, type PatchRow, type PatchRowKind } from "./patch";
 
 export type PatchDocument = {
-  /** The patch body, one row per line. */
-  text: string;
+  /**
+   * One row per patch line. A row's text omits its `+`/`-`/space marker, which
+   * is drawn in its own column, so selecting a block pastes as code.
+   */
   rows: PatchRow[];
   /** Row indexes (0-based) that start a hunk, for `]c` / `[c`. */
   hunkStarts: number[];
-  /** Widest line number on either side, so the gutters can be sized once. */
-  gutterWidth: number;
 };
 
 export function patchDocument(patch: string): PatchDocument {
   const rows = parsePatch(patch);
   const hunkStarts: number[] = [];
-  let widest = 0;
   rows.forEach((row, index) => {
     if (row.kind === "hunk") hunkStarts.push(index);
-    widest = Math.max(widest, row.before ?? 0, row.after ?? 0);
   });
-  return {
-    // The marker column is drawn separately, so the text is the row's content
-    // without its leading `+`/`-`/space — which is also what makes selecting a
-    // block of the patch produce pasteable code rather than a patch.
-    text: rows.map((row) => row.text).join("\n"),
-    rows,
-    hunkStarts,
-    gutterWidth: String(widest).length,
-  };
+  return { rows, hunkStarts };
 }
 
 /** The CSS class a row's line carries. */
@@ -98,6 +88,36 @@ export function intraLine(
     before: { from: prefix, to: before.length - suffix },
     after: { from: prefix, to: after.length - suffix },
   };
+}
+
+/**
+ * Intra-line marks by row index, computed the first time a row asks.
+ *
+ * A patch with no mounted rows — collapsed, or scrolled far away — then pays
+ * nothing for marks; a new `rows` array starts over.
+ */
+export function cachedIntraLine(rows: () => PatchRow[]): (index: number) => Segment | undefined {
+  let previous: PatchRow[] | undefined;
+  let marks = new Map<number, Segment>();
+  return (index) => {
+    const current = rows();
+    if (current !== previous) {
+      marks = intraLineMarks(current);
+      previous = current;
+    }
+    return marks.get(index);
+  };
+}
+
+function intraLineMarks(rows: PatchRow[]): Map<number, Segment> {
+  const marks = new Map<number, Segment>();
+  for (const pair of pairedRows(rows)) {
+    const spans = intraLine(rows[pair.removed]!.text, rows[pair.added]!.text);
+    if (!spans) continue;
+    if (spans.before.to > spans.before.from) marks.set(pair.removed, spans.before);
+    if (spans.after.to > spans.after.from) marks.set(pair.added, spans.after);
+  }
+  return marks;
 }
 
 /**

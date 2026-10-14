@@ -26,6 +26,7 @@ import {
 import { LatencyProbe, PaintProbe, PAINT_BUDGET_MS } from "../../shared/cell-grid/latency";
 import { gridSize, measureCell, type CellMetrics } from "../../shared/cell-grid/metrics";
 import { readPalette } from "../../shared/cell-grid/palette";
+import { watchPixelRatio } from "../../shared/cell-grid/pixelRatio";
 import { TerminalRenderer, type LinkSpan } from "../../shared/cell-grid/renderer";
 import {
   cellAtPoint,
@@ -269,6 +270,18 @@ export function TerminalPane(props: {
 
   createEffect(
     on(
+      () => props.active,
+      (active) => {
+        if (active === false) return;
+        repaintAll = true;
+        schedule();
+      },
+      { defer: true },
+    ),
+  );
+
+  createEffect(
+    on(
       [
         () => props.active,
         () => boundSession(),
@@ -394,6 +407,12 @@ export function TerminalPane(props: {
       if (payload.scrollback_len !== terminalStore.scrollbackLen) {
         setTerminalStore("scrollbackLen", payload.scrollback_len);
       }
+    }
+    // An inactive pane is a hidden slot that the host keeps streaming into:
+    // the viewport stays current, and the canvas waits until it is visible.
+    if (props.active === false) {
+      repaintAll = true;
+      return;
     }
     schedule();
   }
@@ -966,6 +985,7 @@ export function TerminalPane(props: {
 
     const observer = new ResizeObserver(() => measurePane());
     observer.observe(host);
+    const stopRatio = watchPixelRatio(measurePane);
     measurePane();
 
     // The bundled JetBrains Mono may not be resident on the first frame, and a
@@ -1027,6 +1047,7 @@ export function TerminalPane(props: {
       stopCells();
       stopClipboard();
       observer.disconnect();
+      stopRatio();
       themes.disconnect();
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);

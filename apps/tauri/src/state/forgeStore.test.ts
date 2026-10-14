@@ -1,7 +1,12 @@
 import { createComputed, createRoot } from "solid-js";
 import { describe, expect, it } from "vitest";
 import { sessionFixture } from "../contracts/sessions.fixture";
-import type { Launchable, ShellSnapshot } from "../contracts/runtime";
+import type {
+  ExternalAgentSession,
+  Launchable,
+  PullRequest,
+  ShellSnapshot,
+} from "../contracts/runtime";
 import { applyShellSnapshot, emptySnapshot, forgeStore } from "./forgeStore";
 import { loading, setLoading } from "./loading";
 
@@ -152,6 +157,78 @@ describe("applyShellSnapshot", () => {
     applyShellSnapshot(snapshot([first()]));
 
     expect(forgeStore.sessions.map((session) => session.id)).toEqual(["a"]);
+  });
+});
+
+describe("rows keyed by something other than an id", () => {
+  const run = (session_id: string): ExternalAgentSession => ({
+    session_id,
+    project_id: "p-1",
+    workspace_id: "w-1",
+    provider: "claude",
+    profile_id: null,
+    title: session_id,
+    branch: null,
+    preview: null,
+    model: null,
+    message_count: 1,
+    subagent_count: 0,
+    transcript_path: `/tmp/${session_id}.jsonl`,
+    store: "File",
+    started_at: "2026-01-01T00:00:00Z",
+    last_activity: "2026-01-01T00:00:00Z",
+  });
+  const pr = (number: number, updated_at = "2026-01-01T00:00:00Z"): PullRequest => ({
+    project_id: "p1",
+    repository: "acme/widget",
+    host: "github.com",
+    number,
+    title: `#${number}`,
+    body: "",
+    body_truncated: false,
+    url: `https://github.com/acme/widget/pull/${number}`,
+    author: "rin",
+    base_ref: "main",
+    head_ref: "topic",
+    is_draft: false,
+    review_decision: null,
+    labels: [],
+    assignees: [],
+    review_requests: [],
+    additions: 0,
+    deletions: 0,
+    changed_files: 0,
+    comment_count: 0,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at,
+    relations: { assigned: false, review_requested: false, authored: false },
+  });
+  const withRows = (runs: ExternalAgentSession[], prs: PullRequest[]): ShellSnapshot => ({
+    ...emptySnapshot(),
+    external_agents: runs,
+    pull_requests: { ...emptySnapshot().pull_requests, pull_requests: prs },
+  });
+
+  // A new transcript sorts first; matched by position, it would rewrite every
+  // card below it.
+  it("keeps a discovered run's identity when another lands above it", () => {
+    applyShellSnapshot(withRows([run("old")], []));
+    const before = forgeStore.external_agents[0];
+
+    applyShellSnapshot(withRows([run("new"), run("old")], []));
+
+    expect(forgeStore.external_agents.map((item) => item.session_id)).toEqual(["new", "old"]);
+    expect(forgeStore.external_agents[1]).toBe(before);
+  });
+
+  it("keeps a pull request's identity when the list re-sorts", () => {
+    applyShellSnapshot(withRows([], [pr(1), pr(2)]));
+    const second = forgeStore.pull_requests.pull_requests[1];
+
+    applyShellSnapshot(withRows([], [pr(2, "2026-01-02T00:00:00Z"), pr(1)]));
+
+    expect(forgeStore.pull_requests.pull_requests[0]).toBe(second);
+    expect(second.updated_at).toBe("2026-01-02T00:00:00Z");
   });
 });
 
