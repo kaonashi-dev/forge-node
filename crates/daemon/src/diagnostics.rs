@@ -11,6 +11,7 @@
 //! itself is a subprocess per keystroke, which is a cost this repository prices
 //! rather than assumes.
 
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -32,10 +33,11 @@ const KILL_REAP_GRACE: Duration = Duration::from_secs(5);
 /// broken build cannot put a megabyte through a socket sized for a buffer.
 pub const MAX_DIAGNOSTICS: usize = 500;
 
-/// Most output bytes read from a checker.
+/// Most output bytes kept from a checker, across both streams.
 ///
-/// Clamped before the parse, not after: a build that prints a gigabyte is a
-/// build that prints a gigabyte, and `wait_with_output` would hold all of it.
+/// Clamped while reading, not after: each stream keeps at most this much and
+/// the rest is read into a sink, so a build that prints a gigabyte still runs
+/// to its end and is reaped without any of it being held.
 pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Run `command` in `root` and keep what it said about `relative`.
@@ -61,7 +63,7 @@ fn capture(root: &Path, program: &str, args: &[String]) -> Option<String> {
     use std::os::unix::process::CommandExt as _;
 
     let mut cmd = Command::new(program);
-    let child = cmd
+    let mut child = cmd
         .args(args)
         .current_dir(root)
         // Stable, machine-parseable output regardless of the user's locale.
@@ -74,18 +76,25 @@ fn capture(root: &Path, program: &str, args: &[String]) -> Option<String> {
         .spawn()
         .ok()?;
     let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        let streams = std::thread::scope(|scope| {
+            let stderr = scope.spawn(move || read_capped(stderr));
+            let stdout = read_capped(stdout);
+            (stdout, stderr.join().unwrap_or_default())
+        });
+        let _ = tx.send(child.wait().map(|_| streams));
     });
 
     match rx.recv_timeout(TIMEOUT) {
-        Ok(Ok(output)) => {
+        Ok(Ok((stdout, stderr))) => {
             // Both streams: cargo writes diagnostics to stderr and oxlint to
             // stdout, and guessing wrong means finding nothing at all.
             let mut body = String::new();
-            for stream in [&output.stdout, &output.stderr] {
+            for stream in [&stdout, &stderr] {
                 let room = MAX_OUTPUT_BYTES.saturating_sub(body.len());
                 if room == 0 {
                     break;
@@ -103,6 +112,19 @@ fn capture(root: &Path, program: &str, args: &[String]) -> Option<String> {
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => None,
     }
+}
+
+/// The first [`MAX_OUTPUT_BYTES`] of a stream, with the rest drained so the
+/// checker never blocks on a full pipe.
+fn read_capped(reader: Option<impl Read>) -> Vec<u8> {
+    let mut kept = Vec::new();
+    if let Some(mut reader) = reader {
+        let _ = (&mut reader)
+            .take(MAX_OUTPUT_BYTES as u64)
+            .read_to_end(&mut kept);
+        let _ = std::io::copy(&mut reader, &mut std::io::sink());
+    }
+    kept
 }
 
 fn kill_group(pid: u32) {
@@ -248,6 +270,21 @@ src/main.rs:notanumber:1: error: nope
             many.push_str(&format!("a.rs:{}:1: error: e{n}\n", n + 1));
         }
         assert_eq!(parse(&many, "a.rs").len(), MAX_DIAGNOSTICS);
+    }
+
+    /// More output than the cap still runs to the end: the checker is drained
+    /// rather than left blocked on a full pipe, and only the head is kept.
+    #[test]
+    fn output_past_the_cap_is_drained_not_held() {
+        let script = format!(
+            "printf 'a.rs:3:1: error: first\\n'; head -c {} /dev/zero; echo done >&2",
+            MAX_OUTPUT_BYTES * 2
+        );
+        let body = capture(Path::new("/"), "/bin/sh", &["-c".to_owned(), script])
+            .expect("the checker ran");
+        assert!(body.len() <= MAX_OUTPUT_BYTES);
+        assert!(body.starts_with("a.rs:3:1: error: first"));
+        assert_eq!(parse(&body, "a.rs").len(), 1);
     }
 
     #[test]

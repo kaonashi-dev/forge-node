@@ -503,9 +503,11 @@ Four rules keep it honest and cheap:
 - **Best effort, never an error.** An unreadable file, a malformed line or a
   missing directory yields fewer results.
 - **Bounded.** Only the 60 most recently modified transcripts per directory are
-  read, and a Claude transcript is streamed line by line — parsed only for the
-  records the scan reads anything out of, with the `timestamp` recovered from
-  the raw line so first/last activity stays exact anyway.
+  read, and a Claude transcript is streamed record by record through one reused
+  buffer (`agents::jsonl`) — a record over 1 MiB is skipped without being held,
+  and the rest are parsed into typed fields only when the scan reads anything
+  out of them, with the `timestamp` recovered from the raw line so first/last
+  activity stays exact anyway.
 - **Off the lock.** `Daemon::snapshot` releases the core lock before calling
   `discover`, so transcript IO never blocks daemon state.
 - **Cached.** `external_agents::Cache` reuses a pass for 10 s, keyed on a
@@ -564,7 +566,9 @@ The same four rules as discovery apply, with different constants:
 
 - **Best effort.** A malformed line is skipped, never an error.
 - **Bounded**, and it says so: the 500 most recently modified transcripts per
-  provider are read and the rest are counted into `UsageAnalytics::skipped`. A
+  provider are read, a store's walk stops at 20,000 directory entries, and a
+  record over 8 MiB is skipped without being held; every transcript that loses
+  something to one of those caps is counted into `UsageAnalytics::skipped`. A
   bounded scan that looks exhaustive is worse than one that admits its bound.
 - **Off the lock**, behind `daemon::usage_stats::Cache` with a 60 s TTL keyed on
   the window, so re-rendering the page re-reads nothing and asking a *different*

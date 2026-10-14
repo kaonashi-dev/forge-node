@@ -4,7 +4,7 @@
 //! through [`crate::run_git_network`] like [`crate::fetch`], and it is never
 //! automatic: only an explicit user-confirmed request may call it, never a sweeper.
 
-use crate::command::{run_git, run_git_network, GitError, GIT_NETWORK_TIMEOUT};
+use crate::command::{run_git, run_git_network, run_git_prefix, GitError, GIT_NETWORK_TIMEOUT};
 use crate::repository::{current_branch, default_branch, status};
 use std::path::Path;
 use std::time::Duration;
@@ -154,8 +154,11 @@ fn collect_patch(repo: &Path) -> Result<(String, bool), GitError> {
         ["diff", "--cached", "--"].as_slice(),
         ["diff", "--"].as_slice(),
     ] {
-        let out = run_git(Some(repo), args)?;
-        if !out.success() {
+        // One byte past what is left, so a patch that fills the rest exactly
+        // is not mistaken for one that overflowed it.
+        let room = (MAX_PATCH_BYTES + 1).saturating_sub(patch.len());
+        let (out, cut) = run_git_prefix(Some(repo), args, room)?;
+        if !cut && !out.success() {
             // An empty repo with no commits yet fails `diff --cached`; skip.
             continue;
         }
@@ -165,8 +168,8 @@ fn collect_patch(repo: &Path) -> Result<(String, bool), GitError> {
             }
             patch.push_str(&out.stdout);
         }
-        if patch.len() > MAX_PATCH_BYTES {
-            let mut end = MAX_PATCH_BYTES;
+        if cut || patch.len() > MAX_PATCH_BYTES {
+            let mut end = MAX_PATCH_BYTES.min(patch.len());
             while !patch.is_char_boundary(end) {
                 end -= 1;
             }

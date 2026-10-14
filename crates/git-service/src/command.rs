@@ -140,6 +140,10 @@ pub enum GitError {
     #[error("path is not valid UTF-8: {0}")]
     NonUtf8Path(PathBuf),
 
+    /// [`run_git_bounded`] killed the command when its output passed `limit`.
+    #[error("git output exceeds {limit}-byte capture budget")]
+    OutputLimit { limit: usize },
+
     /// An I/O error while spawning or communicating with `git`.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -182,10 +186,20 @@ pub(crate) fn git_path(dir: &Path, name: &str) -> Option<PathBuf> {
 /// - [`GitError::Timeout`] if the command runs longer than [`GIT_TIMEOUT`]; the
 ///   child process is sent `SIGKILL` before returning.
 pub fn run_git(repo: Option<&Path>, args: &[&str]) -> Result<GitOutput, GitError> {
-    run_git_inner(repo, args, GIT_TIMEOUT, false, None)
+    run_git_inner(repo, args, GIT_TIMEOUT, false, Capture::All).map(|(output, _)| output)
 }
 
+/// Most a bounded capture keeps of either stream.
+const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Stderr kept by [`run_git_prefix`], whatever its stdout limit.
+const PREFIX_STDERR_BYTES: usize = 64 * 1024;
+
 /// Refuse stdout or stderr over `limit` bytes, killing and reaping the command group.
+///
+/// # Errors
+/// As [`run_git`], plus [`GitError::OutputLimit`] when either stream passes
+/// `limit` (itself capped at 8 MiB).
 pub fn run_git_bounded(
     repo: Option<&Path>,
     args: &[&str],
@@ -196,8 +210,41 @@ pub fn run_git_bounded(
         args,
         GIT_TIMEOUT,
         false,
-        Some(limit.min(8 * 1024 * 1024)),
+        Capture::Refuse(limit.min(MAX_CAPTURE_BYTES)),
     )
+    .map(|(output, _)| output)
+}
+
+/// Keep the first `limit` bytes of stdout, and kill and reap the command group
+/// once it passes them.
+///
+/// Returns whether anything was cut. A cut command was killed, so its status
+/// says nothing about the prefix; a caller reads `cut` first. Stderr has its
+/// own cap, so a small `limit` is not spent on a warning; passing that cap
+/// also cuts, because the command is killed with its stdout unfinished.
+///
+/// # Errors
+/// As [`run_git`].
+pub fn run_git_prefix(
+    repo: Option<&Path>,
+    args: &[&str],
+    limit: usize,
+) -> Result<(GitOutput, bool), GitError> {
+    run_git_inner(
+        repo,
+        args,
+        GIT_TIMEOUT,
+        false,
+        Capture::Prefix(limit.min(MAX_CAPTURE_BYTES)),
+    )
+}
+
+/// How much of a command's output is held.
+#[derive(Clone, Copy)]
+enum Capture {
+    All,
+    Refuse(usize),
+    Prefix(usize),
 }
 
 /// Run a `git` command that talks to a remote, with its own timeout and with
@@ -216,7 +263,7 @@ pub fn run_git_network(
     args: &[&str],
     timeout: Duration,
 ) -> Result<GitOutput, GitError> {
-    run_git_inner(repo, args, timeout, true, None)
+    run_git_inner(repo, args, timeout, true, Capture::All).map(|(output, _)| output)
 }
 
 fn run_git_inner(
@@ -224,8 +271,8 @@ fn run_git_inner(
     args: &[&str],
     timeout: Duration,
     network: bool,
-    output_limit: Option<usize>,
-) -> Result<GitOutput, GitError> {
+    capture: Capture,
+) -> Result<(GitOutput, bool), GitError> {
     use std::os::unix::process::CommandExt as _;
 
     let mut cmd = Command::new("git");
@@ -277,19 +324,26 @@ fn run_git_inner(
     // enforce a wall-clock timeout with `recv_timeout` (std has none built in).
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(match output_limit {
-            Some(limit) => bounded_output(child, limit),
-            None => child.wait_with_output(),
+        let _ = tx.send(match capture {
+            Capture::All => child.wait_with_output().map(|output| (output, false)),
+            Capture::Refuse(limit) => bounded_output(child, limit, limit, false),
+            Capture::Prefix(limit) => bounded_output(child, limit, PREFIX_STDERR_BYTES, true),
         });
     });
 
     match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) => Ok(GitOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            status: output.status.code().unwrap_or(-1),
+        Ok(Ok((output, cut))) => Ok((
+            GitOutput {
+                stdout: decode(output.stdout),
+                stderr: decode(output.stderr),
+                status: output.status.code().unwrap_or(-1),
+            },
+            cut,
+        )),
+        Ok(Err(e)) => Err(match e.get_ref().and_then(|inner| inner.downcast_ref()) {
+            Some(&OverLimit(limit)) => GitError::OutputLimit { limit },
+            None => GitError::Io(e),
         }),
-        Ok(Err(e)) => Err(GitError::Io(e)),
         Err(mpsc::RecvTimeoutError::Timeout) => {
             kill_process_group(pid);
             // Do not return while the worker still owns an unreaped child: the
@@ -306,30 +360,63 @@ fn run_git_inner(
     }
 }
 
+/// Lossy only when it has to be: valid UTF-8, the usual case, keeps its buffer
+/// instead of being copied.
+fn decode(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
+
+#[derive(Debug)]
+struct OverLimit(usize);
+
+impl std::fmt::Display for OverLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "git output exceeds {}-byte capture budget", self.0)
+    }
+}
+
+impl std::error::Error for OverLimit {}
+
+/// Capture each stream up to its limit; past it, `prefix` keeps what fit and
+/// reports a cut, otherwise the capture is refused. Either way the group is
+/// killed and the child reaped before returning.
 fn bounded_output(
     mut child: std::process::Child,
-    limit: usize,
-) -> std::io::Result<std::process::Output> {
+    stdout_limit: usize,
+    stderr_limit: usize,
+    prefix: bool,
+) -> std::io::Result<(std::process::Output, bool)> {
     let pid = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     std::thread::scope(|scope| {
-        let stderr = scope.spawn(move || capture(stderr, limit, pid));
-        let stdout = capture(stdout, limit, pid);
+        let stderr = scope.spawn(move || capture(stderr, stderr_limit, prefix, pid));
+        let stdout = capture(stdout, stdout_limit, prefix, pid);
         let stderr = stderr.join().unwrap_or_else(|_| {
             kill_process_group(pid);
             Err(std::io::Error::other("git stderr reader panicked"))
         });
         let status = child.wait()?;
-        Ok(std::process::Output {
-            status,
-            stdout: stdout?,
-            stderr: stderr?,
-        })
+        let (stdout, stdout_cut) = stdout?;
+        let (stderr, stderr_cut) = stderr?;
+        Ok((
+            std::process::Output {
+                status,
+                stdout,
+                stderr,
+            },
+            stdout_cut || stderr_cut,
+        ))
     })
 }
 
-fn capture(reader: Option<impl std::io::Read>, limit: usize, pid: u32) -> std::io::Result<Vec<u8>> {
+fn capture(
+    reader: Option<impl std::io::Read>,
+    limit: usize,
+    prefix: bool,
+    pid: u32,
+) -> std::io::Result<(Vec<u8>, bool)> {
     use std::io::Read;
     let mut bytes = Vec::new();
     if let Some(reader) = reader {
@@ -338,13 +425,15 @@ fn capture(reader: Option<impl std::io::Read>, limit: usize, pid: u32) -> std::i
             return Err(error);
         }
     }
-    if bytes.len() > limit {
-        kill_process_group(pid);
-        return Err(std::io::Error::other(format!(
-            "git output exceeds {limit}-byte capture budget"
-        )));
+    if bytes.len() <= limit {
+        return Ok((bytes, false));
     }
-    Ok(bytes)
+    kill_process_group(pid);
+    if !prefix {
+        return Err(std::io::Error::other(OverLimit(limit)));
+    }
+    bytes.truncate(limit);
+    Ok((bytes, true))
 }
 
 /// How long to wait for the worker to reap a killed child before giving up on it.
@@ -387,7 +476,7 @@ mod tests {
                 .spawn()
                 .unwrap();
             let pid = child.id();
-            let error = bounded_output(child, 128).unwrap_err();
+            let error = bounded_output(child, 128, 128, false).unwrap_err();
             assert!(error.to_string().contains("capture budget"));
             assert_eq!(
                 nix::sys::wait::waitpid(
@@ -397,6 +486,39 @@ mod tests {
                 Err(nix::errno::Errno::ECHILD)
             );
         }
+    }
+
+    #[test]
+    fn prefix_capture_keeps_exactly_the_limit_and_reaps_the_killed_process() {
+        use std::os::unix::process::CommandExt;
+        let child = Command::new("/bin/sh")
+            .args(["-c", "while :; do printf 'a line\\n'; done"])
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let (output, cut) = bounded_output(child, 64, PREFIX_STDERR_BYTES, true).unwrap();
+        assert!(cut);
+        assert_eq!(output.stdout, "a line\n".repeat(10).as_bytes()[..64]);
+        assert_eq!(
+            nix::sys::wait::waitpid(
+                nix::unistd::Pid::from_raw(pid as i32),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG)
+            ),
+            Err(nix::errno::Errno::ECHILD)
+        );
+    }
+
+    #[test]
+    fn an_overflowing_bounded_command_is_its_own_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = run_git_bounded(Some(dir.path()), &["--version"], 4).unwrap_err();
+        assert!(
+            matches!(error, GitError::OutputLimit { limit: 4 }),
+            "{error:?}"
+        );
     }
 
     fn output(status: i32, stdout: &str, stderr: &str) -> GitOutput {
