@@ -21,8 +21,12 @@ use client::CellGrid;
 use domain::{Cell, CellFlags, Color, CursorShape, Row, TermModes, TerminalId};
 use serde::Serialize;
 
-/// Rows fetched per scrollback request.
+/// Rows fetched per scrollback request, at least.
 pub const SCROLLBACK_PAGE: u32 = 64;
+
+/// The most rows one scrollback request asks for: a tall viewport's holes plus
+/// the margin, well inside the daemon's own per-fetch limit.
+pub const MAX_SCROLLBACK_REQUEST: u32 = 1_024;
 
 /// Wire sentinel for the terminal's default *foreground*.
 const COLOR_FG: i64 = -1;
@@ -152,21 +156,21 @@ pub fn viewport_row(grid: &CellGrid, scroll_offset: u64, line: usize) -> Option<
     }
 }
 
-/// Whether every scrollback row the viewport needs is already cached.
+/// The first and last absolute scrollback lines a viewport at
+/// `scroll_offset` paints and the cache does not hold, or `None` when it holds
+/// them all.
+///
+/// Both ends, not the top alone: rows that scrolled off after the attach are
+/// never cached by a delta, so a page jump can leave a hole below a window
+/// anchored at the top, and that hole would be fetched again on every frame.
 #[must_use]
-pub fn viewport_is_cached(grid: &CellGrid, scroll_offset: u64) -> bool {
-    (0..grid.visible.len()).all(|line| viewport_row(grid, scroll_offset, line).is_some())
-}
-
-/// The absolute scrollback index of the topmost row a viewport at
-/// `scroll_offset` needs, or `None` when the viewport is entirely live output.
-#[must_use]
-pub fn oldest_needed_line(grid: &CellGrid, scroll_offset: u64) -> Option<i64> {
-    if scroll_offset == 0 {
-        return None;
-    }
-    let top = -(scroll_offset as i64);
-    Some(top + grid.scrollback_len as i64)
+pub fn missing_history(grid: &CellGrid, scroll_offset: u64) -> Option<(i64, i64)> {
+    let base = grid.scrollback_len as i64 - scroll_offset as i64;
+    let mut missing = (0..grid.visible.len())
+        .filter(|line| viewport_row(grid, scroll_offset, *line).is_none())
+        .map(|line| base + line as i64);
+    let first = missing.next()?;
+    Some((first, missing.next_back().unwrap_or(first)))
 }
 
 /// Encode one row into style runs.
@@ -737,17 +741,27 @@ mod tests {
     }
 
     #[test]
-    fn the_oldest_needed_line_is_absolute_and_live_output_needs_none() {
-        let grid = grid(vec![plain("a"), plain("b")], vec![plain("h")]);
-        assert_eq!(oldest_needed_line(&grid, 0), None);
-        assert_eq!(oldest_needed_line(&grid, 1), Some(0));
-    }
-
-    #[test]
-    fn a_viewport_is_cached_only_when_every_row_it_paints_is_there() {
-        let grid = grid(vec![plain("a"), plain("b")], vec![plain("h")]);
-        assert!(viewport_is_cached(&grid, 0));
-        assert!(viewport_is_cached(&grid, 1));
-        assert!(!viewport_is_cached(&grid, 2));
+    fn missing_history_names_both_ends_of_every_uncached_row() {
+        // Ten lines of history, of which the snapshot cached the newest two.
+        let grid = CellGrid::from_snapshot(&TerminalSnapshot {
+            scrollback_generation: 0,
+            seq: 1,
+            size: PtySize {
+                cols: 1,
+                rows: 3,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            scrollback_len: 10,
+            visible: vec![plain("a"), plain("b"), plain("c")],
+            scrollback_tail: vec![plain("y"), plain("z")],
+            cursor: Cursor::default(),
+            modes: TermModes::default(),
+            title: None,
+        });
+        assert_eq!(missing_history(&grid, 0), None);
+        assert_eq!(missing_history(&grid, 2), None);
+        assert_eq!(missing_history(&grid, 3), Some((7, 7)));
+        assert_eq!(missing_history(&grid, 5), Some((5, 7)));
     }
 }

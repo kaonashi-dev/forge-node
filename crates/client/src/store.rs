@@ -27,8 +27,12 @@ pub enum DeltaOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EventOutcome {
-    /// The event mutated replica state (or was a benign no-op such as a notice).
+    /// The event mutated replica state.
     Applied,
+    /// The event carries nothing the replica keeps (a notice, an editor frame,
+    /// orchestration progress), so anything derived from the replica is
+    /// unchanged by it.
+    Unchanged,
     /// A [`DaemonEvent::TerminalDelta`] could not be applied because of a
     /// sequence gap; the GUI must re-attach the named terminal.
     NeedsResync {
@@ -299,7 +303,7 @@ impl Store {
             }
             // Provisioning results are read where they are shown, like a diff
             // or a rebase state: nothing here caches them.
-            DaemonEvent::SharesApplied { .. } => EventOutcome::Applied,
+            DaemonEvent::SharesApplied { .. } => EventOutcome::Unchanged,
             DaemonEvent::PullRequestsUpdated { state } => {
                 self.pull_requests = state.clone();
                 EventOutcome::Applied
@@ -317,8 +321,9 @@ impl Store {
                 EventOutcome::Applied
             }
             // Notices and shutdown carry no replica state; the GUI reacts to them
-            // directly. The catch-all also covers variants added by a newer peer.
-            _ => EventOutcome::Applied,
+            // directly. The catch-all also covers variants added by a newer peer,
+            // which this build cannot have stored either.
+            _ => EventOutcome::Unchanged,
         }
     }
 

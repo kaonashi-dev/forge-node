@@ -2471,9 +2471,9 @@ fn scroll(
 /// Ask the daemon for the history the viewport is about to paint, if the cache
 /// does not already hold it.
 ///
-/// The request starts half a page earlier than strictly needed, so scrolling
-/// steadily in one direction keeps hitting the cache instead of stalling on a
-/// round trip at every page boundary.
+/// The request covers every missing row plus half a page either side, so
+/// scrolling steadily in one direction keeps hitting the cache instead of
+/// stalling on a round trip at every page boundary.
 fn request_scrollback(
     client: &Client,
     store: &mut Store,
@@ -2484,14 +2484,15 @@ fn request_scrollback(
         return;
     };
     let offset = scroll_offset.min(grid.scrollback_len);
-    if cells::viewport_is_cached(grid, offset) {
-        return;
-    }
-    let Some(oldest) = cells::oldest_needed_line(grid, offset) else {
+    let Some((first, last)) = cells::missing_history(grid, offset) else {
         return;
     };
-    let from_line = (oldest - i64::from(cells::SCROLLBACK_PAGE) / 2).max(0);
-    match client.fetch_scrollback(terminal, from_line, cells::SCROLLBACK_PAGE) {
+    let margin = i64::from(cells::SCROLLBACK_PAGE) / 2;
+    let from_line = (first - margin).max(0);
+    let count = u32::try_from(last + margin + 1 - from_line)
+        .unwrap_or(u32::MAX)
+        .clamp(cells::SCROLLBACK_PAGE, cells::MAX_SCROLLBACK_REQUEST);
+    match client.fetch_scrollback(terminal, from_line, count) {
         Ok(block) => store.merge_scrollback(&terminal, &block),
         Err(error) => tracing::warn!(%error, "failed to fetch scrollback"),
     }
@@ -2501,6 +2502,10 @@ fn request_scrollback(
 #[derive(Default)]
 struct Batch {
     shell: bool,
+    /// `shell` before the event being absorbed, restored when the store keeps
+    /// nothing from that event: [`ShellSnapshot`] is a pure function of the
+    /// store, so such an event cannot change it.
+    shell_before_event: bool,
     damage: Option<Damage>,
     split_damage: Option<(TerminalId, Damage)>,
     split_removed: bool,
@@ -2553,6 +2558,7 @@ impl Batch {
         at: &Attached,
         split: Option<&SplitAttachment>,
     ) {
+        self.shell_before_event = self.shell;
         if matches!(event, DaemonEvent::FactoryReset) {
             self.active_session_removed = true;
         }
@@ -2643,6 +2649,14 @@ impl Batch {
         }
     }
 
+    /// Withdraw the shell publish the absorbed event asked for when the store
+    /// kept nothing of it.
+    fn settle(&mut self, outcome: EventOutcome) {
+        if outcome == EventOutcome::Unchanged {
+            self.shell = self.shell_before_event;
+        }
+    }
+
     /// Apply the event to the replica, re-attaching when the sequence gapped.
     ///
     /// A resync is only worth the round trip for the terminal the main canvas
@@ -2656,7 +2670,9 @@ impl Batch {
         active_terminal: TerminalId,
         split: Option<&SplitAttachment>,
     ) {
-        if let EventOutcome::NeedsResync { terminal_id } = store.apply_event(event) {
+        let outcome = store.apply_event(event);
+        self.settle(outcome);
+        if let EventOutcome::NeedsResync { terminal_id } = outcome {
             let split_size = split
                 .filter(|open| open.terminal == terminal_id)
                 .map(|open| open.size);
@@ -2675,11 +2691,13 @@ impl Batch {
     }
 }
 
-/// Whether an event changes anything [`ShellSnapshot`] carries.
+/// Whether an event changes anything [`ShellSnapshot`] carries, judged before
+/// it is applied.
 ///
 /// A blacklist rather than a whitelist because `DaemonEvent` is
 /// `#[non_exhaustive]`: an event this build has never heard of is assumed to
-/// matter, which costs one snapshot rather than losing one.
+/// matter, and [`Batch::settle`] withdraws it once the store reports it kept
+/// nothing.
 ///
 /// Publishing the shell is not cheap — it clones every domain list, builds the
 /// launchables and the attention map, and puts the result through `serde_json`
@@ -3142,6 +3160,34 @@ mod tests {
         batch.absorb(&delta(at.terminal, vec![3, 1], 0), &store, &at);
         assert_eq!(batch.damage, Some(Damage::Rows(vec![3, 1])));
         assert!(!batch.shell, "terminal output is not shell state");
+    }
+
+    /// An editor frame or a notice arrives up to once per frame and changes
+    /// nothing the shell snapshot is built from.
+    #[test]
+    fn an_event_the_store_does_not_keep_publishes_no_shell() {
+        let at = attached(TerminalId::new(), SessionId::new(), 0);
+        let mut store = Store::new();
+        let mut batch = Batch::default();
+        let clipboard = DaemonEvent::ClipboardStore {
+            terminal_id: at.terminal,
+            text: "copied".into(),
+        };
+        batch.absorb(&clipboard, &store, &at);
+        batch.settle(store.apply_event(&clipboard));
+        assert!(!batch.shell);
+
+        let removed = DaemonEvent::WorkspaceRemoved {
+            workspace_id: domain::WorkspaceId::new(),
+        };
+        batch.absorb(&removed, &store, &at);
+        batch.settle(store.apply_event(&removed));
+        batch.absorb(&clipboard, &store, &at);
+        batch.settle(store.apply_event(&clipboard));
+        assert!(
+            batch.shell,
+            "an earlier change in the batch still publishes"
+        );
     }
 
     /// A scroll moved every row, and the rows the delta names are only the ones
