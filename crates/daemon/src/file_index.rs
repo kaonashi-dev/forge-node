@@ -58,16 +58,17 @@ impl Cache {
     /// Capture before `list_files`. Pair with [`Cache::put`] after the walk.
     #[must_use]
     pub fn begin(&self, workspace: WorkspaceId) -> Generation {
-        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let epoch = guard.epoch;
         let local = guard
             .workspaces
-            .get(&workspace)
-            .map(|slot| slot.generation)
-            .unwrap_or(0);
-        Generation {
-            epoch: guard.epoch,
-            local,
-        }
+            .entry(workspace)
+            .or_insert(Slot {
+                generation: 0,
+                entry: None,
+            })
+            .generation;
+        Generation { epoch, local }
     }
 
     /// Remember a listing unless a later invalidate/clear won the race.
@@ -83,10 +84,10 @@ impl Cache {
         if generation.epoch != guard.epoch {
             return tree;
         }
-        let slot = guard.workspaces.entry(workspace).or_insert(Slot {
-            generation: 0,
-            entry: None,
-        });
+        // No slot: the workspace was forgotten while this walk ran.
+        let Some(slot) = guard.workspaces.get_mut(&workspace) else {
+            return tree;
+        };
         if generation.local != slot.generation {
             return tree;
         }
@@ -98,14 +99,22 @@ impl Cache {
     }
 
     /// Drop the listing so the next read walks the disk.
+    ///
+    /// Never creates a slot: a watch that outlives its workspace keeps
+    /// invalidating, and must not bring the entry back.
     pub fn invalidate(&self, workspace: WorkspaceId) {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let slot = guard.workspaces.entry(workspace).or_insert(Slot {
-            generation: 0,
-            entry: None,
-        });
-        slot.generation = slot.generation.wrapping_add(1);
-        slot.entry = None;
+        if let Some(slot) = guard.workspaces.get_mut(&workspace) {
+            slot.generation = slot.generation.wrapping_add(1);
+            slot.entry = None;
+        }
+    }
+
+    /// Release a removed workspace's listing; a walk still running for it
+    /// finds no slot and keeps nothing.
+    pub fn forget(&self, workspace: WorkspaceId) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.workspaces.remove(&workspace);
     }
 
     /// Drop every listing (factory reset).
@@ -147,6 +156,21 @@ mod tests {
         let generation = cache.begin(workspace);
         cache.put(workspace, root.clone(), tree("b.rs"), generation);
         assert_eq!(cache.get(workspace, &root).unwrap().entries[0].path, "b.rs");
+    }
+
+    #[test]
+    fn a_forgotten_workspace_keeps_nothing() {
+        let cache = Cache::default();
+        let workspace = WorkspaceId::new();
+        let root = PathBuf::from("/repo");
+        let generation = cache.begin(workspace);
+        cache.put(workspace, root.clone(), tree("a.rs"), generation);
+        let walking = cache.begin(workspace);
+        cache.forget(workspace);
+        cache.invalidate(workspace);
+        cache.put(workspace, root.clone(), tree("late.rs"), walking);
+        assert!(cache.get(workspace, &root).is_none());
+        assert!(cache.inner.lock().unwrap().workspaces.is_empty());
     }
 
     #[test]

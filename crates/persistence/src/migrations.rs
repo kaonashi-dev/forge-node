@@ -476,6 +476,19 @@ BEGIN
 END;
 ";
 
+/// Indexes the foreign-key columns that a parent delete has to search.
+///
+/// Without them every deleted session or workspace scans `runs` and `attempts`
+/// for its `ON DELETE SET NULL`, and every deleted task scans `task_deps` for
+/// its cascade — once per row, so the startup session purge was quadratic.
+pub const FOREIGN_KEY_INDEXES: &str = "\
+CREATE INDEX idx_runs_controller_session  ON runs (controller_session_id);
+CREATE INDEX idx_runs_integration_workspace ON runs (integration_workspace_id);
+CREATE INDEX idx_runs_parent_attempt      ON runs (parent_attempt_id);
+CREATE INDEX idx_attempts_workspace       ON attempts (workspace_id);
+CREATE INDEX idx_task_deps_after          ON task_deps (after_task_id);
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -493,5 +506,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(WORKTREE_IGNORES),
         M::up(ORCHESTRATION),
         M::up(RUN_ENVELOPE_HISTORY),
+        M::up(FOREIGN_KEY_INDEXES),
     ])
 }

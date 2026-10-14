@@ -78,6 +78,25 @@ impl ContextWriter {
         ContextRepo::new(&conn).insert(envelope)
     }
 
+    /// Persist a session's terminal title alone, from outside the core lock.
+    ///
+    /// An `UPDATE` and never an upsert: by the time the PTY thread writes, the
+    /// session may have been closed and its row deleted, and an upsert would
+    /// bring it back.
+    pub fn set_terminal_title(
+        &self,
+        session: domain::SessionId,
+        title: Option<&str>,
+    ) -> Result<(), DbError> {
+        let conn = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        conn.prepare_cached("UPDATE sessions SET terminal_title = ?2 WHERE id = ?1")?
+            .execute(params![session.to_string(), title])?;
+        Ok(())
+    }
+
     pub fn unread_count(&self, session: domain::SessionId) -> Result<usize, DbError> {
         let conn = self
             .0

@@ -10,8 +10,8 @@ use tokio::net::{UnixListener, UnixStream};
 
 use domain::ClientId;
 use protocol::{
-    decode_payload, encode_frame, ClientMessage, DaemonMessage, Hello, HelloAck, HelloReject,
-    Request, MAX_FRAME_SIZE, PROTOCOL_VERSION,
+    decode_payload, encode_frame, ClientKind, ClientMessage, DaemonMessage, Hello, HelloAck,
+    HelloReject, Request, MAX_FRAME_SIZE, PROTOCOL_VERSION,
 };
 
 use crate::core::Daemon;
@@ -203,7 +203,7 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     });
 
     // ---- Read loop: decode requests, dispatch, reply ----
-    let result = read_loop(&daemon, client_id, &mut read_half).await;
+    let result = read_loop(&daemon, client_id, client_kind, &mut read_half).await;
 
     // Dropping the channel ends the writer on disconnect.
     daemon.registry().unregister(client_id);
@@ -220,6 +220,7 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
 async fn read_loop(
     daemon: &Arc<Daemon>,
     client_id: ClientId,
+    client_kind: ClientKind,
     read_half: &mut (impl AsyncReadExt + Unpin),
 ) -> std::io::Result<()> {
     let mut in_flight = tokio::task::JoinSet::new();
@@ -296,7 +297,7 @@ async fn read_loop(
                     *watch = next;
                     Ok(protocol::Response::Ack)
                 } else {
-                    dispatch.handle_request(body)
+                    dispatch.handle_request_from(client_kind, body)
                 }
             })
             .await
