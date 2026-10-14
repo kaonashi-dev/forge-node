@@ -163,8 +163,9 @@ fn display_column(line: &str, utf16: u32) -> usize {
 /// folds make the mapping non-arithmetic, and there is no second index to
 /// keep in step with them.
 fn screen_row(app: &App, line: usize) -> Option<u16> {
-    (0..app.content_height())
-        .find(|row| app.row_line_sub(*row).is_some_and(|(at, _)| at == line))
+    app.row_lines(app.content_height())
+        .iter()
+        .position(|shown| shown.is_some_and(|(at, _)| at == line))
         .and_then(|row| u16::try_from(row).ok())
 }
 

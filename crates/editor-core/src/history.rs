@@ -5,8 +5,10 @@
 //! into one entry; a paste or a replace-all never does, because undoing half of
 //! one is not a state the person ever saw.
 
+use std::collections::VecDeque;
+
 use crate::limits::{MAX_HISTORY_BYTES, MAX_HISTORY_ENTRIES};
-use crate::selection::{Range, Selection};
+use crate::selection::Range;
 use crate::transaction::{Edit, Origin, Transaction};
 
 /// What the caller may show about a history that has been trimmed.
@@ -36,7 +38,7 @@ struct Entry {
 
 #[derive(Debug, Default)]
 pub struct History {
-    undo: Vec<Entry>,
+    undo: VecDeque<Entry>,
     redo: Vec<Entry>,
     retained: usize,
     dropped: usize,
@@ -59,10 +61,10 @@ impl History {
         let retained = undo.retained_bytes() + redo.retained_bytes();
 
         if !self.sealed {
-            if let Some(last) = self.undo.last_mut() {
-                if let Some((merged_undo, merged_redo)) = coalesce(last, &undo, &redo) {
-                    last.undo = merged_undo;
-                    last.redo = merged_redo;
+            if let Some(last) = self.undo.back_mut() {
+                if coalesce(last, &undo, &redo) {
+                    last.undo.selection_before = undo.selection_before;
+                    last.redo.selection_after = redo.selection_after;
                     last.state_after = state_after;
                     last.resume_at = resume_at;
                     last.retained += retained;
@@ -75,7 +77,7 @@ impl History {
 
         self.sealed = false;
         self.retained += retained;
-        self.undo.push(Entry {
+        self.undo.push_back(Entry {
             undo,
             redo,
             state_before,
@@ -94,7 +96,7 @@ impl History {
     /// The transaction that undoes the newest entry, and the content state it
     /// restores.
     pub fn pop_undo(&mut self) -> Option<(Transaction, u64)> {
-        let entry = self.undo.pop()?;
+        let entry = self.undo.pop_back()?;
         let transaction = entry.undo.clone();
         let state = entry.state_before;
         self.redo.push(entry);
@@ -106,7 +108,7 @@ impl History {
         let entry = self.redo.pop()?;
         let transaction = entry.redo.clone();
         let state = entry.state_after;
-        self.undo.push(entry);
+        self.undo.push_back(entry);
         self.sealed = true;
         Some((transaction, state))
     }
@@ -137,55 +139,49 @@ impl History {
         while self.undo.len() > MAX_HISTORY_ENTRIES
             || (self.retained > MAX_HISTORY_BYTES && self.undo.len() > 1)
         {
-            let oldest = self.undo.remove(0);
+            let Some(oldest) = self.undo.pop_front() else {
+                break;
+            };
             self.retained -= oldest.retained;
             self.dropped += 1;
         }
     }
 }
 
-/// Merge a keystroke into the entry before it, or refuse.
+/// Merge a keystroke into the entry before it, in place, or refuse.
 ///
 /// Refusing is the safe answer: a rejected merge costs one extra undo step,
 /// a wrong one loses text. Both sides must be single-edit, the newcomer a pure
-/// insertion resuming exactly where the entry left off.
-fn coalesce(
-    last: &Entry,
-    undo: &Transaction,
-    redo: &Transaction,
-) -> Option<(Transaction, Transaction)> {
+/// insertion resuming exactly where the entry left off. The caller moves the
+/// selections across; the run's text grows by the keystroke and is never
+/// copied, so a long typing run is not quadratic.
+fn coalesce(last: &mut Entry, undo: &Transaction, redo: &Transaction) -> bool {
     if !last.redo.origin.coalesces() || !redo.origin.coalesces() {
-        return None;
+        return false;
     }
-    let previous_redo = single(&last.redo)?;
-    let previous_undo = single(&last.undo)?;
-    let addition = single(redo)?;
-    let _ = single(undo)?;
-    if !addition.range.is_empty() || addition.range.start != last.resume_at {
-        return None;
+    let Some(addition) = single(redo) else {
+        return false;
+    };
+    if single(undo).is_none()
+        || !addition.range.is_empty()
+        || addition.range.start != last.resume_at
+        || single(&last.undo).is_none()
+    {
+        return false;
     }
-
-    let mut insert = previous_redo.insert.clone();
-    insert.push_str(&addition.insert);
-    let merged_redo = rebuild(
-        vec![Edit::replace(previous_redo.range, insert.clone())],
-        last.redo.origin,
-        last.redo.selection_before.clone(),
-        redo.selection_after.clone(),
-    );
+    let Some(previous_redo) = last.redo.single_mut() else {
+        return false;
+    };
+    previous_redo.insert.push_str(&addition.insert);
+    let start = previous_redo.range.start;
+    let inserted = previous_redo.insert.len();
     // The inverse of the merged edit: remove everything inserted so far and put
     // back the text the first edit displaced.
-    let start = previous_redo.range.start;
-    let merged_undo = rebuild(
-        vec![Edit::replace(
-            Range::new(start, start + insert.len()),
-            previous_undo.insert.clone(),
-        )],
-        Origin::History,
-        undo.selection_before.clone(),
-        last.undo.selection_after.clone(),
-    );
-    Some((merged_undo, merged_redo))
+    if let Some(previous_undo) = last.undo.single_mut() {
+        previous_undo.range = Range::new(start, start + inserted);
+    }
+    last.undo.origin = Origin::History;
+    true
 }
 
 fn single(transaction: &Transaction) -> Option<&Edit> {
@@ -195,23 +191,10 @@ fn single(transaction: &Transaction) -> Option<&Edit> {
     }
 }
 
-fn rebuild(
-    edits: Vec<Edit>,
-    origin: Origin,
-    before: Selection,
-    after: Option<Selection>,
-) -> Transaction {
-    // A single edit can neither overlap nor need sorting, so the only error
-    // `Transaction::new` defines is unreachable here.
-    let mut transaction = Transaction::new(edits, origin, before.clone())
-        .unwrap_or_else(|_| Transaction::new(Vec::new(), origin, before).expect("empty is valid"));
-    transaction.selection_after = after;
-    transaction
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::selection::Selection;
 
     fn typing(at: usize, text: &str) -> Transaction {
         Transaction::new(

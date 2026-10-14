@@ -212,6 +212,9 @@ pub struct App {
     folded: BTreeSet<usize>,
     /// Foldable regions, recomputed when the text changes and never per row.
     regions: Vec<editor_core::fold::Region>,
+    /// The lines `folded` hides, merged and ascending: `is_hidden` runs per row,
+    /// so it is a binary search. Rebuilt by `sync_hidden` after either changes.
+    hidden: Vec<(usize, usize)>,
     /// Where the pointer went down, for a rectangular drag.
     drag_origin: Option<(u16, u16)>,
     /// Presses that are still one gesture.
@@ -272,6 +275,10 @@ pub struct App {
     decor_key: Option<DecorKey>,
     /// The overview ruler's column, one entry per screen row.
     ruler: Vec<Option<RulerMark>>,
+    /// Which ruler rows hold a match, and what they were scanned for. The scan
+    /// is the whole document, so it reruns when the text, the query or the
+    /// ruler's height moves, never for a caret.
+    ruler_matches: Option<RulerMatches>,
     /// The completion list, while one is open.
     completion: Option<Completion>,
     prompt: Option<Prompt>,
@@ -333,6 +340,13 @@ struct DecorKey {
     width: u16,
     /// `None` when Escape cleared the marks; the pattern itself stays.
     query: Option<Query>,
+}
+
+struct RulerMatches {
+    version: u64,
+    query: Query,
+    height: usize,
+    rows: Vec<bool>,
 }
 
 /// Largest slice of the buffer decorations are looked for in.
@@ -407,6 +421,7 @@ impl App {
             checked: false,
             folded: BTreeSet::new(),
             regions: Vec::new(),
+            hidden: Vec::new(),
             drag_origin: None,
             click_run: None,
             pointer_unit: PointerUnit::Char,
@@ -438,6 +453,7 @@ impl App {
             decorations: Vec::new(),
             decor_key: None,
             ruler: Vec::new(),
+            ruler_matches: None,
             completion: None,
             prompt: None,
             help: false,
@@ -517,8 +533,8 @@ impl App {
 
     /// The first visible line, 0-based.
     ///
-    /// The TUI renderer walks rows through `row_line_sub` instead; this is
-    /// what the headless host publishes as a window's `first_line`.
+    /// The TUI renderer walks rows through `row_lines` instead; this is what
+    /// the headless host publishes as a window's `first_line`.
     pub fn top(&self) -> usize {
         self.top
     }
@@ -575,10 +591,17 @@ impl App {
     /// How many lines the fold on `line` is hiding.
     #[must_use]
     pub fn folded_line_count(&self, line: usize) -> usize {
-        self.regions
-            .iter()
-            .find(|region| region.header == line)
+        self.region_at(line)
             .map_or(0, |region| region.last - region.header)
+    }
+
+    /// The region `line` heads. Headers are unique and `regions` is sorted by
+    /// them.
+    fn region_at(&self, line: usize) -> Option<&editor_core::fold::Region> {
+        self.regions
+            .binary_search_by_key(&line, |region| region.header)
+            .ok()
+            .map(|index| &self.regions[index])
     }
 
     /// Whether a screen column falls in the fold marker's cell.
@@ -833,7 +856,7 @@ impl App {
     ///
     /// One pass over the document's *signals*, not its rows: the marks are a
     /// map the daemon already sent, and the matches are a capped scan that only
-    /// runs while the find bar is open.
+    /// runs while the find bar is open, cached in `ruler_matches`.
     fn refresh_ruler(&mut self, height: usize) {
         if !self.ruler_visible() || height == 0 {
             self.ruler.clear();
@@ -852,13 +875,27 @@ impl App {
             put(bucket(line.saturating_sub(1)), RulerMark::Change);
         }
         if self.highlight && !self.query.is_empty() && self.query_error.is_none() {
-            let found = editor_core::find_all(self.document.text(), &self.query);
-            let text = self.document.text();
-            for hit in found.found {
-                put(
-                    bucket(text.line_of_offset(hit.range.start)),
-                    RulerMark::Match,
-                );
+            let version = self.document.version().0;
+            let fresh = self.ruler_matches.as_ref().is_some_and(|cached| {
+                cached.version == version && cached.height == height && cached.query == self.query
+            });
+            if !fresh {
+                let text = self.document.text();
+                let mut rows = vec![false; height];
+                for hit in editor_core::find_all(text, &self.query).found {
+                    rows[bucket(text.line_of_offset(hit.range.start))] = true;
+                }
+                self.ruler_matches = Some(RulerMatches {
+                    version,
+                    query: self.query.clone(),
+                    height,
+                    rows,
+                });
+            }
+            if let Some(cached) = &self.ruler_matches {
+                for (row, _) in cached.rows.iter().enumerate().filter(|(_, hit)| **hit) {
+                    put(row, RulerMark::Match);
+                }
             }
         }
         for cursor in self.document.selection().cursors() {
@@ -935,6 +972,27 @@ impl App {
             skip = 0;
         }
         None
+    }
+
+    /// [`App::row_line_sub`] for each of `height` rows, in one walk from `top`
+    /// instead of one walk per row.
+    #[must_use]
+    pub fn row_lines(&self, height: usize) -> Vec<Option<(usize, usize)>> {
+        let count = self.document.text().line_count();
+        let mut out = Vec::with_capacity(height);
+        let mut line = self.top;
+        let mut sub = self.top_sub;
+        while out.len() < height && line < count {
+            let rows = self.line_rows(line);
+            while sub < rows && out.len() < height {
+                out.push(Some((line, sub)));
+                sub += 1;
+            }
+            line += 1;
+            sub = 0;
+        }
+        out.resize(height, None);
+        out
     }
 
     /// The screen row a line's segment lands on, or `None` when it is scrolled
@@ -2150,6 +2208,7 @@ impl App {
         if !self.folded.remove(&line) {
             self.folded.insert(line);
         }
+        self.sync_hidden();
         self.clamp_anchor();
         self.ensure_visible();
         self.damage_all = true;
@@ -2263,29 +2322,38 @@ impl App {
         self.ensure_visible();
     }
 
-    /// Re-read the document's colouring.
-    ///
-    /// One linear pass, on a mutation and never on a cursor move. Past the cap
-    /// the buffer is shown plain: a scan on every keystroke is not worth a
-    /// frame once a file is large enough, and the renderer treats an empty
-    /// `Syntax` as plain text without a branch of its own.
     /// Re-read which blocks can be folded, and drop folds that no longer name
     /// one. A header that stopped being a header must not keep hiding lines.
     fn refold(&mut self) {
         self.regions = editor_core::fold::regions(self.document.text());
-        let headers: BTreeSet<usize> = self.regions.iter().map(|region| region.header).collect();
-        self.folded.retain(|line| headers.contains(line));
+        let regions = &self.regions;
+        self.folded.retain(|line| {
+            regions
+                .binary_search_by_key(line, |region| region.header)
+                .is_ok()
+        });
+        self.sync_hidden();
+    }
+
+    fn sync_hidden(&mut self) {
+        self.hidden.clear();
+        for header in &self.folded {
+            let Some(region) = self.region_at(*header) else {
+                continue;
+            };
+            let (start, end) = (region.header + 1, region.last);
+            match self.hidden.last_mut() {
+                Some(last) if start <= last.1 + 1 => last.1 = last.1.max(end),
+                _ => self.hidden.push((start, end)),
+            }
+        }
     }
 
     /// Whether `line` is inside a folded block, and so takes no rows.
     #[must_use]
     pub fn is_hidden(&self, line: usize) -> bool {
-        self.folded.iter().any(|header| {
-            self.regions
-                .iter()
-                .find(|region| region.header == *header)
-                .is_some_and(|region| region.hidden().contains(&line))
-        })
+        let after = self.hidden.partition_point(|(start, _)| *start <= line);
+        after > 0 && self.hidden[after - 1].1 >= line
     }
 
     /// The fold marker a line's gutter carries, if it has one.
@@ -2293,10 +2361,7 @@ impl App {
     /// `Some(true)` is folded, `Some(false)` is foldable and open.
     #[must_use]
     pub fn fold_state(&self, line: usize) -> Option<bool> {
-        self.regions
-            .iter()
-            .any(|region| region.header == line)
-            .then(|| self.folded.contains(&line))
+        self.region_at(line).map(|_| self.folded.contains(&line))
     }
 
     /// Fold or unfold the block the caret is in.
@@ -2306,13 +2371,15 @@ impl App {
             self.status = Some("nothing to fold here".to_string());
             return;
         };
-        if !self.folded.remove(&region.header) {
+        let folding = !self.folded.remove(&region.header);
+        if folding {
             self.folded.insert(region.header);
-            // A caret inside what just folded has nowhere to be; the header is
-            // the line the block is now shown as.
-            if region.hidden().contains(&line) {
-                self.goto_line(region.header + 1);
-            }
+        }
+        self.sync_hidden();
+        // A caret inside what just folded has nowhere to be; the header is the
+        // line the block is now shown as.
+        if folding && region.hidden().contains(&line) {
+            self.goto_line(region.header + 1);
         }
         self.clamp_anchor();
         self.ensure_visible();
@@ -2325,6 +2392,7 @@ impl App {
             return;
         }
         self.folded.clear();
+        self.hidden.clear();
         self.ensure_visible();
         self.damage_all = true;
     }
@@ -2345,6 +2413,12 @@ impl App {
         }
     }
 
+    /// Re-read the document's colouring.
+    ///
+    /// One linear pass, on a mutation and never on a cursor move. Past the cap
+    /// the buffer is shown plain: a scan on every keystroke is not worth a
+    /// frame once a file is large enough, and the renderer treats an empty
+    /// `Syntax` as plain text without a branch of its own.
     fn rescan(&mut self) {
         self.refold();
         self.syntax = if self.document.text().len() > MAX_HIGHLIGHT_BYTES {
@@ -2360,17 +2434,32 @@ impl App {
     /// back in the state the previous one was in, so typing on line 4000 does
     /// not re-lex the 3999 lines over it.
     fn rescan_edited(&mut self, applied: editor_core::Applied) {
+        self.shift_folds(&applied);
         self.refold();
         if self.document.text().len() > MAX_HIGHLIGHT_BYTES {
             self.syntax = Syntax::default();
             return;
         }
         self.syntax = std::mem::take(&mut self.syntax).edited(
-            self.document.as_str(),
+            self.document.text(),
             self.grammar,
             applied.first_line,
             applied.last_line,
             applied.line_delta,
+        );
+    }
+
+    /// Renumber the folds below an edit that added or removed lines, so the
+    /// fold stays on its block rather than on whatever line took its number.
+    fn shift_folds(&mut self, applied: &editor_core::Applied) {
+        if applied.line_delta == 0 {
+            return;
+        }
+        let below = self.folded.split_off(&(applied.last_line + 1));
+        self.folded.extend(
+            below
+                .into_iter()
+                .filter_map(|header| header.checked_add_signed(applied.line_delta)),
         );
     }
 
@@ -3040,6 +3129,34 @@ impl App {
         };
     }
 
+    /// The anchor that puts segment `sub` of `line` on the last of `height`
+    /// rows, walking up from it: a far jump would otherwise step the anchor
+    /// down one row at a time, re-walking the viewport on every step.
+    ///
+    /// Never past the anchor the row-by-row loop would stop at, so that loop
+    /// still settles the wrap-boundary caret that has no row of its own.
+    fn anchor_above(&self, line: usize, sub: usize, height: usize) -> (usize, usize) {
+        let mut needed = height.saturating_sub(1);
+        if sub >= needed {
+            let last = self.line_rows(line).saturating_sub(1);
+            return (line, (sub - needed).min(last));
+        }
+        needed -= sub;
+        let mut at = line;
+        while at > 0 {
+            at -= 1;
+            let rows = self.line_rows(at);
+            if rows == 0 {
+                continue;
+            }
+            if rows >= needed {
+                return (at, rows - needed);
+            }
+            needed -= rows;
+        }
+        (0, 0)
+    }
+
     /// Scroll just enough to keep the caret visible, never a cell more.
     fn ensure_visible(&mut self) {
         let height = self.content_height().max(1);
@@ -3059,6 +3176,12 @@ impl App {
             let sub = column / width;
             if position.line == self.top && sub < self.top_sub {
                 self.top_sub = sub;
+            }
+            if self.line_sub_to_row(position.line, sub).is_none() {
+                let below = self.anchor_above(position.line, sub, height);
+                if below > (self.top, self.top_sub) {
+                    (self.top, self.top_sub) = below;
+                }
             }
             // Advance the anchor one *row* at a time until the caret's row fits.
             // The guard is the bound, not a line count: a caret that sits
@@ -4606,6 +4729,58 @@ mod tests {
         );
     }
 
+    /// A far jump walks up from the caret once instead of stepping the anchor
+    /// down a row at a time; both must settle on the same anchor, including
+    /// for a caret on a continuation row and a one-row viewport.
+    #[test]
+    fn a_far_jump_with_wrap_lands_where_row_steps_would() {
+        let text: String = (0..300).map(|n| "x".repeat(n % 37) + "\n").collect();
+        for height in [1, 2, 5, 13] {
+            let mut app = app(&text, false);
+            app.set_integrated();
+            app.resize(14, height);
+            for target in [40, 41, 120, 299] {
+                for end in [false, true] {
+                    let before = (app.top, app.top_sub);
+                    app.goto_line(target);
+                    if end {
+                        app.handle_key(key(KeyCode::End));
+                    }
+                    let jumped = (app.top, app.top_sub);
+
+                    (app.top, app.top_sub) = before;
+                    let position = app.document.caret_line_col();
+                    let column = metrics::display_column(
+                        app.document.text().line(position.line),
+                        position.column,
+                    );
+                    let sub = column / app.content_width().max(1);
+                    // The upward half of `ensure_visible`, which the walk does
+                    // not replace.
+                    if position.line < app.top {
+                        (app.top, app.top_sub) = (position.line, 0);
+                    }
+                    if position.line == app.top && sub < app.top_sub {
+                        app.top_sub = sub;
+                    }
+                    while app.line_sub_to_row(position.line, sub).is_none() {
+                        let at = (app.top, app.top_sub);
+                        app.advance_anchor();
+                        if (app.top, app.top_sub) == at {
+                            break;
+                        }
+                    }
+                    assert_eq!(
+                        (app.top, app.top_sub),
+                        jumped,
+                        "height {height}, line {target}, end {end}"
+                    );
+                    (app.top, app.top_sub) = jumped;
+                }
+            }
+        }
+    }
+
     /// Standalone never wraps: a long line is one row and scrolls sideways.
     #[test]
     fn standalone_does_not_wrap() {
@@ -5191,6 +5366,24 @@ mod tests {
         app.handle_key(key(KeyCode::Char('x')));
         assert_eq!(app.fold_state(0), None);
         assert!(!app.is_hidden(0));
+    }
+
+    /// A line added above a fold moves the fold with its block; keeping the
+    /// old number would unfold it, or fold whatever block took the number.
+    #[test]
+    fn a_fold_moves_down_with_its_block_when_a_line_is_added_above() {
+        let mut app = app("top\nfn f() {\n    one();\n}\n", false);
+        app.resize(40, 10);
+        app.goto_line(2);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+        assert_eq!(app.fold_state(1), Some(true));
+
+        app.goto_line(1);
+        app.handle_key(key(KeyCode::End));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.fold_state(2), Some(true), "the fold followed its block");
+        assert!(app.is_hidden(3));
+        assert_eq!(app.fold_state(1), None);
     }
 
     #[test]

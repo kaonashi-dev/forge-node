@@ -110,6 +110,15 @@ impl Transaction {
         &self.edits
     }
 
+    /// The edit, when there is exactly one: one edit cannot break the
+    /// sorted, non-overlapping order `new` established.
+    pub(crate) fn single_mut(&mut self) -> Option<&mut Edit> {
+        match self.edits.as_mut_slice() {
+            [edit] => Some(edit),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.edits

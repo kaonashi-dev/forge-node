@@ -46,6 +46,9 @@ pub fn grapheme_count(line: &str) -> usize {
 /// Display column of a byte column within `line`.
 #[must_use]
 pub fn display_column(line: &str, byte_column: usize) -> usize {
+    if let Some(cell) = ascii_display_column(line, byte_column) {
+        return cell;
+    }
     let mut cell = 0;
     for (offset, grapheme) in line.grapheme_indices(true) {
         if offset >= byte_column {
@@ -54,6 +57,32 @@ pub fn display_column(line: &str, byte_column: usize) -> usize {
         cell += grapheme_width(grapheme, cell);
     }
     cell
+}
+
+/// [`display_column`] without segmenting, for a prefix of plain ASCII.
+///
+/// The byte *at* `byte_column` is checked too: a combining mark or variation
+/// selector after the prefix would join its last character into one grapheme.
+/// A newline anywhere declines, because CR LF is the one ASCII pair that
+/// segments as a single grapheme.
+fn ascii_display_column(line: &str, byte_column: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let end = byte_column.min(bytes.len());
+    let checked = &bytes[..(end + 1).min(bytes.len())];
+    if !checked.is_ascii() || checked.contains(&b'\n') {
+        return None;
+    }
+    let prefix = &bytes[..end];
+    if !prefix.contains(&b'\t') {
+        return Some(prefix.len());
+    }
+    Some(prefix.iter().fold(0, |cell, byte| {
+        if *byte == b'\t' {
+            cell + TAB_WIDTH - cell % TAB_WIDTH
+        } else {
+            cell + 1
+        }
+    }))
 }
 
 /// Byte column whose display column is nearest to `target`, rounded down so a
@@ -106,6 +135,41 @@ mod tests {
         assert_eq!(grapheme_width("\t", 0), 4);
         assert_eq!(grapheme_width("\t", 1), 3);
         assert_eq!(display_column("a\tb", 3), 5);
+    }
+
+    fn segmented_column(line: &str, byte_column: usize) -> usize {
+        let mut cell = 0;
+        for (offset, grapheme) in line.grapheme_indices(true) {
+            if offset >= byte_column {
+                break;
+            }
+            cell += grapheme_width(grapheme, cell);
+        }
+        cell
+    }
+
+    #[test]
+    fn the_ascii_shortcut_agrees_with_segmentation() {
+        let lines = [
+            "",
+            "plain text",
+            "\tindented\t\tby tabs",
+            "  \t mixed \x1b[0m controls \x7f",
+            "a\r\nb",
+            "trail\r",
+            "#\u{fe0f}\u{20e3} keycap",
+            "e\u{301} accent",
+            "ascii then 中",
+        ];
+        for line in lines {
+            for byte_column in 0..=line.len() + 1 {
+                assert_eq!(
+                    display_column(line, byte_column),
+                    segmented_column(line, byte_column),
+                    "{line:?} at {byte_column}"
+                );
+            }
+        }
     }
 
     #[test]
