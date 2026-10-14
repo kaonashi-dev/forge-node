@@ -32,10 +32,16 @@ mod disk;
 
 const DISK_STATE_REQUEST: u64 = u64::MAX;
 
-/// How long the daemon waits for the editor to connect, handshake and take the
-/// buffer. A spawn that never reaches the handshake is a failed session, not a
-/// hang.
+/// How long the daemon waits for the editor to handshake and take the buffer
+/// once it has connected. A spawn that never finishes the handshake is a
+/// failed session, not a hang.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the editor process may take to start and connect. Longer than the
+/// handshake because process start is outside the daemon's control: macOS scans
+/// a newly installed or rewritten executable on its first launch, and a loaded
+/// machine has been measured taking tens of seconds to exec one.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Bounded command queue toward one editor. Full means busy, never a drop.
 pub const COMMAND_QUEUE: usize = 8;
@@ -393,7 +399,7 @@ fn serve(
         session_id,
     };
 
-    let mut stream = match accept_with_deadline(listener, HANDSHAKE_TIMEOUT) {
+    let mut stream = match accept_with_deadline(listener, CONNECT_TIMEOUT) {
         Ok(stream) => stream,
         Err(reason) => {
             fail(&daemon, session_id, reason);
