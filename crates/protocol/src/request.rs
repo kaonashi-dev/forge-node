@@ -1226,13 +1226,21 @@ pub enum IntegrateHow {
 mod tests {
     use super::*;
 
+    /// The fixtures are built as JSON, where ids are strings; the binary wire
+    /// carries a `Uuid` as 16 bytes and refuses a string, so the defaults are
+    /// read back through the human-readable configuration.
+    fn decode_json_shaped(bytes: &[u8]) -> Request {
+        let mut decoder = rmp_serde::Deserializer::from_read_ref(bytes).with_human_readable();
+        Request::deserialize(&mut decoder).unwrap()
+    }
+
     #[test]
     fn prompt_defaults_and_unknown_policy_survive_named_messagepack() {
         let request = serde_json::json!({"SendSessionPrompt": {
             "session_id": SessionId::new(), "text": "work"
         }});
         let bytes = rmp_serde::to_vec_named(&request).unwrap();
-        let back: Request = rmp_serde::from_slice(&bytes).unwrap();
+        let back = decode_json_shaped(&bytes);
         assert!(matches!(
             back,
             Request::SendSessionPrompt {
@@ -1245,7 +1253,7 @@ mod tests {
         let mut future = request;
         future["SendSessionPrompt"]["when"] = serde_json::json!("AfterReview");
         let bytes = rmp_serde::to_vec_named(&future).unwrap();
-        let back: Request = rmp_serde::from_slice(&bytes).unwrap();
+        let back = decode_json_shaped(&bytes);
         assert!(matches!(
             back,
             Request::SendSessionPrompt {
@@ -1274,7 +1282,7 @@ mod tests {
         fields.remove("model");
         fields.remove("effort");
         let bytes = rmp_serde::to_vec_named(&old).unwrap();
-        let back: Request = rmp_serde::from_slice(&bytes).unwrap();
+        let back = decode_json_shaped(&bytes);
         assert!(matches!(
             back,
             Request::CreateAgentSession {
