@@ -71,12 +71,8 @@ export const EDITOR_LINE_HEIGHT_RANGE = { min: 1.1, max: 2.2, fallback: 1.35 };
  */
 export const LAST_WORKSPACE_KEY = "ui.last_workspace";
 
-/**
- * Bounds the drag handles clamp to, so a panel cannot be dragged to nothing.
- * The sidebar's minimum fits the traffic lights, the toggle and all five view
- * icons in the title bar above it.
- */
-export const SIDEBAR_RANGE = { min: 284, max: 560, fallback: 300 };
+/** Bounds the drag handles clamp to, so a panel cannot be dragged to nothing. */
+export const SIDEBAR_RANGE = { min: 224, max: 560, fallback: 300 };
 export const SESSION_SPLIT_RANGE = { min: 240, max: 620, fallback: 340 };
 
 /**

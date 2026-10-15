@@ -4,7 +4,6 @@ import { Icon } from "../../theme/icons/index";
 import { Button, IconButton } from "../../ui/index";
 import type { Session } from "../../contracts/runtime";
 import { SessionTabs } from "./SessionTabs";
-import { SidebarSwitcher } from "./SidebarSwitcher";
 import { HandoffStatusButton } from "../../features/sessions/HandoffStatusButton";
 import { waitingSessions } from "../../features/sessions/waiting";
 import { focusSession } from "../../features/sessions/sessionActions";
@@ -14,8 +13,8 @@ type TitleBarProps = {
   /**
    * Whether the settings screen is up.
    *
-   * The tab strip, sidebar toggle and view switcher act on something the
-   * settings layer is covering, so they hide. The bar stays — traffic lights and drag region —
+   * The tab strip and sidebar toggle act on something the settings layer is
+   * covering, so they hide. The bar stays — traffic lights and drag region —
    * and carries a back control plus the Settings title after the lights
    * instead.
    */
@@ -46,24 +45,7 @@ export function TitleBar(props: TitleBarProps) {
 
   return (
     <header class="title-bar" data-tauri-drag-region>
-      <div
-        class="title-bar-lead"
-        classList={{ "spans-sidebar": !props.settingsOpen && props.sidebarOpen }}
-        data-tauri-drag-region
-      >
-        <div class="title-bar-inset" aria-hidden="true" data-tauri-drag-region />
-        <Show when={!props.settingsOpen}>
-          <IconButton label="Toggle sidebar" onClick={props.onToggleSidebar}>
-            <Icon
-              name={props.sidebarOpen ? "panel-left-close" : "panel-left-open"}
-              class="forge-icon-muted"
-            />
-          </IconButton>
-          <Show when={props.sidebarOpen}>
-            <SidebarSwitcher />
-          </Show>
-        </Show>
-      </div>
+      <div class="title-bar-inset" aria-hidden="true" data-tauri-drag-region />
       <Show
         when={!props.settingsOpen}
         fallback={
@@ -81,6 +63,12 @@ export function TitleBar(props: TitleBarProps) {
           </>
         }
       >
+        <IconButton label="Toggle sidebar" onClick={props.onToggleSidebar}>
+          <Icon
+            name={props.sidebarOpen ? "panel-left-close" : "panel-left-open"}
+            class="forge-icon-muted"
+          />
+        </IconButton>
         <SessionTabs
           sessions={props.sessions}
           activeId={connectionStore.activeSession}

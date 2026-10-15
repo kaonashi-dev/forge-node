@@ -988,31 +988,43 @@
   margin-left: auto;
 }
 
-/* The view switcher in the title bar. A pill, not a folder tab: the views are
-   navigation, and folder tabs are kept for things that close. */
-.sidebar-switcher {
-  align-items: center;
+/*
+ * The bar is resizable, so the strip can still be dragged narrower than its
+ * content: it scrolls in one row.
+ */
+.sidebar-tabs {
   display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+/* Pills, not folder tabs: the views are navigation on the sidebar's own
+   surface, and folder tabs are kept for things that close. */
+.sidebar-views {
+  flex-shrink: 0;
+  padding: var(--space-6) var(--space-8);
+}
+.sidebar-views .forge-tab-list {
+  align-items: center;
+  flex-wrap: nowrap;
   gap: var(--space-2);
-  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
-.sidebar-switcher::-webkit-scrollbar {
+.sidebar-views .forge-tab-list::-webkit-scrollbar {
   display: none;
 }
 .sidebar-view-tab {
-  align-items: center;
   background: transparent;
   border: 0;
   border-radius: var(--radius-sm);
   color: var(--fg-caption);
-  display: inline-flex;
   flex: none;
   height: var(--control-md);
-  justify-content: center;
   padding: 0;
   position: relative;
+}
+.sidebar-view-tab.forge-tab-icon {
   width: var(--control-md);
 }
 .sidebar-view-tab:hover {
@@ -1045,10 +1057,6 @@
   min-height: 0;
   overflow: hidden;
   padding: var(--space-8) var(--space-12);
-}
-/* The kept Projects panel: `display: flex` above would beat the attribute. */
-.sidebar-body[hidden] {
-  display: none;
 }
 /* Trees scroll themselves, edge to edge, like the rail did. */
 .sidebar-body.projects-body,
