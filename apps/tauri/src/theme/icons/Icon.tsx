@@ -27,12 +27,11 @@ export function Icon(props: IconProps) {
       component={ICONS[props.name]}
       size={props.size ?? 16}
       strokeWidth={1.5}
-      class={`forge-icon ${props.class ?? ""}`}
+      class={`forge-icon ${props.emphasis === "dim" ? "forge-icon-dim" : ""} ${props.class ?? ""}`}
       color={props.color}
       role={props.title ? "img" : undefined}
       aria-hidden={props.title ? undefined : true}
       aria-label={props.title}
-      style={props.emphasis === "dim" ? { opacity: 0.55 } : undefined}
     />
   );
 }

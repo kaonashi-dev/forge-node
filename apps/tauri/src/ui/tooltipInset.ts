@@ -12,7 +12,7 @@ export function tooltipOverflowPadding(): number {
   if (typeof document === "undefined") return 8;
   return tooltipOverflowPaddingFor(
     document.documentElement.dataset.platform,
-    getComputedStyle(document.documentElement).getPropertyValue("--forge-traffic-light-w"),
+    getComputedStyle(document.documentElement).getPropertyValue("--traffic-light-w"),
   );
 }
 

@@ -10,7 +10,7 @@
  * Structural elements — a tab strip, a tree row, a palette row — are not
  * buttons in this vocabulary and deliberately stay in their own components.
  */
-export { Button, IconButton, type ButtonProps, type IconButtonProps } from "./Button";
+export { Button, IconButton, buttonClass, type ButtonProps, type IconButtonProps } from "./Button";
 export { Badge, type BadgeProps, type BadgeTone } from "./Badge";
 export { Card, Separator, type CardProps, type SeparatorProps } from "./Card";
 export { Combobox, type ComboboxOption, type ComboboxProps } from "./Combobox";

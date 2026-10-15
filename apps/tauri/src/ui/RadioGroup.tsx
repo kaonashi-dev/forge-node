@@ -23,11 +23,13 @@ export type RadioGroupProps = {
    * label alone, as pills or as one segmented track, and lay out in a row.
    */
   variant?: "list" | "chips" | "segmented";
+  /** The segmented track's rung; `sm` suits a toolbar, `md` a settings row. */
+  size?: "sm" | "md";
   class?: string;
   itemClass?: string;
 };
 
-const GROUP_CLASS = { list: "", chips: "filter-chips", segmented: "forge-segmented" } as const;
+const GROUP_CLASS = { list: "", chips: "forge-chips", segmented: "forge-segmented" } as const;
 const ITEM_CLASS = { list: "", chips: "forge-chip", segmented: "forge-segment" } as const;
 
 /**
@@ -42,7 +44,9 @@ export function RadioGroup(props: RadioGroupProps) {
   const bare = () => variant() !== "list";
   return (
     <Kobalte
-      class={`forge-radio-group ${GROUP_CLASS[variant()]} ${props.class ?? ""}`}
+      class={`forge-radio-group ${GROUP_CLASS[variant()]} ${
+        variant() === "segmented" && props.size === "md" ? "forge-segmented-md" : ""
+      } ${props.class ?? ""}`}
       value={props.value ?? undefined}
       orientation={props.orientation ?? (bare() ? "horizontal" : "vertical")}
       onChange={props.onChange}
@@ -80,10 +84,10 @@ export function RadioGroup(props: RadioGroupProps) {
                   <Kobalte.ItemControl class="forge-radio-dot">
                     <Kobalte.ItemIndicator />
                   </Kobalte.ItemControl>
-                  <Kobalte.ItemLabel class="settings-row-label">{option().label}</Kobalte.ItemLabel>
+                  <Kobalte.ItemLabel class="forge-option-label">{option().label}</Kobalte.ItemLabel>
                   <Show when={option().note}>
                     {(note) => (
-                      <Kobalte.ItemDescription class="settings-row-note">
+                      <Kobalte.ItemDescription class="forge-option-note">
                         {note()}
                       </Kobalte.ItemDescription>
                     )}

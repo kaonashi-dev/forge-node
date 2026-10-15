@@ -16,6 +16,8 @@ export type ButtonProps = {
   iconLeading?: JSX.Element;
   /** A glyph after the label — a chevron, an external-link mark. */
   iconTrailing?: JSX.Element;
+  /** `pill` rounds the ends fully, for a status chip that is also a button. */
+  shape?: "default" | "pill";
   class?: string;
   title?: string;
   /** Set when the button opens something that stays open. */
@@ -24,6 +26,18 @@ export type ButtonProps = {
   onClick?: (event: MouseEvent) => void;
   onMouseDown?: (event: MouseEvent) => void;
 };
+
+/**
+ * The classes a `Button` wears, for a trigger that a primitive renders itself
+ * (a `Menu` trigger) and so cannot be a `Button`.
+ */
+export function buttonClass(
+  size: ControlSize = "md",
+  variant: ButtonVariant = "ghost",
+  icon = false,
+): string {
+  return `forge-control forge-control-${size} forge-btn forge-btn-${variant}${icon ? " forge-icon-button" : ""}`;
+}
 
 /**
  * Every command button in the shell.
@@ -44,12 +58,11 @@ export function Button(props: ButtonProps) {
     "iconLeading",
     "iconTrailing",
     "disabled",
+    "shape",
   ]);
-  const size = () => own.size ?? "md";
-  const variant = () => own.variant ?? "ghost";
   return (
     <Kobalte
-      class={`forge-control forge-control-${size()} forge-btn forge-btn-${variant()} ${own.class ?? ""}`}
+      class={`${buttonClass(own.size, own.variant)} ${own.shape === "pill" ? "forge-btn-pill" : ""} ${own.class ?? ""}`}
       disabled={own.disabled || own.loading}
       aria-busy={own.loading || undefined}
       aria-pressed={own.selected}

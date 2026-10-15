@@ -51,7 +51,6 @@ export function ColorPicker(props: ColorPickerProps) {
       <Popover.Portal>
         <Popover.Content class="forge-color-picker" aria-label={`${props.label} color picker`}>
           <ColorArea
-            class="forge-color-area"
             colorSpace="hsl"
             xChannel="saturation"
             yChannel="lightness"
@@ -67,7 +66,6 @@ export function ColorPicker(props: ColorPickerProps) {
             </ColorArea.Background>
           </ColorArea>
           <ColorSlider
-            class="forge-color-slider"
             channel="hue"
             colorSpace="hsl"
             value={color()}

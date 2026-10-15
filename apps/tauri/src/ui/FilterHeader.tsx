@@ -47,7 +47,7 @@ export type FilterHeaderProps = {
 
 export function FilterHeader(props: FilterHeaderProps) {
   return (
-    <div class="filter-header">
+    <div class="forge-filter-header">
       {/* `Index`: a caller's `rows` array reads the selected value, so it is a
           new array on every click. Keyed on identity that rebuilt the whole
           strip each time; keyed on position the one `RadioGroup` stays put and
@@ -77,9 +77,9 @@ export function FilterHeader(props: FilterHeaderProps) {
           );
         }}
       </Index>
-      <div class="filter-search">
+      <div class="forge-filter-search">
         <SearchField
-          class="panel-search"
+          class="forge-filter-field"
           size={props.size ?? "sm"}
           aria-label={props.label}
           placeholder={props.placeholder}
