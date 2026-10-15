@@ -336,8 +336,10 @@
   flex: none;
 }
 /* A tab is one line. Left to wrap, a long name doubles the strip's height and
-   pushes the editor down by a row that is not there a moment later. */
+   pushes the editor down by a row that is not there a moment later. The tab
+   owns the hover, so the label drops `.forge-row`'s own box. */
 .workbench-tab-label {
+  background: none;
   color: inherit;
   font-size: inherit;
   gap: var(--space-6);
