@@ -396,6 +396,22 @@ html[data-platform="macos"] .title-bar-inset {
   height: var(--forge-title-h);
   padding: 0 var(--space-8);
 }
+/* With the sidebar open, the lead spans the sidebar column so the session tabs
+   start over the centre column; the bar's padding and gap come off its width. */
+.title-bar-lead {
+  align-items: center;
+  align-self: stretch;
+  display: flex;
+  flex: none;
+  gap: var(--space-8);
+  min-width: 0;
+}
+.title-bar-lead.spans-sidebar {
+  width: calc(
+    var(--sidebar-w, var(--forge-sidebar-w)) + var(--forge-handle-w) - var(--space-8) -
+      var(--space-8)
+  );
+}
 /* `data-tauri-drag-region="false"` means *not* a drag region (tauri 2.11's
    `drag.js` reads the value, not the attribute's presence). A bare presence
    selector here painted `app-region: drag` on exactly the elements that opted
@@ -479,8 +495,11 @@ html[data-platform="macos"] .title-bar-inset {
   position: absolute;
 }
 
+/* The sidebar shares the terminal's surface; `--bg-sidebar` is rescoped so
+   what paints "the sidebar" inside it, such as the file tree, follows. */
 .sidebar {
-  background: var(--bg-subtle);
+  --bg-sidebar: var(--bg-terminal);
+  background: var(--bg-terminal);
   border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;

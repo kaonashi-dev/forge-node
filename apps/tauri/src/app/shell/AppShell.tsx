@@ -649,7 +649,7 @@ export function AppShell() {
   });
   onCleanup(() => clearTimeout(noticeTimer));
   return (
-    <main class="app-shell">
+    <main class="app-shell" style={{ "--sidebar-w": `${sidebarWidth()}px` }}>
       <TitleBar
         settingsOpen={settings()}
         onCloseSettings={() => setSettings(false)}
@@ -665,11 +665,7 @@ export function AppShell() {
         onSelectCode={showCode}
         onCloseCode={closeCode}
       />
-      <div
-        class="workspace-grid"
-        classList={{ "sidebar-collapsed": !sidebarOpen() }}
-        style={{ "--sidebar-w": `${sidebarWidth()}px` }}
-      >
+      <div class="workspace-grid" classList={{ "sidebar-collapsed": !sidebarOpen() }}>
         <Show when={sidebarOpen()}>
           <Sidebar />
           <ResizeHandle

@@ -104,16 +104,14 @@
 /*
  * Concave flares where an active tab meets its strip, shared by every strip
  * whose tabs are the top of the surface under them. A strip sets
- * `--tab-radius`, and `--tab-surface` when that surface is not `--bg-panel`.
+ * `--tab-radius`.
  * The session tab draws them on its inner button: the wrap's own
  * pseudo-elements are the drop markers.
  */
 .session-tab-wrap.active > .session-tab::before,
 .session-tab-wrap.active > .session-tab::after,
 .workbench-tab.active::before,
-.workbench-tab.active::after,
-.sidebar-view-tab[data-selected]::before,
-.sidebar-view-tab[data-selected]::after {
+.workbench-tab.active::after {
   bottom: 0;
   content: "";
   height: var(--tab-radius);
@@ -122,22 +120,20 @@
   width: var(--tab-radius);
 }
 .session-tab-wrap.active > .session-tab::before,
-.workbench-tab.active::before,
-.sidebar-view-tab[data-selected]::before {
+.workbench-tab.active::before {
   background: radial-gradient(
     circle at 0 0,
     transparent calc(var(--tab-radius) - 0.5px),
-    var(--tab-surface, var(--bg-panel)) var(--tab-radius)
+    var(--bg-panel) var(--tab-radius)
   );
   left: calc(-1 * var(--tab-radius));
 }
 .session-tab-wrap.active > .session-tab::after,
-.workbench-tab.active::after,
-.sidebar-view-tab[data-selected]::after {
+.workbench-tab.active::after {
   background: radial-gradient(
     circle at 100% 0,
     transparent calc(var(--tab-radius) - 0.5px),
-    var(--tab-surface, var(--bg-panel)) var(--tab-radius)
+    var(--bg-panel) var(--tab-radius)
   );
   right: calc(-1 * var(--tab-radius));
 }
@@ -992,68 +988,47 @@
   margin-left: auto;
 }
 
-/*
- * The bar is resizable, so the strip can still be dragged narrower than its
- * content: it scrolls in one row.
- */
-.sidebar-tabs {
+/* The view switcher in the title bar. A pill, not a folder tab: the views are
+   navigation, and folder tabs are kept for things that close. */
+.sidebar-switcher {
+  align-items: center;
   display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-}
-/* Folder tabs, like the session and Code strips: the selected view is the top
-   of the sidebar body, so the strip takes the window's surface around it. */
-.sidebar-views {
-  --tab-radius: var(--radius-md);
-  --tab-surface: var(--bg-subtle);
-  background: var(--bg-window);
-  box-shadow: inset 0 -1px var(--border-subtle);
-  flex-shrink: 0;
-}
-.sidebar-views .forge-tab-list {
-  align-items: stretch;
-  flex-wrap: nowrap;
   gap: var(--space-2);
-  height: var(--forge-tab-h);
+  min-width: 0;
   overflow-x: auto;
-  padding: var(--space-6) var(--tab-radius) 0;
   scrollbar-width: none;
 }
-.sidebar-views .forge-tab-list::-webkit-scrollbar {
+.sidebar-switcher::-webkit-scrollbar {
   display: none;
 }
 .sidebar-view-tab {
+  align-items: center;
   background: transparent;
   border: 0;
-  border-radius: var(--tab-radius) var(--tab-radius) 0 0;
+  border-radius: var(--radius-sm);
   color: var(--fg-caption);
+  display: inline-flex;
   flex: none;
-  font-size: var(--text-xs);
-  height: auto;
-  padding: 0 var(--space-8);
+  height: var(--control-md);
+  justify-content: center;
+  padding: 0;
   position: relative;
-}
-.sidebar-view-tab.forge-tab-icon {
-  width: var(--forge-tab-h);
-}
-.sidebar-view-tab[data-selected] {
-  background: var(--tab-surface);
-  color: var(--fg);
-  z-index: var(--z-over);
+  width: var(--control-md);
 }
 .sidebar-view-tab:hover {
+  background: var(--bg-hover);
   color: var(--fg);
 }
-.sidebar-view-tab:not([data-selected]):hover {
-  background: var(--bg-hover);
+.sidebar-view-tab[data-selected] {
+  background: var(--bg-selected);
+  color: var(--fg);
 }
 .sidebar-view-tab:focus-visible {
   box-shadow: var(--focus-ring-shadow);
   outline: none;
 }
 .sidebar-view-tab .forge-tab-badge {
-  inset: var(--space-4) 0 auto auto;
+  inset: calc(-1 * var(--space-2)) calc(-1 * var(--space-2)) auto auto;
 }
 /* An icon trigger is square: the glyph is the label, so horizontal padding
    would only push the seven of them apart. */
@@ -1070,6 +1045,10 @@
   min-height: 0;
   overflow: hidden;
   padding: var(--space-8) var(--space-12);
+}
+/* The kept Projects panel: `display: flex` above would beat the attribute. */
+.sidebar-body[hidden] {
+  display: none;
 }
 /* Trees scroll themselves, edge to edge, like the rail did. */
 .sidebar-body.projects-body,
