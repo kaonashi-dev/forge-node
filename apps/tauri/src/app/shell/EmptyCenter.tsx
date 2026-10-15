@@ -1,6 +1,5 @@
-import { For, Show } from "solid-js";
+import { For } from "solid-js";
 import type { ActionId } from "../../actions/actions";
-import { boundChord } from "../../actions/bindings";
 import { invokeAction } from "../../actions/dispatch";
 import { Kbd } from "../../ui/index";
 import { forgeStore } from "../../state/forgeStore";
@@ -10,22 +9,13 @@ import { Icon, type ForgeIconName } from "../../theme/icons/index";
 /**
  * What the centre column shows when there is no session to show.
  *
- * The terminal pane paints the last frame it was sent and keeps painting it,
- * so a window whose last session just closed went on showing that session's
- * scrollback — a dead terminal that reads exactly like a live one. The only
- * thing separating them was a toast.
+ * The terminal pane keeps painting its last frame, so without this card a
+ * closed session would read exactly like a live one.
  *
- * Every row here goes back through the dispatcher rather than calling the
- * runtime itself: these are second ways in to the actions the menus and the
- * palette already have, not second implementations of them, and the chords
- * are read off the keymap so they cannot drift from what the keys do.
- *
- * The rows are not gated on the actions being registered. `actionIsBound`
- * reads a plain map rather than a signal, and the shell registers in
- * `onMount` — which runs after its children render — so a window opened with
- * no sessions would have shown this card with every row hidden. The shell
- * binds these for its whole life, and `invokeAction` is a no-op if it ever
- * did not.
+ * Rows go through the dispatcher, and their chords are read off the keymap, so
+ * they cannot drift from the menus and the palette. They are not gated on the
+ * actions being registered: the shell registers in `onMount`, after its
+ * children render, and `invokeAction` is a no-op for an unbound action.
  */
 export function EmptyCenter() {
   const bare = () => forgeStore.projects.length === 0;
@@ -125,22 +115,22 @@ function EmptyCard(props: { title: string; copy: string; rows: EmptyRow[] }) {
   return (
     <div class="empty-center">
       <div class="empty-center-card">
-        <p class="empty-center-title">{props.title}</p>
+        <p class="forge-card-title empty-center-title">{props.title}</p>
         <p class="empty-center-copy">{props.copy}</p>
 
-        <ul class="empty-center-rows">
+        <ul class="empty-state-rows">
           <For each={props.rows}>
             {(row) => (
               <li>
                 <button
                   type="button"
-                  class="forge-row empty-center-row"
+                  class="forge-row empty-state-row"
                   onClick={() => invokeAction(row.action)}
                 >
                   <Icon name={row.icon} class="forge-icon-muted" size={15} />
                   <span class="empty-center-label">{row.label}</span>
-                  <span class="empty-center-note">{row.note}</span>
-                  <Hint action={row.action} />
+                  <span class="forge-truncate empty-center-note">{row.note}</span>
+                  <Kbd action={row.action} />
                 </button>
               </li>
             )}
@@ -148,16 +138,9 @@ function EmptyCard(props: { title: string; copy: string; rows: EmptyRow[] }) {
         </ul>
 
         <p class="empty-center-foot">
-          Everything else is behind <Hint action="open_command_palette" />
+          Everything else is behind <Kbd action="open_command_palette" />
         </p>
       </div>
     </div>
-  );
-}
-
-function Hint(props: { action: ActionId }) {
-  const chord = () => boundChord(props.action);
-  return (
-    <Show when={chord()}>{(found) => <Kbd chord={found()} class="empty-center-chord" />}</Show>
   );
 }

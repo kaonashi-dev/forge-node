@@ -19,8 +19,10 @@ export function Page(props: PageProps) {
   return (
     <>
       <header class="settings-page-head">
-        <h2 class="settings-page-title">{props.title}</h2>
-        <Show when={props.summary}>{(text) => <p class="settings-page-summary">{text()}</p>}</Show>
+        <h2 class="forge-section-title">{props.title}</h2>
+        <Show when={props.summary}>
+          {(text) => <p class="forge-body settings-page-summary">{text()}</p>}
+        </Show>
       </header>
       <div class="settings-groups">{props.children}</div>
     </>
@@ -40,11 +42,11 @@ export type GroupProps = {
 /** A bordered card holding one group of related settings. */
 export function Group(props: GroupProps) {
   return (
-    <section class={`settings-group ${props.class ?? ""}`}>
+    <section class={`forge-card settings-group ${props.class ?? ""}`}>
       <Show when={props.title || props.aside}>
         <div class="settings-group-head">
           <Show when={props.title}>
-            {(title) => <h3 class="settings-group-title">{title()}</h3>}
+            {(title) => <h3 class="forge-section-label settings-group-title">{title()}</h3>}
           </Show>
           <Show when={props.aside}>
             {(aside) => <div class="settings-group-aside">{aside()}</div>}
@@ -76,7 +78,7 @@ export function Row(props: RowProps) {
         <div class="settings-item-text">
           <span class="settings-item-label">{props.label}</span>
           <Show when={props.description}>
-            {(text) => <span class="settings-item-description">{text()}</span>}
+            {(text) => <span class="forge-caption">{text()}</span>}
           </Show>
         </div>
         <Show when={props.control}>

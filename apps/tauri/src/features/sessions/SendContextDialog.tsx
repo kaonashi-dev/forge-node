@@ -141,8 +141,8 @@ export function SendContextDialog(props: { request: SendContextRequest; onDismis
       }
     >
       <p class="panel-note">
-        From <span class="tree-label">{props.request.title}</span>. Forge stores an envelope and
-        either pastes it into a live session or starts a child with it as the prompt.
+        From <span class="tree-label forge-truncate">{props.request.title}</span>. Forge stores an
+        envelope and either pastes it into a live session or starts a child with it as the prompt.
       </p>
 
       <Select

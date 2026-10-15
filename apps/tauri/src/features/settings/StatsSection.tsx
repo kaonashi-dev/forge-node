@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { providerId, providerName, type ProviderUsage } from "../../contracts/runtime";
 import { forgeStore } from "../../state/forgeStore";
-import { Button, Select } from "../../ui/index";
+import { Badge, Button, Select } from "../../ui/index";
 import { Group, Page } from "./SettingsLayout";
 import {
   analyticsSessions,
@@ -133,15 +133,15 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
         />
       </div>
 
-      <section class="stats-panel">
+      <section class="forge-card stats-panel">
         <header class="stats-panel-head">
           <h4>Daily tokens</h4>
           <div class="stats-panel-tools">
             <Show when={best()}>
               {(day) => (
-                <span class="stats-badge">
+                <Badge>
                   Peak {shortDay(day().date)} · {compactTokens(day().tokens)}
-                </span>
+                </Badge>
               )}
             </Show>
             <Show when={reporting().length > 1}>
@@ -159,7 +159,7 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
       </section>
 
       <div class="stats-panels">
-        <section class="stats-panel">
+        <section class="forge-card stats-panel">
           <header class="stats-panel-head">
             <h4>Token mix</h4>
           </header>
@@ -184,14 +184,14 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
                     <span class={`stats-swatch kind-${segment.key}`} />
                     <span class="stats-legend-label">{segment.label}</span>
                     <span class="stats-legend-value">{compactTokens(segment.tokens)}</span>
-                    <span class="stats-legend-share">
+                    <span class="forge-caption stats-legend-share">
                       {percentLabel(segment.tokens, summary().tokens)}
                     </span>
                   </li>
                   {/* Reasoning is already inside output, so it is a sub-row and
                       never a segment that would sum past the total. */}
                   <Show when={segment.key === "output" && sum().reasoning > 0}>
-                    <li class="stats-legend-sub">
+                    <li class="forge-caption stats-legend-sub">
                       <span class="stats-legend-label">incl. reasoning</span>
                       <span class="stats-legend-value">{compactTokens(sum().reasoning)}</span>
                       <span class="stats-legend-share" />
@@ -207,7 +207,7 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
           when={forgeStore.usage.length > 0}
           fallback={
             <Show when={forgeStore.providers.length > 0}>
-              <section class="stats-panel">
+              <section class="forge-card stats-panel">
                 <header class="stats-panel-head">
                   <h4>Plan limits</h4>
                 </header>
@@ -216,7 +216,7 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
             </Show>
           }
         >
-          <section class="stats-panel">
+          <section class="forge-card stats-panel">
             <header class="stats-panel-head">
               <h4>Plan limits</h4>
             </header>
@@ -229,7 +229,7 @@ function StatsBody(props: { analytics: UsageAnalytics }) {
         </Show>
       </div>
 
-      <section class="stats-panel">
+      <section class="forge-card stats-panel">
         <header class="stats-panel-head">
           <h4>By provider</h4>
         </header>
@@ -301,7 +301,7 @@ function DailyBars(props: { cells: HeatCell[] }) {
           )}
         </For>
       </div>
-      <div class="stats-daily-axis">
+      <div class="forge-caption stats-daily-axis">
         <span>{first() ? shortDay(first().date) : ""}</span>
         <span>{middle() ? shortDay(middle().date) : ""}</span>
         <span>{last() ? shortDay(last().date) : ""}</span>
@@ -339,10 +339,10 @@ function MeterGroup(props: { reading: ProviderUsage }) {
 
 function StatTile(props: { label: string; value: string; note?: string }) {
   return (
-    <div class="stats-tile">
+    <div class="forge-card stats-tile">
       <span class="stats-tile-label">{props.label}</span>
       <span class="stats-tile-value">{props.value}</span>
-      <Show when={props.note}>{(note) => <span class="stats-tile-note">{note()}</span>}</Show>
+      <Show when={props.note}>{(note) => <span class="forge-caption">{note()}</span>}</Show>
     </div>
   );
 }
@@ -352,7 +352,7 @@ function ProviderCard(props: { provider: StatsProvider; share: number }) {
     <article class="stats-provider">
       <header class="stats-provider-head">
         <span class="stats-provider-name">{props.provider.name}</span>
-        <span class="stats-badge">{props.share}%</span>
+        <Badge>{props.share}%</Badge>
       </header>
       <Show when={props.provider.analytics}>
         {(analytics) => <ProviderMetrics provider={analytics()} share={props.share} />}
@@ -365,18 +365,18 @@ function ProviderMetrics(props: { provider: ProviderAnalytics; share: number }) 
   const accounts = createMemo(() => statsAccounts(props.provider, forgeStore.agent_profiles));
   return (
     <>
-      <p class="settings-hint stats-provider-model">
+      <p class="settings-hint forge-truncate stats-provider-model">
         {props.provider.top_model ?? "no model recorded"}
       </p>
       <div class="stats-provider-figures">
-        <span class="stats-provider-tokens">
+        <span class="forge-card-title">
           {compactTokens(tokenTotal(props.provider.tokens))}
-          <small>tokens</small>
+          <small class="forge-caption">tokens</small>
         </span>
-        <span class="stats-provider-cost">
+        <span class="forge-card-title">
           {money(props.provider.cost_micros)}
           <Show when={props.provider.unpriced_turns > 0}>
-            <small>floor</small>
+            <small class="forge-caption">floor</small>
           </Show>
         </span>
       </div>
@@ -391,16 +391,14 @@ function ProviderMetrics(props: { provider: ProviderAnalytics; share: number }) 
           <For each={accounts()}>
             {(account) => (
               <li>
-                <span class="stats-account-name">{account.name}</span>
-                <span class="stats-account-tokens">
-                  {compactTokens(tokenTotal(account.analytics.tokens))}
-                </span>
-                <span class="stats-account-cost">
+                <span class="forge-truncate">{account.name}</span>
+                <span>{compactTokens(tokenTotal(account.analytics.tokens))}</span>
+                <span>
                   {money(account.analytics.cost_micros)}
                   {account.analytics.unpriced_turns > 0 ? " floor" : ""}
                 </span>
                 <span class="stats-account-share">{account.share}%</span>
-                <span class="stats-account-facts">
+                <span class="forge-caption stats-account-facts">
                   {count(account.analytics.sessions)} runs · {count(account.analytics.turns)} turns
                 </span>
               </li>

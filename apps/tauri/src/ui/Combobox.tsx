@@ -146,13 +146,13 @@ export function Combobox<T>(props: ComboboxProps<T>) {
 
   return (
     <>
-      <div class="palette-query">
+      <div class="forge-combobox-query">
         <Show when={props.leading}>{(leading) => leading()}</Show>
         {/* `spellcheck` kills the squiggle; macOS substitution is a separate
             switch, and a query is never prose. */}
         <input
           ref={input}
-          class={`forge-field-input palette-input ${props.inputClass ?? ""}`}
+          class={`forge-field-input forge-combobox-input ${props.inputClass ?? ""}`}
           type="text"
           role="combobox"
           aria-expanded="true"
@@ -171,7 +171,7 @@ export function Combobox<T>(props: ComboboxProps<T>) {
       </div>
       <div
         ref={list}
-        class={`palette-list ${props.listClass ?? ""}`}
+        class={`forge-combobox-list ${props.listClass ?? ""}`}
         id={`${id}-list`}
         role="listbox"
         style={props.visibleRows ? { "--palette-rows": String(props.visibleRows) } : undefined}
@@ -180,10 +180,10 @@ export function Combobox<T>(props: ComboboxProps<T>) {
           {(option, index) => (
             <>
               <Show when={headings()[index()]}>
-                {(text) => <div class="palette-group">{text()}</div>}
+                {(text) => <div class="forge-combobox-group">{text()}</div>}
               </Show>
               <div
-                class="palette-row"
+                class="forge-combobox-row"
                 id={`${id}-row-${index()}`}
                 role="option"
                 aria-selected={index() === cursor()}

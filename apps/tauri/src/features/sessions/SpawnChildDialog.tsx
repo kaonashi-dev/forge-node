@@ -97,8 +97,9 @@ export function SpawnChildDialog(props: { request: SpawnChildRequest; onDismiss:
       }
     >
       <p class="panel-note">
-        Starts a nested agent under <span class="tree-label">{props.request.title}</span>. Providers
-        talk only through Forge — this is how one session asks another provider for help.
+        Starts a nested agent under{" "}
+        <span class="tree-label forge-truncate">{props.request.title}</span>. Providers talk only
+        through Forge — this is how one session asks another provider for help.
       </p>
 
       <Select

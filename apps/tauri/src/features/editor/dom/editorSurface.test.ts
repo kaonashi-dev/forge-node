@@ -20,7 +20,14 @@ const CENTER_STACK = import.meta.glob("../../../app/shell/CenterStack.tsx", {
   eager: true,
 }) as Record<string, string>;
 
+const SHELL_CSS = import.meta.glob("../../../styles/shell.css", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+
 const view = () => rawSource(VIEW, "EditorView.tsx");
+const shellCss = () => rawSource(SHELL_CSS, "shell.css");
 const centerStack = () => rawSource(CENTER_STACK, "CenterStack.tsx");
 
 function rawSource(sources: Record<string, string>, name: string): string {
@@ -142,10 +149,14 @@ describe("the DOM editor surface", () => {
   });
 
   /* Every colour comes from the theme's own ANSI ramp, the same one the cell
-     surface resolves scopes through. A hex here would be a second theme. */
+     surface resolves scopes through, and a span names its scope rather than
+     carrying a style object per span of every visible row. */
   it("takes every scope colour from the theme", () => {
-    expect(view()).toContain("var(--forge-ansi-");
+    expect(view()).toContain("data-scope={span.scope}");
     expect(view()).not.toMatch(/#[0-9a-fA-F]{6}/);
+    expect(shellCss()).toMatch(
+      /\.ed-text > \[data-scope="Keyword"\] \{\n  color: var\(--forge-ansi-/,
+    );
   });
 
   /* A band under the rows, measured the same way the caret is: a selection

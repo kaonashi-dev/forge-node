@@ -15,6 +15,8 @@ export type ControlSize = "xs" | "sm" | "md" | "lg";
  *   confirm: removing a worktree from a panel, a destructive choice inline.
  * - `attention` — ember. Only for answering a session that is waiting on the
  *   user or resolving a conflict; nothing else may use it.
+ * - `attention-soft` — the same ember as a tint, for the standing reminder
+ *   that something is waiting rather than the act of answering it.
  */
 export type ButtonVariant =
   | "primary"
@@ -22,7 +24,8 @@ export type ButtonVariant =
   | "ghost"
   | "danger"
   | "danger-ghost"
-  | "attention";
+  | "attention"
+  | "attention-soft";
 
 /**
  * One entry in a menu, as data.

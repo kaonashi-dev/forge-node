@@ -39,7 +39,7 @@ export function ReviewView(props: { workspace: string }) {
   };
 
   return (
-    <div class="diff-view review-view">
+    <div class="diff-view">
       <Show when={gitStore.reviewError}>{(error) => <p class="panel-error">{error()}</p>}</Show>
       <Show
         when={review()}
@@ -77,7 +77,7 @@ export function ReviewView(props: { workspace: string }) {
             <Show when={note()}>{(text) => <p class="panel-note">{text()}</p>}</Show>
 
             <section class="review-sessions">
-              <h4 class="panel-subhead">
+              <h4 class="forge-section-label panel-subhead">
                 {current().sessions.length} session
                 {current().sessions.length === 1 ? "" : "s"} wrote this checkout
               </h4>
@@ -85,7 +85,7 @@ export function ReviewView(props: { workspace: string }) {
                 {(session) => (
                   <div class="forge-row review-session-row">
                     <SessionGlyph providerId={session.provider} size={14} />
-                    <span class="tree-label">{session.title}</span>
+                    <span class="tree-label forge-truncate">{session.title}</span>
                     <Show when={session.active}>
                       <Badge tone="good">running</Badge>
                     </Show>
@@ -102,7 +102,7 @@ export function ReviewView(props: { workspace: string }) {
 
             <section class="review-summary">
               <header class="forge-row">
-                <h4 class="panel-subhead">Summary</h4>
+                <h4 class="forge-section-label panel-subhead">Summary</h4>
                 <span class="history-spacer" />
                 <Button variant="secondary" size="xs" onClick={regenerate}>
                   Regenerate
@@ -135,12 +135,12 @@ export function ReviewView(props: { workspace: string }) {
 
             <Show when={current().commits.length > 0}>
               <section class="session-changes-commits">
-                <h4 class="panel-subhead">Commits</h4>
+                <h4 class="forge-section-label panel-subhead">Commits</h4>
                 <For each={current().commits}>
                   {(commit) => (
                     <div class="session-commit">
                       <span class="session-commit-id">{commit.short_id}</span>
-                      <span class="session-commit-subject">{commit.subject}</span>
+                      <span class="forge-truncate">{commit.subject}</span>
                     </div>
                   )}
                 </For>

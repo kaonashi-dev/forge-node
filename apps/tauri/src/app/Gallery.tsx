@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createSignal, type JSX } from "solid-js";
 import {
   AlertDialog,
   Badge,
@@ -10,6 +10,7 @@ import {
   RadioGroup,
   SearchField,
   Breadcrumbs,
+  buttonClass,
   Card,
   IconButton,
   Kbd,
@@ -28,128 +29,216 @@ import { WorkMarker } from "../features/sessions/markers";
 import { applyThemeBase, themeBase } from "../theme/ThemeProvider";
 import { palettes, THEME_LABELS, type ThemeBaseId } from "../theme/tokens";
 import { DENSITIES, applyDensity, type Density } from "../theme/density";
+import "./gallery.css";
 
-/**
- * `?gallery` — the base layer on one screen, painted from live tokens so it
- * reflects whatever the pipeline currently emits. Mounted only when the URL
- * carries `?gallery`, never bundled into the shell's own tree.
- */
+/** `?gallery`: every token and kit control on one page, painted from the live tokens. */
 
 const bases = Object.keys(palettes) as ThemeBaseId[];
 
-/** Read a resolved custom-property value, for the caption under a swatch. */
+type Sample = readonly [token: string, label: string];
+
+function sample(token: string): JSX.CSSProperties {
+  return { "--sample": `var(${token})` };
+}
+
 function resolved(name: string): string {
   if (typeof window === "undefined") return "";
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-function Section(props: { title: string; children: unknown }) {
+function Section(props: { title: string; children: JSX.Element }) {
   return (
-    <section style={{ display: "flex", "flex-direction": "column", gap: "10px" }}>
-      <h2 class="forge-section-label" style={{ margin: "0" }}>
-        {props.title}
-      </h2>
-      {props.children as never}
+    <section class="gallery-section">
+      <h2 class="forge-section-label gallery-section-label">{props.title}</h2>
+      {props.children}
     </section>
   );
 }
 
-function Swatch(props: { token: string; label?: string; ring?: boolean }) {
-  // Re-read on every base change: `applyTheme` rewrites the inline vars before
-  // `themeBase` settles, so touching the signal here keeps the caption honest.
+function Swatch(props: { token: string; ring?: boolean }) {
+  // `applyTheme` rewrites the inline vars before `themeBase` settles, so reading
+  // the signal here is what keeps the caption in step with the base.
   const value = () => {
     themeBase();
     return resolved(props.token);
   };
   return (
-    <div style={{ display: "flex", "flex-direction": "column", gap: "4px", "min-width": "0" }}>
+    <div class="gallery-tile">
       <div
-        style={{
-          height: "44px",
-          "border-radius": "var(--forge-radius-sm)",
-          background: `var(${props.token})`,
-          border: props.ring ? "1px solid var(--forge-border)" : "none",
-        }}
+        class="gallery-swatch"
+        data-ring={props.ring ? "" : undefined}
+        style={sample(props.token)}
       />
-      <div style={{ "font-size": "11px", color: "var(--forge-muted)" }}>
-        {props.label ?? props.token.replace("--forge-", "")}
-      </div>
-      <div
-        style={{
-          "font-size": "10px",
-          color: "var(--forge-faint)",
-          "font-family": "var(--forge-mono)",
-        }}
-      >
-        {value()}
-      </div>
+      <span class="forge-caption">{props.token}</span>
+      <span class="gallery-value">{value()}</span>
     </div>
   );
 }
 
-function Grid(props: { children: unknown }) {
+function Grid(props: { wide?: boolean; children: JSX.Element }) {
   return (
-    <div
-      style={{
-        display: "grid",
-        "grid-template-columns": "repeat(auto-fill, minmax(110px, 1fr))",
-        gap: "12px",
-      }}
-    >
-      {props.children as never}
-    </div>
+    <div class={`gallery-grid ${props.wide ? "gallery-grid-wide" : ""}`}>{props.children}</div>
   );
 }
 
-/** A saturated fill with the semantic foreground `on()` picked painted over it. */
 function FillChip(props: { fill: string; fg: string; label: string }) {
   return (
     <div
-      style={{
-        height: "44px",
-        display: "flex",
-        "align-items": "center",
-        "justify-content": "center",
-        "border-radius": "var(--radius-md)",
-        background: `var(${props.fill})`,
-        color: `var(${props.fg})`,
-        "font-size": "12px",
-        "font-weight": "600",
-      }}
+      class="gallery-fill"
+      style={{ "--sample": `var(${props.fill})`, "--sample-fg": `var(${props.fg})` }}
     >
       {props.label}
     </div>
   );
 }
 
+function TintChip(props: { tone: string }) {
+  return (
+    <div class="gallery-tile">
+      <div
+        class="gallery-tint"
+        style={{
+          "--sample": `var(--${props.tone}-tint-bg)`,
+          "--sample-edge": `var(--${props.tone}-tint-border)`,
+        }}
+      >
+        {props.tone}
+      </div>
+      <span class="forge-caption">--{props.tone}-tint-bg / -border</span>
+    </div>
+  );
+}
+
+const SURFACES = [
+  "--bg-panel",
+  "--bg-window",
+  "--bg-sidebar",
+  "--bg-raised",
+  "--bg-overlay",
+  "--bg-terminal",
+  "--forge-editor",
+];
+const FOREGROUNDS = ["--fg-default", "--fg-muted", "--fg-subtle", "--fg-caption"];
+const INTERACTION = [
+  "--border-subtle",
+  "--border-default",
+  "--border-strong",
+  "--line",
+  "--bg-hover",
+  "--bg-selected",
+  "--bg-pressed",
+];
+const RADII: Sample[] = [
+  ["--radius-2xs", "2xs"],
+  ["--radius-xs", "xs"],
+  ["--radius-sm", "sm"],
+  ["--radius-md", "md"],
+  ["--radius-lg", "lg"],
+  ["--radius-palette", "palette"],
+  ["--radius-full", "full"],
+];
+const CONTROL_HEIGHTS: Sample[] = [
+  ["--control-xs", "control-xs"],
+  ["--control-sm", "control-sm"],
+  ["--control-md", "control-md"],
+  ["--control-lg", "control-lg"],
+  ["--row-h", "row-h"],
+  ["--forge-tab-h", "tab-h"],
+];
+const TYPE_SCALE: Sample[] = [
+  ["--text-label", "label — the mono section label"],
+  ["--text-xs", "xs — metadata"],
+  ["--text-sm", "sm — the chrome's default"],
+  ["--text-md", "md — a body line"],
+  ["--text-lg", "lg — a card title"],
+  ["--text-xl", "xl — a panel heading"],
+  ["--text-2xl", "2xl — the section title"],
+];
+const WEIGHTS: Sample[] = [
+  ["--weight-regular", "regular"],
+  ["--weight-medium", "medium"],
+  ["--weight-semibold", "semibold"],
+  ["--weight-bold", "bold"],
+];
+const LEADINGS: Sample[] = [
+  ["--leading-none", "none"],
+  ["--leading-title", "title"],
+  ["--leading-heading", "heading"],
+  ["--leading-label", "label"],
+  ["--leading-card", "card"],
+  ["--leading-caption", "caption"],
+  ["--leading-body", "body"],
+  ["--leading-prose", "prose"],
+];
+const TRACKINGS: Sample[] = [
+  ["--tracking-tight", "tight — a display title"],
+  ["--tracking-label", "LABEL — AN UPPERCASE LABEL"],
+];
+const OPACITIES: Sample[] = [
+  ["--opacity-disabled", "disabled"],
+  ["--opacity-dim", "dim"],
+  ["--opacity-drag", "drag"],
+];
+const SHADOWS: Sample[] = [
+  ["--shadow-sm", "shadow-sm"],
+  ["--shadow-md", "shadow-md"],
+  ["--shadow-lg", "shadow-lg"],
+  ["--depth-2", "depth-2"],
+  ["--depth-3", "depth-3"],
+];
+
+type SyntaxRun = readonly [scope: string, text: string];
+
+const CODE: SyntaxRun[][] = [
+  [["comment", "// the budget a frame may spend"]],
+  [
+    ["keyword", "import "],
+    ["punctuation", "{ "],
+    ["variable", "lazy "],
+    ["punctuation", "} "],
+    ["keyword", "from "],
+    ["string", '"solid-js"'],
+    ["punctuation", ";"],
+  ],
+  [
+    ["keyword", "const "],
+    ["constant", "FRAME_MS "],
+    ["operator", "= "],
+    ["number", "8"],
+    ["punctuation", ";"],
+  ],
+  [
+    ["keyword", "export function "],
+    ["function", "paint"],
+    ["punctuation", "("],
+    ["variable", "cell"],
+    ["punctuation", ": "],
+    ["type", "Cell"],
+    ["punctuation", ") { "],
+    ["controlKeyword", "return "],
+    ["variable", "cell"],
+    ["punctuation", "."],
+    ["property", "text"],
+    ["punctuation", "; }"],
+  ],
+  [
+    ["tag", "<Kbd "],
+    ["attribute", "action"],
+    ["operator", "="],
+    ["string", '"save_file" '],
+    ["tag", "/> "],
+    ["invalid", "@@"],
+  ],
+];
+
 export function Gallery() {
   const [density, setDensity] = createSignal<Density>("compact");
   return (
-    <div
-      style={{
-        height: "100%",
-        overflow: "auto",
-        background: "var(--forge-bg)",
-        color: "var(--forge-text)",
-        "font-family": "var(--forge-sans)",
-      }}
-    >
-      <header
-        style={{
-          position: "sticky",
-          top: "0",
-          "z-index": "1",
-          display: "flex",
-          "align-items": "center",
-          gap: "12px",
-          padding: "12px 24px",
-          background: "var(--forge-rail)",
-          "border-bottom": "1px solid var(--forge-border)",
-        }}
-      >
-        <strong style={{ "font-size": "13px" }}>Design gallery</strong>
+    <div class="gallery">
+      <header class="gallery-header">
+        <strong class="gallery-title">Design gallery</strong>
         {/* No `system` entry: this page looks at one specific base. */}
-        <div style={{ display: "flex", gap: "6px" }}>
+        <div class="gallery-toggles">
           <For each={bases}>
             {(id) => (
               <Button
@@ -163,7 +252,7 @@ export function Gallery() {
             )}
           </For>
         </div>
-        <div style={{ display: "flex", gap: "6px", "margin-left": "auto" }}>
+        <div class="gallery-toggles gallery-toggles-end">
           <For each={DENSITIES}>
             {(id) => (
               <Button
@@ -182,42 +271,22 @@ export function Gallery() {
         </div>
       </header>
 
-      <div
-        style={{
-          display: "flex",
-          "flex-direction": "column",
-          gap: "28px",
-          padding: "24px",
-          "max-width": "960px",
-        }}
-      >
+      <div class="gallery-body">
         <Section title="Surfaces">
           <Grid>
-            <Swatch token="--forge-bg" ring />
-            <Swatch token="--forge-rail" ring />
-            <Swatch token="--forge-sidebar" ring />
-            <Swatch token="--forge-surface" ring />
-            <Swatch token="--forge-surface-hi" ring />
-            <Swatch token="--forge-editor" ring />
-            <Swatch token="--forge-step" />
+            <For each={SURFACES}>{(token) => <Swatch token={token} ring />}</For>
           </Grid>
         </Section>
 
         <Section title="Foreground">
           <Grid>
-            <Swatch token="--forge-text" ring />
-            <Swatch token="--forge-muted" ring />
-            <Swatch token="--forge-faint" ring />
+            <For each={FOREGROUNDS}>{(token) => <Swatch token={token} ring />}</For>
           </Grid>
         </Section>
 
         <Section title="Borders & interaction">
           <Grid>
-            <Swatch token="--forge-border" ring />
-            <Swatch token="--forge-border-hi" ring />
-            <Swatch token="--forge-hover" ring />
-            <Swatch token="--forge-selected" ring />
-            <Swatch token="--forge-pressed" ring />
+            <For each={INTERACTION}>{(token) => <Swatch token={token} ring />}</For>
           </Grid>
         </Section>
 
@@ -228,73 +297,50 @@ export function Gallery() {
             <FillChip fill="--success-solid" fg="--success-fg" label="Success" />
             <FillChip fill="--danger-solid" fg="--danger-fg" label="Danger" />
             <FillChip fill="--warning-solid" fg="--warning-fg" label="Warning" />
-            <FillChip fill="--forge-blue" fg="--fg-default" label="Info" />
+            <FillChip fill="--info-solid" fg="--info-fg" label="Info" />
+          </Grid>
+        </Section>
+
+        <Section title="Tints — a wash and its edge">
+          <Grid wide>
+            <TintChip tone="accent" />
+            <TintChip tone="danger" />
+            <TintChip tone="attention" />
+          </Grid>
+        </Section>
+
+        <Section title="Opacity">
+          <Grid>
+            <For each={OPACITIES}>
+              {([token, label]) => (
+                <div class="gallery-tile">
+                  <div class="gallery-opacity" style={sample(token)} />
+                  <span class="forge-caption">{label}</span>
+                  <span class="gallery-value">{token}</span>
+                </div>
+              )}
+            </For>
           </Grid>
         </Section>
 
         <Section title="Radius">
-          <div style={{ display: "flex", gap: "16px", "align-items": "flex-end" }}>
-            <For
-              each={
-                [
-                  ["--forge-radius-xs", "xs"],
-                  ["--forge-radius-sm", "sm"],
-                  ["--forge-radius-md", "md"],
-                  ["--forge-radius-lg", "lg"],
-                  ["--forge-radius-xl", "full"],
-                ] as [string, string][]
-              }
-            >
+          <div class="gallery-row gallery-row-loose">
+            <For each={RADII}>
               {([token, label]) => (
-                <div
-                  style={{
-                    display: "flex",
-                    "flex-direction": "column",
-                    gap: "6px",
-                    "align-items": "center",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: "56px",
-                      height: "56px",
-                      background: "var(--forge-surface)",
-                      border: "1px solid var(--forge-border-hi)",
-                      "border-radius": `var(${token})`,
-                    }}
-                  />
-                  <span style={{ "font-size": "11px", color: "var(--forge-muted)" }}>{label}</span>
+                <div class="gallery-tile gallery-tile-center">
+                  <div class="gallery-radius" style={sample(token)} />
+                  <span class="forge-caption">{label}</span>
                 </div>
               )}
             </For>
           </div>
         </Section>
 
-        <Section title="Control heights">
-          <div style={{ display: "flex", gap: "12px", "align-items": "center" }}>
-            <For
-              each={
-                [
-                  ["--forge-control-xs", "xs"],
-                  ["--forge-control-sm", "sm"],
-                  ["--forge-control-md", "md"],
-                  ["--forge-control-lg", "lg"],
-                ] as [string, string][]
-              }
-            >
+        <Section title="Control heights — move with density">
+          <div class="gallery-row">
+            <For each={CONTROL_HEIGHTS}>
               {([token, label]) => (
-                <div
-                  style={{
-                    height: `var(${token})`,
-                    padding: "0 14px",
-                    display: "flex",
-                    "align-items": "center",
-                    "border-radius": "var(--forge-radius-xs)",
-                    background: "var(--forge-surface)",
-                    border: "1px solid var(--forge-border)",
-                    "font-size": "12px",
-                  }}
-                >
+                <div class="gallery-control" style={sample(token)}>
                   {label}
                 </div>
               )}
@@ -303,39 +349,85 @@ export function Gallery() {
         </Section>
 
         <Section title="Type scale">
-          <div style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
-            <For
-              each={
-                [
-                  ["--forge-text-xs", "xs — metadata"],
-                  ["--forge-text-sm", "sm — the chrome's default"],
-                  ["--forge-text-md", "md — a body line"],
-                  ["--forge-text-lg", "lg — a panel heading"],
-                  ["--forge-text-xl", "xl — the one big heading"],
-                ] as [string, string][]
-              }
-            >
-              {([token, label]) => <div style={{ "font-size": `var(${token})` }}>{label}</div>}
+          <div class="gallery-stack gallery-stack-tight">
+            <For each={TYPE_SCALE}>
+              {([token, label]) => (
+                <div class="gallery-type" style={sample(token)}>
+                  {label}
+                </div>
+              )}
             </For>
           </div>
         </Section>
 
-        <Section title="Elevation">
-          <div style={{ display: "flex", gap: "24px" }}>
-            <For each={["--forge-shadow-sm", "--forge-shadow-md", "--forge-shadow-lg"]}>
-              {(token) => (
-                <div
-                  style={{
-                    width: "120px",
-                    height: "72px",
-                    "border-radius": "var(--forge-radius-md)",
-                    background: "var(--forge-surface)",
-                    "box-shadow": `var(${token})`,
-                  }}
-                />
+        <Section title="Weight & tracking">
+          <div class="gallery-row gallery-row-loose">
+            <For each={WEIGHTS}>
+              {([token, label]) => (
+                <div class="gallery-tile">
+                  <span class="gallery-weight" style={sample(token)}>
+                    Forge {label}
+                  </span>
+                  <span class="gallery-value">{token}</span>
+                </div>
               )}
             </For>
           </div>
+          <div class="gallery-stack gallery-stack-tight">
+            <For each={TRACKINGS}>
+              {([token, label]) => (
+                <div class="gallery-tile">
+                  <span class="gallery-tracking" style={sample(token)}>
+                    {label}
+                  </span>
+                  <span class="gallery-value">{token}</span>
+                </div>
+              )}
+            </For>
+          </div>
+        </Section>
+
+        <Section title="Line height">
+          <Grid wide>
+            <For each={LEADINGS}>
+              {([token, label]) => (
+                <div class="gallery-tile">
+                  <p class="gallery-leading" style={sample(token)}>
+                    {label}: two lines of chrome text, wrapped to show the gap between them.
+                  </p>
+                  <span class="gallery-value">{token}</span>
+                </div>
+              )}
+            </For>
+          </Grid>
+        </Section>
+
+        <Section title="Elevation">
+          <div class="gallery-row gallery-row-loose">
+            <For each={SHADOWS}>
+              {([token, label]) => (
+                <div class="gallery-tile gallery-tile-center">
+                  <div class="gallery-shadow" style={sample(token)} />
+                  <span class="forge-caption">{label}</span>
+                </div>
+              )}
+            </For>
+          </div>
+        </Section>
+
+        <Section title="Syntax — data-syntax scopes">
+          <pre class="gallery-code">
+            <For each={CODE}>
+              {(line) => (
+                <>
+                  <For each={line}>
+                    {([scope, text]) => <span data-syntax={scope}>{text}</span>}
+                  </For>
+                  {"\n"}
+                </>
+              )}
+            </For>
+          </pre>
         </Section>
 
         <Primitives />
@@ -343,6 +435,12 @@ export function Gallery() {
     </div>
   );
 }
+
+const ROW_STATES = [
+  { label: "at rest — move the pointer here for hover", selected: false, attention: false },
+  { label: "selected — data-selected", selected: true, attention: false },
+  { label: "waiting on you — .forge-attention-row", selected: false, attention: true },
+] as const;
 
 function Primitives() {
   const [text, setText] = createSignal("");
@@ -354,27 +452,35 @@ function Primitives() {
   const [picked, setPicked] = createSignal("claude");
   const [autosave, setAutosave] = createSignal(true);
   const [density, setDensity] = createSignal("compact");
+  const [scope, setScope] = createSignal("workspace");
   const [pinned, setPinned] = createSignal(true);
   const [tab, setTab] = createSignal("files");
   const [picked42, setPicked42] = createSignal(true);
-  const row = {
-    display: "flex",
-    gap: "12px",
-    "align-items": "center",
-    "flex-wrap": "wrap",
-  } as const;
+  const [cardOn, setCardOn] = createSignal(false);
   return (
     <>
       <Section title="Buttons — hierarchy">
-        <div style={row}>
+        <div class="gallery-row">
           <Button variant="primary">Primary</Button>
           <Button variant="secondary">Secondary</Button>
           <Button variant="ghost">Ghost</Button>
           <Button variant="danger">Danger</Button>
           <Button variant="danger-ghost">Danger ghost</Button>
           <Button variant="attention">Answer now</Button>
+          <Button variant="attention-soft">2 waiting</Button>
         </div>
-        <div style={row}>
+        <div class="gallery-row">
+          <Button variant="secondary" shape="pill">
+            Pill
+          </Button>
+          <Button variant="attention-soft" shape="pill" size="sm">
+            Needs you
+          </Button>
+          <Button variant="ghost" shape="pill" size="sm">
+            Ghost pill
+          </Button>
+        </div>
+        <div class="gallery-row">
           <Button variant="primary" size="lg" iconLeading={<Icon name="plus" size={14} />}>
             New session
           </Button>
@@ -407,8 +513,19 @@ function Primitives() {
               { value: "cozy", label: "Cozy" },
             ]}
           />
+          <RadioGroup
+            label="Scope"
+            variant="segmented"
+            size="md"
+            value={scope()}
+            onChange={setScope}
+            options={[
+              { value: "workspace", label: "Workspace" },
+              { value: "session", label: "Session" },
+            ]}
+          />
         </div>
-        <div style={row}>
+        <div class="gallery-row">
           <Button variant="primary" loading>
             Loading
           </Button>
@@ -422,7 +539,7 @@ function Primitives() {
             Disabled
           </Button>
         </div>
-        <div style={row}>
+        <div class="gallery-row">
           <Button variant="secondary" size="xs">
             xs
           </Button>
@@ -439,7 +556,7 @@ function Primitives() {
       </Section>
 
       <Section title="Fields">
-        <div style={{ display: "flex", gap: "16px", "flex-wrap": "wrap", "max-width": "560px" }}>
+        <div class="gallery-row gallery-wide">
           <TextField label="Default" value={text()} onChange={setText} placeholder="Type…" />
           <TextField
             label="Invalid"
@@ -448,26 +565,18 @@ function Primitives() {
             invalid
             errorMessage="Something is off"
           />
-          <div style={{ "min-width": "200px" }}>
+          <div class="gallery-field">
             <SearchField value={search()} onChange={setSearch} onClear={() => setSearch("")} />
           </div>
         </div>
       </Section>
 
-      {/*
-       * The surfaces the motion is actually on.
-       *
-       * Every one of these was invisible to this page before: a menu that
-       * grows out of its trigger, a chevron that turns, a tick that pops, a
-       * disclosure that collapses. A gallery that could not open one of them
-       * could not be used to review any of it.
-       */}
       <Section title="Interactions — open one of each to see the motion">
-        <div style={row}>
+        <div class="gallery-row">
           <Menu
             triggerLabel="Open menu"
             trigger={<span>Menu ▾</span>}
-            triggerClass="forge-control forge-control-md forge-btn forge-btn-secondary"
+            triggerClass={buttonClass("md", "secondary")}
             items={[
               { kind: "heading", label: "Session" },
               { kind: "item", label: "Refresh status", icon: "refresh", run: () => undefined },
@@ -488,7 +597,7 @@ function Primitives() {
               },
             ]}
           />
-          <div style={{ "min-width": "180px" }}>
+          <div class="gallery-field">
             <Select
               aria-label="Provider"
               value={picked()}
@@ -507,7 +616,7 @@ function Primitives() {
           </Tooltip>
         </div>
 
-        <div style={row}>
+        <div class="gallery-row">
           <Checkbox checked={checked()} onChange={setChecked} label="Checkbox" />
           <RadioGroup
             label="Filter"
@@ -522,7 +631,7 @@ function Primitives() {
           />
         </div>
 
-        <div style={row}>
+        <div class="gallery-row">
           <Badge>draft</Badge>
           <Badge tone="accent">reviewing</Badge>
           <Badge tone="good">ready</Badge>
@@ -531,34 +640,23 @@ function Primitives() {
           <Badge tone="attention">2 waiting</Badge>
         </div>
 
-        <div style={{ display: "flex", "flex-direction": "column", "max-width": "320px" }}>
-          <span class="forge-section-label">Row · four states</span>
-          <For
-            each={
-              [
-                ["at rest", ""],
-                ["hovered", "gallery-row-hover"],
-                ["active pane", "forge-selected"],
-                ["waiting on you", "forge-attention-row"],
-              ] as const
-            }
-          >
-            {([label, state]) => (
+        <div class="gallery-list gallery-medium">
+          <span class="forge-section-label">Row · the real state hooks</span>
+          <For each={ROW_STATES}>
+            {(row) => (
               <button
                 type="button"
-                class={`forge-row empty-state-row ${state}`}
-                style={state === "gallery-row-hover" ? { background: "var(--bg-hover)" } : {}}
+                class={`forge-row empty-state-row ${row.attention ? "forge-attention-row" : ""}`}
+                data-selected={row.selected ? "" : undefined}
               >
-                <span
-                  class={state === "forge-attention-row" ? "forge-attention-dot" : "status-dot"}
-                />
-                <span class="empty-state-label">{label}</span>
+                <span class={row.attention ? "forge-attention-dot" : "status-dot"} />
+                <span class="empty-state-label">{row.label}</span>
               </button>
             )}
           </For>
         </div>
 
-        <div style={{ "max-width": "420px" }}>
+        <div class="gallery-medium">
           <Tabs
             aria-label="Kit example"
             value={tab()}
@@ -571,30 +669,30 @@ function Primitives() {
           />
         </div>
 
-        <div style={row}>
+        <div class="gallery-row">
           <For each={["running", "working", "starting", "needs-you", "failed"] as const}>
             {(work) => (
-              <span style={{ display: "inline-flex", "align-items": "center", gap: "4px" }}>
+              <span class="gallery-marker">
                 <WorkMarker work={work} />
-                <span style={{ "font-size": "11px", color: "var(--fg-muted)" }}>{work}</span>
+                <span class="forge-caption">{work}</span>
               </span>
             )}
           </For>
         </div>
 
-        <div style={{ "max-width": "420px" }}>
+        <div class="gallery-medium">
           <Disclosure summary={<span>A disclosure — this one animates its height</span>}>
-            <p style={{ margin: "0", color: "var(--fg-muted)" }}>
+            <p class="gallery-note">
               Kobalte publishes the measured height as `--kb-collapsible-content-height`, which is
               what the keyframe interpolates to. `auto` does not animate.
             </p>
           </Disclosure>
         </div>
 
-        <div style={{ display: "flex", "flex-direction": "column", "max-width": "420px" }}>
+        <div class="gallery-list gallery-medium">
           <For each={["A row", "Another row", "A third"]}>
             {(label) => (
-              <button type="button" class="forge-row empty-center-row">
+              <button type="button" class="forge-row empty-state-row">
                 <Icon name="square-terminal" class="forge-icon-muted" size={14} />
                 <span>{label}</span>
               </button>
@@ -604,7 +702,7 @@ function Primitives() {
       </Section>
 
       <Section title="Dialogs">
-        <div style={row}>
+        <div class="gallery-row">
           <Button variant="secondary" onClick={() => setDialog(true)}>
             Open dialog
           </Button>
@@ -654,13 +752,8 @@ function Primitives() {
         </Show>
       </Section>
 
-      {/* Controls share one gallery page
-          so "does the new switch look like the rest of the app" is a question
-          that can be answered by looking rather than by remembering. */}
       <Section title="Booleans, progress and placeholders">
-        <div
-          style={{ display: "flex", "flex-direction": "column", gap: "12px", "max-width": "360px" }}
-        >
+        <div class="gallery-stack gallery-medium">
           <Switch
             label="Autosave"
             description="Write on blur, and after a second of stillness."
@@ -677,13 +770,13 @@ function Primitives() {
       </Section>
 
       <Section title="Chords, crumbs and cards">
-        <div
-          style={{ display: "flex", "flex-direction": "column", gap: "12px", "max-width": "460px" }}
-        >
-          <div style={{ display: "flex", gap: "8px", "align-items": "center" }}>
+        <div class="gallery-stack gallery-medium">
+          <div class="gallery-row gallery-row-tight">
             <Kbd action="open_command_palette" />
             <Kbd action="new_terminal" />
             <Kbd action="save_file" />
+            <Kbd>↑↓</Kbd>
+            <Kbd>esc</Kbd>
           </div>
           <Breadcrumbs
             label="File path"
@@ -707,6 +800,9 @@ function Primitives() {
             }
           />
           <Card selected>A selected card: accent edge and an outer halo.</Card>
+          <Card selected={cardOn()} onClick={() => setCardOn(!cardOn())}>
+            A card that is one button: click to toggle aria-pressed.
+          </Card>
           <ListCard
             glyph={<Icon name="git-pull-request" size={14} />}
             title="Replace the textarea editor with CodeMirror"
@@ -729,15 +825,29 @@ function Primitives() {
               </>
             }
           >
-            <p style={{ margin: "0", color: "var(--fg-muted)" }}>
+            <p class="gallery-note">
               The body slot, for whatever a particular list wants under the metadata.
             </p>
           </ListCard>
+          <div class="gallery-stack gallery-stack-tight">
+            <ListCard
+              variant="flat"
+              glyph={<Icon name="git-pull-request" size={14} />}
+              title="Flat: a row in a list, not a card on a board"
+              meta={<span>#131 · hairline between rows</span>}
+            />
+            <ListCard
+              variant="flat"
+              glyph={<Icon name="git-pull-request" size={14} />}
+              title="Another flat row"
+              meta={<span>#132 · hover for the row wash</span>}
+            />
+          </div>
           <Button
             variant="secondary"
             size="sm"
             onClick={() =>
-              toast({ title: "Saved", detail: "src/theme/Gallery.tsx", tone: "success" })
+              toast({ title: "Saved", detail: "src/app/Gallery.tsx", tone: "success" })
             }
           >
             Fire a toast

@@ -25,7 +25,7 @@ import {
   setWorktreeIgnores,
 } from "./commands";
 import { openInEditor, openInFileManager } from "../../runtime/host";
-import { sessionIsAgent, sessionTitle, type Session } from "../../contracts/runtime";
+import { sessionTitle, type Session } from "../../contracts/runtime";
 import { forgeStore } from "../../state/forgeStore";
 import { requestTextInput } from "../../state/dialogs";
 import { connectionStore, setNotice } from "../../state/connection";
@@ -37,7 +37,15 @@ import { refreshWorkspaceStatus } from "../sessions/commands";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
 import { centerMode, openCompare, showCode } from "../../navigation/viewsStore";
 import { focusSession, launchAgent, launchShell } from "../sessions/sessionActions";
-import { Button, ContextMenu, Dialog, IconButton, Tooltip, type MenuItem } from "../../ui/index";
+import {
+  Badge,
+  Button,
+  ContextMenu,
+  Dialog,
+  IconButton,
+  Tooltip,
+  type MenuItem,
+} from "../../ui/index";
 import {
   buildTree,
   railCollapseTarget,
@@ -643,11 +651,11 @@ export function ProjectsView() {
       <Show when={needsYou().length > 0}>
         <section id="needs-you" class="needs-you-block" aria-labelledby="needs-you-label">
           <div class="needs-you-head">
-            <span id="needs-you-label" class="needs-you-label">
+            <span id="needs-you-label" class="forge-section-label needs-you-label">
               Needs you
             </span>
             <span class="needs-you-count">{needsYou().length}</span>
-            <span class="needs-you-hint">↵ to answer</span>
+            <span class="forge-caption needs-you-hint">↵ to answer</span>
           </div>
           <For each={needsYou()}>
             {(session) => (
@@ -665,11 +673,10 @@ export function ProjectsView() {
       </Show>
 
       <div class="rail-head">
-        <span class="rail-head-label">Projects</span>
+        <span class="forge-section-label rail-head-label">Projects</span>
         <IconButton
           label="Add a project"
           size="xs"
-          class="tree-add"
           onClick={() => void addProjectFromPicker(null).catch(() => undefined)}
         >
           <Icon name="plus" size={13} />
@@ -677,7 +684,6 @@ export function ProjectsView() {
         <IconButton
           label="New group"
           size="xs"
-          class="tree-add"
           onClick={() =>
             requestTextInput({
               title: "New group",
@@ -787,7 +793,7 @@ export function ProjectsView() {
                       size={13}
                       class="forge-icon-faint"
                     />
-                    <span class="tree-label">{name()}</span>
+                    <span class="tree-label forge-truncate">{name()}</span>
                     <Show when={group.wantsYou && !isOpen(group.id ?? "")}>
                       <FoldedQuestion />
                     </Show>
@@ -821,10 +827,10 @@ export function ProjectsView() {
                           onContextMenu={(event) => openMenu(event, projectMenu(project))}
                         >
                           <Twisty open={isOpen(project.id)} />
-                          <span class="project-avatar" aria-hidden="true">
+                          <span aria-hidden="true">
                             {project.icon ?? project.name.slice(0, 1).toUpperCase()}
                           </span>
-                          <span class="tree-label">{project.name}</span>
+                          <span class="tree-label forge-truncate">{project.name}</span>
                           {/* Folded, the count is the only thing left saying the
                             project has more than one checkout. */}
                           <Show when={project.wantsYou && !isOpen(project.id)}>
@@ -970,7 +976,7 @@ function WorkspaceList(props: {
   }
 
   return (
-    <div class="ws-list" ref={listEl}>
+    <div ref={listEl}>
       <For each={props.workspaces}>
         {(workspace) => (
           <WorkspaceCard
@@ -1086,14 +1092,14 @@ function WorkspaceCard(props: {
             size={12}
             class={current() ? "forge-icon-accent" : "forge-icon-muted"}
           />
-          <span class="tree-label ws-label">{props.workspace.label}</span>
+          <span class="tree-label ws-label forge-truncate">{props.workspace.label}</span>
           <Show when={!props.workspace.worktree}>
-            <span class="ws-badge">primary</span>
+            <Badge>primary</Badge>
           </Show>
           {/* Provisioning acks when it starts, so a checkout can be open
               before its shared files have landed. */}
           <Show when={sharesStore.applying.includes(props.workspace.id)}>
-            <span class="ws-badge">setting up…</span>
+            <Badge>setting up…</Badge>
           </Show>
         </button>
         <span class="ws-marks">
@@ -1130,7 +1136,7 @@ function WorkspaceCard(props: {
           <IconButton
             label="Start something here"
             size="xs"
-            class="tree-add ws-start"
+            class="ws-start"
             onClick={props.onMenu}
           >
             <Icon name="plus" size={13} />
@@ -1143,11 +1149,12 @@ function WorkspaceCard(props: {
           <button
             type="button"
             id={railRowId(`code:${props.workspace.id}`)}
-            class="forge-row tree-row session"
+            class="forge-row tree-row"
             role="treeitem"
             aria-level={props.level + 1}
             aria-selected={props.cursorCode || codeActive()}
-            classList={{ active: codeActive(), cursor: props.cursorCode }}
+            aria-current={codeActive() || undefined}
+            classList={{ cursor: props.cursorCode }}
             onClick={() => focusCode(props.workspace.id)}
             onContextMenu={(event) => event.stopPropagation()}
           >
@@ -1156,7 +1163,7 @@ function WorkspaceCard(props: {
               size={13}
               class={codeActive() ? "forge-icon-accent" : "forge-icon-muted"}
             />
-            <span class="tree-label">Code</span>
+            <span class="tree-label forge-truncate">Code</span>
           </button>
           <For each={props.workspace.sessions}>
             {(node) => (
@@ -1204,7 +1211,7 @@ function SessionRow(props: {
     <button
       type="button"
       id={props.inTree ? railRowId(`session:${props.session.id}`) : undefined}
-      class="forge-row tree-row session"
+      class="forge-row tree-row"
       // The needs-you block is deliberately *not* inside the tree — it is a
       // lift of rows out of it — so those rows carry no tree role: an orphan
       // `treeitem` is worse for a screen reader than a plain button.
@@ -1214,15 +1221,13 @@ function SessionRow(props: {
       aria-level={props.inTree ? (props.level ?? 1) + props.depth : undefined}
       aria-selected={props.inTree ? (props.cursor ?? active()) : undefined}
       aria-label={props.wantsYou ? `${props.label}, waiting on you for ${waited()}` : undefined}
+      aria-current={(active() && !props.lifted) || undefined}
       classList={{
-        active: active() && !props.lifted,
-        agent: sessionIsAgent(props.session),
-        "wants-you": props.wantsYou,
         lifted: props.lifted === true,
         unread: props.unread && !active(),
         cursor: props.cursor === true,
       }}
-      style={{ "--depth": String(props.depth) }}
+      style={{ "--tree-depth": String(props.depth) }}
       onClick={() => focusSession(props.session.id)}
       onContextMenu={props.onMenu}
     >
@@ -1236,7 +1241,7 @@ function SessionRow(props: {
         session={props.session}
         emphasis={active() || props.wantsYou ? "full" : "dim"}
       />
-      <span class="tree-label">{props.label}</span>
+      <span class="tree-label forge-truncate">{props.label}</span>
       <Show when={props.wantsYou}>
         <span class="tree-waited" aria-hidden="true">
           {waited()}

@@ -60,7 +60,7 @@ describe("Tauri theme tokens", () => {
   it("never emits the traffic-light inset", () => {
     for (const base of Object.keys(palettes) as ThemeBaseId[]) {
       const variables = toCssVariables(palettes[base]);
-      expect(Object.keys(variables), base).not.toContain("--forge-traffic-light-w");
+      expect(Object.keys(variables), base).not.toContain("--traffic-light-w");
       expect(Object.keys(variables), base).not.toContain("--forge-traffic-light");
     }
   });

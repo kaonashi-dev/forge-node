@@ -1,6 +1,6 @@
 import { Show, createMemo } from "solid-js";
 import { Icon } from "../../theme/icons/index";
-import { Button, IconButton, Menu } from "../../ui/index";
+import { Button, IconButton, Menu, buttonClass } from "../../ui/index";
 import { sessionTitle } from "../../contracts/runtime";
 import {
   activeCheckout,
@@ -93,7 +93,7 @@ export function SessionActionBar() {
           </IconButton>
           <Menu
             triggerLabel="Session menu"
-            triggerClass="forge-control forge-control-sm forge-btn forge-btn-ghost forge-icon-button"
+            triggerClass={buttonClass("sm", "ghost", true)}
             trigger={<Icon name="more-horizontal" class="forge-icon-muted" size={14} />}
             items={sessionMenuItems(session(), sessionTitle(session()))}
           />

@@ -94,7 +94,7 @@ export function FindPanel(props: {
           leading={<Icon name="search" size={12} class="forge-icon-muted" />}
         />
         <span
-          class="editor-find-count"
+          class="editor-find-count forge-truncate"
           classList={{
             "editor-find-error": props.find().error !== null || findPatternTooLong(typed()),
           }}

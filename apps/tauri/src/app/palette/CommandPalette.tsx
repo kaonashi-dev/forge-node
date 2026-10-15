@@ -3,7 +3,7 @@ import { COMMAND_PALETTE } from "../../actions/actions";
 import { enterContext } from "../../actions/dispatch";
 import { forgeStore } from "../../state/forgeStore";
 import { connectionStore } from "../../state/connection";
-import { Button, Combobox, Dialog, type ComboboxOption } from "../../ui/index";
+import { Button, Combobox, Dialog, Kbd, type ComboboxOption } from "../../ui/index";
 import { SessionGlyph } from "../../features/sessions/SessionGlyph";
 import { waitedFor } from "../../features/sessions/attention";
 import { now } from "../../runtime/clock";
@@ -132,20 +132,24 @@ export function CommandPalette(props: CommandPaletteProps) {
       render: () => (
         <>
           <PaletteGlyph entry={entry} />
-          <span class="palette-label">
+          <span class="forge-combobox-label">
             <For each={highlight(entry.label, text())}>
               {(segment) =>
-                segment.hit ? <mark class="palette-match">{segment.text}</mark> : segment.text
+                segment.hit ? (
+                  <mark class="forge-combobox-match">{segment.text}</mark>
+                ) : (
+                  segment.text
+                )
               }
             </For>
           </span>
-          <Show when={entry.note}>{(note) => <span class="palette-note">{note()}</span>}</Show>
+          <Show when={entry.note}>
+            {(note) => <span class="forge-combobox-note">{note()}</span>}
+          </Show>
           <Show when={entry.waiting && entry.choice.kind === "focus_session" && entry.choice}>
             {(choice) => <WaitingNote session={choice().session} />}
           </Show>
-          <Show when={entry.hint}>
-            {(hint) => <kbd class="forge-kbd palette-hint">{hint()}</kbd>}
-          </Show>
+          <Show when={entry.hint}>{(hint) => <Kbd class="forge-combobox-hint">{hint()}</Kbd>}</Show>
         </>
       ),
     })),
@@ -178,7 +182,7 @@ export function CommandPalette(props: CommandPaletteProps) {
         placeholder={scopePlaceholder(scope())}
         visibleRows={VISIBLE_ROWS}
         empty={
-          <p class="empty-copy palette-empty">
+          <p class="empty-copy forge-combobox-empty">
             {scope() === "symbols"
               ? "Symbols aren't available for this file yet."
               : "Nothing matches."}
@@ -221,17 +225,16 @@ export function CommandPalette(props: CommandPaletteProps) {
       </Show>
       <footer class="palette-footer">
         <span class="palette-footer-hint">
-          <kbd class="forge-kbd">↑↓</kbd> move
+          <Kbd>↑↓</Kbd> move
         </span>
         <span class="palette-footer-hint">
-          <kbd class="forge-kbd">↵</kbd> open
+          <Kbd>↵</Kbd> open
         </span>
         <span class="palette-footer-hint">
-          <For each={MODE_PREFIXES}>{(mode) => <kbd class="forge-kbd">{mode.prefix}</kbd>}</For>{" "}
-          modes
+          <For each={MODE_PREFIXES}>{(mode) => <Kbd>{mode.prefix}</Kbd>}</For> modes
         </span>
         <span class="palette-footer-hint palette-footer-end">
-          <kbd class="forge-kbd">esc</kbd> close
+          <Kbd>esc</Kbd> close
         </span>
       </footer>
     </Dialog>
@@ -264,7 +267,7 @@ function PaletteGlyph(props: { entry: PaletteEntry }) {
     const choice = props.entry.choice;
     if (props.entry.waiting) {
       return (
-        <span class="palette-glyph palette-glyph-dot" aria-hidden="true">
+        <span class="forge-combobox-glyph forge-combobox-glyph-dot" aria-hidden="true">
           <span class="forge-attention-dot" />
         </span>
       );
@@ -272,22 +275,24 @@ function PaletteGlyph(props: { entry: PaletteEntry }) {
     switch (choice.kind) {
       case "new_shell":
       case "focus_session":
-        return <Icon name="square-terminal" class="forge-icon-faint palette-glyph" size={14} />;
+        return (
+          <Icon name="square-terminal" class="forge-icon-faint forge-combobox-glyph" size={14} />
+        );
       case "new_agent":
         return (
-          <span class="palette-glyph">
+          <span class="forge-combobox-glyph">
             <SessionGlyph providerId={choice.provider} emphasis="dim" size={14} />
           </span>
         );
       case "focus_workspace":
-        return <Icon name="git-branch" class="forge-icon-faint palette-glyph" size={14} />;
+        return <Icon name="git-branch" class="forge-icon-faint forge-combobox-glyph" size={14} />;
       case "open_file":
         // The same mark the file tree draws (`LangIcon`), read off the same
         // name: two lists of the same paths that disagree about what a
         // `.json` looks like read as two different inventories.
-        return <LangIcon path={choice.path} class="palette-glyph" size={14} />;
+        return <LangIcon path={choice.path} class="forge-combobox-glyph" size={14} />;
       default:
-        return <span class="palette-glyph" aria-hidden="true" />;
+        return <span class="forge-combobox-glyph" aria-hidden="true" />;
     }
   };
 

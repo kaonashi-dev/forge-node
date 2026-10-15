@@ -19,13 +19,15 @@ export type ListCardProps = {
   openLabel?: string;
   /** Draws the card selection: accent edge, outer halo, filled identifier. */
   selected?: boolean;
+  /** `flat` is a row in a list rather than a card on a board: no ground, a hairline between rows. */
+  variant?: "card" | "flat";
   class?: string;
 };
 
 export function ListCard(props: ListCardProps) {
   return (
     <article
-      class={`list-card ${props.class ?? ""}`}
+      class={`list-card ${props.variant === "flat" ? "list-card-flat" : ""} ${props.class ?? ""}`}
       data-selected={props.selected ? "" : undefined}
     >
       <Show

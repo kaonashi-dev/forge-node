@@ -8,7 +8,7 @@ import { TERMINAL_VIEW } from "../../navigation/views";
 import { selectSession } from "../sessions/commands";
 import { reviewRun } from "./prReviewStore";
 import { Icon } from "../../theme/icons/index";
-import { Badge, Button, IconButton, Tabs, toast } from "../../ui/index";
+import { Badge, Button, Card, IconButton, Tabs, toast } from "../../ui/index";
 import { Markdown } from "../../shared/markdown/Markdown";
 import {
   commentSummary,
@@ -66,10 +66,10 @@ export function PrDetailView(props: PrDetailViewProps) {
         <div class="pr-detail">
           <header class="pr-detail-head">
             <div class="pr-detail-trail">
-              <span class="pr-state" data-state={item().is_draft ? "draft" : "open"}>
+              <Badge class="pr-state" tone={stateChip(item()).tone}>
                 <Icon name="git-pull-request" size={12} />
                 {stateChip(item()).label}
-              </span>
+              </Badge>
               <span class="pr-detail-repo">
                 {item().repository} #{item().number}
               </span>
@@ -87,7 +87,7 @@ export function PrDetailView(props: PrDetailViewProps) {
             </div>
 
             <div class="pr-detail-title-row">
-              <h2 class="pr-detail-title">{item().title}</h2>
+              <h2 class="forge-panel-heading pr-detail-title">{item().title}</h2>
               <Button
                 variant="primary"
                 iconLeading={<Icon name="agent" size={14} />}
@@ -122,7 +122,6 @@ export function PrDetailView(props: PrDetailViewProps) {
             <Tabs
               class="pr-detail-tabs"
               listClass="pr-detail-tab-list"
-              triggerClass="forge-tab"
               contentClass="pr-detail-panel"
               aria-label="Pull request sections"
               value={tab()}
@@ -144,10 +143,10 @@ export function PrDetailView(props: PrDetailViewProps) {
                         />
                       </Show>
                       <Show when={item().body_truncated}>
-                        <p class="pr-detail-note">
+                        <Card class="pr-detail-note">
                           The host's description was longer than the read allows, so the end of it
                           is not here. Open it on the host for the rest.
-                        </p>
+                        </Card>
                       </Show>
                     </article>
                   ),
@@ -174,7 +173,7 @@ function Details(props: { pr: PullRequest }) {
         <h3 class="forge-section-label">Verdict</h3>
         <Show
           when={decisionChip(props.pr.review_decision)}
-          fallback={<p class="pr-side-empty">No verdict yet.</p>}
+          fallback={<p class="forge-caption pr-side-empty">No verdict yet.</p>}
         >
           {(chip) => <Badge tone={chip().tone}>{chip().label}</Badge>}
         </Show>
@@ -207,7 +206,7 @@ function Details(props: { pr: PullRequest }) {
       <section class="pr-side-section">
         <h3 class="forge-section-label">Activity</h3>
         <p class="pr-side-line">{commentSummary(props.pr.comment_count)}</p>
-        <p class="pr-side-empty">Opened {readableDate(props.pr.created_at)}</p>
+        <p class="forge-caption pr-side-empty">Opened {readableDate(props.pr.created_at)}</p>
       </section>
     </div>
   );
@@ -238,17 +237,18 @@ function ReviewRail(props: { prKey: string; url: string; onCopy: () => void }) {
           Agent review
         </h3>
       </div>
-      <div
-        class="pr-review-status"
-        data-state={session() ? "running" : run() ? "starting" : "idle"}
-      >
-        <span class="pr-review-status-mark" aria-hidden="true" />
+      <Card class="pr-review-status">
+        <span
+          class="pr-review-status-mark"
+          data-state={session() ? "running" : run() ? "starting" : "idle"}
+          aria-hidden="true"
+        />
         <span class="pr-review-status-text">
           <Show when={session()} fallback={run() ? "Starting the agent…" : "No agent pass yet."}>
             {(current) => `${sessionTitle(current())} · ${sessionStateLabel(current().state)}`}
           </Show>
         </span>
-      </div>
+      </Card>
       <Show
         when={run()}
         fallback={
@@ -263,7 +263,7 @@ function ReviewRail(props: { prKey: string; url: string; onCopy: () => void }) {
       </Show>
       <span class="history-spacer" />
       <div class="pr-review-rail-foot">
-        <p class="pr-review-rail-note">
+        <p class="forge-caption pr-review-rail-note">
           The agent reads the pull request and never writes to it. Posting is yours.
         </p>
         <div class="pr-review-rail-actions">
@@ -288,7 +288,10 @@ function People(props: { title: string; names: string[]; empty: string }) {
   return (
     <section class="pr-side-section">
       <h3 class="forge-section-label">{props.title}</h3>
-      <Show when={props.names.length > 0} fallback={<p class="pr-side-empty">{props.empty}</p>}>
+      <Show
+        when={props.names.length > 0}
+        fallback={<p class="forge-caption pr-side-empty">{props.empty}</p>}
+      >
         <ul class="pr-side-people">
           <For each={props.names}>
             {(name) => (

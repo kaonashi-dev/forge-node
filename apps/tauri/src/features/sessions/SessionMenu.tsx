@@ -2,7 +2,7 @@ import { createMemo } from "solid-js";
 import { forgeStore } from "../../state/forgeStore";
 import { SessionGlyph } from "./SessionGlyph";
 import { Icon } from "../../theme/icons/index";
-import { Menu, type MenuItem } from "../../ui/index";
+import { Menu, buttonClass, type MenuItem } from "../../ui/index";
 import { currentWorkspace, launchAgent, launchShell } from "./sessionActions";
 
 /** The `+` button in the tab strip: start a terminal or an agent. */
@@ -53,7 +53,7 @@ export function SessionMenu() {
   return (
     <Menu
       triggerLabel="New session"
-      triggerClass="forge-control forge-control-sm forge-btn forge-btn-ghost forge-icon-button session-menu"
+      triggerClass={`${buttonClass("sm", "ghost", true)} session-menu`}
       trigger={<Icon name="plus" class="forge-icon-muted" size={14} />}
       items={items()}
     />

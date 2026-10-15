@@ -56,7 +56,7 @@ export function SessionHeader(props: { sessionId?: string; onCloseSplit?: () => 
             <Show when={project()}>
               {(item) => (
                 <>
-                  <span class="session-crumb">{item().name}</span>
+                  <span class="session-crumb forge-truncate">{item().name}</span>
                   <span class="session-crumb-sep" aria-hidden="true">
                     /
                   </span>
@@ -66,7 +66,7 @@ export function SessionHeader(props: { sessionId?: string; onCloseSplit?: () => 
             <Show when={workspace()}>
               {(item) => (
                 <>
-                  <span class="session-crumb session-crumb-mono">
+                  <span class="session-crumb session-crumb-mono forge-truncate">
                     {item().display_name ?? item().branch ?? item().path}
                   </span>
                   <span class="session-crumb-sep" aria-hidden="true">
@@ -75,7 +75,7 @@ export function SessionHeader(props: { sessionId?: string; onCloseSplit?: () => 
                 </>
               )}
             </Show>
-            <h2 class="session-crumb-title">{label()}</h2>
+            <h2 class="session-crumb-title forge-truncate">{label()}</h2>
           </nav>
           <Show when={provider()}>
             {(name) => (

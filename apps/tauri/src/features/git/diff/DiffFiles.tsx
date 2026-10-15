@@ -1,5 +1,6 @@
 import { For, Show, createSignal } from "solid-js";
 import { LangIcon } from "../../../theme/icons/index";
+import { IconButton } from "../../../ui/index";
 import { PatchView } from "./PatchView";
 import { SplitPatchView } from "./SplitPatchView";
 import type { DiffFile } from "../../../contracts/workbench";
@@ -26,17 +27,17 @@ export function DiffFiles(props: {
         return (
           <section class="diff-file">
             <header class="forge-row diff-file-head">
-              <button
-                type="button"
-                class="forge-row diff-file-toggle"
-                aria-label={`${open() ? "Collapse" : "Expand"} diff for ${file.path}`}
+              <IconButton
+                size="xs"
+                label={`${open() ? "Collapse" : "Expand"} diff for ${file.path}`}
+                hideTooltip
                 aria-expanded={open()}
                 onClick={() => toggle(file.path)}
               >
                 <span class="tree-twisty" classList={{ open: open() }} aria-hidden="true">
                   ›
                 </span>
-              </button>
+              </IconButton>
               <LangIcon path={file.path} size={13} />
               <span class="git-status" data-status={file.status} title={statusWord(file.status)}>
                 {statusLetter(file.status)}
@@ -48,7 +49,7 @@ export function DiffFiles(props: {
                 title={`Open ${file.path} in Code`}
                 onClick={() => props.onOpenLine(file.path, 1)}
               >
-                <span class="tree-label">{file.path}</span>
+                <span class="tree-label forge-truncate">{file.path}</span>
               </button>
               <span class="git-counts">
                 <span class="added">+{file.additions}</span>

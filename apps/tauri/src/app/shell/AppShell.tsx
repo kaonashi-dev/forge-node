@@ -133,6 +133,7 @@ import {
   toggleSidebar,
   toggleView,
 } from "../../navigation/sidebarStore";
+import { Icon } from "../../theme/icons/index";
 import { IconButton, ToastRegion } from "../../ui/index";
 import { openFile, warmFileTree as warmTree } from "../../features/files/commands";
 import { gitStore, setGitStore } from "../../features/git/state";
@@ -697,13 +698,8 @@ export function AppShell() {
             onFocusOut={() => releaseNotice("focus")}
           >
             <span>{reason()}</span>
-            <IconButton
-              label="Dismiss"
-              size="sm"
-              class="notice-close"
-              onClick={() => setNotice(null)}
-            >
-              ×
+            <IconButton label="Dismiss" size="sm" onClick={() => setNotice(null)}>
+              <Icon name="close" size={14} class="forge-icon-faint" />
             </IconButton>
           </div>
         )}

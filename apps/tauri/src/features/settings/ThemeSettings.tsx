@@ -24,7 +24,7 @@ import {
   type Palette,
   type ThemeBaseId,
 } from "../../theme/tokens";
-import { Button, Disclosure, Select, TextArea } from "../../ui/index";
+import { Button, Card, Disclosure, Select, TextArea } from "../../ui/index";
 import { Icon } from "../../theme/icons/index";
 // Not through `ui/index`: the barrel is in the initial chunk, and the colour
 // primitives belong with Settings, which is loaded when it is first opened.
@@ -220,7 +220,7 @@ export function ThemeSettings() {
                   {label}
                 </label>
                 <div
-                  class="theme-color-field"
+                  class="forge-control forge-control-md forge-field theme-color-field"
                   style={{
                     background: colors()[key],
                     color: hex(on(parseHex(colors()[key]), 0, 0xffffff)),
@@ -243,7 +243,7 @@ export function ThemeSettings() {
                   />
                   <input
                     id={`theme-${key}-hex`}
-                    class="theme-color-hex"
+                    class="forge-field-input theme-color-hex"
                     type="text"
                     spellcheck={false}
                     autocomplete="off"
@@ -324,7 +324,6 @@ export function ThemeSettings() {
           <Button onClick={downloadTemplate}>Download theme</Button>
           <TextArea
             label="Theme JSON"
-            class="theme-json"
             rows={7}
             maxLength={MAX_THEME_BYTES}
             value={source()}
@@ -349,31 +348,29 @@ function ThemeCard(props: {
 }) {
   const colors = () => palettes[props.id];
   return (
-    <button
-      type="button"
+    <Card
       class="theme-card"
-      classList={{ "forge-card-selected": props.selected }}
-      aria-pressed={props.selected}
+      selected={props.selected}
       disabled={props.disabled}
       onClick={props.onChoose}
     >
       <span class="theme-card-preview" style={{ background: colors().bg }} aria-hidden="true">
         <span class="theme-card-bar" style={{ background: colors().surface }} />
         <span class="theme-card-chips">
-          <span class="theme-card-chip" style={{ background: colors().accent, width: "22px" }} />
-          <span class="theme-card-chip" style={{ background: colors().surfaceHi, width: "30px" }} />
-          <span class="theme-card-chip" style={{ background: colors().muted, width: "14px" }} />
+          <span class="theme-card-chip" style={{ background: colors().accent }} />
+          <span class="theme-card-chip" style={{ background: colors().surfaceHi }} />
+          <span class="theme-card-chip" style={{ background: colors().muted }} />
         </span>
         <span class="theme-card-ansi">
           <For each={colors().ansi}>{(color) => <span style={{ background: color }} />}</For>
         </span>
       </span>
       <span class="theme-card-foot">
-        <span class="theme-card-name">{THEME_LABELS[props.id]}</span>
+        <span class="forge-truncate theme-card-name">{THEME_LABELS[props.id]}</span>
         <Show when={props.selected}>
           <Icon name="check" class="forge-icon-accent" size={13} />
         </Show>
       </span>
-    </button>
+    </Card>
   );
 }

@@ -1,6 +1,7 @@
 // CSS provides the first-paint theme before the runtime applies derived values.
 import { resolve } from "node:path";
 import { palettes, staticTokens, toCssVariables, type ThemeBaseId } from "../src/theme/tokens";
+import { syntaxRules, syntaxScopes } from "../src/theme/syntax";
 
 const out = resolve(import.meta.dir, "../src/theme/tokens.css");
 
@@ -20,6 +21,8 @@ const parts = [
     .map((id) => block(`[data-theme="${id}"]`, toCssVariables(palettes[id]))),
   "/* Semantic layer and scale — theme-independent, so emitted once. */",
   block(":root", staticTokens()),
+  "/* Syntax colour by scope, for every DOM surface that paints highlighted code. */",
+  syntaxRules(syntaxScopes(palettes["forge-dark"])),
 ];
 
 await Bun.write(out, `${parts.join("\n")}\n`);

@@ -41,7 +41,7 @@ import { fileDecorations, folderCounts } from "./treeDecorations";
 import { Icon, langIconUrl } from "../../../theme/icons/index";
 import { themeBase } from "../../../theme/ThemeProvider";
 import { baseIsLight } from "../../../theme/tokens";
-import { ContextMenu, EmptyState, Skeleton, type MenuItem } from "../../../ui/index";
+import { Button, ContextMenu, EmptyState, Skeleton, type MenuItem } from "../../../ui/index";
 import { createFileDrag } from "./fileDrag";
 import { sendTargetedPaste } from "../../terminal/commands";
 import { connectionStore } from "../../../state/connection";
@@ -545,29 +545,31 @@ export function FileTreePanel() {
     >
       <button
         type="button"
-        class="fw-root-identity"
+        class="forge-row fw-root-identity"
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           setMenu({ x: rect.left, y: rect.bottom, target: { kind: "root" } });
         }}
       >
         <Icon name="folder-open" size={14} />
-        <span>{workspaceInfo()?.path.split("/").filter(Boolean).at(-1) ?? "Files"}</span>
+        <span class="forge-truncate">
+          {workspaceInfo()?.path.split("/").filter(Boolean).at(-1) ?? "Files"}
+        </span>
       </button>
       <Show when={directoryError()}>{(error) => <p class="panel-error">{error()}</p>}</Show>
       <For each={directoryFailures()}>
         {(failure) => (
           <p class="panel-error">
             {failure.path}: {failure.error}{" "}
-            <button
-              type="button"
+            <Button
+              size="xs"
               onClick={() => {
                 const workspace = activeWorkspace();
                 if (workspace) ensureDirectory(workspace, failure.path, true);
               }}
             >
               Retry
-            </button>
+            </Button>
           </p>
         )}
       </For>

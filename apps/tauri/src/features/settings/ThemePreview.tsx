@@ -1,6 +1,5 @@
-import { For, createMemo } from "solid-js";
+import { For } from "solid-js";
 import { themeBase } from "../../theme/ThemeProvider";
-import { editorPalette } from "../../theme/editorTheme";
 import { palettes } from "../../theme/tokens";
 
 /**
@@ -11,18 +10,10 @@ import { palettes } from "../../theme/tokens";
  * toggle that hides whichever of them the change just broke.
  */
 export function ThemePreview(props: { contrast: number }) {
-  const syntax = createMemo(() => editorPalette(themeBase()).scopes);
   const palette = () => palettes[themeBase()];
-  const styles = createMemo(() => ({
-    "--preview-keyword": syntax().keyword,
-    "--preview-type": syntax().type,
-    "--preview-string": syntax().string,
-    "--preview-number": syntax().number,
-    "--preview-comment": syntax().comment,
-  }));
 
   return (
-    <section class="theme-preview" aria-label="Theme preview" style={styles()}>
+    <section class="theme-preview" aria-label="Theme preview">
       <div class="theme-preview-toolbar">
         <span class="theme-preview-caption">Preview</span>
         <span class="theme-preview-filename">theme.ts</span>
@@ -34,8 +25,8 @@ export function ThemePreview(props: { contrast: number }) {
               <div class="theme-preview-line">
                 <span class="theme-preview-line-number">1</span>
                 <code>
-                  <span class="theme-preview-keyword">const</span> themePreview:{" "}
-                  <span class="theme-preview-type">ThemeConfig</span> = {"{"}
+                  <span data-syntax="keyword">const</span> themePreview:{" "}
+                  <span data-syntax="type">ThemeConfig</span> = {"{"}
                 </code>
               </div>
               <For each={["surface", "accent", "contrast"] as const}>
@@ -51,9 +42,9 @@ export function ThemePreview(props: { contrast: number }) {
                       {"  "}
                       {field}:{" "}
                       {field === "contrast" ? (
-                        <span class="theme-preview-number">{after ? props.contrast : 42}</span>
+                        <span data-syntax="number">{after ? props.contrast : 42}</span>
                       ) : (
-                        <span class="theme-preview-string">
+                        <span data-syntax="string">
                           "
                           {field === "surface"
                             ? after
@@ -101,7 +92,7 @@ export function ThemePreview(props: { contrast: number }) {
         </div>
         <div>
           <span class="theme-terminal-success">✓</span> Theme colors look good{" "}
-          <span class="theme-preview-comment">[12 ms]</span>
+          <span data-syntax="comment">[12 ms]</span>
         </div>
         <div class="theme-terminal-colors" aria-label="Sixteen ANSI colors">
           <For each={palette().ansi}>

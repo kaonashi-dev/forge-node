@@ -16,7 +16,7 @@ import {
   resetBinding,
 } from "../../actions/bindings";
 import { describeChord, specFromEvent, type Chord } from "../../actions/keys";
-import { Button, FilterHeader, Kbd } from "../../ui/index";
+import { Badge, Button, FilterHeader, Kbd } from "../../ui/index";
 import { Group, Page } from "./SettingsLayout";
 
 /** The chords worth learning first, read from the live table so a rebinding shows here too. */
@@ -111,7 +111,7 @@ export function KeyboardSection() {
             {(conflict) => (
               <div class="keymap-conflict">
                 <Kbd chord={conflict.chord} />
-                <span class="keymap-conflict-context">{conflict.context}</span>
+                <span class="forge-caption">{conflict.context}</span>
                 <span class="keymap-conflict-actions">
                   {conflict.actions.map((action) => actionLabel(action)).join(" · ")}
                 </span>
@@ -139,7 +139,7 @@ export function KeyboardSection() {
             )}
           </For>
           <dt>
-            <kbd class="forge-kbd keymap-essential-chord">esc esc</kbd>
+            <Kbd class="keymap-essential-chord">esc esc</Kbd>
           </dt>
           <dd>Leave settings, keep the session</dd>
         </dl>
@@ -154,7 +154,7 @@ export function KeyboardSection() {
           onQuery={setQuery}
         />
         <table class="keymap-table">
-          <thead>
+          <thead class="forge-section-label">
             <tr>
               <th scope="col">Action</th>
               <th scope="col">Context</th>
@@ -175,7 +175,9 @@ export function KeyboardSection() {
                     <th scope="row" class="keymap-action">
                       {label}
                       <Show when={isOverridden(row.action, row.context, row.argument)}>
-                        <span class="keymap-changed">changed</span>
+                        <Badge tone="accent" class="keymap-changed">
+                          changed
+                        </Badge>
                       </Show>
                     </th>
                     <td class="keymap-context">{row.context}</td>

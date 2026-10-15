@@ -183,7 +183,7 @@ export function Markdown(props: {
               <Show when={props.onEdit && blocks().length === 0}>
                 <button
                   type="button"
-                  class="forge-md-p forge-md-empty"
+                  class="forge-row forge-md-p forge-md-empty"
                   onClick={(event) => api.begin(0, props.text.length, event)}
                 >
                   Write…
@@ -429,7 +429,7 @@ function TaskMark(props: { item: MdListItem }) {
       when={edit && !nested}
       fallback={
         <span
-          class="forge-md-box"
+          class="forge-checkbox-box forge-md-box"
           data-checked={checked() ? "" : undefined}
           role="img"
           aria-label={checked() ? "Done" : "Not done"}
@@ -440,7 +440,7 @@ function TaskMark(props: { item: MdListItem }) {
     >
       <button
         type="button"
-        class="forge-md-box"
+        class="forge-checkbox-box forge-md-box"
         data-checked={checked() ? "" : undefined}
         aria-pressed={checked()}
         aria-label={checked() ? "Mark as not done" : "Mark as done"}

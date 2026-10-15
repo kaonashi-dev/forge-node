@@ -79,7 +79,7 @@ export function RemoveProjectDialog(props: RemoveProjectDialogProps) {
         </>
       }
     >
-      <p class="remove-worktree-copy forge-dialog-copy">
+      <p class="forge-dialog-copy">
         {footprint().checkouts === 1
           ? "One checkout is registered under it."
           : `${footprint().checkouts} checkouts are registered under it.`}
@@ -106,7 +106,7 @@ export function RemoveProjectDialog(props: RemoveProjectDialogProps) {
       />
 
       <div class="remove-project-consequences">
-        <p class="section-label">What happens</p>
+        <p class="forge-section-label">What happens</p>
         <ul class="remove-worktree-reasons">
           <For each={consequences()}>{(line) => <li>{line}</li>}</For>
         </ul>

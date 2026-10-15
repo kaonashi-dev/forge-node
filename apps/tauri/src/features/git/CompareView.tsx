@@ -115,17 +115,16 @@ export function CompareView(props: { workspace: string }) {
                   <button
                     type="button"
                     class="forge-row compare-file"
-                    classList={{ active: selected() === null }}
+                    aria-current={selected() === null ? "true" : undefined}
                     onClick={() => setSelected(null)}
                   >
-                    <span class="tree-label">All files</span>
+                    <span class="tree-label forge-truncate">All files</span>
                   </button>
                   <For each={files()}>
                     {(file) => (
                       <button
                         type="button"
                         class="forge-row compare-file"
-                        classList={{ active: selected() === file.path }}
                         aria-current={selected() === file.path ? "true" : undefined}
                         title={file.path}
                         onClick={() => setSelected(file.path)}
@@ -138,7 +137,7 @@ export function CompareView(props: { workspace: string }) {
                         >
                           {statusLetter(file.status)}
                         </span>
-                        <span class="tree-label">
+                        <span class="tree-label forge-truncate">
                           {file.path.slice(file.path.lastIndexOf("/") + 1)}
                         </span>
                         <span class="git-counts">
@@ -152,14 +151,14 @@ export function CompareView(props: { workspace: string }) {
                 <div class="diff-view compare-diff">
                   <Show when={current().commits.length > 0}>
                     <details class="session-changes-commits">
-                      <summary class="panel-subhead">
+                      <summary class="forge-section-label panel-subhead">
                         Commits since {current().merge_base ?? "the merge base"}
                       </summary>
                       <For each={current().commits}>
                         {(commit) => (
                           <div class="session-commit">
                             <span class="session-commit-id">{commit.short_id}</span>
-                            <span class="session-commit-subject">{commit.subject}</span>
+                            <span class="forge-truncate">{commit.subject}</span>
                           </div>
                         )}
                       </For>

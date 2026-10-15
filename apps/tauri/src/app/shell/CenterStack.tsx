@@ -325,7 +325,7 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
       */}
       <Show when={connectionStore.connection.kind === "disconnected"}>
         <div class="disconnected-banner" role="alert">
-          <span class="disconnected-reason">
+          <span class="disconnected-reason forge-truncate">
             {(connectionStore.connection as { reason: string }).reason}
           </span>
           <span class="history-spacer" />

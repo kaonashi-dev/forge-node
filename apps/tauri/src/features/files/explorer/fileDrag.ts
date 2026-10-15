@@ -143,7 +143,7 @@ export function createFileDrag(host: HTMLElement, options: FileDragOptions) {
     drop?.element.classList.add("file-drop-target");
     if (!badge) {
       badge = doc.createElement("div");
-      badge.className = "file-drag-label";
+      badge.className = "file-drag-label forge-truncate";
       badge.setAttribute("role", "status");
       doc.body.append(badge);
     }
@@ -153,8 +153,8 @@ export function createFileDrag(host: HTMLElement, options: FileDragOptions) {
         : drop?.kind === "move"
           ? `Move to ${drop.parent || "checkout root"}`
           : "Cannot drop here";
-    badge.style.left = `${x + 12}px`;
-    badge.style.top = `${y + 12}px`;
+    badge.style.left = `${x}px`;
+    badge.style.top = `${y}px`;
     const parent = drop?.kind === "move" ? drop.parent : null;
     if (parent !== hoverPath) {
       clearHover();

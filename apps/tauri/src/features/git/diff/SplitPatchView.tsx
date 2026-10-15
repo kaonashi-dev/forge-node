@@ -3,7 +3,7 @@ import { parsePatch, type PatchRow } from "./patch";
 import { splitRows } from "./patchDocument";
 import { WindowedPatchRows } from "./WindowedPatchRows";
 import { cachedPatchSyntax } from "./patchSyntax";
-import { PatchText, patchSyntaxColors } from "./PatchText";
+import { PatchText } from "./PatchText";
 
 export function SplitPatchView(props: {
   path: string;
@@ -13,7 +13,6 @@ export function SplitPatchView(props: {
   const rows = createMemo(() => parsePatch(props.patch));
   const pairs = createMemo(() => splitRows(rows()));
   const tokens = cachedPatchSyntax(() => props.path, rows);
-  const colors = patchSyntaxColors();
 
   function openRow(row: PatchRow | null): void {
     if (!row || row.after === null) return;
@@ -28,7 +27,7 @@ export function SplitPatchView(props: {
   }
 
   return (
-    <div class="diff-split" style={colors()}>
+    <div class="diff-split">
       <WindowedPatchRows rows={pairs()}>
         {(pair) => (
           <div class="diff-split-row">

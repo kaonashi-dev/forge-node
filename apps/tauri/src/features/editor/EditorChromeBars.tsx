@@ -10,7 +10,7 @@ export function EditorBreadcrumbs(props: { path: string; children?: JSX.Element 
         <For each={crumbs().parents}>
           {(part) => (
             <li class="editor-crumb">
-              <span>{part}</span>
+              <span class="forge-truncate">{part}</span>
               <span class="editor-crumb-sep" aria-hidden="true">
                 ›
               </span>

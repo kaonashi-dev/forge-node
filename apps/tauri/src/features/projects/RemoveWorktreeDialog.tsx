@@ -59,20 +59,18 @@ export function RemoveWorktreeDialog(props: RemoveWorktreeDialogProps) {
       <Show
         when={props.reason}
         fallback={
-          <p class="remove-worktree-copy forge-dialog-copy">
+          <p class="forge-dialog-copy">
             {managed()
               ? "Forge Node will remove this worktree from disk. The branch and its commits are kept."
               : "Forge Node did not create this worktree, so it only forgets it: the directory and branch are kept, and Forge Node will not adopt it again."}
           </p>
         }
       >
-        <p class="remove-worktree-copy forge-dialog-copy">
-          Forge Node found conditions that make removal unsafe:
-        </p>
+        <p class="forge-dialog-copy">Forge Node found conditions that make removal unsafe:</p>
         <ul class="remove-worktree-reasons">
           <For each={reasons()}>{(reason) => <li>{reason}</li>}</For>
         </ul>
-        <p class="remove-worktree-copy forge-dialog-copy">
+        <p class="forge-dialog-copy">
           {managed()
             ? "Removing it anyway discards the worktree and the state listed above. The branch is kept."
             : "Removing it anyway only forgets Forge Node's entry, permanently. The directory, branch, and local changes are kept."}

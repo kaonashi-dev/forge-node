@@ -69,7 +69,6 @@
   --forge-text-md: 13px;
   --forge-text-lg: 15px;
   --forge-text-xl: 20px;
-  --forge-mono-lh: 1.35;
   --forge-border: #292725;
   --forge-border-hi: #393734;
   --forge-hover: #262523;
@@ -110,6 +109,27 @@
   --git-untracked-text: #c7a4cd;
   --git-conflict-text: #ef9c5b;
   --git-ignored-text: #b5aea2;
+  --syntax-comment: #8d857a;
+  --syntax-keyword: #ee8177;
+  --syntax-control-keyword: #c9a4d6;
+  --syntax-operator: #aea69a;
+  --syntax-punctuation: #aea69a;
+  --syntax-variable: #ede5d6;
+  --syntax-property: #9cbfdc;
+  --syntax-function: #edc65f;
+  --syntax-type: #6fbbb3;
+  --syntax-namespace: #6fbbb3;
+  --syntax-string: #b0ce73;
+  --syntax-escape: #c9a4d6;
+  --syntax-regexp: #6fbbb3;
+  --syntax-number: #c9a4d6;
+  --syntax-constant: #c9a4d6;
+  --syntax-tag: #ee8177;
+  --syntax-attribute: #edc65f;
+  --syntax-heading: #edc65f;
+  --syntax-link: #9cbfdc;
+  --syntax-invalid: #e2645a;
+  --syntax-meta: #aea69a;
 }
 
 [data-theme="forge-light"] {
@@ -181,7 +201,6 @@
   --forge-text-md: 13px;
   --forge-text-lg: 15px;
   --forge-text-xl: 20px;
-  --forge-mono-lh: 1.35;
   --forge-border: #ebe9e4;
   --forge-border-hi: #dad8d3;
   --forge-hover: #eeebe7;
@@ -222,6 +241,27 @@
   --git-untracked-text: #70457f;
   --git-conflict-text: #814a17;
   --git-ignored-text: #5b564e;
+  --syntax-comment: #847d73;
+  --syntax-keyword: #c9524a;
+  --syntax-control-keyword: #96689f;
+  --syntax-operator: #6b6459;
+  --syntax-punctuation: #6b6459;
+  --syntax-variable: #26231f;
+  --syntax-property: #4a7ca6;
+  --syntax-function: #98751f;
+  --syntax-type: #35867f;
+  --syntax-namespace: #35867f;
+  --syntax-string: #6b8246;
+  --syntax-escape: #96689f;
+  --syntax-regexp: #35867f;
+  --syntax-number: #96689f;
+  --syntax-constant: #96689f;
+  --syntax-tag: #c9524a;
+  --syntax-attribute: #98751f;
+  --syntax-heading: #98751f;
+  --syntax-link: #4a7ca6;
+  --syntax-invalid: #b03a31;
+  --syntax-meta: #6b6459;
 }
 
 [data-theme="gruvbox-hard"] {
@@ -293,7 +333,6 @@
   --forge-text-md: 13px;
   --forge-text-lg: 15px;
   --forge-text-xl: 20px;
-  --forge-mono-lh: 1.35;
   --forge-border: #363532;
   --forge-border-hi: #45433d;
   --forge-hover: #333330;
@@ -334,6 +373,27 @@
   --git-untracked-text: #ccbe9c;
   --git-conflict-text: #dbb9a6;
   --git-ignored-text: #cbbb9c;
+  --syntax-comment: #928374;
+  --syntax-keyword: #fb4934;
+  --syntax-control-keyword: #d3869b;
+  --syntax-operator: #bdae93;
+  --syntax-punctuation: #bdae93;
+  --syntax-variable: #ebdbb2;
+  --syntax-property: #83a598;
+  --syntax-function: #fabd2f;
+  --syntax-type: #8ec07c;
+  --syntax-namespace: #8ec07c;
+  --syntax-string: #b8bb26;
+  --syntax-escape: #d3869b;
+  --syntax-regexp: #8ec07c;
+  --syntax-number: #d3869b;
+  --syntax-constant: #d3869b;
+  --syntax-tag: #fb4934;
+  --syntax-attribute: #fabd2f;
+  --syntax-heading: #fabd2f;
+  --syntax-link: #83a598;
+  --syntax-invalid: #fb4934;
+  --syntax-meta: #bdae93;
 }
 
 [data-theme="gruvbox"] {
@@ -405,7 +465,6 @@
   --forge-text-md: 13px;
   --forge-text-lg: 15px;
   --forge-text-xl: 20px;
-  --forge-mono-lh: 1.35;
   --forge-border: #363532;
   --forge-border-hi: #45433d;
   --forge-hover: #333330;
@@ -446,6 +505,27 @@
   --git-untracked-text: #c2cf9a;
   --git-conflict-text: #eec49e;
   --git-ignored-text: #d9c9a6;
+  --syntax-comment: #928374;
+  --syntax-keyword: #fb4934;
+  --syntax-control-keyword: #d3869b;
+  --syntax-operator: #bdae93;
+  --syntax-punctuation: #bdae93;
+  --syntax-variable: #ebdbb2;
+  --syntax-property: #83a598;
+  --syntax-function: #fabd2f;
+  --syntax-type: #8ec07c;
+  --syntax-namespace: #8ec07c;
+  --syntax-string: #b8bb26;
+  --syntax-escape: #d3869b;
+  --syntax-regexp: #8ec07c;
+  --syntax-number: #d3869b;
+  --syntax-constant: #d3869b;
+  --syntax-tag: #fb4934;
+  --syntax-attribute: #fabd2f;
+  --syntax-heading: #fabd2f;
+  --syntax-link: #83a598;
+  --syntax-invalid: #fb4934;
+  --syntax-meta: #bdae93;
 }
 
 [data-theme="neutral"] {
@@ -517,7 +597,6 @@
   --forge-text-md: 13px;
   --forge-text-lg: 15px;
   --forge-text-xl: 20px;
-  --forge-mono-lh: 1.35;
   --forge-border: #1b1b1b;
   --forge-border-hi: #2e2e2e;
   --forge-hover: #181818;
@@ -558,6 +637,27 @@
   --git-untracked-text: #73c991;
   --git-conflict-text: #e98a8d;
   --git-ignored-text: #a6a6a6;
+  --syntax-comment: #8a8a8a;
+  --syntax-keyword: #ff7a93;
+  --syntax-control-keyword: #bb9af7;
+  --syntax-operator: #a1a1a1;
+  --syntax-punctuation: #a1a1a1;
+  --syntax-variable: #fafafa;
+  --syntax-property: #7da6ff;
+  --syntax-function: #ff9e64;
+  --syntax-type: #7dcfff;
+  --syntax-namespace: #7dcfff;
+  --syntax-string: #b9f27c;
+  --syntax-escape: #bb9af7;
+  --syntax-regexp: #7dcfff;
+  --syntax-number: #bb9af7;
+  --syntax-constant: #bb9af7;
+  --syntax-tag: #ff7a93;
+  --syntax-attribute: #ff9e64;
+  --syntax-heading: #ff9e64;
+  --syntax-link: #7da6ff;
+  --syntax-invalid: #ff6568;
+  --syntax-meta: #a1a1a1;
 }
 
 [data-theme="gruvbox-light"] {
@@ -629,7 +729,6 @@
   --forge-text-md: 13px;
   --forge-text-lg: 15px;
   --forge-text-xl: 20px;
-  --forge-mono-lh: 1.35;
   --forge-border: #eee4bd;
   --forge-border-hi: #dfd5b1;
   --forge-hover: #f0e6be;
@@ -670,6 +769,27 @@
   --git-untracked-text: #3f5b48;
   --git-conflict-text: #9d0006;
   --git-ignored-text: #5b524c;
+  --syntax-comment: #7c6f64;
+  --syntax-keyword: #9d0006;
+  --syntax-control-keyword: #8f3f71;
+  --syntax-operator: #5f5750;
+  --syntax-punctuation: #5f5750;
+  --syntax-variable: #3c3836;
+  --syntax-property: #076678;
+  --syntax-function: #8f5a0b;
+  --syntax-type: #427b58;
+  --syntax-namespace: #427b58;
+  --syntax-string: #79740e;
+  --syntax-escape: #8f3f71;
+  --syntax-regexp: #427b58;
+  --syntax-number: #8f3f71;
+  --syntax-constant: #8f3f71;
+  --syntax-tag: #9d0006;
+  --syntax-attribute: #8f5a0b;
+  --syntax-heading: #8f5a0b;
+  --syntax-link: #076678;
+  --syntax-invalid: #9d0006;
+  --syntax-meta: #5f5750;
 }
 
 [data-theme="neutral-light"] {
@@ -741,7 +861,6 @@
   --forge-text-md: 13px;
   --forge-text-lg: 15px;
   --forge-text-xl: 20px;
-  --forge-mono-lh: 1.35;
   --forge-border: #efefef;
   --forge-border-hi: #dcdcdc;
   --forge-hover: #f1f1f1;
@@ -782,6 +901,27 @@
   --git-untracked-text: #156734;
   --git-conflict-text: #ac1c1c;
   --git-ignored-text: #595959;
+  --syntax-comment: #6e6e6e;
+  --syntax-keyword: #dc2626;
+  --syntax-control-keyword: #9333ea;
+  --syntax-operator: #565656;
+  --syntax-punctuation: #565656;
+  --syntax-variable: #171717;
+  --syntax-property: #2563eb;
+  --syntax-function: #946200;
+  --syntax-type: #0e7490;
+  --syntax-namespace: #0e7490;
+  --syntax-string: #15803d;
+  --syntax-escape: #9333ea;
+  --syntax-regexp: #0e7490;
+  --syntax-number: #9333ea;
+  --syntax-constant: #9333ea;
+  --syntax-tag: #dc2626;
+  --syntax-attribute: #946200;
+  --syntax-heading: #946200;
+  --syntax-link: #2563eb;
+  --syntax-invalid: #b91c1c;
+  --syntax-meta: #565656;
 }
 
 [data-theme="ocean"] {
@@ -853,7 +993,6 @@
   --forge-text-md: 13px;
   --forge-text-lg: 15px;
   --forge-text-xl: 20px;
-  --forge-mono-lh: 1.35;
   --forge-border: #212b36;
   --forge-border-hi: #343c46;
   --forge-hover: #1f2833;
@@ -894,6 +1033,27 @@
   --git-untracked-text: #73c991;
   --git-conflict-text: #eda2a4;
   --git-ignored-text: #b8b8b8;
+  --syntax-comment: #8a8a8a;
+  --syntax-keyword: #ff7a93;
+  --syntax-control-keyword: #bb9af7;
+  --syntax-operator: #a1a1a1;
+  --syntax-punctuation: #a1a1a1;
+  --syntax-variable: #fafafa;
+  --syntax-property: #7da6ff;
+  --syntax-function: #ff9e64;
+  --syntax-type: #7dcfff;
+  --syntax-namespace: #7dcfff;
+  --syntax-string: #b9f27c;
+  --syntax-escape: #bb9af7;
+  --syntax-regexp: #7dcfff;
+  --syntax-number: #bb9af7;
+  --syntax-constant: #bb9af7;
+  --syntax-tag: #ff7a93;
+  --syntax-attribute: #ff9e64;
+  --syntax-heading: #ff9e64;
+  --syntax-link: #7da6ff;
+  --syntax-invalid: #ff6568;
+  --syntax-meta: #a1a1a1;
 }
 
 [data-theme="forest"] {
@@ -965,7 +1125,6 @@
   --forge-text-md: 13px;
   --forge-text-lg: 15px;
   --forge-text-xl: 20px;
-  --forge-mono-lh: 1.35;
   --forge-border: #232d28;
   --forge-border-hi: #313a35;
   --forge-hover: #212b26;
@@ -1006,6 +1165,27 @@
   --git-untracked-text: #a8b9a9;
   --git-conflict-text: #d1aeaa;
   --git-ignored-text: #b8b4b0;
+  --syntax-comment: #7d7d7d;
+  --syntax-keyword: #fb4934;
+  --syntax-control-keyword: #d3869b;
+  --syntax-operator: #969696;
+  --syntax-punctuation: #969696;
+  --syntax-variable: #c7c7c7;
+  --syntax-property: #83a598;
+  --syntax-function: #fabd2f;
+  --syntax-type: #8ec07c;
+  --syntax-namespace: #8ec07c;
+  --syntax-string: #b8bb26;
+  --syntax-escape: #d3869b;
+  --syntax-regexp: #8ec07c;
+  --syntax-number: #d3869b;
+  --syntax-constant: #d3869b;
+  --syntax-tag: #fb4934;
+  --syntax-attribute: #fabd2f;
+  --syntax-heading: #fabd2f;
+  --syntax-link: #83a598;
+  --syntax-invalid: #fb4934;
+  --syntax-meta: #969696;
 }
 
 /* Semantic layer and scale — theme-independent, so emitted once. */
@@ -1024,7 +1204,6 @@
   --success-solid: var(--forge-green);
   --warning-solid: var(--forge-amber);
   --attention-solid: var(--forge-needs-you);
-  --attention-soft: var(--forge-needs-you-tint);
   --info-solid: var(--forge-blue);
   --ring: var(--forge-focus-ring);
   --radius-xs: var(--forge-radius-xs);
@@ -1068,9 +1247,22 @@
   --attention-halo: 0 0 0 3px color-mix(in srgb, var(--attention) 18%, transparent);
   --card-select-border: color-mix(in srgb, var(--accent) 50%, transparent);
   --card-select-halo: 0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent);
+  --accent-tint-bg: color-mix(in srgb, var(--accent) 7%, transparent);
+  --accent-tint-border: color-mix(in srgb, var(--accent) 32%, transparent);
+  --danger-tint-bg: color-mix(in srgb, var(--danger-solid) 7%, transparent);
+  --danger-tint-border: color-mix(in srgb, var(--danger-solid) 40%, transparent);
+  --attention-tint-bg: color-mix(in srgb, var(--attention) 7%, transparent);
+  --attention-tint-border: color-mix(in srgb, var(--attention) 30%, transparent);
+  --diff-meta-bg: color-mix(in srgb, var(--fg-default) 4%, var(--forge-editor));
+  --merge-ours-bg: color-mix(in srgb, var(--info-solid) 12%, transparent);
+  --merge-theirs-bg: color-mix(in srgb, var(--git-untracked-text) 12%, transparent);
+  --find-match-bg: color-mix(in srgb, var(--warning-solid) 28%, transparent);
+  --scrim: rgb(0 0 0 / 42%);
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;
+  --focus-ring-inset: inset 0 0 0 var(--focus-ring-width) var(--ring);
   --focus-ring-shadow: 0 0 0 2px var(--bg-panel), 0 0 0 4px var(--ring);
+  --tab-underline: inset 0 -2px 0 0 var(--accent);
   --space-1: 1px;
   --space-2: 2px;
   --space-3: 3px;
@@ -1097,17 +1289,30 @@
   --z-strip: 5;
   --z-route: 15;
   --z-notice: 30;
-  --z-context: 40;
   --z-scrim: 50;
   --z-dialog: 51;
   --z-popup: 55;
   --z-tooltip: 60;
   --shadow-sm: 0 8px 20px rgb(0 0 0 / 40%);
-  --forge-shadow-sm: var(--shadow-sm);
   --shadow-md: 0 16px 34px rgb(0 0 0 / 40%);
-  --forge-shadow-md: var(--shadow-md);
   --shadow-lg: 0 24px 54px rgb(0 0 0 / 55%);
-  --forge-shadow-lg: var(--shadow-lg);
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --leading-none: 1;
+  --leading-title: 1.2;
+  --leading-heading: 1.3;
+  --leading-label: 1.4;
+  --leading-card: 1.45;
+  --leading-caption: 1.5;
+  --leading-body: 1.6;
+  --leading-prose: 1.7;
+  --tracking-tight: -0.01em;
+  --tracking-label: 0.1em;
+  --opacity-disabled: 0.5;
+  --opacity-dim: 0.55;
+  --opacity-drag: 0.45;
   --motion-0: 0ms;
   --motion-fast: 90ms;
   --motion-menu: 120ms;
@@ -1119,7 +1324,69 @@
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --motion-enter: cubic-bezier(0, 0, 0.2, 1);
   --motion-exit: cubic-bezier(0.4, 0, 1, 1);
-  --forge-motion-fast: var(--motion-fast);
-  --forge-motion-slow: var(--motion-slow);
-  --forge-ease: var(--ease);
+}
+
+/* Syntax colour by scope, for every DOM surface that paints highlighted code. */
+[data-syntax="comment"] {
+  color: var(--syntax-comment);
+}
+[data-syntax="keyword"] {
+  color: var(--syntax-keyword);
+}
+[data-syntax="controlKeyword"] {
+  color: var(--syntax-control-keyword);
+}
+[data-syntax="operator"] {
+  color: var(--syntax-operator);
+}
+[data-syntax="punctuation"] {
+  color: var(--syntax-punctuation);
+}
+[data-syntax="variable"] {
+  color: var(--syntax-variable);
+}
+[data-syntax="property"] {
+  color: var(--syntax-property);
+}
+[data-syntax="function"] {
+  color: var(--syntax-function);
+}
+[data-syntax="type"] {
+  color: var(--syntax-type);
+}
+[data-syntax="namespace"] {
+  color: var(--syntax-namespace);
+}
+[data-syntax="string"] {
+  color: var(--syntax-string);
+}
+[data-syntax="escape"] {
+  color: var(--syntax-escape);
+}
+[data-syntax="regexp"] {
+  color: var(--syntax-regexp);
+}
+[data-syntax="number"] {
+  color: var(--syntax-number);
+}
+[data-syntax="constant"] {
+  color: var(--syntax-constant);
+}
+[data-syntax="tag"] {
+  color: var(--syntax-tag);
+}
+[data-syntax="attribute"] {
+  color: var(--syntax-attribute);
+}
+[data-syntax="heading"] {
+  color: var(--syntax-heading);
+}
+[data-syntax="link"] {
+  color: var(--syntax-link);
+}
+[data-syntax="invalid"] {
+  color: var(--syntax-invalid);
+}
+[data-syntax="meta"] {
+  color: var(--syntax-meta);
 }

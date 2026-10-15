@@ -4,7 +4,7 @@ import { loading, setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
 import { diffTotals } from "../../contracts/workbench";
 import { Icon } from "../../theme/icons/index";
-import { Button, IconButton } from "../../ui/index";
+import { Button, IconButton, TextArea } from "../../ui/index";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
 import { applyJuvaDraft, draftWithJuva, loadBranchCompare, loadDiff } from "./commands";
 import { commitLabel, commitMessage, firstHunk, statusLetter, statusWord } from "./gitView";
@@ -90,16 +90,15 @@ export function WorkingTreeRail(props: { committable: boolean }) {
             <li>
               <button
                 type="button"
-                class="git-file"
-                classList={{ "forge-selected": selected()?.path === file.path }}
-                aria-pressed={selected()?.path === file.path}
+                class="forge-row git-file"
+                aria-current={selected()?.path === file.path ? "true" : undefined}
                 aria-label={`${file.path}, ${statusWord(file.status)}, ${file.additions} added, ${file.deletions} removed`}
                 onClick={() => setPicked(file.path)}
               >
                 <span class="git-status" data-status={file.status} aria-hidden="true">
                   {statusLetter(file.status)}
                 </span>
-                <span class="git-file-path">{file.path}</span>
+                <span class="git-file-path forge-truncate">{file.path}</span>
                 <span class="git-counts" aria-hidden="true">
                   <Show when={file.additions > 0}>
                     <span class="added">+{file.additions}</span>
@@ -132,9 +131,9 @@ export function WorkingTreeRail(props: { committable: boolean }) {
             }
           >
             {(preview) => (
-              <figure class="git-hunk" aria-label={`First change in ${file().path}`}>
+              <figure class="forge-card git-hunk" aria-label={`First change in ${file().path}`}>
                 <figcaption class="git-hunk-head">
-                  <span class="git-hunk-range">{preview().header}</span>
+                  <span class="forge-caption git-hunk-range">{preview().header}</span>
                 </figcaption>
                 <div class="git-hunk-body">
                   <For each={preview().rows}>
@@ -143,13 +142,13 @@ export function WorkingTreeRail(props: { committable: boolean }) {
                         <span class="git-hunk-marker" aria-hidden="true">
                           {row.kind === "added" ? "+" : row.kind === "removed" ? "−" : " "}
                         </span>
-                        <span class="git-hunk-text">{row.text}</span>
+                        <span>{row.text}</span>
                       </div>
                     )}
                   </For>
                 </div>
                 <Show when={preview().hiddenRows > 0 || preview().more > 0}>
-                  <p class="git-hunk-foot">
+                  <p class="forge-caption git-hunk-foot">
                     {[
                       preview().hiddenRows > 0 ? `${preview().hiddenRows} more lines` : null,
                       preview().more > 0
@@ -167,25 +166,19 @@ export function WorkingTreeRail(props: { committable: boolean }) {
       </Show>
 
       <div class="git-commit">
-        <div class="git-commit-field">
-          <label for="git-commit-message" class="forge-section-label">
-            Message
-          </label>
-          <textarea
-            id="git-commit-message"
-            class="git-commit-input"
-            rows={2}
-            placeholder={props.committable ? "What this change does" : "Finish the replay first"}
-            disabled={!props.committable}
-            value={message()}
-            onInput={(event) => setMessage(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter") return;
-              event.preventDefault();
-              commit();
-            }}
-          />
-        </div>
+        <TextArea
+          label="Message"
+          rows={2}
+          placeholder={props.committable ? "What this change does" : "Finish the replay first"}
+          disabled={!props.committable}
+          value={message()}
+          onChange={setMessage}
+          onKeyDown={(event) => {
+            if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter") return;
+            event.preventDefault();
+            commit();
+          }}
+        />
         <div class="git-commit-actions">
           <Button
             variant="primary"
@@ -205,7 +198,7 @@ export function WorkingTreeRail(props: { committable: boolean }) {
             <Icon name="edit" size={14} />
           </IconButton>
         </div>
-        <p class="git-commit-note">
+        <p class="forge-caption git-commit-note">
           {props.committable
             ? "Stages every change above, then commits. Nothing is pushed."
             : "Nothing can be committed while the replay is stopped."}

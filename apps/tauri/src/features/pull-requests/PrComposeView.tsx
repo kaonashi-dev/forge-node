@@ -196,7 +196,14 @@ export function PrComposeView() {
   return (
     <div class="pr-compose">
       <header class="pr-compose-head">
-        <span class={`pr-compose-summary tone-${headerLine().tone}`}>{headerLine().text}</span>
+        <span
+          classList={{
+            "tone-muted": headerLine().tone === "muted",
+            "tone-error": headerLine().tone === "error",
+          }}
+        >
+          {headerLine().text}
+        </span>
         <div class="pr-compose-actions">
           <Button variant="secondary" onClick={() => openDiff()}>
             View diff
@@ -207,7 +214,6 @@ export function PrComposeView() {
           <Tooltip label="Show prompt" contents>
             <Button
               variant="secondary"
-              class={promptOpen() ? "active" : ""}
               aria-expanded={promptOpen()}
               aria-label="Show prompt"
               onClick={() => setPromptOpen((open) => !open)}
@@ -225,7 +231,7 @@ export function PrComposeView() {
         <section class="pr-compose-tasks">
           <RadioGroup
             label="Task"
-            itemClass="pr-task-row"
+            itemClass="forge-card pr-task-row"
             value={taskId()}
             onChange={setTaskId}
             options={builtinTasks().map((item) => ({
@@ -245,7 +251,7 @@ export function PrComposeView() {
         </section>
 
         <Show when={promptOpen()}>
-          <section class="pr-compose-prompt">
+          <section>
             <p class="settings-hint">This is what the agent will be sent.</p>
             <pre class="pr-prompt-preview">
               {diff() ? composePrompt(task(), diff()!, extra()) : task().body}
@@ -274,7 +280,7 @@ export function PrComposeView() {
         </section>
 
         <Show when={draft()}>
-          <section class="pr-compose-draft" aria-label="Pull request draft">
+          <section class="forge-card pr-compose-draft" aria-label="Pull request draft">
             <TextField class="pr-compose-field" label="Title" value={title()} onChange={setTitle} />
             <TextArea
               class="pr-compose-field"
@@ -320,17 +326,17 @@ export function PrComposeView() {
           {(status) => (
             <button type="button" class="forge-row pr-compose-progress" onClick={showLaunched}>
               <span>{status()}</span>
-              <span class="settings-row-note">open the session</span>
+              <span class="forge-caption">open the session</span>
             </button>
           )}
         </Show>
 
         <Show when={pullRequest()}>
           {(pr) => (
-            <div class="pr-compose-result">
+            <div class="forge-card pr-compose-result">
               <div class="pr-compose-result-head">
                 <span>#{pr().number}</span>
-                <span class="pr-compose-result-title">{pr().title}</span>
+                <span class="forge-truncate pr-compose-result-title">{pr().title}</span>
               </div>
               <span class="settings-hint">{pr().url}</span>
             </div>

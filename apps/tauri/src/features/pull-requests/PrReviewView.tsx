@@ -149,7 +149,7 @@ export function PrReviewView(props: { prKey: string }) {
       {(item) => (
         <div class="pr-review">
           <header class="pr-review-head">
-            <h2>
+            <h2 class="forge-card-title">
               <span class="pr-number">#{item().number}</span> {item().title}{" "}
               <Badge>read-only</Badge>
             </h2>
@@ -190,7 +190,7 @@ export function PrReviewView(props: { prKey: string }) {
             <section class="pr-compose-tasks">
               <RadioGroup
                 label="What to ask for"
-                itemClass="pr-task-row"
+                itemClass="forge-card pr-task-row"
                 value={recipe().id}
                 onChange={setRecipeId}
                 options={builtinRecipes().map((option) => ({
@@ -232,7 +232,6 @@ export function PrReviewView(props: { prKey: string }) {
               <Tooltip label="Show prompt" contents>
                 <Button
                   variant="secondary"
-                  class={promptOpen() ? "active" : ""}
                   aria-expanded={promptOpen()}
                   aria-label="Show prompt"
                   onClick={() => setPromptOpen((open) => !open)}
@@ -243,7 +242,7 @@ export function PrReviewView(props: { prKey: string }) {
             </section>
 
             <Show when={promptOpen()}>
-              <section class="pr-compose-prompt">
+              <section>
                 <p class="settings-hint">This is what the agent will be sent.</p>
                 <pre class="pr-prompt-preview">{prompt()}</pre>
               </section>
@@ -277,7 +276,7 @@ export function PrReviewView(props: { prKey: string }) {
                     {(item) => `${sessionTitle(item())} · ${sessionStateLabel(item().state)}`}
                   </Show>
                 </span>
-                <span class="settings-row-note">open the session</span>
+                <span class="forge-caption">open the session</span>
               </button>
             </Show>
           </div>

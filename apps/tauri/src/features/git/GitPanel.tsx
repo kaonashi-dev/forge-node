@@ -51,7 +51,11 @@ export function GitPanel() {
             <div class="git-head-row">
               <Show
                 when={replaying() && rebase()?.head}
-                fallback={<span class="git-branch">{checkout().branch ?? checkout().path}</span>}
+                fallback={
+                  <span class="git-branch forge-truncate">
+                    {checkout().branch ?? checkout().path}
+                  </span>
+                }
               >
                 {(head) => (
                   <span class="git-detached">
@@ -75,7 +79,7 @@ export function GitPanel() {
               <span class="history-spacer" />
               <Show when={checkout().status.ahead !== null || checkout().status.behind !== null}>
                 <span
-                  class="git-upstream"
+                  class="git-upstream forge-caption"
                   aria-label={`${checkout().status.ahead ?? 0} ahead, ${checkout().status.behind ?? 0} behind the upstream`}
                 >
                   ↑{checkout().status.ahead ?? 0} ↓{checkout().status.behind ?? 0}
@@ -83,7 +87,7 @@ export function GitPanel() {
               </Show>
             </div>
             <Show when={replaying()}>
-              <p class="git-head-note">
+              <p class="forge-caption git-head-note">
                 HEAD is detached while the replay is in flight — that is why nothing can be
                 committed yet.
               </p>
@@ -95,7 +99,7 @@ export function GitPanel() {
 
       <Show when={replaying()}>
         <section
-          class="git-sequencer"
+          class="forge-card git-sequencer"
           data-state={unresolved() > 0 ? "conflicted" : "ready"}
           aria-labelledby="git-sequencer-title"
         >
@@ -139,7 +143,7 @@ export function GitPanel() {
           </Show>
 
           <Show when={rebase()?.branch && rebase()?.onto}>
-            <p class="git-sequencer-branches">
+            <p class="forge-caption git-sequencer-branches">
               {rebase()?.branch} onto {rebase()?.onto}
             </p>
           </Show>
@@ -199,8 +203,8 @@ export function GitPanel() {
                     >
                       <ConflictMark />
                       <span class="git-conflict-text">
-                        <span class="git-conflict-path">{conflict.path}</span>
-                        <span class="git-conflict-code">
+                        <span class="git-conflict-path forge-truncate">{conflict.path}</span>
+                        <span class="forge-caption forge-truncate">
                           {conflictLabel(conflict.code)}
                           <Show when={regions() !== undefined}>
                             {" · "}
@@ -235,7 +239,7 @@ export function GitPanel() {
       <WorkingTreeRail committable={!replaying()} />
 
       <Show when={replaying()}>
-        <p class="git-foot">a staged file is just a change again</p>
+        <p class="forge-caption git-foot">a staged file is just a change again</p>
       </Show>
     </div>
   );

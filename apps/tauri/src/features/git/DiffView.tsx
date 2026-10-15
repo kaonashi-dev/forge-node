@@ -40,7 +40,7 @@ export function DiffView() {
         <ConflictView />
       </Show>
       <Show when={rebaseInProgress(gitStore.rebase) && readyToContinue(gitStore.rebase)}>
-        <div class="git-ready">
+        <div class="forge-card git-ready">
           <span>Every conflict is staged.</span>
           <span class="history-spacer" />
           <Button variant="primary" size="sm" onClick={continueReplay}>

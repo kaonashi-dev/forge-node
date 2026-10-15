@@ -5,7 +5,7 @@ import type { Session } from "../../contracts/runtime";
 import { SessionGlyph } from "../../features/sessions/SessionGlyph";
 import { Icon } from "../../theme/icons/index";
 import { AttentionMarker, StateMarker } from "../../features/sessions/markers";
-import { ContextMenu, IconButton, type MenuItem } from "../../ui/index";
+import { Badge, ContextMenu, IconButton, type MenuItem } from "../../ui/index";
 import { SessionMenu } from "../../features/sessions/SessionMenu";
 import { hasQuestion } from "../../features/sessions/waiting";
 import { closeSessionFromUi, sessionMenuItems } from "../../features/sessions/sessionMenuItems";
@@ -18,8 +18,6 @@ import {
   orderFromSessions,
 } from "../../navigation/tabOrder";
 
-const TAB_MIN_W = 120;
-const CODE_TAB_MIN_W = 92;
 const TAB_SCROLL_STEP = 120;
 const TAB_DRAG_PX = 4;
 const TAB_SCROLL_EDGE_PX = 40;
@@ -217,11 +215,7 @@ export function SessionTabs(props: SessionTabsProps) {
           <div class="tab-strip" role="tablist" aria-label="Sessions">
             {/* Code leads so Option+1 reaches the files. Sessions follow it. */}
             <Show when={props.codeOpen}>
-              <div
-                class="session-tab-wrap code-tab-wrap"
-                classList={{ active: props.codeActive }}
-                style={{ "min-width": `${CODE_TAB_MIN_W}px`, "max-width": "200px" }}
-              >
+              <div class="session-tab-wrap code-tab-wrap" classList={{ active: props.codeActive }}>
                 <button
                   type="button"
                   role="tab"
@@ -235,11 +229,9 @@ export function SessionTabs(props: SessionTabsProps) {
                     class={props.codeActive ? "forge-icon-accent" : "forge-icon-muted"}
                     size={14}
                   />
-                  <span class="session-tab-label">Code</span>
+                  <span class="session-tab-label forge-truncate">Code</span>
                   <Show when={props.codeCount > 0}>
-                    <span class="code-tab-count" aria-hidden="true">
-                      {props.codeCount}
-                    </span>
+                    <Badge aria-hidden>{props.codeCount}</Badge>
                   </Show>
                 </button>
                 <Show when={props.codeCount > 0}>
@@ -266,7 +258,7 @@ export function SessionTabs(props: SessionTabsProps) {
                 </Show>
               }
             >
-              {(session, index) => {
+              {(session) => {
                 const ground = () => groundOf(session);
                 const label = createMemo(() => sessionTabLabel(session, tabs()));
                 const emphasis = () =>
@@ -275,37 +267,32 @@ export function SessionTabs(props: SessionTabsProps) {
                     : "dim";
 
                 return (
-                  <>
-                    <Show when={index() === 0 && props.codeOpen}>
-                      <span class="tab-divider" aria-hidden="true" />
-                    </Show>
-                    <SessionTab
-                      session={session}
-                      ground={ground()}
-                      label={label()}
-                      emphasis={emphasis()}
-                      active={!props.codeActive && session.id === props.activeId}
-                      waiting={ground() === "needs-you" || hasQuestion(session.id)}
-                      dragging={dragging() === session.id}
-                      dropBefore={dropTarget()?.id === session.id && !dropTarget()?.after}
-                      dropAfter={dropTarget()?.id === session.id && dropTarget()?.after === true}
-                      onSelect={() => {
-                        if (swallowClick) {
-                          swallowClick = false;
-                          return;
-                        }
-                        // A session tab is a request for that terminal, so it
-                        // takes the window back from Code as well as selecting.
-                        focusSession(session.id);
-                      }}
-                      onClose={() => closeSessionFromUi(session, label())}
-                      onPointerDown={(event) => onTabPointerDown(session.id, event)}
-                      onPointerMove={(event) => onTabPointerMove(session.id, event)}
-                      onPointerUp={(event) => onTabPointerUp(session.id, event)}
-                      onPointerCancel={finishDrag}
-                      onMenu={(event) => openSessionMenu(event, session, label())}
-                    />
-                  </>
+                  <SessionTab
+                    session={session}
+                    ground={ground()}
+                    label={label()}
+                    emphasis={emphasis()}
+                    active={!props.codeActive && session.id === props.activeId}
+                    waiting={ground() === "needs-you" || hasQuestion(session.id)}
+                    dragging={dragging() === session.id}
+                    dropBefore={dropTarget()?.id === session.id && !dropTarget()?.after}
+                    dropAfter={dropTarget()?.id === session.id && dropTarget()?.after === true}
+                    onSelect={() => {
+                      if (swallowClick) {
+                        swallowClick = false;
+                        return;
+                      }
+                      // A session tab is a request for that terminal, so it
+                      // takes the window back from Code as well as selecting.
+                      focusSession(session.id);
+                    }}
+                    onClose={() => closeSessionFromUi(session, label())}
+                    onPointerDown={(event) => onTabPointerDown(session.id, event)}
+                    onPointerMove={(event) => onTabPointerMove(session.id, event)}
+                    onPointerUp={(event) => onTabPointerUp(session.id, event)}
+                    onPointerCancel={finishDrag}
+                    onMenu={(event) => openSessionMenu(event, session, label())}
+                  />
                 );
               }}
             </For>
@@ -316,20 +303,10 @@ export function SessionTabs(props: SessionTabsProps) {
         </div>
         <div class="tab-strip-spacer" data-tauri-drag-region />
         <Show when={overflowing()}>
-          <IconButton
-            label="Previous tab"
-            size="sm"
-            class="tab-step"
-            onClick={() => scrollBy(-TAB_SCROLL_STEP)}
-          >
+          <IconButton label="Previous tab" size="sm" onClick={() => scrollBy(-TAB_SCROLL_STEP)}>
             <Icon name="chevron-left" class="forge-icon-muted" />
           </IconButton>
-          <IconButton
-            label="Next tab"
-            size="sm"
-            class="tab-step"
-            onClick={() => scrollBy(TAB_SCROLL_STEP)}
-          >
+          <IconButton label="Next tab" size="sm" onClick={() => scrollBy(TAB_SCROLL_STEP)}>
             <Icon name="chevron-right" class="forge-icon-muted" />
           </IconButton>
         </Show>
@@ -382,7 +359,6 @@ function SessionTab(props: SessionTabProps) {
         "drop-before": props.dropBefore,
         "drop-after": props.dropAfter,
       }}
-      style={{ "min-width": `${TAB_MIN_W}px`, "max-width": "200px" }}
       data-tauri-drag-region="false"
       onPointerDown={props.onPointerDown}
       onPointerMove={props.onPointerMove}
@@ -411,7 +387,7 @@ function SessionTab(props: SessionTabProps) {
           session={props.session}
           emphasis={props.emphasis}
         />
-        <span class="session-tab-label">{props.label}</span>
+        <span class="session-tab-label forge-truncate">{props.label}</span>
       </button>
       <IconButton
         label={`Close ${props.label}`}

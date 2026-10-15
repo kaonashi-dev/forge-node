@@ -1,4 +1,5 @@
 import { contrast, derivedTokens, hex, mix, on, parseHex, pct, readableColor } from "./mix";
+import { cssName, syntaxVariables } from "./syntax";
 
 export type ThemeBaseId =
   | "forge-dark"
@@ -500,7 +501,6 @@ export const scale = {
     strip: 5,
     route: 15,
     notice: 30,
-    context: 40,
     scrim: 50,
     dialog: 51,
     popup: 55,
@@ -512,6 +512,20 @@ export const scale = {
     md: "0 16px 34px rgb(0 0 0 / 40%)",
     lg: "0 24px 54px rgb(0 0 0 / 55%)",
   },
+  weight: { regular: 400, medium: 500, semibold: 600, bold: 700 },
+  /** Named for the role in the type scale (docs/theming.md), not the number. */
+  leading: {
+    none: 1,
+    title: 1.2,
+    heading: 1.3,
+    label: 1.4,
+    card: 1.45,
+    caption: 1.5,
+    body: 1.6,
+    prose: 1.7,
+  },
+  tracking: { tight: "-0.01em", label: "0.1em" },
+  opacity: { disabled: 0.5, dim: 0.55, drag: 0.45 },
   // Hover/focus/selection, menus/tooltips/toasts, sidebar and panel resize. Output repaints never animate.
   motion: {
     fast: "90ms",
@@ -545,7 +559,6 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--success-solid": "var(--forge-green)",
   "--warning-solid": "var(--forge-amber)",
   "--attention-solid": "var(--forge-needs-you)",
-  "--attention-soft": "var(--forge-needs-you-tint)",
   "--info-solid": "var(--forge-blue)",
   "--ring": "var(--forge-focus-ring)",
   "--radius-xs": "var(--forge-radius-xs)",
@@ -596,10 +609,25 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--attention-halo": "0 0 0 3px color-mix(in srgb, var(--attention) 18%, transparent)",
   "--card-select-border": "color-mix(in srgb, var(--accent) 50%, transparent)",
   "--card-select-halo": "0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent)",
+  /* A callout or soft status: a wash and a hairline in one hue. */
+  "--accent-tint-bg": "color-mix(in srgb, var(--accent) 7%, transparent)",
+  "--accent-tint-border": "color-mix(in srgb, var(--accent) 32%, transparent)",
+  "--danger-tint-bg": "color-mix(in srgb, var(--danger-solid) 7%, transparent)",
+  "--danger-tint-border": "color-mix(in srgb, var(--danger-solid) 40%, transparent)",
+  "--attention-tint-bg": "color-mix(in srgb, var(--attention) 7%, transparent)",
+  "--attention-tint-border": "color-mix(in srgb, var(--attention) 30%, transparent)",
+  "--diff-meta-bg": "color-mix(in srgb, var(--fg-default) 4%, var(--forge-editor))",
+  /* The two sides of a three-way merge, and a find hit wherever text is searched. */
+  "--merge-ours-bg": "color-mix(in srgb, var(--info-solid) 12%, transparent)",
+  "--merge-theirs-bg": "color-mix(in srgb, var(--git-untracked-text) 12%, transparent)",
+  "--find-match-bg": "color-mix(in srgb, var(--warning-solid) 28%, transparent)",
+  "--scrim": "rgb(0 0 0 / 42%)",
   "--focus-ring-width": "2px",
   "--focus-ring-offset": "2px",
   /* For a focusable thing whose container clips an outside outline. */
+  "--focus-ring-inset": "inset 0 0 0 var(--focus-ring-width) var(--ring)",
   "--focus-ring-shadow": "0 0 0 2px var(--bg-panel), 0 0 0 4px var(--ring)",
+  "--tab-underline": "inset 0 -2px 0 0 var(--accent)",
 };
 
 function semanticColors(
@@ -674,10 +702,8 @@ function semanticColors(
 }
 
 /**
- * The tokens that never change with the base: the scale forwards above, the
- * spacing/z/shadow/motion constants, plus `--forge-*` bridges for elevation and
- * motion so any remaining `var(--forge-shadow-md)` keeps resolving
- * now that the literals moved here. Emitted once, in a plain `:root`.
+ * The tokens that never change with the base: the scale forwards above and the
+ * spacing/z/shadow/type/motion constants. Emitted once, in a plain `:root`.
  */
 export function staticTokens(): Record<string, string> {
   const out: Record<string, string> = { ...SEMANTIC_FORWARDS };
@@ -693,7 +719,14 @@ export function staticTokens(): Record<string, string> {
   }
   for (const [name, value] of Object.entries(scale.shadow)) {
     out[`--shadow-${name}`] = value;
-    out[`--forge-shadow-${name}`] = `var(--shadow-${name})`;
+  }
+  for (const [name, value] of Object.entries(scale.weight)) out[`--weight-${name}`] = String(value);
+  for (const [name, value] of Object.entries(scale.leading)) {
+    out[`--leading-${name}`] = String(value);
+  }
+  for (const [name, value] of Object.entries(scale.tracking)) out[`--tracking-${name}`] = value;
+  for (const [name, value] of Object.entries(scale.opacity)) {
+    out[`--opacity-${name}`] = String(value);
   }
   out["--motion-0"] = "0ms";
   out["--motion-fast"] = scale.motion.fast;
@@ -706,9 +739,6 @@ export function staticTokens(): Record<string, string> {
   out["--ease"] = scale.motion.ease;
   out["--motion-enter"] = scale.motion.enter;
   out["--motion-exit"] = scale.motion.exit;
-  out["--forge-motion-fast"] = "var(--motion-fast)";
-  out["--forge-motion-slow"] = "var(--motion-slow)";
-  out["--forge-ease"] = "var(--ease)";
   return out;
 }
 
@@ -723,11 +753,10 @@ export function toCssVariables(active: Palette): Record<string, string> {
     variables[`--forge-ansi-${index}`] = color;
   });
   for (const [key, value] of Object.entries(metrics)) {
-    variables[`--forge-${cssName(key)}`] = typeof value === "number" ? `${value}px` : value;
+    const unitless = key === "monoLineHeight";
+    variables[`--forge-${cssName(key)}`] =
+      typeof value === "number" && !unitless ? `${value}px` : String(value);
   }
-  variables["--forge-mono-size"] = `${metrics.monoSize}px`;
-  variables["--forge-mono-lh"] = String(metrics.monoLineHeight);
-  variables["--forge-mono-line-height"] = String(metrics.monoLineHeight);
   const interaction = derivedTokens({
     bg: parseHex(active.bg),
     text: parseHex(active.text),
@@ -738,12 +767,13 @@ export function toCssVariables(active: Palette): Record<string, string> {
     gitAdded: parseHex(active.gitAdded),
     gitDeleted: parseHex(active.gitDeleted),
   });
-  Object.assign(variables, interaction, semanticColors(active, interaction));
+  Object.assign(
+    variables,
+    interaction,
+    semanticColors(active, interaction),
+    syntaxVariables(active),
+  );
   return variables;
-}
-
-function cssName(key: string): string {
-  return key.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 }
 
 export function applyTheme(active: Palette): void {

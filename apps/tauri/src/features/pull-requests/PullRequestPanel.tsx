@@ -72,7 +72,6 @@ export function PullRequestPanel() {
     const decision = () => decisionChip(pr.review_decision);
     return (
       <ListCard
-        class="pr-card"
         selected={selected()}
         ident={`#${pr.number}`}
         openLabel={`Open pull request #${pr.number}: ${pr.title}`}
@@ -134,7 +133,7 @@ export function PullRequestPanel() {
       </div>
 
       <SearchField
-        class="panel-search"
+        class="forge-filter-field"
         size="sm"
         aria-label="Filter pull requests"
         placeholder="Filter pull requests…"

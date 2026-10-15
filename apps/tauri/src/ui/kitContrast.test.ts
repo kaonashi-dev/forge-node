@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { contrast, mix, parseHex, pct } from "../theme/mix";
-import { palettes, toCssVariables, type ThemeBaseId } from "../theme/tokens";
+import { palettes, staticTokens, toCssVariables, type ThemeBaseId } from "../theme/tokens";
 import kit from "./ui.css?raw";
-import workbench from "../styles/workbench.css?raw";
 
 const AA = 4.5;
 const bases = Object.keys(palettes) as ThemeBaseId[];
+
+/** The percentage a `--*-tint-bg` token mixes in, read off the token itself. */
+function tint(token: string): number {
+  const found = staticTokens()[token]?.match(/ (\d+)%, transparent\)$/);
+  if (!found) throw new Error(`${token} is not a transparent tint`);
+  return Number(found[1]);
+}
 
 /**
  * Text the kit sets on a translucent tint. `color-mix(…, transparent)` lands on
@@ -15,11 +21,8 @@ const bases = Object.keys(palettes) as ThemeBaseId[];
 describe("kit tints keep text at AA", () => {
   it("still uses the percentages checked below", () => {
     expect(kit).toContain("var(--badge-hue) 10%, transparent");
-    expect(kit).toContain("var(--danger-solid) 8%, transparent");
     expect(kit).toContain("var(--danger-solid) 12%, transparent");
-    expect(kit).toContain("var(--danger-solid) 7%, var(--surface)");
-    expect(kit).toContain("var(--danger-solid) 5%, var(--surface)");
-    expect(workbench).toContain("var(--accent) 6%, transparent");
+    expect(kit).toContain("var(--attention) 20%, transparent");
   });
 
   it.each(bases)("%s", (base) => {
@@ -47,19 +50,35 @@ describe("kit tints keep text at AA", () => {
       })) {
         check(`${role} badge over ${ground}`, text(`--${role}-text`), over(ground, hue, 10));
       }
-      for (const percent of [8, 12]) {
+      for (const percent of [tint("--danger-tint-bg"), 12]) {
         check(
           `danger-ghost ${percent}% over ${ground}`,
           text("--danger-text"),
           over(ground, p.red, percent),
         );
       }
-      check(`markdown callout over ${ground}`, text("--accent-text"), over(ground, p.accent, 6));
+      for (const percent of [13, 20]) {
+        check(
+          `attention-soft ${percent}% over ${ground}`,
+          text("--attention-text"),
+          over(ground, p.needsYou, percent),
+        );
+      }
+      check(
+        `accent callout over ${ground}`,
+        text("--accent-text"),
+        over(ground, p.accent, tint("--accent-tint-bg")),
+      );
+      check(
+        `attention callout over ${ground}`,
+        text("--fg-default"),
+        over(ground, p.needsYou, tint("--attention-tint-bg")),
+      );
     }
 
-    const dangerToast = over(p.surface, p.red, 7);
+    const dangerToast = over(p.surface, p.red, tint("--danger-tint-bg"));
     check("danger toast detail", text("--fg-muted"), dangerToast);
     check("danger toast icon text", text("--danger-text"), dangerToast);
-    check("invalid field text", text("--fg-default"), over(p.surface, p.red, 5));
+    check("invalid field text", text("--fg-default"), dangerToast);
   });
 });
