@@ -118,11 +118,32 @@ moves content: the editor keeps `ui.editor.font_size` and every terminal and
 agent shares `ui.terminal.zoom`. A theme switch reapplies both overlays from
 `dataset` so they survive `applyTheme` rewriting the metric variables.
 
+Type properties are tokens too, named for their role rather than their
+number: `--weight-regular|medium|semibold|bold`, `--leading-none|title|heading|label|card|caption|body|prose`
+(1 to 1.7; mono text uses `--forge-mono-line-height`), `--tracking-tight|label`.
+`--opacity-disabled|dim|drag` are the three ways a thing recedes. Tints are
+`--{accent,danger,attention}-tint-bg|border`; a feature stylesheet never writes
+`color-mix` itself. Syntax colour is `--syntax-<scope>`, emitted per theme and
+selected with a `data-syntax="<scope>"` attribute, so a highlighted span names
+its scope instead of carrying a colour.
+
 Control heights and radii come from the same token module (`metrics.controlXS`…`controlLG`).
 Component look lives in `apps/tauri/src/ui/ui.css`, keyed off those CSS
 variables. `styles/index.css` loads global defaults, then the control kit, then
 feature layouts. Use control sizes and variants instead of redefining their
-paint or focus states in a feature stylesheet.
+paint or focus states in a feature stylesheet, and the kit never depends on a
+feature sheet: every class a `ui/` component renders is defined in `ui.css` or
+`base.css`.
+
+Shared recipes are classes, not copies: `.forge-section-title`,
+`.forge-panel-heading`, `.forge-card-title`, `.forge-body`, `.forge-caption`
+and `.forge-section-label` for type roles; `.forge-truncate` for a one-line
+ellipsis; `.forge-row` for a list row's reset, its hover and its selection
+(`aria-selected`, `aria-current`, `data-selected` or `.forge-selected`). Focus
+is the global outline, or `--focus-ring-inset` inside a scroller that would clip
+it. `buttonClass()` gives a primitive-rendered trigger the Button look.
+`stylesheets.test.ts` enforces these rules on every sheet and on static
+`style={{…}}` props in TSX.
 
 Icons tint with `currentColor` against token-driven text colors —
 with one deliberate exception, the language marks on file rows (`LangIcon`),
