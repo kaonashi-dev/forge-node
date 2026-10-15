@@ -21,8 +21,6 @@ import {
 import { ViewGlyph } from "./ViewGlyph";
 import { sessionKindWord, viewKindWord } from "./switchKind";
 
-const VISIBLE_ROWS = 10;
-
 export type TabSwitcherProps = {
   view: TabSwitcherView;
   sessions: readonly Session[];
@@ -75,11 +73,10 @@ export function TabSwitcher(props: TabSwitcherProps) {
     >
       <div
         ref={list}
-        class="palette-list tab-switcher-list"
+        class="forge-combobox-list tab-switcher-list"
         role="listbox"
         tabindex={0}
         aria-label="Switch Tab"
-        style={{ "--palette-rows": VISIBLE_ROWS }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
@@ -105,13 +102,13 @@ export function TabSwitcher(props: TabSwitcherProps) {
                     props.view.foreignAt < props.view.targets.length
                   }
                 >
-                  <div class="palette-group">Recent</div>
+                  <div class="forge-combobox-group">Recent</div>
                 </Show>
                 <button
                   type="button"
                   role="option"
                   data-switcher-index={index()}
-                  class="palette-row"
+                  class="forge-combobox-row"
                   classList={{ selected: selected() }}
                   aria-selected={selected()}
                   onClick={() => chooseTabSwitcher(index())}
@@ -148,8 +145,8 @@ export function TabSwitcher(props: TabSwitcherProps) {
 function CodeRow() {
   return (
     <>
-      <Icon name="folder-open" class="forge-icon-muted palette-glyph" size={14} />
-      <span class="palette-label">Code</span>
+      <Icon name="folder-open" class="forge-icon-muted forge-combobox-glyph" size={14} />
+      <span class="forge-combobox-label">Code</span>
       <span class="tab-switcher-kind">code</span>
     </>
   );
@@ -164,11 +161,11 @@ function ViewRow(props: { view: WorkbenchView }) {
   };
   return (
     <>
-      <span class="palette-glyph">
+      <span class="forge-combobox-glyph">
         <ViewGlyph view={props.view} size={14} />
       </span>
-      <span class="palette-label">{viewLabel(props.view)}</span>
-      <Show when={note()}>{(text) => <span class="palette-note">{text()}</span>}</Show>
+      <span class="forge-combobox-label">{viewLabel(props.view)}</span>
+      <Show when={note()}>{(text) => <span class="forge-combobox-note">{text()}</span>}</Show>
       <span class="tab-switcher-kind">{viewKindWord(props.view)}</span>
     </>
   );
@@ -200,14 +197,14 @@ function SessionRow(props: {
   return (
     <>
       {provider() ? (
-        <span class="palette-glyph">
+        <span class="forge-combobox-glyph">
           <SessionGlyph providerId={provider()!} emphasis="dim" size={14} />
         </span>
       ) : (
-        <Icon name="square-terminal" class="forge-icon-faint palette-glyph" size={14} />
+        <Icon name="square-terminal" class="forge-icon-faint forge-combobox-glyph" size={14} />
       )}
-      <span class="palette-label">{label()}</span>
-      <Show when={note()}>{(text) => <span class="palette-note">{text()}</span>}</Show>
+      <span class="forge-combobox-label">{label()}</span>
+      <Show when={note()}>{(text) => <span class="forge-combobox-note">{text()}</span>}</Show>
       <span class="tab-switcher-kind">{sessionKindWord(provider() !== null)}</span>
     </>
   );

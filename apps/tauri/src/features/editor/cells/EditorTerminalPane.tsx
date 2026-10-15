@@ -483,7 +483,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
             none. Everything in it comes from `Session.editor`, never from the
             cells. */}
         <div
-          class="editor-terminal-aria"
+          class="forge-visually-hidden"
           role="application"
           aria-roledescription="code editor"
           aria-label={aria().label}
@@ -494,7 +494,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
         </div>
         {/* Polite, not assertive: a find tally should wait for the word being
             read rather than cut it off. */}
-        <div class="editor-terminal-aria" role="status" aria-live="polite" aria-atomic="true">
+        <div class="forge-visually-hidden" role="status" aria-live="polite" aria-atomic="true">
           {announcement()}
         </div>
         {/* The editor owns its viewport; this only reports where it is. The

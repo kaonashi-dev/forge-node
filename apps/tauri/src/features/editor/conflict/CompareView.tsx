@@ -15,9 +15,15 @@ export function CompareView(props: { disk: string; mine: string }) {
     <div class="editor-compare diff-patch">
       <For each={rows()}>
         {(row) => (
-          <div class={`diff-row ${row.kind === "equal" ? "" : `forge-diff-${row.kind}`}`}>
-            <span class="forge-diff-gutter forge-diff-gutter-before">{row.left ?? ""}</span>
-            <span class="forge-diff-gutter forge-diff-gutter-after">{row.right ?? ""}</span>
+          <div
+            class="diff-row"
+            classList={{
+              "forge-diff-added": row.kind === "added",
+              "forge-diff-removed": row.kind === "removed",
+            }}
+          >
+            <span class="forge-diff-gutter">{row.left ?? ""}</span>
+            <span class="forge-diff-gutter">{row.right ?? ""}</span>
             <span class="forge-diff-gutter forge-diff-gutter-marker">
               {row.kind === "added" ? "+" : row.kind === "removed" ? "−" : ""}
             </span>

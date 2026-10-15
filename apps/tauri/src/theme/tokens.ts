@@ -756,7 +756,6 @@ export function toCssVariables(active: Palette): Record<string, string> {
     variables[`--forge-${cssName(key)}`] =
       typeof value === "number" && !unitless ? `${value}px` : String(value);
   }
-  variables["--forge-mono-lh"] = String(metrics.monoLineHeight);
   const interaction = derivedTokens({
     bg: parseHex(active.bg),
     text: parseHex(active.text),

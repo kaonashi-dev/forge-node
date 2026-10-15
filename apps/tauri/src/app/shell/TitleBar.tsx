@@ -1,7 +1,7 @@
 import { Show, createMemo } from "solid-js";
 import { connectionStore } from "../../state/connection";
 import { Icon } from "../../theme/icons/index";
-import { IconButton } from "../../ui/index";
+import { Button, IconButton } from "../../ui/index";
 import type { Session } from "../../contracts/runtime";
 import { SessionTabs } from "./SessionTabs";
 import { HandoffStatusButton } from "../../features/sessions/HandoffStatusButton";
@@ -83,10 +83,15 @@ export function TitleBar(props: TitleBarProps) {
       </Show>
       <div class="title-bar-trailing">
         <Show when={!props.settingsOpen && waiting().length > 0}>
-          <button type="button" class="waiting-chip" onClick={answerNext}>
-            <span class="forge-attention-dot" aria-hidden="true" />
+          <Button
+            variant="attention-soft"
+            shape="pill"
+            size="sm"
+            iconLeading={<span class="forge-attention-dot" />}
+            onClick={answerNext}
+          >
             {waiting().length} waiting on you
-          </button>
+          </Button>
         </Show>
         <HandoffStatusButton />
         <Show when={!props.settingsOpen}>

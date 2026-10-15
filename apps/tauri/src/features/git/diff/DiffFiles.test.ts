@@ -9,12 +9,18 @@ const source = Object.values(sources)[0];
 if (!source) throw new Error("DiffFiles source was not loaded");
 
 const header = source.match(/<header\b[\s\S]*?<\/header>/)?.[0] ?? "";
-const buttons = [...header.matchAll(/<button\b[\s\S]*?<\/button>/g)].map((match) => match[0]);
+const buttons = [...header.matchAll(/<(button|IconButton)\b[\s\S]*?<\/\1>/g)].map(
+  (match) => match[0],
+);
 
 describe("diff file header actions", () => {
   it("keeps opening and folding on separate native buttons", () => {
     expect(buttons).toHaveLength(2);
-    expect(buttons.every((button) => button.includes('type="button"'))).toBe(true);
+    expect(
+      buttons.every(
+        (button) => button.startsWith("<IconButton") || button.includes('type="button"'),
+      ),
+    ).toBe(true);
     expect(header).not.toContain('role="button"');
   });
 
@@ -27,7 +33,7 @@ describe("diff file header actions", () => {
   });
 
   it("folds only from the arrow and exposes its expanded state", () => {
-    const button = buttons.find((item) => item.includes("diff-file-toggle"));
+    const button = buttons.find((item) => item.startsWith("<IconButton"));
     expect(button).toContain("toggle(file.path)");
     expect(button).toContain("aria-expanded={open()}");
     expect(button).not.toContain("onOpenLine");

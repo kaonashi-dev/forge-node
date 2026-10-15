@@ -290,7 +290,7 @@ export function SharedFiles(props: { projectId?: string; workspaceId?: string } 
                       />
                     )}
                   </For>
-                  <p class="settings-note">
+                  <p class="forge-caption">
                     Re-applying backs up and replaces existing files. Editing or removing project
                     rules below affects all worktrees.
                   </p>
@@ -299,7 +299,7 @@ export function SharedFiles(props: { projectId?: string; workspaceId?: string } 
             </Show>
             <Show when={sharesStore.error}>
               {(error) => (
-                <p class="settings-note" role="alert">
+                <p class="forge-caption" role="alert">
                   {error()}
                 </p>
               )}
@@ -335,7 +335,7 @@ export function SharedFiles(props: { projectId?: string; workspaceId?: string } 
                       return (
                         <li class="share-rule" classList={{ off: !rule.enabled }}>
                           <div class="share-rule-main">
-                            <code class="share-rule-path">{rule.path}</code>
+                            <code class="share-rule-path forge-truncate">{rule.path}</code>
                             <Select<ShareStrategy["kind"]>
                               aria-label={`Strategy for ${rule.path}`}
                               class="share-rule-strategy"
@@ -492,7 +492,7 @@ export function SharedFiles(props: { projectId?: string; workspaceId?: string } 
                   <For each={candidates().filter((candidate) => !candidate.already_ruled)}>
                     {(candidate) => (
                       <li class="share-candidate">
-                        <code class="share-rule-path">{candidate.path}</code>
+                        <code class="share-rule-path forge-truncate">{candidate.path}</code>
                         <span class="share-candidate-class">{CLASS_LABEL[candidate.class]}</span>
                         <span class="share-candidate-size">{size(candidate.size_bytes)}</span>
                         <Button
@@ -507,7 +507,7 @@ export function SharedFiles(props: { projectId?: string; workspaceId?: string } 
                 </ul>
               </Show>
               <Show when={sharesStore.truncated[id()]}>
-                <p class="settings-note">
+                <p class="forge-caption">
                   The scan stopped at its budget, so this list is a floor, not the whole tree.
                 </p>
               </Show>

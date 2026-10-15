@@ -7,7 +7,7 @@ import { forgeStore } from "../../state/forgeStore";
 import { requestConfirm } from "../../state/dialogs";
 import { SessionGlyph } from "./SessionGlyph";
 import { Icon } from "../../theme/icons/index";
-import { Button, FilterHeader, ListCard, Menu, Tooltip, toast } from "../../ui/index";
+import { Button, FilterHeader, ListCard, Menu, Tooltip, buttonClass, toast } from "../../ui/index";
 import { deleteExternalSession } from "./commands";
 import { activeWorkspace } from "../../state/workspace";
 
@@ -150,9 +150,10 @@ export function HistoryPanel() {
         {(session) => (
           <ListCard
             class="history-card"
+            variant="flat"
             glyph={<SessionGlyph providerId={session.provider} size={14} />}
             title={session.title}
-            aside={<span class="history-provider">{session.provider}</span>}
+            aside={<span class="forge-caption history-provider">{session.provider}</span>}
             meta={
               <>
                 <Show when={session.branch}>
@@ -186,7 +187,7 @@ export function HistoryPanel() {
                   )}
                 </Show>
                 <Menu
-                  triggerClass="history-more"
+                  triggerClass={buttonClass("xs", "ghost", true)}
                   triggerLabel={`More actions for ${session.title}`}
                   trigger={<Icon name="more-horizontal" size={14} />}
                   items={historyMenuItems(session, () => confirmDelete(session))}

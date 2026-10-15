@@ -12,7 +12,7 @@
   --fw-deleted: var(--git-deleted-text);
   --fw-untracked: var(--git-untracked-text);
   --fw-conflict: var(--git-conflict-text);
-  --fw-ignored-opacity: 0.6;
+  --fw-ignored-opacity: var(--opacity-dim);
   --fw-font: var(--font-sans);
   --fw-font-size: var(--text-sm);
   gap: 0;
@@ -55,7 +55,7 @@
 /* The list keeps DOM focus and names the row through
    `aria-activedescendant`, so the focus ring is drawn on that row. */
 .fw-host .fw-tree:focus-visible .fw-tree-row[aria-selected="true"] {
-  box-shadow: inset 0 0 0 2px var(--ring);
+  box-shadow: var(--focus-ring-inset);
 }
 .fw-host .fw-tree-row[data-file-directory="true"] {
   color: var(--fg-default);
@@ -76,25 +76,9 @@
   font-family: var(--font-mono);
   font-size: var(--text-label);
 }
-.fw-host .fw-tree-row[data-tone="added"],
-.fw-host .fw-tree-row[data-tone="added"] .fw-tree-mark {
-  color: var(--git-added-text);
-}
-.fw-host .fw-tree-row[data-tone="modified"],
-.fw-host .fw-tree-row[data-tone="modified"] .fw-tree-mark {
-  color: var(--git-modified-text);
-}
-.fw-host .fw-tree-row[data-tone="deleted"],
-.fw-host .fw-tree-row[data-tone="deleted"] .fw-tree-mark {
-  color: var(--git-deleted-text);
-}
-.fw-host .fw-tree-row[data-tone="untracked"],
-.fw-host .fw-tree-row[data-tone="untracked"] .fw-tree-mark {
-  color: var(--git-untracked-text);
-}
-.fw-host .fw-tree-row[data-tone="conflict"],
-.fw-host .fw-tree-row[data-tone="conflict"] .fw-tree-mark {
-  color: var(--git-conflict-text);
+.fw-host .fw-tree-row[data-tone],
+.fw-host .fw-tree-row[data-tone] .fw-tree-mark {
+  color: var(--fw-tone);
 }
 /* A folder's roll-up tints only its count: the name is structure, not a change. */
 .fw-host .fw-tree-row[data-file-directory="true"][data-tone] {
@@ -106,26 +90,14 @@
 }
 
 .fw-root-identity {
-  display: flex;
-  align-items: center;
   flex: none;
   gap: var(--space-8);
   padding: var(--space-6) var(--space-8);
   color: var(--fg-muted);
-  background: transparent;
-  border: 0;
-  font: inherit;
-  text-align: start;
   width: 100%;
 }
 .fw-root-identity span {
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fw-root-identity:hover {
-  background: var(--bg-hover);
+  font-weight: var(--weight-medium);
 }
 .fw-host .fw-mount {
   flex: 1;
@@ -151,9 +123,7 @@
   pointer-events: none;
   z-index: var(--z-tooltip);
   max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  translate: var(--space-12) var(--space-12);
   padding: var(--space-8);
   background: var(--surface);
   color: var(--fg-default);

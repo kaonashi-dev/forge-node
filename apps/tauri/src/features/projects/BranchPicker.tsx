@@ -61,8 +61,10 @@ export function BranchPicker(props: BranchPickerProps) {
       disabled: !entry.enabled,
       render: () => (
         <>
-          <span class="palette-label">{entry.label}</span>
-          <Show when={entry.note}>{(note) => <span class="palette-note">{note()}</span>}</Show>
+          <span class="forge-combobox-label">{entry.label}</span>
+          <Show when={entry.note}>
+            {(note) => <span class="forge-combobox-note">{note()}</span>}
+          </Show>
         </>
       ),
     })),
@@ -237,7 +239,7 @@ export function BranchPicker(props: BranchPickerProps) {
         leading={
           <>
             <span class="palette-scope">New worktree</span>
-            <span class="palette-note">{props.projectName}</span>
+            <span class="forge-combobox-note">{props.projectName}</span>
           </>
         }
       />

@@ -31,31 +31,12 @@
 }
 /* Soften the scrollport edge so a tab mid-clip fades out instead of a hard cut. */
 .tab-strip-scroll[data-fade="right"] {
-  -webkit-mask-image: linear-gradient(
-    to right,
-    #000 0%,
-    #000 calc(100% - var(--space-24)),
-    transparent
-  );
   mask-image: linear-gradient(to right, #000 0%, #000 calc(100% - var(--space-24)), transparent);
 }
 .tab-strip-scroll[data-fade="left"] {
-  -webkit-mask-image: linear-gradient(
-    to left,
-    #000 0%,
-    #000 calc(100% - var(--space-24)),
-    transparent
-  );
   mask-image: linear-gradient(to left, #000 0%, #000 calc(100% - var(--space-24)), transparent);
 }
 .tab-strip-scroll[data-fade="both"] {
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent,
-    #000 var(--space-24),
-    #000 calc(100% - var(--space-24)),
-    transparent
-  );
   mask-image: linear-gradient(
     to right,
     transparent,
@@ -74,10 +55,6 @@
   min-width: min-content;
   padding: var(--space-6) var(--tab-radius) 0;
 }
-/* Every tab already draws its own divider. */
-.tab-strip .tab-divider {
-  display: none;
-}
 
 .tab-strip-trailing {
   flex-shrink: 0;
@@ -86,19 +63,6 @@
 .tab-strip-spacer {
   flex: 1;
   min-width: 0;
-}
-
-.tab-step {
-  border-radius: var(--radius-xs);
-  flex-shrink: 0;
-}
-
-.tab-divider {
-  background: var(--line);
-  flex-shrink: 0;
-  height: 18px;
-  margin: 0 var(--space-4);
-  width: 1px;
 }
 
 .session-tab-wrap.hides-close .session-tab-close {
@@ -114,13 +78,11 @@
   cursor: grab;
   display: inline-flex;
   flex-shrink: 0;
-  max-width: 240px;
+  max-width: 200px;
+  min-width: 120px;
   padding-right: var(--space-6);
   position: relative;
   touch-action: none;
-  transition:
-    background var(--motion-fast) var(--ease),
-    color var(--motion-fast) var(--ease);
   -webkit-user-drag: none;
 }
 .session-tab-wrap:hover {
@@ -166,15 +128,16 @@
 }
 .session-tab-wrap.ground-unread .session-tab-label {
   color: var(--fg);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 .session-tab-wrap.code-tab-wrap {
   cursor: default;
+  min-width: 92px;
   touch-action: auto;
 }
 .session-tab-wrap.dragging {
   cursor: grabbing;
-  opacity: 0.45;
+  opacity: var(--opacity-drag);
 }
 .tab-strip-scroll.reordering {
   cursor: grabbing;
@@ -216,7 +179,7 @@
   flex: 1;
   font: inherit;
   font-size: var(--text-sm);
-  font-weight: 500;
+  font-weight: var(--weight-medium);
   gap: var(--space-6);
   min-width: 0;
   padding: 0 var(--space-4) 0 var(--space-12);
@@ -226,32 +189,11 @@
 .code-tab-wrap:not(:has(.session-tab-close)) {
   padding-right: var(--space-12);
 }
-.code-tab-count {
-  background: var(--surface);
-  border-radius: var(--radius-badge);
-  color: var(--fg-caption);
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-label);
-  font-weight: 500;
-  line-height: 1.4;
-  padding: var(--space-1) var(--space-6);
-}
-.session-tab-wrap.active .code-tab-count {
-  background: var(--surface-hi);
-  color: var(--fg-muted);
-}
 .session-tab-label {
   flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .session-tab-close {
-  border-radius: var(--radius-xs);
   flex-shrink: 0;
-  opacity: 1;
 }
 
 .tab-empty {
@@ -293,16 +235,6 @@
   top: var(--space-8);
   width: 4px;
 }
-/* Read by an accessibility tree, never by an eye. Not `display:none` or
-   zero-size: both take the node out of the tree this exists to populate. */
-.editor-terminal-aria {
-  clip-path: inset(50%);
-  height: 1px;
-  overflow: hidden;
-  position: absolute;
-  white-space: nowrap;
-  width: 1px;
-}
 .editor-terminal-thumb {
   background: var(--fg-muted);
   border-radius: var(--radius-full);
@@ -322,14 +254,13 @@
   min-height: 0;
   min-width: 0;
 }
+/* `pre` over `.forge-truncate`'s nowrap: the prompt's own spacing is content. */
 .editor-view-prompt {
   background: var(--bg-raised);
   color: var(--fg-default);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  overflow: hidden;
   padding: var(--space-4) var(--space-12);
-  text-overflow: ellipsis;
   white-space: pre;
 }
 /* The find panel floats over the top right of the text rather than taking a
@@ -368,10 +299,7 @@
   font-size: var(--text-xs);
   max-width: 160px;
   min-width: 64px;
-  overflow: hidden;
   padding: 0 var(--space-4);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .editor-find-count.editor-find-error {
   color: var(--danger-text);
@@ -383,15 +311,9 @@
 }
 .editor-find-toggle {
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   min-width: var(--control-xs);
   padding: 0 var(--space-4);
-}
-.editor-find-toggle[aria-pressed="true"] {
-  background: var(--select-bg);
-  box-shadow: var(--select-ring);
-  color: var(--accent-text);
 }
 .editor-view-scroll {
   background: var(--bg-terminal);
@@ -425,6 +347,7 @@
 }
 .ed-selection {
   background: var(--accent-solid);
+  height: var(--ed-line-height);
   left: 0;
   opacity: 0.25;
   position: absolute;
@@ -433,6 +356,7 @@
 /* A find hit is not a second selection: the current match *is* the selection,
    so the two have to read as different things or neither does. */
 .ed-decoration {
+  height: var(--ed-line-height);
   left: 0;
   position: absolute;
   top: 0;
@@ -468,10 +392,31 @@
   width: var(--ed-gutter);
 }
 .ed-row-active {
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  background: var(--accent-tint-bg);
 }
 .ed-row-active .ed-number {
   color: var(--fg-default);
+}
+.ed-mark {
+  color: transparent;
+}
+.ed-mark[data-mark="Added"] {
+  color: var(--forge-git-added);
+}
+.ed-mark[data-mark="Modified"] {
+  color: var(--forge-git-modified);
+}
+.ed-mark[data-mark="Deleted"] {
+  color: var(--forge-git-deleted);
+}
+.ed-mark[data-mark="Error"] {
+  color: var(--danger-text);
+}
+.ed-mark[data-mark="Warning"] {
+  color: var(--warning-text);
+}
+.ed-mark[data-mark="Info"] {
+  color: var(--info-text);
 }
 .ed-mark,
 .ed-fold {
@@ -490,6 +435,34 @@
   color: var(--forge-term-fg);
   padding-left: var(--space-4);
 }
+/* The scope palette the TUI maps onto the ANSI 16; `Plain` is the row's own colour. */
+.ed-text > [data-scope="Comment"] {
+  color: var(--forge-ansi-8);
+}
+.ed-text > [data-scope="Keyword"] {
+  color: var(--forge-ansi-13);
+}
+.ed-text > [data-scope="ControlKeyword"] {
+  color: var(--forge-ansi-9);
+}
+.ed-text > [data-scope="String"] {
+  color: var(--forge-ansi-10);
+}
+.ed-text > [data-scope="Number"] {
+  color: var(--forge-ansi-11);
+}
+.ed-text > [data-scope="Type"] {
+  color: var(--forge-ansi-14);
+}
+.ed-text > [data-scope="Function"] {
+  color: var(--forge-ansi-12);
+}
+.ed-text > [data-scope="Property"] {
+  color: var(--forge-ansi-6);
+}
+.ed-text > [data-scope="Constant"] {
+  color: var(--forge-ansi-3);
+}
 .ed-folded {
   color: var(--fg-subtle);
 }
@@ -501,6 +474,7 @@
    surface never quite lost. */
 .ed-caret {
   background: var(--accent);
+  height: var(--ed-line-height);
   left: 0;
   pointer-events: none;
   position: absolute;
@@ -594,7 +568,7 @@
   caret-color: transparent;
   color: transparent;
   height: 1px;
-  left: 8px;
+  left: var(--space-8);
   opacity: 0;
   outline: none;
   overflow: hidden;
@@ -605,11 +579,12 @@
   pointer-events: none;
   position: absolute;
   resize: none;
-  top: 8px;
+  top: var(--space-8);
   width: 1px;
   z-index: var(--z-raised);
 }
-.terminal-scrolled {
+.terminal-scrolled,
+.terminal-debug {
   background: var(--bg-overlay);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
@@ -618,27 +593,18 @@
   padding: var(--space-3) var(--space-8);
   pointer-events: none;
   position: absolute;
-  right: 12px;
-  top: 8px;
+  right: var(--space-12);
   z-index: var(--z-over);
 }
+.terminal-scrolled {
+  top: var(--space-8);
+}
+/* Two lines, the round trip and the paint: a `\n` in a text node collapses without `pre`. */
 .terminal-debug {
-  /* Two lines now — the round trip and the paint — and a `\n` in a text node
-     is collapsed without this. */
-  white-space: pre;
-  text-align: right;
-  background: var(--bg-overlay);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xs);
-  bottom: 8px;
-  color: var(--fg-muted);
+  bottom: var(--space-8);
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  padding: var(--space-3) var(--space-8);
-  pointer-events: none;
-  position: absolute;
-  right: 12px;
-  z-index: var(--z-over);
+  text-align: right;
+  white-space: pre;
 }
 
 /* --- Title bar, right of the tabs ---------------------------------------- */
@@ -649,31 +615,8 @@
   flex-shrink: 0;
   gap: var(--space-8);
 }
-.waiting-chip {
-  align-items: center;
-  background: var(--attention-bg);
-  border: 0;
-  border-radius: var(--radius-pill);
-  box-shadow: var(--attention-ring);
-  color: var(--attention-text);
-  cursor: pointer;
-  display: inline-flex;
-  font: inherit;
-  font-size: var(--text-xs);
-  font-weight: 600;
-  gap: var(--space-8);
-  height: 26px;
-  padding: 0 var(--space-12) 0 var(--space-8);
-  white-space: nowrap;
-}
-.waiting-chip:hover {
-  background: color-mix(in srgb, var(--attention) 20%, transparent);
-}
 
 /* ---------------------------------------------------------- notices --- */
-
-/* The menu surface (`.context-menu` / `.context-item`) lives in `ui/ui.css`
-   now, next to the `[data-highlighted]` states Kobalte drives it with. */
 
 .notice {
   align-items: center;
@@ -681,7 +624,7 @@
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   bottom: var(--space-12);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--depth-2);
   color: var(--fg-default);
   display: flex;
   font-size: var(--text-sm);
@@ -693,18 +636,6 @@
   transform: translateX(-50%);
   z-index: var(--z-notice);
 }
-.notice-close {
-  color: var(--fg-subtle);
-  font-size: var(--text-md);
-  height: auto;
-  min-width: 0;
-  padding: 0 var(--space-2);
-}
-.notice-close:hover {
-  color: var(--fg-default);
-}
-
-/* ------------------------------------------------------------- palette --- */
 
 /* ---------------------------------------------------------------- rail --- */
 
@@ -722,72 +653,70 @@
 }
 .needs-you-label {
   color: var(--attention-text);
-  font-family: var(--font-mono);
-  font-size: var(--text-label);
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
 }
 .needs-you-count {
+  align-items: center;
   background: var(--attention-solid);
   border-radius: var(--radius-badge);
   color: var(--attention-fg);
+  display: inline-flex;
   font-family: var(--font-mono);
   font-size: var(--text-label);
-  font-weight: 700;
-  line-height: 15px;
-  padding: 0 var(--space-6);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-none);
+  padding: var(--space-2) var(--space-6);
 }
 .needs-you-hint {
-  color: var(--fg-caption);
-  font-size: var(--text-xs);
   margin-left: auto;
 }
 .tree-group {
   margin-bottom: var(--space-2);
 }
-/* The reset — background, border, colour, font, alignment — is `.forge-row`
-   in `ui/ui.css`. What is left here is what makes this row a *tree* row. */
+/* The reset is `.forge-row`; what is left makes this row a tree row. */
 .tree-row {
-  border-radius: var(--radius-xs);
-  /* A row keeps its height. Left shrinkable inside the column flex box that
-     holds it, every row squashed from `--forge-row-h` down towards its text —
-     and the virtualiser, which places its spacers in units of `--forge-row-h`,
-     then ran out of rows a third of the way down a full panel. */
+  border-radius: var(--radius-control);
+  color: var(--fg-muted);
+  /* A row keeps its height: the column flex box would otherwise shrink it towards its text. */
   flex: none;
   font-size: var(--text-sm);
-  gap: var(--space-6);
+  gap: var(--space-8);
   height: var(--row-h);
-  padding: 0 var(--space-8) 0 calc(var(--space-8) + var(--depth, 0) * var(--space-12));
+  padding: 0 var(--space-8) 0 calc(var(--space-8) + var(--tree-depth, 0) * var(--space-12));
   width: 100%;
 }
 .tree-row.group {
-  --depth: 0;
-  color: var(--fg-muted);
+  color: var(--fg);
   font-size: var(--text-xs);
 }
 .tree-row.project {
-  --depth: 0;
-  font-weight: 600;
+  color: var(--fg);
+  font-weight: var(--weight-semibold);
 }
-/* A group's contents, indented one tree level as a block — the project row,
-   the checkout rows under it and their sessions all move together, which a
-   `--depth` on the project row alone would not do: the checkouts are its
-   siblings in the markup, not its children. */
+/* A group's contents indent as a block: the checkout rows are the project
+   row's siblings in the markup, so a depth on the project row alone would
+   leave them behind. */
 .tree-children.nested {
   padding-left: var(--space-16);
 }
-.tree-row.session {
-  --depth: 0;
+.tree-row[aria-current="true"] {
+  color: var(--fg);
+  font-weight: var(--weight-medium);
 }
-.tree-row:hover {
-  background: var(--forge-sidebar-hi);
+.tree-row.unread .tree-label {
+  color: var(--fg);
+  font-weight: var(--weight-semibold);
+}
+/* A row the Needs-you block lifted out of the tree takes the attention shape;
+   two classes so it outranks the kit row hover. */
+.tree-row.lifted {
+  background: var(--attention-bg);
+  box-shadow: var(--attention-ring);
+  color: var(--fg);
+  height: calc(var(--row-h) + var(--space-8));
+  margin-bottom: var(--space-4);
 }
 .tree-label {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .tree-twisty {
   align-items: center;
@@ -795,55 +724,10 @@
   display: inline-flex;
   flex: none;
   justify-content: center;
-  transition: transform var(--motion-fast) var(--ease);
   width: 11px;
 }
 .tree-twisty.open {
   transform: rotate(90deg);
-}
-.tree-add {
-  color: var(--fg-caption);
-  flex: none;
-  opacity: 1;
-}
-.tree-add:hover {
-  color: var(--fg);
-}
-
-/* --- Project rail rows ----------------------------------------------------- */
-
-.projects-view .tree-row,
-.projects-view .ws-row {
-  border-radius: var(--radius-control);
-  color: var(--fg-muted);
-  gap: var(--space-8);
-  transition: background var(--motion-fast) var(--ease);
-}
-.projects-view .tree-row:hover,
-.projects-view .ws-row:hover {
-  background: var(--bg-hover);
-}
-.projects-view .tree-row.project,
-.projects-view .tree-row.group {
-  color: var(--fg);
-}
-.projects-view .tree-row.session.active {
-  background: var(--select-bg);
-  box-shadow: var(--select-ring);
-  color: var(--fg);
-  font-weight: 500;
-}
-.projects-view .tree-row.unread .tree-label {
-  color: var(--fg);
-  font-weight: 600;
-}
-/* A row the Needs-you block lifted out of the tree takes the attention shape. */
-.projects-view .tree-row.lifted {
-  background: var(--attention-bg);
-  box-shadow: var(--attention-ring);
-  color: var(--fg);
-  height: calc(var(--row-h) + var(--space-8));
-  margin-bottom: var(--space-4);
 }
 .tree-waited {
   color: var(--attention-text);
@@ -853,9 +737,9 @@
 }
 /* The keyboard cursor, drawn only while the tree itself has focus: the rows
    are reached through `aria-activedescendant`, so none of them is focused. */
-.projects-view [role="tree"]:focus-visible .cursor:not(.ws-card),
-.projects-view [role="tree"]:focus-visible .ws-card.cursor > .ws-row {
-  box-shadow: inset 0 0 0 2px var(--ring);
+:where(.projects-view [role="tree"]:focus-visible) .tree-row.cursor,
+:where(.projects-view [role="tree"]:focus-visible) .ws-card.cursor > .ws-row {
+  box-shadow: var(--focus-ring-inset);
 }
 
 /* --- Checkout row -------------------------------------------------------- */
@@ -865,7 +749,7 @@
   position: relative;
 }
 .ws-card.dragging {
-  opacity: 0.45;
+  opacity: var(--opacity-drag);
 }
 .ws-card.drop-before::before,
 .ws-card.drop-after::after {
@@ -886,7 +770,10 @@
 }
 .ws-row {
   align-items: center;
+  border-radius: var(--radius-control);
+  color: var(--fg-muted);
   display: flex;
+  gap: var(--space-8);
   height: var(--row-h);
   padding-right: var(--space-4);
 }
@@ -895,6 +782,9 @@
 .ws-card.current > .ws-row {
   background: var(--surface);
   color: var(--fg);
+}
+.ws-card > .ws-row:hover {
+  background: var(--bg-hover);
 }
 .ws-head {
   align-self: stretch;
@@ -916,15 +806,6 @@
 }
 .ws-head .tree-label {
   flex: 0 1 auto;
-}
-.ws-badge {
-  background: var(--surface-hi);
-  border-radius: var(--radius-badge);
-  color: var(--fg-muted);
-  flex: none;
-  font-size: var(--text-xs);
-  font-weight: 500;
-  padding: 0 var(--space-6);
 }
 .ws-marks {
   align-items: center;
@@ -974,60 +855,34 @@
   box-shadow: var(--depth-3);
   width: min(640px, 92vw);
 }
-.palette-query {
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  gap: var(--space-12);
-  height: var(--control-lg);
-  padding: 0 var(--space-12);
-}
-.command-palette .palette-query {
+.command-palette .forge-combobox-query {
   height: calc(var(--row-h) + var(--space-28));
   padding: 0 var(--space-16);
 }
 .palette-scope {
   align-items: center;
   background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border: 1px solid var(--accent-tint-border);
   border-radius: var(--radius-badge);
   color: var(--accent-text);
   display: flex;
   flex: none;
   font-size: var(--text-xs);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   gap: var(--space-6);
   height: 22px;
   padding: 0 var(--space-8);
 }
 .palette-scope-prefix {
   font-family: var(--font-mono);
-  font-weight: 700;
+  font-weight: var(--weight-bold);
 }
-/* `.forge-field-input` from the base layer; a query is set larger than a field. */
-.palette-input {
-  font-size: var(--text-md);
-}
-.command-palette .palette-input {
+.command-palette .forge-combobox-input {
   font-size: var(--text-lg);
 }
-/* `.palette-note` grows inside a row; in the query seam it sits before the
-   input, and growing there pushes the query to the middle of the card. */
-.palette-query > .palette-note {
-  flex: none;
-}
-.palette-list {
-  /* Plus one group heading, so the last visible row is not cut in half. */
-  max-height: calc(var(--palette-rows, 9) * var(--row-h) + 30px);
-  overflow-y: auto;
-  padding: var(--space-4);
-}
-.command-palette .palette-list {
+.command-palette .forge-combobox-list {
   max-height: calc(var(--palette-rows, 9) * (var(--row-h) + var(--space-12)) + 30px);
   padding: var(--space-6) 0;
-}
-.palette-empty {
-  padding: var(--space-12) var(--space-16);
 }
 /* The selected row is the hold-Control list's focus indicator; an outline on
    the list would be clipped by the card. */
@@ -1039,9 +894,10 @@
   box-shadow: var(--depth-3);
 }
 .tab-switcher-list {
+  --palette-rows: 10;
   padding: var(--space-6);
 }
-.tab-switcher-list .palette-row {
+.tab-switcher-list .forge-combobox-row {
   height: calc(var(--row-h) + var(--space-10));
   padding: 0 var(--space-10);
 }
@@ -1068,96 +924,20 @@
   font-family: var(--font-mono);
   margin-left: auto;
 }
-.palette-group {
-  color: var(--fg-caption);
-  font-family: var(--font-mono);
-  font-size: var(--text-label);
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  padding: var(--space-10) var(--space-8) var(--space-4);
-  text-transform: uppercase;
-}
-.command-palette .palette-group {
+.command-palette .forge-combobox-group {
   padding: var(--space-10) var(--space-16) var(--space-4);
 }
-.palette-row {
-  align-items: center;
-  background: none;
-  border: 0;
-  border-radius: var(--radius-control);
-  color: var(--fg-default);
-  display: flex;
-  font-family: inherit;
-  font-size: var(--text-sm);
-  gap: var(--space-10);
-  height: var(--row-h);
-  padding: 0 var(--space-8);
-  text-align: left;
-  width: 100%;
-}
-.command-palette .palette-row {
+.command-palette .forge-combobox-row {
   border-radius: 0;
   font-size: var(--text-md);
   height: calc(var(--row-h) + var(--space-12));
   padding: 0 var(--space-16);
-}
-.palette-row.selected {
-  background: var(--select-bg);
-  box-shadow: var(--select-ring);
-  color: var(--fg);
-}
-/* Held even when it is empty, so every label in the list starts on the same pixel. */
-.palette-glyph {
-  flex: none;
-  height: 14px;
-  width: 14px;
-}
-.palette-glyph-dot {
-  align-items: center;
-  display: flex;
-  justify-content: center;
-}
-/* Dimmed but still listed, so the palette also answers "what could run here?" */
-.palette-row.disabled {
-  color: var(--fg-subtle);
-}
-/* Shrinkable: a row whose label and path both refuse to give ground pushes the
-   shortcut column off the card. The label yields last. */
-.palette-label {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.palette-match {
-  background: none;
-  color: var(--accent-text);
-  font-weight: 600;
-}
-.palette-note {
-  color: var(--fg-subtle);
-  flex: 1 1 auto;
-  font-size: var(--text-xs);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .palette-waiting {
   color: var(--attention-text);
   flex: none;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-}
-.palette-hint {
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-badge);
-  color: var(--fg-muted);
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  padding: var(--space-2) var(--space-6);
 }
 .palette-footer {
   align-items: center;
@@ -1176,10 +956,6 @@
   align-items: center;
   display: flex;
   gap: var(--space-4);
-}
-.palette-footer-hint .forge-kbd {
-  color: var(--fg-muted);
-  padding: var(--space-1) var(--space-6);
 }
 .palette-footer-end {
   margin-left: auto;
@@ -1223,13 +999,12 @@
   height: auto;
   padding: 0 var(--space-8);
   position: relative;
-  transition: color var(--motion-fast) var(--ease);
 }
 .sidebar-view-tab.forge-tab-icon {
-  width: 34px;
+  width: var(--forge-tab-h);
 }
 .sidebar-view-tab[data-selected] {
-  box-shadow: inset 0 -2px 0 var(--accent);
+  box-shadow: var(--tab-underline);
   color: var(--fg);
 }
 .sidebar-view-tab:hover {
@@ -1240,13 +1015,7 @@
   outline: none;
 }
 .sidebar-view-tab .forge-tab-badge {
-  font-family: var(--font-mono);
-  font-size: var(--text-label);
-  font-weight: 700;
   inset: var(--space-4) 0 auto auto;
-  line-height: 14px;
-  min-width: 14px;
-  padding: 0 var(--space-3);
 }
 /* An icon trigger is square: the glyph is the label, so horizontal padding
    would only push the seven of them apart. */
@@ -1255,7 +1024,7 @@
   display: inline-flex;
   justify-content: center;
   padding: 0;
-  width: 24px;
+  width: var(--control-sm);
 }
 .sidebar-body {
   display: flex;
@@ -1288,8 +1057,6 @@
   padding: var(--space-4) var(--space-8) var(--space-8);
 }
 
-/* Controls, fields and cards now live in `ui/ui.css`, next to `src/ui/`. */
-
 /* The two answers under the list: what to call it, and what to start in it. */
 .branch-picker-fields {
   border-top: 1px solid var(--border-subtle);
@@ -1302,10 +1069,6 @@
   border-top: 1px solid var(--border-subtle);
 }
 .juva-editor .forge-textarea {
-  background: var(--bg-terminal);
-  border-color: var(--border-subtle);
-  color: var(--forge-term-fg);
-  font-size: var(--text-md);
   min-height: 200px;
 }
 /* The three policies read as one block of choices rather than as three rows of
@@ -1328,41 +1091,31 @@
 /* The note goes under its label, not after it: the longest of the three runs
    the width of the card on one line, and the first thing a narrower window
    does to it is wrap it under the radio dot. */
-.remove-project-policies .settings-row-label,
-.remove-project-policies .settings-row-note {
+.remove-project-policies .forge-option-label,
+.remove-project-policies .forge-option-note {
   grid-column: 2;
 }
 .remove-project-policies .forge-radio:hover:not([data-disabled]) {
   background: var(--bg-hover);
 }
 .remove-project-policies .forge-radio[data-disabled] {
-  opacity: 0.55;
+  opacity: var(--opacity-disabled);
 }
 /* The consequences of whatever is selected, kept apart from the choosing. */
 .remove-project-consequences {
   border-top: 1px solid var(--border-subtle);
   padding-top: var(--space-10);
 }
-.remove-project-consequences .section-label {
+.remove-project-consequences .forge-section-label {
   padding: 0 0 var(--space-2);
 }
 .remove-project-consequences .remove-worktree-reasons {
   margin: 0;
 }
-.remove-worktree-title {
-  font-size: var(--text-lg);
-  margin: 0 0 var(--space-10);
-}
-.remove-worktree-copy {
-  color: var(--fg-muted);
-  font-size: var(--text-sm);
-  line-height: 1.6;
-  margin: 0;
-}
 .remove-worktree-reasons {
   color: var(--fg-default);
   font-size: var(--text-sm);
-  line-height: 1.7;
+  line-height: var(--leading-prose);
   margin: 0;
   padding-left: var(--space-20);
 }
@@ -1400,13 +1153,7 @@
   padding: var(--space-4) 0 var(--space-4) var(--space-4);
 }
 .rail-head-label {
-  color: var(--fg-caption);
   flex: 1;
-  font-family: var(--font-mono);
-  font-size: var(--text-label);
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
 }
 
 .branch-picker-shares {

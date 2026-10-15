@@ -1,6 +1,6 @@
 import { For, Index, Show, createMemo } from "solid-js";
 import { activeWorkspace } from "../../state/workspace";
-import { Button } from "../../ui/index";
+import { Badge, Button } from "../../ui/index";
 import { openEditorAt } from "../editor/open";
 import { openFile } from "../files/commands";
 import { conflictLabel, conflictSides } from "./conflictPrompt";
@@ -73,19 +73,17 @@ export function ConflictView() {
       {(current) => (
         <section class="git-conflict-view" aria-label="Conflict resolution">
           <header class="git-conflict-view-head">
-            <span class="git-conflict-view-path">{current().path}</span>
+            <span class="git-conflict-view-path forge-truncate">{current().path}</span>
             <Show
               when={blocks().length > 0}
               fallback={
-                <span class="git-conflict-view-state" data-state="unmarked">
-                  {readable() ? "no markers left" : conflictLabel(current().code)}
-                </span>
+                <Badge>{readable() ? "no markers left" : conflictLabel(current().code)}</Badge>
               }
             >
-              <span class="git-conflict-view-state" data-state="conflicted">
+              <Badge tone="attention" class="git-conflict-view-state">
                 <ConflictMark size={12} />
                 {blocks().length} conflict{blocks().length === 1 ? "" : "s"}
-              </span>
+              </Badge>
             </Show>
             <span class="history-spacer" />
             <Show when={conflicts().length > 1}>
@@ -107,7 +105,7 @@ export function ConflictView() {
             <div class="git-three-way-heads" aria-hidden="true">
               <span class="git-side" data-side="ours">
                 <span class="git-side-swatch" />
-                Ours <span class="git-side-ref">{sides().ours}</span>
+                Ours <span class="git-side-ref forge-truncate">{sides().ours}</span>
               </span>
               <span class="git-side" data-side="base">
                 <span class="git-side-swatch" />
@@ -115,7 +113,7 @@ export function ConflictView() {
               </span>
               <span class="git-side" data-side="theirs">
                 <span class="git-side-swatch" />
-                Theirs <span class="git-side-ref">{sides().theirs}</span>
+                Theirs <span class="git-side-ref forge-truncate">{sides().theirs}</span>
               </span>
             </div>
             <Index each={blocks()}>
@@ -127,11 +125,13 @@ export function ConflictView() {
                 >
                   <header class="git-conflict-block-head">
                     <span class="forge-attention-dot" aria-hidden="true" />
-                    <span class="git-conflict-block-title">
+                    <span class="forge-section-label git-conflict-block-title">
                       Conflict {position + 1} of {blocks().length}
                     </span>
                     <Show when={block().line}>
-                      {(line) => <span class="git-conflict-block-line">line {line()}</span>}
+                      {(line) => (
+                        <span class="forge-caption git-conflict-block-line">line {line()}</span>
+                      )}
                     </Show>
                     <span class="history-spacer" />
                     <Button variant="ghost" size="xs" onClick={() => openAt(block().line)}>
@@ -144,7 +144,7 @@ export function ConflictView() {
                       when={block().base}
                       fallback={
                         <div class="git-three-way-side" data-side="base">
-                          <p class="git-three-way-empty">
+                          <p class="forge-caption git-three-way-empty">
                             No base recorded. Git wrote this conflict without diff3 markers.
                           </p>
                         </div>
@@ -174,7 +174,7 @@ export function ConflictView() {
               <header class="git-proposal-head">
                 <span class="git-proposal-title">Proposed resolution</span>
                 <span class="history-spacer" />
-                <span class="git-proposal-note">not staged · you stage it</span>
+                <span class="forge-caption">not staged · you stage it</span>
               </header>
               <p class="git-proposal-body">
                 No conflict markers are left in this file. Read the change below: staging it is what
@@ -234,7 +234,10 @@ export function ConflictView() {
 function Side(props: { label: string; side: "ours" | "base" | "theirs"; lines: string[] }) {
   return (
     <div class="git-three-way-side" data-side={props.side} aria-label={props.label} role="group">
-      <For each={props.lines} fallback={<p class="git-three-way-empty">Empty on this side.</p>}>
+      <For
+        each={props.lines}
+        fallback={<p class="forge-caption git-three-way-empty">Empty on this side.</p>}
+      >
         {(line) => <div class="git-three-way-line">{line === "" ? " " : line}</div>}
       </For>
     </div>

@@ -29,15 +29,15 @@ export function AgentProfiles() {
     >
       <For each={forgeStore.agent_profiles} fallback={<p class="empty-copy">No profiles yet.</p>}>
         {(profile) => (
-          <div class="settings-row profile-row">
+          <div class="profile-row">
             <div class="profile-row-main">
-              <span class="settings-row-label">{profile.name}</span>
-              <span class="settings-row-note">{profile.provider_id}</span>
+              <span class="forge-option-label">{profile.name}</span>
+              <span class="forge-option-note">{profile.provider_id}</span>
               <Show when={profile.executable}>
-                {(executable) => <span class="settings-row-note">{executable()}</span>}
+                {(executable) => <span class="forge-option-note">{executable()}</span>}
               </Show>
               <Show when={profile.config_dir}>
-                {(dir) => <span class="settings-row-note">{dir()}</span>}
+                {(dir) => <span class="forge-option-note">{dir()}</span>}
               </Show>
             </div>
             <div class="profile-row-actions">
@@ -145,7 +145,7 @@ function ProfileForm(props: {
 
   return (
     <form
-      class="settings-form"
+      class="forge-card settings-form"
       onSubmit={(event) => {
         event.preventDefault();
         submit();

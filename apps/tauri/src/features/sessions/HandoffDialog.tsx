@@ -5,6 +5,7 @@ import { defaultAgentFrom, resolveDefaultAgent } from "../settings/defaultAgent"
 import { SessionGlyph } from "./SessionGlyph";
 import {
   Button,
+  Checkbox,
   Dialog,
   Disclosure,
   Select,
@@ -225,7 +226,7 @@ export function HandoffDialog(props: { request: HandoffRequest; onDismiss: () =>
 
       <div class="handoff-source">
         <SessionGlyph providerId={props.request.sourceAgent} size={14} />
-        <span class="tree-label">{props.request.title}</span>
+        <span class="tree-label forge-truncate">{props.request.title}</span>
       </div>
 
       <Select
@@ -255,7 +256,7 @@ export function HandoffDialog(props: { request: HandoffRequest; onDismiss: () =>
         the same thread.
       </p>
 
-      <Disclosure summary={<span class="tree-label">Summarizer and options</span>}>
+      <Disclosure summary={<span class="tree-label forge-truncate">Summarizer and options</span>}>
         <Select
           label="Summarizer"
           value={chosenSummarizer()}
@@ -267,14 +268,11 @@ export function HandoffDialog(props: { request: HandoffRequest; onDismiss: () =>
         <p class="panel-note">
           Prefer a lower-effort or flash profile here — it only writes the continuation brief.
         </p>
-        <label class="handoff-raw">
-          <input
-            type="checkbox"
-            checked={rawCopy()}
-            onChange={(event) => setRawCopy(event.currentTarget.checked)}
-          />
-          <span>Paste the raw transcript instead (no summary)</span>
-        </label>
+        <Checkbox
+          label="Paste the raw transcript instead (no summary)"
+          checked={rawCopy()}
+          onChange={setRawCopy}
+        />
       </Disclosure>
 
       <p class="panel-note">

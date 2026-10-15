@@ -41,7 +41,6 @@ import type {
   EditorPlace,
   EditorRange,
   EditorRow,
-  EditorScope,
   EditorSeverity,
 } from "../../../contracts/terminal";
 import {
@@ -59,16 +58,11 @@ type EditorViewProps = {
 /** A painted band, in the content layer's own pixels. */
 type Rect = { x: number; y: number; width: number };
 
-/** The glyph and colour each gutter mark reads as, as the TUI draws them. */
+/** The glyph each gutter mark reads as, as the TUI draws them; `.ed-mark[data-mark]` colours it. */
 const MARK_GLYPH: Readonly<Record<EditorMark, string>> = {
   Added: "\u2502",
   Modified: "\u2502",
   Deleted: "\u2582",
-};
-const MARK_TOKEN: Readonly<Record<EditorMark, string>> = {
-  Added: "var(--forge-git-added)",
-  Modified: "var(--forge-git-modified)",
-  Deleted: "var(--forge-git-deleted)",
 };
 
 /* A problem outranks a change on the one cell: somebody who just ran a checker
@@ -79,19 +73,14 @@ const SEVERITY_GLYPH: Readonly<Record<EditorSeverity, string>> = {
   Warning: "\u26a0",
   Info: "\u2139",
 };
-const SEVERITY_TOKEN: Readonly<Record<EditorSeverity, string>> = {
-  Error: "var(--forge-red)",
-  Warning: "var(--forge-amber)",
-  Info: "var(--forge-blue)",
-};
 
-/** What the one mark cell shows for a row, and in what colour. */
-function gutterMark(row: EditorRow): { glyph: string; color: string } | null {
+/** What the one mark cell shows for a row, and which mark it is. */
+function gutterMark(row: EditorRow): { glyph: string; kind: EditorSeverity | EditorMark } | null {
   if (row.diagnostic !== null) {
-    return { glyph: SEVERITY_GLYPH[row.diagnostic], color: SEVERITY_TOKEN[row.diagnostic] };
+    return { glyph: SEVERITY_GLYPH[row.diagnostic], kind: row.diagnostic };
   }
   if (row.mark !== null) {
-    return { glyph: MARK_GLYPH[row.mark], color: MARK_TOKEN[row.mark] };
+    return { glyph: MARK_GLYPH[row.mark], kind: row.mark };
   }
   return null;
 }
@@ -127,20 +116,6 @@ function caretOffsetAt(x: number, y: number): { node: Node; offset: number } | n
   }
   return null;
 }
-
-/** The theme colour each scope reads in, as the TUI already maps them. */
-const SCOPE_TOKEN: Readonly<Record<EditorScope, string>> = {
-  Plain: "var(--forge-term-fg)",
-  Comment: "var(--forge-ansi-8)",
-  Keyword: "var(--forge-ansi-13)",
-  ControlKeyword: "var(--forge-ansi-9)",
-  String: "var(--forge-ansi-10)",
-  Number: "var(--forge-ansi-11)",
-  Type: "var(--forge-ansi-14)",
-  Function: "var(--forge-ansi-12)",
-  Property: "var(--forge-ansi-6)",
-  Constant: "var(--forge-ansi-3)",
-};
 
 /**
  * The Code-region surface for a headless `forge-editor`.
@@ -490,7 +465,7 @@ function EditorSessionView(props: EditorViewProps) {
           A panel of real inputs is what this becomes; the keys still go to the
           host either way. */}
       <Show when={session()?.editor?.status}>
-        {(status) => <div class="editor-view-prompt">{status()}</div>}
+        {(status) => <div class="editor-view-prompt forge-truncate">{status()}</div>}
       </Show>
 
       <Show when={conflict()}>
@@ -561,7 +536,6 @@ function EditorSessionView(props: EditorViewProps) {
                   style={{
                     transform: `translate(${rect.x}px, ${rect.y}px)`,
                     width: `${rect.width}px`,
-                    height: `${lineHeight()}px`,
                   }}
                 />
               )}
@@ -576,7 +550,6 @@ function EditorSessionView(props: EditorViewProps) {
                       style={{
                         transform: `translate(${rect.x}px, ${rect.y}px)`,
                         width: `${rect.width}px`,
-                        height: `${lineHeight()}px`,
                       }}
                     />
                   )}
@@ -598,11 +571,7 @@ function EditorSessionView(props: EditorViewProps) {
                   </span>
                   {/* One cell, always drawn: a gutter that widened the first
                       time git answered would shift every line sideways. */}
-                  <span
-                    class="ed-mark"
-                    aria-hidden="true"
-                    style={{ color: gutterMark(row)?.color ?? "transparent" }}
-                  >
+                  <span class="ed-mark" aria-hidden="true" data-mark={gutterMark(row)?.kind}>
                     {gutterMark(row)?.glyph ?? " "}
                   </span>
                   <span
@@ -614,9 +583,7 @@ function EditorSessionView(props: EditorViewProps) {
                   </span>
                   <span class="ed-text">
                     <For each={row.spans}>
-                      {(span) => (
-                        <span style={{ color: SCOPE_TOKEN[span.scope] }}>{span.text}</span>
-                      )}
+                      {(span) => <span data-scope={span.scope}>{span.text}</span>}
                     </For>
                     <Show when={row.truncated}>
                       <span class="ed-truncated" aria-hidden="true">
@@ -642,7 +609,6 @@ function EditorSessionView(props: EditorViewProps) {
                 aria-hidden="true"
                 style={{
                   transform: `translate(${at.x}px, ${at.y}px)`,
-                  height: `${lineHeight()}px`,
                 }}
               />
             )}
@@ -655,13 +621,12 @@ function EditorSessionView(props: EditorViewProps) {
                 aria-hidden="true"
                 style={{
                   transform: `translate(${at().x}px, ${at().y}px)`,
-                  height: `${lineHeight()}px`,
                 }}
               />
             )}
           </Show>
         </div>
-        <div class="editor-terminal-aria" role="status" aria-live="polite" aria-atomic="true">
+        <div class="forge-visually-hidden" role="status" aria-live="polite" aria-atomic="true">
           {announcement()}
         </div>
         <textarea

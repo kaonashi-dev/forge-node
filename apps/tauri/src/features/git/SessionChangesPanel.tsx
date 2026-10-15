@@ -31,7 +31,7 @@ export function SessionChangesPanel(props: { session: string }) {
   return (
     <div class="session-changes">
       <header class="session-changes-head">
-        <span class="session-changes-branch">{summary()?.branch ?? "detached"}</span>
+        <span class="session-changes-branch forge-truncate">{summary()?.branch ?? "detached"}</span>
         <Show when={summary()?.base}>
           {(base) => <span class="session-changes-base">base {base()}</span>}
         </Show>
@@ -77,14 +77,14 @@ export function SessionChangesPanel(props: { session: string }) {
           <>
             <Show when={current().commit_count > 0}>
               <section class="session-changes-commits">
-                <h4 class="panel-subhead">
+                <h4 class="forge-section-label panel-subhead">
                   {current().commit_count} commit{current().commit_count === 1 ? "" : "s"}
                 </h4>
                 <For each={current().commits}>
                   {(commit) => (
                     <div class="session-commit">
                       <span class="session-commit-id">{commit.short_id}</span>
-                      <span class="session-commit-subject">{commit.subject}</span>
+                      <span class="forge-truncate">{commit.subject}</span>
                     </div>
                   )}
                 </For>
@@ -116,7 +116,7 @@ export function SessionChangesPanel(props: { session: string }) {
                       >
                         {statusLetter(file.status)}
                       </span>
-                      <span class="tree-label">{file.path}</span>
+                      <span class="tree-label forge-truncate">{file.path}</span>
                       <span class="git-counts">
                         <Show
                           when={file.binary}

@@ -21,6 +21,7 @@ import {
   Badge,
   Button,
   Disclosure,
+  IconButton,
   RadioGroup,
   Select,
   Switch,
@@ -154,7 +155,7 @@ export function SettingsRoute(props: SettingsRouteProps) {
         value={section()}
         onChange={(value) => setSection(value as Section)}
         listClass="settings-rail"
-        triggerClass="settings-nav"
+        triggerClass="forge-row settings-nav"
         contentClass="settings-body"
         tabs={SECTIONS.map((item) => {
           const IconComp = SECTION_ICONS[item];
@@ -276,12 +277,12 @@ function General() {
           <li>
             <span class="settings-path-name">
               config.toml
-              <span class="settings-row-note">terminal, sessions, worktrees, daemon</span>
+              <span class="forge-option-note">terminal, sessions, worktrees, daemon</span>
             </span>
             <span class="settings-path-value">
               {paths()?.config_file ?? "no config directory on this platform"}
             </span>
-            <span class="settings-row-note">
+            <span class="forge-option-note">
               {paths() === undefined
                 ? ""
                 : paths()?.config_exists
@@ -294,7 +295,7 @@ function General() {
             <span class="settings-path-value">
               {paths()?.logs_dir ?? "no data directory on this platform"}
             </span>
-            <span class="settings-row-note">daemon.&lt;date&gt;.log, last 5 days</span>
+            <span class="forge-option-note">daemon.&lt;date&gt;.log, last 5 days</span>
           </li>
         </ul>
         <div class="settings-actions">
@@ -494,7 +495,7 @@ function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent })
           <SessionGlyph providerId={id()} size={16} />
           <span class="provider-identity">
             <span class="provider-name">{providerName(props.provider)}</span>
-            <span class="provider-id">{id()}</span>
+            <span class="forge-caption provider-id">{id()}</span>
           </span>
           <Badge tone={providerInstalled(props.provider) ? "good" : "warn"}>
             {providerDetectionLabel(props.provider)}
@@ -533,7 +534,7 @@ function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent })
       >
         <div class="provider-command">
           <TextField
-            class="panel-search provider-command-field"
+            class="provider-command-field"
             aria-label={`Executable for ${providerName(props.provider)}`}
             value={path()}
             placeholder={executable()?.path ?? "Path to the binary"}
@@ -573,8 +574,7 @@ function Appearance() {
     writeChoice(DENSITY_KEY, next);
   }
 
-  function toggleReduceMotion(): void {
-    const next = !reduceMotion();
+  function setReduceMotion(next: boolean): void {
     applyReduceMotion(next);
     writeFlag(REDUCE_MOTION_KEY, next);
   }
@@ -588,20 +588,14 @@ function Appearance() {
 
       <Group title="Density">
         <div class="settings-density">
-          <div class="settings-segmented" role="group" aria-label="Row density">
-            <For each={DENSITIES}>
-              {(value) => (
-                <button
-                  type="button"
-                  class="settings-segment"
-                  aria-pressed={density() === value}
-                  onClick={() => chooseDensity(value)}
-                >
-                  {DENSITY_LABELS[value]}
-                </button>
-              )}
-            </For>
-          </div>
+          <RadioGroup
+            label="Row density"
+            variant="segmented"
+            size="md"
+            value={density()}
+            options={DENSITIES.map((value) => ({ value, label: DENSITY_LABELS[value] }))}
+            onChange={(value) => chooseDensity(readDensity(value))}
+          />
           <span class="settings-density-note">{DENSITY_NOTES[density()]}</span>
         </div>
       </Group>
@@ -654,26 +648,18 @@ function Appearance() {
       </Group>
 
       <Group>
-        <div class="settings-motion">
-          <div class="settings-item-text">
-            <span class="settings-item-label" id="settings-reduce-motion-label">
-              Reduce motion
-            </span>
-            <span class="settings-item-description">
-              Panels and menus appear without easing, on top of the system setting.
-            </span>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            class="settings-switch"
-            aria-checked={reduceMotion()}
-            aria-labelledby="settings-reduce-motion-label"
-            onClick={toggleReduceMotion}
-          >
-            <span class="settings-switch-knob" aria-hidden="true" />
-          </button>
-        </div>
+        <Row
+          label="Reduce motion"
+          description="Panels and menus appear without easing, on top of the system setting."
+          control={
+            <Switch
+              label="Reduce motion"
+              hideLabel
+              checked={reduceMotion()}
+              onChange={setReduceMotion}
+            />
+          }
+        />
       </Group>
 
       <Group
@@ -737,27 +723,27 @@ function TypeStepper(props: {
     <div class="settings-stepper">
       <span class="settings-stepper-label">{props.label}</span>
       <div class="settings-stepper-controls">
-        <button
-          type="button"
-          class="settings-stepper-button"
-          aria-label={`Smaller ${props.noun}`}
+        <IconButton
+          variant="secondary"
+          size="md"
+          label={`Smaller ${props.noun}`}
           disabled={!canStep(props.value, -1, props.range)}
           onClick={() => step(-1)}
         >
           <Minus size={12} strokeWidth={1.8} aria-hidden="true" />
-        </button>
+        </IconButton>
         <output class="settings-stepper-value" aria-live="polite">
           {props.format(props.value)}
         </output>
-        <button
-          type="button"
-          class="settings-stepper-button"
-          aria-label={`Larger ${props.noun}`}
+        <IconButton
+          variant="secondary"
+          size="md"
+          label={`Larger ${props.noun}`}
           disabled={!canStep(props.value, 1, props.range)}
           onClick={() => step(1)}
         >
           <Plus size={12} strokeWidth={1.8} aria-hidden="true" />
-        </button>
+        </IconButton>
       </div>
     </div>
   );

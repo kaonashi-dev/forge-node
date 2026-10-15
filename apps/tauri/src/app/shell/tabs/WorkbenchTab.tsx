@@ -32,10 +32,7 @@ export function WorkbenchTab(props: {
   return (
     <div
       class="workbench-tab"
-      classList={{
-        active: sameView(props.active, props.view),
-        dirty: dirty(),
-      }}
+      classList={{ active: sameView(props.active, props.view) }}
       role="tab"
       aria-selected={sameView(props.active, props.view)}
       onContextMenu={(event) => {
@@ -58,7 +55,7 @@ export function WorkbenchTab(props: {
         onClick={() => focus(props.view)}
       >
         <ViewGlyph view={props.view} />
-        <span class="workbench-tab-text">{viewLabel(props.view)}</span>
+        <span class="forge-truncate">{viewLabel(props.view)}</span>
       </button>
       <span
         class="workbench-tab-close-hit"
@@ -76,7 +73,7 @@ export function WorkbenchTab(props: {
             when={showClose()}
             fallback={<span class="workbench-tab-dirty" aria-hidden="true" />}
           >
-            <Icon name="close" class="workbench-tab-close-icon" size={12} />
+            <Icon name="close" size={12} />
           </Show>
         </IconButton>
       </span>

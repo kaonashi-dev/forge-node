@@ -1,0 +1,238 @@
+.gallery {
+  height: 100%;
+  overflow: auto;
+  background: var(--bg-panel);
+  color: var(--fg-default);
+  font-family: var(--font-sans);
+}
+
+.gallery-header {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-raised);
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  padding: var(--space-12) var(--space-24);
+  background: var(--bg-window);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.gallery-title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+}
+
+.gallery-toggles {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.gallery-toggles-end {
+  margin-left: auto;
+}
+
+.gallery-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-28);
+  padding: var(--space-24);
+  max-width: 960px;
+}
+
+.gallery-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+.gallery-section-label {
+  margin: 0;
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: var(--space-12);
+}
+
+.gallery-grid-wide {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+
+.gallery-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.gallery-stack-tight {
+  gap: var(--space-6);
+}
+
+.gallery-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.gallery-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+.gallery-row-tight {
+  gap: var(--space-8);
+}
+
+.gallery-row-loose {
+  align-items: flex-end;
+  gap: var(--space-24);
+}
+
+.gallery-medium {
+  max-width: 420px;
+}
+
+.gallery-wide {
+  max-width: 560px;
+}
+
+.gallery-field {
+  min-width: 200px;
+}
+
+.gallery-note {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+.gallery-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  color: var(--fg-subtle);
+  overflow-wrap: anywhere;
+}
+
+.gallery-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.gallery-tile-center {
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.gallery-swatch {
+  height: var(--space-44);
+  border-radius: var(--radius-sm);
+  background: var(--sample);
+}
+
+.gallery-swatch[data-ring] {
+  border: 1px solid var(--border-subtle);
+}
+
+.gallery-fill {
+  height: var(--space-44);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--sample);
+  color: var(--sample-fg);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.gallery-tint {
+  height: var(--space-44);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--sample-edge);
+  background: var(--sample);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.gallery-opacity {
+  height: var(--space-44);
+  border-radius: var(--radius-sm);
+  background: var(--accent-solid);
+  opacity: var(--sample);
+}
+
+.gallery-radius {
+  width: 56px;
+  height: 56px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--sample);
+}
+
+.gallery-control {
+  height: var(--sample);
+  padding: 0 var(--space-14);
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-xs);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--text-sm);
+}
+
+.gallery-shadow {
+  width: 120px;
+  height: 72px;
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  box-shadow: var(--sample);
+}
+
+.gallery-type {
+  font-size: var(--sample);
+}
+
+.gallery-weight {
+  font-size: var(--text-lg);
+  font-weight: var(--sample);
+}
+
+.gallery-leading {
+  margin: 0;
+  padding: 0 var(--space-6);
+  font-size: var(--text-sm);
+  line-height: var(--sample);
+  background: var(--bg-raised);
+  border-radius: var(--radius-xs);
+}
+
+.gallery-tracking {
+  font-size: var(--text-md);
+  letter-spacing: var(--sample);
+}
+
+.gallery-code {
+  margin: 0;
+  padding: var(--space-12) var(--space-16);
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--forge-editor);
+  color: var(--fg-default);
+  font-family: var(--font-mono);
+  font-size: var(--forge-mono-size);
+  line-height: var(--forge-mono-line-height);
+}
+
+.gallery-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
