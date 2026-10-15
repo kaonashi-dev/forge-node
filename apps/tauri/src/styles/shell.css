@@ -29,15 +29,20 @@
 .tab-strip-scroll::-webkit-scrollbar {
   display: none;
 }
-/* Soften the scrollport edge so a tab mid-clip fades out instead of a hard cut. */
+/* Soften the scrollport edge so a tab mid-clip fades out instead of a hard cut.
+   The prefixed property stays: macOS 11's WebKit has no unprefixed `mask-image`. */
+.tab-strip-scroll[data-fade] {
+  -webkit-mask-image: var(--tab-fade);
+  mask-image: var(--tab-fade);
+}
 .tab-strip-scroll[data-fade="right"] {
-  mask-image: linear-gradient(to right, #000 0%, #000 calc(100% - var(--space-24)), transparent);
+  --tab-fade: linear-gradient(to right, #000 0%, #000 calc(100% - var(--space-24)), transparent);
 }
 .tab-strip-scroll[data-fade="left"] {
-  mask-image: linear-gradient(to left, #000 0%, #000 calc(100% - var(--space-24)), transparent);
+  --tab-fade: linear-gradient(to left, #000 0%, #000 calc(100% - var(--space-24)), transparent);
 }
 .tab-strip-scroll[data-fade="both"] {
-  mask-image: linear-gradient(
+  --tab-fade: linear-gradient(
     to right,
     transparent,
     #000 var(--space-24),
@@ -740,6 +745,18 @@
 :where(.projects-view [role="tree"]:focus-visible) .tree-row.cursor,
 :where(.projects-view [role="tree"]:focus-visible) .ws-card.cursor > .ws-row {
   box-shadow: var(--focus-ring-inset);
+}
+
+.project-avatar {
+  align-items: center;
+  background: var(--bg-overlay);
+  border-radius: var(--radius-xs);
+  display: inline-flex;
+  flex: none;
+  font-size: var(--text-xs);
+  height: var(--control-xs);
+  justify-content: center;
+  width: var(--control-xs);
 }
 
 /* --- Checkout row -------------------------------------------------------- */

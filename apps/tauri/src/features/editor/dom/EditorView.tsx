@@ -559,45 +559,48 @@ function EditorSessionView(props: EditorViewProps) {
           </div>
           <div ref={rowLayer} class="editor-view-rows">
             <For each={rows}>
-              {(row) => (
-                <div
-                  class="ed-row"
-                  classList={{ "ed-row-active": isCaretLine(row.line) }}
-                  data-line={row.line}
-                  style={{ top: `${row.line * lineHeight()}px` }}
-                >
-                  <span class="ed-number" aria-hidden="true">
-                    {row.line + 1}
-                  </span>
-                  {/* One cell, always drawn: a gutter that widened the first
-                      time git answered would shift every line sideways. */}
-                  <span class="ed-mark" aria-hidden="true" data-mark={gutterMark(row)?.kind}>
-                    {gutterMark(row)?.glyph ?? " "}
-                  </span>
-                  <span
-                    class="ed-fold"
-                    classList={{ "ed-fold-toggle": row.fold !== null }}
-                    aria-hidden="true"
+              {(row) => {
+                const mark = createMemo(() => gutterMark(row));
+                return (
+                  <div
+                    class="ed-row"
+                    classList={{ "ed-row-active": isCaretLine(row.line) }}
+                    data-line={row.line}
+                    style={{ top: `${row.line * lineHeight()}px` }}
                   >
-                    {row.fold === null ? " " : row.fold > 0 ? "\u25b8" : "\u25be"}
-                  </span>
-                  <span class="ed-text">
-                    <For each={row.spans}>
-                      {(span) => <span data-scope={span.scope}>{span.text}</span>}
-                    </For>
-                    <Show when={row.truncated}>
-                      <span class="ed-truncated" aria-hidden="true">
-                        {" …"}
-                      </span>
-                    </Show>
-                    <Show when={(row.fold ?? 0) > 0}>
-                      <span class="ed-folded" aria-hidden="true">
-                        {`  … ${row.fold} lines`}
-                      </span>
-                    </Show>
-                  </span>
-                </div>
-              )}
+                    <span class="ed-number" aria-hidden="true">
+                      {row.line + 1}
+                    </span>
+                    {/* One cell, always drawn: a gutter that widened the first
+                      time git answered would shift every line sideways. */}
+                    <span class="ed-mark" aria-hidden="true" data-mark={mark()?.kind}>
+                      {mark()?.glyph ?? " "}
+                    </span>
+                    <span
+                      class="ed-fold"
+                      classList={{ "ed-fold-toggle": row.fold !== null }}
+                      aria-hidden="true"
+                    >
+                      {row.fold === null ? " " : row.fold > 0 ? "\u25b8" : "\u25be"}
+                    </span>
+                    <span class="ed-text">
+                      <For each={row.spans}>
+                        {(span) => <span data-scope={span.scope}>{span.text}</span>}
+                      </For>
+                      <Show when={row.truncated}>
+                        <span class="ed-truncated" aria-hidden="true">
+                          {" …"}
+                        </span>
+                      </Show>
+                      <Show when={(row.fold ?? 0) > 0}>
+                        <span class="ed-folded" aria-hidden="true">
+                          {`  … ${row.fold} lines`}
+                        </span>
+                      </Show>
+                    </span>
+                  </div>
+                );
+              }}
             </For>
           </div>
           {/* A terminal has one hardware cursor and paints the rest as cells;

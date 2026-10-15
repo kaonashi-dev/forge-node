@@ -1,5 +1,6 @@
 import { Separator as Kobalte } from "@kobalte/core/separator";
-import { Show, type JSX } from "solid-js";
+import type { JSX } from "solid-js";
+import { Dynamic } from "solid-js/web";
 
 export type CardProps = {
   children: JSX.Element;
@@ -13,32 +14,20 @@ export type CardProps = {
 };
 
 export function Card(props: CardProps) {
+  const interactive = () => props.onClick !== undefined;
   return (
-    <Show
-      when={props.onClick}
-      fallback={
-        <div
-          class={`forge-card ${props.class ?? ""}`}
-          data-selected={props.selected ? "" : undefined}
-        >
-          {props.children}
-        </div>
-      }
+    <Dynamic
+      component={interactive() ? "button" : "div"}
+      type={interactive() ? "button" : undefined}
+      class={`forge-card ${interactive() ? "forge-card-button" : ""} ${props.class ?? ""}`}
+      data-selected={props.selected ? "" : undefined}
+      aria-pressed={interactive() ? (props.selected ?? false) : undefined}
+      aria-label={props["aria-label"]}
+      disabled={interactive() ? props.disabled : undefined}
+      onClick={props.onClick}
     >
-      {(onClick) => (
-        <button
-          type="button"
-          class={`forge-card forge-card-button ${props.class ?? ""}`}
-          data-selected={props.selected ? "" : undefined}
-          aria-pressed={props.selected ?? false}
-          aria-label={props["aria-label"]}
-          disabled={props.disabled}
-          onClick={() => onClick()()}
-        >
-          {props.children}
-        </button>
-      )}
-    </Show>
+      {props.children}
+    </Dynamic>
   );
 }
 

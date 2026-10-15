@@ -18,6 +18,8 @@ export type ButtonProps = {
   iconTrailing?: JSX.Element;
   /** `pill` rounds the ends fully, for a status chip that is also a button. */
   shape?: "default" | "pill";
+  /** Square, glyph-only geometry; set by `IconButton`, which also supplies the label. */
+  iconOnly?: boolean;
   class?: string;
   title?: string;
   /** Set when the button opens something that stays open. */
@@ -59,10 +61,11 @@ export function Button(props: ButtonProps) {
     "iconTrailing",
     "disabled",
     "shape",
+    "iconOnly",
   ]);
   return (
     <Kobalte
-      class={`${buttonClass(own.size, own.variant)} ${own.shape === "pill" ? "forge-btn-pill" : ""} ${own.class ?? ""}`}
+      class={`${buttonClass(own.size, own.variant, own.iconOnly)} ${own.shape === "pill" ? "forge-btn-pill" : ""} ${own.class ?? ""}`}
       disabled={own.disabled || own.loading}
       aria-busy={own.loading || undefined}
       aria-pressed={own.selected}
@@ -86,7 +89,7 @@ export function Button(props: ButtonProps) {
 
 export type IconButtonProps = Omit<
   ButtonProps,
-  "variant" | "aria-label" | "iconLeading" | "iconTrailing"
+  "variant" | "aria-label" | "iconLeading" | "iconTrailing" | "iconOnly"
 > & {
   /** Required: an icon alone says nothing to a screen reader. */
   label: string;
@@ -113,7 +116,8 @@ export function IconButton(props: IconButtonProps) {
       {...rest}
       loading={own.loading}
       variant={own.variant ?? "ghost"}
-      class={`forge-icon-button ${own.class ?? ""}`}
+      iconOnly
+      class={own.class}
       aria-label={own.label}
     >
       <Show when={!own.loading}>{own.children}</Show>

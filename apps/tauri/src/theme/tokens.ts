@@ -1,4 +1,5 @@
 import { contrast, derivedTokens, hex, mix, on, parseHex, pct, readableColor } from "./mix";
+import { cssName, syntaxVariables } from "./syntax";
 
 export type ThemeBaseId =
   | "forge-dark"
@@ -766,12 +767,13 @@ export function toCssVariables(active: Palette): Record<string, string> {
     gitAdded: parseHex(active.gitAdded),
     gitDeleted: parseHex(active.gitDeleted),
   });
-  Object.assign(variables, interaction, semanticColors(active, interaction));
+  Object.assign(
+    variables,
+    interaction,
+    semanticColors(active, interaction),
+    syntaxVariables(active),
+  );
   return variables;
-}
-
-function cssName(key: string): string {
-  return key.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 }
 
 export function applyTheme(active: Palette): void {

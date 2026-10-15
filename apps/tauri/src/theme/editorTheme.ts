@@ -1,19 +1,14 @@
 // The editor's own colours, derived from the same palette as everything else.
 //
 // Scope assignment stays importable by a node test that has no DOM
-// (`AGENTS.md`, TypeScript section).
-//
-// The terminal editor does not read these: it emits the ANSI 16, which the
-// canvas resolves through `--forge-ansi-*` from the same theme. They serve DOM
-// surfaces that colour syntax by scope (diffs, project-search excerpts, the
-// theme preview) through `--syntax-*` and a `data-syntax` attribute, because a
-// cell grid has sixteen slots and a stylesheet does not.
+// (`AGENTS.md`, TypeScript section). The scopes themselves live in
+// `syntax.ts`, which the theme pipeline also emits as `--syntax-*`.
 
-import { hex, mix, parseHex, pct, readableColor } from "./mix";
+import { hex, mix, parseHex, pct } from "./mix";
+import { liftToFloor, syntaxScopes, type EditorScopes } from "./syntax";
 import { palettes, type Palette, type ThemeBaseId } from "./tokens";
 
-// Syntax uses a 4:1 product floor, below WCAG AA's 4.5:1 for normal-sized text.
-export const SCOPE_CONTRAST_FLOOR = 4;
+export { SCOPE_CONTRAST_FLOOR, liftToFloor, type EditorScopes } from "./syntax";
 
 /** Every colour the editor paints, by role. */
 export type EditorPalette = {
@@ -38,54 +33,10 @@ export type EditorPalette = {
   gitDeleted: string;
 };
 
-export type EditorScopes = {
-  comment: string;
-  keyword: string;
-  controlKeyword: string;
-  operator: string;
-  punctuation: string;
-  variable: string;
-  property: string;
-  function: string;
-  type: string;
-  namespace: string;
-  string: string;
-  escape: string;
-  regexp: string;
-  number: string;
-  constant: string;
-  tag: string;
-  attribute: string;
-  heading: string;
-  link: string;
-  invalid: string;
-  meta: string;
-};
-
-export function liftToFloor(
-  color: number,
-  ground: number,
-  toward: number,
-  floor: number = SCOPE_CONTRAST_FLOOR,
-): number {
-  return readableColor(color, [ground], toward, floor);
-}
-
-/**
- * Assign every scope, then hold each one to the floor.
- *
- * The assignment leans on the ANSI brights instead of inventing a second set
- * of syntax colours: they are already the palette's answer to "eight hues that
- * read on this background", the terminal beside the editor is painted with
- * them, and a `TODO` in a comment should not be a different yellow in the two
- * panes.
- */
 export function editorPalette(base: ThemeBaseId): EditorPalette {
   const active: Palette = palettes[base];
   const ground = parseHex(active.editor);
   const text = parseHex(active.text);
-  const ansi = active.ansi.map(parseHex);
-  const lift = (color: number) => hex(liftToFloor(color, ground, text));
 
   return {
     background: active.editor,
@@ -107,50 +58,6 @@ export function editorPalette(base: ThemeBaseId): EditorPalette {
     gitAdded: active.gitAdded,
     gitModified: active.gitModified,
     gitDeleted: active.gitDeleted,
-    scopes: {
-      comment: hex(liftToFloor(parseHex(active.faint), ground, text)),
-      keyword: lift(ansi[9]),
-      controlKeyword: lift(ansi[13]),
-      operator: hex(liftToFloor(parseHex(active.muted), ground, text)),
-      punctuation: hex(liftToFloor(parseHex(active.muted), ground, text)),
-      variable: active.text,
-      property: lift(ansi[12]),
-      function: lift(ansi[11]),
-      type: lift(ansi[14]),
-      namespace: lift(ansi[14]),
-      string: lift(ansi[10]),
-      escape: lift(ansi[13]),
-      regexp: lift(ansi[14]),
-      number: lift(ansi[13]),
-      constant: lift(ansi[13]),
-      tag: lift(ansi[9]),
-      attribute: lift(ansi[11]),
-      heading: lift(ansi[11]),
-      link: lift(ansi[12]),
-      // The one scope allowed to shout: a lexer error is not decoration.
-      invalid: active.red,
-      meta: hex(liftToFloor(parseHex(active.muted), ground, text)),
-    },
+    scopes: syntaxScopes(active),
   };
-}
-
-function cssName(scope: string): string {
-  return scope.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
-}
-
-/** `--syntax-<scope>` for every scope, as the root carries them for this base. */
-export function syntaxVariables(base: ThemeBaseId): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(editorPalette(base).scopes).map(([scope, color]) => [
-      `--syntax-${cssName(scope)}`,
-      color,
-    ]),
-  );
-}
-
-/** One `[data-syntax]` rule per scope, so a token span carries a name instead of a colour. */
-export function syntaxRules(): string {
-  return Object.keys(editorPalette("forge-dark").scopes)
-    .map((scope) => `[data-syntax="${scope}"] {\n  color: var(--syntax-${cssName(scope)});\n}\n`)
-    .join("");
 }

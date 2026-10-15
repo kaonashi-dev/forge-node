@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { syntaxVariables } from "./editorTheme";
 import { palettes, staticTokens, toCssVariables } from "./tokens";
 import generated from "./tokens.css?raw";
 import base from "../styles/base.css?raw";
@@ -76,7 +75,7 @@ type Declaration = Offence & {
  * A line scan cannot answer "is this inside `@font-face`" or "which selector
  * is this opacity for", and those are the questions the rules below ask.
  */
-function declarations(): Declaration[] {
+function parseDeclarations(): Declaration[] {
   const found: Declaration[] = [];
   for (const [sheet, source] of SHEETS) {
     const stack: string[] = [];
@@ -122,10 +121,10 @@ function declarations(): Declaration[] {
   return found;
 }
 
+const DECLARATIONS = parseDeclarations();
+
 function offending(test: (declaration: Declaration) => boolean): Offence[] {
-  return declarations()
-    .filter(test)
-    .map(({ sheet, line, text }) => ({ sheet, line, text }));
+  return DECLARATIONS.filter(test).map(({ sheet, line, text }) => ({ sheet, line, text }));
 }
 
 /** Whether `needle` sits inside an unclosed top-level `@media` block that gates on `condition`. */
@@ -149,7 +148,7 @@ describe("stylesheet motion", () => {
 describe("stylesheet token discipline", () => {
   it("inspects real CSS instead of the test runner's empty style mocks", () => {
     for (const [name, source] of SHEETS) expect(source, name).toContain("{");
-    expect(declarations().filter(({ at }) => at.length > 0).length).toBeGreaterThan(20);
+    expect(DECLARATIONS.filter(({ at }) => at.length > 0).length).toBeGreaterThan(20);
     expect(Object.keys(SOURCES).length).toBeGreaterThan(100);
   });
 
@@ -229,10 +228,9 @@ describe("stylesheet token discipline", () => {
     const defined = new Set([
       ...Object.keys(staticTokens()),
       ...Object.keys(toCssVariables(palettes["gruvbox-hard"])),
-      ...Object.keys(syntaxVariables("gruvbox-hard")),
-      ...declarations()
-        .filter(({ property }) => property.startsWith("--"))
-        .map(({ property }) => property),
+      ...DECLARATIONS.filter(({ property }) => property.startsWith("--")).map(
+        ({ property }) => property,
+      ),
       ...[...fileWorkbench.matchAll(/(--fw-[\w-]+)\s*:/g)].map((match) => match[1]),
       ...Object.values(SOURCES).flatMap((source) =>
         [...source.matchAll(/["'`](--[a-z][\w-]*)["'`]/g)].map((match) => match[1]),
@@ -349,9 +347,9 @@ describe("component markup discipline", () => {
 
   it("renders only classes the kit or the base layer defines from `ui/`", () => {
     const defined = new Set(
-      declarations()
-        .filter(({ sheet }) => sheet === KIT || sheet === BASE)
-        .flatMap(({ selector }) => [...selector.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1])),
+      DECLARATIONS.filter(({ sheet }) => sheet === KIT || sheet === BASE).flatMap(({ selector }) =>
+        [...selector.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1]),
+      ),
     );
     const found = tsx
       .filter(([path]) => path.startsWith("../ui/"))

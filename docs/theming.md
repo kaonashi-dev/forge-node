@@ -139,7 +139,7 @@ Shared recipes are classes, not copies: `.forge-section-title`,
 `.forge-panel-heading`, `.forge-card-title`, `.forge-body`, `.forge-caption`
 and `.forge-section-label` for type roles; `.forge-truncate` for a one-line
 ellipsis; `.forge-row` for a list row's reset, its hover and its selection
-(`aria-selected`, `aria-current`, `data-selected` or `.forge-selected`). Focus
+(`aria-current`, `data-selected`, `.forge-selected`, or `aria-selected` outside a tree, where it is the keyboard cursor). Focus
 is the global outline, or `--focus-ring-inset` inside a scroller that would clip
 it. `buttonClass()` gives a primitive-rendered trigger the Button look.
 `stylesheets.test.ts` enforces these rules on every sheet and on static

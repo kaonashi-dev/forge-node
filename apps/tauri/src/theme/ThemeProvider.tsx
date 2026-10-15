@@ -8,7 +8,6 @@ import {
   type ThemeBaseId,
 } from "./tokens";
 import { applyUiFont } from "./uiFont";
-import { syntaxVariables } from "./editorTheme";
 
 import { parseCustomTheme } from "./customTheme";
 
@@ -55,9 +54,6 @@ export function applyThemeBase(next: ThemePreference = DEFAULT_BASE): void {
   // Native controls and scrollbars need the same mode as the CSS tokens.
   document.documentElement.style.colorScheme = baseIsLight(resolved) ? "light" : "dark";
   applyTheme(palettes[resolved]);
-  for (const [name, value] of Object.entries(syntaxVariables(resolved))) {
-    document.documentElement.style.setProperty(name, value);
-  }
   // `applyTheme` rewrites every `--forge-*` metric, including the ones density
   // and UI font overlay. Put those back from `dataset` so a theme switch does
   // not snap the chrome to the defaults.

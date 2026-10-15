@@ -701,7 +701,9 @@
  * class of specificity so a row with its own ground still overrides them, and
  * selection follows hover so a hovered chosen row stays chosen. Selection
  * never draws a bar down an edge: the row changes its own ground and carries
- * an inset hairline, so nothing shifts when it is picked.
+ * an inset hairline, so nothing shifts when it is picked. In a tree,
+ * `aria-selected` is the keyboard cursor behind `aria-activedescendant`, not
+ * a choice, so a tree item is chosen only through `aria-current`.
  */
 .forge-row:where(button, a[href], [role="option"], [role="treeitem"], [role="row"]):where(
     :hover:not(:disabled, [aria-disabled="true"])
@@ -709,7 +711,7 @@
   background: var(--bg-hover);
 }
 .forge-row:where(
-  [aria-selected="true"],
+  [aria-selected="true"]:not([role="treeitem"]),
   [aria-current="true"],
   [aria-current="page"],
   [data-selected]
