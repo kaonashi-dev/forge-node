@@ -329,15 +329,47 @@ export function conflictPrompt(state: RebaseState): string {
     .replace(/\n{3,}/g, "\n\n");
 }
 
+/** The agent the Git panel's picker last chose, as a launchable key. */
+export const RESOLVE_AGENT_KEY = "ui.git.resolve_agent";
+
 /** Who "Resolve with AI" would launch, or why it cannot. */
 export type Resolver =
   | { kind: "agent"; provider: string; profile: string | null }
   | { kind: "unavailable"; reason: string };
 
+/** One row of the picker: an installed agent, or one of its profiles, that takes a prompt. */
+export type ResolverChoice = {
+  key: string;
+  label: string;
+  provider: string;
+  profile: string | null;
+};
+
+export function resolverChoices(store: ShellSnapshot): ResolverChoice[] {
+  return store.launchables.flatMap((launchable) =>
+    launchable.kind === "agent" &&
+    launchable.enabled &&
+    launchable.provider !== null &&
+    acceptsPrompt(store, launchable.provider)
+      ? [
+          {
+            key: launchable.key,
+            label: launchable.label,
+            provider: launchable.provider,
+            profile: launchable.profile,
+          },
+        ]
+      : [],
+  );
+}
+
 /**
  * Pick the agent to hand the prompt to.
  *
- * The configured default first — `ui.default_agent`, carrying its profile if
+ * An explicit choice from the panel's picker wins while it is still installed
+ * and prompt-capable; a stale one falls through rather than refusing.
+ *
+ * Then the configured default — `ui.default_agent`, carrying its profile if
  * it names one — because that is the agent the user already chose and the one
  * `⌘⇧A` starts. An agent that cannot be handed a prompt is refused *here*,
  * with a sentence naming what to change, rather than at the daemon where the
@@ -349,7 +381,15 @@ export type Resolver =
  * make. Silently picking the first of several is how a button ends up starting
  * an agent the user does not use.
  */
-export function resolverFor(store: ShellSnapshot): Resolver {
+export function resolverFor(
+  store: ShellSnapshot,
+  chosen: string | null = store.app_state[RESOLVE_AGENT_KEY] ?? null,
+): Resolver {
+  const picked = chosen
+    ? resolverChoices(store).find((choice) => choice.key === chosen)
+    : undefined;
+  if (picked) return { kind: "agent", provider: picked.provider, profile: picked.profile };
+
   const preferred = resolveDefaultAgent(defaultAgentFrom(store.app_state), store.launchables);
   if (preferred.kind === "agent") {
     if (acceptsPrompt(store, preferred.provider)) {
@@ -357,27 +397,20 @@ export function resolverFor(store: ShellSnapshot): Resolver {
     }
     return {
       kind: "unavailable",
-      reason: `${preferred.provider} cannot be started with a prompt — pick another default agent in Settings → Agents.`,
+      reason: `${preferred.provider} cannot be started with a prompt — pick another agent beside the button or in Settings → Agents.`,
     };
   }
 
   // Providers only: two profiles of one agent are not two choices about which
   // agent to start, and picking a profile nobody asked for is its own guess.
-  const capable = store.launchables.filter(
-    (launchable) =>
-      launchable.kind === "agent" &&
-      launchable.enabled &&
-      launchable.profile === null &&
-      launchable.provider !== null &&
-      acceptsPrompt(store, launchable.provider),
-  );
-  if (capable.length === 1 && capable[0].provider) {
-    return { kind: "agent", provider: capable[0].provider, profile: capable[0].profile };
+  const capable = resolverChoices(store).filter((choice) => choice.profile === null);
+  if (capable.length === 1) {
+    return { kind: "agent", provider: capable[0].provider, profile: null };
   }
   if (capable.length > 1) {
     return {
       kind: "unavailable",
-      reason: "No default agent is set — choose one in Settings → Agents.",
+      reason: "No default agent is set — pick one beside the button or in Settings → Agents.",
     };
   }
   return {

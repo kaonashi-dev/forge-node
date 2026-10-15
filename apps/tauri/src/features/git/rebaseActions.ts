@@ -5,7 +5,8 @@ import { setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
 import { openDiff } from "../../navigation/viewsStore";
 import { newAgent } from "../sessions/commands";
-import { conflictPrompt, resolverFor } from "./conflictPrompt";
+import { setAppState } from "../settings/commands";
+import { RESOLVE_AGENT_KEY, conflictPrompt, resolverFor } from "./conflictPrompt";
 import {
   abortRebase,
   continueRebase,
@@ -75,6 +76,11 @@ export function abortReplay(): void {
   });
 }
 
+/** Remembered so the next stopped replay offers the same agent. */
+export function chooseResolver(key: string): void {
+  void setAppState(RESOLVE_AGENT_KEY, key).catch(() => undefined);
+}
+
 /**
  * The ordinary `CreateAgentSession`, with the conflict prompt already typed.
  *
@@ -82,11 +88,11 @@ export function abortReplay(): void {
  * what to change, rather than arriving at the daemon as a launch that did
  * nothing.
  */
-export function resolveWithAgent(): void {
+export function resolveWithAgent(chosen: string | null): void {
   const target = activeWorkspace();
   const state = gitStore.rebase;
   if (!target || !state) return;
-  const resolver = resolverFor(forgeStore);
+  const resolver = resolverFor(forgeStore, chosen);
   if (resolver.kind === "unavailable") {
     setNotice(resolver.reason);
     return;

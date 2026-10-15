@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { emptySnapshot } from "../../state/forgeStore";
 import type { Launchable, ProviderInfo, ShellSnapshot } from "../../contracts/runtime";
 import type { RebaseState } from "../../contracts/workbench";
-import { conflictLabel, conflictPrompt, conflictSides, resolverFor } from "./conflictPrompt";
+import {
+  RESOLVE_AGENT_KEY,
+  conflictLabel,
+  conflictPrompt,
+  conflictSides,
+  resolverChoices,
+  resolverFor,
+} from "./conflictPrompt";
 
 function state(partial: Partial<RebaseState> = {}): RebaseState {
   return {
@@ -329,5 +336,65 @@ describe("resolverFor", () => {
       providers: [provider("codex", true), provider("claude", true)],
     });
     expect(resolverFor(snapshot)).toEqual({ kind: "agent", provider: "claude", profile: null });
+  });
+
+  it("prefers the agent picked in the panel over the configured default", () => {
+    const snapshot = store({
+      app_state: { "ui.default_agent": "provider:claude" },
+      launchables: [
+        launchable({ key: "claude" }),
+        launchable({ key: "codex", label: "Codex", provider: "codex" }),
+      ],
+      providers: [provider("claude", true), provider("codex", true)],
+    });
+    expect(resolverFor(snapshot, "codex")).toEqual({
+      kind: "agent",
+      provider: "codex",
+      profile: null,
+    });
+  });
+
+  it("reads the remembered pick when none is passed", () => {
+    const snapshot = store({
+      app_state: { [RESOLVE_AGENT_KEY]: "codex" },
+      launchables: [
+        launchable({ key: "claude" }),
+        launchable({ key: "codex", label: "Codex", provider: "codex" }),
+      ],
+      providers: [provider("claude", true), provider("codex", true)],
+    });
+    expect(resolverFor(snapshot)).toEqual({ kind: "agent", provider: "codex", profile: null });
+  });
+
+  it("falls through a pick that can no longer take a prompt", () => {
+    const snapshot = store({
+      app_state: { "ui.default_agent": "provider:claude" },
+      launchables: [
+        launchable({ key: "claude" }),
+        launchable({ key: "opencode", label: "OpenCode", provider: "opencode" }),
+      ],
+      providers: [provider("claude", true), provider("opencode", false)],
+    });
+    expect(resolverFor(snapshot, "opencode")).toEqual({
+      kind: "agent",
+      provider: "claude",
+      profile: null,
+    });
+  });
+});
+
+describe("resolverChoices", () => {
+  it("offers profiles and skips what cannot take a prompt or is not installed", () => {
+    const snapshot = store({
+      launchables: [
+        launchable({ key: "claude" }),
+        launchable({ key: "profile:x", label: "Reviewer", profile: "x" }),
+        launchable({ key: "opencode", label: "OpenCode", provider: "opencode" }),
+        launchable({ key: "codex", label: "Codex", provider: "codex", enabled: false }),
+        launchable({ kind: "shell", key: "shell", label: "Shell", provider: null }),
+      ],
+      providers: [provider("claude", true), provider("opencode", false), provider("codex", true)],
+    });
+    expect(resolverChoices(snapshot).map((choice) => choice.key)).toEqual(["claude", "profile:x"]);
   });
 });
