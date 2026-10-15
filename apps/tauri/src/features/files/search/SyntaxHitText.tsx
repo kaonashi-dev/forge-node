@@ -4,13 +4,7 @@ import type { SyntaxHit, SyntaxToken } from "./searchSyntax";
 function Tokens(props: { tokens: SyntaxToken[] }) {
   return (
     <For each={props.tokens}>
-      {(token) =>
-        token.scope ? (
-          <span style={{ color: `var(--search-${token.scope})` }}>{token.text}</span>
-        ) : (
-          token.text
-        )
-      }
+      {(token) => (token.scope ? <span data-syntax={token.scope}>{token.text}</span> : token.text)}
     </For>
   );
 }

@@ -5,8 +5,9 @@
 //
 // The terminal editor does not read these: it emits the ANSI 16, which the
 // canvas resolves through `--forge-ansi-*` from the same theme. They serve DOM
-// surfaces that colour syntax by scope (project-search excerpts, the theme
-// preview), because a cell grid has sixteen slots and a stylesheet does not.
+// surfaces that colour syntax by scope (diffs, project-search excerpts, the
+// theme preview) through `--syntax-*` and a `data-syntax` attribute, because a
+// cell grid has sixteen slots and a stylesheet does not.
 
 import { hex, mix, parseHex, pct, readableColor } from "./mix";
 import { palettes, type Palette, type ThemeBaseId } from "./tokens";
@@ -131,4 +132,25 @@ export function editorPalette(base: ThemeBaseId): EditorPalette {
       meta: hex(liftToFloor(parseHex(active.muted), ground, text)),
     },
   };
+}
+
+function cssName(scope: string): string {
+  return scope.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
+}
+
+/** `--syntax-<scope>` for every scope, as the root carries them for this base. */
+export function syntaxVariables(base: ThemeBaseId): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(editorPalette(base).scopes).map(([scope, color]) => [
+      `--syntax-${cssName(scope)}`,
+      color,
+    ]),
+  );
+}
+
+/** One `[data-syntax]` rule per scope, so a token span carries a name instead of a colour. */
+export function syntaxRules(): string {
+  return Object.keys(editorPalette("forge-dark").scopes)
+    .map((scope) => `[data-syntax="${scope}"] {\n  color: var(--syntax-${cssName(scope)});\n}\n`)
+    .join("");
 }

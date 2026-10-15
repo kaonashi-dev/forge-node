@@ -5,7 +5,7 @@ import { WindowedPatchRows } from "./WindowedPatchRows";
 import { nextHunk } from "./patchWindow";
 import { scrollPatchRow } from "./patchViewport";
 import { cachedPatchSyntax } from "./patchSyntax";
-import { PatchText, patchSyntaxColors } from "./PatchText";
+import { PatchText } from "./PatchText";
 
 export function PatchView(props: {
   path: string;
@@ -19,7 +19,6 @@ export function PatchView(props: {
     () => props.path,
     () => doc().rows,
   );
-  const colors = patchSyntaxColors();
 
   const intra = cachedIntraLine(() => doc().rows);
 
@@ -43,7 +42,6 @@ export function PatchView(props: {
     <div
       ref={host}
       class="diff-patch"
-      style={colors()}
       tabIndex={0}
       onClick={(event) => {
         const row = (event.target as HTMLElement).closest("[data-index]");
@@ -71,8 +69,8 @@ export function PatchView(props: {
             data-index={index()}
             onDblClick={() => openRow(row)}
           >
-            <span class="forge-diff-gutter forge-diff-gutter-before">{row.before ?? ""}</span>
-            <span class="forge-diff-gutter forge-diff-gutter-after">{row.after ?? ""}</span>
+            <span class="forge-diff-gutter">{row.before ?? ""}</span>
+            <span class="forge-diff-gutter">{row.after ?? ""}</span>
             <span class="forge-diff-gutter forge-diff-gutter-marker">
               {row.kind === "added" ? "+" : row.kind === "removed" ? "−" : ""}
             </span>

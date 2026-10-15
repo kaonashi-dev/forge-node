@@ -4,8 +4,6 @@ import { clearFindInFiles, findInFilesPending } from "../../../navigation/viewsS
 import { openEditorAt } from "../../editor/open";
 import { Icon, LangIcon } from "../../../theme/icons/index";
 import { EmptyState, IconButton, SearchField, Skeleton } from "../../../ui/index";
-import { editorPalette } from "../../../theme/editorTheme";
-import { themeBase } from "../../../theme/ThemeProvider";
 import { SyntaxHitText } from "./SyntaxHitText";
 import { highlightExcerpt, syntaxHits } from "./searchSyntax";
 import {
@@ -26,14 +24,6 @@ export function ProjectSearchView() {
   let field: HTMLInputElement | undefined;
   const [folded, setFolded] = createSignal<ReadonlySet<string>>(new Set());
   const files = createMemo(() => buildExcerpts(contentResults()?.matches ?? []));
-  const syntaxColors = createMemo(() =>
-    Object.fromEntries(
-      Object.entries(editorPalette(themeBase()).scopes).map(([scope, color]) => [
-        `--search-${scope}`,
-        color,
-      ]),
-    ),
-  );
   const allFolded = () => files().length > 0 && files().every((file) => folded().has(file.path));
 
   onMount(() => {
@@ -90,7 +80,7 @@ export function ProjectSearchView() {
   };
 
   return (
-    <div class="project-search" ref={(element) => (root = element)} style={syntaxColors()}>
+    <div class="project-search" ref={(element) => (root = element)}>
       <header class="project-search-bar">
         <SearchField
           class="project-search-field"
@@ -159,7 +149,7 @@ export function ProjectSearchView() {
                       <section class="project-search-file">
                         <button
                           type="button"
-                          class="project-search-file-head"
+                          class="forge-row project-search-file-head"
                           aria-expanded={!folded().has(file.path)}
                           onClick={() => toggle(file.path)}
                         >
@@ -170,7 +160,9 @@ export function ProjectSearchView() {
                           />
                           <LangIcon path={file.path} size={13} />
                           <span class="project-search-file-name">{file.path.slice(cut + 1)}</span>
-                          <span class="project-search-file-dir">{file.path.slice(0, cut + 1)}</span>
+                          <span class="project-search-file-dir forge-truncate">
+                            {file.path.slice(0, cut + 1)}
+                          </span>
                           <span class="project-search-file-hits">{file.hits}</span>
                         </button>
                         <Show when={!folded().has(file.path)}>
@@ -196,7 +188,7 @@ export function ProjectSearchView() {
                                       {(line) => (
                                         <button
                                           type="button"
-                                          class="project-search-line"
+                                          class="forge-row project-search-line"
                                           classList={{ hit: line.hit }}
                                           onClick={() => openEditorAt(file.path, line.line)}
                                         >
