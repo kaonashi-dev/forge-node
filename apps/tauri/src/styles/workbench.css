@@ -268,12 +268,8 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* Same shape as the session strip in the title bar: an inset shadow rather
-   than a border, so the active tab can paint over the seam, and inline
-   padding that leaves room for its flares inside the scrollport. */
 .workbench-strip {
-  --tab-radius: var(--radius-md);
-  align-items: stretch;
+  align-items: center;
   background: var(--bg-window);
   box-shadow: inset 0 -1px var(--border-subtle);
   display: flex;
@@ -284,7 +280,7 @@
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: var(--space-6) var(--tab-radius) 0;
+  padding: 0 var(--space-4);
   scrollbar-width: none;
   z-index: var(--z-strip);
 }
@@ -300,27 +296,25 @@
 }
 .workbench-tab {
   align-items: center;
-  border-radius: var(--tab-radius) var(--tab-radius) 0 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   color: var(--fg-muted);
   display: flex;
   flex: none;
   font-size: var(--text-sm);
   gap: var(--space-4);
+  height: var(--control-lg);
   max-width: 220px;
   min-width: 0;
   padding: 0 var(--space-6) 0 var(--space-12);
-  position: relative;
 }
 .workbench-tab:hover {
-  background: var(--bg-hover);
   color: var(--fg-default);
 }
-/* The active tab is the top of the panel under it: same surface, no seam,
-   and the shared flares from `shell.css` where it meets the strip. */
 .workbench-tab.active {
-  background: var(--bg-panel);
+  background: var(--bg-raised);
+  border-color: var(--border-subtle);
   color: var(--fg-default);
-  z-index: var(--z-over);
 }
 .workbench-tab-dirty {
   display: block;

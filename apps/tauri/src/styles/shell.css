@@ -6,8 +6,6 @@
  * what a window *is*, and none of it is behind a route.
  */
 
-/* The strip fills the title bar's height so its tabs sit on the bar's bottom
-   edge, the way the Code strip's tabs sit on theirs. */
 .tab-strip-host {
   align-items: center;
   align-self: stretch;
@@ -51,14 +49,12 @@
   );
 }
 
-/* Inline padding leaves room for the active tab's flares inside the scrollport. */
 .tab-strip {
-  --tab-radius: var(--radius-md);
-  align-items: stretch;
+  align-items: center;
   display: flex;
   gap: var(--space-2);
   min-width: min-content;
-  padding: var(--space-6) var(--tab-radius) 0;
+  padding: 0 var(--space-4);
 }
 
 .tab-strip-trailing {
@@ -78,11 +74,13 @@
    inside it, because a button cannot contain another. */
 .session-tab-wrap {
   align-items: center;
-  border-radius: var(--tab-radius) var(--tab-radius) 0 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   color: var(--fg-muted);
   cursor: grab;
   display: inline-flex;
   flex-shrink: 0;
+  height: var(--control-lg);
   max-width: 200px;
   min-width: 120px;
   padding-right: var(--space-6);
@@ -90,52 +88,15 @@
   touch-action: none;
   -webkit-user-drag: none;
 }
+/* Hover only lifts the text: a hover ground would outshine the active chip. */
 .session-tab-wrap:hover {
-  background: var(--bg-hover);
   color: var(--fg);
 }
-/* The active tab is the top of the panel under it: same surface, no seam,
-   and concave flares where it meets the bar. */
+/* A raised chip rather than a folder tab, the same for sessions and Code. */
 .session-tab-wrap.active {
-  background: var(--bg-panel);
+  background: var(--bg-raised);
+  border-color: var(--border-subtle);
   color: var(--fg);
-  z-index: var(--z-over);
-}
-/*
- * Concave flares where an active tab meets its strip, shared by every strip
- * whose tabs are the top of the surface under them. A strip sets
- * `--tab-radius`.
- * The session tab draws them on its inner button: the wrap's own
- * pseudo-elements are the drop markers.
- */
-.session-tab-wrap.active > .session-tab::before,
-.session-tab-wrap.active > .session-tab::after,
-.workbench-tab.active::before,
-.workbench-tab.active::after {
-  bottom: 0;
-  content: "";
-  height: var(--tab-radius);
-  pointer-events: none;
-  position: absolute;
-  width: var(--tab-radius);
-}
-.session-tab-wrap.active > .session-tab::before,
-.workbench-tab.active::before {
-  background: radial-gradient(
-    circle at 0 0,
-    transparent calc(var(--tab-radius) - 0.5px),
-    var(--bg-panel) var(--tab-radius)
-  );
-  left: calc(-1 * var(--tab-radius));
-}
-.session-tab-wrap.active > .session-tab::after,
-.workbench-tab.active::after {
-  background: radial-gradient(
-    circle at 100% 0,
-    transparent calc(var(--tab-radius) - 0.5px),
-    var(--bg-panel) var(--tab-radius)
-  );
-  right: calc(-1 * var(--tab-radius));
 }
 .session-tab-wrap.waiting:not(.active) {
   background: var(--attention-bg);

@@ -385,7 +385,6 @@ html[data-platform="macos"] .title-bar-inset {
   display: block;
 }
 
-/* An inset shadow rather than a border, so the active tab can paint over the seam. */
 .title-bar {
   align-items: center;
   background: var(--bg-window);
