@@ -92,7 +92,9 @@ export function CardLocation() {
         {(facts) => (
           <>
             <Show when={facts().position}>
-              {(position) => <span class="card-location-mono card-location-strong">{position()}</span>}
+              {(position) => (
+                <span class="card-location-mono card-location-strong">{position()}</span>
+              )}
             </Show>
             <span class="card-location-mono">
               {[...facts().details, facts().mark].filter(Boolean).join(" · ")}
