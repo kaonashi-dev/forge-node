@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sessionFixture } from "./sessions.fixture";
-import { sessionIsActive, sessionIsAgent, sessionTitle, type Session } from "./runtime";
+import { promptPath, sessionIsActive, sessionIsAgent, sessionTitle, type Session } from "./runtime";
 import { sessionWork } from "../features/sessions/work";
 
 const session = (partial: Partial<Session>): Session => sessionFixture(partial);
@@ -31,6 +31,19 @@ describe("an Editor session", () => {
     // the fallback is what a session with nothing to say is called.
     const named = session({ kind: "Editor", title: { user: null, terminal: "main.rs" } });
     expect(sessionTitle(named)).toBe("main.rs");
+  });
+});
+
+describe("a shell prompt title", () => {
+  it("drops user@host and shortens the home directory", () => {
+    const shell = session({
+      kind: "Shell",
+      agent_provider_id: null,
+      title: { user: null, terminal: "dev@mbp:/Users/dev/hellopay/admin-portal" },
+    });
+    expect(sessionTitle(shell)).toBe("Shell ~/hellopay/admin-portal");
+    expect(promptPath("dev@mbp.local:~/src")).toBe("~/src");
+    expect(promptPath("vim main.rs")).toBeNull();
   });
 });
 

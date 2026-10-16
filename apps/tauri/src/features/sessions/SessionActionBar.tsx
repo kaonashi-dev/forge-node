@@ -47,13 +47,13 @@ export function SessionActionBar() {
       {(session) => (
         <div class="session-actions" role="toolbar" aria-label="Session actions">
           <Button
-            variant="secondary"
-            size="sm"
+            variant="ghost"
+            size="md"
             selected={sessionChangesOpen()}
             disabled={!ready()}
             onClick={toggleSessionChanges}
             aria-label={changed() === null ? "Changes" : `Changes, ${changed()} files`}
-            iconLeading={<Icon name="columns-2" size={13} class="forge-icon-muted" />}
+            iconLeading={<Icon name="columns-2" size={14} class="forge-icon-muted" />}
           >
             Changes
             <Show when={changed() !== null}>
@@ -67,7 +67,7 @@ export function SessionActionBar() {
             fallback={
               <IconButton
                 label="Continue in a new session…"
-                size="sm"
+                size="md"
                 onClick={startHandoff}
                 disabled={!ready()}
               >
@@ -77,7 +77,7 @@ export function SessionActionBar() {
           >
             <IconButton
               label="Open session handoff"
-              size="sm"
+              size="md"
               onClick={() => setHandoffProgressOpen(true)}
             >
               <Icon name="loader" class="forge-icon-muted forge-icon-spin" size={14} />
@@ -85,7 +85,7 @@ export function SessionActionBar() {
           </Show>
           <IconButton
             label="Review this checkout"
-            size="sm"
+            size="md"
             onClick={openCheckoutReview}
             disabled={!ready()}
           >
@@ -93,7 +93,7 @@ export function SessionActionBar() {
           </IconButton>
           <Menu
             triggerLabel="Session menu"
-            triggerClass={buttonClass("sm", "ghost", true)}
+            triggerClass={buttonClass("md", "ghost", true)}
             trigger={<Icon name="more-horizontal" class="forge-icon-muted" size={14} />}
             items={sessionMenuItems(session(), sessionTitle(session()))}
           />

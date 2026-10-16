@@ -7,6 +7,7 @@ import {
   railCollapseTarget,
   railExpandTarget,
   railRows,
+  checkoutLabel,
   waiting,
   type GroupNode,
   type ProjectNode,
@@ -120,21 +121,18 @@ describe("buildTree", () => {
     );
     const tree = buildTree(store);
     expect(tree[0].projects[0].workspaces[0].sessions.map((node) => node.id)).toEqual(["a"]);
-    const rows = railRows(tree, new Set());
+    const rows = railRows(tree, new Set(), () => true);
     expect(rows.filter((row) => row.id === "code:w1")).toHaveLength(1);
     expect(rows.some((row) => row.id.startsWith("session:editor-"))).toBe(false);
   });
 
-  it("offers Code in workspaces that have no sessions", () => {
+  it("lists Code only for a checkout with files open", () => {
     const store = snapshot();
     store.sessions = [];
-    const rows = railRows(buildTree(store), new Set());
-    expect(rows.filter((row) => row.kind === "code").map((row) => row.target)).toEqual([
-      "w1",
-      "w2",
-    ]);
+    const rows = railRows(buildTree(store), new Set(), (workspace) => workspace === "w2");
+    expect(rows.filter((row) => row.kind === "code").map((row) => row.target)).toEqual(["w2"]);
     expect(
-      railRows(buildTree(store), new Set(["workspace:w1"])).some((row) => row.id === "code:w1"),
+      railRows(buildTree(store), new Set(), () => false).some((row) => row.kind === "code"),
     ).toBe(false);
   });
 
@@ -277,6 +275,21 @@ describe("buildTree session nesting", () => {
   });
 });
 
+describe("checkoutLabel", () => {
+  it("drops the project prefix a worktree repeats", () => {
+    expect(checkoutLabel("hellopay-backend-amount-min", "hellopay-backend", true)).toBe(
+      "amount-min",
+    );
+  });
+  it("keeps a repository's own branch and an unrelated worktree name", () => {
+    expect(checkoutLabel("hellopay-backend-x", "hellopay-backend", false)).toBe(
+      "hellopay-backend-x",
+    );
+    expect(checkoutLabel("feat/ledger", "hellopay-backend", true)).toBe("feat/ledger");
+    expect(checkoutLabel("hellopay-backend-", "hellopay-backend", true)).toBe("hellopay-backend-");
+  });
+});
+
 describe("railRows", () => {
   const session = (id: string, depth = 0): SessionNode => ({
     id,
@@ -286,8 +299,8 @@ describe("railRows", () => {
     wantsYou: false,
     unread: false,
   });
-  const workspace = (id: string, sessions: SessionNode[]): WorkspaceNode =>
-    ({ id, label: id, path: `/${id}`, sessions, wantsYou: false }) as WorkspaceNode;
+  const workspace = (id: string, sessions: SessionNode[], worktree = true): WorkspaceNode =>
+    ({ id, label: id, path: `/${id}`, sessions, wantsYou: false, worktree }) as WorkspaceNode;
   const project = (id: string, workspaces: WorkspaceNode[]): ProjectNode =>
     ({ id, name: id, icon: null, workspaces, wantsYou: false }) as ProjectNode;
   const grouped = (name: string | null, projects: ProjectNode[]): GroupNode =>
@@ -296,12 +309,19 @@ describe("railRows", () => {
   const tree = [grouped(null, [project("p", [workspace("w", [session("s")])])])];
 
   it("flattens the four levels into paint order", () => {
-    expect(railRows(tree, new Set()).map((row) => row.id)).toEqual([
+    expect(railRows(tree, new Set(), () => true).map((row) => row.id)).toEqual([
       "project:p",
       "workspace:w",
       "code:w",
       "session:s",
     ]);
+  });
+
+  it("hangs a lone checkout's rows off the project, with no branch level", () => {
+    const lone = [grouped(null, [project("p", [workspace("w", [session("s")], false)])])];
+    const rows = railRows(lone, new Set());
+    expect(rows.map((row) => row.id)).toEqual(["project:p", "session:s"]);
+    expect(rows[1]).toMatchObject({ parent: "project:p", depth: 1 });
   });
 
   it("gives the ungrouped group no row of its own", () => {
@@ -390,12 +410,19 @@ function railRowsFixture() {
             icon: null,
             wantsYou: false,
             workspaces: [
-              { id: "w", label: "w", path: "/w", sessions: [session("s")] } as WorkspaceNode,
+              {
+                id: "w",
+                label: "w",
+                path: "/w",
+                worktree: true,
+                sessions: [session("s")],
+              } as WorkspaceNode,
             ],
           },
         ],
       } as GroupNode,
     ],
     new Set(),
+    () => true,
   );
 }

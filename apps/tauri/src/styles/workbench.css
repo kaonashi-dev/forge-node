@@ -158,10 +158,10 @@
   align-items: center;
   display: flex;
   flex: none;
-  gap: var(--space-4);
+  gap: var(--space-2);
 }
 .session-actions-count {
-  color: var(--git-modified-text);
+  color: var(--forge-faint);
   font-family: var(--font-mono);
   font-size: var(--text-mono);
 }

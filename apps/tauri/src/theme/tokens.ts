@@ -759,6 +759,13 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--select-ring": "none",
   "--attention-bg": "color-mix(in srgb, var(--attention) 13%, transparent)",
   "--attention-ring": "none",
+  /* Ember washes: the pinned needs-you card and the strip's waiting pill, at rest and under the pointer. */
+  "--attention-wash": "color-mix(in srgb, var(--attention) 9%, transparent)",
+  "--attention-wash-hover": "color-mix(in srgb, var(--attention) 14%, transparent)",
+  "--attention-pill": "color-mix(in srgb, var(--attention) 12%, transparent)",
+  "--attention-pill-hover": "color-mix(in srgb, var(--attention) 20%, transparent)",
+  /* A segmented track laid on the window ground, where the strip ground would sink nothing. */
+  "--track-on-window": "color-mix(in srgb, var(--fg-strong) 4%, transparent)",
   "--attention-halo": "0 0 0 3px color-mix(in srgb, var(--attention) 18%, transparent)",
   "--card-select-border": "color-mix(in srgb, var(--accent) 50%, transparent)",
   "--card-select-halo": "0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent)",

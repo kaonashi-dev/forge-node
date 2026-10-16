@@ -1,22 +1,5 @@
-import {
-  For,
-  Show,
-  createEffect,
-  createMemo,
-  createResource,
-  createSignal,
-  type JSX,
-} from "solid-js";
-import {
-  BarChart3,
-  Bot,
-  FolderSymlink,
-  Keyboard as KeyboardIcon,
-  Minus,
-  Palette,
-  Plus,
-  Settings as SettingsIcon,
-} from "lucide-solid";
+import { For, Show, createMemo, createResource, createSignal, type JSX } from "solid-js";
+import { Minus, Plus } from "lucide-solid";
 import {
   Badge,
   Button,
@@ -25,7 +8,6 @@ import {
   RadioGroup,
   Select,
   Switch,
-  Tabs,
   TextField,
 } from "../../ui/index";
 import { Icon } from "../../theme/icons/index";
@@ -60,6 +42,8 @@ import {
   type ProviderInfo,
 } from "../../contracts/runtime";
 import { Group, Page, Row } from "./SettingsLayout";
+import type { Section } from "./sections";
+import { Dynamic } from "solid-js/web";
 // Lazy route styling avoids loading settings CSS in windows that never open it.
 import "../../styles/settings.css";
 import { requestConfirm } from "../../state/dialogs";
@@ -102,75 +86,28 @@ const LINE_HEIGHTS = [
   { value: 1.8, label: "Loose" },
 ] as const;
 
-/** Sections, in tab order. */
-const SECTIONS = [
-  "General",
-  "Agents",
-  "Keyboard",
-  "Shared files",
-  "Stats & Usage",
-  "Appearance",
-] as const;
-export type Section = (typeof SECTIONS)[number];
-
-const SECTION_ICONS: Record<Section, typeof SettingsIcon> = {
-  General: SettingsIcon,
-  Agents: Bot,
-  Keyboard: KeyboardIcon,
-  "Shared files": FolderSymlink,
-  "Stats & Usage": BarChart3,
-  Appearance: Palette,
-};
+export type { Section } from "./sections";
 
 export type SettingsRouteProps = {
-  /** Section to open on. Re-reading it moves the rail, which is how About lands on General. */
-  section?: Section;
+  section: Section;
 };
 
+/** The chosen settings page. The sections themselves are listed by the sidebar. */
 export function SettingsRoute(props: SettingsRouteProps) {
-  const [section, setSection] = createSignal<Section>(props.section ?? "General");
-
-  // Opening settings *at* a section is a different act from opening settings:
-  // "About Forge Node" has to land on General even when the screen was last left on
-  // Appearance.
-  createEffect(() => {
-    if (props.section) setSection(props.section);
-  });
-
   const PANELS: Record<Section, () => JSX.Element> = {
     General: () => <General />,
     Agents: () => <Agents />,
     Keyboard: () => <KeyboardSection />,
     "Shared files": () => <SharedFiles />,
-    "Stats & Usage": () => <StatsSection />,
+    "Stats & usage": () => <StatsSection />,
     Appearance: () => <Appearance />,
   };
 
   return (
     <div class="settings-layer">
-      <Tabs
-        class="settings-route"
-        aria-label="Settings"
-        orientation="vertical"
-        value={section()}
-        onChange={(value) => setSection(value as Section)}
-        listClass="settings-rail"
-        triggerClass="forge-row settings-nav"
-        contentClass="settings-body"
-        tabs={SECTIONS.map((item) => {
-          const IconComp = SECTION_ICONS[item];
-          return {
-            value: item,
-            label: (
-              <span class="settings-nav-label">
-                <IconComp size={16} class="settings-nav-icon" strokeWidth={1.85} />
-                <span>{item}</span>
-              </span>
-            ),
-            content: PANELS[item],
-          };
-        })}
-      />
+      <div class="settings-body">
+        <Dynamic component={PANELS[props.section]} />
+      </div>
     </div>
   );
 }

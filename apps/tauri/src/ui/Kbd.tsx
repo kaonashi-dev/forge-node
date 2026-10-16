@@ -11,21 +11,24 @@ export type KbdProps = {
   /** A key that is not a bindable chord — `↑↓`, `esc` in a footer hint. */
   children?: JSX.Element;
   class?: string;
+  /** Plain mono text with no keycap, for a hint inside another control. */
+  bare?: boolean;
 };
 
 /** Renders nothing for unbound actions; `action` takes precedence over `chord`, `chord` over `children`. */
 export function Kbd(props: KbdProps) {
+  const cls = () => `forge-kbd ${props.bare ? "forge-kbd-bare" : ""} ${props.class ?? ""}`;
   const chord = () => (props.action ? boundChord(props.action) : (props.chord ?? null));
   return (
     <Show
       when={chord()}
       fallback={
         <Show when={!props.action && props.chord === undefined && props.children}>
-          <kbd class={`forge-kbd ${props.class ?? ""}`}>{props.children}</kbd>
+          <kbd class={cls()}>{props.children}</kbd>
         </Show>
       }
     >
-      {(found) => <kbd class={`forge-kbd ${props.class ?? ""}`}>{describeChord(found())}</kbd>}
+      {(found) => <kbd class={cls()}>{describeChord(found())}</kbd>}
     </Show>
   );
 }

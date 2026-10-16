@@ -357,11 +357,21 @@ textarea:disabled {
   color: var(--fg-subtle);
 }
 
+/* The window: a sidebar column and one card, inset 8px from every edge the
+   sidebar does not own. Panes never draw hairlines between each other. */
 .app-shell {
-  display: flex;
-  flex-direction: column;
+  background: var(--bg-window);
+  display: grid;
+  grid-template-columns: var(--sidebar-w, var(--forge-sidebar-w)) var(--forge-handle-w) minmax(
+      0,
+      1fr
+    );
   height: 100%;
-  background: var(--bg-base);
+  padding: var(--space-8) var(--space-8) var(--space-8) 0;
+}
+.app-shell.sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+  padding-left: var(--space-8);
 }
 
 /*
@@ -370,48 +380,34 @@ textarea:disabled {
  * A platform fact rather than a theme value, so it is deliberately *not* in
  * the token pipeline: `applyTheme` writes every token as an inline style on
  * the root element, and an inline default would outrank the macOS rule below
- * it — collapsing the padding to 8px and putting the first button on top of
- * the close button. `tokens.test.ts` holds that line.
+ * it — putting the first button on top of the close button. `tokens.test.ts`
+ * holds that line.
  *
  * Zero everywhere else, and declared rather than left undefined: a `var()`
- * with no value invalidates the whole `calc()` it sits in, which is a title
- * bar with no left padding at all.
+ * with no value invalidates the whole `calc()` it sits in.
  *
- * 78px is the arithmetic of the lights themselves, at the position
- * `tauri.conf.json` puts them: 9 left inset + three 12px buttons + two 8px
- * gaps + 17px of air before the first interactive control = 78. Move
- * `trafficLightPosition` and this moves with it.
+ * 84px is where the lights end plus air, from the window's left edge, at the
+ * position `tauri.conf.json` puts them: 20 left inset + three 12px buttons +
+ * two 8px gaps + 12px before the first control. Each holder subtracts its own
+ * distance from that edge. Move `trafficLightPosition` and this moves with it.
  */
 :root {
-  --traffic-light-w: 0px;
+  --traffic-light-end: 0px;
 }
 
 html[data-platform="macos"] {
   /* The lights are drawn by AppKit, not by us: this only reserves the room.
-     Their y lives in tauri.conf.json `trafficLightPosition` and is tied to
-     --forge-title-h — tao insets them from the window top, so the y there is
-     (title-h - 14) / 2 + 9, the 9 being the button frame's own offset. */
-  --traffic-light-w: 78px;
+     Their y lives in tauri.conf.json `trafficLightPosition`: centred on the
+     sidebar's 36px top row, which starts 8px down. */
+  --traffic-light-end: 84px;
 }
 
 .title-bar-inset {
   display: none;
   flex-shrink: 0;
-  width: var(--traffic-light-w);
 }
 html[data-platform="macos"] .title-bar-inset {
   display: block;
-}
-
-.title-bar {
-  align-items: center;
-  background: var(--bg-window);
-  box-shadow: inset 0 -1px var(--border-subtle);
-  display: flex;
-  flex-shrink: 0;
-  gap: var(--space-8);
-  height: var(--forge-title-h);
-  padding: 0 var(--space-8);
 }
 /* `data-tauri-drag-region="false"` means *not* a drag region (tauri 2.11's
    `drag.js` reads the value, not the attribute's presence). A bare presence
@@ -421,30 +417,13 @@ html[data-platform="macos"] .title-bar-inset {
   -webkit-app-region: drag;
   app-region: drag;
 }
-.title-bar button,
-.title-bar .tab-strip-host,
-.title-bar .session-tab-wrap,
-.title-bar .session-menu {
+.card-strip button,
+.card-strip .tab-strip-host,
+.card-strip .session-tab-wrap,
+.card-strip .session-menu,
+.sidebar-top button {
   -webkit-app-region: no-drag;
   app-region: no-drag;
-}
-
-/* What the tab strip leaves behind on the settings screen: the drag region
-   still has to reach across the bar, or the window stops moving. */
-.title-bar-spacer {
-  flex: 1;
-  height: 100%;
-  min-width: 0;
-}
-.title-bar-title {
-  font: inherit;
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-tight);
-  line-height: var(--leading-none);
-  margin: 0;
-  user-select: none;
-  white-space: nowrap;
 }
 
 .status-dot {
@@ -466,21 +445,6 @@ html[data-platform="macos"] .title-bar-inset {
   background: var(--danger-solid);
 }
 
-/* Sidebar, handle, terminal. The widths are inline custom properties the drag
-   handle writes, falling back to the theme's metrics before the daemon has
-   answered with the stored layout. */
-.workspace-grid {
-  display: grid;
-  flex: 1;
-  grid-template-columns:
-    var(--sidebar-w, var(--forge-sidebar-w)) var(--forge-handle-w)
-    minmax(0, 1fr);
-  min-height: 0;
-}
-.workspace-grid.sidebar-collapsed {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 /* A 4px column with a 9px hit area: the divider a pointer has to find is
    wider than the line the eye should see. */
 .resize-handle {
@@ -496,16 +460,32 @@ html[data-platform="macos"] .title-bar-inset {
   position: absolute;
 }
 
-/* The sidebar shares the terminal's surface; `--bg-sidebar` is rescoped so
-   what paints "the sidebar" inside it, such as the file tree, follows. */
+/* The sidebar runs to the top of the window on the window's own ground. */
 .sidebar {
-  --bg-sidebar: var(--bg-terminal);
-  background: var(--bg-terminal);
-  border-right: 1px solid var(--border-subtle);
+  --bg-sidebar: var(--bg-window);
+  background: var(--bg-window);
+  display: flex;
+  flex-direction: column;
+  margin-top: calc(var(--space-8) * -1);
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--space-8) var(--space-8) 0 var(--space-12);
+}
+
+/* The card holds all the work: strip, content, footer. */
+.work-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--card-shadow);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
+}
+.work-card > .center-stack {
+  flex: 1;
 }
 
 /* Icons — mask tint glyphs */

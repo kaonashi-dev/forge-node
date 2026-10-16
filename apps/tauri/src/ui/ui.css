@@ -1136,6 +1136,12 @@
   white-space: nowrap;
 }
 
+.forge-kbd-bare {
+  border: 0;
+  color: var(--forge-faint);
+  padding: 0;
+}
+
 /* --------------------------------------------------------------- switch --- */
 
 .forge-switch {

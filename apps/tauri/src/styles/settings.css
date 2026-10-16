@@ -2,56 +2,25 @@
 
 /* ------------------------------------------------------------ settings --- */
 
-/* Leave the title bar exposed for window controls and dragging. */
+/* The page fills the card's content row, over the terminal it hides. */
 .settings-layer {
-  background: var(--bg-base);
+  background: var(--bg-panel);
   display: grid;
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
   grid-template-rows: minmax(0, 1fr);
-  inset: var(--forge-title-h) 0 0 0;
-  position: fixed;
+  min-height: 0;
+  position: relative;
   z-index: var(--z-route);
 }
-.settings-route {
-  display: grid;
-  grid-template-columns: 208px minmax(0, 1fr);
-  min-height: 0;
-}
-.settings-rail {
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--line);
-  padding: var(--space-16) var(--space-10);
-}
-.settings-nav {
-  border-radius: var(--radius-control);
-  color: var(--fg-muted);
-  font-size: var(--text-md);
-  gap: var(--space-10);
-  min-height: var(--control-lg);
-  padding: 0 var(--space-10);
-}
-.settings-nav:hover {
-  color: var(--fg-default);
-}
-.settings-nav[data-selected] {
-  color: var(--fg);
-  font-weight: var(--weight-medium);
-}
-.settings-nav-label {
-  align-items: center;
-  display: flex;
-  gap: var(--space-10);
-}
-.settings-nav-icon {
-  flex: none;
-}
-.settings-nav[data-selected] .settings-nav-icon {
-  color: var(--accent-text);
-}
 .settings-body {
-  background: var(--bg-panel);
   overflow-y: auto;
   padding: var(--space-32);
   scrollbar-gutter: stable;
+}
+.settings-body > * {
+  margin-inline: auto;
+  max-width: 760px;
 }
 
 /* --- Settings: page, group, row ------------------------------------------ */

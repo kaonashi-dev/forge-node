@@ -5,7 +5,7 @@ import type { Session } from "../../contracts/runtime";
 import { SessionGlyph } from "../../features/sessions/SessionGlyph";
 import { Icon } from "../../theme/icons/index";
 import { AttentionMarker, StateMarker } from "../../features/sessions/markers";
-import { Badge, ContextMenu, IconButton, type MenuItem } from "../../ui/index";
+import { ContextMenu, IconButton, type MenuItem } from "../../ui/index";
 import { SessionMenu } from "../../features/sessions/SessionMenu";
 import { hasQuestion } from "../../features/sessions/waiting";
 import { closeSessionFromUi, sessionMenuItems } from "../../features/sessions/sessionMenuItems";
@@ -231,7 +231,9 @@ export function SessionTabs(props: SessionTabsProps) {
                   />
                   <span class="session-tab-label forge-truncate">Code</span>
                   <Show when={props.codeCount > 0}>
-                    <Badge aria-hidden>{props.codeCount}</Badge>
+                    <span class="session-tab-count" aria-hidden="true">
+                      {props.codeCount}
+                    </span>
                   </Show>
                 </button>
                 <Show when={props.codeCount > 0}>

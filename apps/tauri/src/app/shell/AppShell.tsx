@@ -67,7 +67,7 @@ import {
   writeWidth,
 } from "../../state/preferences";
 import { CenterStack } from "./CenterStack";
-import type { Section } from "../../features/settings/SettingsRoute";
+import type { Section } from "../../features/settings/sections";
 import { ESC_AGAIN_MS, isSecondEsc } from "../../features/settings/escAgain";
 import { defaultAgentFrom, resolveDefaultAgent } from "../../features/settings/defaultAgent";
 import { applyThemeBase, type ThemePreference } from "../../theme/ThemeProvider";
@@ -76,7 +76,8 @@ import { applyReduceMotion } from "../../theme/motion";
 import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
 import { ResizeHandle } from "./ResizeHandle";
 import { Sidebar } from "./Sidebar";
-import { TitleBar } from "./TitleBar";
+import { CardStrip } from "./CardStrip";
+import { CardFooter } from "./CardFooter";
 import { BranchPicker } from "../../features/projects/BranchPicker";
 import { JuvaDraftDialog } from "../../features/git/JuvaDraftDialog";
 import { ConfirmDialog } from "./dialogs/ConfirmDialog";
@@ -512,10 +513,7 @@ export function AppShell() {
       registerAction("close_views_to_right", closeViewsToRight),
       registerAction("previous_code_view", () => stepCodeView(-1)),
       registerAction("next_code_view", () => stepCodeView(1)),
-      registerAction("open_settings", () => {
-        setSettingsSection(undefined);
-        setSettings((open) => !open);
-      }),
+      registerAction("open_settings", () => setSettings((open) => !open)),
       // The menu bar has "About Forge Node" in two places and the palette lists it;
       // without a handler all three were dead. It is the General group — the
       // version, the daemon and what it is running — so it opens that.
@@ -649,42 +647,51 @@ export function AppShell() {
   });
   onCleanup(() => clearTimeout(noticeTimer));
   return (
-    <main class="app-shell">
-      <TitleBar
-        settingsOpen={settings()}
-        onCloseSettings={() => setSettings(false)}
-        settingsEscArmed={settingsEscArmed()}
-        sidebarOpen={sidebarOpen()}
-        onToggleSidebar={toggleSidebar}
-        sessions={openSessions()}
-        tabOrder={currentTabOrder()}
-        onReorderTabs={persistTabOrder}
-        codeOpen={codeOpen()}
-        codeActive={centerMode() === "code" && codeOpen()}
-        codeCount={openViewCount()}
-        onSelectCode={showCode}
-        onCloseCode={closeCode}
-      />
-      <div
-        class="workspace-grid"
-        classList={{ "sidebar-collapsed": !sidebarOpen() }}
-        style={{ "--sidebar-w": `${sidebarWidth()}px` }}
-      >
-        <Show when={sidebarOpen()}>
-          <Sidebar />
-          <ResizeHandle
-            side="left"
-            label="Resize the sidebar"
-            width={sidebarWidth()}
-            min={SIDEBAR_RANGE.min}
-            max={SIDEBAR_RANGE.max}
-            fallback={SIDEBAR_RANGE.fallback}
-            onResize={setSidebarWidth}
-            onCommit={(width) => writeWidth(SIDEBAR_WIDTH_KEY, width)}
-          />
+    <main
+      class="app-shell"
+      classList={{ "sidebar-collapsed": !sidebarOpen() }}
+      style={{ "--sidebar-w": `${sidebarWidth()}px` }}
+    >
+      <Show when={sidebarOpen() || settings()}>
+        <Sidebar
+          onHide={toggleSidebar}
+          settings={settings()}
+          settingsSection={settingsSection() ?? "General"}
+          onSettingsSection={setSettingsSection}
+          onCloseSettings={() => setSettings(false)}
+          settingsEscArmed={settingsEscArmed()}
+        />
+        <ResizeHandle
+          side="left"
+          label="Resize the sidebar"
+          width={sidebarWidth()}
+          min={SIDEBAR_RANGE.min}
+          max={SIDEBAR_RANGE.max}
+          fallback={SIDEBAR_RANGE.fallback}
+          onResize={setSidebarWidth}
+          onCommit={(width) => writeWidth(SIDEBAR_WIDTH_KEY, width)}
+        />
+      </Show>
+      <section class="work-card" aria-label="Work">
+        <CardStrip
+          settings={settings()}
+          settingsSection={settingsSection() ?? "General"}
+          sidebarOpen={sidebarOpen() || settings()}
+          onShowSidebar={toggleSidebar}
+          sessions={openSessions()}
+          tabOrder={currentTabOrder()}
+          onReorderTabs={persistTabOrder}
+          codeOpen={codeOpen()}
+          codeActive={centerMode() === "code" && codeOpen()}
+          codeCount={openViewCount()}
+          onSelectCode={showCode}
+          onCloseCode={closeCode}
+        />
+        <CenterStack settings={settings()} settingsSection={settingsSection() ?? "General"} />
+        <Show when={!settings()}>
+          <CardFooter />
         </Show>
-        <CenterStack settings={settings()} settingsSection={settingsSection()} />
-      </div>
+      </section>
       {/* What the host refused, and why. It leaves on its own, but never while
           the pointer or focus is on it, so it cannot vanish mid-read. */}
       <Show when={connectionStore.notice}>
