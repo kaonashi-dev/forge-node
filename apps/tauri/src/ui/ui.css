@@ -872,6 +872,23 @@
   font-weight: var(--weight-medium);
 }
 
+.forge-tab-list-underline {
+  border-bottom: 1px solid var(--border-subtle);
+  gap: var(--space-20);
+}
+.forge-tab-underline {
+  border-radius: 0;
+  height: var(--open-files-h);
+  padding: 0;
+}
+.forge-tab-underline:hover {
+  background: transparent;
+}
+.forge-tab-underline[data-selected] {
+  background: transparent;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 /* Rides the trigger's top-right corner inside its box: a strip that scrolls
    on one axis clips on both. */
 .forge-tab-icon {

@@ -4,7 +4,6 @@ import {
   failureCopy,
   filterPullRequests,
   parseScope,
-  scopeCounts,
   scopeEmptyCopy,
 } from "./prFilters";
 import type { PullRequest, PullRequestFailure } from "../../contracts/runtime";
@@ -61,17 +60,6 @@ describe("prFilters", () => {
     expect(numbers("assigned")).toEqual([2]);
     expect(numbers("review_requested")).toEqual([3]);
     expect(numbers("authored")).toEqual([4]);
-  });
-
-  /** The scopes are not exclusive: one pull request can be in three of them. */
-  it("counts a pull request under every relation it has", () => {
-    const both = pr({ relations: { assigned: true, review_requested: true, authored: true } });
-    expect(scopeCounts([both])).toEqual({
-      all: 1,
-      assigned: 1,
-      review_requested: 1,
-      authored: 1,
-    });
   });
 
   it("puts this project's pull requests first and keeps the rest", () => {

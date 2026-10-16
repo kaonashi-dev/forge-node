@@ -565,6 +565,14 @@
 .pr-decision[data-tone="warn"] {
   color: var(--warning-text);
 }
+.pr-decision[data-tone="attention"] {
+  color: var(--attention-text);
+}
+.pr-decision {
+  flex: none;
+  font-size: var(--text-mono);
+  font-weight: var(--weight-medium);
+}
 .pr-panel {
   display: flex;
   flex-direction: column;
@@ -574,13 +582,17 @@
   align-items: center;
   display: flex;
   gap: var(--space-8);
+  padding: var(--space-4) var(--space-4) 0 var(--space-8);
 }
-.pr-panel-head .forge-section-label {
+.pr-panel-title {
+  color: var(--fg-strong);
+  flex: 1;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   margin: 0;
 }
 .pr-synced {
-  color: var(--fg-caption);
-  font-family: var(--font-mono);
+  color: var(--forge-faint);
   font-size: var(--text-xs);
 }
 .pr-scope {
@@ -588,13 +600,59 @@
 }
 .pr-scope-item {
   flex: 1 1 auto;
+  font-size: var(--text-xs);
   padding: 0 var(--space-6);
   white-space: nowrap;
 }
 .pr-cards {
   display: flex;
   flex-direction: column;
+  gap: var(--space-4);
+}
+/* One pull request: number and title, then the repository and the verdict. */
+.pr-row {
+  align-items: stretch;
+  border-radius: var(--radius-control);
+  color: var(--fg-default);
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-10);
+  width: 100%;
+}
+.pr-row-line {
+  display: flex;
   gap: var(--space-8);
+}
+.pr-row-number {
+  color: var(--forge-faint);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  min-width: var(--space-28);
+}
+.pr-row[aria-current="true"] .pr-row-number {
+  color: var(--fg-subtle);
+}
+.pr-row-title {
+  font-size: var(--text-sm);
+  line-height: var(--leading-heading);
+}
+.pr-row[aria-current="true"] .pr-row-title {
+  font-weight: var(--weight-medium);
+}
+.pr-row-meta {
+  align-items: center;
+  display: flex;
+  gap: var(--space-8);
+  padding-left: calc(var(--space-28) + var(--space-8));
+}
+.pr-row-repo {
+  color: var(--forge-faint);
+  flex: 1;
+  font-size: var(--text-xs);
+}
+.pr-row[aria-current="true"] .pr-row-repo {
+  color: var(--fg-muted);
 }
 .pr-cards:empty {
   display: none;
