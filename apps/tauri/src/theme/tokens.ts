@@ -731,6 +731,8 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--bg-sunken": "var(--forge-strip)",
   "--border-field": "var(--forge-surface-hi)",
   "--tab-edge": "var(--forge-surface-hi)",
+  /* Separators and line numbers: glyphs a reader counts, not words they read, so below faint. */
+  "--fg-rule": "color-mix(in srgb, var(--forge-text) 22%, var(--forge-bg))",
   /* White in every base: the thumb is a shape, not type, so it is not held to the text floor. */
   "--switch-thumb-on": "rgb(255 255 255)",
   "--fg-strong": "var(--forge-text-strong)",

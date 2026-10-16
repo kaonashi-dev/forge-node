@@ -268,19 +268,21 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* Open files: a second, quieter strip under the card's own. Tabs are flush
+   text and the chosen one carries an accent underline. */
 .workbench-strip {
-  align-items: center;
-  background: var(--bg-window);
-  box-shadow: inset 0 -1px var(--border-subtle);
+  align-items: stretch;
+  background: var(--bg-panel);
+  box-shadow: inset 0 -1px var(--surface);
   display: flex;
-  gap: var(--space-2);
+  gap: 0;
   grid-column: 1;
   grid-row: 1;
-  height: var(--tab-h);
+  height: var(--open-files-h);
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 0 var(--space-4);
+  padding: 0 var(--space-12);
   scrollbar-width: none;
   z-index: var(--z-strip);
 }
@@ -288,7 +290,7 @@
   display: none;
 }
 .center-stack:has(.workbench-strip) {
-  grid-template-rows: var(--tab-h) minmax(0, 1fr);
+  grid-template-rows: var(--open-files-h) minmax(0, 1fr);
 }
 .center-stack:has(.workbench-strip) > .center-slot,
 .center-stack:has(.workbench-strip) > .center-view {
@@ -296,14 +298,11 @@
 }
 .workbench-tab {
   align-items: center;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  color: var(--fg-muted);
+  color: var(--fg-subtle);
   display: flex;
   flex: none;
-  font-size: var(--text-sm);
-  gap: var(--space-4);
-  height: var(--control-lg);
+  font-size: var(--text-xs);
+  gap: var(--space-2);
   max-width: 220px;
   min-width: 0;
   padding: 0 var(--space-6) 0 var(--space-12);
@@ -312,9 +311,12 @@
   color: var(--fg-default);
 }
 .workbench-tab.active {
-  background: var(--bg-raised);
-  border-color: var(--border-subtle);
-  color: var(--fg-default);
+  box-shadow: inset 0 -2px 0 var(--accent);
+  color: var(--fg-strong);
+  font-weight: var(--weight-medium);
+}
+.workbench-tab:not(.active):not(:hover) .workbench-tab-close:not(:has(.workbench-tab-dirty)) {
+  opacity: 0;
 }
 .workbench-tab-dirty {
   display: block;
@@ -584,75 +586,17 @@
   overflow: auto;
 }
 
-/* The path as mono segments; the file name keeps priority when it is long. */
+/* The file's own controls, right-aligned; gone when it has none. */
 .editor-breadcrumb {
   align-items: center;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--fg-muted);
   display: flex;
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
   gap: var(--space-8);
-  height: 30px;
-  min-width: 0;
-  padding: 0 var(--space-16);
+  justify-content: flex-end;
+  padding: var(--space-8) var(--space-16) 0;
 }
-.editor-crumbs {
-  align-items: center;
-  display: flex;
-  flex: 1;
-  gap: var(--space-6);
-  list-style: none;
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  padding: 0;
-}
-.editor-crumb {
-  align-items: center;
-  display: flex;
-  flex: 0 1 auto;
-  gap: var(--space-6);
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.editor-crumb.current {
-  color: var(--fg-default);
-  flex: 0 0 auto;
-  max-width: 100%;
-}
-.editor-crumb-sep {
-  color: var(--fg-caption);
-  flex: none;
-}
-.editor-breadcrumb > :not(.editor-crumbs) {
-  flex: none;
-  font-family: var(--font-sans);
-}
-
-.editor-status {
-  align-items: center;
-  background: var(--bg-window);
-  border-top: 1px solid var(--border-subtle);
-  color: var(--fg-muted);
-  display: flex;
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  gap: var(--space-16);
-  height: var(--control-md);
-  min-width: 0;
-  overflow: hidden;
-  padding: 0 var(--space-16);
-  white-space: nowrap;
-}
-.editor-status-spacer {
-  flex: 1;
-}
-.editor-status-mark {
-  color: var(--fg-default);
+.editor-breadcrumb:not(:has(*)) {
+  display: none;
 }
 
 /* --------------------------------------------------------- pull requests --- */

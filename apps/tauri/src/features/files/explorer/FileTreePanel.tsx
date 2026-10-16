@@ -551,10 +551,11 @@ export function FileTreePanel() {
           setMenu({ x: rect.left, y: rect.bottom, target: { kind: "root" } });
         }}
       >
-        <Icon name="folder-open" size={14} />
-        <span class="forge-truncate">
+        <span class="fw-root-name forge-truncate">
           {workspaceInfo()?.path.split("/").filter(Boolean).at(-1) ?? "Files"}
         </span>
+        <span class="fw-root-branch forge-truncate">{workspaceInfo()?.branch ?? ""}</span>
+        <Icon name="more-horizontal" size={14} class="forge-icon-muted" />
       </button>
       <Show when={directoryError()}>{(error) => <p class="panel-error">{error()}</p>}</Show>
       <For each={directoryFailures()}>

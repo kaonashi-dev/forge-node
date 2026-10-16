@@ -370,19 +370,21 @@
   right: 0;
   white-space: pre;
 }
+/* Line numbers are the one place type may sit below faint: they label rows
+   a reader counts, not words they read. */
 .ed-number {
-  color: var(--fg-subtle);
+  color: var(--fg-rule);
   flex: none;
-  padding-right: var(--space-8);
+  padding-right: var(--space-16);
   text-align: right;
   user-select: none;
   width: var(--ed-gutter);
 }
 .ed-row-active {
-  background: var(--accent-tint-bg);
+  background: var(--bg-float);
 }
 .ed-row-active .ed-number {
-  color: var(--fg-default);
+  color: var(--fg-muted);
 }
 .ed-mark {
   color: transparent;
@@ -629,7 +631,7 @@
   color: var(--fg-subtle);
 }
 .card-crumb-sep {
-  color: var(--line);
+  color: var(--fg-rule);
 }
 .card-crumb-current {
   color: var(--fg-strong);
@@ -680,16 +682,20 @@
   padding: 0 var(--space-16) 0 var(--space-20);
   white-space: nowrap;
 }
-.card-footer-place {
+.card-footer-place,
+.card-footer-path {
   color: var(--fg-muted);
 }
 .card-footer-mono {
-  color: var(--fg-muted);
+  color: inherit;
   font-family: var(--font-mono);
   font-size: var(--text-mono);
 }
+.card-footer-strong {
+  color: var(--fg-muted);
+}
 .card-footer-sep {
-  color: var(--line);
+  color: var(--fg-rule);
 }
 .card-footer-spacer {
   flex: 1;

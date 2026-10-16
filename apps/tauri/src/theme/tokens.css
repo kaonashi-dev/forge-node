@@ -1576,6 +1576,7 @@
   --bg-sunken: var(--forge-strip);
   --border-field: var(--forge-surface-hi);
   --tab-edge: var(--forge-surface-hi);
+  --fg-rule: color-mix(in srgb, var(--forge-text) 22%, var(--forge-bg));
   --switch-thumb-on: rgb(255 255 255);
   --fg-strong: var(--forge-text-strong);
   --bg-terminal: var(--forge-term-bg);
