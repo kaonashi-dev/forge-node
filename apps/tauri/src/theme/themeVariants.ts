@@ -30,6 +30,7 @@ export function withThemeColor(source: Palette, key: ThemeColor, color: string):
     for (const surface of [
       "rail",
       "sidebar",
+      "strip",
       "surface",
       "surfaceHi",
       "editor",
@@ -38,6 +39,7 @@ export function withThemeColor(source: Palette, key: ThemeColor, color: string):
     ] as const) {
       result[surface] = shift(source[surface]);
     }
+    if (source.border) result.border = shift(source.border);
     result.ansi[0] = result.termBg;
   } else if (key === "text") {
     result.termFg = value;
@@ -66,6 +68,7 @@ export function withThemeContrast(source: Palette, contrast: number): Palette {
   for (const role of [
     "rail",
     "sidebar",
+    "strip",
     "surface",
     "surfaceHi",
     "step",
@@ -73,6 +76,10 @@ export function withThemeContrast(source: Palette, contrast: number): Palette {
     "faint",
   ] as const) {
     result[role] = hex(mix(parseHex(source[role]), toward, pct(amount)));
+  }
+  for (const role of ["border", "fgSubtle"] as const) {
+    const color = source[role];
+    if (color) result[role] = hex(mix(parseHex(color), toward, pct(amount)));
   }
   return result;
 }

@@ -185,7 +185,7 @@ describe("semantic layer", () => {
     const map = merged("forge-dark");
     expect(resolve("--control-md", map)).toBe(`${metrics.controlMD}px`);
     expect(resolve("--radius-xs", map)).toBe(`${metrics.radiusXS}px`);
-    expect(resolve("--shadow-md", map)).toBe("0 16px 34px rgb(0 0 0 / 40%)");
+    expect(resolve("--shadow-md", map)).toBe("0 12px 32px rgb(0 0 0 / 35%)");
     expect(resolve("--motion-fast", map)).toBe("90ms");
     for (const token of ["--accent-fg", "--danger-fg", "--attention-fg", "--border-strong"]) {
       expect(resolve(token, map), token).toMatch(/^#[0-9a-f]{6}$/);

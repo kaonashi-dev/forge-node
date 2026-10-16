@@ -404,7 +404,7 @@
   font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
   gap: var(--space-8);
-  min-height: var(--forge-tab-h);
+  min-height: var(--tab-h);
   min-width: 0;
   padding: 0 var(--space-16);
 }

@@ -26,7 +26,7 @@ export function readDensity(value: string | undefined): Density {
 
 const ROW_HEIGHT: Record<Density, number> = {
   compact: metrics.rowH,
-  cozy: 32,
+  cozy: metrics.rowH + 6,
 };
 
 /**
@@ -42,6 +42,7 @@ export function densityTokens(density: Density): Record<string, string> {
   const offset = densityOffset(density);
   return {
     "--forge-row-h": `${ROW_HEIGHT[density]}px`,
+    "--forge-tree-row-h": `${metrics.treeRowH + offset}px`,
     "--forge-control-xs": `${metrics.controlXS + offset}px`,
     "--forge-control-sm": `${metrics.controlSM + offset}px`,
     "--forge-control-md": `${metrics.controlMD + offset}px`,

@@ -8,54 +8,75 @@
  */
 
 @font-face {
-  font-family: "IBM Plex Sans";
+  font-family: "Geist";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/IBMPlexSans-400.woff2") format("woff2");
+  src: url("/fonts/Geist-Regular.woff2") format("woff2");
 }
-
 @font-face {
-  font-family: "IBM Plex Sans";
+  font-family: "Geist";
   font-style: normal;
   font-weight: 500;
   font-display: swap;
-  src: url("/fonts/IBMPlexSans-500.woff2") format("woff2");
+  src: url("/fonts/Geist-Medium.woff2") format("woff2");
 }
-
 @font-face {
-  font-family: "IBM Plex Sans";
+  font-family: "Geist";
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url("/fonts/IBMPlexSans-600.woff2") format("woff2");
+  src: url("/fonts/Geist-SemiBold.woff2") format("woff2");
 }
-
 @font-face {
-  font-family: "IBM Plex Sans";
+  font-family: "Geist";
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/IBMPlexSans-400-italic.woff2") format("woff2");
+  src: url("/fonts/Geist-Italic.woff2") format("woff2");
 }
 
 @font-face {
-  font-family: Fraunces;
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/GeistMono-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Mono";
   font-style: normal;
   font-weight: 500;
   font-display: swap;
-  src: url("/fonts/Fraunces-500.woff2") format("woff2");
+  src: url("/fonts/GeistMono-Medium.woff2") format("woff2");
 }
 
 @font-face {
-  font-family: Fraunces;
+  font-family: "Geist Mono";
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url("/fonts/Fraunces-600.woff2") format("woff2");
+  src: url("/fonts/GeistMono-SemiBold.woff2") format("woff2");
 }
 
-/* Full TTFs, not a latin subset: the grid needs box-drawing and block glyphs. Install JetBrainsMono Nerd Font Mono for prompt icons (docs/theming.md). */
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/GeistMono-Bold.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/GeistMono-Italic.woff2") format("woff2");
+}
+
+/* Full TTFs: the per-glyph fallback for what Geist Mono lacks (braille, ❯, ⎿). Install JetBrainsMono Nerd Font Mono for prompt icons (docs/theming.md). */
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;

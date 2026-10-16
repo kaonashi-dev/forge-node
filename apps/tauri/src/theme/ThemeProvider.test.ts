@@ -7,7 +7,7 @@ beforeEach(() => {
   vi.stubGlobal("document", { documentElement: { dataset: {}, style: { setProperty: vi.fn() } } });
 });
 afterEach(() => {
-  applyThemeBase("forge-dark");
+  applyThemeBase("calm-dark");
   vi.unstubAllGlobals();
 });
 
@@ -21,13 +21,13 @@ describe("theme selection", () => {
     vi.stubGlobal("window", { matchMedia: () => ({ matches: true }) });
     applyThemeBase("system");
     expect(themePreference()).toBe("system");
-    expect(themeBase()).toBe("forge-light");
+    expect(themeBase()).toBe("calm-light");
   });
   it("falls back with a matching active option for invalid saved preferences", () => {
     for (const value of ["unknown", "toString", "{bad json"]) {
       applyThemeBase(value as ThemePreference);
-      expect(themeBase()).toBe("forge-dark");
-      expect(themePreference()).toBe("forge-dark");
+      expect(themeBase()).toBe("calm-dark");
+      expect(themePreference()).toBe("calm-dark");
     }
   });
   it("reapplies density and UI font after a theme switch", () => {

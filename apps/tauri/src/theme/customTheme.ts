@@ -1,4 +1,4 @@
-import { palettes, type Palette } from "./tokens";
+import { PALETTE_OVERRIDES, deriveStrip, palettes, type Palette } from "./tokens";
 
 export const MAX_THEME_BYTES = 16 * 1024;
 export type CustomTheme = {
@@ -62,9 +62,11 @@ export function parseCustomTheme(source: string): CustomTheme {
 function parsePalette(value: unknown): Palette {
   if (!record(value))
     throw new Error("A palette object is required. Download a theme for all fields.");
-  const result = { ...palettes["forge-dark"] };
+  const result: Palette = { ...palettes["forge-dark"] };
   for (const key of Object.keys(result) as (keyof Palette)[]) {
     const color = value[key];
+    // Themes saved before the strip role existed still load; the strip derives.
+    if (key === "strip" && color === undefined) continue;
     if (key === "ansi") {
       if (!Array.isArray(color) || color.length !== 16 || !color.every(isColor))
         throw new Error("palette.ansi must contain exactly 16 #RRGGBB colors.");
@@ -73,6 +75,13 @@ function parsePalette(value: unknown): Palette {
       if (!isColor(color)) throw new Error(`palette.${key} must be a #RRGGBB color.`);
       result[key] = color;
     }
+  }
+  if (value.strip === undefined) result.strip = deriveStrip(result.rail, result.bg);
+  for (const key of PALETTE_OVERRIDES) {
+    const color = value[key];
+    if (color === undefined) continue;
+    if (!isColor(color)) throw new Error(`palette.${key} must be a #RRGGBB color.`);
+    result[key] = color;
   }
   return result;
 }

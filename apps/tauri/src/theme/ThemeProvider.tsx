@@ -11,13 +11,13 @@ import { applyUiFont } from "./uiFont";
 
 import { parseCustomTheme } from "./customTheme";
 
-const DEFAULT_BASE: ThemeBaseId = "forge-dark";
+const DEFAULT_BASE: ThemeBaseId = "calm-dark";
 
 export const SYSTEM_BASE = "system" as const;
 export type ThemePreference = ThemeBaseId | typeof SYSTEM_BASE | `{${string}`;
 
-const SYSTEM_DARK: ThemeBaseId = "forge-dark";
-const SYSTEM_LIGHT: ThemeBaseId = "forge-light";
+const SYSTEM_DARK: ThemeBaseId = "calm-dark";
+const SYSTEM_LIGHT: ThemeBaseId = "calm-light";
 
 const [base, setBase] = createSignal<ThemeBaseId>(DEFAULT_BASE, { equals: false });
 const [preference, setPreference] = createSignal<ThemePreference>(DEFAULT_BASE);
