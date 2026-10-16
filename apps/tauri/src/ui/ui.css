@@ -844,28 +844,30 @@
   flex-direction: column;
 }
 
-/* The kit's own trigger. Tabs sit on a shared edge, so the selected one keeps
-   an underline rather than a fill. */
-.forge-tab-list-underline {
+/* The kit's own trigger is the session tabs' raised chip, so every tab strip
+   marks its selection the same way. */
+.forge-tab-list-chips {
+  align-items: center;
   border-bottom: 1px solid var(--border-subtle);
-  gap: var(--space-20);
+  padding-block: var(--space-4);
 }
 .forge-tab {
   background: none;
-  border: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   color: var(--fg-muted);
   font: inherit;
   font-size: var(--text-sm);
   height: var(--control-lg);
-  padding: 0;
+  padding: 0 var(--space-10);
 }
 .forge-tab:hover {
   color: var(--fg-default);
 }
 .forge-tab[data-selected] {
-  box-shadow: var(--tab-underline);
+  background: var(--bg-raised);
+  border-color: var(--border-subtle);
   color: var(--fg-default);
-  font-weight: var(--weight-semibold);
 }
 
 /* Rides the trigger's top-right corner inside its box: a strip that scrolls

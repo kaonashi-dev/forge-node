@@ -959,8 +959,8 @@
   flex-direction: column;
   min-height: 0;
 }
-/* Pills, not folder tabs: the views are navigation on the sidebar's own
-   surface, and folder tabs are kept for things that close. */
+/* The same raised chip as the session tabs, square because each view is a
+   glyph. */
 .sidebar-views {
   flex-shrink: 0;
   padding: var(--space-6) var(--space-8);
@@ -977,8 +977,8 @@
 }
 .sidebar-view-tab {
   background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   color: var(--fg-caption);
   flex: none;
   height: var(--control-md);
@@ -989,11 +989,11 @@
   width: var(--control-md);
 }
 .sidebar-view-tab:hover {
-  background: var(--bg-hover);
   color: var(--fg);
 }
 .sidebar-view-tab[data-selected] {
-  background: var(--bg-selected);
+  background: var(--bg-raised);
+  border-color: var(--border-subtle);
   color: var(--fg);
 }
 .sidebar-view-tab:focus-visible {

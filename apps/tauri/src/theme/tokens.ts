@@ -627,7 +627,6 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   /* For a focusable thing whose container clips an outside outline. */
   "--focus-ring-inset": "inset 0 0 0 var(--focus-ring-width) var(--ring)",
   "--focus-ring-shadow": "0 0 0 2px var(--bg-panel), 0 0 0 4px var(--ring)",
-  "--tab-underline": "inset 0 -2px 0 0 var(--accent)",
 };
 
 function semanticColors(
