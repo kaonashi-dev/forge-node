@@ -113,12 +113,15 @@ const SURFACES = [
   "--bg-panel",
   "--bg-window",
   "--bg-sidebar",
+  "--bg-strip",
+  "--bg-sunken",
+  "--bg-float",
   "--bg-raised",
   "--bg-overlay",
   "--bg-terminal",
   "--forge-editor",
 ];
-const FOREGROUNDS = ["--fg-default", "--fg-muted", "--fg-subtle", "--fg-caption"];
+const FOREGROUNDS = ["--fg-strong", "--fg-default", "--fg-muted", "--fg-subtle", "--forge-faint"];
 const INTERACTION = [
   "--border-subtle",
   "--border-default",
@@ -133,6 +136,7 @@ const RADII: Sample[] = [
   ["--radius-xs", "xs"],
   ["--radius-sm", "sm"],
   ["--radius-md", "md"],
+  ["--radius-list", "list"],
   ["--radius-lg", "lg"],
   ["--radius-palette", "palette"],
   ["--radius-full", "full"],
@@ -143,16 +147,18 @@ const CONTROL_HEIGHTS: Sample[] = [
   ["--control-md", "control-md"],
   ["--control-lg", "control-lg"],
   ["--row-h", "row-h"],
-  ["--forge-tab-h", "tab-h"],
+  ["--tree-row-h", "tree-row-h"],
+  ["--tab-h", "tab-h"],
+  ["--footer-h", "footer-h"],
+  ["--strip-h", "strip-h"],
 ];
 const TYPE_SCALE: Sample[] = [
-  ["--text-label", "label — the mono section label"],
-  ["--text-xs", "xs — metadata"],
-  ["--text-sm", "sm — the chrome's default"],
-  ["--text-md", "md — a body line"],
-  ["--text-lg", "lg — a card title"],
-  ["--text-xl", "xl — a panel heading"],
-  ["--text-2xl", "2xl — the section title"],
+  ["--text-mono", "mono — counts, keys, branches"],
+  ["--text-xs", "xs — captions, group labels, footer"],
+  ["--text-sm", "sm — rows, tabs, buttons, body"],
+  ["--text-md", "md — a section heading"],
+  ["--text-lg", "lg — a dialog title"],
+  ["--text-xl", "xl — the page title"],
 ];
 const WEIGHTS: Sample[] = [
   ["--weight-regular", "regular"],
@@ -170,10 +176,7 @@ const LEADINGS: Sample[] = [
   ["--leading-body", "body"],
   ["--leading-prose", "prose"],
 ];
-const TRACKINGS: Sample[] = [
-  ["--tracking-tight", "tight — a display title"],
-  ["--tracking-label", "LABEL — AN UPPERCASE LABEL"],
-];
+const TRACKINGS: Sample[] = [["--tracking-tight", "tight — the page title"]];
 const OPACITIES: Sample[] = [
   ["--opacity-disabled", "disabled"],
   ["--opacity-dim", "dim"],
@@ -669,13 +672,15 @@ function Primitives() {
           />
         </div>
 
-        <div class="gallery-row">
-          <For each={["running", "working", "starting", "needs-you", "failed"] as const}>
+        <div class="gallery-list gallery-medium">
+          <span class="forge-section-label">Markers sit at the end of a row, after the label</span>
+          <For each={["working", "starting", "needs-you", "idle", "exited", "failed"] as const}>
             {(work) => (
-              <span class="gallery-marker">
+              <button type="button" class="forge-row empty-state-row">
+                <Icon name="square-terminal" class="forge-icon-muted" size={14} />
+                <span class="empty-state-label">{work}</span>
                 <WorkMarker work={work} />
-                <span class="forge-caption">{work}</span>
-              </span>
+              </button>
             )}
           </For>
         </div>

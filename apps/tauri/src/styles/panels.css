@@ -158,7 +158,7 @@
   border-radius: var(--radius-badge);
   color: var(--attention-fg);
   font-family: var(--font-mono);
-  font-size: var(--text-label);
+  font-size: var(--text-mono);
   font-weight: var(--weight-bold);
   line-height: var(--leading-none);
   padding: var(--space-2) var(--space-4);

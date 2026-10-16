@@ -637,7 +637,7 @@
   color: var(--attention-fg);
   display: inline-flex;
   font-family: var(--font-mono);
-  font-size: var(--text-label);
+  font-size: var(--text-mono);
   font-weight: var(--weight-bold);
   line-height: var(--leading-none);
   padding: var(--space-2) var(--space-6);

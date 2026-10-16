@@ -601,7 +601,8 @@ export const metrics = {
   monoSize: 13,
   monoLineHeight: 1.35,
   sans: 'Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
-  display: 'Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+  display:
+    'Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
   // Caption, row label, body, section heading, page title. `sm` is the chrome's base.
   textXS: 12,
   textSM: 13,
@@ -627,6 +628,8 @@ export const scale = {
   /** Section title and the mono section label; outside the chrome-size multiplier. */
   text2XL: 28,
   textLabel: 10,
+  /** Counts, keys and branch names set in Geist Mono beside 13px chrome. */
+  textMono: 11,
   /** Values below 40 stack within panes; 40 and above order global overlays. */
   z: {
     raised: 1,
@@ -723,6 +726,13 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   /* The redesign's surface names; the artboards spell components in these. */
   "--bg-window": "var(--forge-rail)",
   "--bg-strip": "var(--forge-strip)",
+  /* Overlays and raised controls sit a step above the card; fields and tracks sink to the strip. */
+  "--bg-float": "color-mix(in srgb, var(--forge-surface) 40%, var(--forge-bg))",
+  "--bg-sunken": "var(--forge-strip)",
+  "--border-field": "var(--forge-surface-hi)",
+  "--tab-edge": "var(--forge-surface-hi)",
+  /* White in every base: the thumb is a shape, not type, so it is not held to the text floor. */
+  "--switch-thumb-on": "rgb(255 255 255)",
   "--fg-strong": "var(--forge-text-strong)",
   "--bg-terminal": "var(--forge-term-bg)",
   "--bg-panel": "var(--forge-bg)",
@@ -748,12 +758,12 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--select-bg": "color-mix(in srgb, var(--accent) 14%, transparent)",
   "--select-ring": "none",
   "--attention-bg": "color-mix(in srgb, var(--attention) 13%, transparent)",
-  "--attention-ring": "inset 0 0 0 1px color-mix(in srgb, var(--attention) 36%, transparent)",
+  "--attention-ring": "none",
   "--attention-halo": "0 0 0 3px color-mix(in srgb, var(--attention) 18%, transparent)",
   "--card-select-border": "color-mix(in srgb, var(--accent) 50%, transparent)",
   "--card-select-halo": "0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent)",
   "--card-shadow": "0 1px 0 rgb(255 255 255 / 3%) inset, var(--shadow-md)",
-  "--overlay-shadow": "var(--shadow-lg)",
+  "--overlay-shadow": "var(--shadow-lg), 0 1px 0 rgb(255 255 255 / 4%) inset",
   /* A callout or soft status: a wash and a hairline in one hue. */
   "--accent-tint-bg": "color-mix(in srgb, var(--accent) 7%, transparent)",
   "--accent-tint-border": "color-mix(in srgb, var(--accent) 32%, transparent)",
@@ -863,6 +873,7 @@ export function staticTokens(): Record<string, string> {
   out["--radius-palette"] = `${scale.radiusPalette}px`;
   out["--text-2xl"] = `${scale.text2XL}px`;
   out["--text-label"] = `${scale.textLabel}px`;
+  out["--text-mono"] = `${scale.textMono}px`;
   for (const [name, value] of Object.entries(scale.z)) {
     out[`--z-${name}`] = String(value);
   }

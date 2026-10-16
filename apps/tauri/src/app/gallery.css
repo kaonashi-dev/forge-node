@@ -110,7 +110,7 @@
 
 .gallery-value {
   font-family: var(--font-mono);
-  font-size: var(--text-label);
+  font-size: var(--text-mono);
   color: var(--fg-subtle);
   overflow-wrap: anywhere;
 }

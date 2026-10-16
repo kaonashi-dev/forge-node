@@ -74,7 +74,7 @@
 .fw-host .fw-tree-mark {
   color: var(--fg-caption);
   font-family: var(--font-mono);
-  font-size: var(--text-label);
+  font-size: var(--text-mono);
 }
 .fw-host .fw-tree-row[data-tone],
 .fw-host .fw-tree-row[data-tone] .fw-tree-mark {

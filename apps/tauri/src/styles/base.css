@@ -147,16 +147,13 @@
   line-height: var(--leading-caption);
   color: var(--fg-caption);
 }
-/* Never below 10px: the smallest text the app sets. A tone or spacing may
-   vary per surface; the face, size, weight and tracking may not. */
+/* A group label: sentence case in the chrome face. A tone or spacing may vary
+   per surface; the face, size and weight may not. */
 .forge-section-label {
-  font-family: var(--font-mono);
-  font-size: var(--text-label);
-  font-weight: var(--weight-bold);
-  letter-spacing: var(--tracking-label);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   line-height: var(--leading-label);
-  text-transform: uppercase;
-  color: var(--fg-caption);
+  color: var(--fg-subtle);
 }
 .forge-truncate {
   min-width: 0;
@@ -588,7 +585,7 @@ html[data-platform="macos"] .title-bar-inset {
    ring) or waiting on a person (a dot with a halo), and the marker's name says
    it in words. */
 .forge-state-marker {
-  --marker-size: 6px;
+  --marker-size: 7px;
   align-items: center;
   display: inline-flex;
   flex: none;
@@ -612,6 +609,9 @@ html[data-platform="macos"] .title-bar-inset {
    look keep full strength. */
 .forge-state-dot.forge-icon-green::before {
   opacity: var(--opacity-dim);
+}
+.forge-state-ring {
+  --marker-size: 8px;
 }
 .forge-state-ring::before {
   border: 1.5px solid currentColor;

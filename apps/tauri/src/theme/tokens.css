@@ -1572,6 +1572,11 @@
   --font-display: var(--forge-display);
   --bg-window: var(--forge-rail);
   --bg-strip: var(--forge-strip);
+  --bg-float: color-mix(in srgb, var(--forge-surface) 40%, var(--forge-bg));
+  --bg-sunken: var(--forge-strip);
+  --border-field: var(--forge-surface-hi);
+  --tab-edge: var(--forge-surface-hi);
+  --switch-thumb-on: rgb(255 255 255);
   --fg-strong: var(--forge-text-strong);
   --bg-terminal: var(--forge-term-bg);
   --bg-panel: var(--forge-bg);
@@ -1592,12 +1597,12 @@
   --select-bg: color-mix(in srgb, var(--accent) 14%, transparent);
   --select-ring: none;
   --attention-bg: color-mix(in srgb, var(--attention) 13%, transparent);
-  --attention-ring: inset 0 0 0 1px color-mix(in srgb, var(--attention) 36%, transparent);
+  --attention-ring: none;
   --attention-halo: 0 0 0 3px color-mix(in srgb, var(--attention) 18%, transparent);
   --card-select-border: color-mix(in srgb, var(--accent) 50%, transparent);
   --card-select-halo: 0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent);
   --card-shadow: 0 1px 0 rgb(255 255 255 / 3%) inset, var(--shadow-md);
-  --overlay-shadow: var(--shadow-lg);
+  --overlay-shadow: var(--shadow-lg), 0 1px 0 rgb(255 255 255 / 4%) inset;
   --accent-tint-bg: color-mix(in srgb, var(--accent) 7%, transparent);
   --accent-tint-border: color-mix(in srgb, var(--accent) 32%, transparent);
   --danger-tint-bg: color-mix(in srgb, var(--danger-solid) 7%, transparent);
@@ -1634,6 +1639,7 @@
   --radius-palette: 14px;
   --text-2xl: 28px;
   --text-label: 10px;
+  --text-mono: 11px;
   --z-raised: 1;
   --z-over: 2;
   --z-handle: 3;

@@ -163,7 +163,7 @@
 .session-actions-count {
   color: var(--git-modified-text);
   font-family: var(--font-mono);
-  font-size: var(--text-label);
+  font-size: var(--text-mono);
 }
 
 /* ------------------------------------------------------ session changes --- */

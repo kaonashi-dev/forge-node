@@ -62,10 +62,10 @@ exactly two things: a session waiting on the user and an unresolved conflict.
 Selection never draws a bar down an edge. A chosen row changes its own ground
 (`--select-bg`, the accent at 14%) and nothing else (`--select-ring` is `none`),
 so nothing shifts when it is picked; an attention row takes the same shape in ember
-(`--attention-bg`, `--attention-ring`) with a dot and a 3px halo. A selected
+(`--attention-bg`; `--attention-ring` is `none` too) with a dot and a 3px halo. A selected
 card warms its border (`--card-select-border`), gains an outer ring
-(`--card-select-halo`) and fills its identifier chip. Tabs keep their underline,
-because they sit on a shared edge.
+(`--card-select-halo`) and fills its identifier chip. A tab is chosen by a raised chip (`--border-subtle` ground,
+`--tab-edge` inset); the open-files strip keeps an accent underline.
 
 ### Semantic foregrounds
 
