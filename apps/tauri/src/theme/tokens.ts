@@ -786,7 +786,7 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--merge-ours-bg": "color-mix(in srgb, var(--info-solid) 12%, transparent)",
   "--merge-theirs-bg": "color-mix(in srgb, var(--git-untracked-text) 12%, transparent)",
   "--find-match-bg": "color-mix(in srgb, var(--warning-solid) 28%, transparent)",
-  "--scrim": "rgb(0 0 0 / 42%)",
+  "--scrim": "rgb(5 5 6 / 55%)",
   "--focus-ring-width": "2px",
   "--focus-ring-offset": "2px",
   /* For a focusable thing whose container clips an outside outline. */

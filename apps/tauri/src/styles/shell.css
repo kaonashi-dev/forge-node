@@ -1003,12 +1003,11 @@
    radius and depth, and the rows below are shared with every `Combobox`. */
 .command-palette.forge-dialog-card {
   border-radius: var(--radius-palette);
-  box-shadow: var(--depth-3);
-  width: min(640px, 92vw);
+  width: min(660px, 92vw);
 }
 .command-palette .forge-combobox-query {
-  height: calc(var(--row-h) + var(--space-28));
-  padding: 0 var(--space-16);
+  height: 56px;
+  padding: 0 var(--space-20);
 }
 .palette-scope {
   align-items: center;
@@ -1029,11 +1028,18 @@
   font-weight: var(--weight-bold);
 }
 .command-palette .forge-combobox-input {
+  color: var(--fg-strong);
   font-size: var(--text-lg);
 }
 .command-palette .forge-combobox-list {
-  max-height: calc(var(--palette-rows, 9) * (var(--row-h) + var(--space-12)) + 30px);
-  padding: var(--space-6) 0;
+  max-height: calc(var(--palette-rows, 9) * 40px + 30px);
+  padding: var(--space-6) var(--space-6) var(--space-8);
+}
+.command-palette .forge-combobox-row {
+  font-size: var(--text-md);
+  gap: var(--space-12);
+  height: 40px;
+  padding: 0 var(--space-12);
 }
 /* The selected row is the hold-Control list's focus indicator; an outline on
    the list would be clipped by the card. */
@@ -1094,14 +1100,14 @@
   align-items: center;
   background: var(--bg-panel);
   border-top: 1px solid var(--line);
-  color: var(--fg-muted);
+  color: var(--fg-subtle);
   display: flex;
   flex: none;
   flex-wrap: wrap;
   font-size: var(--text-xs);
   gap: var(--space-4) var(--space-16);
-  min-height: calc(var(--row-h) + var(--space-12));
-  padding: var(--space-6) var(--space-16);
+  min-height: 40px;
+  padding: var(--space-6) var(--space-20);
 }
 .palette-footer-hint {
   align-items: center;
