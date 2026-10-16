@@ -569,6 +569,27 @@ palettes.forest = {
   ansi: ["#1f1f1f", ...palettes.gruvbox.ansi.slice(1, 15), "#c7c7c7"],
 };
 
+/**
+ * Accents offered beside the theme cards. A light base gets darker versions so
+ * a fill and its derived text still clear the floor on a white card.
+ */
+export const ACCENT_SWATCHES: Record<"dark" | "light", { name: string; color: string }[]> = {
+  dark: [
+    { name: "Violet", color: "#a78bfa" },
+    { name: "Teal", color: "#5ccabb" },
+    { name: "Blue", color: "#7aa2f7" },
+    { name: "Rose", color: "#f28fad" },
+    { name: "Lime", color: "#a3d977" },
+  ],
+  light: [
+    { name: "Violet", color: "#6d28d9" },
+    { name: "Teal", color: "#0f766e" },
+    { name: "Blue", color: "#1d4ed8" },
+    { name: "Rose", color: "#be185d" },
+    { name: "Lime", color: "#4d7c0f" },
+  ],
+};
+
 export function registerCustomPalette(value: Palette, light: boolean): void {
   // Keep the replaceable custom slot out of built-in pickers and fixture exports.
   Object.defineProperty(palettes, "custom", { value, writable: true, configurable: true });
@@ -626,7 +647,7 @@ export const scale = {
   radiusList: 10,
   radiusPalette: 14,
   /** Section title and the mono section label; outside the chrome-size multiplier. */
-  text2XL: 28,
+  text2XL: 24,
   textLabel: 10,
   /** Counts, keys and branch names set in Geist Mono beside 13px chrome. */
   textMono: 11,

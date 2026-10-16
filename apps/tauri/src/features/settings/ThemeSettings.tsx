@@ -18,19 +18,19 @@ import {
   type ThemeColor,
 } from "../../theme/themeVariants";
 import {
+  ACCENT_SWATCHES,
   baseIsLight,
   palettes,
   THEME_LABELS,
   type Palette,
   type ThemeBaseId,
 } from "../../theme/tokens";
-import { Button, Card, Disclosure, Select, TextArea } from "../../ui/index";
+import { Button, Switch, TextArea } from "../../ui/index";
 import { Icon } from "../../theme/icons/index";
 // Not through `ui/index`: the barrel is in the initial chunk, and the colour
 // primitives belong with Settings, which is loaded when it is first opened.
 import { ColorPicker } from "../../ui/ColorPicker";
 import { Group } from "./SettingsLayout";
-import { ThemePreview } from "./ThemePreview";
 
 const CUSTOM_KEY = "ui.custom_theme";
 const COLORS: { key: ThemeColor; label: string }[] = [
@@ -46,6 +46,7 @@ export function ThemeSettings() {
   const [error, setError] = createSignal("");
   const [status, setStatus] = createSignal("");
   const [source, setSource] = createSignal("");
+  const [customizing, setCustomizing] = createSignal(false);
   const [savedCustom, setSavedCustom] = createSignal(
     themePreference().startsWith("{")
       ? themePreference()
@@ -72,11 +73,6 @@ export function ThemeSettings() {
   const contrast = () => active().adjustments?.contrast ?? DEFAULT_CONTRAST;
   const selected = () => (themePreference().startsWith("{") ? "custom" : themePreference());
   const bases = Object.keys(palettes) as ThemeBaseId[];
-  const options = createMemo(() => [
-    { value: "system", label: "Match system" },
-    ...bases.map((id) => ({ value: id, label: THEME_LABELS[id] })),
-    ...(custom() ? [{ value: "custom", label: `${custom()!.theme.name} · Custom` }] : []),
-  ]);
 
   async function choose(next: ThemePreference): Promise<void> {
     if (busy()) return;
@@ -165,130 +161,210 @@ export function ThemeSettings() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  const mode = () => (baseIsLight(themeBase()) ? "light" : "dark");
+  const accentIs = (color: string) => colors().accent.toLowerCase() === color.toLowerCase();
+
+  function chooseAccent(color: string): void {
+    preview("accent", color);
+    commit();
+  }
+
   return (
-    <div class="theme-editor">
-      <Group title="Theme">
-        <div class="theme-cards">
+    <>
+      <Group
+        title="Theme"
+        plain
+        aside={
+          <Switch
+            label="Match system"
+            checked={themePreference() === "system"}
+            disabled={busy()}
+            onChange={(on) => void choose(on ? "system" : themeBase())}
+          />
+        }
+      >
+        <div class="theme-cards" role="radiogroup" aria-label="Theme">
           <For each={bases}>
             {(id) => (
               <ThemeCard
-                id={id}
+                palette={palettes[id]}
+                label={THEME_LABELS[id]}
+                note={id.startsWith("calm-") ? (baseIsLight(id) ? "light" : "dark") : null}
                 selected={selected() === id}
                 disabled={busy()}
                 onChoose={() => void choose(id)}
               />
             )}
           </For>
+          <Show when={custom()}>
+            {(saved) => (
+              <ThemeCard
+                palette={saved().theme.palette}
+                label={saved().theme.name}
+                note="custom"
+                selected={selected() === "custom"}
+                disabled={busy()}
+                onChoose={() => void choose(saved().source)}
+              />
+            )}
+          </Show>
+        </div>
+        <div class="theme-actions">
+          <Button
+            variant="ghost"
+            size="sm"
+            selected={customizing()}
+            onClick={() => setCustomizing(!customizing())}
+          >
+            Customize colors…
+          </Button>
+          <Button variant="ghost" size="sm" disabled={busy()} onClick={() => fileInput?.click()}>
+            Import JSON
+          </Button>
+          <Button variant="ghost" size="sm" onClick={downloadTemplate}>
+            Download JSON
+          </Button>
         </div>
       </Group>
-      <ThemePreview contrast={contrast()} />
-      <Group class="theme-controls">
-        <div class="theme-control-row theme-selector-row">
-          <span class="theme-control-label">
-            {baseIsLight(themeBase()) ? "Light theme" : "Dark theme"}
-          </span>
-          <div class="theme-selector-actions">
-            <Button disabled={busy()} onClick={() => fileInput?.click()}>
-              Import
-            </Button>
-            <Button onClick={() => void copyTheme()}>Copy theme</Button>
-          </div>
-          <div class="theme-selector">
-            <span class="theme-type-sample" aria-hidden="true">
-              Aa
-            </span>
-            <Select
-              aria-label="Color theme"
-              value={selected()}
-              options={options()}
-              disabled={busy()}
-              onChange={(value) => {
-                // The select also reconciles its value when a live preview becomes custom.
-                if (value !== selected()) {
-                  void choose(value === "custom" ? custom()!.source : (value as ThemePreference));
-                }
-              }}
-            />
-          </div>
+
+      <section class="appearance-row" aria-labelledby="accent-title">
+        <h3 id="accent-title" class="appearance-row-title">
+          Accent
+        </h3>
+        <div class="accent-swatches" role="radiogroup" aria-labelledby="accent-title">
+          <For each={ACCENT_SWATCHES[mode()]}>
+            {(swatch) => (
+              <button
+                type="button"
+                role="radio"
+                class="accent-swatch"
+                aria-checked={accentIs(swatch.color)}
+                aria-label={swatch.name}
+                disabled={busy()}
+                style={{ background: swatch.color }}
+                onClick={() => chooseAccent(swatch.color)}
+              />
+            )}
+          </For>
+          <button
+            type="button"
+            class="accent-swatch accent-swatch-custom"
+            aria-label="Pick a custom accent"
+            onClick={() => setCustomizing(true)}
+          >
+            <Icon name="plus" size={12} />
+          </button>
         </div>
-        <For each={COLORS}>
-          {({ key, label }) => {
-            let colorOrigin: Palette | undefined;
-            return (
-              <div class="theme-control-row">
-                <label class="theme-control-label" for={`theme-${key}-hex`}>
-                  {label}
-                </label>
-                <div
-                  class="forge-control forge-control-md forge-field theme-color-field"
-                  style={{
-                    background: colors()[key],
-                    color: hex(on(parseHex(colors()[key]), 0, 0xffffff)),
-                  }}
-                >
-                  <ColorPicker
-                    label={label}
-                    value={colors()[key]}
-                    disabled={busy()}
-                    swatches={colors().ansi}
-                    onInput={(value) => {
-                      colorOrigin ??= colors();
-                      preview(key, value, contrast(), colorOrigin);
+        <span class="appearance-row-note">Ember stays reserved for “needs you”.</span>
+      </section>
+
+      <Show when={customizing()}>
+        <Group title="Colors" class="theme-controls">
+          <For each={COLORS}>
+            {({ key, label }) => {
+              let colorOrigin: Palette | undefined;
+              return (
+                <div class="theme-control-row">
+                  <label class="theme-control-label" for={`theme-${key}-hex`}>
+                    {label}
+                  </label>
+                  <div
+                    class="forge-control forge-control-md forge-field theme-color-field"
+                    style={{
+                      background: colors()[key],
+                      color: hex(on(parseHex(colors()[key]), 0, 0xffffff)),
                     }}
-                    onCommit={(value) => {
-                      preview(key, value, contrast(), colorOrigin ?? colors());
-                      colorOrigin = undefined;
-                      commit();
-                    }}
-                  />
-                  <input
-                    id={`theme-${key}-hex`}
-                    class="forge-field-input theme-color-hex"
-                    type="text"
-                    spellcheck={false}
-                    autocomplete="off"
-                    maxLength={7}
-                    value={colors()[key].toUpperCase()}
-                    disabled={busy()}
-                    onChange={(event) => editHex(key, event.currentTarget)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") event.currentTarget.blur();
-                      if (event.key === "Escape") {
-                        event.currentTarget.value = colors()[key].toUpperCase();
-                        event.currentTarget.blur();
-                      }
-                    }}
-                  />
+                  >
+                    <ColorPicker
+                      label={label}
+                      value={colors()[key]}
+                      disabled={busy()}
+                      swatches={colors().ansi}
+                      onInput={(value) => {
+                        colorOrigin ??= colors();
+                        preview(key, value, contrast(), colorOrigin);
+                      }}
+                      onCommit={(value) => {
+                        preview(key, value, contrast(), colorOrigin ?? colors());
+                        colorOrigin = undefined;
+                        commit();
+                      }}
+                    />
+                    <input
+                      id={`theme-${key}-hex`}
+                      class="forge-field-input theme-color-hex"
+                      type="text"
+                      spellcheck={false}
+                      autocomplete="off"
+                      maxLength={7}
+                      value={colors()[key].toUpperCase()}
+                      disabled={busy()}
+                      onChange={(event) => editHex(key, event.currentTarget)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                        if (event.key === "Escape") {
+                          event.currentTarget.value = colors()[key].toUpperCase();
+                          event.currentTarget.blur();
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
-              </div>
-            );
-          }}
-        </For>
-        <div class="theme-control-row">
-          <label class="theme-control-label" for="theme-contrast">
-            Contrast
-          </label>
-          <div class="theme-contrast-control">
-            <input
-              id="theme-contrast"
-              type="range"
-              min="0"
-              max="100"
-              step="1"
-              value={contrast()}
-              disabled={busy()}
-              aria-describedby="theme-contrast-description"
-              onInput={(event) => preview(undefined, undefined, event.currentTarget.valueAsNumber)}
-              onChange={commit}
-            />
-            <output for="theme-contrast">{contrast()}</output>
+              );
+            }}
+          </For>
+          <div class="theme-control-row">
+            <label class="theme-control-label" for="theme-contrast">
+              Contrast
+            </label>
+            <div class="theme-contrast-control">
+              <input
+                id="theme-contrast"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={contrast()}
+                disabled={busy()}
+                aria-describedby="theme-contrast-description"
+                onInput={(event) =>
+                  preview(undefined, undefined, event.currentTarget.valueAsNumber)
+                }
+                onChange={commit}
+              />
+              <output for="theme-contrast">{contrast()}</output>
+            </div>
           </div>
-        </div>
-      </Group>
-      <p class="theme-editor-hint" id="theme-contrast-description">
-        Contrast adjusts panel separation and secondary text. Choose the original theme to reset
-        your changes.
-      </p>
+          <div class="theme-control-row theme-import">
+            <TextArea
+              label="Paste theme JSON"
+              rows={5}
+              maxLength={MAX_THEME_BYTES}
+              value={source()}
+              disabled={busy()}
+              spellcheck={false}
+              onChange={setSource}
+            />
+            <div class="theme-selector-actions">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy() || !source().trim()}
+                onClick={() => void importTheme(source())}
+              >
+                Import and apply
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => void copyTheme()}>
+                Copy theme
+              </Button>
+            </div>
+          </div>
+        </Group>
+        <p class="theme-editor-hint" id="theme-contrast-description">
+          Contrast adjusts panel separation and secondary text. Choose the original theme to reset
+          your changes.
+        </p>
+      </Show>
       <Show when={error()}>
         <p class="theme-editor-error" role="alert">
           {error()}
@@ -319,58 +395,44 @@ export function ThemeSettings() {
           }
         }}
       />
-      <Disclosure summary="Theme JSON">
-        <div class="theme-import">
-          <Button onClick={downloadTemplate}>Download theme</Button>
-          <TextArea
-            label="Theme JSON"
-            rows={7}
-            maxLength={MAX_THEME_BYTES}
-            value={source()}
-            disabled={busy()}
-            spellcheck={false}
-            onChange={setSource}
-          />
-          <Button disabled={busy() || !source().trim()} onClick={() => void importTheme(source())}>
-            Import and apply
-          </Button>
-        </div>
-      </Disclosure>
-    </div>
+    </>
   );
 }
 
+/** A miniature window in the palette's own grounds: rail, sidebar bars, the card. */
 function ThemeCard(props: {
-  id: ThemeBaseId;
+  palette: Palette;
+  label: string;
+  note: string | null;
   selected: boolean;
   disabled: boolean;
   onChoose: () => void;
 }) {
-  const colors = () => palettes[props.id];
+  const colors = () => props.palette;
   return (
-    <Card
+    <button
+      type="button"
+      role="radio"
       class="theme-card"
-      selected={props.selected}
+      aria-checked={props.selected}
       disabled={props.disabled}
       onClick={props.onChoose}
     >
-      <span class="theme-card-preview" style={{ background: colors().bg }} aria-hidden="true">
-        <span class="theme-card-bar" style={{ background: colors().surface }} />
-        <span class="theme-card-chips">
-          <span class="theme-card-chip" style={{ background: colors().accent }} />
-          <span class="theme-card-chip" style={{ background: colors().surfaceHi }} />
-          <span class="theme-card-chip" style={{ background: colors().muted }} />
+      <span class="theme-card-window" style={{ background: colors().rail }} aria-hidden="true">
+        <span class="theme-card-side">
+          <span style={{ background: colors().surfaceHi }} />
+          <span style={{ background: colors().accent }} />
+          <span style={{ background: colors().surfaceHi }} />
         </span>
-        <span class="theme-card-ansi">
-          <For each={colors().ansi}>{(color) => <span style={{ background: color }} />}</For>
-        </span>
+        <span
+          class="theme-card-panel"
+          style={{ background: colors().bg, "border-color": colors().border ?? colors().surface }}
+        />
       </span>
-      <span class="theme-card-foot">
-        <span class="forge-truncate theme-card-name">{THEME_LABELS[props.id]}</span>
-        <Show when={props.selected}>
-          <Icon name="check" class="forge-icon-accent" size={13} />
-        </Show>
+      <span class="theme-card-name">
+        <span class="forge-truncate">{props.label}</span>
+        <Show when={props.note}>{(note) => <span class="theme-card-mode">{note()}</span>}</Show>
       </span>
-    </Card>
+    </button>
   );
 }

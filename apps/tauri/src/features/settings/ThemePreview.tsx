@@ -1,106 +1,36 @@
 import { For } from "solid-js";
-import { themeBase } from "../../theme/ThemeProvider";
-import { palettes } from "../../theme/tokens";
+
+const ANSI_SLOTS = Array.from({ length: 16 }, (_, index) => index);
 
 /**
- * Both surfaces a theme has to answer for, at once.
- *
- * Not a Code/Terminal switch: the two share one palette, and someone choosing a
- * colour needs the diff and the ANSI row in the same glance rather than a
- * toggle that hides whichever of them the change just broke.
+ * The terminal under the chosen theme: a prompt, a command, its output and the
+ * sixteen ANSI slots, all read from the live variables so a custom palette
+ * previews as it is edited.
  */
-export function ThemePreview(props: { contrast: number }) {
-  const palette = () => palettes[themeBase()];
-
+export function ThemePreview() {
   return (
     <section class="theme-preview" aria-label="Theme preview">
       <div class="theme-preview-toolbar">
-        <span class="theme-preview-caption">Preview</span>
-        <span class="theme-preview-filename">theme.ts</span>
-      </div>
-      <div class="theme-preview-diff" aria-label="Code diff color preview">
-        <For each={[false, true]}>
-          {(after) => (
-            <div class="theme-preview-code" aria-label={after ? "After" : "Before"}>
-              <div class="theme-preview-line">
-                <span class="theme-preview-line-number">1</span>
-                <code>
-                  <span data-syntax="keyword">const</span> themePreview:{" "}
-                  <span data-syntax="type">ThemeConfig</span> = {"{"}
-                </code>
-              </div>
-              <For each={["surface", "accent", "contrast"] as const}>
-                {(field, index) => (
-                  <div
-                    class={`theme-preview-line ${after ? "theme-preview-added" : "theme-preview-removed"}`}
-                  >
-                    <span class="theme-preview-line-number">{index() + 2}</span>
-                    <span class="theme-preview-sign" aria-hidden="true">
-                      {after ? "+" : "−"}
-                    </span>
-                    <code>
-                      {"  "}
-                      {field}:{" "}
-                      {field === "contrast" ? (
-                        <span data-syntax="number">{after ? props.contrast : 42}</span>
-                      ) : (
-                        <span data-syntax="string">
-                          "
-                          {field === "surface"
-                            ? after
-                              ? "sidebar-elevated"
-                              : "sidebar"
-                            : after
-                              ? palette().accent
-                              : palette().blue}
-                          "
-                        </span>
-                      )}
-                      ,
-                    </code>
-                  </div>
-                )}
-              </For>
-              <div class="theme-preview-line">
-                <span class="theme-preview-line-number">5</span>
-                <code>{"};"}</code>
-              </div>
-            </div>
-          )}
-        </For>
-      </div>
-      <div class="theme-preview-toolbar">
-        <span class="theme-preview-caption">Terminal</span>
-        <span class="theme-preview-filename">zsh</span>
+        <span class="forge-state-marker forge-state-dot forge-icon-green" aria-hidden="true" />
+        Terminal 1
       </div>
       <div class="theme-preview-terminal" aria-label="Terminal color preview">
         <div>
-          <span class="theme-terminal-path">~/forge</span>{" "}
-          <span class="theme-terminal-branch">main</span>{" "}
-          <span class="theme-terminal-prompt">❯</span> git status --short
+          <span class="theme-terminal-path">forge-node</span> on{" "}
+          <span class="theme-terminal-branch">main</span> via{" "}
+          <span class="theme-terminal-version">v1.89.0</span>
         </div>
         <div>
-          <span class="theme-terminal-modified"> M</span> src/theme.ts
+          <span class="theme-terminal-prompt">❯</span> scripts/dev check
         </div>
-        <div>
-          <span class="theme-terminal-added">??</span> src/preview.ts
-        </div>
-        <div>
-          <span class="theme-terminal-path">~/forge</span>{" "}
-          <span class="theme-terminal-branch">main</span>{" "}
-          <span class="theme-terminal-prompt">❯</span> bun test
-        </div>
-        <div>
-          <span class="theme-terminal-success">✓</span> Theme colors look good{" "}
-          <span data-syntax="comment">[12 ms]</span>
-        </div>
-        <div class="theme-terminal-colors" aria-label="Sixteen ANSI colors">
-          <For each={palette().ansi}>
-            {(color, index) => (
-              <span style={{ background: color }} title={`ANSI ${index()}: ${color}`} />
-            )}
-          </For>
-        </div>
+        <div class="theme-terminal-quiet">{"   Finished in 41.2s"}</div>
+      </div>
+      <div class="theme-terminal-colors" aria-label="Sixteen ANSI colors">
+        <For each={ANSI_SLOTS}>
+          {(slot) => (
+            <span style={{ background: `var(--forge-ansi-${slot})` }} title={`ANSI ${slot}`} />
+          )}
+        </For>
       </div>
     </section>
   );

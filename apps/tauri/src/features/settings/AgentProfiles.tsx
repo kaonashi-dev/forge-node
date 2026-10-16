@@ -4,9 +4,10 @@ import type { AgentProfile, ConfigDirSpec } from "../../contracts/runtime";
 import { forgeStore } from "../../state/forgeStore";
 import { profilesStore, setProfilesStore } from "./profiles";
 import { formatArgs, newAgentProfile, normalizeArgs, parseArgs } from "./agentProfile";
-import { Button, TextArea, TextField } from "../../ui/index";
+import { Button, Menu, TextArea, TextField, buttonClass } from "../../ui/index";
+import { Icon } from "../../theme/icons/index";
 import { Group } from "./SettingsLayout";
-import { AgentVisibilityButton } from "./AgentVisibilityButton";
+import { AgentVisibilitySwitch } from "./AgentVisibilitySwitch";
 
 type EditingProfile = { profile: AgentProfile; isNew: boolean };
 
@@ -24,56 +25,59 @@ export function AgentProfiles() {
   return (
     <Group
       title="Launch profiles"
-      description="Save a custom executable, account, or launch arguments. Profiles appear in the + menu."
+      description="A custom executable, account or arguments. Profiles appear in the + menu."
       class="settings-profiles"
+      aside={
+        <Menu
+          triggerLabel="New profile"
+          triggerClass={buttonClass("sm", "secondary")}
+          trigger={
+            <>
+              New profile
+              <Icon name="chevron-down" size={13} class="forge-icon-muted" />
+            </>
+          }
+          items={providers().map((descriptor) => ({
+            kind: "item" as const,
+            label: descriptor.display_name ?? descriptor.id,
+            run: () => setEditing({ profile: newAgentProfile(descriptor.id), isNew: true }),
+          }))}
+        />
+      }
     >
       <For each={forgeStore.agent_profiles} fallback={<p class="empty-copy">No profiles yet.</p>}>
         {(profile) => (
           <div class="profile-row">
-            <div class="profile-row-main">
-              <span class="forge-option-label">{profile.name}</span>
-              <span class="forge-option-note">{profile.provider_id}</span>
-              <Show when={profile.executable}>
-                {(executable) => <span class="forge-option-note">{executable()}</span>}
-              </Show>
-              <Show when={profile.config_dir}>
-                {(dir) => <span class="forge-option-note">{dir()}</span>}
-              </Show>
-            </div>
-            <div class="profile-row-actions">
-              <AgentVisibilityButton agentKey={`profile:${profile.id}`} label={profile.name} />
-              <Button
-                variant="secondary"
-                size="xs"
-                onClick={() => setEditing({ profile: { ...profile }, isNew: false })}
-              >
-                Edit
-              </Button>
-              <Button
-                variant="danger"
-                size="xs"
-                onClick={() => void removeAgentProfile(profile.id).catch(() => undefined)}
-              >
-                Delete
-              </Button>
-            </div>
+            <span class="profile-row-name">{profile.name}</span>
+            <span class="profile-row-meta forge-truncate">
+              {[profile.provider_id, profile.executable, profile.config_dir]
+                .filter(Boolean)
+                .join(" · ")}
+            </span>
+            <AgentVisibilitySwitch agentKey={`profile:${profile.id}`} label={profile.name} />
+            <Menu
+              triggerLabel={`${profile.name}: edit or delete`}
+              triggerClass={buttonClass("sm", "ghost", true)}
+              trigger={<Icon name="more-horizontal" size={14} class="forge-icon-muted" />}
+              items={[
+                {
+                  kind: "item",
+                  label: "Edit",
+                  icon: "edit",
+                  run: () => setEditing({ profile: { ...profile }, isNew: false }),
+                },
+                {
+                  kind: "item",
+                  label: "Delete",
+                  icon: "trash",
+                  destructive: true,
+                  run: () => void removeAgentProfile(profile.id).catch(() => undefined),
+                },
+              ]}
+            />
           </div>
         )}
       </For>
-
-      <div class="settings-actions">
-        <For each={providers()}>
-          {(descriptor) => (
-            <Button
-              variant="secondary"
-              size="xs"
-              onClick={() => setEditing({ profile: newAgentProfile(descriptor.id), isNew: true })}
-            >
-              New {descriptor.display_name ?? descriptor.id} profile
-            </Button>
-          )}
-        </For>
-      </div>
 
       <Show when={editing()}>
         {(state) => (

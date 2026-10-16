@@ -121,7 +121,7 @@
   line-height: var(--leading-title);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-tight);
-  color: var(--fg);
+  color: var(--fg-strong);
 }
 .forge-panel-heading {
   margin: 0;
