@@ -1,3 +1,4 @@
+import { sendRuntimeCommand } from "../../runtime/host";
 import { sendWorkbenchCommand } from "../../runtime/workbench";
 import { setLoading } from "../../state/loading";
 import { setGitStore } from "./state";
@@ -82,4 +83,9 @@ export async function applyJuvaDraft(
   body: string,
 ): Promise<void> {
   await sendWorkbenchCommand({ type: "apply_juva_draft", workspace, kind, title, body });
+}
+
+/** Acks when the fetch starts; `RemoteRefsUpdated` reports the result. */
+export async function fetchRemote(project: string, remote: string | null = null): Promise<void> {
+  await sendRuntimeCommand({ type: "fetch_remote", project, remote });
 }

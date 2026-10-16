@@ -781,6 +781,7 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--attention-tint-bg": "color-mix(in srgb, var(--attention) 7%, transparent)",
   "--attention-tint-border": "color-mix(in srgb, var(--attention) 30%, transparent)",
   "--diff-meta-bg": "color-mix(in srgb, var(--fg-default) 4%, var(--forge-editor))",
+  "--diff-hunk-bg": "color-mix(in srgb, var(--info-solid) 7%, var(--forge-editor))",
   /* The two sides of a three-way merge, and a find hit wherever text is searched. */
   "--merge-ours-bg": "color-mix(in srgb, var(--info-solid) 12%, transparent)",
   "--merge-theirs-bg": "color-mix(in srgb, var(--git-untracked-text) 12%, transparent)",

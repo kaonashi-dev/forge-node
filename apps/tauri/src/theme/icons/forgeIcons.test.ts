@@ -42,6 +42,7 @@ const NAMES: ForgeIconName[] = [
   "more-horizontal",
   "image",
   "image-off",
+  "sparkles",
 ];
 
 describe("forgeIcons", () => {

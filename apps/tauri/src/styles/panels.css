@@ -12,7 +12,7 @@
   gap: var(--space-6);
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-10);
+  padding: 0;
 }
 .panel-note {
   color: var(--fg-subtle);
@@ -24,14 +24,13 @@
 .git-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-12);
+  gap: var(--space-8);
 }
 .git-head {
-  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
-  gap: var(--space-8);
-  padding-bottom: var(--space-12);
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-4) 0 var(--space-8);
 }
 .git-head-row {
   align-items: center;
@@ -40,8 +39,15 @@
   min-width: 0;
 }
 .git-branch {
+  color: var(--fg-strong);
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.git-head-place {
+  color: var(--forge-faint);
+  font-size: var(--text-xs);
+  margin: 0;
 }
 /* It takes the branch name's place, spelled out: a detached HEAD mid-replay is
    why nothing can be committed. Neutral, because it is a fact and not a call
@@ -62,8 +68,10 @@
   padding: 0 var(--space-10);
 }
 .git-upstream {
+  color: var(--forge-faint);
   flex: none;
   font-family: var(--font-mono);
+  font-size: var(--text-mono);
 }
 .git-head-note {
   margin: 0;
@@ -149,6 +157,12 @@
   display: flex;
   gap: var(--space-8);
   min-width: 0;
+  padding: var(--space-4) var(--space-4) var(--space-2) var(--space-8);
+}
+.git-section-count {
+  color: var(--forge-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
 }
 .git-section-head .forge-section-label {
   margin: 0;
@@ -223,32 +237,36 @@
 
 .git-tree {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: var(--space-8);
+  gap: var(--space-2);
+  min-height: 0;
+}
+.git-tree-spacer {
+  flex: 1;
 }
 .git-file {
-  border-radius: var(--radius-control);
-  color: var(--fg-muted);
+  border-radius: var(--radius-row);
+  color: var(--fg-default);
   font-size: var(--text-sm);
   gap: var(--space-8);
-  min-height: var(--row-h);
+  min-height: var(--control-md);
   padding: 0 var(--space-8);
   width: 100%;
 }
-.git-file[aria-current="true"] {
-  color: var(--fg);
-}
 .git-file-path {
   flex: 1;
+}
+.git-file-dir {
+  color: var(--forge-faint);
 }
 .git-status {
   color: var(--git-modified-text);
   flex: none;
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-bold);
-  text-align: center;
-  width: 10px;
+  font-size: var(--text-mono);
+  font-weight: var(--weight-semibold);
+  width: 12px;
 }
 .git-status[data-status="Added"] {
   color: var(--git-added-text);
@@ -266,7 +284,7 @@
   display: flex;
   flex: none;
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-size: var(--text-mono);
   gap: var(--space-6);
 }
 .git-counts .added {
@@ -276,76 +294,33 @@
   color: var(--git-deleted-text);
 }
 
-.git-hunk {
-  margin: 0;
-  overflow: hidden;
-  padding: 0;
-}
-.git-hunk-head {
-  align-items: center;
-  background: var(--bg-sidebar);
-  border-bottom: 1px solid var(--border-subtle);
-  display: flex;
-  gap: var(--space-8);
-  min-height: var(--control-md);
-  padding: 0 var(--space-10);
-}
-.git-hunk-range {
-  font-family: var(--font-mono);
-}
-.git-hunk-body {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: var(--leading-body);
-  overflow-x: auto;
-  padding: var(--space-8) 0;
-}
-.git-hunk-row {
-  display: flex;
-  gap: var(--space-8);
-  padding: 0 var(--space-10);
-  white-space: pre;
-}
-.git-hunk-row[data-kind="added"] {
-  background: var(--forge-diff-added-bg);
-}
-.git-hunk-row[data-kind="removed"] {
-  background: var(--forge-diff-removed-bg);
-}
-.git-hunk-row[data-kind="context"] {
-  color: var(--fg-muted);
-}
-.git-hunk-marker {
-  flex: none;
-}
-.git-hunk-row[data-kind="added"] .git-hunk-marker {
-  color: var(--git-added-text);
-}
-.git-hunk-row[data-kind="removed"] .git-hunk-marker {
-  color: var(--git-deleted-text);
-}
-.git-hunk-foot {
-  border-top: 1px solid var(--border-subtle);
-  margin: 0;
-  padding: var(--space-4) var(--space-10);
-}
-
 .git-commit {
-  border-top: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   gap: var(--space-8);
-  padding-top: var(--space-10);
+  padding: var(--space-12) 0 var(--space-4);
+}
+.git-commit .forge-label {
+  padding-left: var(--space-8);
 }
 .git-commit-actions {
   display: flex;
-  gap: var(--space-8);
+  gap: var(--space-6);
 }
 .git-commit-button {
   flex: 1;
 }
+.git-commit-chord {
+  color: inherit;
+  opacity: 0.7;
+}
 .git-commit-note {
   margin: 0;
+  padding: 0 var(--space-4);
+}
+.git-commit .git-actions {
+  gap: var(--space-2);
+  padding-top: var(--space-4);
 }
 
 /* The three-way view heads the Diff tab while a replay has unresolved paths. */

@@ -1,19 +1,29 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
-import { openCompare, openDiff } from "../../navigation/viewsStore";
+import { For, Show, createSignal } from "solid-js";
+import { centerMode, currentViews, openCompare, openDiff } from "../../navigation/viewsStore";
 import { loading, setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
-import { diffTotals } from "../../contracts/workbench";
 import { Icon } from "../../theme/icons/index";
-import { Button, IconButton, TextArea } from "../../ui/index";
+import { Button, IconButton, Kbd, TextArea } from "../../ui/index";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
 import { applyJuvaDraft, draftWithJuva, loadBranchCompare, loadDiff } from "./commands";
-import { commitLabel, commitMessage, firstHunk, statusLetter, statusWord } from "./gitView";
+import { commitLabel, commitMessage, statusLetter, statusWord } from "./gitView";
 import { refreshGit } from "./rebaseActions";
 import { gitStore } from "./state";
+import type { Chord } from "../../actions/keys";
+
+/** Shown on the button only; the textarea's own key handler commits. */
+const COMMIT_CHORD: Chord = {
+  key: "enter",
+  code: "Enter",
+  ctrl: false,
+  alt: false,
+  shift: false,
+  meta: true,
+};
 
 /**
- * The checkout's uncommitted work: the files, the first hunk of the one picked,
- * and a commit box.
+ * The checkout's uncommitted work: the files, then a commit box. A file opens
+ * the patch as a tab; the rail itself never draws a diff.
  *
  * `CreateCommit` stages the whole tree, so the box commits every file listed
  * here and never pushes.
@@ -25,14 +35,7 @@ export function WorkingTreeRail(props: { committable: boolean }) {
   const [error, setError] = createSignal<string | null>(null);
 
   const files = () => gitStore.diff?.files ?? [];
-  const totals = createMemo(() => diffTotals(gitStore.diff));
-  const selected = createMemo(
-    () => files().find((file) => file.path === picked()) ?? files()[0] ?? null,
-  );
-  const hunk = createMemo(() => {
-    const file = selected();
-    return file && !file.binary && !file.truncated ? firstHunk(file.patch) : null;
-  });
+  const onPatch = () => centerMode() === "code" && currentViews().active.kind === "diff";
 
   const canCommit = () =>
     props.committable && files().length > 0 && message().trim().length > 0 && !busy();
@@ -62,17 +65,14 @@ export function WorkingTreeRail(props: { committable: boolean }) {
     <section class="git-tree" aria-labelledby="git-tree-title">
       <header class="git-section-head">
         <h3 id="git-tree-title" class="forge-section-label">
-          Working tree
+          Changes
         </h3>
         <span class="history-spacer" />
         <Show when={files().length > 0}>
-          <span class="git-counts">
-            <span class="added">+{totals().additions}</span>
-            <span class="deleted">−{totals().deletions}</span>
-          </span>
+          <span class="git-section-count">{files().length}</span>
         </Show>
-        <IconButton label="Re-read the working tree" size="xs" variant="ghost" onClick={refreshGit}>
-          <Icon name="refresh" size={13} />
+        <IconButton label="Re-read the working tree" size="xs" onClick={refreshGit}>
+          <Icon name="refresh" size={13} class="forge-icon-muted" />
         </IconButton>
       </header>
       <Show when={gitStore.diffError}>{(message) => <p class="panel-error">{message()}</p>}</Show>
@@ -86,89 +86,53 @@ export function WorkingTreeRail(props: { committable: boolean }) {
             </li>
           }
         >
-          {(file) => (
-            <li>
-              <button
-                type="button"
-                class="forge-row git-file"
-                aria-current={selected()?.path === file.path ? "true" : undefined}
-                aria-label={`${file.path}, ${statusWord(file.status)}, ${file.additions} added, ${file.deletions} removed`}
-                onClick={() => setPicked(file.path)}
-              >
-                <span class="git-status" data-status={file.status} aria-hidden="true">
-                  {statusLetter(file.status)}
-                </span>
-                <span class="git-file-path forge-truncate">{file.path}</span>
-                <span class="git-counts" aria-hidden="true">
-                  <Show when={file.additions > 0}>
-                    <span class="added">+{file.additions}</span>
-                  </Show>
-                  <Show when={file.deletions > 0}>
-                    <span class="deleted">−{file.deletions}</span>
-                  </Show>
-                </span>
-              </button>
-            </li>
-          )}
+          {(file) => {
+            const slash = file.path.lastIndexOf("/");
+            return (
+              <li>
+                <button
+                  type="button"
+                  class="forge-row git-file"
+                  aria-current={onPatch() && picked() === file.path ? "true" : undefined}
+                  aria-label={`${file.path}, ${statusWord(file.status)}, ${file.additions} added, ${file.deletions} removed`}
+                  onClick={() => {
+                    setPicked(file.path);
+                    openDiff();
+                  }}
+                >
+                  <span class="git-status" data-status={file.status} aria-hidden="true">
+                    {statusLetter(file.status)}
+                  </span>
+                  <span class="git-file-path forge-truncate">
+                    {file.path.slice(slash + 1)}
+                    <Show when={slash > 0}>
+                      <span class="git-file-dir"> {file.path.slice(0, slash)}</span>
+                    </Show>
+                  </span>
+                  <span class="git-counts" aria-hidden="true">
+                    <Show when={file.additions > 0}>
+                      <span class="added">+{file.additions}</span>
+                    </Show>
+                    <Show when={file.deletions > 0}>
+                      <span class="deleted">−{file.deletions}</span>
+                    </Show>
+                  </span>
+                </button>
+              </li>
+            );
+          }}
         </For>
       </ul>
       <Show when={gitStore.diff?.truncated}>
         <p class="panel-note">Some files were over budget and are not listed.</p>
       </Show>
 
-      <Show when={selected()}>
-        {(file) => (
-          <Show
-            when={hunk()}
-            fallback={
-              <p class="panel-note">
-                {file().binary
-                  ? "Binary file: no lines to preview."
-                  : file().truncated
-                    ? "This patch was over budget and is not shown."
-                    : "No lines changed."}
-              </p>
-            }
-          >
-            {(preview) => (
-              <figure class="forge-card git-hunk" aria-label={`First change in ${file().path}`}>
-                <figcaption class="git-hunk-head">
-                  <span class="forge-caption git-hunk-range">{preview().header}</span>
-                </figcaption>
-                <div class="git-hunk-body">
-                  <For each={preview().rows}>
-                    {(row) => (
-                      <div class="git-hunk-row" data-kind={row.kind}>
-                        <span class="git-hunk-marker" aria-hidden="true">
-                          {row.kind === "added" ? "+" : row.kind === "removed" ? "−" : " "}
-                        </span>
-                        <span>{row.text}</span>
-                      </div>
-                    )}
-                  </For>
-                </div>
-                <Show when={preview().hiddenRows > 0 || preview().more > 0}>
-                  <p class="forge-caption git-hunk-foot">
-                    {[
-                      preview().hiddenRows > 0 ? `${preview().hiddenRows} more lines` : null,
-                      preview().more > 0
-                        ? `${preview().more} more hunk${preview().more === 1 ? "" : "s"}`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </p>
-                </Show>
-              </figure>
-            )}
-          </Show>
-        )}
-      </Show>
+      <span class="git-tree-spacer" />
 
       <div class="git-commit">
         <TextArea
-          label="Message"
-          rows={2}
+          label="Commit message"
+          rows={3}
           placeholder={props.committable ? "What this change does" : "Finish the replay first"}
           disabled={!props.committable}
           value={message()}
@@ -182,20 +146,25 @@ export function WorkingTreeRail(props: { committable: boolean }) {
         <div class="git-commit-actions">
           <Button
             variant="primary"
+            size="lg"
             class="git-commit-button"
             disabled={!canCommit()}
             loading={busy()}
             onClick={commit}
           >
             {commitLabel(files().length)}
+            <Show when={files().length > 0}>
+              <Kbd chord={COMMIT_CHORD} bare class="git-commit-chord" />
+            </Show>
           </Button>
           <IconButton
             label="Draft the message with Juva"
             variant="secondary"
+            size="lg"
             disabled={!props.committable || files().length === 0}
             onClick={draft}
           >
-            <Icon name="edit" size={14} />
+            <Icon name="sparkles" size={15} />
           </IconButton>
         </div>
         <p class="forge-caption git-commit-note">
@@ -204,37 +173,33 @@ export function WorkingTreeRail(props: { committable: boolean }) {
             : "Nothing can be committed while the replay is stopped."}
         </p>
         <Show when={error()}>{(message) => <p class="panel-error">{message()}</p>}</Show>
-      </div>
-
-      <div class="git-actions">
-        <Button variant="secondary" size="sm" disabled={files().length === 0} onClick={openDiff}>
-          Open patch
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => {
-            const workspace = activeWorkspace();
-            if (workspace) {
-              openCompare(workspace);
-              void loadBranchCompare(workspace).catch(() => undefined);
-            }
-          }}
-        >
-          Preview PR
-        </Button>
-        <Show when={files().length > 0}>
+        <div class="git-actions">
           <Button
-            variant="secondary"
+            variant="ghost"
             size="sm"
             onClick={() => {
               const workspace = activeWorkspace();
-              if (workspace) openComposeForWorkspace(workspace);
+              if (workspace) {
+                openCompare(workspace);
+                void loadBranchCompare(workspace).catch(() => undefined);
+              }
             }}
           >
-            Open PR with agent…
+            Preview PR
           </Button>
-        </Show>
+          <Show when={files().length > 0}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const workspace = activeWorkspace();
+                if (workspace) openComposeForWorkspace(workspace);
+              }}
+            >
+              Open PR with agent…
+            </Button>
+          </Show>
+        </div>
       </div>
     </section>
   );

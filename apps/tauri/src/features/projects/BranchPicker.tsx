@@ -1,5 +1,6 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { createWorktree, fetchRemote } from "./commands";
+import { createWorktree } from "./commands";
+import { fetchRemote } from "../git/commands";
 import { launchAgent, launchShell } from "../sessions/sessionActions";
 import { forgeStore } from "../../state/forgeStore";
 import { projectDialogsStore, setProjectDialogsStore } from "./dialogs";

@@ -1616,6 +1616,7 @@
   --attention-tint-bg: color-mix(in srgb, var(--attention) 7%, transparent);
   --attention-tint-border: color-mix(in srgb, var(--attention) 30%, transparent);
   --diff-meta-bg: color-mix(in srgb, var(--fg-default) 4%, var(--forge-editor));
+  --diff-hunk-bg: color-mix(in srgb, var(--info-solid) 7%, var(--forge-editor));
   --merge-ours-bg: color-mix(in srgb, var(--info-solid) 12%, transparent);
   --merge-theirs-bg: color-mix(in srgb, var(--git-untracked-text) 12%, transparent);
   --find-match-bg: color-mix(in srgb, var(--warning-solid) 28%, transparent);

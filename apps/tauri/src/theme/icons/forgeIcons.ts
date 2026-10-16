@@ -50,6 +50,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Settings,
   SquareTerminal,
   Trash2,
@@ -97,7 +98,8 @@ export type ForgeIconName =
   | "maximize"
   | "more-horizontal"
   | "image"
-  | "image-off";
+  | "image-off"
+  | "sparkles";
 
 export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "git-branch": GitBranch,
@@ -139,4 +141,5 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "more-horizontal": MoreHorizontal,
   image: ImageIcon,
   "image-off": ImageOffIcon,
+  sparkles: Sparkles,
 };

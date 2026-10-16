@@ -401,8 +401,8 @@
 .diff-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-10);
-  padding: var(--space-10) var(--space-12);
+  gap: var(--space-12);
+  padding: 0 var(--space-16) var(--space-16);
 }
 /* The rail and the diff scroll on their own, so picking a file deep in the
    list does not scroll the list away. */
@@ -452,20 +452,29 @@
   align-items: center;
   color: var(--fg-muted);
   display: flex;
+  flex: none;
+  font-family: var(--font-sans);
   font-size: var(--text-sm);
-  gap: var(--space-10);
+  gap: var(--space-12);
+  height: 44px;
+  padding-left: var(--space-4);
+}
+.diff-header-files {
+  color: var(--fg-strong);
+  font-weight: var(--weight-medium);
 }
 .diff-file {
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-list);
   flex-shrink: 0;
+  overflow: hidden;
 }
 .diff-file-head {
-  background: var(--bg-raised);
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: var(--bg-float);
   font-size: var(--text-sm);
-  gap: var(--space-8);
-  padding: var(--space-6) var(--space-8);
+  gap: var(--space-10);
+  min-height: 38px;
+  padding: 0 var(--space-14);
   position: sticky;
   top: 0;
   width: 100%;
@@ -522,7 +531,10 @@
 .forge-diff-removed {
   background-color: var(--forge-diff-removed-bg);
 }
-.forge-diff-hunk,
+.forge-diff-hunk {
+  color: var(--forge-faint);
+  background-color: var(--diff-hunk-bg);
+}
 .forge-diff-meta {
   color: var(--fg-subtle);
   background-color: var(--diff-meta-bg);
@@ -537,8 +549,7 @@
   color: inherit;
 }
 .forge-diff-gutter {
-  color: var(--fg-subtle);
-  opacity: var(--opacity-dim);
+  color: var(--fg-rule);
   padding: 0 0.5ch;
   text-align: right;
   user-select: none;
