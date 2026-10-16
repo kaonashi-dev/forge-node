@@ -706,6 +706,80 @@ function Primitives() {
         </div>
       </Section>
 
+      <Section title="Shell — the card's strip and footer, a pinned wait, tree rows">
+        <div class="gallery-shell">
+          <div class="work-card">
+            <div class="card-strip">
+              <div class="session-tab-wrap code-tab-wrap">
+                <span class="session-tab">
+                  <Icon name="file-code" size={14} class="forge-icon-muted" />
+                  <span class="session-tab-label">Code</span>
+                  <span class="session-tab-count">3</span>
+                </span>
+              </div>
+              <div class="session-tab-wrap">
+                <span class="session-tab">
+                  <WorkMarker work="idle" />
+                  <span class="session-tab-label">Terminal 1</span>
+                </span>
+              </div>
+              <div class="session-tab-wrap active">
+                <span class="session-tab">
+                  <WorkMarker work="working" />
+                  <span class="session-tab-label">Calm redesign</span>
+                </span>
+              </div>
+              <span class="tab-strip-spacer" />
+              <button type="button" class="waiting-pill">
+                <span class="waiting-pill-dot" aria-hidden="true" />1 waiting
+              </button>
+              <Button variant="ghost" size="md">
+                Changes <span class="session-actions-count">0</span>
+              </Button>
+            </div>
+            <div class="gallery-shell-body" />
+            <footer class="card-footer">
+              <span class="card-footer-place">forge-node</span>
+              <span class="card-footer-sep">/</span>
+              <span class="card-footer-mono card-footer-strong">main</span>
+              <span class="card-footer-sep">·</span>
+              <span>no changes</span>
+              <span class="card-footer-spacer" />
+              <span class="card-footer-mono">132 × 42</span>
+            </footer>
+          </div>
+          <div class="gallery-shell-side">
+            <button type="button" class="needs-you-card">
+              <span class="needs-you-line">
+                <span class="forge-attention-dot" aria-hidden="true" />
+                <span class="needs-you-title forge-truncate">Migrate the admin portal</span>
+                <span class="needs-you-waited">12m</span>
+              </span>
+              <span class="needs-you-place forge-truncate">admin-portal · waiting on you</span>
+            </button>
+            <button type="button" class="forge-row tree-row project">
+              <span class="project-avatar current">F</span>
+              <span class="tree-label">forge-node</span>
+              <span class="tree-meta">main</span>
+            </button>
+            <div class="tree-guide">
+              <button type="button" class="forge-row tree-row">
+                <Icon name="square-terminal" size={14} class="forge-icon-muted" />
+                <span class="tree-label">
+                  Shell <span class="tree-path">~/forge-node</span>
+                </span>
+                <WorkMarker work="idle" />
+              </button>
+              <button type="button" class="forge-row tree-row" aria-current="true">
+                <Icon name="agent" size={14} class="forge-icon-muted" />
+                <span class="tree-label">Calm redesign</span>
+                <WorkMarker work="working" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </Section>
+
       <Section title="Dialogs">
         <div class="gallery-row">
           <Button variant="secondary" onClick={() => setDialog(true)}>
