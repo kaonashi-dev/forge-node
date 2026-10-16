@@ -149,7 +149,7 @@ const CONTROL_HEIGHTS: Sample[] = [
   ["--row-h", "row-h"],
   ["--tree-row-h", "tree-row-h"],
   ["--tab-h", "tab-h"],
-  ["--footer-h", "footer-h"],
+  ["--location-h", "location-h"],
   ["--strip-h", "strip-h"],
 ];
 const TYPE_SCALE: Sample[] = [
@@ -706,7 +706,7 @@ function Primitives() {
         </div>
       </Section>
 
-      <Section title="Shell — the card's strip and footer, a pinned wait, tree rows">
+      <Section title="Shell — the card's strip and location, a pinned wait, tree rows">
         <div class="gallery-shell">
           <div class="work-card">
             <div class="card-strip">
@@ -737,16 +737,16 @@ function Primitives() {
                 Changes <span class="session-actions-count">0</span>
               </Button>
             </div>
-            <div class="gallery-shell-body" />
-            <footer class="card-footer">
-              <span class="card-footer-place">forge-node</span>
-              <span class="card-footer-sep">/</span>
-              <span class="card-footer-mono card-footer-strong">main</span>
-              <span class="card-footer-sep">·</span>
+            <div class="card-location">
+              <span class="card-location-place">forge-node</span>
+              <span class="card-location-sep">/</span>
+              <span class="card-location-mono card-location-strong">main</span>
+              <span class="card-location-sep">·</span>
               <span>no changes</span>
-              <span class="card-footer-spacer" />
-              <span class="card-footer-mono">132 × 42</span>
-            </footer>
+              <span class="card-location-spacer" />
+              <span class="card-location-mono">132 × 42</span>
+            </div>
+            <div class="gallery-shell-body" />
           </div>
           <div class="gallery-shell-side">
             <button type="button" class="needs-you-card">

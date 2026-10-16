@@ -21,8 +21,8 @@ function syncLabel(workspace: Workspace): string | null {
   return `↑${ahead ?? 0} ↓${behind ?? 0}`;
 }
 
-/** Location and status for whatever the card is showing: project / checkout / path. */
-export function CardFooter() {
+/** Under the strip: where the card is (project / checkout / file) and the state of the tree. */
+export function CardLocation() {
   const session = createMemo(
     () => forgeStore.sessions.find((item) => item.id === connectionStore.activeSession) ?? null,
   );
@@ -48,36 +48,36 @@ export function CardFooter() {
   });
 
   return (
-    <footer class="card-footer">
+    <div class="card-location">
       <Show when={project()}>
-        {(item) => <span class="card-footer-place forge-truncate">{item().name}</span>}
+        {(item) => <span class="card-location-place forge-truncate">{item().name}</span>}
       </Show>
       <Show when={workspace()}>
         {(item) => (
           <>
-            <span class="card-footer-sep" aria-hidden="true">
+            <span class="card-location-sep" aria-hidden="true">
               /
             </span>
-            <span class="card-footer-mono card-footer-strong forge-truncate">
+            <span class="card-location-mono card-location-strong forge-truncate">
               {item().branch ?? item().display_name ?? item().path}
             </span>
             <Show when={path()}>
               {(file) => (
                 <>
-                  <span class="card-footer-sep" aria-hidden="true">
+                  <span class="card-location-sep" aria-hidden="true">
                     /
                   </span>
-                  <span class="card-footer-mono forge-truncate">{file()}</span>
+                  <span class="card-location-mono forge-truncate">{file()}</span>
                 </>
               )}
             </Show>
             <Show when={syncLabel(item())}>
-              {(sync) => <span class="card-footer-mono card-footer-strong">{sync()}</span>}
+              {(sync) => <span class="card-location-mono card-location-strong">{sync()}</span>}
             </Show>
             <Show when={treeLabel(item())}>
               {(tree) => (
                 <>
-                  <span class="card-footer-sep" aria-hidden="true">
+                  <span class="card-location-sep" aria-hidden="true">
                     ·
                   </span>
                   <span>{tree()}</span>
@@ -87,14 +87,14 @@ export function CardFooter() {
           </>
         )}
       </Show>
-      <span class="card-footer-spacer" />
+      <span class="card-location-spacer" />
       <Show when={onCode() && editorFooter()}>
         {(facts) => (
           <>
             <Show when={facts().position}>
-              {(position) => <span class="card-footer-mono card-footer-strong">{position()}</span>}
+              {(position) => <span class="card-location-mono card-location-strong">{position()}</span>}
             </Show>
-            <span class="card-footer-mono">
+            <span class="card-location-mono">
               {[...facts().details, facts().mark].filter(Boolean).join(" · ")}
             </span>
           </>
@@ -103,11 +103,11 @@ export function CardFooter() {
       <Show when={!onCode()}>
         <Show when={provider()}>{(name) => <span class="forge-truncate">{name()}</span>}</Show>
         <Show when={session() && terminalStore.cols > 0}>
-          <span class="card-footer-mono">
+          <span class="card-location-mono">
             {terminalStore.cols} × {terminalStore.rows}
           </span>
         </Show>
       </Show>
-    </footer>
+    </div>
   );
 }

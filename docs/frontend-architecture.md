@@ -18,7 +18,7 @@ src/
     lifecycle/             listener binding, effects startup, connection
       events/              Tauri listener groups and event application
     integrations/          checkout/workspace coordination and path retargeting
-    shell/                 window composition: AppShell, Sidebar, CardStrip, CenterStack, CardFooter
+    shell/                 window composition: AppShell, Sidebar, CardStrip, CenterStack, CardLocation
       dialogs/             application-level confirm/text-input
       tabs/                tab strip interaction (order and MRU live in navigation/)
     palette/               command/file palette composition

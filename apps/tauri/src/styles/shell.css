@@ -667,37 +667,38 @@
   width: 6px;
 }
 
-/* ----------------------------------------------------------- card footer --- */
+/* --------------------------------------------------------- card location --- */
 
-.card-footer {
+/* Where the card is, under the strip: project / checkout / file, then state. */
+.card-location {
   align-items: center;
-  border-top: 1px solid var(--surface);
+  border-bottom: 1px solid var(--surface);
   color: var(--forge-faint);
   display: flex;
   flex-shrink: 0;
   font-size: var(--text-xs);
   gap: var(--space-8);
-  height: var(--footer-h);
+  height: var(--location-h);
   min-width: 0;
   padding: 0 var(--space-16) 0 var(--space-20);
   white-space: nowrap;
 }
-.card-footer-place,
-.card-footer-path {
+.card-location-place,
+.card-location-path {
   color: var(--fg-muted);
 }
-.card-footer-mono {
+.card-location-mono {
   color: inherit;
   font-family: var(--font-mono);
   font-size: var(--text-mono);
 }
-.card-footer-strong {
+.card-location-strong {
   color: var(--fg-muted);
 }
-.card-footer-sep {
+.card-location-sep {
   color: var(--fg-rule);
 }
-.card-footer-spacer {
+.card-location-spacer {
   flex: 1;
 }
 
@@ -1252,6 +1253,9 @@
   color: var(--fg-subtle);
   flex: 1;
   font-size: var(--text-xs);
+}
+.sidebar-footer-settings {
+  margin-left: auto;
 }
 
 /* Settings replace the sidebar's content: Back, then the sections. */

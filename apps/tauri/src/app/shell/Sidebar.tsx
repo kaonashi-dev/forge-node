@@ -147,29 +147,42 @@ function SettingsNav(props: SidebarProps) {
   );
 }
 
+/**
+ * Settings, plus the daemon's state only while it is not connected: a healthy
+ * connection is the normal case and is read in Settings › General.
+ */
 function SidebarFooter() {
   const state = () => connectionStore.connection.kind;
-  const label = () => {
+  const trouble = () => {
     switch (state()) {
       case "connected":
-        return "Daemon connected";
+        return null;
       case "connecting":
-        return "Connecting to the daemon…";
+        return { label: "Connecting to the daemon…", tone: "idle" };
       case "disconnected":
-        return "Daemon disconnected";
+        return { label: "Daemon disconnected", tone: "error" };
       default:
-        return "Daemon offline";
+        return { label: "Daemon offline", tone: "idle" };
     }
   };
-  const tone = () =>
-    state() === "connected" ? "live" : state() === "disconnected" ? "error" : "idle";
   return (
     <div class="sidebar-footer">
-      <span class={`status-dot ${tone()}`} aria-hidden="true" />
-      <span class="sidebar-footer-label forge-truncate" role="status">
-        {label()}
-      </span>
-      <IconButton label="Settings" size="sm" onClick={() => invokeAction("open_settings")}>
+      <Show when={trouble()}>
+        {(shown) => (
+          <>
+            <span class={`status-dot ${shown().tone}`} aria-hidden="true" />
+            <span class="sidebar-footer-label forge-truncate" role="status">
+              {shown().label}
+            </span>
+          </>
+        )}
+      </Show>
+      <IconButton
+        label="Settings"
+        size="sm"
+        class="sidebar-footer-settings"
+        onClick={() => invokeAction("open_settings")}
+      >
         <Icon name="settings" class="forge-icon-muted" />
       </IconButton>
     </div>

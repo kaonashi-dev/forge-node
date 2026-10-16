@@ -601,7 +601,7 @@ export const metrics = {
   tabH: 32,
   stripH: 46,
   openFilesH: 36,
-  footerH: 32,
+  locationH: 32,
   sidebarW: 300,
   handleW: 4,
   // Density moves `rowH`, `treeRowH` and the control ladder; this is the compact default.
@@ -733,7 +733,7 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--tree-row-h": "var(--forge-tree-row-h)",
   "--strip-h": "var(--forge-strip-h)",
   "--tab-h": "var(--forge-tab-h)",
-  "--footer-h": "var(--forge-footer-h)",
+  "--location-h": "var(--forge-location-h)",
   "--open-files-h": "var(--forge-open-files-h)",
   /* The type scale and the two faces, so a rule names one layer, not both. */
   "--text-xs": "var(--forge-text-xs)",

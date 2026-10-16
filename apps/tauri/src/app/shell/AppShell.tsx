@@ -77,7 +77,7 @@ import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
 import { ResizeHandle } from "./ResizeHandle";
 import { Sidebar } from "./Sidebar";
 import { CardStrip } from "./CardStrip";
-import { CardFooter } from "./CardFooter";
+import { CardLocation } from "./CardLocation";
 import { BranchPicker } from "../../features/projects/BranchPicker";
 import { JuvaDraftDialog } from "../../features/git/JuvaDraftDialog";
 import { ConfirmDialog } from "./dialogs/ConfirmDialog";
@@ -687,10 +687,10 @@ export function AppShell() {
           onSelectCode={showCode}
           onCloseCode={closeCode}
         />
-        <CenterStack settings={settings()} settingsSection={settingsSection() ?? "General"} />
         <Show when={!settings()}>
-          <CardFooter />
+          <CardLocation />
         </Show>
+        <CenterStack settings={settings()} settingsSection={settingsSection() ?? "General"} />
       </section>
       {/* What the host refused, and why. It leaves on its own, but never while
           the pointer or focus is on it, so it cannot vanish mid-read. */}
