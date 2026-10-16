@@ -16,7 +16,7 @@ import { waitingSessions } from "../../features/sessions/waiting";
 import { invokeAction } from "../../actions/dispatch";
 import { Icon } from "../../theme/icons/index";
 import { connectionStore } from "../../state/connection";
-import { SETTINGS_SECTIONS, type Section } from "../../features/settings/sections";
+import { SECTION_ICONS, SETTINGS_SECTIONS, type Section } from "../../features/settings/sections";
 
 const VIEW_LABELS: Record<SidebarView, string> = {
   Projects: "Projects",
@@ -138,6 +138,7 @@ function SettingsNav(props: SidebarProps) {
             aria-current={props.settingsSection === item ? "page" : undefined}
             onClick={() => props.onSettingsSection(item)}
           >
+            <Icon name={SECTION_ICONS[item]} size={15} class="settings-nav-icon" />
             {item}
           </button>
         )}

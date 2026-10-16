@@ -1267,6 +1267,7 @@
   color: var(--fg-muted);
   flex-shrink: 0;
   font-size: var(--text-sm);
+  gap: var(--space-10);
   height: var(--control-lg);
   padding: 0 var(--space-10);
 }
@@ -1275,6 +1276,12 @@
 }
 .settings-nav[aria-current="page"] {
   font-weight: var(--weight-medium);
+}
+.settings-nav-icon {
+  color: var(--fg-subtle);
+}
+.settings-nav[aria-current="page"] .settings-nav-icon {
+  color: var(--accent-text);
 }
 
 .sidebar-body {

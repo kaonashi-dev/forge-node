@@ -50,6 +50,8 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Keyboard,
+  FolderSymlink,
   Sparkles,
   Settings,
   SquareTerminal,
@@ -99,7 +101,9 @@ export type ForgeIconName =
   | "more-horizontal"
   | "image"
   | "image-off"
-  | "sparkles";
+  | "sparkles"
+  | "keyboard"
+  | "folder-symlink";
 
 export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   "git-branch": GitBranch,
@@ -142,4 +146,6 @@ export const ICONS: Record<ForgeIconName, Component<LucideProps>> = {
   image: ImageIcon,
   "image-off": ImageOffIcon,
   sparkles: Sparkles,
+  keyboard: Keyboard,
+  "folder-symlink": FolderSymlink,
 };
