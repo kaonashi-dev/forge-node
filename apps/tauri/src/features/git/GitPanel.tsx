@@ -1,14 +1,16 @@
-import { For, Index, Show, createMemo, onMount } from "solid-js";
+import { For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
 import { forgeStore } from "../../state/forgeStore";
 import { activeWorkspace } from "../../state/workspace";
 import { rebaseInProgress, readyToContinue } from "../../contracts/workbench";
-import { Button, Tooltip } from "../../ui/index";
-import { conflictLabel } from "./conflictPrompt";
+import { Button, Select, Tooltip, type SelectOption } from "../../ui/index";
+import { SessionGlyph } from "../sessions/SessionGlyph";
+import { conflictLabel, resolverChoices, resolverFor } from "./conflictPrompt";
 import { conflictBlocksOf } from "./conflictBlocks";
 import { operationName, rebaseSteps } from "./gitView";
 import { ConflictMark } from "./GitMarks";
 import {
   abortReplay,
+  chooseResolver,
   continueReplay,
   refreshGit,
   resolveWithAgent,
@@ -37,6 +39,27 @@ export function GitPanel() {
       counts.set(file.path, conflictBlocksOf(file.patch).length);
     }
     return counts;
+  });
+
+  const choices = createMemo(() => resolverChoices(forgeStore));
+  const agentOptions = createMemo<SelectOption<string>[]>(() =>
+    choices().map((choice) => ({
+      value: choice.key,
+      label: choice.label,
+      glyph: <SessionGlyph providerId={choice.provider} size={14} />,
+    })),
+  );
+  const [picked, setPicked] = createSignal<string | null>(null);
+  const agentKey = createMemo(() => {
+    const local = picked();
+    if (local && choices().some((choice) => choice.key === local)) return local;
+    const resolver = resolverFor(forgeStore);
+    if (resolver.kind !== "agent") return null;
+    return (
+      choices().find(
+        (choice) => choice.provider === resolver.provider && choice.profile === resolver.profile,
+      )?.key ?? null
+    );
   });
 
   const focused = () => gitStore.conflictFocus ?? rebase()?.conflicts[0]?.path ?? null;
@@ -148,9 +171,28 @@ export function GitPanel() {
             </p>
           </Show>
 
+          <Show when={unresolved() > 0 && agentOptions().length > 0}>
+            <Select
+              class="git-resolver"
+              label="Resolve with"
+              placeholder="Choose an agent"
+              value={agentKey()}
+              options={agentOptions()}
+              onChange={(key) => {
+                setPicked(key);
+                chooseResolver(key);
+              }}
+            />
+          </Show>
+
           <div class="git-actions">
             <Show when={unresolved() > 0}>
-              <Button variant="primary" size="sm" onClick={resolveWithAgent}>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={agentOptions().length > 0 && agentKey() === null}
+                onClick={() => resolveWithAgent(agentKey())}
+              >
                 Resolve with an agent
               </Button>
               <Button variant="secondary" size="sm" onClick={() => reviewConflict(focused())}>

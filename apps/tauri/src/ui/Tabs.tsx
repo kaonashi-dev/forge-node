@@ -35,7 +35,7 @@ export type TabsProps = {
   orientation?: "horizontal" | "vertical";
   class?: string;
   listClass?: string;
-  /** Omit for the kit's underlined trigger. */
+  /** Omit for the kit's raised-chip trigger. */
   triggerClass?: string;
   contentClass?: string;
   /** Rendered after the triggers, inside the list's container. */
@@ -63,7 +63,7 @@ export function Tabs(props: TabsProps) {
       <div class={props.listClass}>
         <Kobalte.List
           class="forge-tab-list"
-          classList={{ "forge-tab-list-underline": props.triggerClass === undefined }}
+          classList={{ "forge-tab-list-chips": props.triggerClass === undefined }}
         >
           <For each={props.tabs}>
             {(tab) => {

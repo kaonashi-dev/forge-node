@@ -1262,7 +1262,6 @@
   --focus-ring-offset: 2px;
   --focus-ring-inset: inset 0 0 0 var(--focus-ring-width) var(--ring);
   --focus-ring-shadow: 0 0 0 2px var(--bg-panel), 0 0 0 4px var(--ring);
-  --tab-underline: inset 0 -2px 0 0 var(--accent);
   --space-1: 1px;
   --space-2: 2px;
   --space-3: 3px;

@@ -385,7 +385,6 @@ html[data-platform="macos"] .title-bar-inset {
   display: block;
 }
 
-/* An inset shadow rather than a border, so the active tab can paint over the seam. */
 .title-bar {
   align-items: center;
   background: var(--bg-window);
@@ -479,8 +478,11 @@ html[data-platform="macos"] .title-bar-inset {
   position: absolute;
 }
 
+/* The sidebar shares the terminal's surface; `--bg-sidebar` is rescoped so
+   what paints "the sidebar" inside it, such as the file tree, follows. */
 .sidebar {
-  background: var(--bg-subtle);
+  --bg-sidebar: var(--bg-terminal);
+  background: var(--bg-terminal);
   border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;

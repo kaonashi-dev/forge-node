@@ -6,8 +6,6 @@
  * what a window *is*, and none of it is behind a route.
  */
 
-/* The strip fills the title bar's height so its tabs sit on the bar's bottom
-   edge, the way the Code strip's tabs sit on theirs. */
 .tab-strip-host {
   align-items: center;
   align-self: stretch;
@@ -51,14 +49,12 @@
   );
 }
 
-/* Inline padding leaves room for the active tab's flares inside the scrollport. */
 .tab-strip {
-  --tab-radius: var(--radius-md);
-  align-items: stretch;
+  align-items: center;
   display: flex;
   gap: var(--space-2);
   min-width: min-content;
-  padding: var(--space-6) var(--tab-radius) 0;
+  padding: 0 var(--space-4);
 }
 
 .tab-strip-trailing {
@@ -78,11 +74,13 @@
    inside it, because a button cannot contain another. */
 .session-tab-wrap {
   align-items: center;
-  border-radius: var(--tab-radius) var(--tab-radius) 0 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   color: var(--fg-muted);
   cursor: grab;
   display: inline-flex;
   flex-shrink: 0;
+  height: var(--control-lg);
   max-width: 200px;
   min-width: 120px;
   padding-right: var(--space-6);
@@ -90,42 +88,15 @@
   touch-action: none;
   -webkit-user-drag: none;
 }
+/* Hover only lifts the text: a hover ground would outshine the active chip. */
 .session-tab-wrap:hover {
-  background: var(--bg-hover);
   color: var(--fg);
 }
-/* The active tab is the top of the panel under it: same surface, no seam,
-   and concave flares where it meets the bar. */
+/* A raised chip rather than a folder tab, the same for sessions and Code. */
 .session-tab-wrap.active {
-  background: var(--bg-panel);
+  background: var(--bg-raised);
+  border-color: var(--border-subtle);
   color: var(--fg);
-  z-index: var(--z-over);
-}
-/* On the inner button: the wrap's own pseudo-elements are the drop markers. */
-.session-tab-wrap.active > .session-tab::before,
-.session-tab-wrap.active > .session-tab::after {
-  bottom: 0;
-  content: "";
-  height: var(--tab-radius);
-  pointer-events: none;
-  position: absolute;
-  width: var(--tab-radius);
-}
-.session-tab-wrap.active > .session-tab::before {
-  background: radial-gradient(
-    circle at 0 0,
-    transparent calc(var(--tab-radius) - 0.5px),
-    var(--bg-panel) var(--tab-radius)
-  );
-  left: calc(-1 * var(--tab-radius));
-}
-.session-tab-wrap.active > .session-tab::after {
-  background: radial-gradient(
-    circle at 100% 0,
-    transparent calc(var(--tab-radius) - 0.5px),
-    var(--bg-panel) var(--tab-radius)
-  );
-  right: calc(-1 * var(--tab-radius));
 }
 .session-tab-wrap.waiting:not(.active) {
   background: var(--attention-bg);
@@ -988,43 +959,41 @@
   flex-direction: column;
   min-height: 0;
 }
+/* The same raised chip as the session tabs, square because each view is a
+   glyph. */
 .sidebar-views {
-  border-bottom: 1px solid var(--line);
   flex-shrink: 0;
-  padding: 0 var(--space-8);
+  padding: var(--space-6) var(--space-8);
 }
 .sidebar-views .forge-tab-list {
-  align-items: stretch;
+  align-items: center;
   flex-wrap: nowrap;
   gap: var(--space-2);
-  height: var(--forge-tab-h);
   overflow-x: auto;
   scrollbar-width: none;
 }
 .sidebar-views .forge-tab-list::-webkit-scrollbar {
   display: none;
 }
-/* The rail sits on the sidebar's top edge, so the chosen view is underlined
-   like a tab rather than filled like a row. */
 .sidebar-view-tab {
   background: transparent;
-  border: 0;
-  border-radius: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   color: var(--fg-caption);
   flex: none;
-  font-size: var(--text-xs);
-  height: auto;
-  padding: 0 var(--space-8);
+  height: var(--control-md);
+  padding: 0;
   position: relative;
 }
 .sidebar-view-tab.forge-tab-icon {
-  width: var(--forge-tab-h);
-}
-.sidebar-view-tab[data-selected] {
-  box-shadow: var(--tab-underline);
-  color: var(--fg);
+  width: var(--control-md);
 }
 .sidebar-view-tab:hover {
+  color: var(--fg);
+}
+.sidebar-view-tab[data-selected] {
+  background: var(--bg-raised);
+  border-color: var(--border-subtle);
   color: var(--fg);
 }
 .sidebar-view-tab:focus-visible {
@@ -1032,7 +1001,7 @@
   outline: none;
 }
 .sidebar-view-tab .forge-tab-badge {
-  inset: var(--space-4) 0 auto auto;
+  inset: calc(-1 * var(--space-2)) calc(-1 * var(--space-2)) auto auto;
 }
 /* An icon trigger is square: the glyph is the label, so horizontal padding
    would only push the seven of them apart. */
