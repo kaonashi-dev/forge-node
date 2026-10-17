@@ -47,6 +47,24 @@ describe("scale coherence", () => {
   });
 });
 
+describe("text hierarchy", () => {
+  it.each(["calm-dark", "calm-light"] as const)(
+    "keeps %s's muted and subtle text a visible step apart",
+    (base) => {
+      const v = toCssVariables(palettes[base]);
+      expect(
+        contrast(parseHex(v["--fg-muted"]), parseHex(v["--fg-subtle"])),
+      ).toBeGreaterThanOrEqual(1.2);
+    },
+  );
+
+  it("lands Calm Dark's secondary text on the specified greys", () => {
+    const v = toCssVariables(palettes["calm-dark"]);
+    expect(v["--fg-muted"]).toBe("#a0a0a8");
+    expect(v["--fg-subtle"]).toBe("#8a8a93");
+  });
+});
+
 describe("AA contrast", () => {
   const AA = 4.5;
   const c = (a: string, b: string) => contrast(parseHex(a), parseHex(b));
@@ -82,8 +100,6 @@ describe("AA contrast", () => {
       ];
       for (const token of [
         "--fg-default",
-        "--fg-muted",
-        "--fg-subtle",
         "--accent-text",
         "--danger-text",
         "--success-text",
@@ -102,6 +118,12 @@ describe("AA contrast", () => {
         expect(minimum, `${base} contrast ${level}: ${token}`).toBeGreaterThanOrEqual(
           token === "--forge-focus-ring" ? 3 : AA,
         );
+      }
+      // Secondary text is held to the grounds it is set on, not to the tints.
+      const textGrounds = [p.rail, p.sidebar, p.bg, p.strip, p.surface, p.editor];
+      for (const token of ["--fg-muted", "--fg-subtle"]) {
+        const minimum = Math.min(...textGrounds.map((ground) => c(v[token], ground)));
+        expect(minimum, `${base} contrast ${level}: ${token}`).toBeGreaterThanOrEqual(AA);
       }
       for (const [role, fill] of Object.entries({
         accent: p.accent,

@@ -203,7 +203,7 @@ export const palettes = {
       gitConflict: "#a04a08",
       gitIgnored: "#67676f",
       fgDefault: "#2e2e33",
-      fgSubtle: "#62626a",
+      fgSubtle: "#6d6d75",
       border: "#e4e4e7",
       finish: { tab: "#ffffff", rule: "#e9e9eb" },
     },
@@ -897,6 +897,20 @@ function semanticColors(
       ),
     ),
   ];
+  /*
+   * Secondary and tertiary text sit on the window, the sidebar, the card, the
+   * strip and a raised surface, never on an accent tint (a chosen row reads in
+   * default text). Holding them to the tints too pulled both up to the same
+   * grey and erased the step between them.
+   */
+  const textGrounds = [
+    active.rail,
+    active.sidebar,
+    active.bg,
+    active.strip,
+    active.surface,
+    active.editor,
+  ].map(parseHex);
   const foreground = (fill: number) => {
     const candidate = on(fill, bg, text);
     return hex(contrast(candidate, fill) >= 4.5 ? candidate : on(fill, 0, 0xffffff));
@@ -904,8 +918,8 @@ function semanticColors(
   const colors: Record<string, string> = {
     "--forge-text-strong": hex(readableColor(text, grounds, text)),
     "--fg-default": hex(readableColor(parseHex(active.fgDefault ?? active.text), grounds, text)),
-    "--fg-muted": hex(readableColor(parseHex(active.muted), grounds, text)),
-    "--fg-subtle": hex(readableColor(parseHex(active.fgSubtle ?? active.faint), grounds, text)),
+    "--fg-muted": hex(readableColor(parseHex(active.muted), textGrounds, text)),
+    "--fg-subtle": hex(readableColor(parseHex(active.fgSubtle ?? active.faint), textGrounds, text)),
     "--accent-soft": hex(soft(active.accent)),
     "--danger-soft": hex(soft(active.red)),
     "--forge-focus-ring": hex(readableColor(parseHex(active.accent), grounds, text, 3)),

@@ -88,8 +88,8 @@
   --forge-activity-tint: #2b2518;
   --forge-text-strong: #ededef;
   --fg-default: #c9c9cf;
-  --fg-muted: #afafb6;
-  --fg-subtle: #aeaeb4;
+  --fg-muted: #a0a0a8;
+  --fg-subtle: #8a8a93;
   --accent-soft: #2f2f30;
   --danger-soft: #321f1f;
   --forge-focus-ring: #e4e4e7;
@@ -244,8 +244,8 @@
   --forge-activity-tint: #f2ece1;
   --forge-text-strong: #1a1a1c;
   --fg-default: #2e2e33;
-  --fg-muted: #56565d;
-  --fg-subtle: #56565d;
+  --fg-muted: #5e5e66;
+  --fg-subtle: #6d6d75;
   --accent-soft: #e1e1e1;
   --danger-soft: #f5dfdf;
   --forge-focus-ring: #27272a;
@@ -400,8 +400,8 @@
   --forge-activity-tint: #322c1d;
   --forge-text-strong: #ede5d6;
   --fg-default: #ede5d6;
-  --fg-muted: #b6aea1;
-  --fg-subtle: #b7afa2;
+  --fg-muted: #aea69a;
+  --fg-subtle: #8d857a;
   --accent-soft: #212c2a;
   --danger-soft: #362421;
   --forge-focus-ring: #4fa39b;
@@ -556,8 +556,8 @@
   --forge-activity-tint: #eee8d8;
   --forge-text-strong: #26231f;
   --fg-default: #26231f;
-  --fg-muted: #5d574d;
-  --fg-subtle: #5b564e;
+  --fg-muted: #6b6459;
+  --fg-subtle: #706a61;
   --accent-soft: #dce6e0;
   --danger-soft: #f0ddd8;
   --forge-focus-ring: #29766f;
@@ -712,8 +712,8 @@
   --forge-activity-tint: #423a29;
   --forge-text-strong: #ebdbb2;
   --fg-default: #ebdbb2;
-  --fg-muted: #cabb9c;
-  --fg-subtle: #cbbb9c;
+  --fg-muted: #bdae93;
+  --fg-subtle: #a79883;
   --accent-soft: #2c3536;
   --danger-soft: #462d2a;
   --forge-focus-ring: #7aa196;
@@ -868,8 +868,8 @@
   --forge-activity-tint: #423a29;
   --forge-text-strong: #ebdbb2;
   --fg-default: #ebdbb2;
-  --fg-muted: #d9c9a6;
-  --fg-subtle: #d9c9a6;
+  --fg-muted: #bdae93;
+  --fg-subtle: #b2a38a;
   --accent-soft: #403538;
   --danger-soft: #462d2a;
   --forge-focus-ring: #d7949f;
@@ -1024,8 +1024,8 @@
   --forge-activity-tint: #251f0a;
   --forge-text-strong: #fafafa;
   --fg-default: #fafafa;
-  --fg-muted: #a4a4a4;
-  --fg-subtle: #a5a5a5;
+  --fg-muted: #a1a1a1;
+  --fg-subtle: #8a8a8a;
   --accent-soft: #201c2c;
   --danger-soft: #2d1717;
   --forge-focus-ring: #a78bfa;
@@ -1180,8 +1180,8 @@
   --forge-activity-tint: #eedfb0;
   --forge-text-strong: #3c3836;
   --fg-default: #3c3836;
-  --fg-muted: #5b534d;
-  --fg-subtle: #5b524c;
+  --fg-muted: #5f5750;
+  --fg-subtle: #675d55;
   --accent-soft: #d9ddbc;
   --danger-soft: #eecfac;
   --forge-focus-ring: #076678;
@@ -1337,7 +1337,7 @@
   --forge-text-strong: #171717;
   --fg-default: #171717;
   --fg-muted: #565656;
-  --fg-subtle: #595959;
+  --fg-subtle: #6e6e6e;
   --accent-soft: #e8e0f5;
   --danger-soft: #f5dfdf;
   --forge-focus-ring: #5b21b6;
@@ -1492,8 +1492,8 @@
   --forge-activity-tint: #2b2d23;
   --forge-text-strong: #fafafa;
   --fg-default: #fafafa;
-  --fg-muted: #b6b6b6;
-  --fg-subtle: #b7b7b7;
+  --fg-muted: #a1a1a1;
+  --fg-subtle: #8e8e8e;
   --accent-soft: #203445;
   --danger-soft: #332530;
   --forge-focus-ring: #7dcfff;
@@ -1648,8 +1648,8 @@
   --forge-activity-tint: #2e301d;
   --forge-text-strong: #c7c7c7;
   --fg-default: #c7c7c7;
-  --fg-muted: #b5b5b5;
-  --fg-subtle: #b5b5b5;
+  --fg-muted: #969696;
+  --fg-subtle: #959595;
   --accent-soft: #28372a;
   --danger-soft: #37271f;
   --forge-focus-ring: #8ec07c;

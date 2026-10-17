@@ -1427,6 +1427,10 @@
 .forge-toast-success .forge-toast-icon {
   color: var(--success-text);
 }
+/* Muted text is only held to plain grounds, and this one is a danger tint. */
+.forge-toast-danger .forge-toast-detail {
+  color: var(--fg-default);
+}
 .forge-toast-danger .forge-toast-icon {
   color: var(--danger-text);
 }
