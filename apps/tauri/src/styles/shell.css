@@ -1012,7 +1012,11 @@
 }
 /* A row's + and ⋯ sit over its trailing marks, hidden until the row is
    hovered or one of them has focus; the marks then step aside. */
+/* The marks keep room for both actions, so revealing them covers nothing
+   but the marks they replace. */
 .ws-marks {
+  justify-content: flex-end;
+  min-width: calc(2 * var(--control-xs) + var(--space-2));
   position: relative;
 }
 .row-marks {
