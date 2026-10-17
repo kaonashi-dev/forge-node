@@ -59,7 +59,7 @@ export function CardLocation() {
               /
             </span>
             <span class="card-location-mono card-location-strong forge-truncate">
-              {item().branch ?? item().display_name ?? item().path}
+              {item().display_name ?? item().branch ?? item().path}
             </span>
             <Show when={path()}>
               {(file) => (

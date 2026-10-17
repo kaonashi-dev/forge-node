@@ -1158,7 +1158,7 @@ function WorkspaceCard(props: {
           />
           <span class="tree-label ws-label forge-truncate">{props.workspace.label}</span>
           <Show when={!props.workspace.worktree}>
-            <Badge>primary</Badge>
+            <span class="tree-meta">primary</span>
           </Show>
         </button>
         <CheckoutMarks
