@@ -176,6 +176,13 @@
   box-shadow: var(--attention-halo);
 }
 
+/* A chosen glyph fills one region at 20% of its own colour, so state never
+   rests on colour alone. */
+:is([data-selected], [aria-current="page"], [aria-current="true"]) .glyph-region {
+  fill: currentColor;
+  fill-opacity: 0.2;
+}
+
 /* A project's place, in its hue: always a square, because circles are states. */
 .hue-mark {
   background: var(--project-hue);

@@ -45,10 +45,22 @@ const NAMES: ForgeIconName[] = [
   "sparkles",
   "keyboard",
   "folder-symlink",
+  "worktree",
+  "commit",
+  "fetch",
+  "push",
+  "patch",
+  "merged",
+  "conflict",
+  "spawn-child",
+  "idle",
+  "exited",
+  "failed",
+  "command-palette",
 ];
 
 describe("forgeIcons", () => {
-  it("backs every UI name with a lucide component", () => {
+  it("backs every UI name with a component", () => {
     for (const name of NAMES) {
       expect(typeof ICONS[name], name).toBe("function");
     }

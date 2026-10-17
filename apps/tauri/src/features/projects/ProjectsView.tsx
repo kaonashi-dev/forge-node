@@ -1153,7 +1153,7 @@ function WorkspaceCard(props: {
         >
           <Twisty open={props.open} />
           <Icon
-            name="git-branch"
+            name={props.workspace.worktree ? "worktree" : "git-branch"}
             size={12}
             class={current() ? "forge-icon-accent" : "forge-icon-muted"}
           />

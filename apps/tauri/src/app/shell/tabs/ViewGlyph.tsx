@@ -9,7 +9,7 @@ export function ViewGlyph(props: { view: WorkbenchView; size?: number }) {
     const view = props.view;
     switch (view.kind) {
       case "diff":
-        return { icon: "git-branch", tone: "forge-icon-amber" } as const;
+        return { icon: "patch", tone: "forge-icon-amber" } as const;
       case "review":
         return { icon: "list-checks", tone: "forge-icon-accent" } as const;
       case "pr_detail":

@@ -123,7 +123,7 @@ export function GitPanel() {
               <Button
                 variant="ghost"
                 size="xs"
-                iconLeading={<Icon name="refresh" size={13} class="forge-icon-muted" />}
+                iconLeading={<Icon name="fetch" size={13} class="forge-icon-muted" />}
                 onClick={() => void fetchRemote(checkout().project_id).catch(() => undefined)}
               >
                 Fetch

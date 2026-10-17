@@ -50,7 +50,7 @@ export function sessionMenuItems(session: Session, displayedTitle: string): Menu
     {
       kind: "item",
       label: "Spawn Child…",
-      icon: "git-branch",
+      icon: "spawn-child",
       run: () =>
         requestSpawnChild({
           parent: session.id,
