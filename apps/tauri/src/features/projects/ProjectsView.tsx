@@ -529,7 +529,13 @@ export function ProjectsView() {
    */
   const [tree, setTree] = createStore<GroupNode[]>([]);
   createComputed(() => applyRailTree(setTree, buildTree(forgeStore, workspaceOrder(), tabOrder())));
-  createComputed(() => workspaceArrivals.prime(forgeStore.workspaces.map((item) => item.id)));
+  // Stamps arrivals as the store gains them: a workspace change, never a frame.
+  createComputed(() =>
+    workspaceArrivals.note(
+      forgeStore.workspaces.map((item) => item.id),
+      Date.now(),
+    ),
+  );
 
   function persistProjectOrder(projectId: string, ids: string[]): void {
     const next = { ...workspaceOrder(), [projectId]: ids };
@@ -1133,7 +1139,7 @@ function WorkspaceCard(props: {
     ),
   );
   const codeActive = () => centerMode() === "code" && activeWorkspace() === props.workspace.id;
-  const arrived = workspaceArrivals.arrived(props.workspace.id);
+  const arrived = workspaceArrivals.arrived(props.workspace.id, Date.now());
   const current = createMemo(
     () =>
       codeActive() ||
