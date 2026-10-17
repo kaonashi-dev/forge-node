@@ -1309,6 +1309,12 @@
   color: var(--accent-text);
 }
 
+.sidebar-work {
+  display: contents;
+}
+.sidebar-work[hidden] {
+  display: none;
+}
 .sidebar-body {
   display: flex;
   flex: 1;

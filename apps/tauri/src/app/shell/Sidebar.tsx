@@ -88,7 +88,9 @@ export function Sidebar(props: SidebarProps) {
           </IconButton>
         </Show>
       </div>
-      <Show when={!props.settings} fallback={<SettingsNav {...props} />}>
+      {/* Hidden, not unmounted: Settings is a trip, and ProjectsView's scroll
+          and cursor must be where they were on the way back. */}
+      <div class="sidebar-work" hidden={props.settings}>
         <button
           type="button"
           class="sidebar-jump"
@@ -108,6 +110,9 @@ export function Sidebar(props: SidebarProps) {
           contentClass="sidebar-body"
           tabs={tabs}
         />
+      </div>
+      <Show when={props.settings}>
+        <SettingsNav {...props} />
       </Show>
       <SidebarFooter />
     </aside>

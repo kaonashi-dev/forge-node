@@ -1,13 +1,4 @@
-import {
-  For,
-  Show,
-  createComputed,
-  createEffect,
-  createMemo,
-  createSelector,
-  createSignal,
-  on,
-} from "solid-js";
+import { For, Show, createComputed, createMemo, createSelector, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { applyRailTree } from "./railTree";
 import { SIDEBAR } from "../../actions/actions";
@@ -74,7 +65,6 @@ function railRowId(id: string): string {
   return `rail-${encodeURIComponent(id)}`;
 }
 import { sessionDisplayTitle } from "../sessions/sessionTree";
-import { sidebarView } from "../../navigation/sidebarStore";
 import { waitedFor } from "../sessions/attention";
 import { hasQuestion, waitingSessions } from "../sessions/waiting";
 import { gitStore } from "../git/state";
@@ -622,29 +612,29 @@ export function ProjectsView() {
   onCleanup(releaseKeyboard);
 
   /*
-   * This view stays mounted while hidden, so neither cleanup nor a `focusout`
-   * is guaranteed to release SIDEBAR when it goes — not every engine sends one
-   * for a focused element that becomes `display: none` — and a live context
-   * would hand `MOD-Enter` to this tree instead of the terminal.
+   * This view stays mounted while hidden — behind another sidebar view or
+   * behind Settings — so neither cleanup nor a `focusout` is guaranteed to
+   * release SIDEBAR when it goes: not every engine sends one for a focused
+   * element that becomes `display: none`, and a live context would hand
+   * `MOD-Enter` to this tree instead of the terminal.
    *
-   * The scroll offset has the opposite problem: WKWebView drops it for a
-   * `display: none` box, and by the time this runs the attribute has already
-   * been applied. So the offset is kept from the scroll events and put back on
-   * the way in.
+   * WKWebView also drops the scroll offset of a `display: none` box, so the
+   * offset is kept from scroll events while the view has a height and put back
+   * when it has one again. A resize observer sees both ways of hiding.
    */
   let viewEl: HTMLDivElement | undefined;
   let keptScroll = 0;
 
-  createEffect(
-    on(
-      () => sidebarView() === "Projects",
-      (visible) => {
-        if (!visible) releaseKeyboard();
-        else if (viewEl) viewEl.scrollTop = keptScroll;
-      },
-      { defer: true },
-    ),
-  );
+  onMount(() => {
+    if (!viewEl || typeof ResizeObserver === "undefined") return;
+    const el = viewEl;
+    const observer = new ResizeObserver(() => {
+      if (el.clientHeight === 0) releaseKeyboard();
+      else if (el.scrollTop !== keptScroll) el.scrollTop = keptScroll;
+    });
+    observer.observe(el);
+    onCleanup(() => observer.disconnect());
+  });
 
   onMount(() => {
     const bound = [
@@ -693,7 +683,7 @@ export function ProjectsView() {
       class="projects-view"
       ref={viewEl}
       onScroll={(event) => {
-        if (sidebarView() === "Projects") keptScroll = event.currentTarget.scrollTop;
+        if (event.currentTarget.clientHeight > 0) keptScroll = event.currentTarget.scrollTop;
       }}
     >
       {/* A question that has been waiting is the one thing that must not need
