@@ -649,7 +649,7 @@ export function AppShell() {
   return (
     <main
       class="app-shell"
-      classList={{ "sidebar-collapsed": !sidebarOpen() }}
+      classList={{ "sidebar-collapsed": !(sidebarOpen() || settings()) }}
       style={{ "--sidebar-w": `${sidebarWidth()}px` }}
     >
       <Show when={sidebarOpen() || settings()}>
