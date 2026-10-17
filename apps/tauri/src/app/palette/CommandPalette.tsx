@@ -254,22 +254,13 @@ function WaitingNote(props: { session: string }) {
   );
 }
 
-function workspaceOfChoice(
-  choice:
-    | { kind: "focus_session"; session: string }
-    | { kind: "focus_workspace"; workspace: string },
-): string | undefined {
-  if (choice.kind === "focus_workspace") return choice.workspace;
-  return forgeStore.sessions.find((item) => item.id === choice.session)?.workspace_id;
-}
-
-/** A session or a checkout is a place, so its mark is its project's square. */
+/** A session or a checkout is a place, so it leads with its project's square. */
 function PlaceMark(props: { workspace: string | undefined }) {
   const project = () =>
     forgeStore.workspaces.find((item) => item.id === props.workspace)?.project_id;
   return (
     <span
-      class="forge-combobox-glyph forge-combobox-glyph-dot"
+      class="palette-hue"
       style={project() ? { "--project-hue": projectHue(project()!) } : undefined}
       aria-hidden="true"
     >
@@ -298,9 +289,28 @@ function PaletteGlyph(props: { entry: PaletteEntry }) {
       );
     }
     switch (choice.kind) {
-      case "focus_session":
+      case "focus_session": {
+        const session = forgeStore.sessions.find((item) => item.id === choice.session);
+        return (
+          <span class="palette-place">
+            <PlaceMark workspace={session?.workspace_id} />
+            <span class="forge-combobox-glyph">
+              <SessionGlyph
+                providerId={session?.agent_provider_id ?? null}
+                emphasis="dim"
+                size={14}
+              />
+            </span>
+          </span>
+        );
+      }
       case "focus_workspace":
-        return <PlaceMark workspace={workspaceOfChoice(choice)} />;
+        return (
+          <span class="palette-place">
+            <PlaceMark workspace={choice.workspace} />
+            <Icon name="git-branch" class="forge-icon-faint forge-combobox-glyph" size={14} />
+          </span>
+        );
       case "new_shell":
         return (
           <Icon name="square-terminal" class="forge-icon-faint forge-combobox-glyph" size={14} />

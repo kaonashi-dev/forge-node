@@ -1085,6 +1085,17 @@
   border-radius: var(--radius-palette);
   width: min(660px, 92vw);
 }
+/* A place row's project square, then the glyph that says what runs there. */
+.palette-place {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: var(--space-6);
+}
+.palette-hue {
+  align-items: center;
+  display: flex;
+}
 /* The palette is a menu, so it opens on the menu beat: scale and fade, 120ms. */
 @media (prefers-reduced-motion: no-preference) {
   .command-palette.forge-dialog-card[data-expanded] {
