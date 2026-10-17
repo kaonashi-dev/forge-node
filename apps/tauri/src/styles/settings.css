@@ -319,24 +319,21 @@
 }
 
 /* A miniature window per theme, in its own grounds. */
-.theme-cards {
+.forge-radio-group.theme-cards {
   display: grid;
   gap: var(--space-12);
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 .theme-card {
-  background: none;
-  border: 0;
+  align-items: stretch;
   color: var(--fg-default);
-  display: flex;
+  cursor: pointer;
   flex-direction: column;
-  font: inherit;
   font-size: var(--text-xs);
   gap: var(--space-8);
-  padding: 0;
-  text-align: left;
+  min-width: 0;
 }
-.theme-card:disabled {
+.theme-card[data-disabled] {
   cursor: progress;
 }
 .theme-card-window {
@@ -350,11 +347,11 @@
 .theme-card:hover .theme-card-window {
   box-shadow: 0 0 0 1px var(--line);
 }
-.theme-card[aria-checked="true"] {
+.theme-card[data-checked] {
   color: var(--fg-strong);
   font-weight: var(--weight-medium);
 }
-.theme-card[aria-checked="true"] .theme-card-window {
+.theme-card[data-checked] .theme-card-window {
   box-shadow: 0 0 0 2px var(--accent);
 }
 .theme-card-side {
@@ -395,18 +392,28 @@
   margin-top: var(--space-4);
 }
 
-.accent-swatches {
+.accent-choices {
+  align-items: center;
   display: flex;
+  gap: var(--space-10);
+}
+.forge-radio-group.accent-swatches {
   gap: var(--space-10);
 }
 .accent-swatch {
   border: 0;
   border-radius: 50%;
+  cursor: pointer;
   height: 26px;
   padding: 0;
   width: 26px;
 }
-.accent-swatch[aria-checked="true"] {
+.accent-swatch-fill {
+  border-radius: inherit;
+  height: 100%;
+  width: 100%;
+}
+.accent-swatch[data-checked] {
   box-shadow: var(--focus-ring-shadow);
 }
 .accent-swatch-custom {
