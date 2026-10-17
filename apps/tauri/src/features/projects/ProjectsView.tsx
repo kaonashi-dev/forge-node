@@ -74,7 +74,8 @@ import { AttentionMarker, StateMarker, WorkMarker } from "../sessions/markers";
 import { SessionGlyph } from "../sessions/SessionGlyph";
 import { draftWithJuva, loadBranchCompare } from "../git/commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
-import { projectHue } from "../../theme/projectHue";
+import { projectHue, projectHueChoice, setProjectHue } from "../../state/projectColors";
+import { DEFAULT_HUE, HUE_NAMES } from "../../theme/tokens";
 import { justCreated } from "../../theme/motion";
 import { workspaceArrivals } from "./arrivals";
 
@@ -256,6 +257,33 @@ export function ProjectsView() {
               void setProjectIcon(node.id, icon || null).catch(() => undefined),
           });
         },
+      },
+      {
+        kind: "submenu",
+        label: "Color",
+        icon: "appearance",
+        items: [
+          {
+            kind: "item",
+            label: "Theme default",
+            detail: projectHueChoice(node.id) === null ? "Current" : HUE_NAMES[DEFAULT_HUE],
+            glyph: <span class="hue-mark hue-mark-menu hue-mark-default" />,
+            run: () => setProjectHue(node.id, null),
+          },
+          { kind: "rule" },
+          ...HUE_NAMES.map((name, slot) => ({
+            kind: "item" as const,
+            label: name,
+            detail: projectHueChoice(node.id) === slot ? "Current" : undefined,
+            glyph: (
+              <span
+                class="hue-mark hue-mark-menu"
+                style={{ "--project-hue": `var(--hue-${slot})` }}
+              />
+            ),
+            run: () => setProjectHue(node.id, slot),
+          })),
+        ],
       },
       ...(groups.length > 0 || project?.project_group_id
         ? [

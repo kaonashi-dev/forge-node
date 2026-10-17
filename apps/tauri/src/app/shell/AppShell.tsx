@@ -50,7 +50,7 @@ import {
   closeViewsToRight,
 } from "../../features/editor/tabs";
 import { hasCode, openFileCount } from "../../navigation/views";
-import { projectHue } from "../../theme/projectHue";
+import { projectHue } from "../../state/projectColors";
 import { centerSplit } from "../../navigation/centerSplitStore";
 import { openEditor } from "../../features/editor/open";
 import {

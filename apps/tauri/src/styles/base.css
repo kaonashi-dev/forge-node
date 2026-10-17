@@ -208,6 +208,14 @@
   width: 7px;
 }
 
+/* In a menu the square sits in the 14px glyph column. */
+.hue-mark-menu {
+  margin: 0 var(--space-3);
+}
+.hue-mark-default {
+  --project-hue: var(--hue-default);
+}
+
 /* The face a code surface asks for by name. */
 .terminal-canvas,
 .diff-view,

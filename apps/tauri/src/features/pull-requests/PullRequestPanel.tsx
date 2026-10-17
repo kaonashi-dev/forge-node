@@ -20,7 +20,7 @@ import { refreshPullRequests } from "./commands";
 import { loading, setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
 import type { PullRequest } from "../../contracts/runtime";
-import { projectHue } from "../../theme/projectHue";
+import { projectHue } from "../../state/projectColors";
 
 // Snapshot data is cached; remote refreshes complete through events.
 /** `owner/payments-api` reads as the repository the person knows. */

@@ -153,6 +153,7 @@
   --hue-6: #6cc4f0;
   --hue-7: #e0c36a;
   --hue-8: #a78bfa;
+  --hue-default: #a78bfa;
 }
 
 [data-theme="calm-light"] {
@@ -308,6 +309,7 @@
   --hue-6: #146892;
   --hue-7: #7e5e0c;
   --hue-8: #6d28d9;
+  --hue-default: #6d28d9;
 }
 
 [data-theme="forge-dark"] {
@@ -463,6 +465,7 @@
   --hue-6: #6cc4f0;
   --hue-7: #e0c36a;
   --hue-8: #a78bfa;
+  --hue-default: #a78bfa;
 }
 
 [data-theme="forge-light"] {
@@ -618,6 +621,7 @@
   --hue-6: #15658d;
   --hue-7: #775a0e;
   --hue-8: #6d28d9;
+  --hue-default: #6d28d9;
 }
 
 [data-theme="gruvbox-hard"] {
@@ -773,6 +777,7 @@
   --hue-6: #6cc4f0;
   --hue-7: #e0c36a;
   --hue-8: #bea6e2;
+  --hue-default: #bea6e2;
 }
 
 [data-theme="gruvbox"] {
@@ -928,6 +933,7 @@
   --hue-6: #71c5ee;
   --hue-7: #e0c36a;
   --hue-8: #cbb5d4;
+  --hue-default: #cbb5d4;
 }
 
 [data-theme="neutral"] {
@@ -1083,6 +1089,7 @@
   --hue-6: #6cc4f0;
   --hue-7: #e0c36a;
   --hue-8: #a78bfa;
+  --hue-default: #a78bfa;
 }
 
 [data-theme="gruvbox-light"] {
@@ -1238,6 +1245,7 @@
   --hue-6: #1a6084;
   --hue-7: #725816;
   --hue-8: #6d28d9;
+  --hue-default: #6d28d9;
 }
 
 [data-theme="neutral-light"] {
@@ -1393,6 +1401,7 @@
   --hue-6: #146892;
   --hue-7: #7d5e0c;
   --hue-8: #6d28d9;
+  --hue-default: #6d28d9;
 }
 
 [data-theme="ocean"] {
@@ -1548,6 +1557,7 @@
   --hue-6: #6cc4f0;
   --hue-7: #e0c36a;
   --hue-8: #ae94fa;
+  --hue-default: #ae94fa;
 }
 
 [data-theme="forest"] {
@@ -1703,6 +1713,7 @@
   --hue-6: #6cc4f0;
   --hue-7: #e0c36a;
   --hue-8: #b19eeb;
+  --hue-default: #b19eeb;
 }
 
 /* Semantic layer and scale — theme-independent, so emitted once. */

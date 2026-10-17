@@ -70,6 +70,22 @@ export type Finish = { tab: string; rule: string; hover?: string };
 
 export const HUE_COUNT = 9;
 
+/** What the project colour menu calls each hue slot, in slot order. */
+export const HUE_NAMES = [
+  "Teal",
+  "Blue",
+  "Green",
+  "Orchid",
+  "Rose",
+  "Lime",
+  "Sky",
+  "Gold",
+  "Violet",
+] as const;
+
+/** The slot a project wears until someone picks another: Violet. */
+export const DEFAULT_HUE = 8;
+
 /**
  * Roles a base may pin instead of deriving: rows below primary text, icons
  * above faint, the card edge, and type on an ember wash. Absent, each derives
@@ -1106,9 +1122,11 @@ export function projectHues(active: Palette): string[] {
 
 function hueVariables(active: Palette): Record<string, string> {
   const out: Record<string, string> = { "--hue-tint": `${hueTint(active)}%` };
-  projectHues(active).forEach((color, index) => {
+  const hues = projectHues(active);
+  hues.forEach((color, index) => {
     out[`--hue-${index}`] = color;
   });
+  out["--hue-default"] = hues[DEFAULT_HUE];
   return out;
 }
 

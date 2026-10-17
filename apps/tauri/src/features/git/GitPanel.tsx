@@ -1,5 +1,5 @@
 import { For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
-import { projectHue } from "../../theme/projectHue";
+import { projectHue } from "../../state/projectColors";
 import { playOnce } from "../../theme/motion";
 import { forgeStore } from "../../state/forgeStore";
 import { activeWorkspace } from "../../state/workspace";

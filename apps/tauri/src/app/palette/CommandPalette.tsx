@@ -32,7 +32,7 @@ import { filesStore, setFilesStore } from "../../features/files/state";
 import { gitStore } from "../../features/git/state";
 import { activeWorkspace } from "../../state/workspace";
 import { highlight } from "./highlight";
-import { projectHue } from "../../theme/projectHue";
+import { projectHue } from "../../state/projectColors";
 
 /** Rows shown before the list scrolls. */
 const VISIBLE_ROWS = 12;
