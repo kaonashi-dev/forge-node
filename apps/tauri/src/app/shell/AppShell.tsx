@@ -48,7 +48,7 @@ import {
   closeOtherViews,
   closeViewsToRight,
 } from "../../features/editor/tabs";
-import { openFileCount } from "../../navigation/views";
+import { hasCode, openFileCount } from "../../navigation/views";
 import { projectHue } from "../../theme/projectHue";
 import { centerSplit } from "../../navigation/centerSplitStore";
 import { openEditor } from "../../features/editor/open";
@@ -212,7 +212,7 @@ export function AppShell() {
   trackTabFocus();
   trackQuestions();
 
-  /** How many files, diffs and PRs are parked in the Code tab. */
+  /** How many files the Code tab holds; a patch, a pull request or a search is not one. */
   const openViewCount = createMemo(() => openFileCount(currentViews()));
 
   /**
@@ -716,6 +716,7 @@ export function AppShell() {
           codeOpen={codeOpen()}
           codeActive={centerMode() === "code" && codeOpen()}
           codeCount={openViewCount()}
+          codeHasViews={hasCode(currentViews())}
           onSelectCode={showCode}
           onCloseCode={closeCode}
         />

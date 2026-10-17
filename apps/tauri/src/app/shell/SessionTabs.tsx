@@ -31,8 +31,10 @@ type SessionTabsProps = {
   codeOpen: boolean;
   /** Whether Code, rather than a session, is what the window is showing. */
   codeActive: boolean;
-  /** How many files/diffs are parked inside it. */
+  /** How many files are open in it, for the badge. */
   codeCount: number;
+  /** Whether anything at all is open in it — a patch alone still has a close. */
+  codeHasViews: boolean;
   onSelectCode: () => void;
   onCloseCode: () => void;
 };
@@ -257,7 +259,11 @@ export function SessionTabs(props: SessionTabsProps) {
                   role="tab"
                   class="session-tab"
                   aria-selected={props.codeActive}
-                  aria-label={`Code, ${props.codeCount} open`}
+                  aria-label={
+                    props.codeCount > 0
+                      ? `Code, ${props.codeCount} ${props.codeCount === 1 ? "file" : "files"} open`
+                      : "Code"
+                  }
                   onClick={props.onSelectCode}
                 >
                   <span class="hue-mark" aria-hidden="true" />
@@ -273,9 +279,9 @@ export function SessionTabs(props: SessionTabsProps) {
                     </span>
                   </Show>
                 </button>
-                <Show when={props.codeCount > 0}>
+                <Show when={props.codeHasViews}>
                   <IconButton
-                    label="Close every open file"
+                    label="Close everything in Code"
                     hideTooltip
                     size="xs"
                     class="session-tab-close"

@@ -22,6 +22,7 @@ type CardStripProps = {
   codeOpen: boolean;
   codeActive: boolean;
   codeCount: number;
+  codeHasViews: boolean;
   onSelectCode: () => void;
   onCloseCode: () => void;
 };
@@ -79,6 +80,7 @@ export function CardStrip(props: CardStripProps) {
           codeOpen={props.codeOpen}
           codeActive={props.codeActive}
           codeCount={props.codeCount}
+          codeHasViews={props.codeHasViews}
           onSelectCode={props.onSelectCode}
           onCloseCode={props.onCloseCode}
         />
