@@ -277,14 +277,10 @@ describe("buildTree session nesting", () => {
 
 describe("checkoutLabel", () => {
   it("drops the project prefix a worktree repeats", () => {
-    expect(checkoutLabel("payments-api-amount-min", "payments-api", true)).toBe(
-      "amount-min",
-    );
+    expect(checkoutLabel("payments-api-amount-min", "payments-api", true)).toBe("amount-min");
   });
   it("keeps a repository's own branch and an unrelated worktree name", () => {
-    expect(checkoutLabel("payments-api-x", "payments-api", false)).toBe(
-      "payments-api-x",
-    );
+    expect(checkoutLabel("payments-api-x", "payments-api", false)).toBe("payments-api-x");
     expect(checkoutLabel("feat/ledger", "payments-api", true)).toBe("feat/ledger");
     expect(checkoutLabel("payments-api-", "payments-api", true)).toBe("payments-api-");
   });
