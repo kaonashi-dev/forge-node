@@ -1603,15 +1603,17 @@
 :root[data-glass="true"] .app-shell {
   background: var(--glass-backdrop);
 }
+/* The sidebar floats like the card: the same 8px inset from every window edge
+   and from the card (4px here plus the 4px resize handle), the same radius and
+   the same glass edge, so the window reads as two panes on one backdrop. */
 :root[data-glass="true"] .sidebar {
   --bg-sidebar: transparent;
   -webkit-backdrop-filter: blur(28px) saturate(1.5);
   backdrop-filter: blur(28px) saturate(1.5);
   background: var(--glass-pane);
-  border-radius: 0 var(--radius-palette) var(--radius-palette) 0;
-  box-shadow: inset -1px 0 0 var(--glass-edge);
-  margin-bottom: calc(var(--space-8) * -1);
-  margin-right: var(--space-4);
+  border-radius: var(--radius-palette);
+  box-shadow: inset 0 0 0 1px var(--glass-edge);
+  margin: 0 var(--space-4) 0 var(--space-8);
 }
 :root[data-glass="true"] .sidebar-jump {
   background: var(--glass-fill);
