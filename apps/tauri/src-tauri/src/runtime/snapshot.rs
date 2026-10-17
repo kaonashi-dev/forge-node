@@ -251,6 +251,13 @@ pub struct DisconnectedPayload {
     pub reason: String,
 }
 
+/// A refusal or a caveat the WebView can show, without touching the connection
+/// pill.
+#[derive(Clone, Debug, Serialize)]
+pub struct NoticePayload {
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct HostStatus {
     pub client_ready: bool,

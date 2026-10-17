@@ -13,7 +13,7 @@ import {
   sendPaste,
   sendText,
 } from "./commands";
-import { cellsChannel, clipboardChannel } from "../../runtime/bus";
+import { cellsChannel } from "../../runtime/bus";
 import { setTerminalStore, terminalStore } from "./terminalStore";
 import { metrics as tokens } from "../../theme/tokens";
 import {
@@ -496,7 +496,7 @@ export function TerminalPane(props: {
 
   function onPaste(event: ClipboardEvent): void {
     event.preventDefault();
-    const paste = clipboardPaste(event.clipboardData);
+    const paste = clipboardPaste(event.clipboardData, isAgent() ? "agent" : "shell");
     if (paste.kind !== "empty") answered();
     if (paste.kind === "text") {
       void sendPaste(paste.text, probe.send(), props.session).catch(() => undefined);
@@ -987,9 +987,6 @@ export function TerminalPane(props: {
     renderer = new TerminalRenderer(canvas, cell, readPalette());
 
     const stopCells = cellsChannel.subscribe(onFrame);
-    const stopClipboard = clipboardChannel.subscribe((text) => {
-      void writeClipboard(text);
-    });
 
     const observer = new ResizeObserver(() => measurePane());
     observer.observe(host);
@@ -1055,7 +1052,6 @@ export function TerminalPane(props: {
 
     onCleanup(() => {
       stopCells();
-      stopClipboard();
       observer.disconnect();
       stopRatio();
       themes.disconnect();
@@ -1091,6 +1087,7 @@ export function TerminalPane(props: {
       <canvas class="terminal-canvas" ref={canvas} />
       <textarea
         class="terminal-keys"
+        data-pane="terminal"
         ref={keys}
         aria-label="Terminal input"
         autocomplete="off"
@@ -1142,13 +1139,6 @@ export function TerminalPane(props: {
 }
 
 /**
- * Put text on the system clipboard.
- *
- * `navigator.clipboard` is the path a Tauri WebView takes; the `execCommand`
- * fallback is for the ones that still refuse it outside a user gesture, which a
- * key handler technically is not by the time an await has resolved.
- */
-/**
  * Read the clipboard for a paste the user asked for with a chord.
  *
  * The `paste` DOM event is the normal path and needs none of this; this is the
@@ -1161,27 +1151,5 @@ async function readClipboard(): Promise<string> {
     // A WebView that refuses the read outside a paste event: the `paste`
     // handler still works, so this is a fallback losing nothing.
     return "";
-  }
-}
-
-async function writeClipboard(text: string): Promise<void> {
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    return;
-  } catch {
-    // Fall through to the legacy path.
-  }
-  const scratch = document.createElement("textarea");
-  scratch.value = text;
-  scratch.setAttribute("aria-hidden", "true");
-  scratch.style.position = "fixed";
-  scratch.style.opacity = "0";
-  document.body.append(scratch);
-  scratch.select();
-  try {
-    document.execCommand("copy");
-  } finally {
-    scratch.remove();
   }
 }

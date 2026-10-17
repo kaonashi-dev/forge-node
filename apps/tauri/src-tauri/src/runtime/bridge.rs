@@ -28,10 +28,11 @@ use super::cells::{self, Damage};
 use super::commands::RuntimeCommand;
 use super::input;
 use super::snapshot::{
-    ConnectedPayload, DaemonInfoDto, DisconnectedPayload, HostStatus, Latest, ShellSnapshot,
-    StatePayload,
+    ConnectedPayload, DaemonInfoDto, DisconnectedPayload, HostStatus, Latest, NoticePayload,
+    ShellSnapshot, StatePayload,
 };
 use super::workbench::{self, WorkbenchCommand, WorkbenchSender};
+use crate::clipboard::{ClipboardSink, ClipboardWriter};
 use crate::daemon::locator::{connect_or_spawn, Locator};
 
 const EVENT_BATCH_LIMIT: usize = 64;
@@ -132,12 +133,6 @@ enum Selected {
     Closed,
 }
 
-/// Text cut from the grid for the clipboard.
-#[derive(Clone, Debug, Serialize)]
-struct ClipboardPayload {
-    text: String,
-}
-
 pub struct Runtime {
     commands: flume::Sender<RuntimeCommand>,
     latest: Arc<Mutex<Latest>>,
@@ -152,11 +147,12 @@ impl Runtime {
         let (commands_tx, commands_rx) = flume::bounded(256);
         let latest = Arc::new(Mutex::new(Latest::default()));
         let workbench = Arc::new(Mutex::new(None));
+        let clipboard = Arc::new(ClipboardWriter::spawn());
         let status = Arc::clone(&latest);
         let worker = Arc::clone(&workbench);
         thread::Builder::new()
             .name("forge-tauri-runtime".to_string())
-            .spawn(move || runtime_loop(app, commands_rx, status, worker))
+            .spawn(move || runtime_loop(app, commands_rx, status, worker, clipboard))
             .expect("failed to start Tauri runtime bridge");
         Self {
             commands: commands_tx,
@@ -198,6 +194,27 @@ impl Runtime {
 
     pub fn host_status(&self) -> HostStatus {
         lock(&self.latest).status.clone()
+    }
+
+    /// The connected generation, or `None` while the host is between
+    /// connections.
+    ///
+    /// A reader that may take a while — the pasteboard can wait on the app
+    /// that owns it — captures this before and again after, and drops the
+    /// result if a reconnect moved the connection under it.
+    #[must_use]
+    pub fn connection_generation(&self) -> Option<u64> {
+        let latest = lock(&self.latest);
+        latest
+            .status
+            .connected
+            .then(|| {
+                latest
+                    .payload
+                    .as_ref()
+                    .map(|payload| payload.connection_generation)
+            })
+            .flatten()
     }
 
     pub fn snapshot(&self) -> Option<ConnectedPayload> {
@@ -402,6 +419,7 @@ fn runtime_loop(
     commands: flume::Receiver<RuntimeCommand>,
     latest: Arc<Mutex<Latest>>,
     workbench: Arc<Mutex<Option<WorkbenchSender>>>,
+    clipboard: Arc<ClipboardWriter>,
 ) {
     let locator = Locator::from_env();
     let mut preferred_session = None;
@@ -526,7 +544,10 @@ fn runtime_loop(
                             );
                         }
                         if let Some(text) = effect.clipboard {
-                            let _ = app.emit("runtime:clipboard", ClipboardPayload { text });
+                            clipboard.store(&text);
+                        }
+                        if let Some(reason) = effect.notice {
+                            let _ = app.emit("runtime:notice", NoticePayload { reason });
                         }
                         if let Some((terminal, damage)) = effect.editor_damage {
                             emitter.editor_cells(&mut store, terminal, &damage);
@@ -650,7 +671,7 @@ fn runtime_loop(
                 let mut batch = Batch::default();
                 batch.absorb_named(&event, &store, &at, split.as_ref());
                 emit_side_event(&app, &event);
-                emit_clipboard_event(&app, &event, &at, &editors, split.as_ref());
+                emit_clipboard_event(&*clipboard, &event, &at, &editors, split.as_ref());
                 batch.apply(
                     &event,
                     &mut store,
@@ -669,7 +690,7 @@ fn runtime_loop(
                     };
                     batch.absorb_named(&more, &store, &at, split.as_ref());
                     emit_side_event(&app, &more);
-                    emit_clipboard_event(&app, &more, &at, &editors, split.as_ref());
+                    emit_clipboard_event(&*clipboard, &more, &at, &editors, split.as_ref());
                     batch.apply(
                         &more,
                         &mut store,
@@ -857,12 +878,6 @@ impl std::fmt::Display for CommandError {
     }
 }
 
-/// A refusal the WebView can show, without touching the connection pill.
-#[derive(Clone, Debug, Serialize)]
-struct NoticePayload {
-    reason: String,
-}
-
 /// A safe worktree removal needs a second, explicit forced confirmation.
 #[derive(Clone, Debug, Serialize)]
 struct WorktreeBlockedPayload {
@@ -890,7 +905,7 @@ struct AgentProfileSavePayload {
 /// hazard. A terminal this window is attached to — the focused one, or an open
 /// editor pane — is one the person is looking at; everything else is refused.
 fn emit_clipboard_event(
-    app: &AppHandle,
+    sink: &dyn ClipboardSink,
     event: &DaemonEvent,
     at: &Attached,
     editors: &HashMap<SessionId, EditorAttachment>,
@@ -902,7 +917,7 @@ fn emit_clipboard_event(
     if !clipboard_is_allowed(*terminal_id, at, editors, split) {
         return;
     }
-    let _ = app.emit("runtime:clipboard", ClipboardPayload { text: text.clone() });
+    sink.store(text);
 }
 
 /// Whether a terminal may set the clipboard: only one this window shows.
@@ -1032,8 +1047,10 @@ struct Effect {
     shell: bool,
     /// The viewport has to repaint.
     damage: Option<Damage>,
-    /// Text to hand the WebView for the clipboard.
+    /// Text a copy cut off the grid, for the host's clipboard writer.
     clipboard: Option<String>,
+    /// A refusal or a caveat the person has to be told about.
+    notice: Option<String>,
     /// A side editor terminal has to repaint.
     editor_damage: Option<(TerminalId, Damage)>,
     /// A new editor session was spawned; the WebView opens its Code view.
@@ -1909,14 +1926,22 @@ fn run_command(
                 .map(|grid| grid.modes)
                 .unwrap_or_default();
             let (bytes, clamped) = input::encode_editor_paste(&text, &modes);
+            let mut notice = None;
             if clamped {
                 tracing::warn!(
                     bytes = text.len(),
                     limit = input::MAX_EDITOR_PASTE_BYTES,
                     "editor paste clamped to the document budget"
                 );
+                notice = Some(input::paste_cut_notice(
+                    input::MAX_EDITOR_PASTE_BYTES,
+                    text.len(),
+                ));
             }
-            input_editor_bytes(client, editors, pending_echo, session_id, bytes, id)
+            let mut effect =
+                input_editor_bytes(client, editors, pending_echo, session_id, bytes, id)?;
+            effect.notice = notice;
+            Ok(effect)
         }
         // The editor sibling of `Mouse`: the pane only sends these while the
         // editor asked to read the mouse, and the encoder refuses whatever the
@@ -3133,6 +3158,24 @@ mod tests {
         }
     }
 
+    /// A `ClipboardSink` that records what it was asked to store.
+    #[derive(Default)]
+    struct Recorder {
+        stored: Mutex<Vec<String>>,
+    }
+
+    impl Recorder {
+        fn stored(&self) -> Vec<String> {
+            lock(&self.stored).clone()
+        }
+    }
+
+    impl ClipboardSink for Recorder {
+        fn store(&self, text: &str) {
+            lock(&self.stored).push(text.to_string());
+        }
+    }
+
     fn delta(terminal_id: TerminalId, rows: Vec<u16>, scrolled_lines: u32) -> DaemonEvent {
         DaemonEvent::TerminalDelta {
             terminal_id,
@@ -3456,6 +3499,22 @@ mod tests {
             clipboard_is_allowed(background, &at, &editors, Some(&split)),
             "a terminal in the extra column is on screen"
         );
+
+        // The guard is what the sink is behind: a refused store never reaches
+        // it, and an allowed one does.
+        let sink = Recorder::default();
+        let refused = DaemonEvent::ClipboardStore {
+            terminal_id: background,
+            text: "stolen".into(),
+        };
+        emit_clipboard_event(&sink, &refused, &at, &editors, None);
+        assert!(sink.stored().is_empty(), "a refused store reached the sink");
+        let allowed = DaemonEvent::ClipboardStore {
+            terminal_id: focused,
+            text: "mine".into(),
+        };
+        emit_clipboard_event(&sink, &allowed, &at, &editors, None);
+        assert_eq!(sink.stored(), vec!["mine".to_string()]);
     }
 
     #[test]

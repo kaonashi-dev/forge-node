@@ -249,7 +249,13 @@ pub fn frame(
 const MAX_SELECTION_ROWS: i64 = 5_000;
 const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
 
-/// Trim trailing blanks per line; refuse uncached history or an oversized selection whole.
+/// The text a dragged range copies.
+///
+/// A soft-wrapped row joins the row under it without a newline and without
+/// losing the blanks at the fold point: a URL, a path or a long command drawn
+/// across rows is one logical line, and cutting it at the pane's width breaks
+/// it. Trailing blanks are trimmed at the end of a logical line only. Refuses
+/// uncached history or an oversized selection whole.
 pub fn selection_text(
     grid: &CellGrid,
     anchor: (i64, usize),
@@ -262,11 +268,11 @@ pub fn selection_text(
     };
     let history = i64::try_from(grid.scrollback_len).unwrap_or(i64::MAX);
     let first = start.0.max(-history);
-    let last = end.0.min(grid.visible.len() as i64 - 1);
-    if last < first {
+    let last_line = end.0.min(grid.visible.len() as i64 - 1);
+    if last_line < first {
         return Ok(String::new());
     }
-    if last
+    if last_line
         .checked_sub(first)
         .is_none_or(|distance| distance >= MAX_SELECTION_ROWS)
     {
@@ -274,20 +280,26 @@ pub fn selection_text(
     }
     let mut text = String::new();
     let mut has_line = false;
-    for line in first..=last {
+    // Whether the row last appended continues into the next one.
+    let mut wrapped = false;
+    for line in first..=last_line {
         let row = if line < 0 {
             grid.scrollback_row(line)
         } else {
             grid.visible.get(line as usize)
         }
         .ok_or("Some selected history is no longer cached. Select a smaller range.")?;
-        let last = row.cells.len().saturating_sub(1);
+        let last_cell = row.cells.len().saturating_sub(1);
         let from = if line == start.0 { start.1 } else { 0 };
-        let to = if line == end.0 { end.1.min(last) } else { last };
+        let to = if line == end.0 {
+            end.1.min(last_cell)
+        } else {
+            last_cell
+        };
         if from > to || from >= row.cells.len() {
             continue;
         }
-        if has_line {
+        if has_line && !wrapped {
             if text.len() == MAX_SELECTION_BYTES {
                 return Err("Selection is too large to copy (8 MiB limit).");
             }
@@ -302,9 +314,12 @@ pub fn selection_text(
                 text.push_str(&cell.text);
             }
         }
-        let trimmed = text[row_start..].trim_end().len();
-        text.truncate(row_start + trimmed);
+        if line == last_line || !row.wrapped {
+            let trimmed = text[row_start..].trim_end().len();
+            text.truncate(row_start + trimmed);
+        }
         has_line = true;
+        wrapped = row.wrapped;
     }
     Ok(text)
 }
@@ -663,6 +678,69 @@ mod tests {
         let grid = grid(vec![plain("ls -la    "), plain("done      ")], Vec::new());
         let text = selection_text(&grid, (0, 0), (1, 9)).unwrap();
         assert_eq!(text, "ls -la\ndone");
+    }
+
+    #[test]
+    fn a_soft_wrap_joins_the_rows_it_continues() {
+        let mut first = plain("https://example.com/ver");
+        first.wrapped = true;
+        let grid = grid(vec![first, plain("y/long/path")], Vec::new());
+        assert_eq!(
+            selection_text(&grid, (0, 0), (1, 10)),
+            Ok("https://example.com/very/long/path".into())
+        );
+    }
+
+    #[test]
+    fn the_space_at_a_fold_point_survives_the_join() {
+        let mut first = plain("foo ");
+        first.wrapped = true;
+        let grid = grid(vec![first, plain("bar")], Vec::new());
+        assert_eq!(selection_text(&grid, (0, 0), (1, 2)), Ok("foo bar".into()));
+    }
+
+    #[test]
+    fn a_selection_that_starts_or_ends_inside_a_wrapped_row() {
+        let mut first = plain("alpha ");
+        first.wrapped = true;
+        let mut second = plain("beta ");
+        second.wrapped = true;
+        let grid = grid(vec![first, second, plain("gamma")], Vec::new());
+        // Mid-row start, mid-run end: both folds join and the blanks before
+        // them survive; only the row the selection stops in is trimmed.
+        assert_eq!(
+            selection_text(&grid, (0, 2), (2, 2)),
+            Ok("pha beta gam".into())
+        );
+        // The last row of the range trims even when it is itself wrapped.
+        assert_eq!(selection_text(&grid, (1, 0), (1, 2)), Ok("bet".into()));
+    }
+
+    #[test]
+    fn a_soft_wrap_in_history_joins_the_same_way() {
+        let mut history = plain("very/long/");
+        history.wrapped = true;
+        let grid = grid(vec![plain("live")], vec![history, plain("path")]);
+        assert_eq!(
+            selection_text(&grid, (-2, 0), (-1, 3)),
+            Ok("very/long/path".into())
+        );
+    }
+
+    /// A wide glyph pushed to the fold leaves a spacer starting the next row;
+    /// the spacer contributes no column to the copy.
+    #[test]
+    fn a_leading_spacer_at_a_fold_takes_no_column() {
+        let mut first = plain("漢");
+        first.wrapped = true;
+        let spacer = row(vec![cell(
+            "",
+            Color::Default,
+            Color::Default,
+            CellFlags::WIDE_SPACER,
+        )]);
+        let grid = grid(vec![first, spacer], Vec::new());
+        assert_eq!(selection_text(&grid, (0, 0), (1, 0)), Ok("漢".into()));
     }
 
     #[test]

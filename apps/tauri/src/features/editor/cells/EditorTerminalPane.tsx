@@ -349,7 +349,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
 
   function onPaste(event: ClipboardEvent): void {
     event.preventDefault();
-    const paste = clipboardPaste(event.clipboardData);
+    const paste = clipboardPaste(event.clipboardData, "editor");
     if (paste.kind === "text") {
       void sendEditorPaste(props.session, paste.text, probe.send()).catch(() => undefined);
     }

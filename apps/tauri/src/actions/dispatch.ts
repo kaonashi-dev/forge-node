@@ -8,6 +8,7 @@
 import { createSignal } from "solid-js";
 import {
   CONTEXT_ORDER,
+  TERMINAL,
   firesOnRepeat,
   type ActionId,
   type Binding,
@@ -99,6 +100,11 @@ export function resolve(
   typing = false,
 ): Binding | null {
   for (const context of active) {
+    // The grid's chords belong to the grid's own hidden textarea. The editor's
+    // textarea shares the `terminal-keys` class, so a `TERMINAL` context left
+    // active under an editor would swallow ⌘C with `preventDefault` before the
+    // editor's key handler ever saw it.
+    if (context === TERMINAL && !isTerminalTarget(event.target)) continue;
     for (const binding of bindings) {
       if (binding.context !== context) continue;
       // A bare letter is a letter while someone is typing one. The tree binds
@@ -113,6 +119,12 @@ export function resolve(
     }
   }
   return null;
+}
+
+/** Whether the keystroke went to the terminal's own hidden textarea. */
+export function isTerminalTarget(target: EventTarget | null): boolean {
+  const element = target as { dataset?: { pane?: unknown } } | null;
+  return element?.dataset?.pane === "terminal";
 }
 
 /** A chord with no modifier at all: indistinguishable from typing. */

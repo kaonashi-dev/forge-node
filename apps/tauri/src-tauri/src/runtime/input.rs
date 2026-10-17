@@ -213,6 +213,19 @@ pub fn encode_editor_paste(text: &str, modes: &TermModes) -> (Vec<u8>, bool) {
     (paste(&text[..cut], modes), true)
 }
 
+/// The note a paste the document budget cut short leaves for the person.
+///
+/// A clamp that only reaches the log looks like a complete paste: the editor
+/// holds half a file and says nothing.
+#[must_use]
+pub fn paste_cut_notice(kept: usize, total: usize) -> String {
+    format!(
+        "pasted partially: {} of {} KiB (the editor's paste limit)",
+        kept / 1024,
+        total.div_ceil(1024)
+    )
+}
+
 /// Text committed by an input method, which is typed rather than pasted: it
 /// goes to the PTY verbatim, never wrapped in paste markers.
 #[must_use]
@@ -466,6 +479,15 @@ mod tests {
         let (bytes, cut) = encode_editor_paste(&text, &modes);
         assert!(cut);
         assert!(std::str::from_utf8(&bytes).is_ok());
+    }
+
+    /// The person has to be able to tell a partial paste from a complete one.
+    #[test]
+    fn the_cut_paste_notice_names_both_sizes() {
+        assert_eq!(
+            paste_cut_notice(MAX_EDITOR_PASTE_BYTES, MAX_EDITOR_PASTE_BYTES + 1024),
+            "pasted partially: 2048 of 2049 KiB (the editor's paste limit)"
+        );
     }
 
     fn press(key: &str) -> KeyPress {

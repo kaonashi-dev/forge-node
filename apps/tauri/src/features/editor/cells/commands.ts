@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import type { KeyPress } from "../../../contracts/terminal";
 import { sendRuntimeCommand } from "../../../runtime/host";
 import { connectionStore } from "../../../state/connection";
@@ -27,12 +28,25 @@ export async function sendEditorPaste(session: string, text: string, id: number)
   await sendRuntimeCommand({ type: "paste_editor", session_id: session, text, id });
 }
 
+/**
+ * Paste the system clipboard into a Code editor's buffer.
+ *
+ * The host reads the pasteboard where it can: WKWebView refuses
+ * `navigator.clipboard.readText` even inside a gesture, and this way the text
+ * never crosses the WebView. The host answers `false` on a platform with no
+ * reader, and `read` plus the generation rule cover that case.
+ */
 export async function pasteEditorClipboard(
   session: string,
   read: () => Promise<string>,
   id: () => number,
 ): Promise<void> {
+  // Captured before either route waits: a reconnect while the pasteboard is
+  // being read makes the text stale however it was read.
   const generation = connectionStore.connectionGeneration;
+  if (await invoke<boolean>("paste_editor_clipboard", { sessionId: session }).catch(() => false)) {
+    return;
+  }
   const text = await read();
   if (!text || generation !== connectionStore.connectionGeneration) return;
   await sendEditorPaste(session, text, id());

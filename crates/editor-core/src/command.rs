@@ -522,30 +522,66 @@ fn delete_line(document: &mut Document) -> Outcome {
 }
 
 /// Copy or cut the selection, or the whole line when there is none.
+///
+/// Every caret contributes: a multi-caret copy joins each selection in
+/// document order with `\n`, the way VS Code and CodeMirror do, instead of
+/// dropping everything but the primary. The whole-line rule belongs to the
+/// single caret; a line copied once per caret that selected nothing would
+/// usually be a surprise.
 fn copy(document: &mut Document, cut: bool) -> Outcome {
     let selection = document.selection();
-    let range = if selection.is_empty() {
-        let (start, end) = movement::line_span(document.text(), selection.clone());
-        Range::new(start, end)
-    } else {
-        selection.range()
-    };
-    let text = document.text().slice(range).to_string();
-    if !cut || range.is_empty() {
+    let text = document.text();
+    let single = selection.count() == 1;
+    let spans: Vec<Range> = selection
+        .cursors()
+        .iter()
+        .map(|cursor| {
+            if single && cursor.is_empty() {
+                let (start, end) = movement::line_span(text, Selection::one(*cursor));
+                Range::new(start, end)
+            } else {
+                cursor.range()
+            }
+        })
+        .collect();
+    let clipboard = spans
+        .iter()
+        .map(|range| text.slice(*range))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !cut {
         return Outcome {
-            clipboard: Some(text),
+            clipboard: Some(clipboard),
+            ..Outcome::default()
+        };
+    }
+    // Only the selections are removed, and they never overlap: `Selection`
+    // keeps its carets apart, so one transaction can carry them all.
+    let mut edits = Vec::with_capacity(spans.len());
+    let mut carets = Vec::with_capacity(spans.len());
+    let mut shift = 0_isize;
+    for range in spans.iter().filter(|range| !range.is_empty()) {
+        let at = (range.start as isize + shift).max(0) as usize;
+        carets.push(crate::Cursor::caret(at));
+        shift -= range.len() as isize;
+        edits.push(Edit::delete(*range));
+    }
+    if edits.is_empty() {
+        return Outcome {
+            clipboard: Some(clipboard),
             ..Outcome::default()
         };
     }
     document.break_undo_group();
-    let transaction =
-        match Transaction::new(vec![Edit::delete(range)], Origin::Input, selection.clone()) {
-            Ok(transaction) => transaction.with_selection_after(Selection::caret(range.start)),
-            Err(error) => return Outcome::refused(refusal_for(error)),
-        };
+    let transaction = match Transaction::new(edits, Origin::Input, selection.clone()) {
+        Ok(transaction) => {
+            transaction.with_selection_after(Selection::many(carets, selection.primary_index()))
+        }
+        Err(error) => return Outcome::refused(refusal_for(error)),
+    };
     let mut outcome = Outcome::from_edit(document.apply(transaction));
     document.break_undo_group();
-    outcome.clipboard = Some(text);
+    outcome.clipboard = Some(clipboard);
     outcome
 }
 
@@ -674,6 +710,36 @@ mod tests {
         let outcome = run(&mut doc, Command::Cut);
         assert_eq!(outcome.clipboard.as_deref(), Some("one\n"));
         assert_eq!(doc.as_str(), "two\n");
+    }
+
+    #[test]
+    fn a_multi_caret_copy_joins_every_selection_in_document_order() {
+        let mut doc = document("one two three");
+        doc.set_selection(Selection::many(
+            vec![crate::Cursor::new(0, 3), crate::Cursor::new(8, 13)],
+            0,
+        ));
+        let outcome = run(&mut doc, Command::Copy);
+        assert_eq!(outcome.clipboard.as_deref(), Some("one\nthree"));
+        assert_eq!(doc.as_str(), "one two three", "a copy is not an edit");
+    }
+
+    #[test]
+    fn a_multi_caret_cut_removes_every_selection_in_one_step() {
+        let mut doc = document("one two three");
+        doc.set_selection(Selection::many(
+            vec![crate::Cursor::new(0, 3), crate::Cursor::new(8, 13)],
+            0,
+        ));
+        let outcome = run(&mut doc, Command::Cut);
+        assert_eq!(outcome.clipboard.as_deref(), Some("one\nthree"));
+        assert_eq!(doc.as_str(), " two ");
+        run(&mut doc, Command::Undo);
+        assert_eq!(
+            doc.as_str(),
+            "one two three",
+            "the whole cut undoes at once"
+        );
     }
 
     #[test]

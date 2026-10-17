@@ -290,6 +290,59 @@ fn a_resize_during_a_paste_still_lands_the_whole_text() {
     editor.wait_for_disk("alpha bravo charlie");
 }
 
+/// Whether `needle` sits inside a DEC 2026 synchronized update: the frame is
+/// one atomic update, and the copy escapes with the frame that carries it.
+fn inside_synchronized_update(stream: &[u8], needle: &str) -> bool {
+    const OPEN: &[u8] = b"\x1b[?2026h";
+    const CLOSE: &[u8] = b"\x1b[?2026l";
+    let needle = needle.as_bytes();
+    let Some(at) = stream
+        .windows(needle.len())
+        .position(|window| window == needle)
+    else {
+        return false;
+    };
+    let Some(opened) = stream[..at]
+        .windows(OPEN.len())
+        .rposition(|window| window == OPEN)
+    else {
+        return false;
+    };
+    !stream[opened..at]
+        .windows(CLOSE.len())
+        .any(|window| window == CLOSE)
+}
+
+/// The whole copy chain through a real terminal: an SGR drag selects, Ctrl-C
+/// copies, and the exact bytes the daemon's engine parses are what the editor
+/// actually wrote — an OSC 52 inside a DEC 2026 synchronized update.
+#[test]
+fn a_drag_and_ctrl_c_leave_an_osc_52_inside_the_synchronized_update() {
+    let mut editor = Harness::start("hello world\n", &[]);
+    editor.expect("hello");
+    editor.forget();
+
+    // One line number, the mark column, the fold column and a space: the text
+    // starts at the fourth cell. SGR coordinates are 1-based.
+    let press = "\x1b[<0;5;1M";
+    let drag = "\x1b[<32;10;1M";
+    let release = "\x1b[<0;10;1m";
+    editor.send(press.as_bytes());
+    editor.send(drag.as_bytes());
+    editor.send(release.as_bytes());
+    editor.send(&[0x03]); // Ctrl-C
+    assert!(
+        wait_for(&editor.receiver, &mut editor.seen, "aGVsbG8=", WAIT),
+        "the copy never left as an OSC 52; stream was:\n{:?}",
+        String::from_utf8_lossy(&editor.seen)
+    );
+    assert!(
+        inside_synchronized_update(&editor.seen, "\x1b]52;c;aGVsbG8=\x07"),
+        "the OSC 52 must travel inside the frame's synchronized update; stream was:\n{:?}",
+        String::from_utf8_lossy(&editor.seen)
+    );
+}
+
 #[test]
 fn read_only_refuses_to_write_and_says_so() {
     let mut editor = Harness::start("locked\n", &["--read-only"]);

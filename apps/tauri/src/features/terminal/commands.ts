@@ -115,9 +115,9 @@ export async function repaintTerminal(sessionId?: string): Promise<void> {
 /**
  * Ask the host to cut a dragged range.
  *
- * Only the grid knows what a run's cells hold, so the text comes back on the
- * `runtime:clipboard` event rather than being reconstructed from what the
- * canvas was given to paint.
+ * Only the grid knows what a run's cells hold, so the text is cut on the host
+ * rather than reconstructed from what the canvas was given to paint; the host
+ * writes the system clipboard itself.
  */
 export async function copySelection(
   anchor: { line: number; col: number },

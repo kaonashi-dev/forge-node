@@ -49,6 +49,12 @@ tauri-build = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 
+# The macOS host reads and writes `NSPasteboard` directly (`clipboard.rs`).
+# Already in the graph through Tauri, so these add no new crate.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSPasteboard"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSString"] }
+
 objc = "0.2"
 
 # Serialization

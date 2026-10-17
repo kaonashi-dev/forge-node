@@ -106,6 +106,15 @@ running them there would freeze typing. Its bounded queue and dispatcher live in
 `apps/tauri/src-tauri/src/runtime/workbench/mod.rs`; sibling modules group command
 definitions and capability handlers within that same worker.
 
+The host owns the system clipboard on its own thread, for that same reason: a
+pasteboard read or write can wait on the application that owns it.
+`apps/tauri/src-tauri/src/clipboard.rs` reads `NSPasteboard` for the Code pane's
+**Paste** (answering `false` where the host has no reader, so the WebView
+fallback applies) and hands every copy — the grid's own drag selection and an
+OSC 52 store alike — to one writer thread through a one-slot, latest-wins
+hand-off. `NSPasteboard` is not main-thread-only, so a background thread is the
+right side of the bridge thread rule rather than an exception to it.
+
 The file surface splits presentation from IO the same way. The windowed explorer
 lives in `apps/tauri/packages/file-workbench`, which has no Solid, Tauri or
 filesystem dependency; `apps/tauri` adapts that package to the daemon's reads

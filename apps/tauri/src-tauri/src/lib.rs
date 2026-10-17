@@ -4,6 +4,7 @@
 //! thread that holds `client::Client` (blocking UDS + reader thread) and emits
 //! coalesced snapshots.
 
+mod clipboard;
 mod commands;
 mod daemon;
 mod menus;
@@ -51,6 +52,7 @@ pub fn run() {
             commands::reconnect,
             commands::send_runtime_command,
             commands::send_workbench_command,
+            commands::paste_editor_clipboard,
             commands::pick_directory,
             commands::pick_file,
             commands::config_paths,
