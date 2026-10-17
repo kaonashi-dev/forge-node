@@ -24,7 +24,9 @@ import {
   Tooltip,
   toast,
 } from "../ui/index";
-import { Icon } from "../theme/icons/index";
+import { Icon, type ForgeIconName } from "../theme/icons/index";
+import { playOnce } from "../theme/motion";
+import { HUE_COUNT } from "../theme/tokens";
 import { WorkMarker } from "../features/sessions/markers";
 import { applyThemeBase, themeBase } from "../theme/ThemeProvider";
 import { palettes, THEME_LABELS, type ThemeBaseId } from "../theme/tokens";
@@ -234,6 +236,69 @@ const CODE: SyntaxRun[][] = [
   ],
 ];
 
+const HUE_SLOTS = Array.from({ length: HUE_COUNT }, (_, index) => index);
+
+/** The glyphs Forge draws itself, as opposed to the lucide remainder. */
+const GLYPH_NAMES: ForgeIconName[] = [
+  "layers",
+  "folder",
+  "history",
+  "git-pull-request",
+  "git-branch",
+  "worktree",
+  "square-terminal",
+  "file-code",
+  "commit",
+  "fetch",
+  "push",
+  "patch",
+  "list-checks",
+  "merged",
+  "conflict",
+  "message-square-plus",
+  "spawn-child",
+  "folder-symlink",
+  "bell",
+  "idle",
+  "exited",
+  "failed",
+  "columns-2",
+  "command-palette",
+];
+
+/** The five icons that move once, each named for the event that plays it. */
+const ONE_SHOTS: {
+  icon: ForgeIconName;
+  play: string;
+  on: "glyph" | "host";
+  tone: string;
+  label: string;
+}[] = [
+  {
+    icon: "bell",
+    play: "glyph-ring-once",
+    on: "glyph",
+    tone: "forge-icon-needs-you",
+    label: "Starts waiting",
+  },
+  {
+    icon: "worktree",
+    play: "glyph-draw-long",
+    on: "glyph",
+    tone: "forge-icon-accent",
+    label: "New worktree",
+  },
+  {
+    icon: "fetch",
+    play: "glyph-drop",
+    on: "glyph",
+    tone: "forge-icon-muted",
+    label: "Fetch acked",
+  },
+  { icon: "check", play: "glyph-draw", on: "glyph", tone: "forge-icon-green", label: "Agent done" },
+  { icon: "commit", play: "settle-in", on: "host", tone: "forge-icon-muted", label: "Committed" },
+];
+
 export function Gallery() {
   const [density, setDensity] = createSignal<Density>("compact");
   return (
@@ -302,6 +367,81 @@ export function Gallery() {
             <FillChip fill="--warning-solid" fg="--warning-fg" label="Warning" />
             <FillChip fill="--info-solid" fg="--info-fg" label="Info" />
           </Grid>
+        </Section>
+
+        <Section title="Project hues — a square or a line, never a circle">
+          <div class="gallery-stack">
+            <For each={HUE_SLOTS}>
+              {(slot) => (
+                <div
+                  class="gallery-row gallery-row-tight hued"
+                  style={{ "--project-hue": `var(--hue-${slot})` }}
+                >
+                  <span class="project-avatar" aria-hidden="true">
+                    {String.fromCharCode(65 + slot)}
+                  </span>
+                  <span class="hue-mark" aria-hidden="true" />
+                  <span class="gallery-hue-guide" aria-hidden="true" />
+                  <span class="gallery-value">--hue-{slot}</span>
+                </div>
+              )}
+            </For>
+          </div>
+        </Section>
+
+        <Section title="Glyphs — at rest, then chosen (one region at 20%)">
+          <div class="gallery-row">
+            <For each={GLYPH_NAMES}>
+              {(name) => (
+                <div class="gallery-tile gallery-tile-center">
+                  <span class="gallery-row gallery-row-tight">
+                    <Icon name={name} size={18} />
+                    <span class="gallery-chosen" data-selected="">
+                      <Icon name={name} size={18} />
+                    </span>
+                  </span>
+                  <span class="gallery-value">{name}</span>
+                </div>
+              )}
+            </For>
+          </div>
+        </Section>
+
+        <Section title="Motion — loops only for live state; one-shots on an event">
+          <div class="gallery-row gallery-row-loose">
+            <div class="gallery-tile gallery-tile-center">
+              <WorkMarker work="working" size="md" />
+              <span class="gallery-value">working · 900ms</span>
+            </div>
+            <div class="gallery-tile gallery-tile-center">
+              <WorkMarker work="needs-you" size="md" />
+              <span class="gallery-value">needs you · breathe</span>
+            </div>
+            <For each={ONE_SHOTS}>
+              {(shot) => {
+                let host: HTMLSpanElement | undefined;
+                return (
+                  <div class="gallery-tile gallery-tile-center">
+                    <span ref={host} class={shot.tone}>
+                      <Icon name={shot.icon} size={18} />
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        playOnce(
+                          shot.on === "glyph" ? (host?.firstElementChild ?? undefined) : host,
+                          shot.play,
+                        )
+                      }
+                    >
+                      {shot.label}
+                    </Button>
+                  </div>
+                );
+              }}
+            </For>
+          </div>
         </Section>
 
         <Section title="Tints — a wash and its edge">

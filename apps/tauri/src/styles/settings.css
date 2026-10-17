@@ -409,7 +409,7 @@
   width: 26px;
 }
 .accent-swatch-fill {
-  border-radius: inherit;
+  border-radius: 50%;
   height: 100%;
   width: 100%;
 }
@@ -575,6 +575,7 @@
   margin: 0;
 }
 .theme-preview {
+  --project-hue: var(--hue-8);
   background: var(--bg-sunken);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-list);
@@ -624,6 +625,19 @@
 .theme-terminal-colors span {
   border-radius: var(--radius-2xs);
   height: 14px;
+}
+.theme-preview-hues {
+  align-items: center;
+  border-top: 1px solid var(--surface);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  padding: var(--space-10) var(--space-14);
+}
+.theme-preview-hues-label {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+  margin-right: auto;
 }
 .theme-import {
   align-items: flex-start;
