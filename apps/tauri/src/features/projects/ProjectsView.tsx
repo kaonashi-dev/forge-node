@@ -936,122 +936,137 @@ export function ProjectsView() {
                     a rule on `.tree-row.project`. */}
                 <div class="tree-children" classList={{ nested: group.name !== null }} role="group">
                   <For each={group.projects}>
-                    {(project) => (
-                      <>
-                        <div class="project-line">
-                          <button
-                            type="button"
-                            id={railRowId(`project:${project.id}`)}
-                            class="forge-row tree-row project"
-                            role="treeitem"
-                            aria-level={group.name === null ? 1 : 2}
-                            aria-expanded={isOpen(project.id)}
-                            aria-selected={isSelected(`project:${project.id}`)}
-                            classList={{
-                              cursor: isSelected(`project:${project.id}`),
-                            }}
-                            onClick={() => {
-                              selectRow(`project:${project.id}`);
-                              const sole = soleCheckout(project);
-                              if (sole) focusWorkspace(sole.id);
-                              toggle(project.id);
-                            }}
-                            onContextMenu={(event) => openMenu(event, projectMenu(project))}
+                    {(project) => {
+                      const projectHover = createRowHover();
+                      const projectRevealed = () =>
+                        projectHover.hot() || isSelected(`project:${project.id}`);
+                      return (
+                        <>
+                          <div
+                            class="project-line"
+                            onPointerEnter={projectHover.enter}
+                            onPointerLeave={projectHover.leave}
                           >
-                            <span
-                              class="project-avatar hued"
-                              style={{ "--project-hue": projectHue(project.id) }}
-                              aria-hidden="true"
+                            <button
+                              type="button"
+                              id={railRowId(`project:${project.id}`)}
+                              class="forge-row tree-row project"
+                              role="treeitem"
+                              aria-level={group.name === null ? 1 : 2}
+                              aria-expanded={isOpen(project.id)}
+                              aria-selected={isSelected(`project:${project.id}`)}
+                              classList={{
+                                cursor: isSelected(`project:${project.id}`),
+                              }}
+                              onClick={() => {
+                                selectRow(`project:${project.id}`);
+                                const sole = soleCheckout(project);
+                                if (sole) focusWorkspace(sole.id);
+                                toggle(project.id);
+                              }}
+                              onContextMenu={(event) => openMenu(event, projectMenu(project))}
                             >
-                              {project.icon ?? project.name.slice(0, 1).toUpperCase()}
-                            </span>
-                            <span class="tree-label forge-truncate">{project.name}</span>
+                              <span
+                                class="project-avatar hued"
+                                style={{ "--project-hue": projectHue(project.id) }}
+                                aria-hidden="true"
+                              >
+                                {project.icon ?? project.name.slice(0, 1).toUpperCase()}
+                              </span>
+                              <span class="tree-label forge-truncate">{project.name}</span>
+                              <Show
+                                when={isOpen(project.id) ? null : projectWork(project)}
+                                fallback={
+                                  <Show when={isOpen(project.id) && soleCheckout(project)}>
+                                    {(sole) => (
+                                      <span class="tree-meta">{sole().branch ?? sole().label}</span>
+                                    )}
+                                  </Show>
+                                }
+                              >
+                                {(work) => <WorkMarker work={work()} />}
+                              </Show>
+                            </button>
                             <Show
-                              when={isOpen(project.id) ? null : projectWork(project)}
+                              when={soleCheckout(project)}
                               fallback={
-                                <Show when={isOpen(project.id) && soleCheckout(project)}>
-                                  {(sole) => (
-                                    <span class="tree-meta">{sole().branch ?? sole().label}</span>
-                                  )}
-                                </Show>
+                                <span class="ws-marks">
+                                  <Show when={projectRevealed()}>
+                                    <RowActions
+                                      onMore={(event) => openMenu(event, projectMenu(project))}
+                                    />
+                                  </Show>
+                                </span>
                               }
                             >
-                              {(work) => <WorkMarker work={work()} />}
-                            </Show>
-                          </button>
-                          <Show
-                            when={soleCheckout(project)}
-                            fallback={
-                              <span class="ws-marks">
-                                <RowActions
+                              {(sole) => (
+                                <CheckoutMarks
+                                  workspace={sole()}
+                                  work={null}
+                                  onStart={(event) => openMenu(event, launchItems(sole().id))}
                                   onMore={(event) => openMenu(event, projectMenu(project))}
+                                  reveal={projectRevealed()}
                                 />
-                              </span>
-                            }
-                          >
+                              )}
+                            </Show>
+                          </div>
+                          <Show when={isOpen(project.id) && soleCheckout(project)}>
                             {(sole) => (
-                              <CheckoutMarks
-                                workspace={sole()}
-                                work={null}
-                                onStart={(event) => openMenu(event, launchItems(sole().id))}
-                                onMore={(event) => openMenu(event, projectMenu(project))}
-                              />
+                              <div
+                                class="tree-guide hued"
+                                style={{ "--project-hue": projectHue(project.id) }}
+                              >
+                                <CheckoutChildren
+                                  workspace={sole()}
+                                  level={group.name === null ? 2 : 3}
+                                  selected={selected()}
+                                  onSessionMenu={(event, session) =>
+                                    openMenu(
+                                      event,
+                                      sessionMenuItems(session, sessionTitle(session)),
+                                    )
+                                  }
+                                />
+                              </div>
                             )}
                           </Show>
-                        </div>
-                        <Show when={isOpen(project.id) && soleCheckout(project)}>
-                          {(sole) => (
+                          <Show when={isOpen(project.id) && !soleCheckout(project)}>
                             <div
                               class="tree-guide hued"
                               style={{ "--project-hue": projectHue(project.id) }}
                             >
-                              <CheckoutChildren
-                                workspace={sole()}
+                              <WorkspaceList
+                                workspaces={project.workspaces}
                                 level={group.name === null ? 2 : 3}
+                                order={workspaceOrder()[project.id] ?? []}
+                                onReorder={(ids) => persistProjectOrder(project.id, ids)}
+                                isOpen={isOpen}
                                 selected={selected()}
+                                onToggle={(workspace) => {
+                                  selectRow(`workspace:${workspace.id}`);
+                                  // Picking a checkout points the window at it, not
+                                  // just the rail: the tab strip, the launchers and
+                                  // the sidebar views are all scoped to the checkout,
+                                  // and a worktree with no sessions left had no other
+                                  // way to be selected — the card only folded.
+                                  focusWorkspace(workspace.id);
+                                  toggle(workspace.id);
+                                }}
+                                onMenu={(event, workspace) =>
+                                  openMenu(event, workspaceMenu(workspace))
+                                }
+                                onLaunch={(event, workspace) =>
+                                  openMenu(event, launchItems(workspace.id))
+                                }
                                 onSessionMenu={(event, session) =>
                                   openMenu(event, sessionMenuItems(session, sessionTitle(session)))
                                 }
                               />
                             </div>
-                          )}
-                        </Show>
-                        <Show when={isOpen(project.id) && !soleCheckout(project)}>
-                          <div
-                            class="tree-guide hued"
-                            style={{ "--project-hue": projectHue(project.id) }}
-                          >
-                            <WorkspaceList
-                              workspaces={project.workspaces}
-                              level={group.name === null ? 2 : 3}
-                              order={workspaceOrder()[project.id] ?? []}
-                              onReorder={(ids) => persistProjectOrder(project.id, ids)}
-                              isOpen={isOpen}
-                              selected={selected()}
-                              onToggle={(workspace) => {
-                                selectRow(`workspace:${workspace.id}`);
-                                // Picking a checkout points the window at it, not
-                                // just the rail: the tab strip, the launchers and
-                                // the sidebar views are all scoped to the checkout,
-                                // and a worktree with no sessions left had no other
-                                // way to be selected — the card only folded.
-                                focusWorkspace(workspace.id);
-                                toggle(workspace.id);
-                              }}
-                              onMenu={(event, workspace) =>
-                                openMenu(event, workspaceMenu(workspace))
-                              }
-                              onLaunch={(event, workspace) =>
-                                openMenu(event, launchItems(workspace.id))
-                              }
-                              onSessionMenu={(event, session) =>
-                                openMenu(event, sessionMenuItems(session, sessionTitle(session)))
-                              }
-                            />
-                          </div>
-                        </Show>
-                      </>
-                    )}
+                          </Show>
+                        </>
+                      );
+                    }}
                   </For>
                 </div>
               </Show>
@@ -1236,6 +1251,7 @@ function WorkspaceCard(props: {
   );
   const codeActive = () => centerMode() === "code" && activeWorkspace() === props.workspace.id;
   const arrived = workspaceArrivals.arrived(props.workspace.id, Date.now());
+  const rowHover = createRowHover();
   const current = createMemo(
     () =>
       codeActive() ||
@@ -1263,7 +1279,7 @@ function WorkspaceCard(props: {
       }}
       onContextMenu={props.onMenu}
     >
-      <div class="ws-row">
+      <div class="ws-row" onPointerEnter={rowHover.enter} onPointerLeave={rowHover.leave}>
         <button
           type="button"
           class="forge-row ws-head"
@@ -1290,6 +1306,7 @@ function WorkspaceCard(props: {
           work={props.open ? null : work()}
           onStart={props.onLaunch}
           onMore={props.onMenu}
+          reveal={rowHover.hot() || props.cursor}
         />
       </div>
 
@@ -1319,6 +1336,8 @@ function CheckoutMarks(props: {
   onStart: (event: MouseEvent) => void;
   /** Everything the row's context menu offers. */
   onMore: (event: MouseEvent) => void;
+  /** Mount + and ⋯: the row is hovered, or it is the keyboard cursor and Tab must reach them. */
+  reveal: boolean;
 }) {
   const sync = createMemo(() => syncLabel(props.workspace.ahead, props.workspace.behind));
   const changed = () =>
@@ -1362,9 +1381,36 @@ function CheckoutMarks(props: {
           )}
         </Show>
       </span>
-      <RowActions onStart={props.onStart} onMore={props.onMore} />
+      <Show when={props.reveal}>
+        <RowActions onStart={props.onStart} onMore={props.onMore} />
+      </Show>
     </span>
   );
+}
+
+/** How long a row keeps its actions after the pointer leaves, so they fade out. */
+const ROW_ACTIONS_LINGER_MS = 200;
+
+/**
+ * Whether the pointer is over a row, for mounting its + and ⋯ only while it
+ * is: a rail of a few hundred rows otherwise carries two hidden buttons and
+ * their tooltips on every one of them.
+ */
+function createRowHover() {
+  const [hot, setHot] = createSignal(false);
+  let linger: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(linger));
+  return {
+    hot,
+    enter: () => {
+      clearTimeout(linger);
+      setHot(true);
+    },
+    leave: () => {
+      clearTimeout(linger);
+      linger = setTimeout(() => setHot(false), ROW_ACTIONS_LINGER_MS);
+    },
+  };
 }
 
 /** + and ⋯, revealed on hover or focus while the row's marks step aside. */

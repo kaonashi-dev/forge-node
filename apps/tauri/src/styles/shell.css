@@ -252,18 +252,18 @@
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  padding: var(--space-8);
+  padding: var(--editor-pad);
   position: relative;
   user-select: none;
 }
 /* A read-out of the editor's own viewport, not a control: the wheel is
    reported to the TUI, so the thumb must not swallow the pointer. */
 .editor-terminal-scrollbar {
-  bottom: var(--space-8);
+  bottom: var(--editor-pad);
   pointer-events: none;
   position: absolute;
   right: 2px;
-  top: var(--space-8);
+  top: var(--editor-pad);
   width: 4px;
 }
 .editor-terminal-thumb {
@@ -580,7 +580,7 @@
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  padding: var(--space-16) var(--space-24);
+  padding: var(--terminal-pad-y) var(--terminal-pad-x);
   position: relative;
   /* The pane runs its own selection against the grid; the browser's would
      select a canvas element, which is nothing. */
@@ -601,7 +601,7 @@
   caret-color: transparent;
   color: transparent;
   height: 1px;
-  left: var(--space-8);
+  left: var(--terminal-pad-x);
   opacity: 0;
   outline: none;
   overflow: hidden;
@@ -612,7 +612,7 @@
   pointer-events: none;
   position: absolute;
   resize: none;
-  top: var(--space-8);
+  top: var(--terminal-pad-y);
   width: 1px;
   z-index: var(--z-raised);
 }
@@ -1126,6 +1126,19 @@
 @media (prefers-reduced-motion: no-preference) {
   .ws-sessions {
     animation: ws-list-in var(--motion-fast) var(--ease);
+  }
+}
+/* The actions mount on hover, so they fade in by animation: a transition has
+   no earlier style to start from on a node that did not exist. */
+@media (prefers-reduced-motion: no-preference) {
+  .ws-row:hover .row-actions,
+  .project-line:hover .row-actions {
+    animation: row-actions-in var(--motion-fast) var(--ease) var(--motion-fast) backwards;
+  }
+}
+@keyframes row-actions-in {
+  from {
+    opacity: 0;
   }
 }
 @keyframes ws-list-in {
