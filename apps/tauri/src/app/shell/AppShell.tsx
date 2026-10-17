@@ -7,6 +7,7 @@ import {
   on,
   onCleanup,
   onMount,
+  untrack,
 } from "solid-js";
 import { APP } from "../../actions/actions";
 import { enterContext, installKeymap, invokeAction, registerAction } from "../../actions/dispatch";
@@ -19,7 +20,7 @@ import { focusedTerminalId } from "../../features/terminal/focus";
 import { startAppRuntime } from "../lifecycle/index";
 import { startGitSync } from "../../features/git/gitSync";
 import { startCheckoutWatch } from "../integrations/checkoutWatch";
-import { forgeStore } from "../../state/forgeStore";
+import { forgeStore, snapshotLanded } from "../../state/forgeStore";
 import { dialogsStore, requestConfirm, setDialogsStore } from "../../state/dialogs";
 import { connectionStore, setNotice } from "../../state/connection";
 import {
@@ -155,6 +156,19 @@ export function AppShell() {
   // The daemon answers with the stored layout some milliseconds after the
   // window is already on screen. Seeding once — rather than tracking — keeps a
   // later snapshot from yanking a panel the user has since dragged.
+  /*
+   * The theme waits for the first snapshot, not for a non-empty `app_state`:
+   * a fresh daemon has stored nothing, and the browser-local echo applied at
+   * launch must give way to "no stored theme" as soon as the daemon has said so.
+   */
+  let themed = false;
+  createEffect(() => {
+    if (themed || !snapshotLanded()) return;
+    themed = true;
+    const base = untrack(() => forgeStore.app_state[THEME_BASE_KEY]) as ThemePreference | undefined;
+    applyThemeBase(base ?? "calm-dark");
+    rememberTheme(base);
+  });
   let seeded = false;
   createEffect(() => {
     if (seeded || Object.keys(forgeStore.app_state).length === 0) return;
@@ -162,9 +176,6 @@ export function AppShell() {
     restoreSidebar();
     setSidebarWidth(readWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_RANGE));
     seedTabOrder();
-    const base = forgeStore.app_state[THEME_BASE_KEY] as ThemePreference | undefined;
-    applyThemeBase(base ?? "calm-dark");
-    rememberTheme(base);
     // Density is written over `tokens.css` as an inline style, so it has to be
     // re-applied whenever the stored preference lands — the same round trip
     // the theme takes.

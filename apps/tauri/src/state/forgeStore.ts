@@ -1,4 +1,4 @@
-import { batch } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import { createStore, reconcile, unwrap } from "solid-js/store";
 import type { ShellSnapshot } from "../contracts/runtime";
 import { agentVisible } from "./agentVisibility";
@@ -50,6 +50,14 @@ export const [forgeStore, setForgeStore] = createStore<ShellSnapshot>(emptySnaps
  * transcript or a re-sorted pull request would shift every later row, so they
  * are keyed by `session_id` and `url` instead.
  */
+const [snapshotLanded, setSnapshotLanded] = createSignal(false);
+
+/**
+ * Whether a daemon snapshot has been applied. Unlike a non-empty `app_state`,
+ * this is true for a fresh daemon that has stored nothing yet.
+ */
+export { snapshotLanded };
+
 export function applyShellSnapshot(snapshot: ShellSnapshot): void {
   const before = forgeStore.pull_requests;
   const answered =
@@ -72,6 +80,7 @@ export function applyShellSnapshot(snapshot: ShellSnapshot): void {
     );
     setForgeStore("external_agents", reconcile(snapshot.external_agents, { key: "session_id" }));
     setForgeStore("pull_requests", reconcile(snapshot.pull_requests, { key: "url" }));
+    setSnapshotLanded(true);
   });
   // A refresh acks when it starts and is answered by the next snapshot.
   if (answered) setLoading("pull_requests", false);
