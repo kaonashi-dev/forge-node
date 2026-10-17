@@ -1861,6 +1861,16 @@
   --leading-prose: 1.7;
   --tracking-tight: -0.01em;
   --tracking-label: 0.1em;
+  --glass-backdrop:
+    radial-gradient(900px 600px at 10% 10%, rgb(43 37 80) 0%, rgb(43 37 80 / 0%) 60%),
+    radial-gradient(700px 500px at 0% 90%, rgb(18 58 74) 0%, rgb(18 58 74 / 0%) 60%), rgb(11 13 20);
+  --glass-pane: rgb(16 17 24 / 55%);
+  --glass-edge: rgb(255 255 255 / 7%);
+  --glass-fill: rgb(255 255 255 / 6%);
+  --glass-fill-strong: rgb(255 255 255 / 14%);
+  --glass-tab: rgb(138 180 255 / 16%);
+  --glass-tab-ring: rgb(138 180 255 / 35%);
+  --glass-card-depth: 0 30px 80px rgb(0 0 0 / 55%), 0 0 0 1px rgb(0 0 0 / 40%);
   --opacity-disabled: 0.5;
   --opacity-dim: 0.55;
   --opacity-drag: 0.45;

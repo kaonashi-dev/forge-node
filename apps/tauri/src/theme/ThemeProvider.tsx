@@ -10,6 +10,7 @@ import {
 import { applyUiFont } from "./uiFont";
 
 import { parseCustomTheme } from "./customTheme";
+import { withGlass } from "./glass";
 
 const DEFAULT_BASE: ThemeBaseId = "calm-dark";
 
@@ -21,6 +22,17 @@ const SYSTEM_LIGHT: ThemeBaseId = "calm-light";
 
 const [base, setBase] = createSignal<ThemeBaseId>(DEFAULT_BASE, { equals: false });
 const [preference, setPreference] = createSignal<ThemePreference>(DEFAULT_BASE);
+const [glass, setGlass] = createSignal(false);
+
+/** Whether the Glass finish is asked for; it only takes effect on a dark base. */
+export const glassPreference = glass;
+
+/** Turns the Glass finish on or off and repaints the current theme under it. */
+export function applyGlass(on: boolean): void {
+  if (glass() === on) return;
+  setGlass(on);
+  applyThemeBase(preference());
+}
 
 // JS-rendered surfaces must refresh even when one custom palette replaces another.
 export const themeBase = base;
@@ -53,7 +65,10 @@ export function applyThemeBase(next: ThemePreference = DEFAULT_BASE): void {
   document.documentElement.dataset.theme = resolved;
   // Native controls and scrollbars need the same mode as the CSS tokens.
   document.documentElement.style.colorScheme = baseIsLight(resolved) ? "light" : "dark";
-  applyTheme(palettes[resolved]);
+  const glassy = glass() && !baseIsLight(resolved);
+  if (glassy) document.documentElement.dataset.glass = "true";
+  else delete document.documentElement.dataset.glass;
+  applyTheme(glassy ? withGlass(palettes[resolved]) : palettes[resolved]);
   // `applyTheme` rewrites every `--forge-*` metric, including the ones density
   // and UI font overlay. Put those back from `dataset` so a theme switch does
   // not snap the chrome to the defaults.

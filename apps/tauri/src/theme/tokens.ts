@@ -745,6 +745,18 @@ export const scale = {
   },
   tracking: { tight: "-0.01em", label: "0.1em" },
   opacity: { disabled: 0.5, dim: 0.55, drag: 0.45 },
+  /** The Glass finish's structure: a lit backdrop, frosted panes and their edges. Dark only. */
+  glass: {
+    backdrop:
+      "radial-gradient(900px 600px at 10% 10%, rgb(43 37 80) 0%, rgb(43 37 80 / 0%) 60%), radial-gradient(700px 500px at 0% 90%, rgb(18 58 74) 0%, rgb(18 58 74 / 0%) 60%), rgb(11 13 20)",
+    pane: "rgb(16 17 24 / 55%)",
+    edge: "rgb(255 255 255 / 7%)",
+    fill: "rgb(255 255 255 / 6%)",
+    "fill-strong": "rgb(255 255 255 / 14%)",
+    tab: "rgb(138 180 255 / 16%)",
+    "tab-ring": "rgb(138 180 255 / 35%)",
+    "card-depth": "0 30px 80px rgb(0 0 0 / 55%), 0 0 0 1px rgb(0 0 0 / 40%)",
+  },
   // Hover/focus/selection, menus/tooltips/toasts, sidebar and panel resize. Output repaints never animate.
   motion: {
     fast: "90ms",
@@ -994,6 +1006,7 @@ export function staticTokens(): Record<string, string> {
     out[`--leading-${name}`] = String(value);
   }
   for (const [name, value] of Object.entries(scale.tracking)) out[`--tracking-${name}`] = value;
+  for (const [name, value] of Object.entries(scale.glass)) out[`--glass-${name}`] = value;
   for (const [name, value] of Object.entries(scale.opacity)) {
     out[`--opacity-${name}`] = String(value);
   }

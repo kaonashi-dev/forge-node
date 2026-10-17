@@ -61,6 +61,7 @@ import {
   SIDEBAR_RANGE,
   SIDEBAR_WIDTH_KEY,
   THEME_BASE_KEY,
+  GLASS_KEY,
   UI_FONT_SIZE_KEY,
   bumpScale,
   readChoice,
@@ -73,7 +74,7 @@ import { CenterStack } from "./CenterStack";
 import type { Section } from "../../features/settings/sections";
 import { ESC_AGAIN_MS, isSecondEsc } from "../../features/settings/escAgain";
 import { defaultAgentFrom, resolveDefaultAgent } from "../../features/settings/defaultAgent";
-import { applyThemeBase, type ThemePreference } from "../../theme/ThemeProvider";
+import { applyThemeBase, type ThemePreference, applyGlass } from "../../theme/ThemeProvider";
 import { applyDensity, readDensity } from "../../theme/density";
 import { rememberTheme } from "../../theme/lastTheme";
 import { applyReduceMotion } from "../../theme/motion";
@@ -166,6 +167,7 @@ export function AppShell() {
     if (themed || !snapshotLanded()) return;
     themed = true;
     const base = untrack(() => forgeStore.app_state[THEME_BASE_KEY]) as ThemePreference | undefined;
+    applyGlass(untrack(() => forgeStore.app_state[GLASS_KEY]) === "true");
     applyThemeBase(base ?? "calm-dark");
     rememberTheme(base);
   });
