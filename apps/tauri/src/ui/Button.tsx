@@ -26,6 +26,8 @@ export type ButtonProps = {
   /** Set when the button opens something that stays open. */
   "aria-expanded"?: boolean;
   "aria-label"?: string;
+  /** Inert but still at full strength, for a control showing a result for a beat. */
+  "aria-disabled"?: boolean;
   onClick?: (event: MouseEvent) => void;
   onMouseDown?: (event: MouseEvent) => void;
 };

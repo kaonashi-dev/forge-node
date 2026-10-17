@@ -153,6 +153,7 @@ export function WorkingTreeRail(props: { committable: boolean }) {
             size="lg"
             class="git-commit-button"
             disabled={!canCommit() && !committed()}
+            aria-disabled={committed() && !canCommit()}
             loading={busy()}
             onClick={commit}
           >
@@ -183,6 +184,9 @@ export function WorkingTreeRail(props: { committable: boolean }) {
             <Icon name="sparkles" size={15} />
           </IconButton>
         </div>
+        <span class="forge-visually-hidden" role="status">
+          {committed() ? "Committed. Nothing was pushed." : ""}
+        </span>
         <p class="forge-caption git-commit-note">
           {props.committable
             ? "Stages every change above, then commits. Nothing is pushed."
