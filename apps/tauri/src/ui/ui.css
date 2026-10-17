@@ -758,6 +758,19 @@
   box-shadow: var(--card-select-halo);
 }
 
+/* ---------------------------------------------------------- project hue --- */
+
+/*
+ * A project's hue as a tint, a hairline and a guide line. Mixed on the element
+ * that sets `--project-hue` rather than on `:root`: a custom property computes
+ * where it is declared, so a root-level mix would never see a row's own hue.
+ */
+.hued {
+  --hue-wash: color-mix(in srgb, var(--project-hue) var(--hue-tint), transparent);
+  --hue-edge: color-mix(in srgb, var(--project-hue) 25%, transparent);
+  --hue-guide: color-mix(in srgb, var(--project-hue) 33%, transparent);
+}
+
 /* ---------------------------------------------------------- radiogroup --- */
 
 .forge-radio-group {
@@ -866,8 +879,8 @@
   color: var(--fg-default);
 }
 .forge-tab[data-selected] {
-  background: var(--border-subtle);
-  box-shadow: inset 0 0 0 1px var(--tab-edge);
+  background: var(--finish-tab-bg);
+  box-shadow: var(--finish-tab-shadow);
   color: var(--fg-strong);
   font-weight: var(--weight-medium);
 }

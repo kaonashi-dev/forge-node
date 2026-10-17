@@ -74,6 +74,7 @@ import { AttentionMarker, StateMarker, WorkMarker } from "../sessions/markers";
 import { SessionGlyph } from "../sessions/SessionGlyph";
 import { draftWithJuva, loadBranchCompare } from "../git/commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
+import { projectHue } from "../../theme/projectHue";
 
 const COLLAPSED_KEY = "ui.sidebar.collapsed";
 const WORKSPACE_ORDER_KEY = "ui.sidebar.workspace_order";
@@ -97,12 +98,6 @@ function codeShown(workspace: string): boolean {
     (viewsStore.byWorkspace[workspace]?.open.length ?? 0) > 0 ||
     (centerMode() === "code" && activeWorkspace() === workspace)
   );
-}
-
-/** The project the window is pointed at wears the accent on its avatar. */
-function projectCurrent(project: ProjectNode): boolean {
-  const workspace = activeWorkspace();
-  return project.workspaces.some((item) => item.id === workspace);
 }
 
 /** The loudest state anywhere under a folded project: one dot instead of a count. */
@@ -859,8 +854,8 @@ export function ProjectsView() {
                             onContextMenu={(event) => openMenu(event, projectMenu(project))}
                           >
                             <span
-                              class="project-avatar"
-                              classList={{ current: projectCurrent(project) }}
+                              class="project-avatar hued"
+                              style={{ "--project-hue": projectHue(project.id) }}
                               aria-hidden="true"
                             >
                               {project.icon ?? project.name.slice(0, 1).toUpperCase()}
@@ -891,7 +886,10 @@ export function ProjectsView() {
                         </div>
                         <Show when={isOpen(project.id) && soleCheckout(project)}>
                           {(sole) => (
-                            <div class="tree-guide">
+                            <div
+                              class="tree-guide hued"
+                              style={{ "--project-hue": projectHue(project.id) }}
+                            >
                               <CheckoutChildren
                                 workspace={sole()}
                                 level={group.name === null ? 2 : 3}
@@ -904,7 +902,10 @@ export function ProjectsView() {
                           )}
                         </Show>
                         <Show when={isOpen(project.id) && !soleCheckout(project)}>
-                          <div class="tree-guide">
+                          <div
+                            class="tree-guide hued"
+                            style={{ "--project-hue": projectHue(project.id) }}
+                          >
                             <WorkspaceList
                               workspaces={project.workspaces}
                               level={group.name === null ? 2 : 3}

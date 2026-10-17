@@ -176,6 +176,16 @@
   box-shadow: var(--attention-halo);
 }
 
+/* A project's place, in its hue: always a square, because circles are states. */
+.hue-mark {
+  background: var(--project-hue);
+  /* Off the spacing scale: the ladder's smallest radius rounds 7px to a dot. */
+  border-radius: var(--space-2);
+  flex: none;
+  height: 7px;
+  width: 7px;
+}
+
 /* The face a code surface asks for by name. */
 .terminal-canvas,
 .diff-view,
@@ -483,6 +493,21 @@ html[data-platform="macos"] .title-bar-inset {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  position: relative;
+}
+/* The current project's hue on the top edge and the 1px light under it. A
+   layer of its own because the strip's opaque ground would cover an inset. */
+.work-card::before {
+  background: var(--project-hue, transparent);
+  box-shadow: 0 1px 0 var(--finish-top-light);
+  content: "";
+  height: 2px;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+  z-index: calc(var(--z-strip) + var(--z-raised));
 }
 .work-card > .center-stack {
   flex: 1;

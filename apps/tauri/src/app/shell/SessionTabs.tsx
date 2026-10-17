@@ -37,8 +37,20 @@ type SessionTabsProps = {
   onCloseCode: () => void;
 };
 
+/** How far the active tab's underline stops short of its edges, in px. */
+const TAB_INDICATOR_INSET = 10;
+
 export function SessionTabs(props: SessionTabsProps) {
   let scrollEl: HTMLDivElement | undefined;
+  let stripEl: HTMLDivElement | undefined;
+  /* One indicator for the whole strip, so a switch glides it rather than
+     drawing a new one: measured when the active tab or a tab's width changes,
+     never per frame. */
+  const [indicator, setIndicator] = createSignal<{ x: number; width: number } | null>(null);
+  const measureIndicator = () => {
+    const active = stripEl?.querySelector<HTMLElement>(".session-tab-wrap.active");
+    setIndicator(active ? { x: active.offsetLeft, width: active.offsetWidth } : null);
+  };
   const [overflowing, setOverflowing] = createSignal(false);
   /* Which edges of the scrollport hide a tab mid-pill. Drives the mask fade
      so a half-visible current tab dissolves instead of clipping square. */
@@ -100,7 +112,20 @@ export function SessionTabs(props: SessionTabsProps) {
     }
     const observer = new ResizeObserver(() => onScroll());
     observer.observe(scrollEl);
-    onCleanup(() => observer.disconnect());
+    // A retitled tab resizes the strip, not the scrollport.
+    const strip = new ResizeObserver(measureIndicator);
+    if (stripEl) strip.observe(stripEl);
+    onCleanup(() => {
+      observer.disconnect();
+      strip.disconnect();
+    });
+  });
+
+  createEffect(() => {
+    props.activeId;
+    props.codeActive;
+    tabs().length;
+    queueMicrotask(measureIndicator);
   });
 
   // Tabs opening or closing changes scrollWidth without firing scroll or resize.
@@ -212,7 +237,18 @@ export function SessionTabs(props: SessionTabsProps) {
           ref={scrollEl}
           onScroll={onScroll}
         >
-          <div class="tab-strip" role="tablist" aria-label="Sessions">
+          <div class="tab-strip" role="tablist" aria-label="Sessions" ref={stripEl}>
+            <Show when={indicator()}>
+              {(place) => (
+                <span
+                  class="tab-indicator"
+                  aria-hidden="true"
+                  style={{
+                    transform: `translateX(${place().x + TAB_INDICATOR_INSET}px) scaleX(${Math.max(0, place().width - 2 * TAB_INDICATOR_INSET)})`,
+                  }}
+                />
+              )}
+            </Show>
             {/* Code leads so Option+1 reaches the files. Sessions follow it. */}
             <Show when={props.codeOpen}>
               <div class="session-tab-wrap code-tab-wrap" classList={{ active: props.codeActive }}>
@@ -224,6 +260,7 @@ export function SessionTabs(props: SessionTabsProps) {
                   aria-label={`Code, ${props.codeCount} open`}
                   onClick={props.onSelectCode}
                 >
+                  <span class="hue-mark" aria-hidden="true" />
                   <Icon
                     name="file-code"
                     class={props.codeActive ? "forge-icon-accent" : "forge-icon-muted"}
@@ -381,6 +418,7 @@ function SessionTab(props: SessionTabProps) {
         aria-selected={props.active}
         aria-label={props.waiting ? `${props.label}, waiting on you` : props.label}
       >
+        <span class="hue-mark" aria-hidden="true" />
         <Show when={props.waiting} fallback={<StateMarker session={props.session} />}>
           <AttentionMarker />
         </Show>

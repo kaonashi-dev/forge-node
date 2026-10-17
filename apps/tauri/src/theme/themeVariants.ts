@@ -40,6 +40,10 @@ export function withThemeColor(source: Palette, key: ThemeColor, color: string):
       result[surface] = shift(source[surface]);
     }
     if (source.border) result.border = shift(source.border);
+    if (source.finish) {
+      const { tab, rule, hover } = source.finish;
+      result.finish = { tab: shift(tab), rule: shift(rule), ...(hover && { hover: shift(hover) }) };
+    }
     result.ansi[0] = result.termBg;
   } else if (key === "text") {
     result.termFg = value;

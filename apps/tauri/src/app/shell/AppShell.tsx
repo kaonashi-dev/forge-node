@@ -49,6 +49,7 @@ import {
   closeViewsToRight,
 } from "../../features/editor/tabs";
 import { openFileCount } from "../../navigation/views";
+import { projectHue } from "../../theme/projectHue";
 import { centerSplit } from "../../navigation/centerSplitStore";
 import { openEditor } from "../../features/editor/open";
 import {
@@ -223,6 +224,12 @@ export function AppShell() {
    * than the one it started in.
    */
   const currentWorkspace = createMemo(sharedWorkspace);
+  /** The card, its tabs and its location bar wear the current checkout's project hue. */
+  const cardHue = createMemo(() => {
+    const id = currentWorkspace();
+    const project = forgeStore.workspaces.find((item) => item.id === id)?.project_id;
+    return project ? projectHue(project) : undefined;
+  });
 
   /**
    * The tabs, in the order the strip shows them.
@@ -675,7 +682,11 @@ export function AppShell() {
           onCommit={(width) => writeWidth(SIDEBAR_WIDTH_KEY, width)}
         />
       </Show>
-      <section class="work-card" aria-label="Work">
+      <section
+        class="work-card hued"
+        aria-label="Work"
+        style={cardHue() ? { "--project-hue": cardHue() } : undefined}
+      >
         <CardStrip
           settings={settings()}
           settingsSection={settingsSection() ?? "General"}

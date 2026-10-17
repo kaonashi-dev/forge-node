@@ -55,6 +55,23 @@
   gap: var(--space-2);
   min-width: min-content;
   padding: 0 var(--space-4);
+  position: relative;
+}
+/* One 1px bar scaled to the active tab's width, so a switch is a transform. */
+.tab-indicator {
+  background: var(--project-hue, var(--accent-solid));
+  bottom: 0;
+  height: 2px;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  transform-origin: left center;
+  width: 1px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tab-indicator {
+    transition: transform var(--motion-slow) var(--ease);
+  }
 }
 
 .tab-strip-trailing {
@@ -93,8 +110,8 @@
 }
 /* A raised chip rather than a folder tab, the same for sessions and Code. */
 .session-tab-wrap.active {
-  background: var(--border-subtle);
-  box-shadow: inset 0 0 0 1px var(--tab-edge);
+  background: var(--finish-tab-bg);
+  box-shadow: var(--finish-tab-shadow);
   color: var(--fg-strong);
 }
 .session-tab-wrap.active .session-tab {
@@ -601,7 +618,7 @@
 .card-strip {
   align-items: center;
   background: var(--bg-strip);
-  border-bottom: 1px solid var(--surface);
+  border-bottom: 1px solid var(--finish-strip-rule);
   display: flex;
   flex-shrink: 0;
   gap: var(--space-2);
@@ -672,7 +689,7 @@
 /* Where the card is, under the strip: project / checkout / file, then state. */
 .card-location {
   align-items: center;
-  border-bottom: 1px solid var(--surface);
+  border-bottom: 1px solid var(--finish-strip-rule);
   color: var(--forge-faint);
   display: flex;
   flex-shrink: 0;
@@ -686,6 +703,12 @@
 .card-location-place,
 .card-location-path {
   color: var(--fg-muted);
+}
+.card-location-place {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-6);
+  min-width: 0;
 }
 .card-location-mono {
   color: inherit;
@@ -866,9 +889,9 @@
 .tree-path {
   font-size: var(--text-xs);
 }
-/* Children hang off a hairline guide under the row that holds them. */
+/* Children hang off a guide under the row that holds them, in its project's hue. */
 .tree-guide {
-  border-left: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--hue-guide, var(--border-subtle));
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -895,9 +918,10 @@
 
 .project-avatar {
   align-items: center;
-  background: var(--surface);
+  background: var(--hue-wash, var(--surface));
   border-radius: var(--radius-badge);
-  color: var(--fg-muted);
+  box-shadow: inset 0 0 0 1px var(--hue-edge, transparent);
+  color: var(--project-hue, var(--fg-muted));
   display: inline-flex;
   flex: none;
   font-size: var(--text-label);
@@ -905,10 +929,6 @@
   height: 18px;
   justify-content: center;
   width: 18px;
-}
-.project-avatar.current {
-  background: var(--select-bg);
-  color: var(--accent-text);
 }
 
 /* --- Checkout row -------------------------------------------------------- */
@@ -1004,7 +1024,7 @@
   gap: var(--space-1);
 }
 .ws-card > .ws-sessions {
-  border-left: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--hue-guide, var(--border-subtle));
   margin-left: var(--space-14);
   padding-left: var(--space-8);
 }

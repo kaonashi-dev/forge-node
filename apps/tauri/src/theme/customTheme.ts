@@ -63,7 +63,7 @@ function parsePalette(value: unknown): Palette {
   if (!record(value))
     throw new Error("A palette object is required. Download a theme for all fields.");
   const result: Palette = { ...palettes["forge-dark"] };
-  for (const key of Object.keys(result) as (keyof Palette)[]) {
+  for (const key of Object.keys(result) as Exclude<keyof Palette, "finish">[]) {
     const color = value[key];
     // Themes saved before the strip role existed still load; the strip derives.
     if (key === "strip" && color === undefined) continue;
@@ -82,6 +82,19 @@ function parsePalette(value: unknown): Palette {
     if (color === undefined) continue;
     if (!isColor(color)) throw new Error(`palette.${key} must be a #RRGGBB color.`);
     result[key] = color;
+  }
+  // A theme exported from Calm carries its finish; one without keeps A2's grounds.
+  const finish = value.finish;
+  if (finish !== undefined) {
+    if (!record(finish) || !isColor(finish.tab) || !isColor(finish.rule))
+      throw new Error("palette.finish needs #RRGGBB tab and rule colors.");
+    if (finish.hover !== undefined && !isColor(finish.hover))
+      throw new Error("palette.finish.hover must be a #RRGGBB color.");
+    result.finish = {
+      tab: finish.tab,
+      rule: finish.rule,
+      ...(finish.hover !== undefined && { hover: finish.hover }),
+    };
   }
   return result;
 }

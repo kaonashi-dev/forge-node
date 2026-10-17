@@ -57,7 +57,17 @@ export type Palette = {
   gitConflict: string;
   gitIgnored: string;
   ansi: string[];
+  finish?: Finish;
 } & Partial<Record<PaletteOverride, string>>;
+
+/**
+ * The Ink finish: grounds a base pins for the active tab, the strip's rule and
+ * the hover wash. A base that has one also takes Ink's selection (a thinner
+ * tint plus a hairline) and depth; a base without one keeps the A2 values.
+ */
+export type Finish = { tab: string; rule: string; hover?: string };
+
+export const HUE_COUNT = 9;
 
 /**
  * Roles a base may pin instead of deriving: rows below primary text, icons
@@ -74,6 +84,36 @@ export function deriveStrip(rail: string, bg: string): string {
 
 type PaletteInput = Omit<Palette, "ansi" | "strip"> & { strip?: string };
 
+/**
+ * Calm's project hues, the source every base derives its nine from: they are
+ * kept where they already clear the floor on that base and pulled toward its
+ * text where they do not.
+ */
+const CALM_HUES = {
+  dark: [
+    "#5cc8c0",
+    "#7aa2f7",
+    "#7ed69a",
+    "#d98ae0",
+    "#f28fad",
+    "#b5d86a",
+    "#6cc4f0",
+    "#e0c36a",
+    "#a78bfa",
+  ],
+  light: [
+    "#0c6e68",
+    "#2f5fc9",
+    "#1f7343",
+    "#94379f",
+    "#b0355f",
+    "#536d0f",
+    "#146892",
+    "#86640b",
+    "#6d28d9",
+  ],
+} as const;
+
 const palette = (values: PaletteInput, ansi: string[]): Palette => ({
   ...values,
   strip: values.strip ?? deriveStrip(values.rail, values.bg),
@@ -83,25 +123,25 @@ const palette = (values: PaletteInput, ansi: string[]): Palette => ({
 export const palettes = {
   "calm-dark": palette(
     {
-      bg: "#131315",
+      bg: "#111112",
       rail: "#0c0c0d",
       sidebar: "#0c0c0d",
-      strip: "#0f0f11",
+      strip: "#0e0e0f",
       surface: "#1c1c1f",
-      surfaceHi: "#26262a",
-      editor: "#131315",
+      surfaceHi: "#2a2a2e",
+      editor: "#111112",
       step: "#2a2a2f",
       text: "#ededef",
       muted: "#a0a0a8",
       faint: "#7e7e87",
-      accent: "#a78bfa",
+      accent: "#e4e4e7",
       needsYou: "#f59e4b",
       needsYouDeep: "#c2620f",
       green: "#4ade80",
       red: "#f87171",
       amber: "#e3b341",
       blue: "#7aa2f7",
-      termBg: "#131315",
+      termBg: "#111112",
       termFg: "#c9c9cf",
       gitAdded: "#4ade80",
       gitModified: "#e3b341",
@@ -111,8 +151,9 @@ export const palettes = {
       gitIgnored: "#5a5a62",
       fgDefault: "#c9c9cf",
       fgSubtle: "#8a8a93",
-      border: "#1e1e21",
+      border: "#222225",
       needsYouText: "#f7b276",
+      finish: { tab: "#1c1c1f", rule: "#1f1f22", hover: "#19191c" },
     },
     [
       "#1c1c1f",
@@ -146,7 +187,7 @@ export const palettes = {
       text: "#1a1a1c",
       muted: "#5e5e66",
       faint: "#67676f",
-      accent: "#6d28d9",
+      accent: "#27272a",
       needsYou: "#a04a08",
       needsYouDeep: "#7c3a06",
       green: "#15803d",
@@ -164,6 +205,7 @@ export const palettes = {
       fgDefault: "#2e2e33",
       fgSubtle: "#62626a",
       border: "#e4e4e7",
+      finish: { tab: "#ffffff", rule: "#e9e9eb" },
     },
     [
       "#ffffff",
@@ -575,6 +617,7 @@ palettes.forest = {
  */
 export const ACCENT_SWATCHES: Record<"dark" | "light", { name: string; color: string }[]> = {
   dark: [
+    { name: "Neutral", color: "#e4e4e7" },
     { name: "Violet", color: "#a78bfa" },
     { name: "Teal", color: "#5ccabb" },
     { name: "Blue", color: "#7aa2f7" },
@@ -582,6 +625,7 @@ export const ACCENT_SWATCHES: Record<"dark" | "light", { name: string; color: st
     { name: "Lime", color: "#a3d977" },
   ],
   light: [
+    { name: "Neutral", color: "#27272a" },
     { name: "Violet", color: "#6d28d9" },
     { name: "Teal", color: "#0f766e" },
     { name: "Blue", color: "#1d4ed8" },
@@ -689,6 +733,10 @@ export const scale = {
     fast: "90ms",
     menu: "120ms",
     slow: "160ms",
+    /** A result landing: a commit, an opened pull request. */
+    settle: "240ms",
+    /** The needs-you pulse, and nothing else loops this slowly. */
+    breathe: "2400ms",
     ease: "cubic-bezier(0.2, 0, 0, 1)",
     enter: "cubic-bezier(0, 0, 0.2, 1)",
     exit: "cubic-bezier(0.4, 0, 1, 1)",
@@ -777,8 +825,8 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
    * ground and carries a hairline ring *inside* its box, so nothing shifts.
    * Tabs are the exception and keep their underline on the shared edge.
    */
-  "--select-bg": "color-mix(in srgb, var(--accent) 14%, transparent)",
-  "--select-ring": "none",
+  "--select-bg": "color-mix(in srgb, var(--accent) var(--finish-select-tint), transparent)",
+  "--select-ring": "var(--finish-select-ring)",
   "--attention-bg": "color-mix(in srgb, var(--attention) 13%, transparent)",
   "--attention-ring": "none",
   /* Ember washes: the pinned needs-you card and the strip's waiting pill, at rest and under the pointer. */
@@ -791,7 +839,7 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--attention-halo": "0 0 0 3px color-mix(in srgb, var(--attention) 18%, transparent)",
   "--card-select-border": "color-mix(in srgb, var(--accent) 50%, transparent)",
   "--card-select-halo": "0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent)",
-  "--card-shadow": "0 1px 0 rgb(255 255 255 / 3%) inset, var(--shadow-md)",
+  "--card-shadow": "var(--finish-card-depth)",
   "--overlay-shadow": "var(--shadow-lg), 0 1px 0 rgb(255 255 255 / 4%) inset",
   /* A callout or soft status: a wash and a hairline in one hue. */
   "--accent-tint-bg": "color-mix(in srgb, var(--accent) 7%, transparent)",
@@ -922,6 +970,8 @@ export function staticTokens(): Record<string, string> {
   out["--motion-fast"] = scale.motion.fast;
   out["--motion-menu"] = scale.motion.menu;
   out["--motion-slow"] = scale.motion.slow;
+  out["--motion-settle"] = scale.motion.settle;
+  out["--motion-breathe"] = scale.motion.breathe;
   out["--depth-0"] = "none";
   out["--depth-1"] = "none";
   out["--depth-2"] = "var(--shadow-md)";
@@ -962,13 +1012,91 @@ export function toCssVariables(active: Palette): Record<string, string> {
     gitDeleted: parseHex(active.gitDeleted),
   });
   if (active.border) interaction["--forge-border"] = active.border;
+  if (active.finish?.hover) interaction["--forge-hover"] = active.finish.hover;
   Object.assign(
     variables,
     interaction,
     semanticColors(active, interaction),
     syntaxVariables(active),
+    finishVariables(active),
+    hueVariables(active),
   );
   return variables;
+}
+
+function isLightGround(active: Palette): boolean {
+  return contrast(parseHex(active.bg), 0) > contrast(parseHex(active.bg), 0xffffff);
+}
+
+function finishVariables(active: Palette): Record<string, string> {
+  const light = isLightGround(active);
+  const finish = active.finish;
+  if (!finish) {
+    return {
+      "--finish-tab-bg": "var(--border-subtle)",
+      "--finish-tab-shadow": "inset 0 0 0 1px var(--tab-edge)",
+      "--finish-strip-rule": "var(--surface)",
+      "--finish-select-tint": "14%",
+      "--finish-select-ring": "none",
+      "--finish-top-light": "rgb(255 255 255 / 3%)",
+      "--finish-card-depth": "var(--shadow-md)",
+    };
+  }
+  return {
+    "--finish-tab-bg": finish.tab,
+    "--finish-tab-shadow": light
+      ? "inset 0 0 0 1px var(--border-subtle), 0 1px 2px rgb(0 0 0 / 6%)"
+      : "inset 0 1px 0 rgb(255 255 255 / 6%), 0 1px 2px rgb(0 0 0 / 50%)",
+    "--finish-strip-rule": finish.rule,
+    "--finish-select-tint": "8%",
+    "--finish-select-ring": light
+      ? "inset 0 0 0 1px rgb(0 0 0 / 6%)"
+      : "inset 0 0 0 1px rgb(255 255 255 / 8%)",
+    "--finish-top-light": light ? "transparent" : "rgb(255 255 255 / 4%)",
+    "--finish-card-depth": light
+      ? "0 1px 2px rgb(0 0 0 / 5%), 0 12px 32px rgb(0 0 0 / 8%)"
+      : "0 18px 40px rgb(0 0 0 / 50%)",
+  };
+}
+
+/**
+ * The tint a hue sits on behind an avatar, over the ground the avatar sits
+ * on. 15% on a dark ground, 12% on a light one, where the same share reads
+ * heavier.
+ */
+export function hueTint(active: Palette): number {
+  return isLightGround(active) ? 12 : 15;
+}
+
+/**
+ * Every hue clears 4.5:1 as an avatar's initial on its own tint, over the
+ * sidebar, the card and the strip, so a square or a line drawn in it clears
+ * the 3:1 a shape needs with room to spare.
+ */
+export function projectHues(active: Palette): string[] {
+  const source = CALM_HUES[isLightGround(active) ? "light" : "dark"];
+  const amount = pct(hueTint(active));
+  const plain = [active.sidebar, active.bg, active.strip, active.surface].map(parseHex);
+  const text = parseHex(active.text);
+  const tinted = (hue: number) => [...plain, ...plain.map((ground) => mix(ground, hue, amount))];
+  return source.map((color) => {
+    // The tint is made of the hue, so moving the hue moves its ground too.
+    let hue = parseHex(color);
+    for (let pass = 0; pass < 4; pass += 1) {
+      const next = readableColor(hue, tinted(hue), text);
+      if (next === hue) break;
+      hue = next;
+    }
+    return hex(hue);
+  });
+}
+
+function hueVariables(active: Palette): Record<string, string> {
+  const out: Record<string, string> = { "--hue-tint": `${hueTint(active)}%` };
+  projectHues(active).forEach((color, index) => {
+    out[`--hue-${index}`] = color;
+  });
+  return out;
 }
 
 export function applyTheme(active: Palette): void {
