@@ -820,6 +820,26 @@
   color: var(--fg-default);
   gap: var(--space-10);
 }
+/* A project row and, for a sole checkout, that checkout's marks beside it. */
+.project-line {
+  align-items: center;
+  border-radius: var(--radius-row);
+  display: flex;
+  flex: none;
+}
+.project-line:has(> .ws-marks) {
+  padding-right: var(--space-4);
+}
+.project-line:hover {
+  background: var(--bg-hover);
+}
+.project-line > .tree-row.project {
+  flex: 1;
+  min-width: 0;
+}
+.project-line > .tree-row.project:hover {
+  background: transparent;
+}
 .tree-row.project[aria-expanded="true"] {
   color: var(--fg-strong);
   font-weight: var(--weight-medium);
@@ -974,6 +994,7 @@
   opacity: 0;
 }
 .ws-row:hover .ws-start,
+.project-line:hover .ws-start,
 .ws-start:focus-visible {
   opacity: 1;
 }

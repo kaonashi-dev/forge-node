@@ -217,14 +217,22 @@ export function ProjectsView() {
   function projectMenu(node: ProjectNode): MenuItem[] {
     const project = forgeStore.projects.find((item) => item.id === node.id);
     const groups = forgeStore.project_groups;
-    return [
-      newWorktreeItem({ id: node.id, name: node.name }),
-      {
-        kind: "item",
-        label: "Shared files…",
-        icon: "folder-open",
-        run: () => setSharedFiles({ projectId: node.id, name: node.name }),
-      },
+    const sole = soleCheckout(node);
+    // A project with one checkout answers for it too; its rows already carry
+    // the new worktree, shared files and the path.
+    const own: MenuItem[] = sole
+      ? []
+      : [
+          newWorktreeItem({ id: node.id, name: node.name }),
+          {
+            kind: "item",
+            label: "Shared files…",
+            icon: "folder-open",
+            run: () => setSharedFiles({ projectId: node.id, name: node.name }),
+          },
+        ];
+    const items: MenuItem[] = [
+      ...own,
       {
         kind: "item",
         label: "Ignored worktrees…",
@@ -281,15 +289,19 @@ export function ProjectsView() {
               : []),
           ]
         : []),
-      { kind: "rule" },
-      {
-        kind: "item",
-        label: "Copy path",
-        icon: "copy",
-        disabled: !project,
-        run: () =>
-          void navigator.clipboard.writeText(project?.root_path ?? "").catch(() => undefined),
-      },
+      ...(sole
+        ? []
+        : [
+            { kind: "rule" as const },
+            {
+              kind: "item" as const,
+              label: "Copy path",
+              icon: "copy" as const,
+              disabled: !project,
+              run: () =>
+                void navigator.clipboard.writeText(project?.root_path ?? "").catch(() => undefined),
+            },
+          ]),
       { kind: "rule" },
       {
         kind: "item",
@@ -304,6 +316,9 @@ export function ProjectsView() {
         run: () => setProjectDialogsStore("projectRemoval", node.id),
       },
     ];
+    return sole
+      ? [...workspaceMenu(sole), { kind: "rule" }, { kind: "heading", label: "Project" }, ...items]
+      : items;
   }
 
   /** A group's menu. Removing one never touches the project directories. */
@@ -829,46 +844,57 @@ export function ProjectsView() {
                   <For each={group.projects}>
                     {(project) => (
                       <>
-                        <button
-                          type="button"
-                          id={railRowId(`project:${project.id}`)}
-                          class="forge-row tree-row project"
-                          role="treeitem"
-                          aria-level={group.name === null ? 1 : 2}
-                          aria-expanded={isOpen(project.id)}
-                          aria-selected={isSelected(`project:${project.id}`)}
-                          classList={{
-                            cursor: isSelected(`project:${project.id}`),
-                          }}
-                          onClick={() => {
-                            selectRow(`project:${project.id}`);
-                            const sole = soleCheckout(project);
-                            if (sole) focusWorkspace(sole.id);
-                            toggle(project.id);
-                          }}
-                          onContextMenu={(event) => openMenu(event, projectMenu(project))}
-                        >
-                          <span
-                            class="project-avatar"
-                            classList={{ current: projectCurrent(project) }}
-                            aria-hidden="true"
+                        <div class="project-line">
+                          <button
+                            type="button"
+                            id={railRowId(`project:${project.id}`)}
+                            class="forge-row tree-row project"
+                            role="treeitem"
+                            aria-level={group.name === null ? 1 : 2}
+                            aria-expanded={isOpen(project.id)}
+                            aria-selected={isSelected(`project:${project.id}`)}
+                            classList={{
+                              cursor: isSelected(`project:${project.id}`),
+                            }}
+                            onClick={() => {
+                              selectRow(`project:${project.id}`);
+                              const sole = soleCheckout(project);
+                              if (sole) focusWorkspace(sole.id);
+                              toggle(project.id);
+                            }}
+                            onContextMenu={(event) => openMenu(event, projectMenu(project))}
                           >
-                            {project.icon ?? project.name.slice(0, 1).toUpperCase()}
-                          </span>
-                          <span class="tree-label forge-truncate">{project.name}</span>
-                          <Show
-                            when={isOpen(project.id) ? null : projectWork(project)}
-                            fallback={
-                              <Show when={isOpen(project.id) && soleCheckout(project)}>
-                                {(sole) => (
-                                  <span class="tree-meta">{sole().branch ?? sole().label}</span>
-                                )}
-                              </Show>
-                            }
-                          >
-                            {(work) => <WorkMarker work={work()} />}
+                            <span
+                              class="project-avatar"
+                              classList={{ current: projectCurrent(project) }}
+                              aria-hidden="true"
+                            >
+                              {project.icon ?? project.name.slice(0, 1).toUpperCase()}
+                            </span>
+                            <span class="tree-label forge-truncate">{project.name}</span>
+                            <Show
+                              when={isOpen(project.id) ? null : projectWork(project)}
+                              fallback={
+                                <Show when={isOpen(project.id) && soleCheckout(project)}>
+                                  {(sole) => (
+                                    <span class="tree-meta">{sole().branch ?? sole().label}</span>
+                                  )}
+                                </Show>
+                              }
+                            >
+                              {(work) => <WorkMarker work={work()} />}
+                            </Show>
+                          </button>
+                          <Show when={soleCheckout(project)}>
+                            {(sole) => (
+                              <CheckoutMarks
+                                workspace={sole()}
+                                work={null}
+                                onStart={(event) => openMenu(event, projectMenu(project))}
+                              />
+                            )}
                           </Show>
-                        </button>
+                        </div>
                         <Show when={isOpen(project.id) && soleCheckout(project)}>
                           {(sole) => (
                             <div class="tree-guide">
@@ -1099,9 +1125,6 @@ function WorkspaceCard(props: {
       (centerMode() === "session" &&
         props.workspace.sessions.some((node) => node.session.id === connectionStore.activeSession)),
   );
-  const sync = createMemo(() => syncLabel(props.workspace.ahead, props.workspace.behind));
-  const changed = () =>
-    gitStore.diff?.workspace_id === props.workspace.id ? gitStore.diff.files.length : null;
 
   return (
     <div
@@ -1143,52 +1166,12 @@ function WorkspaceCard(props: {
           <Show when={!props.workspace.worktree}>
             <Badge>primary</Badge>
           </Show>
-          {/* Provisioning acks when it starts, so a checkout can be open
-              before its shared files have landed. */}
-          <Show when={sharesStore.applying.includes(props.workspace.id)}>
-            <Badge>setting up…</Badge>
-          </Show>
         </button>
-        <span class="ws-marks">
-          <Show when={!props.open && work()}>{(state) => <WorkMarker work={state()} />}</Show>
-          {/* `measured_at: None` means "not measured", which is not the same as
-              clean — so an unmeasured checkout shows no mark at all. */}
-          <Show when={props.workspace.measured && props.workspace.dirty}>
-            <Tooltip label="Uncommitted changes" contents>
-              <span
-                class="ws-dirty"
-                role="img"
-                aria-label={
-                  changed() !== null ? `${changed()} uncommitted changes` : "Uncommitted changes"
-                }
-              >
-                ●{changed() ?? ""}
-              </span>
-            </Tooltip>
-          </Show>
-          <Show when={sync()}>
-            {(label) => (
-              <span class="ws-sync" aria-label="Ahead of or behind the remote">
-                {label()}
-              </span>
-            )}
-          </Show>
-          <Show when={props.workspace.pullRequest}>
-            {(pr) => (
-              <Tooltip label={prLabel(pr())} contents>
-                <Icon name="git-pull-request" size={13} class={PR_ICON_CLASS[prTone(pr())]} />
-              </Tooltip>
-            )}
-          </Show>
-          <IconButton
-            label="Start something here"
-            size="xs"
-            class="ws-start"
-            onClick={props.onMenu}
-          >
-            <Icon name="plus" size={13} />
-          </IconButton>
-        </span>
+        <CheckoutMarks
+          workspace={props.workspace}
+          work={props.open ? null : work()}
+          onStart={props.onMenu}
+        />
       </div>
 
       <Show when={props.open}>
@@ -1206,6 +1189,59 @@ function WorkspaceCard(props: {
         />
       </Show>
     </div>
+  );
+}
+
+/** A checkout's trailing marks: work, changes, sync, pull request and its launcher. */
+function CheckoutMarks(props: {
+  workspace: WorkspaceNode;
+  work: ReturnType<typeof rollupWork>;
+  onStart: (event: MouseEvent) => void;
+}) {
+  const sync = createMemo(() => syncLabel(props.workspace.ahead, props.workspace.behind));
+  const changed = () =>
+    gitStore.diff?.workspace_id === props.workspace.id ? gitStore.diff.files.length : null;
+  return (
+    <span class="ws-marks">
+      {/* Provisioning acks when it starts, so a checkout can be open
+          before its shared files have landed. */}
+      <Show when={sharesStore.applying.includes(props.workspace.id)}>
+        <Badge>setting up…</Badge>
+      </Show>
+      <Show when={props.work}>{(state) => <WorkMarker work={state()} />}</Show>
+      {/* `measured_at: None` means "not measured", which is not the same as
+          clean — so an unmeasured checkout shows no mark at all. */}
+      <Show when={props.workspace.measured && props.workspace.dirty}>
+        <Tooltip label="Uncommitted changes" contents>
+          <span
+            class="ws-dirty"
+            role="img"
+            aria-label={
+              changed() !== null ? `${changed()} uncommitted changes` : "Uncommitted changes"
+            }
+          >
+            ●{changed() ?? ""}
+          </span>
+        </Tooltip>
+      </Show>
+      <Show when={sync()}>
+        {(label) => (
+          <span class="ws-sync" aria-label="Ahead of or behind the remote">
+            {label()}
+          </span>
+        )}
+      </Show>
+      <Show when={props.workspace.pullRequest}>
+        {(pr) => (
+          <Tooltip label={prLabel(pr())} contents>
+            <Icon name="git-pull-request" size={13} class={PR_ICON_CLASS[prTone(pr())]} />
+          </Tooltip>
+        )}
+      </Show>
+      <IconButton label="Start something here" size="xs" class="ws-start" onClick={props.onStart}>
+        <Icon name="plus" size={13} />
+      </IconButton>
+    </span>
   );
 }
 
