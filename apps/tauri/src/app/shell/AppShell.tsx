@@ -73,6 +73,7 @@ import { ESC_AGAIN_MS, isSecondEsc } from "../../features/settings/escAgain";
 import { defaultAgentFrom, resolveDefaultAgent } from "../../features/settings/defaultAgent";
 import { applyThemeBase, type ThemePreference } from "../../theme/ThemeProvider";
 import { applyDensity, readDensity } from "../../theme/density";
+import { rememberTheme } from "../../theme/lastTheme";
 import { applyReduceMotion } from "../../theme/motion";
 import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
 import { ResizeHandle } from "./ResizeHandle";
@@ -161,7 +162,8 @@ export function AppShell() {
     setSidebarWidth(readWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_RANGE));
     seedTabOrder();
     const base = forgeStore.app_state[THEME_BASE_KEY] as ThemePreference | undefined;
-    if (base) applyThemeBase(base);
+    applyThemeBase(base ?? "calm-dark");
+    rememberTheme(base);
     // Density is written over `tokens.css` as an inline style, so it has to be
     // re-applied whenever the stored preference lands — the same round trip
     // the theme takes.

@@ -71,7 +71,7 @@ function restoreChromeOverlays(): void {
 
 export function ThemeProvider(props: { children: JSX.Element; base?: ThemePreference }) {
   onMount(() => {
-    applyThemeBase(props.base ?? DEFAULT_BASE);
+    applyThemeBase(props.base ?? preference());
 
     // Keep listening so choosing system later also follows OS changes.
     if (typeof window === "undefined" || !window.matchMedia) return;

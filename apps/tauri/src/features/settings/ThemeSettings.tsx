@@ -8,6 +8,7 @@ import {
   themePreference,
   type ThemePreference,
 } from "../../theme/ThemeProvider";
+import { rememberTheme } from "../../theme/lastTheme";
 import { MAX_THEME_BYTES, parseCustomTheme, type CustomTheme } from "../../theme/customTheme";
 import { hex, on, parseHex } from "../../theme/mix";
 import {
@@ -83,6 +84,7 @@ export function ThemeSettings() {
     try {
       await setAppState(THEME_BASE_KEY, next);
       persistedPreference = next;
+      rememberTheme(next);
       if (next.startsWith("{")) {
         setSavedCustom(next);
         await setAppState(CUSTOM_KEY, next);
