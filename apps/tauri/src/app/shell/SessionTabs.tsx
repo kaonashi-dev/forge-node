@@ -4,7 +4,6 @@ import { sessionTabLabel, tabGround, type TabGround } from "../../features/sessi
 import type { Session } from "../../contracts/runtime";
 import { SessionGlyph } from "../../features/sessions/SessionGlyph";
 import { Icon } from "../../theme/icons/index";
-import { AttentionMarker, StateMarker } from "../../features/sessions/markers";
 import { ContextMenu, IconButton, type MenuItem } from "../../ui/index";
 import { SessionMenu } from "../../features/sessions/SessionMenu";
 import { hasQuestion } from "../../features/sessions/waiting";
@@ -425,9 +424,7 @@ function SessionTab(props: SessionTabProps) {
         aria-label={props.waiting ? `${props.label}, waiting on you` : props.label}
       >
         <span class="hue-mark" aria-hidden="true" />
-        <Show when={props.waiting} fallback={<StateMarker session={props.session} />}>
-          <AttentionMarker />
-        </Show>
+        {/* The glyph slot carries the state: a bell, a spinner, a check. */}
         <SessionGlyph
           providerId={props.session.agent_provider_id}
           session={props.session}
