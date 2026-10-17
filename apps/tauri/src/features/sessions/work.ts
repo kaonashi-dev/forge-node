@@ -31,7 +31,11 @@ export function sessionWork(
 
   switch (session.activity?.state) {
     case "working":
-      return "working";
+      // The daemon marks a keystroke into an idle agent as working so a queued
+      // prompt cannot submit over it. That is a guard, not a turn: a key that
+      // never submitted, an Esc or a focus report would otherwise spin the ring
+      // until the next Stop hook. Only a hook says a turn is running.
+      return session.activity.evidence === "input" ? "running" : "working";
     case "idle":
       return "idle";
     case "waiting":
