@@ -801,8 +801,8 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--tab-edge": "var(--forge-surface-hi)",
   /* Separators and line numbers: glyphs a reader counts, not words they read, so below faint. */
   "--fg-rule": "color-mix(in srgb, var(--forge-text) 22%, var(--forge-bg))",
-  /* White in every base: the thumb is a shape, not type, so it is not held to the text floor. */
-  "--switch-thumb-on": "rgb(255 255 255)",
+  /* The accent's own foreground: a neutral accent is a light fill, where a white thumb vanishes. */
+  "--switch-thumb-on": "var(--accent-fg)",
   "--fg-strong": "var(--forge-text-strong)",
   "--bg-terminal": "var(--forge-term-bg)",
   "--bg-panel": "var(--forge-bg)",
