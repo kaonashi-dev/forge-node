@@ -876,6 +876,35 @@
   color: var(--fg-strong);
   font-weight: var(--weight-medium);
 }
+/* The current row's ground is `.rail-selection`, which glides between rows;
+   rows are positioned so their text paints over it. */
+.rail-tree {
+  position: relative;
+}
+.rail-tree .tree-row {
+  position: relative;
+}
+.rail-tree .tree-row[aria-current="true"] {
+  background: transparent;
+  box-shadow: none;
+}
+.rail-selection {
+  background: var(--select-bg);
+  border-radius: var(--radius-row);
+  box-shadow: var(--select-ring);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rail-selection.gliding {
+    transition:
+      transform var(--motion-slow) var(--ease),
+      width var(--motion-slow) var(--ease),
+      height var(--motion-slow) var(--ease);
+  }
+}
 .tree-row[aria-current="true"] {
   color: var(--fg-strong);
   font-weight: var(--weight-medium);
@@ -1319,8 +1348,9 @@
   background: transparent;
   color: var(--fg-default);
 }
+/* Its ground is the list's gliding `.forge-tab-indicator`. */
 .sidebar-view-tab[data-selected] {
-  background: var(--surface-hi);
+  background: transparent;
   box-shadow: none;
   color: var(--fg-strong);
 }
@@ -1559,7 +1589,7 @@
 :root[data-glass="true"] .sidebar-views .forge-tab-list {
   background: var(--glass-fill);
 }
-:root[data-glass="true"] .sidebar-view-tab[data-selected] {
+:root[data-glass="true"] .sidebar-views .forge-tab-indicator {
   background: var(--glass-fill-strong);
 }
 :root[data-glass="true"] .work-card {

@@ -112,6 +112,7 @@ export function Sidebar(props: SidebarProps) {
           onChange={(value) => setSidebarView(value as SidebarView)}
           listClass="sidebar-views"
           triggerClass="sidebar-view-tab"
+          glide
           contentClass="sidebar-body"
           tabs={tabs}
         />

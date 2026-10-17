@@ -889,6 +889,31 @@
   font-weight: var(--weight-medium);
 }
 
+/* One ground for the chosen trigger, under the triggers, moved by Kobalte. */
+.forge-tab-list-glide {
+  position: relative;
+}
+.forge-tab-indicator {
+  background: var(--surface-hi);
+  border-radius: var(--radius-sm);
+  bottom: var(--space-3);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: var(--space-3);
+}
+.forge-tab-list-glide > [role="tab"],
+.forge-tab-list-glide .forge-tooltip-contents > [role="tab"] {
+  position: relative;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .forge-tab-indicator {
+    transition:
+      transform var(--motion-slow) var(--ease),
+      width var(--motion-slow) var(--ease);
+  }
+}
+
 .forge-tab-list-underline {
   border-bottom: 1px solid var(--border-subtle);
   gap: var(--space-20);

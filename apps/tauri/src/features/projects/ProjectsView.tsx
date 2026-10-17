@@ -1,4 +1,12 @@
-import { For, Show, createComputed, createMemo, createSelector, createSignal } from "solid-js";
+import {
+  For,
+  Show,
+  createComputed,
+  createEffect,
+  createMemo,
+  createSelector,
+  createSignal,
+} from "solid-js";
 import { createStore } from "solid-js/store";
 import { applyRailTree } from "./railTree";
 import { SIDEBAR } from "../../actions/actions";
@@ -581,6 +589,50 @@ export function ProjectsView() {
    */
   const rows = createMemo(() => railRows(tree, collapsed(), codeShown));
   const [selected, setSelected] = createSignal<string | null>(null);
+
+  /*
+   * The current row's ground is one element that glides to the row picked
+   * next, like the tab strip's chip. Measured when what is current, what is
+   * folded or the tree's size changes, never per frame.
+   */
+  let treeEl: HTMLDivElement | undefined;
+  const [currentBox, setCurrentBox] = createSignal<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [currentPlaced, setCurrentPlaced] = createSignal(false);
+  function measureCurrent(): void {
+    const row = treeEl?.querySelector<HTMLElement>('.tree-row[aria-current="true"]');
+    if (!treeEl || !row || row.getClientRects().length === 0) {
+      setCurrentBox(null);
+      setCurrentPlaced(false);
+      return;
+    }
+    const outer = treeEl.getBoundingClientRect();
+    const inner = row.getBoundingClientRect();
+    setCurrentBox({
+      x: inner.left - outer.left,
+      y: inner.top - outer.top,
+      width: inner.width,
+      height: inner.height,
+    });
+    if (!currentPlaced()) requestAnimationFrame(() => setCurrentPlaced(true));
+  }
+  createEffect(() => {
+    connectionStore.activeSession;
+    centerMode();
+    activeWorkspace();
+    collapsed();
+    queueMicrotask(measureCurrent);
+  });
+  onMount(() => {
+    if (!treeEl || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measureCurrent);
+    observer.observe(treeEl);
+    onCleanup(() => observer.disconnect());
+  });
   const isSelected = createSelector(selected);
   const cursor = createMemo(() => {
     const id = selected();
@@ -801,6 +853,8 @@ export function ProjectsView() {
           chords act on, and the context entered on focus rather than on mount.
           `focusin`/`focusout` so focus moving between rows is not "leaving". */}
       <div
+        ref={treeEl}
+        class="rail-tree"
         role="tree"
         aria-label="Projects, checkouts and sessions"
         aria-activedescendant={rows()[cursor()] ? railRowId(rows()[cursor()].id) : undefined}
@@ -810,6 +864,20 @@ export function ProjectsView() {
           if (!event.currentTarget.contains(event.relatedTarget as Node | null)) releaseKeyboard();
         }}
       >
+        <Show when={currentBox()}>
+          {(box) => (
+            <span
+              class="rail-selection"
+              classList={{ gliding: currentPlaced() }}
+              aria-hidden="true"
+              style={{
+                transform: `translate(${box().x}px, ${box().y}px)`,
+                width: `${box().width}px`,
+                height: `${box().height}px`,
+              }}
+            />
+          )}
+        </Show>
         {/* An empty rail was a sentence and nothing else. The one thing there is
           to do here is the button, rather than a line of prose about a menu
           somewhere else. */}

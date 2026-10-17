@@ -42,6 +42,11 @@ export type TabsProps = {
   listSuffix?: JSX.Element;
   /** `underline`: flush text on a hairline, the chosen tab marked by an accent rule. */
   variant?: "chips" | "underline";
+  /**
+   * Draws the chosen trigger's ground as one element that glides between
+   * triggers; the trigger then paints no ground of its own.
+   */
+  glide?: boolean;
   "aria-label"?: string;
 };
 
@@ -71,8 +76,12 @@ export function Tabs(props: TabsProps) {
             "forge-tab-list-chips":
               props.triggerClass === undefined && props.variant !== "underline",
             "forge-tab-list-underline": props.variant === "underline",
+            "forge-tab-list-glide": props.glide === true,
           }}
         >
+          <Show when={props.glide}>
+            <Kobalte.Indicator class="forge-tab-indicator" />
+          </Show>
           <For each={props.tabs}>
             {(tab) => {
               const badge = () => tab.badge?.() ?? null;
