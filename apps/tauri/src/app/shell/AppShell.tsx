@@ -248,9 +248,9 @@ export function AppShell() {
       { defer: true },
     ),
   );
-  /** The card, its tabs and its location bar wear the current checkout's project hue. */
+  /** The card's tabs and location bar wear the current checkout's project hue. */
   const cardHue = createMemo(() => {
-    // Settings is about no project, so the card wears no hue there.
+    // Settings is about no project, so nothing in the card wears a hue there.
     if (settings()) return undefined;
     const id = currentWorkspace();
     const project = forgeStore.workspaces.find((item) => item.id === id)?.project_id;

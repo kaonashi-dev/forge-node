@@ -1053,7 +1053,6 @@ function finishVariables(active: Palette): Record<string, string> {
       "--finish-strip-rule": "var(--surface)",
       "--finish-select-tint": "14%",
       "--finish-select-ring": "none",
-      "--finish-top-light": "rgb(255 255 255 / 3%)",
       "--finish-card-depth": "var(--shadow-md)",
     };
   }
@@ -1067,7 +1066,6 @@ function finishVariables(active: Palette): Record<string, string> {
     "--finish-select-ring": light
       ? "inset 0 0 0 1px rgb(0 0 0 / 6%)"
       : "inset 0 0 0 1px rgb(255 255 255 / 8%)",
-    "--finish-top-light": light ? "transparent" : "rgb(255 255 255 / 4%)",
     "--finish-card-depth": light
       ? "0 1px 2px rgb(0 0 0 / 5%), 0 12px 32px rgb(0 0 0 / 8%)"
       : "0 18px 40px rgb(0 0 0 / 50%)",

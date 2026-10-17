@@ -536,20 +536,6 @@ html[data-platform="macos"] .title-bar-inset {
   overflow: hidden;
   position: relative;
 }
-/* The current project's hue on the top edge and the 1px light under it. A
-   layer of its own because the strip's opaque ground would cover an inset. */
-.work-card::before {
-  background: var(--project-hue, transparent);
-  box-shadow: 0 1px 0 var(--finish-top-light);
-  content: "";
-  height: 2px;
-  left: 0;
-  pointer-events: none;
-  position: absolute;
-  right: 0;
-  top: 0;
-  z-index: calc(var(--z-strip) + var(--z-raised));
-}
 .work-card > .center-stack {
   flex: 1;
 }
