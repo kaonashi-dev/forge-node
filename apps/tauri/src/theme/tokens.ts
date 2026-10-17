@@ -63,7 +63,8 @@ export type Palette = {
 /**
  * The Ink finish: grounds a base pins for the active tab, the strip's rule and
  * the hover wash. A base that has one also takes Ink's selection (a thinner
- * tint plus a hairline) and depth; a base without one keeps the A2 values.
+ * tint plus a hairline) and depth; a base without one keeps the ring-edged
+ * tab, the 14% selection and the shared card shadow.
  */
 export type Finish = { tab: string; rule: string; hover?: string };
 

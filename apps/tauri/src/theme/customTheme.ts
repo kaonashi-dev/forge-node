@@ -83,7 +83,7 @@ function parsePalette(value: unknown): Palette {
     if (!isColor(color)) throw new Error(`palette.${key} must be a #RRGGBB color.`);
     result[key] = color;
   }
-  // A theme exported from Calm carries its finish; one without keeps A2's grounds.
+  // A theme exported from Calm carries its finish; one without derives its tab and selection.
   const finish = value.finish;
   if (finish !== undefined) {
     if (!record(finish) || !isColor(finish.tab) || !isColor(finish.rule))
