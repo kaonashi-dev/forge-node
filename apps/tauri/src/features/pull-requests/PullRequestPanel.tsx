@@ -90,9 +90,12 @@ export function PullRequestPanel() {
         <span class="pr-row-meta">
           <span
             class="pr-row-repo"
-            style={{ "--project-hue": projectHue(pr.project_id ?? pr.repository) }}
+            style={pr.project_id ? { "--project-hue": projectHue(pr.project_id) } : undefined}
           >
-            <span class="hue-mark" aria-hidden="true" />
+            {/* A repository no project claims gets no square: a hue would imply a link. */}
+            <Show when={pr.project_id}>
+              <span class="hue-mark" aria-hidden="true" />
+            </Show>
             <span class="forge-truncate">{repositoryName(pr.repository)}</span>
           </span>
           <Show when={!pr.is_draft} fallback={<Badge>Draft</Badge>}>
