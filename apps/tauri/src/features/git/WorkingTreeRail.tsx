@@ -9,17 +9,11 @@ import { applyJuvaDraft, draftWithJuva, loadBranchCompare, loadDiff } from "./co
 import { commitLabel, commitMessage, statusLetter, statusWord } from "./gitView";
 import { refreshGit } from "./rebaseActions";
 import { gitStore } from "./state";
-import type { Chord } from "../../actions/keys";
+import { MOD, parseChord } from "../../actions/keys";
+import { revealDiffFile } from "./diff/reveal";
 
 /** Shown on the button only; the textarea's own key handler commits. */
-const COMMIT_CHORD: Chord = {
-  key: "enter",
-  code: "Enter",
-  ctrl: false,
-  alt: false,
-  shift: false,
-  meta: true,
-};
+const COMMIT_CHORD = parseChord(`${MOD}-enter`);
 
 /**
  * The checkout's uncommitted work: the files, then a commit box. A file opens
@@ -97,6 +91,7 @@ export function WorkingTreeRail(props: { committable: boolean }) {
                   aria-label={`${file.path}, ${statusWord(file.status)}, ${file.additions} added, ${file.deletions} removed`}
                   onClick={() => {
                     setPicked(file.path);
+                    revealDiffFile(file.path);
                     openDiff();
                   }}
                 >

@@ -1,10 +1,11 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createEffect, createSignal } from "solid-js";
 import { LangIcon } from "../../../theme/icons/index";
 import { IconButton } from "../../../ui/index";
 import { PatchView } from "./PatchView";
 import { SplitPatchView } from "./SplitPatchView";
 import type { DiffFile } from "../../../contracts/workbench";
 import { statusLetter, statusWord } from "../gitView";
+import { clearDiffReveal, diffFileAnchor, pendingDiffReveal } from "./reveal";
 
 export function DiffFiles(props: {
   files: DiffFile[];
@@ -20,12 +21,23 @@ export function DiffFiles(props: {
     setCollapsed(next);
   }
 
+  createEffect(() => {
+    const request = pendingDiffReveal();
+    if (!request || !props.files.some((file) => file.path === request.path)) return;
+    if (collapsed().has(request.path)) toggle(request.path);
+    clearDiffReveal(request);
+    // After the section the request names has laid out its rows.
+    requestAnimationFrame(() =>
+      document.getElementById(diffFileAnchor(request.path))?.scrollIntoView({ block: "start" }),
+    );
+  });
+
   return (
     <For each={props.files}>
       {(file) => {
         const open = () => !collapsed().has(file.path);
         return (
-          <section class="diff-file">
+          <section class="diff-file" id={diffFileAnchor(file.path)}>
             <header class="forge-row diff-file-head">
               <IconButton
                 size="xs"
