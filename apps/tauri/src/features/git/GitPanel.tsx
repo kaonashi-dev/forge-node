@@ -1,4 +1,5 @@
 import { For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
+import { projectHue } from "../../theme/projectHue";
 import { forgeStore } from "../../state/forgeStore";
 import { activeWorkspace } from "../../state/workspace";
 import { rebaseInProgress, readyToContinue } from "../../contracts/workbench";
@@ -80,12 +81,13 @@ export function GitPanel() {
     <div class="panel-body git-panel">
       <Show when={workspace()}>
         {(checkout) => (
-          <header class="git-head">
+          <header class="git-head" style={{ "--project-hue": projectHue(checkout().project_id) }}>
             <div class="git-head-row">
               <Show
                 when={replaying() && rebase()?.head}
                 fallback={
                   <span class="git-branch forge-truncate">
+                    <span class="git-branch-line" aria-hidden="true" />
                     {checkout().branch ?? checkout().path}
                   </span>
                 }

@@ -32,6 +32,7 @@ import { filesStore, setFilesStore } from "../../features/files/state";
 import { gitStore } from "../../features/git/state";
 import { activeWorkspace } from "../../state/workspace";
 import { highlight } from "./highlight";
+import { projectHue } from "../../theme/projectHue";
 
 /** Rows shown before the list scrolls. */
 const VISIBLE_ROWS = 12;
@@ -253,6 +254,30 @@ function WaitingNote(props: { session: string }) {
   );
 }
 
+function workspaceOfChoice(
+  choice:
+    | { kind: "focus_session"; session: string }
+    | { kind: "focus_workspace"; workspace: string },
+): string | undefined {
+  if (choice.kind === "focus_workspace") return choice.workspace;
+  return forgeStore.sessions.find((item) => item.id === choice.session)?.workspace_id;
+}
+
+/** A session or a checkout is a place, so its mark is its project's square. */
+function PlaceMark(props: { workspace: string | undefined }) {
+  const project = () =>
+    forgeStore.workspaces.find((item) => item.id === props.workspace)?.project_id;
+  return (
+    <span
+      class="forge-combobox-glyph forge-combobox-glyph-dot"
+      style={project() ? { "--project-hue": projectHue(project()!) } : undefined}
+      aria-hidden="true"
+    >
+      <span class="hue-mark" />
+    </span>
+  );
+}
+
 /**
  * The mark on a palette row.
  *
@@ -273,8 +298,10 @@ function PaletteGlyph(props: { entry: PaletteEntry }) {
       );
     }
     switch (choice.kind) {
-      case "new_shell":
       case "focus_session":
+      case "focus_workspace":
+        return <PlaceMark workspace={workspaceOfChoice(choice)} />;
+      case "new_shell":
         return (
           <Icon name="square-terminal" class="forge-icon-faint forge-combobox-glyph" size={14} />
         );
@@ -284,8 +311,6 @@ function PaletteGlyph(props: { entry: PaletteEntry }) {
             <SessionGlyph providerId={choice.provider} emphasis="dim" size={14} />
           </span>
         );
-      case "focus_workspace":
-        return <Icon name="git-branch" class="forge-icon-faint forge-combobox-glyph" size={14} />;
       case "open_file":
         // The same mark the file tree draws (`LangIcon`), read off the same
         // name: two lists of the same paths that disagree about what a

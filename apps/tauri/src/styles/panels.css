@@ -44,6 +44,15 @@
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
 }
+/* The checkout's project hue as a line beside its branch; Commit stays neutral. */
+.git-branch-line {
+  background: var(--project-hue);
+  display: inline-block;
+  height: 12px;
+  margin-right: var(--space-8);
+  vertical-align: -1px;
+  width: 2px;
+}
 .git-head-place {
   color: var(--forge-faint);
   font-size: var(--text-xs);
@@ -647,9 +656,13 @@
   padding-left: calc(var(--space-28) + var(--space-8));
 }
 .pr-row-repo {
+  align-items: center;
   color: var(--forge-faint);
+  display: flex;
   flex: 1;
   font-size: var(--text-xs);
+  gap: var(--space-6);
+  min-width: 0;
 }
 .pr-row[aria-current="true"] .pr-row-repo {
   color: var(--fg-muted);

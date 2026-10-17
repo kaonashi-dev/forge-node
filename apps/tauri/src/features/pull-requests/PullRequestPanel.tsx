@@ -20,6 +20,7 @@ import { refreshPullRequests } from "./commands";
 import { loading, setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
 import type { PullRequest } from "../../contracts/runtime";
+import { projectHue } from "../../theme/projectHue";
 
 // Snapshot data is cached; remote refreshes complete through events.
 /** `owner/payments-api` reads as the repository the person knows. */
@@ -87,7 +88,13 @@ export function PullRequestPanel() {
           <span class="pr-row-title">{pr.title}</span>
         </span>
         <span class="pr-row-meta">
-          <span class="pr-row-repo forge-truncate">{repositoryName(pr.repository)}</span>
+          <span
+            class="pr-row-repo"
+            style={{ "--project-hue": projectHue(pr.project_id ?? pr.repository) }}
+          >
+            <span class="hue-mark" aria-hidden="true" />
+            <span class="forge-truncate">{repositoryName(pr.repository)}</span>
+          </span>
           <Show when={!pr.is_draft} fallback={<Badge>Draft</Badge>}>
             <Show when={decision()}>
               {(chip) => (
