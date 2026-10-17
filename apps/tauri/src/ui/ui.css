@@ -431,6 +431,20 @@
   /* Copied onto the popper's positioner; above a dialog opened from within. */
   z-index: var(--z-popup);
 }
+/* Menus, popovers and dialogs still scroll when they run long, but draw no
+   bar: a track down a floating card reads as part of its edge. */
+.context-menu,
+.forge-select-content,
+.forge-dialog-body,
+.forge-combobox-list {
+  scrollbar-width: none;
+}
+.context-menu::-webkit-scrollbar,
+.forge-select-content::-webkit-scrollbar,
+.forge-dialog-body::-webkit-scrollbar,
+.forge-combobox-list::-webkit-scrollbar {
+  display: none;
+}
 .context-menu > * {
   /* A capped flex column must scroll its rows instead of compressing them. */
   flex-shrink: 0;
