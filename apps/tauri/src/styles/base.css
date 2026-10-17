@@ -176,6 +176,21 @@
   box-shadow: var(--attention-halo);
 }
 
+/* Counts and times line up in columns and do not jitter as they tick. */
+.tree-meta,
+.ws-marks,
+.session-tab-count,
+.needs-you-waited,
+.git-counts,
+.git-section-count,
+.git-upstream,
+.card-location-mono,
+.palette-waiting,
+.pr-row-number,
+.pr-synced {
+  font-variant-numeric: tabular-nums;
+}
+
 /* A chosen glyph fills one region at 20% of its own colour, so state never
    rests on colour alone. */
 :is([data-selected], [aria-current="page"], [aria-current="true"]) .glyph-region {

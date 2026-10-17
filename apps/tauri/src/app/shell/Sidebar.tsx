@@ -83,7 +83,12 @@ export function Sidebar(props: SidebarProps) {
         <div class="title-bar-inset" aria-hidden="true" data-tauri-drag-region />
         <div class="sidebar-top-spacer" data-tauri-drag-region />
         <Show when={!props.settings}>
-          <IconButton label="Hide the sidebar" size="sm" onClick={props.onHide}>
+          <IconButton
+            label="Hide the sidebar"
+            size="sm"
+            shortcut="toggle_sidebar"
+            onClick={props.onHide}
+          >
             <Icon name="panel-left-close" class="forge-icon-muted" />
           </IconButton>
         </Show>
@@ -185,6 +190,7 @@ function SidebarFooter() {
       <IconButton
         label="Settings"
         size="sm"
+        shortcut="open_settings"
         class="sidebar-footer-settings"
         onClick={() => invokeAction("open_settings")}
       >

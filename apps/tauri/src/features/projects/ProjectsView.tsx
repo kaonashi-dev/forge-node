@@ -877,12 +877,22 @@ export function ProjectsView() {
                               {(work) => <WorkMarker work={work()} />}
                             </Show>
                           </button>
-                          <Show when={soleCheckout(project)}>
+                          <Show
+                            when={soleCheckout(project)}
+                            fallback={
+                              <span class="ws-marks">
+                                <RowActions
+                                  onMore={(event) => openMenu(event, projectMenu(project))}
+                                />
+                              </span>
+                            }
+                          >
                             {(sole) => (
                               <CheckoutMarks
                                 workspace={sole()}
                                 work={null}
-                                onStart={(event) => openMenu(event, projectMenu(project))}
+                                onStart={(event) => openMenu(event, launchItems(sole().id))}
+                                onMore={(event) => openMenu(event, projectMenu(project))}
                               />
                             )}
                           </Show>
@@ -929,6 +939,9 @@ export function ProjectsView() {
                               onMenu={(event, workspace) =>
                                 openMenu(event, workspaceMenu(workspace))
                               }
+                              onLaunch={(event, workspace) =>
+                                openMenu(event, launchItems(workspace.id))
+                              }
                               onSessionMenu={(event, session) =>
                                 openMenu(event, sessionMenuItems(session, sessionTitle(session)))
                               }
@@ -966,6 +979,7 @@ function WorkspaceList(props: {
   selected: string | null;
   onToggle: (workspace: WorkspaceNode) => void;
   onMenu: (event: MouseEvent, workspace: WorkspaceNode) => void;
+  onLaunch: (event: MouseEvent, workspace: WorkspaceNode) => void;
   onSessionMenu: (event: MouseEvent, session: Session) => void;
 }) {
   let listEl: HTMLDivElement | undefined;
@@ -1069,6 +1083,7 @@ function WorkspaceList(props: {
               props.onToggle(workspace);
             }}
             onMenu={(event) => props.onMenu(event, workspace)}
+            onLaunch={(event) => props.onLaunch(event, workspace)}
             onSessionMenu={props.onSessionMenu}
             onHandlePointerDown={(event) => onHandlePointerDown(workspace.id, event)}
             onHandlePointerMove={(event) => onHandlePointerMove(workspace.id, event)}
@@ -1099,6 +1114,7 @@ function WorkspaceCard(props: {
   dropAfter: boolean;
   onToggle: () => void;
   onMenu: (event: MouseEvent) => void;
+  onLaunch: (event: MouseEvent) => void;
   onSessionMenu: (event: MouseEvent, session: Session) => void;
   onHandlePointerDown: (event: PointerEvent) => void;
   onHandlePointerMove: (event: PointerEvent) => void;
@@ -1170,7 +1186,8 @@ function WorkspaceCard(props: {
         <CheckoutMarks
           workspace={props.workspace}
           work={props.open ? null : work()}
-          onStart={props.onMenu}
+          onStart={props.onLaunch}
+          onMore={props.onMenu}
         />
       </div>
 
@@ -1196,50 +1213,74 @@ function WorkspaceCard(props: {
 function CheckoutMarks(props: {
   workspace: WorkspaceNode;
   work: ReturnType<typeof rollupWork>;
+  /** The launchers alone. */
   onStart: (event: MouseEvent) => void;
+  /** Everything the row's context menu offers. */
+  onMore: (event: MouseEvent) => void;
 }) {
   const sync = createMemo(() => syncLabel(props.workspace.ahead, props.workspace.behind));
   const changed = () =>
     gitStore.diff?.workspace_id === props.workspace.id ? gitStore.diff.files.length : null;
   return (
     <span class="ws-marks">
-      {/* Provisioning acks when it starts, so a checkout can be open
+      <span class="row-marks">
+        {/* Provisioning acks when it starts, so a checkout can be open
           before its shared files have landed. */}
-      <Show when={sharesStore.applying.includes(props.workspace.id)}>
-        <Badge>setting up…</Badge>
-      </Show>
-      <Show when={props.work}>{(state) => <WorkMarker work={state()} />}</Show>
-      {/* `measured_at: None` means "not measured", which is not the same as
+        <Show when={sharesStore.applying.includes(props.workspace.id)}>
+          <Badge>setting up…</Badge>
+        </Show>
+        <Show when={props.work}>{(state) => <WorkMarker work={state()} />}</Show>
+        {/* `measured_at: None` means "not measured", which is not the same as
           clean — so an unmeasured checkout shows no mark at all. */}
-      <Show when={props.workspace.measured && props.workspace.dirty}>
-        <Tooltip label="Uncommitted changes" contents>
-          <span
-            class="ws-dirty"
-            role="img"
-            aria-label={
-              changed() !== null ? `${changed()} uncommitted changes` : "Uncommitted changes"
-            }
-          >
-            ●{changed() ?? ""}
-          </span>
-        </Tooltip>
-      </Show>
-      <Show when={sync()}>
-        {(label) => (
-          <span class="ws-sync" aria-label="Ahead of or behind the remote">
-            {label()}
-          </span>
-        )}
-      </Show>
-      <Show when={props.workspace.pullRequest}>
-        {(pr) => (
-          <Tooltip label={prLabel(pr())} contents>
-            <Icon name="git-pull-request" size={13} class={PR_ICON_CLASS[prTone(pr())]} />
+        <Show when={props.workspace.measured && props.workspace.dirty}>
+          <Tooltip label="Uncommitted changes" contents>
+            <span
+              class="ws-dirty"
+              role="img"
+              aria-label={
+                changed() !== null ? `${changed()} uncommitted changes` : "Uncommitted changes"
+              }
+            >
+              ●{changed() ?? ""}
+            </span>
           </Tooltip>
+        </Show>
+        <Show when={sync()}>
+          {(label) => (
+            <span class="ws-sync" aria-label="Ahead of or behind the remote">
+              {label()}
+            </span>
+          )}
+        </Show>
+        <Show when={props.workspace.pullRequest}>
+          {(pr) => (
+            <Tooltip label={prLabel(pr())} contents>
+              <Icon name="git-pull-request" size={13} class={PR_ICON_CLASS[prTone(pr())]} />
+            </Tooltip>
+          )}
+        </Show>
+      </span>
+      <RowActions onStart={props.onStart} onMore={props.onMore} />
+    </span>
+  );
+}
+
+/** + and ⋯, revealed on hover or focus while the row's marks step aside. */
+function RowActions(props: {
+  onStart?: (event: MouseEvent) => void;
+  onMore: (event: MouseEvent) => void;
+}) {
+  return (
+    <span class="row-actions">
+      <Show when={props.onStart}>
+        {(start) => (
+          <IconButton label="Start something here" size="xs" onClick={(event) => start()(event)}>
+            <Icon name="plus" size={13} />
+          </IconButton>
         )}
       </Show>
-      <IconButton label="Start something here" size="xs" class="ws-start" onClick={props.onStart}>
-        <Icon name="plus" size={13} />
+      <IconButton label="More actions" size="xs" onClick={props.onMore}>
+        <Icon name="more-horizontal" size={13} />
       </IconButton>
     </span>
   );

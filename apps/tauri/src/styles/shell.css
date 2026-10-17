@@ -1010,13 +1010,47 @@
 .ws-sync {
   font-variant-numeric: tabular-nums;
 }
-.ws-start {
-  opacity: 0;
+/* A row's + and ⋯ sit over its trailing marks, hidden until the row is
+   hovered or one of them has focus; the marks then step aside. */
+.ws-marks {
+  position: relative;
 }
-.ws-row:hover .ws-start,
-.project-line:hover .ws-start,
-.ws-start:focus-visible {
+.row-marks {
+  align-items: center;
+  display: flex;
+  gap: var(--space-6);
+}
+.row-actions {
+  align-items: center;
+  display: flex;
+  gap: var(--space-2);
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+}
+.ws-row:hover .row-actions,
+.project-line:hover .row-actions,
+.row-actions:focus-within {
   opacity: 1;
+  pointer-events: auto;
+}
+/* The marks step aside rather than slide over the label: the actions take
+   their place. */
+.ws-row:hover .row-marks,
+.project-line:hover :is(.row-marks, .tree-meta),
+.ws-marks:has(.row-actions:focus-within) .row-marks {
+  opacity: 0;
+  transform: translateX(calc(var(--space-4) * -1));
+}
+@media (prefers-reduced-motion: no-preference) {
+  .row-actions,
+  .row-marks,
+  .project-line .tree-meta {
+    transition:
+      opacity var(--motion-fast) var(--ease) var(--motion-fast),
+      transform var(--motion-fast) var(--ease) var(--motion-fast);
+  }
 }
 .ws-sessions {
   display: flex;

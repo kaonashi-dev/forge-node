@@ -536,6 +536,10 @@
   padding: var(--space-6) var(--space-10);
   z-index: var(--z-tooltip);
 }
+.forge-tooltip-kbd {
+  color: var(--fg-subtle);
+  margin-left: var(--space-8);
+}
 [data-popper-positioner]:has(.forge-tooltip) {
   z-index: var(--z-tooltip);
 }
