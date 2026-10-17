@@ -1,5 +1,6 @@
 import { For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
 import { projectHue } from "../../theme/projectHue";
+import { playOnce } from "../../theme/motion";
 import { forgeStore } from "../../state/forgeStore";
 import { activeWorkspace } from "../../state/workspace";
 import { rebaseInProgress, readyToContinue } from "../../contracts/workbench";
@@ -124,7 +125,17 @@ export function GitPanel() {
                 variant="ghost"
                 size="xs"
                 iconLeading={<Icon name="fetch" size={13} class="forge-icon-muted" />}
-                onClick={() => void fetchRemote(checkout().project_id).catch(() => undefined)}
+                onClick={(event) => {
+                  const target = event.currentTarget;
+                  const icon =
+                    target instanceof Element
+                      ? (target.querySelector(".forge-glyph") ?? undefined)
+                      : undefined;
+                  // The daemon acks when the fetch starts; that ack is what lands the arrow.
+                  void fetchRemote(checkout().project_id)
+                    .then(() => playOnce(icon, "glyph-drop"))
+                    .catch(() => undefined);
+                }}
               >
                 Fetch
               </Button>

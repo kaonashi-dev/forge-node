@@ -224,6 +224,19 @@ export function AppShell() {
    * than the one it started in.
    */
   const currentWorkspace = createMemo(sharedWorkspace);
+  /*
+   * The sidebar slides in when it comes back, and the card takes its new width
+   * once: animating the column instead would re-measure the terminal canvas
+   * on every frame of the transition.
+   */
+  const [sidebarRevealed, setSidebarRevealed] = createSignal(false);
+  createEffect(
+    on(
+      () => sidebarOpen() || settings(),
+      (open, was) => setSidebarRevealed(open && was === false),
+      { defer: true },
+    ),
+  );
   /** The card, its tabs and its location bar wear the current checkout's project hue. */
   const cardHue = createMemo(() => {
     const id = currentWorkspace();
@@ -659,7 +672,10 @@ export function AppShell() {
   return (
     <main
       class="app-shell"
-      classList={{ "sidebar-collapsed": !(sidebarOpen() || settings()) }}
+      classList={{
+        "sidebar-collapsed": !(sidebarOpen() || settings()),
+        "sidebar-revealed": sidebarRevealed(),
+      }}
       style={{ "--sidebar-w": `${sidebarWidth()}px` }}
     >
       <Show when={sidebarOpen() || settings()}>

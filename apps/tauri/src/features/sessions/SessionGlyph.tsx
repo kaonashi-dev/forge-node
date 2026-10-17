@@ -66,7 +66,7 @@ export function SessionGlyph(props: SessionGlyphProps) {
       <Match when={face() === "needs-you"}>
         <Icon
           name="bell"
-          class="forge-icon-needs-you attention-pulse"
+          class="forge-icon-needs-you glyph-ring-once"
           size={props.size}
           title="Needs you"
         />
@@ -82,7 +82,7 @@ export function SessionGlyph(props: SessionGlyphProps) {
       <Match when={face() === "done"}>
         <Icon
           name="check"
-          class={work() === "idle" ? "forge-icon-green" : "forge-icon-muted"}
+          class={`glyph-draw ${work() === "idle" ? "forge-icon-green" : "forge-icon-muted"}`}
           size={props.size}
           title={work() === "idle" ? "Finished" : "Exited"}
         />

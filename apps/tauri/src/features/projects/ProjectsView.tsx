@@ -75,6 +75,8 @@ import { SessionGlyph } from "../sessions/SessionGlyph";
 import { draftWithJuva, loadBranchCompare } from "../git/commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
 import { projectHue } from "../../theme/projectHue";
+import { justCreated } from "../../theme/motion";
+import { workspaceArrivals } from "./arrivals";
 
 const COLLAPSED_KEY = "ui.sidebar.collapsed";
 const WORKSPACE_ORDER_KEY = "ui.sidebar.workspace_order";
@@ -527,6 +529,7 @@ export function ProjectsView() {
    */
   const [tree, setTree] = createStore<GroupNode[]>([]);
   createComputed(() => applyRailTree(setTree, buildTree(forgeStore, workspaceOrder(), tabOrder())));
+  createComputed(() => workspaceArrivals.prime(forgeStore.workspaces.map((item) => item.id)));
 
   function persistProjectOrder(projectId: string, ids: string[]): void {
     const next = { ...workspaceOrder(), [projectId]: ids };
@@ -1114,6 +1117,7 @@ function WorkspaceCard(props: {
     ),
   );
   const codeActive = () => centerMode() === "code" && activeWorkspace() === props.workspace.id;
+  const arrived = workspaceArrivals.arrived(props.workspace.id);
   const current = createMemo(
     () =>
       codeActive() ||
@@ -1135,6 +1139,7 @@ function WorkspaceCard(props: {
         open: props.open,
         cursor: props.cursor,
         dragging: props.dragging,
+        "row-new": arrived,
         "drop-before": props.dropBefore,
         "drop-after": props.dropAfter,
       }}
@@ -1155,7 +1160,7 @@ function WorkspaceCard(props: {
           <Icon
             name={props.workspace.worktree ? "worktree" : "git-branch"}
             size={12}
-            class={current() ? "forge-icon-accent" : "forge-icon-muted"}
+            class={`${current() ? "forge-icon-accent" : "forge-icon-muted"} ${arrived ? "glyph-draw-long" : ""}`}
           />
           <span class="tree-label ws-label forge-truncate">{props.workspace.label}</span>
           <Show when={!props.workspace.worktree}>
@@ -1337,6 +1342,8 @@ function SessionRow(props: {
   const active = () =>
     centerMode() === "session" && props.session.id === connectionStore.activeSession;
   const waited = () => waitedFor(props.session, now());
+  // Read once at mount: a row that was born moments ago announces itself.
+  const arrived = justCreated(props.session.created_at);
   return (
     <button
       type="button"
@@ -1355,6 +1362,7 @@ function SessionRow(props: {
       classList={{
         unread: props.unread && !active(),
         cursor: props.cursor === true,
+        "row-new": arrived,
       }}
       style={{ "--tree-depth": String(props.depth) }}
       onClick={() => focusSession(props.session.id)}

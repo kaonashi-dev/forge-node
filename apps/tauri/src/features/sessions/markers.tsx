@@ -1,4 +1,4 @@
-import { createMemo } from "solid-js";
+import { createEffect, createMemo, createSignal, on } from "solid-js";
 import { Tooltip } from "../../ui/index";
 import { now } from "../../runtime/clock";
 import type { Session } from "../../contracts/runtime";
@@ -76,11 +76,21 @@ function Marker(props: {
   label: string;
   size?: MarkerSize;
 }) {
+  // A ring that becomes a dot is work that just finished: the dot scales in once.
+  const [settled, setSettled] = createSignal(false);
+  createEffect(
+    on(
+      () => props.shape,
+      (shape, previous) => setSettled(previous === "ring" && shape === "dot"),
+      { defer: true },
+    ),
+  );
   return (
     <Tooltip label={props.label} contents>
       <span
         class={`forge-state-marker forge-state-${props.shape} ${props.colorClass}`}
-        classList={{ "forge-state-lg": props.size === "md" }}
+        classList={{ "forge-state-lg": props.size === "md", "forge-state-settled": settled() }}
+        onAnimationEnd={() => setSettled(false)}
         role="img"
         aria-label={props.label}
       />
