@@ -38,19 +38,33 @@ type SessionTabsProps = {
   onCloseCode: () => void;
 };
 
-/** How far the active tab's underline stops short of its edges, in px. */
-const TAB_INDICATOR_INSET = 10;
-
 export function SessionTabs(props: SessionTabsProps) {
   let scrollEl: HTMLDivElement | undefined;
   let stripEl: HTMLDivElement | undefined;
-  /* One indicator for the whole strip, so a switch glides it rather than
-     drawing a new one: measured when the active tab or a tab's width changes,
-     never per frame. */
-  const [indicator, setIndicator] = createSignal<{ x: number; width: number } | null>(null);
+  /* One raised chip for the whole strip, so a switch glides it from the old
+     tab to the new one instead of lighting a second chip: measured when the
+     active tab, the order or a tab's width changes, never per frame. */
+  const [indicator, setIndicator] = createSignal<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  /* The first placement lands without gliding in from the strip's corner. */
+  const [placed, setPlaced] = createSignal(false);
   const measureIndicator = () => {
     const active = stripEl?.querySelector<HTMLElement>(".session-tab-wrap.active");
-    setIndicator(active ? { x: active.offsetLeft, width: active.offsetWidth } : null);
+    setIndicator(
+      active
+        ? {
+            x: active.offsetLeft,
+            y: active.offsetTop,
+            width: active.offsetWidth,
+            height: active.offsetHeight,
+          }
+        : null,
+    );
+    if (active && !placed()) requestAnimationFrame(() => setPlaced(true));
   };
   const [overflowing, setOverflowing] = createSignal(false);
   /* Which edges of the scrollport hide a tab mid-pill. Drives the mask fade
@@ -125,6 +139,7 @@ export function SessionTabs(props: SessionTabsProps) {
   createEffect(() => {
     props.activeId;
     props.codeActive;
+    props.tabOrder;
     tabs().length;
     queueMicrotask(measureIndicator);
   });
@@ -243,9 +258,12 @@ export function SessionTabs(props: SessionTabsProps) {
               {(place) => (
                 <span
                   class="tab-indicator"
+                  classList={{ gliding: placed() }}
                   aria-hidden="true"
                   style={{
-                    transform: `translateX(${place().x + TAB_INDICATOR_INSET}px) scaleX(${Math.max(0, place().width - 2 * TAB_INDICATOR_INSET)})`,
+                    transform: `translate(${place().x}px, ${place().y}px)`,
+                    width: `${place().width}px`,
+                    height: `${place().height}px`,
                   }}
                 />
               )}
