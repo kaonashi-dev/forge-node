@@ -700,11 +700,11 @@ html[data-platform="macos"] .title-bar-inset {
   justify-content: center;
   position: relative;
 }
-/* A settled dot that was a ring a moment ago scales in, once. */
-.forge-state-settled::before {
-  animation: state-settle var(--motion-slow) var(--motion-enter);
-}
 @media (prefers-reduced-motion: no-preference) {
+  /* A settled dot that was a ring a moment ago scales in, once. */
+  .forge-state-settled::before {
+    animation: state-settle var(--motion-slow) var(--motion-enter);
+  }
   .forge-state-ring::after {
     animation: forge-spin 900ms linear infinite;
   }
