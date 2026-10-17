@@ -197,10 +197,28 @@
 .code-tab-wrap:not(:has(.session-tab-close)) {
   padding-right: var(--space-12);
 }
-.session-tab-wrap:not(.active):not(:hover) .session-tab-close {
-  width: 0;
-  min-width: 0;
-  overflow: hidden;
+/* An inactive tab's close lies over the end of its label instead of taking
+   room, so revealing it on hover never moves the tabs beside it; the strip's
+   ground under it hides the letters it covers. */
+.session-tab-wrap:not(.active) .session-tab-close {
+  background: var(--bg-strip);
+  box-shadow: calc(var(--space-8) * -1) 0 var(--space-8) var(--bg-strip);
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: var(--space-2);
+  top: 50%;
+  translate: 0 -50%;
+}
+.session-tab-wrap:not(.active):hover .session-tab-close,
+.session-tab-wrap:not(.active) .session-tab-close:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .session-tab-close {
+    transition: opacity var(--motion-fast) var(--ease);
+  }
 }
 .session-tab-label {
   flex: 1;
