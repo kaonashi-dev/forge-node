@@ -27,6 +27,7 @@ import { setAppState } from "../settings/commands";
 import { refreshWorkspaceStatus } from "../sessions/commands";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
 import { centerMode, openCompare, showCode, viewsStore } from "../../navigation/viewsStore";
+import { openFileCount } from "../../navigation/views";
 import { focusSession, launchAgent, launchShell } from "../sessions/sessionActions";
 import {
   Badge,
@@ -84,14 +85,17 @@ function focusCode(workspace: string): void {
   showCode();
 }
 
-/** Files a checkout has open in Code; the rail lists Code only while there are some. */
-function openFileCount(workspace: string): number {
-  return viewsStore.byWorkspace[workspace]?.open.length ?? 0;
+/** Files a checkout has open in Code. */
+function filesOpen(workspace: string): number {
+  const views = viewsStore.byWorkspace[workspace];
+  return views ? openFileCount(views) : 0;
 }
 
+/** The rail lists Code while the checkout has anything open there. */
 function codeShown(workspace: string): boolean {
   return (
-    openFileCount(workspace) > 0 || (centerMode() === "code" && activeWorkspace() === workspace)
+    (viewsStore.byWorkspace[workspace]?.open.length ?? 0) > 0 ||
+    (centerMode() === "code" && activeWorkspace() === workspace)
   );
 }
 
@@ -1264,8 +1268,8 @@ function CheckoutChildren(props: {
             class={codeActive() ? "forge-icon-accent" : "forge-icon-muted"}
           />
           <span class="tree-label forge-truncate">Code</span>
-          <Show when={openFileCount(props.workspace.id) > 0}>
-            <span class="tree-meta">{openFileCount(props.workspace.id)} open</span>
+          <Show when={filesOpen(props.workspace.id) > 0}>
+            <span class="tree-meta">{filesOpen(props.workspace.id)} open</span>
           </Show>
         </button>
       </Show>

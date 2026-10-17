@@ -207,6 +207,12 @@ export function strip(views: ParkedViews): WorkbenchView[] {
   return views.open;
 }
 
+/** Files among the open views: a patch, a pull request or a search is not one. */
+export function openFileCount(views: ParkedViews): number {
+  return views.open.filter((view) => view.kind === "editor-terminal" || view.kind === "preview")
+    .length;
+}
+
 /** Whether the Code tab has anything to show. */
 export function hasCode(views: ParkedViews): boolean {
   return views.open.length > 0;

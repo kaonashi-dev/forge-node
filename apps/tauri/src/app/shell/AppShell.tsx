@@ -48,6 +48,7 @@ import {
   closeOtherViews,
   closeViewsToRight,
 } from "../../features/editor/tabs";
+import { openFileCount } from "../../navigation/views";
 import { centerSplit } from "../../navigation/centerSplitStore";
 import { openEditor } from "../../features/editor/open";
 import {
@@ -209,7 +210,7 @@ export function AppShell() {
   trackQuestions();
 
   /** How many files, diffs and PRs are parked in the Code tab. */
-  const openViewCount = createMemo(() => currentViews().open.length);
+  const openViewCount = createMemo(() => openFileCount(currentViews()));
 
   /**
    * The checkout the window is in — the scope of the tab strip.
