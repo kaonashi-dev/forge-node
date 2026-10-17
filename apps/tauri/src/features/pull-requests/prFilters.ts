@@ -119,16 +119,6 @@ export function filterPullRequests(
   };
 }
 
-/** How many of the last read's pull requests fall in each scope, for the tabs. */
-export function scopeCounts(pullRequests: readonly PullRequest[]): Record<PrScope, number> {
-  return {
-    all: pullRequests.length,
-    assigned: pullRequests.filter((pr) => pr.relations.assigned).length,
-    review_requested: pullRequests.filter((pr) => pr.relations.review_requested).length,
-    authored: pullRequests.filter((pr) => pr.relations.authored).length,
-  };
-}
-
 /**
  * The sentence a person reads for one failed host.
  *

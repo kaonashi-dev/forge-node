@@ -2,6 +2,8 @@ import { contrast, derivedTokens, hex, mix, on, parseHex, pct, readableColor } f
 import { cssName, syntaxVariables } from "./syntax";
 
 export type ThemeBaseId =
+  | "calm-dark"
+  | "calm-light"
   | "forge-dark"
   | "forge-light"
   | "gruvbox-hard"
@@ -15,6 +17,7 @@ export type ThemeBaseId =
 
 /** Which bases are light, for `prefers-color-scheme` and `color-scheme`. */
 export const LIGHT_BASES: ReadonlySet<ThemeBaseId> = new Set<ThemeBaseId>([
+  "calm-light",
   "forge-light",
   "gruvbox-light",
   "neutral-light",
@@ -30,6 +33,7 @@ export type Palette = {
   bg: string;
   rail: string;
   sidebar: string;
+  strip: string;
   surface: string;
   surfaceHi: string;
   editor: string;
@@ -53,11 +57,133 @@ export type Palette = {
   gitConflict: string;
   gitIgnored: string;
   ansi: string[];
-};
+} & Partial<Record<PaletteOverride, string>>;
 
-const palette = (values: Omit<Palette, "ansi">, ansi: string[]): Palette => ({ ...values, ansi });
+/**
+ * Roles a base may pin instead of deriving: rows below primary text, icons
+ * above faint, the card edge, and type on an ember wash. Absent, each derives
+ * as it always has, so a palette without them keeps its look.
+ */
+export const PALETTE_OVERRIDES = ["fgDefault", "fgSubtle", "border", "needsYouText"] as const;
+export type PaletteOverride = (typeof PALETTE_OVERRIDES)[number];
+
+/** The tab strip sits halfway between the window and the card it belongs to. */
+export function deriveStrip(rail: string, bg: string): string {
+  return hex(mix(parseHex(rail), parseHex(bg), pct(50)));
+}
+
+type PaletteInput = Omit<Palette, "ansi" | "strip"> & { strip?: string };
+
+const palette = (values: PaletteInput, ansi: string[]): Palette => ({
+  ...values,
+  strip: values.strip ?? deriveStrip(values.rail, values.bg),
+  ansi,
+});
 
 export const palettes = {
+  "calm-dark": palette(
+    {
+      bg: "#131315",
+      rail: "#0c0c0d",
+      sidebar: "#0c0c0d",
+      strip: "#0f0f11",
+      surface: "#1c1c1f",
+      surfaceHi: "#26262a",
+      editor: "#131315",
+      step: "#2a2a2f",
+      text: "#ededef",
+      muted: "#a0a0a8",
+      faint: "#7e7e87",
+      accent: "#a78bfa",
+      needsYou: "#f59e4b",
+      needsYouDeep: "#c2620f",
+      green: "#4ade80",
+      red: "#f87171",
+      amber: "#e3b341",
+      blue: "#7aa2f7",
+      termBg: "#131315",
+      termFg: "#c9c9cf",
+      gitAdded: "#4ade80",
+      gitModified: "#e3b341",
+      gitDeleted: "#f87171",
+      gitUntracked: "#67d4e8",
+      gitConflict: "#f59e4b",
+      gitIgnored: "#5a5a62",
+      fgDefault: "#c9c9cf",
+      fgSubtle: "#8a8a93",
+      border: "#1e1e21",
+      needsYouText: "#f7b276",
+    },
+    [
+      "#1c1c1f",
+      "#f87171",
+      "#4ade80",
+      "#e3b341",
+      "#7aa2f7",
+      "#a78bfa",
+      "#67d4e8",
+      "#c9c9cf",
+      "#5a5a62",
+      "#fca5a5",
+      "#86efac",
+      "#f0c96a",
+      "#a5c0fa",
+      "#c4b5fd",
+      "#8fe0ee",
+      "#ededef",
+    ],
+  ),
+  "calm-light": palette(
+    {
+      bg: "#ffffff",
+      rail: "#f4f4f2",
+      sidebar: "#f4f4f2",
+      strip: "#f9f9f8",
+      surface: "#f1f1f2",
+      surfaceHi: "#e6e6e9",
+      editor: "#ffffff",
+      step: "#d4d4d8",
+      text: "#1a1a1c",
+      muted: "#5e5e66",
+      faint: "#67676f",
+      accent: "#6d28d9",
+      needsYou: "#a04a08",
+      needsYouDeep: "#7c3a06",
+      green: "#15803d",
+      red: "#b91c1c",
+      amber: "#93610a",
+      blue: "#1d4ed8",
+      termBg: "#ffffff",
+      termFg: "#1a1a1c",
+      gitAdded: "#15803d",
+      gitModified: "#93610a",
+      gitDeleted: "#b91c1c",
+      gitUntracked: "#0e7490",
+      gitConflict: "#a04a08",
+      gitIgnored: "#67676f",
+      fgDefault: "#2e2e33",
+      fgSubtle: "#62626a",
+      border: "#e4e4e7",
+    },
+    [
+      "#ffffff",
+      "#b91c1c",
+      "#15803d",
+      "#93610a",
+      "#1d4ed8",
+      "#6d28d9",
+      "#0e7490",
+      "#5e5e66",
+      "#67676f",
+      "#dc2626",
+      "#166534",
+      "#8a5a00",
+      "#2563eb",
+      "#7c3aed",
+      "#0e7490",
+      "#1a1a1c",
+    ],
+  ),
   "forge-dark": palette(
     {
       bg: "#1a1918",
@@ -390,6 +516,8 @@ export const palettes = {
 } as Record<ThemeBaseId, Palette>;
 
 export const THEME_LABELS: Record<ThemeBaseId, string> = {
+  "calm-dark": "Calm Dark",
+  "calm-light": "Calm Light",
   "forge-dark": "Forge Dark",
   "forge-light": "Forge Light",
   "gruvbox-hard": "Gruvbox",
@@ -409,6 +537,7 @@ palettes.ocean = {
   termBg: "#111b27",
   rail: "#0c141e",
   sidebar: "#152130",
+  strip: deriveStrip("#0c141e", "#111b27"),
   surface: "#1b2939",
   surfaceHi: "#25364a",
   accent: "#7dcfff",
@@ -420,6 +549,7 @@ palettes.forest = {
   termBg: "#17211c",
   rail: "#111913",
   sidebar: "#1a261f",
+  strip: deriveStrip("#111913", "#17211c"),
   surface: "#223027",
   surfaceHi: "#2b3a30",
   accent: "#8ec07c",
@@ -439,6 +569,27 @@ palettes.forest = {
   ansi: ["#1f1f1f", ...palettes.gruvbox.ansi.slice(1, 15), "#c7c7c7"],
 };
 
+/**
+ * Accents offered beside the theme cards. A light base gets darker versions so
+ * a fill and its derived text still clear the floor on a white card.
+ */
+export const ACCENT_SWATCHES: Record<"dark" | "light", { name: string; color: string }[]> = {
+  dark: [
+    { name: "Violet", color: "#a78bfa" },
+    { name: "Teal", color: "#5ccabb" },
+    { name: "Blue", color: "#7aa2f7" },
+    { name: "Rose", color: "#f28fad" },
+    { name: "Lime", color: "#a3d977" },
+  ],
+  light: [
+    { name: "Violet", color: "#6d28d9" },
+    { name: "Teal", color: "#0f766e" },
+    { name: "Blue", color: "#1d4ed8" },
+    { name: "Rose", color: "#be185d" },
+    { name: "Lime", color: "#4d7c0f" },
+  ],
+};
+
 export function registerCustomPalette(value: Palette, light: boolean): void {
   // Keep the replaceable custom slot out of built-in pickers and fixture exports.
   Object.defineProperty(palettes, "custom", { value, writable: true, configurable: true });
@@ -447,34 +598,38 @@ export function registerCustomPalette(value: Palette, light: boolean): void {
 
 export const metrics = {
   titleH: 36,
-  tabH: 34,
+  tabH: 32,
+  stripH: 46,
+  openFilesH: 36,
+  locationH: 32,
   sidebarW: 300,
   handleW: 4,
-  // Density moves `rowH` and the control ladder; this is the compact default.
+  // Density moves `rowH`, `treeRowH` and the control ladder; this is the compact default.
   rowH: 26,
-  controlXS: 20,
-  controlSM: 24,
-  controlMD: 28,
-  controlLG: 32,
-  // Badge/kbd, button/row, card, panel, pill. The palette's 14px lives in `scale`.
+  treeRowH: 28,
+  controlXS: 26,
+  controlSM: 28,
+  controlMD: 30,
+  controlLG: 34,
+  // Badge, row, button/tab, card/panel, pill. List and segmented (10) and the palette (14) live in `scale`.
   radiusXS: 5,
   radiusSM: 7,
-  radiusMD: 9,
+  radiusMD: 8,
   radiusLG: 12,
   radiusXL: 999,
-  // Prefer a system Nerd Font install for prompt icons; bundled JetBrains Mono is the fallback (docs/theming.md).
-  mono: "JetBrainsMono Nerd Font Mono, JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
+  // Geist Mono first; the rest catch glyphs it lacks, per glyph (docs/theming.md).
+  mono: '"Geist Mono", "JetBrainsMono Nerd Font Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
   monoSize: 13,
   monoLineHeight: 1.35,
-  sans: '"IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
-  // Documentation headings only (settings section titles), never chrome.
-  display: 'Fraunces, Georgia, "Times New Roman", serif',
-  // Caption, row label, body, card/dialog heading, panel heading. `sm` is the chrome's base.
-  textXS: 11.5,
-  textSM: 12.5,
-  textMD: 13,
+  sans: 'Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+  display:
+    'Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+  // Caption, row label, body, section heading, page title. `sm` is the chrome's base.
+  textXS: 12,
+  textSM: 13,
+  textMD: 14,
   textLG: 15,
-  textXL: 20,
+  textXL: 24,
 } as const;
 
 /**
@@ -489,10 +644,13 @@ export const scale = {
   /** Pixel-valued names permit new steps without renumbering existing tokens. */
   space: [1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 20, 22, 24, 28, 32, 44],
   radius2XS: 3,
+  radiusList: 10,
   radiusPalette: 14,
   /** Section title and the mono section label; outside the chrome-size multiplier. */
-  text2XL: 28,
+  text2XL: 24,
   textLabel: 10,
+  /** Counts, keys and branch names set in Geist Mono beside 13px chrome. */
+  textMono: 11,
   /** Values below 40 stack within panes; 40 and above order global overlays. */
   z: {
     raised: 1,
@@ -507,10 +665,11 @@ export const scale = {
     tooltip: 60,
   },
   /** Elevation, moved out of the stylesheet so a surface reads it as a token. */
+  /** Two depths: the card resting on the window, and anything floating over it. */
   shadow: {
     sm: "0 8px 20px rgb(0 0 0 / 40%)",
-    md: "0 16px 34px rgb(0 0 0 / 40%)",
-    lg: "0 24px 54px rgb(0 0 0 / 55%)",
+    md: "0 12px 32px rgb(0 0 0 / 35%)",
+    lg: "0 30px 80px rgb(0 0 0 / 60%)",
   },
   weight: { regular: 400, medium: 500, semibold: 600, bold: 700 },
   /** Named for the role in the type scale (docs/theming.md), not the number. */
@@ -571,6 +730,11 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--control-md": "var(--forge-control-md)",
   "--control-lg": "var(--forge-control-lg)",
   "--row-h": "var(--forge-row-h)",
+  "--tree-row-h": "var(--forge-tree-row-h)",
+  "--strip-h": "var(--forge-strip-h)",
+  "--tab-h": "var(--forge-tab-h)",
+  "--location-h": "var(--forge-location-h)",
+  "--open-files-h": "var(--forge-open-files-h)",
   /* The type scale and the two faces, so a rule names one layer, not both. */
   "--text-xs": "var(--forge-text-xs)",
   "--text-sm": "var(--forge-text-sm)",
@@ -582,6 +746,17 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--font-display": "var(--forge-display)",
   /* The redesign's surface names; the artboards spell components in these. */
   "--bg-window": "var(--forge-rail)",
+  "--bg-strip": "var(--forge-strip)",
+  /* Overlays and raised controls sit a step above the card; fields and tracks sink to the strip. */
+  "--bg-float": "color-mix(in srgb, var(--forge-surface) 40%, var(--forge-bg))",
+  "--bg-sunken": "var(--forge-strip)",
+  "--border-field": "var(--forge-surface-hi)",
+  "--tab-edge": "var(--forge-surface-hi)",
+  /* Separators and line numbers: glyphs a reader counts, not words they read, so below faint. */
+  "--fg-rule": "color-mix(in srgb, var(--forge-text) 22%, var(--forge-bg))",
+  /* White in every base: the thumb is a shape, not type, so it is not held to the text floor. */
+  "--switch-thumb-on": "rgb(255 255 255)",
+  "--fg-strong": "var(--forge-text-strong)",
   "--bg-terminal": "var(--forge-term-bg)",
   "--bg-panel": "var(--forge-bg)",
   "--bg-sidebar": "var(--forge-sidebar)",
@@ -593,8 +768,9 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--accent": "var(--forge-accent)",
   "--attention": "var(--forge-needs-you)",
   "--radius-badge": "var(--forge-radius-xs)",
-  "--radius-control": "var(--forge-radius-sm)",
-  "--radius-card": "var(--forge-radius-md)",
+  "--radius-row": "var(--forge-radius-sm)",
+  "--radius-control": "var(--forge-radius-md)",
+  "--radius-card": "var(--radius-list)",
   "--radius-panel": "var(--forge-radius-lg)",
   "--radius-pill": "var(--forge-radius-xl)",
   /*
@@ -602,13 +778,22 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
    * ground and carries a hairline ring *inside* its box, so nothing shifts.
    * Tabs are the exception and keep their underline on the shared edge.
    */
-  "--select-bg": "color-mix(in srgb, var(--accent) 13%, transparent)",
-  "--select-ring": "inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent)",
+  "--select-bg": "color-mix(in srgb, var(--accent) 14%, transparent)",
+  "--select-ring": "none",
   "--attention-bg": "color-mix(in srgb, var(--attention) 13%, transparent)",
-  "--attention-ring": "inset 0 0 0 1px color-mix(in srgb, var(--attention) 36%, transparent)",
+  "--attention-ring": "none",
+  /* Ember washes: the pinned needs-you card and the strip's waiting pill, at rest and under the pointer. */
+  "--attention-wash": "color-mix(in srgb, var(--attention) 9%, transparent)",
+  "--attention-wash-hover": "color-mix(in srgb, var(--attention) 14%, transparent)",
+  "--attention-pill": "color-mix(in srgb, var(--attention) 12%, transparent)",
+  "--attention-pill-hover": "color-mix(in srgb, var(--attention) 20%, transparent)",
+  /* A segmented track laid on the window ground, where the strip ground would sink nothing. */
+  "--track-on-window": "color-mix(in srgb, var(--fg-strong) 4%, transparent)",
   "--attention-halo": "0 0 0 3px color-mix(in srgb, var(--attention) 18%, transparent)",
   "--card-select-border": "color-mix(in srgb, var(--accent) 50%, transparent)",
   "--card-select-halo": "0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent)",
+  "--card-shadow": "0 1px 0 rgb(255 255 255 / 3%) inset, var(--shadow-md)",
+  "--overlay-shadow": "var(--shadow-lg), 0 1px 0 rgb(255 255 255 / 4%) inset",
   /* A callout or soft status: a wash and a hairline in one hue. */
   "--accent-tint-bg": "color-mix(in srgb, var(--accent) 7%, transparent)",
   "--accent-tint-border": "color-mix(in srgb, var(--accent) 32%, transparent)",
@@ -617,11 +802,12 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--attention-tint-bg": "color-mix(in srgb, var(--attention) 7%, transparent)",
   "--attention-tint-border": "color-mix(in srgb, var(--attention) 30%, transparent)",
   "--diff-meta-bg": "color-mix(in srgb, var(--fg-default) 4%, var(--forge-editor))",
+  "--diff-hunk-bg": "color-mix(in srgb, var(--info-solid) 7%, var(--forge-editor))",
   /* The two sides of a three-way merge, and a find hit wherever text is searched. */
   "--merge-ours-bg": "color-mix(in srgb, var(--info-solid) 12%, transparent)",
   "--merge-theirs-bg": "color-mix(in srgb, var(--git-untracked-text) 12%, transparent)",
   "--find-match-bg": "color-mix(in srgb, var(--warning-solid) 28%, transparent)",
-  "--scrim": "rgb(0 0 0 / 42%)",
+  "--scrim": "rgb(5 5 6 / 55%)",
   "--focus-ring-width": "2px",
   "--focus-ring-offset": "2px",
   /* For a focusable thing whose container clips an outside outline. */
@@ -669,9 +855,10 @@ function semanticColors(
     return hex(contrast(candidate, fill) >= 4.5 ? candidate : on(fill, 0, 0xffffff));
   };
   const colors: Record<string, string> = {
-    "--fg-default": hex(readableColor(text, grounds, text)),
+    "--forge-text-strong": hex(readableColor(text, grounds, text)),
+    "--fg-default": hex(readableColor(parseHex(active.fgDefault ?? active.text), grounds, text)),
     "--fg-muted": hex(readableColor(parseHex(active.muted), grounds, text)),
-    "--fg-subtle": hex(readableColor(parseHex(active.faint), grounds, text)),
+    "--fg-subtle": hex(readableColor(parseHex(active.fgSubtle ?? active.faint), grounds, text)),
     "--accent-soft": hex(soft(active.accent)),
     "--danger-soft": hex(soft(active.red)),
     "--forge-focus-ring": hex(readableColor(parseHex(active.accent), grounds, text, 3)),
@@ -681,6 +868,9 @@ function semanticColors(
     const fill = parseHex(color);
     colors[`--${role}-fg`] = foreground(fill);
     colors[`--${role}-text`] = hex(readableColor(fill, grounds, text));
+    if (role === "attention" && active.needsYouText) {
+      colors["--attention-text"] = hex(readableColor(parseHex(active.needsYouText), grounds, text));
+    }
     if (role === "accent" || role === "danger") {
       const hover = mix(fill, text, pct(12));
       colors[`--${role}-solid-hover`] = hex(hover);
@@ -710,9 +900,11 @@ export function staticTokens(): Record<string, string> {
     out[`--space-${value}`] = `${value}px`;
   }
   out["--radius-2xs"] = `${scale.radius2XS}px`;
+  out["--radius-list"] = `${scale.radiusList}px`;
   out["--radius-palette"] = `${scale.radiusPalette}px`;
   out["--text-2xl"] = `${scale.text2XL}px`;
   out["--text-label"] = `${scale.textLabel}px`;
+  out["--text-mono"] = `${scale.textMono}px`;
   for (const [name, value] of Object.entries(scale.z)) {
     out[`--z-${name}`] = String(value);
   }
@@ -733,7 +925,7 @@ export function staticTokens(): Record<string, string> {
   out["--motion-slow"] = scale.motion.slow;
   out["--depth-0"] = "none";
   out["--depth-1"] = "none";
-  out["--depth-2"] = "var(--shadow-sm)";
+  out["--depth-2"] = "var(--shadow-md)";
   out["--depth-3"] = "var(--shadow-lg)";
   out["--ease"] = scale.motion.ease;
   out["--motion-enter"] = scale.motion.enter;
@@ -741,10 +933,14 @@ export function staticTokens(): Record<string, string> {
   return out;
 }
 
+function isOverride(key: string): key is PaletteOverride {
+  return (PALETTE_OVERRIDES as readonly string[]).includes(key);
+}
+
 export function toCssVariables(active: Palette): Record<string, string> {
   const variables: Record<string, string> = {};
   for (const [key, value] of Object.entries(active)) {
-    if (key !== "ansi" && typeof value === "string") {
+    if (key !== "ansi" && !isOverride(key) && typeof value === "string") {
       variables[`--forge-${cssName(key)}`] = value;
     }
   }
@@ -766,6 +962,7 @@ export function toCssVariables(active: Palette): Record<string, string> {
     gitAdded: parseHex(active.gitAdded),
     gitDeleted: parseHex(active.gitDeleted),
   });
+  if (active.border) interaction["--forge-border"] = active.border;
   Object.assign(
     variables,
     interaction,

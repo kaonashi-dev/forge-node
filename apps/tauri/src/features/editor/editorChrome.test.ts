@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UNKNOWN_MARK, editorChrome, languageLabel, pathCrumbs } from "./editorChrome";
+import { UNKNOWN_MARK, editorChrome, languageLabel } from "./editorChrome";
 import type { EditorState } from "../../contracts/runtime";
 
 const state = (partial: Partial<EditorState> = {}): EditorState => ({
@@ -81,10 +81,5 @@ describe("the editor status facts", () => {
     expect(languageLabel("Makefile")).toBeNull();
     expect(languageLabel(".gitignore")).toBeNull();
     expect(languageLabel("notes.")).toBeNull();
-  });
-
-  it("splits a path into folders and the file", () => {
-    expect(pathCrumbs("a/b/c.ts")).toEqual({ parents: ["a", "b"], name: "c.ts" });
-    expect(pathCrumbs("c.ts")).toEqual({ parents: [], name: "c.ts" });
   });
 });

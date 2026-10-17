@@ -42,6 +42,9 @@ const NAMES: ForgeIconName[] = [
   "more-horizontal",
   "image",
   "image-off",
+  "sparkles",
+  "keyboard",
+  "folder-symlink",
 ];
 
 describe("forgeIcons", () => {

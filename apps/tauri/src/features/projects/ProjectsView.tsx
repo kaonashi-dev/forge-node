@@ -35,7 +35,7 @@ import { sessionWork } from "../sessions/work";
 import { setAppState } from "../settings/commands";
 import { refreshWorkspaceStatus } from "../sessions/commands";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
-import { centerMode, openCompare, showCode } from "../../navigation/viewsStore";
+import { centerMode, openCompare, showCode, viewsStore } from "../../navigation/viewsStore";
 import { focusSession, launchAgent, launchShell } from "../sessions/sessionActions";
 import {
   Badge,
@@ -43,7 +43,9 @@ import {
   ContextMenu,
   Dialog,
   IconButton,
+  Menu,
   Tooltip,
+  buttonClass,
   type MenuItem,
 } from "../../ui/index";
 import {
@@ -51,6 +53,7 @@ import {
   railCollapseTarget,
   railExpandTarget,
   railRows,
+  soleCheckout,
   type GroupNode,
   type ProjectNode,
   type WorkspaceNode,
@@ -89,6 +92,38 @@ const CHECKOUT_SCROLL_EDGE_PX = 40;
 function focusCode(workspace: string): void {
   focusWorkspace(workspace);
   showCode();
+}
+
+/** Files a checkout has open in Code; the rail lists Code only while there are some. */
+function openFileCount(workspace: string): number {
+  return viewsStore.byWorkspace[workspace]?.open.length ?? 0;
+}
+
+function codeShown(workspace: string): boolean {
+  return (
+    openFileCount(workspace) > 0 || (centerMode() === "code" && activeWorkspace() === workspace)
+  );
+}
+
+/** The project the window is pointed at wears the accent on its avatar. */
+function projectCurrent(project: ProjectNode): boolean {
+  const workspace = activeWorkspace();
+  return project.workspaces.some((item) => item.id === workspace);
+}
+
+/** The loudest state anywhere under a folded project: one dot instead of a count. */
+function projectWork(project: ProjectNode) {
+  return rollupWork(
+    project.workspaces.flatMap((workspace) =>
+      workspace.sessions.map((node) =>
+        sessionWork(
+          node.session,
+          { wants_you: node.wantsYou || hasQuestion(node.session.id) },
+          now(),
+        ),
+      ),
+    ),
+  );
 }
 
 /** The palette a review decision paints the card's pull-request mark. */
@@ -503,7 +538,7 @@ export function ProjectsView() {
    * four nested `For`s, so "the row after this one" is not a sibling — hence a
    * flat list beside the markup rather than a rewrite of it.
    */
-  const rows = createMemo(() => railRows(tree, collapsed()));
+  const rows = createMemo(() => railRows(tree, collapsed(), codeShown));
   const [selected, setSelected] = createSignal<string | null>(null);
   const isSelected = createSelector(selected);
   const cursor = createMemo(() => {
@@ -649,54 +684,40 @@ export function ProjectsView() {
       {/* A question that has been waiting is the one thing that must not need
           scrolling to find, so it is lifted out of the tree and above it. */}
       <Show when={needsYou().length > 0}>
-        <section id="needs-you" class="needs-you-block" aria-labelledby="needs-you-label">
-          <div class="needs-you-head">
-            <span id="needs-you-label" class="forge-section-label needs-you-label">
-              Needs you
-            </span>
-            <span class="needs-you-count">{needsYou().length}</span>
-            <span class="forge-caption needs-you-hint">↵ to answer</span>
-          </div>
-          <For each={needsYou()}>
-            {(session) => (
-              <SessionRow
-                session={session}
-                label={sessionDisplayTitle(session)}
-                wantsYou
-                unread={false}
-                depth={0}
-                lifted
-              />
-            )}
-          </For>
+        <section id="needs-you" class="needs-you-block" aria-label="Needs you">
+          <For each={needsYou()}>{(session) => <NeedsYouCard session={session} />}</For>
         </section>
       </Show>
 
       <div class="rail-head">
         <span class="forge-section-label rail-head-label">Projects</span>
-        <IconButton
-          label="Add a project"
-          size="xs"
-          onClick={() => void addProjectFromPicker(null).catch(() => undefined)}
-        >
-          <Icon name="plus" size={13} />
-        </IconButton>
-        <IconButton
-          label="New group"
-          size="xs"
-          onClick={() =>
-            requestTextInput({
-              title: "New group",
-              label: "Group name",
-              value: "",
-              confirmLabel: "Create",
-              allowEmpty: false,
-              onSubmit: (name) => void createProjectGroup(name).catch(() => undefined),
-            })
-          }
-        >
-          <Icon name="folder" size={13} />
-        </IconButton>
+        <Menu
+          triggerLabel="Add a project or a group"
+          triggerClass={buttonClass("xs", "ghost", true)}
+          trigger={<Icon name="plus" size={14} class="forge-icon-muted" />}
+          items={[
+            {
+              kind: "item",
+              label: "Add a project…",
+              icon: "folder-open",
+              run: () => void addProjectFromPicker(null).catch(() => undefined),
+            },
+            {
+              kind: "item",
+              label: "New group…",
+              icon: "folder",
+              run: () =>
+                requestTextInput({
+                  title: "New group",
+                  label: "Group name",
+                  value: "",
+                  confirmLabel: "Create",
+                  allowEmpty: false,
+                  onSubmit: (name) => void createProjectGroup(name).catch(() => undefined),
+                }),
+            },
+          ]}
+        />
       </div>
 
       <Show when={sharedFiles()}>
@@ -787,10 +808,9 @@ export function ProjectsView() {
                     }}
                     onContextMenu={(event) => openMenu(event, groupMenu(group))}
                   >
-                    <Twisty open={isOpen(group.id ?? "")} />
                     <Icon
                       name={isOpen(group.id ?? "") ? "folder-open" : "folder"}
-                      size={13}
+                      size={12}
                       class="forge-icon-faint"
                     />
                     <span class="tree-label forge-truncate">{name()}</span>
@@ -822,47 +842,74 @@ export function ProjectsView() {
                           }}
                           onClick={() => {
                             selectRow(`project:${project.id}`);
+                            const sole = soleCheckout(project);
+                            if (sole) focusWorkspace(sole.id);
                             toggle(project.id);
                           }}
                           onContextMenu={(event) => openMenu(event, projectMenu(project))}
                         >
-                          <Twisty open={isOpen(project.id)} />
-                          <span aria-hidden="true">
+                          <span
+                            class="project-avatar"
+                            classList={{ current: projectCurrent(project) }}
+                            aria-hidden="true"
+                          >
                             {project.icon ?? project.name.slice(0, 1).toUpperCase()}
                           </span>
                           <span class="tree-label forge-truncate">{project.name}</span>
-                          {/* Folded, the count is the only thing left saying the
-                            project has more than one checkout. */}
-                          <Show when={project.wantsYou && !isOpen(project.id)}>
-                            <FoldedQuestion />
-                          </Show>
-                          <Show when={!isOpen(project.id) && project.workspaces.length > 0}>
-                            <span class="tree-note">{project.workspaces.length}</span>
+                          <Show
+                            when={isOpen(project.id) ? null : projectWork(project)}
+                            fallback={
+                              <Show when={isOpen(project.id) && soleCheckout(project)}>
+                                {(sole) => (
+                                  <span class="tree-meta">{sole().branch ?? sole().label}</span>
+                                )}
+                              </Show>
+                            }
+                          >
+                            {(work) => <WorkMarker work={work()} />}
                           </Show>
                         </button>
-                        <Show when={isOpen(project.id)}>
-                          <WorkspaceList
-                            workspaces={project.workspaces}
-                            level={group.name === null ? 2 : 3}
-                            order={workspaceOrder()[project.id] ?? []}
-                            onReorder={(ids) => persistProjectOrder(project.id, ids)}
-                            isOpen={isOpen}
-                            selected={selected()}
-                            onToggle={(workspace) => {
-                              selectRow(`workspace:${workspace.id}`);
-                              // Picking a checkout points the window at it, not
-                              // just the rail: the tab strip, the launchers and
-                              // the sidebar views are all scoped to the checkout,
-                              // and a worktree with no sessions left had no other
-                              // way to be selected — the card only folded.
-                              focusWorkspace(workspace.id);
-                              toggle(workspace.id);
-                            }}
-                            onMenu={(event, workspace) => openMenu(event, workspaceMenu(workspace))}
-                            onSessionMenu={(event, session) =>
-                              openMenu(event, sessionMenuItems(session, sessionTitle(session)))
-                            }
-                          />
+                        <Show when={isOpen(project.id) && soleCheckout(project)}>
+                          {(sole) => (
+                            <div class="tree-guide">
+                              <CheckoutChildren
+                                workspace={sole()}
+                                level={group.name === null ? 2 : 3}
+                                selected={selected()}
+                                onSessionMenu={(event, session) =>
+                                  openMenu(event, sessionMenuItems(session, sessionTitle(session)))
+                                }
+                              />
+                            </div>
+                          )}
+                        </Show>
+                        <Show when={isOpen(project.id) && !soleCheckout(project)}>
+                          <div class="tree-guide">
+                            <WorkspaceList
+                              workspaces={project.workspaces}
+                              level={group.name === null ? 2 : 3}
+                              order={workspaceOrder()[project.id] ?? []}
+                              onReorder={(ids) => persistProjectOrder(project.id, ids)}
+                              isOpen={isOpen}
+                              selected={selected()}
+                              onToggle={(workspace) => {
+                                selectRow(`workspace:${workspace.id}`);
+                                // Picking a checkout points the window at it, not
+                                // just the rail: the tab strip, the launchers and
+                                // the sidebar views are all scoped to the checkout,
+                                // and a worktree with no sessions left had no other
+                                // way to be selected — the card only folded.
+                                focusWorkspace(workspace.id);
+                                toggle(workspace.id);
+                              }}
+                              onMenu={(event, workspace) =>
+                                openMenu(event, workspaceMenu(workspace))
+                              }
+                              onSessionMenu={(event, session) =>
+                                openMenu(event, sessionMenuItems(session, sessionTitle(session)))
+                              }
+                            />
+                          </div>
                         </Show>
                       </>
                     )}
@@ -1145,44 +1192,98 @@ function WorkspaceCard(props: {
       </div>
 
       <Show when={props.open}>
-        <div class="ws-sessions">
-          <button
-            type="button"
-            id={railRowId(`code:${props.workspace.id}`)}
-            class="forge-row tree-row"
-            role="treeitem"
-            aria-level={props.level + 1}
-            aria-selected={props.cursorCode || codeActive()}
-            aria-current={codeActive() || undefined}
-            classList={{ cursor: props.cursorCode }}
-            onClick={() => focusCode(props.workspace.id)}
-            onContextMenu={(event) => event.stopPropagation()}
-          >
-            <Icon
-              name="file-code"
-              size={13}
-              class={codeActive() ? "forge-icon-accent" : "forge-icon-muted"}
-            />
-            <span class="tree-label forge-truncate">Code</span>
-          </button>
-          <For each={props.workspace.sessions}>
-            {(node) => (
-              <SessionRow
-                session={node.session}
-                label={node.label}
-                wantsYou={node.wantsYou || hasQuestion(node.session.id)}
-                unread={node.unread}
-                inTree
-                cursor={props.cursorSession === node.session.id}
-                depth={node.depth}
-                level={props.level + 1}
-                onMenu={(event) => props.onSessionMenu(event, node.session)}
-              />
-            )}
-          </For>
-        </div>
+        <CheckoutChildren
+          workspace={props.workspace}
+          level={props.level + 1}
+          selected={
+            props.cursorCode
+              ? `code:${props.workspace.id}`
+              : props.cursorSession
+                ? `session:${props.cursorSession}`
+                : null
+          }
+          onSessionMenu={props.onSessionMenu}
+        />
       </Show>
     </div>
+  );
+}
+
+/** What a checkout holds: its Code row while files are open, then its sessions. */
+function CheckoutChildren(props: {
+  workspace: WorkspaceNode;
+  level: number;
+  selected: string | null;
+  onSessionMenu: (event: MouseEvent, session: Session) => void;
+}) {
+  const codeActive = () => centerMode() === "code" && activeWorkspace() === props.workspace.id;
+  return (
+    <div class="ws-sessions">
+      <Show when={codeShown(props.workspace.id)}>
+        <button
+          type="button"
+          id={railRowId(`code:${props.workspace.id}`)}
+          class="forge-row tree-row"
+          role="treeitem"
+          aria-level={props.level}
+          aria-selected={props.selected === `code:${props.workspace.id}` || codeActive()}
+          aria-current={codeActive() || undefined}
+          classList={{ cursor: props.selected === `code:${props.workspace.id}` }}
+          onClick={() => focusCode(props.workspace.id)}
+          onContextMenu={(event) => event.stopPropagation()}
+        >
+          <Icon
+            name="file-code"
+            size={14}
+            class={codeActive() ? "forge-icon-accent" : "forge-icon-muted"}
+          />
+          <span class="tree-label forge-truncate">Code</span>
+          <Show when={openFileCount(props.workspace.id) > 0}>
+            <span class="tree-meta">{openFileCount(props.workspace.id)} open</span>
+          </Show>
+        </button>
+      </Show>
+      <For each={props.workspace.sessions}>
+        {(node) => (
+          <SessionRow
+            session={node.session}
+            label={node.label}
+            wantsYou={node.wantsYou || hasQuestion(node.session.id)}
+            unread={node.unread}
+            inTree
+            cursor={props.selected === `session:${node.session.id}`}
+            depth={node.depth}
+            level={props.level}
+            onMenu={(event) => props.onSessionMenu(event, node.session)}
+          />
+        )}
+      </For>
+    </div>
+  );
+}
+
+/** A waiting session lifted above the tree: what it is, where, and for how long. */
+function NeedsYouCard(props: { session: Session }) {
+  const place = createMemo(() => {
+    const workspace = forgeStore.workspaces.find((item) => item.id === props.session.workspace_id);
+    const project = forgeStore.projects.find((item) => item.id === workspace?.project_id);
+    return project?.name ?? workspace?.branch ?? "";
+  });
+  const label = () => sessionDisplayTitle(props.session);
+  return (
+    <button
+      type="button"
+      class="needs-you-card"
+      aria-label={`${label()}, waiting on you for ${waitedFor(props.session, now())}`}
+      onClick={() => focusSession(props.session.id)}
+    >
+      <span class="needs-you-line">
+        <span class="forge-attention-dot" aria-hidden="true" />
+        <span class="needs-you-title forge-truncate">{label()}</span>
+        <span class="needs-you-waited">{waitedFor(props.session, now())}</span>
+      </span>
+      <span class="needs-you-place forge-truncate">{place()} · waiting on you</span>
+    </button>
   );
 }
 
@@ -1231,9 +1332,6 @@ function SessionRow(props: {
       onClick={() => focusSession(props.session.id)}
       onContextMenu={props.onMenu}
     >
-      <Show when={props.wantsYou} fallback={<StateMarker session={props.session} />}>
-        <AttentionMarker />
-      </Show>
       {/* What it runs, not just that it exists: a terminal and a Codex
           agent in the same checkout are unreadable as two identical labels. */}
       <SessionGlyph
@@ -1241,13 +1339,28 @@ function SessionRow(props: {
         session={props.session}
         emphasis={active() || props.wantsYou ? "full" : "dim"}
       />
-      <span class="tree-label forge-truncate">{props.label}</span>
-      <Show when={props.wantsYou}>
-        <span class="tree-waited" aria-hidden="true">
-          {waited()}
-        </span>
+      <SessionLabel label={props.label} />
+      <Show when={props.wantsYou} fallback={<StateMarker session={props.session} />}>
+        <AttentionMarker />
       </Show>
     </button>
+  );
+}
+
+/** A shell's `Shell ~/path` title sets its path in the code face, so names line up. */
+function SessionLabel(props: { label: string }) {
+  const split = () => {
+    const at = props.label.indexOf(" ~/");
+    return at > 0 ? [props.label.slice(0, at), props.label.slice(at + 1)] : null;
+  };
+  return (
+    <Show when={split()} fallback={<span class="tree-label forge-truncate">{props.label}</span>}>
+      {(parts) => (
+        <span class="tree-label forge-truncate">
+          {parts()[0]} <span class="tree-path">{parts()[1]}</span>
+        </span>
+      )}
+    </Show>
   );
 }
 

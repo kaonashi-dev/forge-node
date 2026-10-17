@@ -20,7 +20,7 @@ function tint(token: string): number {
  */
 describe("kit tints keep text at AA", () => {
   it("still uses the percentages checked below", () => {
-    expect(kit).toContain("var(--badge-hue) 10%, transparent");
+    expect(kit).toContain("var(--badge-hue) 12%, transparent");
     expect(kit).toContain("var(--danger-solid) 12%, transparent");
     expect(kit).toContain("var(--attention) 20%, transparent");
   });
@@ -48,7 +48,7 @@ describe("kit tints keep text at AA", () => {
         danger: p.red,
         attention: p.needsYou,
       })) {
-        check(`${role} badge over ${ground}`, text(`--${role}-text`), over(ground, hue, 10));
+        check(`${role} badge over ${ground}`, text(`--${role}-text`), over(ground, hue, 12));
       }
       for (const percent of [tint("--danger-tint-bg"), 12]) {
         check(

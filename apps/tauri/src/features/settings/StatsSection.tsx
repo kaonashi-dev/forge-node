@@ -54,7 +54,7 @@ export function StatsSection() {
 
   return (
     <Page
-      title="Stats & Usage"
+      title="Stats & usage"
       summary="Token analytics counted off agent transcripts on disk — separate from subscription meters, which are the provider's word on allowance."
     >
       <Group

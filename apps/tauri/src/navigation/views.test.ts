@@ -53,7 +53,7 @@ describe("parked views", () => {
 
   it("names an editor after its file, not its path", () => {
     expect(viewLabel(lib)).toBe("lib.rs");
-    expect(viewLabel(diff)).toBe("Diff");
+    expect(viewLabel(diff)).toBe("Patch");
     const terminal = {
       kind: "editor-terminal" as const,
       session: "s1",
@@ -66,7 +66,7 @@ describe("parked views", () => {
   // Two `mod.rs` tabs are indistinguishable by label alone.
   it("keeps the whole path reachable as the tab's accessible name", () => {
     expect(viewTitle(lib)).toBe("crates/client/src/lib.rs");
-    expect(viewTitle(diff)).toBe("Diff");
+    expect(viewTitle(diff)).toBe("Patch");
   });
 
   describe("closeView", () => {

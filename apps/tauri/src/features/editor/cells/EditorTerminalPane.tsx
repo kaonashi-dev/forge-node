@@ -420,7 +420,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
 
   return (
     <div class="editor-terminal-pane">
-      <EditorBreadcrumbs path={chrome().path}>
+      <EditorBreadcrumbs>
         <Show when={failed()}>{(reason) => <span class="panel-note">{reason()}</span>}</Show>
         <SourceSwitch path={props.path} surface="editor" />
       </EditorBreadcrumbs>

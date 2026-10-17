@@ -113,12 +113,15 @@ const SURFACES = [
   "--bg-panel",
   "--bg-window",
   "--bg-sidebar",
+  "--bg-strip",
+  "--bg-sunken",
+  "--bg-float",
   "--bg-raised",
   "--bg-overlay",
   "--bg-terminal",
   "--forge-editor",
 ];
-const FOREGROUNDS = ["--fg-default", "--fg-muted", "--fg-subtle", "--fg-caption"];
+const FOREGROUNDS = ["--fg-strong", "--fg-default", "--fg-muted", "--fg-subtle", "--forge-faint"];
 const INTERACTION = [
   "--border-subtle",
   "--border-default",
@@ -133,6 +136,7 @@ const RADII: Sample[] = [
   ["--radius-xs", "xs"],
   ["--radius-sm", "sm"],
   ["--radius-md", "md"],
+  ["--radius-list", "list"],
   ["--radius-lg", "lg"],
   ["--radius-palette", "palette"],
   ["--radius-full", "full"],
@@ -143,16 +147,18 @@ const CONTROL_HEIGHTS: Sample[] = [
   ["--control-md", "control-md"],
   ["--control-lg", "control-lg"],
   ["--row-h", "row-h"],
-  ["--forge-tab-h", "tab-h"],
+  ["--tree-row-h", "tree-row-h"],
+  ["--tab-h", "tab-h"],
+  ["--location-h", "location-h"],
+  ["--strip-h", "strip-h"],
 ];
 const TYPE_SCALE: Sample[] = [
-  ["--text-label", "label — the mono section label"],
-  ["--text-xs", "xs — metadata"],
-  ["--text-sm", "sm — the chrome's default"],
-  ["--text-md", "md — a body line"],
-  ["--text-lg", "lg — a card title"],
-  ["--text-xl", "xl — a panel heading"],
-  ["--text-2xl", "2xl — the section title"],
+  ["--text-mono", "mono — counts, keys, branches"],
+  ["--text-xs", "xs — captions, group labels, footer"],
+  ["--text-sm", "sm — rows, tabs, buttons, body"],
+  ["--text-md", "md — a section heading"],
+  ["--text-lg", "lg — a dialog title"],
+  ["--text-xl", "xl — the page title"],
 ];
 const WEIGHTS: Sample[] = [
   ["--weight-regular", "regular"],
@@ -170,10 +176,7 @@ const LEADINGS: Sample[] = [
   ["--leading-body", "body"],
   ["--leading-prose", "prose"],
 ];
-const TRACKINGS: Sample[] = [
-  ["--tracking-tight", "tight — a display title"],
-  ["--tracking-label", "LABEL — AN UPPERCASE LABEL"],
-];
+const TRACKINGS: Sample[] = [["--tracking-tight", "tight — the page title"]];
 const OPACITIES: Sample[] = [
   ["--opacity-disabled", "disabled"],
   ["--opacity-dim", "dim"],
@@ -669,13 +672,15 @@ function Primitives() {
           />
         </div>
 
-        <div class="gallery-row">
-          <For each={["running", "working", "starting", "needs-you", "failed"] as const}>
+        <div class="gallery-list gallery-medium">
+          <span class="forge-section-label">Markers sit at the end of a row, after the label</span>
+          <For each={["working", "starting", "needs-you", "idle", "exited", "failed"] as const}>
             {(work) => (
-              <span class="gallery-marker">
+              <button type="button" class="forge-row empty-state-row">
+                <Icon name="square-terminal" class="forge-icon-muted" size={14} />
+                <span class="empty-state-label">{work}</span>
                 <WorkMarker work={work} />
-                <span class="forge-caption">{work}</span>
-              </span>
+              </button>
             )}
           </For>
         </div>
@@ -698,6 +703,80 @@ function Primitives() {
               </button>
             )}
           </For>
+        </div>
+      </Section>
+
+      <Section title="Shell — the card's strip and location, a pinned wait, tree rows">
+        <div class="gallery-shell">
+          <div class="work-card">
+            <div class="card-strip">
+              <div class="session-tab-wrap code-tab-wrap">
+                <span class="session-tab">
+                  <Icon name="file-code" size={14} class="forge-icon-muted" />
+                  <span class="session-tab-label">Code</span>
+                  <span class="session-tab-count">3</span>
+                </span>
+              </div>
+              <div class="session-tab-wrap">
+                <span class="session-tab">
+                  <WorkMarker work="idle" />
+                  <span class="session-tab-label">Terminal 1</span>
+                </span>
+              </div>
+              <div class="session-tab-wrap active">
+                <span class="session-tab">
+                  <WorkMarker work="working" />
+                  <span class="session-tab-label">Calm redesign</span>
+                </span>
+              </div>
+              <span class="tab-strip-spacer" />
+              <button type="button" class="waiting-pill">
+                <span class="waiting-pill-dot" aria-hidden="true" />1 waiting
+              </button>
+              <Button variant="ghost" size="md">
+                Changes <span class="session-actions-count">0</span>
+              </Button>
+            </div>
+            <div class="card-location">
+              <span class="card-location-place">forge-node</span>
+              <span class="card-location-sep">/</span>
+              <span class="card-location-mono card-location-strong">main</span>
+              <span class="card-location-sep">·</span>
+              <span>no changes</span>
+              <span class="card-location-spacer" />
+              <span class="card-location-mono">132 × 42</span>
+            </div>
+            <div class="gallery-shell-body" />
+          </div>
+          <div class="gallery-shell-side">
+            <button type="button" class="needs-you-card">
+              <span class="needs-you-line">
+                <span class="forge-attention-dot" aria-hidden="true" />
+                <span class="needs-you-title forge-truncate">Migrate the admin portal</span>
+                <span class="needs-you-waited">12m</span>
+              </span>
+              <span class="needs-you-place forge-truncate">admin-portal · waiting on you</span>
+            </button>
+            <button type="button" class="forge-row tree-row project">
+              <span class="project-avatar current">F</span>
+              <span class="tree-label">forge-node</span>
+              <span class="tree-meta">main</span>
+            </button>
+            <div class="tree-guide">
+              <button type="button" class="forge-row tree-row">
+                <Icon name="square-terminal" size={14} class="forge-icon-muted" />
+                <span class="tree-label">
+                  Shell <span class="tree-path">~/forge-node</span>
+                </span>
+                <WorkMarker work="idle" />
+              </button>
+              <button type="button" class="forge-row tree-row" aria-current="true">
+                <Icon name="agent" size={14} class="forge-icon-muted" />
+                <span class="tree-label">Calm redesign</span>
+                <WorkMarker work="working" />
+              </button>
+            </div>
+          </div>
         </div>
       </Section>
 

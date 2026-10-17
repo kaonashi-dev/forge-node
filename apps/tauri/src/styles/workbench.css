@@ -100,7 +100,7 @@
   display: flex;
   gap: var(--space-10);
   grid-row: 1;
-  height: var(--forge-tab-h);
+  height: var(--tab-h);
   min-width: 0;
   padding: 0 var(--space-12) 0 var(--space-16);
 }
@@ -158,12 +158,12 @@
   align-items: center;
   display: flex;
   flex: none;
-  gap: var(--space-4);
+  gap: var(--space-2);
 }
 .session-actions-count {
-  color: var(--git-modified-text);
+  color: var(--forge-faint);
   font-family: var(--font-mono);
-  font-size: var(--text-label);
+  font-size: var(--text-mono);
 }
 
 /* ------------------------------------------------------ session changes --- */
@@ -268,19 +268,21 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* Open files: a second, quieter strip under the card's own. Tabs are flush
+   text and the chosen one carries an accent underline. */
 .workbench-strip {
-  align-items: center;
-  background: var(--bg-window);
-  box-shadow: inset 0 -1px var(--border-subtle);
+  align-items: stretch;
+  background: var(--bg-panel);
+  box-shadow: inset 0 -1px var(--surface);
   display: flex;
-  gap: var(--space-2);
+  gap: 0;
   grid-column: 1;
   grid-row: 1;
-  height: var(--forge-tab-h);
+  height: var(--open-files-h);
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 0 var(--space-4);
+  padding: 0 var(--space-12);
   scrollbar-width: none;
   z-index: var(--z-strip);
 }
@@ -288,7 +290,7 @@
   display: none;
 }
 .center-stack:has(.workbench-strip) {
-  grid-template-rows: var(--forge-tab-h) minmax(0, 1fr);
+  grid-template-rows: var(--open-files-h) minmax(0, 1fr);
 }
 .center-stack:has(.workbench-strip) > .center-slot,
 .center-stack:has(.workbench-strip) > .center-view {
@@ -296,14 +298,11 @@
 }
 .workbench-tab {
   align-items: center;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  color: var(--fg-muted);
+  color: var(--fg-subtle);
   display: flex;
   flex: none;
-  font-size: var(--text-sm);
-  gap: var(--space-4);
-  height: var(--control-lg);
+  font-size: var(--text-xs);
+  gap: var(--space-2);
   max-width: 220px;
   min-width: 0;
   padding: 0 var(--space-6) 0 var(--space-12);
@@ -312,9 +311,12 @@
   color: var(--fg-default);
 }
 .workbench-tab.active {
-  background: var(--bg-raised);
-  border-color: var(--border-subtle);
-  color: var(--fg-default);
+  box-shadow: inset 0 -2px 0 var(--accent);
+  color: var(--fg-strong);
+  font-weight: var(--weight-medium);
+}
+.workbench-tab:not(.active):not(:hover) .workbench-tab-close:not(:has(.workbench-tab-dirty)) {
+  opacity: 0;
 }
 .workbench-tab-dirty {
   display: block;
@@ -399,8 +401,8 @@
 .diff-view {
   display: flex;
   flex-direction: column;
-  gap: var(--space-10);
-  padding: var(--space-10) var(--space-12);
+  gap: var(--space-12);
+  padding: 0 var(--space-16) var(--space-16);
 }
 /* The rail and the diff scroll on their own, so picking a file deep in the
    list does not scroll the list away. */
@@ -450,20 +452,29 @@
   align-items: center;
   color: var(--fg-muted);
   display: flex;
+  flex: none;
+  font-family: var(--font-sans);
   font-size: var(--text-sm);
-  gap: var(--space-10);
+  gap: var(--space-12);
+  height: 44px;
+  padding-left: var(--space-4);
+}
+.diff-header-files {
+  color: var(--fg-strong);
+  font-weight: var(--weight-medium);
 }
 .diff-file {
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-list);
   flex-shrink: 0;
+  overflow: hidden;
 }
 .diff-file-head {
-  background: var(--bg-raised);
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: var(--bg-float);
   font-size: var(--text-sm);
-  gap: var(--space-8);
-  padding: var(--space-6) var(--space-8);
+  gap: var(--space-10);
+  min-height: 38px;
+  padding: 0 var(--space-14);
   position: sticky;
   top: 0;
   width: 100%;
@@ -520,7 +531,10 @@
 .forge-diff-removed {
   background-color: var(--forge-diff-removed-bg);
 }
-.forge-diff-hunk,
+.forge-diff-hunk {
+  color: var(--forge-faint);
+  background-color: var(--diff-hunk-bg);
+}
 .forge-diff-meta {
   color: var(--fg-subtle);
   background-color: var(--diff-meta-bg);
@@ -535,8 +549,7 @@
   color: inherit;
 }
 .forge-diff-gutter {
-  color: var(--fg-subtle);
-  opacity: var(--opacity-dim);
+  color: var(--fg-rule);
   padding: 0 0.5ch;
   text-align: right;
   user-select: none;
@@ -584,75 +597,17 @@
   overflow: auto;
 }
 
-/* The path as mono segments; the file name keeps priority when it is long. */
+/* The file's own controls, right-aligned; gone when it has none. */
 .editor-breadcrumb {
   align-items: center;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--fg-muted);
   display: flex;
   flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
   gap: var(--space-8);
-  height: 30px;
-  min-width: 0;
-  padding: 0 var(--space-16);
+  justify-content: flex-end;
+  padding: var(--space-8) var(--space-16) 0;
 }
-.editor-crumbs {
-  align-items: center;
-  display: flex;
-  flex: 1;
-  gap: var(--space-6);
-  list-style: none;
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  padding: 0;
-}
-.editor-crumb {
-  align-items: center;
-  display: flex;
-  flex: 0 1 auto;
-  gap: var(--space-6);
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.editor-crumb.current {
-  color: var(--fg-default);
-  flex: 0 0 auto;
-  max-width: 100%;
-}
-.editor-crumb-sep {
-  color: var(--fg-caption);
-  flex: none;
-}
-.editor-breadcrumb > :not(.editor-crumbs) {
-  flex: none;
-  font-family: var(--font-sans);
-}
-
-.editor-status {
-  align-items: center;
-  background: var(--bg-window);
-  border-top: 1px solid var(--border-subtle);
-  color: var(--fg-muted);
-  display: flex;
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  gap: var(--space-16);
-  height: var(--control-md);
-  min-width: 0;
-  overflow: hidden;
-  padding: 0 var(--space-16);
-  white-space: nowrap;
-}
-.editor-status-spacer {
-  flex: 1;
-}
-.editor-status-mark {
-  color: var(--fg-default);
+.editor-breadcrumb:not(:has(*)) {
+  display: none;
 }
 
 /* --------------------------------------------------------- pull requests --- */
@@ -665,44 +620,48 @@
  * left there does not exist until someone opens Settings, and a tab styled
  * from it opens raw.
  */
+/* A main column that scrolls as one page, beside a 280px rail of facts. */
 .pr-detail {
   display: flex;
-  flex-direction: column;
   height: 100%;
   overflow: hidden;
 }
+.pr-detail-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  overflow: auto;
+  padding: var(--space-28) var(--space-32) var(--space-32);
+}
 .pr-detail-head {
-  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
-  gap: var(--space-10);
-  padding: var(--space-16) var(--space-24) var(--space-14);
+  gap: var(--space-16);
 }
 .pr-detail-trail {
   align-items: center;
   display: flex;
-  gap: var(--space-10);
+  flex-wrap: wrap;
+  gap: var(--space-8);
 }
 .pr-detail-repo {
-  color: var(--fg-caption);
+  color: var(--fg-subtle);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
 }
 .pr-detail-tools {
   display: flex;
   gap: var(--space-2);
   margin-left: auto;
 }
-.pr-state {
-  gap: var(--space-6);
-}
-.pr-detail-title-row {
-  align-items: flex-start;
-  display: flex;
-  gap: var(--space-16);
-  justify-content: space-between;
-}
 .pr-detail-title {
+  color: var(--fg-strong);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-title);
+  margin: 0;
   max-width: 72ch;
 }
 .pr-detail-facts {
@@ -711,12 +670,12 @@
   display: flex;
   flex-wrap: wrap;
   font-size: var(--text-sm);
-  gap: var(--space-8) var(--space-10);
+  gap: var(--space-8) var(--space-14);
 }
-.pr-fact-sep {
-  background: var(--border-default);
-  height: 12px;
-  width: 1px;
+.pr-fact-branches,
+.pr-fact-counts {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 .pr-fact-branches {
   align-items: center;
@@ -724,38 +683,48 @@
   gap: var(--space-6);
 }
 .pr-fact-branches code {
-  color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: inherit;
 }
-.pr-detail-main {
-  display: flex;
-  flex: 1;
-  min-height: 0;
+.pr-fact-arrow {
+  color: var(--fg-rule);
 }
 .pr-detail-tabs {
   display: flex;
-  flex: 1;
   flex-direction: column;
-  min-width: 0;
-}
-.pr-detail-tab-list {
-  padding: 0 var(--space-24);
+  margin-top: var(--space-24);
 }
 .pr-detail-panel {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: var(--space-20) var(--space-24) var(--space-32);
+  padding-top: var(--space-20);
 }
 .pr-detail-body {
-  max-width: 72ch;
+  color: var(--fg-default);
+  font-size: var(--text-md);
+  line-height: var(--leading-body);
+  max-width: 70ch;
   min-width: 0;
 }
 .pr-detail-note {
-  color: var(--fg-muted);
+  color: var(--fg-subtle);
   font-size: var(--text-sm);
   margin: var(--space-20) 0 0;
-  padding: var(--space-10) var(--space-12);
+}
+.pr-detail-rail {
+  border-left: 1px solid var(--surface);
+  display: flex;
+  flex: 0 0 280px;
+  flex-direction: column;
+  gap: var(--space-22);
+  overflow: auto;
+  padding: var(--space-28) var(--space-22);
+}
+.pr-verdict[data-tone="good"] {
+  color: var(--success-text);
+}
+.pr-verdict[data-tone="bad"] {
+  color: var(--danger-text);
+}
+.pr-verdict[data-tone="warn"] {
+  color: var(--warning-text);
 }
 .pr-detail-facts-grid {
   display: grid;
@@ -828,59 +797,48 @@
   color: var(--git-deleted-text);
   font-family: var(--font-mono);
 }
-.pr-review-rail {
-  background: var(--bg-sidebar);
-  border-left: 1px solid var(--border-subtle);
+.pr-review-card {
+  background: var(--bg-float);
+  border-radius: var(--radius-list);
   display: flex;
-  flex: 0 0 18rem;
   flex-direction: column;
-  gap: var(--space-10);
-  min-width: 0;
-  overflow: auto;
-  padding: var(--space-16) var(--space-16) 0;
+  gap: var(--space-8);
+  padding: var(--space-14);
+}
+.pr-review-card-title {
+  color: var(--fg-strong);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  margin: 0;
+}
+.pr-review-card-note {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-caption);
+  margin: 0 0 var(--space-4);
 }
 .pr-review-status {
   align-items: center;
+  color: var(--fg-subtle);
   display: flex;
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   gap: var(--space-8);
-  padding: var(--space-12);
+  margin: 0;
 }
-/* Idle is a hollow ring, starting a half-filled one, running a solid dot. */
+/* Idle is a muted dot, starting a half-filled ring, running an accent dot. */
 .pr-review-status-mark {
-  border: 1.5px solid var(--fg-caption);
+  background: var(--fg-rule);
   border-radius: 50%;
   flex: none;
-  height: 8px;
-  width: 8px;
+  height: 6px;
+  width: 6px;
 }
 .pr-review-status-mark[data-state="starting"] {
   background: linear-gradient(90deg, var(--accent) 50%, transparent 50%);
-  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 .pr-review-status-mark[data-state="running"] {
   background: var(--accent);
-  border-color: var(--accent);
-}
-.pr-review-status-text {
-  min-width: 0;
-}
-.pr-review-rail-foot {
-  border-top: 1px solid var(--border-subtle);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-8);
-  padding: var(--space-12) 0 var(--space-14);
-}
-.pr-review-rail-note {
-  margin: 0;
-}
-.pr-review-rail-actions {
-  display: flex;
-  gap: var(--space-6);
-}
-.pr-review-rail-actions > * {
-  flex: 1;
 }
 .pr-detail-actions {
   display: flex;

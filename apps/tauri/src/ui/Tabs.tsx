@@ -40,6 +40,8 @@ export type TabsProps = {
   contentClass?: string;
   /** Rendered after the triggers, inside the list's container. */
   listSuffix?: JSX.Element;
+  /** `underline`: flush text on a hairline, the chosen tab marked by an accent rule. */
+  variant?: "chips" | "underline";
   "aria-label"?: string;
 };
 
@@ -51,7 +53,9 @@ export type TabsProps = {
  * which panel each one reveals.
  */
 export function Tabs(props: TabsProps) {
-  const triggerClass = () => props.triggerClass ?? "forge-tab";
+  const triggerClass = () =>
+    props.triggerClass ??
+    (props.variant === "underline" ? "forge-tab forge-tab-underline" : "forge-tab");
   return (
     <Kobalte
       class={props.class}
@@ -63,7 +67,11 @@ export function Tabs(props: TabsProps) {
       <div class={props.listClass}>
         <Kobalte.List
           class="forge-tab-list"
-          classList={{ "forge-tab-list-chips": props.triggerClass === undefined }}
+          classList={{
+            "forge-tab-list-chips":
+              props.triggerClass === undefined && props.variant !== "underline",
+            "forge-tab-list-underline": props.variant === "underline",
+          }}
         >
           <For each={props.tabs}>
             {(tab) => {

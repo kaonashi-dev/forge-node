@@ -1,18 +1,21 @@
 # Theming
 
-Forge ships nine built-in bases, plus a custom slot. Colors and control metrics live in
+Forge ships eleven built-in bases, plus a custom slot. Colors and control metrics live in
 `apps/tauri/src/theme/tokens.ts`; views must not hardcode hex values. Interaction
 states (hover, selection, borders, tints) are derived in `mix.ts` from `bg`,
 `text` and the accents.
 
-Default preference: **`forge-dark`**. A `system` preference follows
-`prefers-color-scheme` (`forge-dark` / `forge-light`).
+Default preference: **`calm-dark`**. A `system` preference follows
+`prefers-color-scheme` (`calm-dark` / `calm-light`). A stored preference is kept,
+so an existing install stays on the base it chose.
 
 ## Bases
 
 | Id | Role |
 |----|------|
-| `forge-dark` | Default: warm dark `#1a1918` panels on a `#121211` window, `#ede5d6` text, verdigris `#4fa39b` accent |
+| `calm-dark` | Default: `#131315` card on a `#0c0c0d` window, `#ededef` text over `#c9c9cf` rows, violet `#a78bfa` accent, ember `#f59e4b` |
+| `calm-light` | The same roles on a `#f4f4f2` window and `#ffffff` card, `#6d28d9` accent, `#a04a08` ember |
+| `forge-dark` | Warm dark `#1a1918` panels on a `#121211` window, `#ede5d6` text, verdigris `#4fa39b` accent |
 | `forge-light` | The same roles on a `#faf8f3` ground, `#29766f` accent |
 | `gruvbox-hard` | Gruvbox: `#282828` canvas, `#ebdbb2` text, `#458588` accent |
 | `gruvbox` | Warm original Gruvbox medium-contrast surfaces |
@@ -57,12 +60,12 @@ active pane and link. Ember (`--attention`, the palette's `needsYou`) marks
 exactly two things: a session waiting on the user and an unresolved conflict.
 
 Selection never draws a bar down an edge. A chosen row changes its own ground
-(`--select-bg`) and carries an inset hairline (`--select-ring`), so nothing
-shifts when it is picked; an attention row takes the same shape in ember
-(`--attention-bg`, `--attention-ring`) with a dot and a 3px halo. A selected
+(`--select-bg`, the accent at 14%) and nothing else (`--select-ring` is `none`),
+so nothing shifts when it is picked; an attention row takes the same shape in ember
+(`--attention-bg`; `--attention-ring` is `none` too) with a dot and a 3px halo. A selected
 card warms its border (`--card-select-border`), gains an outer ring
-(`--card-select-halo`) and fills its identifier chip. Tabs keep their underline,
-because they sit on a shared edge.
+(`--card-select-halo`) and fills its identifier chip. A tab is chosen by a raised chip (`--border-subtle` ground,
+`--tab-edge` inset); the open-files strip keeps an accent underline.
 
 ### Semantic foregrounds
 
@@ -71,8 +74,13 @@ because they sit on a shared edge.
   `--attention-text` and `--info-text` are readable foregrounds on UI surfaces.
 - `--git-*-text` serves Git labels and file decorations; raw `--forge-git-*`
   colours remain the inputs for diff washes and gutter marks.
-- `--fg-default`, `--fg-muted` and `--fg-subtle` are derived from the palette,
-  with a 4.5:1 floor across panels, overlays and interaction backgrounds.
+- `--fg-strong` (primary text), `--fg-default` (rows), `--fg-muted` and
+  `--fg-subtle` (icons) are derived from the palette, with a 4.5:1 floor across
+  panels, overlays and interaction backgrounds. A base may pin `fgDefault`,
+  `fgSubtle`, `border` and `needsYouText` instead of deriving them
+  (`PALETTE_OVERRIDES`); without them `--fg-default` equals `--fg-strong`.
+- Every base has a `strip` ground for the card's tab strip; bases that do not
+  set one take the midpoint of `rail` and `bg`.
 - `--ring` is opaque and held to 3:1 against those same backgrounds.
 
 These adjustments run when applying a theme. Raw palette values and terminal
@@ -84,35 +92,40 @@ surfaces cannot guarantee one foreground readable on all of them.
 ## Fonts
 
 Three faces, all bundled under `apps/tauri/public/fonts/` (SIL OFL) so a
-packaged app never reaches a CDN: IBM Plex Sans for the chrome (latin subset,
-400/500/600 and italic), JetBrains Mono for code, the terminal, paths, counts
-and keys, and Fraunces for documentation headings only (settings section
-titles). JetBrains Mono ships as the full TTFs rather than a latin subset
-because the terminal needs its box-drawing and block glyphs. Prompt icon glyphs (Nerd Font /
-powerline codepoints such as U+E718) are **not** in that bundle — shipping a
-Nerd Font patch would roughly 10× the font payload.
+packaged app never reaches a CDN: Geist for the chrome (400/500/600 and
+italic), Geist Mono for code, the terminal, paths, counts and keys
+(400/500/600/700 and italic), and JetBrains Mono as the per-glyph fallback.
+Geist Mono covers box-drawing and block elements; braille, `❯`, `⎿` and
+similar fall through to the JetBrains Mono TTFs, which ship whole rather than
+subset for that reason. Prompt icon glyphs (Nerd Font / powerline codepoints
+such as U+E718) are **not** in that bundle — shipping a Nerd Font patch would
+roughly 10× the font payload.
 
 Install [JetBrainsMono Nerd Font](https://github.com/ryanoasis/nerd-fonts)
-(the Mono variant) on the machine that runs the GUI. The mono stack prefers
-`JetBrainsMono Nerd Font Mono` when present and falls back to the bundled
-face for everything else.
+(the Mono variant) on the machine that runs the GUI. The mono stack tries it
+right after Geist Mono, so its icons fill the codepoints Geist Mono lacks.
 
 ## Controls and chrome
 
-Density (`ui.density`: `compact` 26px rows or `cozy` 32px; the retired
+Density (`ui.density`: `compact` 26px file rows and 28px tree rows, or `cozy`, 6px taller; the retired
 `default`/`comfortable` ids map onto them) overlays row height and the control
 ladder; UI font size (`ui.font_size`, half-pixel steps from 12 to 16) overlays
 `--forge-text-*`. Reduce motion (`ui.reduce_motion`) sets
 `data-reduce-motion` on the root, which removes every transition on top of the
 OS setting.
 
-The type scale is 28/1.2/600 section title (`--text-2xl`), 20/1.3/600 panel
-heading, 15/1.45/600 card and dialog heading, 13/1.6 body, 12.5 row label, 11.5/1.5
-caption and a 10px bold uppercase mono section label (`--text-label`); nothing is
-set below 10px. Space steps run 1/2/3/4/6/8/10/12/14/16/20/22/24/28/32/44
+The type scale is 24/600 page title (`--text-xl`), 15 and 14/600 headings
+(`--text-lg`, `--text-md`), 13 rows, tabs, buttons and body (`--text-sm`, the
+chrome's base), 12 captions, group labels and the footer (`--text-xs`), and
+11–12.5 Geist Mono for branches, paths, counts and keys. Labels are sentence
+case: no uppercase tracking, no serif. Space steps run 1/2/3/4/6/8/10/12/14/16/20/22/24/28/32/44
 (`--space-*`, pixel-named);
-radii are 5 badge, 7 button and row, 9 card, 12 panel, 14 palette and a pill;
-depth runs 0–3 (only menus, tooltips, dialogs and the palette cast a shadow);
+radii are 5 badge, 7 row, 8 button and tab, 10 list and segmented control
+(`--radius-list`), 12 card, 14 palette and a pill. The shell is a 46px tab
+strip with 32px tabs, a 36px open-files strip and a 32px footer; controls run
+26/28/30/34. There are two depths: the card (1px edge, `0 12px 32px` at 35%)
+and overlays (`0 30px 80px` at 60%), and panes never draw hairlines between
+each other;
 motion is 0/90/120/160ms. Neither
 moves content: the editor keeps `ui.editor.font_size` and every terminal and
 agent shares `ui.terminal.zoom`. A theme switch reapplies both overlays from

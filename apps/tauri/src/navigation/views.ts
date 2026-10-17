@@ -115,19 +115,19 @@ export function viewLabel(view: WorkbenchView): string {
     case "terminal":
       return "Terminal";
     case "diff":
-      return "Diff";
+      return "Patch";
     case "editor-terminal":
       return view.path.slice(view.path.lastIndexOf("/") + 1) || "Editor";
     case "preview":
       return view.path.slice(view.path.lastIndexOf("/") + 1) || "Preview";
     case "pr_detail":
-      return "Pull Request";
+      return "Pull request";
     case "pr_review":
-      return "PR Review";
+      return "PR review";
     case "review":
       return "Review";
     case "compare":
-      return "PR Preview";
+      return "PR preview";
     case "pr_compose":
       return "Open PR";
     case "search":
@@ -144,7 +144,7 @@ export function viewLabel(view: WorkbenchView): string {
  */
 export function viewTitle(view: WorkbenchView): string {
   if (view.kind === "editor-terminal" || view.kind === "preview") return view.path;
-  // Two review tabs are both called "PR Review"; the key is the only thing
+  // Two review tabs are both called "PR review"; the key is the only thing
   // that tells the reader which pull request each one is about.
   if (view.kind === "pr_review") return `Review ${view.key}`;
   return viewLabel(view);

@@ -1,40 +1,23 @@
-import { For, Show, type JSX } from "solid-js";
-import { pathCrumbs, type EditorChrome } from "./editorChrome";
+import { createEffect, onCleanup, type JSX } from "solid-js";
+import type { EditorChrome } from "./editorChrome";
+import { setEditorFooter } from "./editorFooter";
 
-/** The path as segments; `children` sit at the trailing end of the bar. */
-export function EditorBreadcrumbs(props: { path: string; children?: JSX.Element }) {
-  const crumbs = () => pathCrumbs(props.path);
-  return (
-    <header class="editor-breadcrumb">
-      <ol class="editor-crumbs" aria-label="File path">
-        <For each={crumbs().parents}>
-          {(part) => (
-            <li class="editor-crumb">
-              <span class="forge-truncate">{part}</span>
-              <span class="editor-crumb-sep" aria-hidden="true">
-                ›
-              </span>
-            </li>
-          )}
-        </For>
-        <li class="editor-crumb current" aria-current="page">
-          <span>{crumbs().name}</span>
-        </li>
-      </ol>
-      {props.children}
-    </header>
-  );
+/** The file's own controls above the text; the path lives in the card's footer. */
+export function EditorBreadcrumbs(props: { children?: JSX.Element }) {
+  return <header class="editor-breadcrumb">{props.children}</header>;
 }
 
+/** Hands the editor's status to the card footer rather than drawing a second bar. */
 export function EditorStatusBar(props: { chrome: EditorChrome }) {
-  return (
-    <footer class="editor-status" aria-label="Editor status">
-      <Show when={props.chrome.position}>{(position) => <span>{position()}</span>}</Show>
-      <For each={props.chrome.details}>{(fact) => <span>{fact}</span>}</For>
-      <span class="editor-status-spacer" />
-      <span class="editor-status-mark">{props.chrome.mark}</span>
-    </footer>
+  createEffect(() =>
+    setEditorFooter({
+      position: props.chrome.position,
+      details: props.chrome.details,
+      mark: props.chrome.mark,
+    }),
   );
+  onCleanup(() => setEditorFooter(null));
+  return null;
 }
 
 export function EditorConflictNote(props: { children: JSX.Element }) {

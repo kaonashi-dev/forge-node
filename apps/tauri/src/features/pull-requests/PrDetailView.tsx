@@ -7,8 +7,7 @@ import { focus, openPrReview, showTerminal } from "../../navigation/viewsStore";
 import { TERMINAL_VIEW } from "../../navigation/views";
 import { selectSession } from "../sessions/commands";
 import { reviewRun } from "./prReviewStore";
-import { Icon } from "../../theme/icons/index";
-import { Badge, Button, Card, IconButton, Tabs, toast } from "../../ui/index";
+import { Badge, Button, Tabs, toast } from "../../ui/index";
 import { Markdown } from "../../shared/markdown/Markdown";
 import {
   commentSummary,
@@ -64,64 +63,63 @@ export function PrDetailView(props: PrDetailViewProps) {
     <Show when={pr()} fallback={<p class="empty-copy">Pull request not found in the last read.</p>}>
       {(item) => (
         <div class="pr-detail">
-          <header class="pr-detail-head">
-            <div class="pr-detail-trail">
-              <Badge class="pr-state" tone={stateChip(item()).tone}>
-                <Icon name="git-pull-request" size={12} />
-                {stateChip(item()).label}
-              </Badge>
-              <span class="pr-detail-repo">
-                {item().repository} #{item().number}
-              </span>
-              <div class="pr-detail-tools">
-                <IconButton label="Copy link" onClick={() => copyLink(item().url)}>
-                  <Icon name="copy" size={14} />
-                </IconButton>
-                <IconButton
-                  label="Open on the host"
-                  onClick={() => void openUrl(item().url).catch(() => undefined)}
-                >
-                  <Icon name="external-link" size={14} />
-                </IconButton>
-              </div>
-            </div>
-
-            <div class="pr-detail-title-row">
-              <h2 class="forge-panel-heading pr-detail-title">{item().title}</h2>
-              <Button
-                variant="primary"
-                iconLeading={<Icon name="agent" size={14} />}
-                onClick={() => openPrReview(props.prKey)}
-              >
-                Review with an agent
-              </Button>
-            </div>
-
-            <div class="pr-detail-facts">
-              <span class="pr-fact-branches">
-                <code>{item().head_ref}</code>
-                <span aria-hidden="true">→</span>
-                <span class="forge-visually-hidden">into</span>
-                <code>{item().base_ref}</code>
-              </span>
-              <span class="pr-fact-sep" aria-hidden="true" />
-              <span>{fileSummary(item().changed_files)}</span>
-              <span class="pr-added">+{item().additions}</span>
-              <span class="pr-removed">−{item().deletions}</span>
-              <span class="pr-fact-sep" aria-hidden="true" />
-              <span>
-                {item().author} · updated {relativeAge(item().updated_at, new Date())} ago
-              </span>
-              <For each={relationChips(item().relations)}>
-                {(chip) => <Badge tone={chip.tone}>{chip.label}</Badge>}
-              </For>
-            </div>
-          </header>
-
           <div class="pr-detail-main">
+            <header class="pr-detail-head">
+              <div class="pr-detail-trail">
+                <Badge class="pr-state" tone={stateChip(item()).tone}>
+                  {stateChip(item()).label}
+                </Badge>
+                <span class="pr-detail-repo">
+                  {item().repository} #{item().number}
+                </span>
+                <For each={relationChips(item().relations)}>
+                  {(chip) => <Badge tone={chip.tone}>{chip.label}</Badge>}
+                </For>
+                <div class="pr-detail-tools">
+                  <Button variant="ghost" size="md" onClick={() => copyLink(item().url)}>
+                    Copy link
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="md"
+                    onClick={() => void openUrl(item().url).catch(() => undefined)}
+                  >
+                    Open on the host
+                  </Button>
+                </div>
+              </div>
+
+              <h1 class="pr-detail-title">{item().title}</h1>
+
+              <div class="pr-detail-facts">
+                <span class="pr-fact-branches">
+                  <code>{item().head_ref}</code>
+                  <span class="pr-fact-arrow" aria-hidden="true">
+                    →
+                  </span>
+                  <span class="forge-visually-hidden">into</span>
+                  <code>{item().base_ref}</code>
+                </span>
+                <span>{fileSummary(item().changed_files)}</span>
+                <span class="pr-fact-counts">
+                  <span class="pr-added">+{item().additions}</span>{" "}
+                  <span class="pr-removed">−{item().deletions}</span>
+                </span>
+                <span>
+                  {item().author} · updated {relativeAge(item().updated_at, new Date())} ago
+                </span>
+              </div>
+
+              <div class="pr-detail-actions">
+                <Button variant="primary" size="lg" onClick={() => openPrReview(props.prKey)}>
+                  Review with an agent
+                </Button>
+              </div>
+            </header>
+
             <Tabs
+              variant="underline"
               class="pr-detail-tabs"
-              listClass="pr-detail-tab-list"
               contentClass="pr-detail-panel"
               aria-label="Pull request sections"
               value={tab()}
@@ -143,10 +141,10 @@ export function PrDetailView(props: PrDetailViewProps) {
                         />
                       </Show>
                       <Show when={item().body_truncated}>
-                        <Card class="pr-detail-note">
+                        <p class="pr-detail-note">
                           The host's description was longer than the read allows, so the end of it
                           is not here. Open it on the host for the rest.
-                        </Card>
+                        </p>
                       </Show>
                     </article>
                   ),
@@ -158,8 +156,30 @@ export function PrDetailView(props: PrDetailViewProps) {
                 },
               ]}
             />
-            <ReviewRail prKey={props.prKey} url={item().url} onCopy={() => copyLink(item().url)} />
           </div>
+          <aside class="pr-detail-rail" aria-label="Pull request facts">
+            <section class="pr-side-section">
+              <h2 class="forge-section-label">Verdict</h2>
+              <Show
+                when={decisionChip(item().review_decision)}
+                fallback={<p class="pr-side-empty">No verdict yet.</p>}
+              >
+                {(chip) => (
+                  <p class="pr-side-line pr-verdict" data-tone={chip().tone}>
+                    {chip().label}
+                  </p>
+                )}
+              </Show>
+            </section>
+            <People title="Reviewers" names={item().review_requests} empty="None requested" />
+            <section class="pr-side-section">
+              <h2 class="forge-section-label">Labels</h2>
+              <Show when={item().labels.length > 0} fallback={<p class="pr-side-empty">None</p>}>
+                <Labels labels={item().labels} />
+              </Show>
+            </section>
+            <ReviewRail prKey={props.prKey} />
+          </aside>
         </div>
       )}
     </Show>
@@ -183,24 +203,7 @@ function Details(props: { pr: PullRequest }) {
       <Show when={props.pr.labels.length > 0}>
         <section class="pr-side-section">
           <h3 class="forge-section-label">Labels</h3>
-          <ul class="pr-side-labels">
-            <For each={props.pr.labels}>
-              {(label) => (
-                <li class="pr-label">
-                  <span
-                    class="pr-label-dot"
-                    aria-hidden="true"
-                    style={
-                      labelColor(label.color) === null
-                        ? undefined
-                        : { background: labelColor(label.color) ?? "" }
-                    }
-                  />
-                  {label.name}
-                </li>
-              )}
-            </For>
-          </ul>
+          <Labels labels={props.pr.labels} />
         </section>
       </Show>
       <section class="pr-side-section">
@@ -212,11 +215,34 @@ function Details(props: { pr: PullRequest }) {
   );
 }
 
+function Labels(props: { labels: PullRequest["labels"] }) {
+  return (
+    <ul class="pr-side-labels">
+      <For each={props.labels}>
+        {(label) => (
+          <li class="pr-label">
+            <span
+              class="pr-label-dot"
+              aria-hidden="true"
+              style={
+                labelColor(label.color) === null
+                  ? undefined
+                  : { background: labelColor(label.color) ?? "" }
+              }
+            />
+            {label.name}
+          </li>
+        )}
+      </For>
+    </ul>
+  );
+}
+
 /**
  * Where the agent's pass stands. Its findings are prose in its own session,
  * never posted: what reaches the pull request is the reader's call.
  */
-function ReviewRail(props: { prKey: string; url: string; onCopy: () => void }) {
+function ReviewRail(props: { prKey: string }) {
   const run = () => reviewRun(props.prKey);
   const session = createMemo((): Session | null => {
     const id = run()?.session ?? null;
@@ -231,55 +257,30 @@ function ReviewRail(props: { prKey: string; url: string; onCopy: () => void }) {
   }
 
   return (
-    <aside class="pr-review-rail" aria-labelledby="pr-review-rail-title">
-      <div class="pr-divider">
-        <h3 id="pr-review-rail-title" class="forge-section-label">
-          Agent review
-        </h3>
-      </div>
-      <Card class="pr-review-status">
+    <section class="pr-review-card" aria-labelledby="pr-review-rail-title">
+      <h2 id="pr-review-rail-title" class="pr-review-card-title">
+        Agent review
+      </h2>
+      <p class="pr-review-card-note">
+        Runs read-only in this checkout. It can't edit, commit or post; you decide what reaches the
+        host.
+      </p>
+      <p class="pr-review-status">
         <span
           class="pr-review-status-mark"
           data-state={session() ? "running" : run() ? "starting" : "idle"}
           aria-hidden="true"
         />
-        <span class="pr-review-status-text">
-          <Show when={session()} fallback={run() ? "Starting the agent…" : "No agent pass yet."}>
-            {(current) => `${sessionTitle(current())} · ${sessionStateLabel(current().state)}`}
-          </Show>
-        </span>
-      </Card>
-      <Show
-        when={run()}
-        fallback={
-          <Button variant="secondary" size="sm" onClick={() => openPrReview(props.prKey)}>
-            Choose what to ask for
-          </Button>
-        }
-      >
+        <Show when={session()} fallback={run() ? "Starting the agent…" : "Not started"}>
+          {(current) => `${sessionTitle(current())} · ${sessionStateLabel(current().state)}`}
+        </Show>
+      </p>
+      <Show when={run()}>
         <Button variant="secondary" size="sm" disabled={!session()} onClick={showSession}>
           Read the findings
         </Button>
       </Show>
-      <span class="history-spacer" />
-      <div class="pr-review-rail-foot">
-        <p class="forge-caption pr-review-rail-note">
-          The agent reads the pull request and never writes to it. Posting is yours.
-        </p>
-        <div class="pr-review-rail-actions">
-          <Button variant="secondary" size="sm" onClick={props.onCopy}>
-            Copy link
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void openUrl(props.url).catch(() => undefined)}
-          >
-            Open on the host
-          </Button>
-        </div>
-      </div>
-    </aside>
+    </section>
   );
 }
 

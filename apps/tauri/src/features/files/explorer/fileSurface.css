@@ -36,13 +36,13 @@
   height: var(--row-h);
 }
 .fw-host .fw-tree-row {
-  border-radius: var(--radius-control);
-  color: var(--fg-muted);
+  border-radius: var(--radius-row);
+  color: var(--fg-default);
   padding-inline-end: var(--space-8);
 }
 .fw-host .fw-tree-items,
 .fw-host .fw-tree-edit {
-  padding-inline: var(--space-8);
+  padding-inline: 0;
 }
 .fw-host .fw-tree-row:hover {
   background: var(--bg-hover);
@@ -51,6 +51,7 @@
 .fw-host .fw-tree:focus .fw-tree-row[aria-selected="true"] {
   background: var(--select-bg);
   box-shadow: var(--select-ring);
+  color: var(--fg-strong);
 }
 /* The list keeps DOM focus and names the row through
    `aria-activedescendant`, so the focus ring is drawn on that row. */
@@ -74,7 +75,7 @@
 .fw-host .fw-tree-mark {
   color: var(--fg-caption);
   font-family: var(--font-mono);
-  font-size: var(--text-label);
+  font-size: var(--text-mono);
 }
 .fw-host .fw-tree-row[data-tone],
 .fw-host .fw-tree-row[data-tone] .fw-tree-mark {
@@ -90,14 +91,21 @@
 }
 
 .fw-root-identity {
+  border-radius: var(--radius-row);
+  color: var(--fg-strong);
   flex: none;
   gap: var(--space-8);
-  padding: var(--space-6) var(--space-8);
-  color: var(--fg-muted);
+  padding: var(--space-4) var(--space-8) var(--space-8);
   width: 100%;
 }
-.fw-root-identity span {
+.fw-root-name {
   font-weight: var(--weight-medium);
+}
+.fw-root-branch {
+  color: var(--forge-faint);
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
 }
 .fw-host .fw-mount {
   flex: 1;

@@ -41,12 +41,6 @@ function scrollThumb(state: EditorState): EditorChrome["scroll"] {
 /** Said instead of a position or a mark before the first state arrives. */
 export const UNKNOWN_MARK = "state unknown";
 
-/** The path's folders, outermost first, then the file's own name. */
-export function pathCrumbs(path: string): { parents: string[]; name: string } {
-  const parts = path.split("/").filter(Boolean);
-  return { parents: parts.slice(0, -1), name: parts.at(-1) ?? path };
-}
-
 /**
  * The file's extension as a label, or `null` when the name has none.
  *

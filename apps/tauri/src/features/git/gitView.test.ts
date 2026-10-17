@@ -3,7 +3,6 @@ import {
   MAX_SEGMENTS,
   commitLabel,
   commitMessage,
-  firstHunk,
   operationName,
   rebaseSteps,
   statusLetter,
@@ -73,31 +72,6 @@ describe("commit box", () => {
     expect(commitLabel(0)).toBe("Nothing to commit");
     expect(commitLabel(1)).toBe("Commit 1 file");
     expect(commitLabel(3)).toBe("Commit 3 files");
-  });
-});
-
-describe("firstHunk", () => {
-  const patch =
-    "diff --git a/x b/x\n--- a/x\n+++ b/x\n" +
-    "@@ -31,2 +31,3 @@ function x() {\n-a\n+b\n+c\n d\n" +
-    "@@ -60,1 +61,1 @@\n-e\n+f\n";
-
-  it("returns the first hunk's rows and counts the hunks after it", () => {
-    const hunk = firstHunk(patch);
-    expect(hunk?.header).toBe("@@ -31,2 +31,3 @@");
-    expect(hunk?.rows.map((row) => row.kind)).toEqual(["removed", "added", "added", "context"]);
-    expect(hunk?.more).toBe(1);
-    expect(hunk?.hiddenRows).toBe(0);
-  });
-
-  it("cuts a long hunk and says how much was left out", () => {
-    const hunk = firstHunk(patch, 2);
-    expect(hunk?.rows).toHaveLength(2);
-    expect(hunk?.hiddenRows).toBe(2);
-  });
-
-  it("has no preview for a patch without hunks", () => {
-    expect(firstHunk("Binary files differ\n")).toBeNull();
   });
 });
 

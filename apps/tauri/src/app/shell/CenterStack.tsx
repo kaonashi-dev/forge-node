@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, lazy, onCleanup } from "solid-js";
-import type { Section } from "../../features/settings/SettingsRoute";
+import type { Section } from "../../features/settings/sections";
 import {
   centerMode,
   codeOpen,
@@ -114,7 +114,7 @@ const PrReviewView = lazy(() =>
  * nothing and cost a full resync on the way back, so a glance at a diff would
  * reflow every program running in it.
  */
-export function CenterStack(props: { settings: boolean; settingsSection?: Section }) {
+export function CenterStack(props: { settings: boolean; settingsSection: Section }) {
   const views = () => currentViews();
   const onCode = () => !props.settings && centerMode() === "code" && codeOpen();
   /* The daemon's word, taken at the handshake: before a connection there is no
@@ -352,7 +352,9 @@ export function CenterStack(props: { settings: boolean; settingsSection?: Sectio
           class="terminal-slot"
           onMouseDown={() => focusSplitPane(layout() === "code" ? "extra" : "primary")}
         >
-          <SessionHeader onCloseSplit={layout() === "code" ? joinPanes : undefined} />
+          <Show when={layout() === "code"}>
+            <SessionHeader onCloseSplit={joinPanes} />
+          </Show>
           <TerminalPane
             active={!hideMainTerminal()}
             onActivate={() => focusSplitPane(layout() === "code" ? "extra" : "primary")}

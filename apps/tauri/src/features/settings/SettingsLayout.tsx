@@ -37,26 +37,30 @@ export type GroupProps = {
   aside?: JSX.Element;
   children: JSX.Element;
   class?: string;
+  /** Content that brings its own layout, such as a grid of choices, skips the bordered list. */
+  plain?: boolean;
 };
 
-/** A bordered card holding one group of related settings. */
+/** A heading line, then one bordered list of the group's settings. */
 export function Group(props: GroupProps) {
   return (
-    <section class={`forge-card settings-group ${props.class ?? ""}`}>
-      <Show when={props.title || props.aside}>
+    <section class={`settings-group ${props.class ?? ""}`}>
+      <Show when={props.title || props.aside || props.description}>
         <div class="settings-group-head">
           <Show when={props.title}>
-            {(title) => <h3 class="forge-section-label settings-group-title">{title()}</h3>}
+            {(title) => <h3 class="settings-group-title">{title()}</h3>}
+          </Show>
+          <Show when={props.description}>
+            {(text) => <p class="settings-group-description">{text()}</p>}
           </Show>
           <Show when={props.aside}>
             {(aside) => <div class="settings-group-aside">{aside()}</div>}
           </Show>
         </div>
       </Show>
-      <Show when={props.description}>
-        {(text) => <p class="settings-group-description">{text()}</p>}
-      </Show>
-      {props.children}
+      <div class="settings-group-body" classList={{ plain: props.plain === true }}>
+        {props.children}
+      </div>
     </section>
   );
 }

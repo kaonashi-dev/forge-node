@@ -1,31 +1,12 @@
-import {
-  For,
-  Show,
-  createEffect,
-  createMemo,
-  createResource,
-  createSignal,
-  type JSX,
-} from "solid-js";
-import {
-  BarChart3,
-  Bot,
-  FolderSymlink,
-  Keyboard as KeyboardIcon,
-  Minus,
-  Palette,
-  Plus,
-  Settings as SettingsIcon,
-} from "lucide-solid";
+import { For, Show, createMemo, createResource, createSignal, type JSX } from "solid-js";
+import { Minus, Plus } from "lucide-solid";
 import {
   Badge,
   Button,
   Disclosure,
   IconButton,
   RadioGroup,
-  Select,
   Switch,
-  Tabs,
   TextField,
 } from "../../ui/index";
 import { Icon } from "../../theme/icons/index";
@@ -39,7 +20,7 @@ import {
 } from "./commands";
 import { SessionGlyph } from "../sessions/SessionGlyph";
 import { AgentProfiles } from "./AgentProfiles";
-import { AgentVisibilityButton } from "./AgentVisibilityButton";
+import { AgentVisibilitySwitch } from "./AgentVisibilitySwitch";
 import { SharedFiles } from "../projects/SharedFiles";
 import { KeyboardSection } from "./KeyboardSection";
 import { StatsSection } from "./StatsSection";
@@ -60,12 +41,15 @@ import {
   type ProviderInfo,
 } from "../../contracts/runtime";
 import { Group, Page, Row } from "./SettingsLayout";
+import type { Section } from "./sections";
+import { Dynamic } from "solid-js/web";
 // Lazy route styling avoids loading settings CSS in windows that never open it.
 import "../../styles/settings.css";
 import { requestConfirm } from "../../state/dialogs";
 import { connectionStore } from "../../state/connection";
 import { terminalStore } from "../terminal/terminalStore";
 import { ThemeSettings } from "./ThemeSettings";
+import { ThemePreview } from "./ThemePreview";
 import {
   DENSITIES,
   DENSITY_LABELS,
@@ -102,75 +86,28 @@ const LINE_HEIGHTS = [
   { value: 1.8, label: "Loose" },
 ] as const;
 
-/** Sections, in tab order. */
-const SECTIONS = [
-  "General",
-  "Agents",
-  "Keyboard",
-  "Shared files",
-  "Stats & Usage",
-  "Appearance",
-] as const;
-export type Section = (typeof SECTIONS)[number];
-
-const SECTION_ICONS: Record<Section, typeof SettingsIcon> = {
-  General: SettingsIcon,
-  Agents: Bot,
-  Keyboard: KeyboardIcon,
-  "Shared files": FolderSymlink,
-  "Stats & Usage": BarChart3,
-  Appearance: Palette,
-};
+export type { Section } from "./sections";
 
 export type SettingsRouteProps = {
-  /** Section to open on. Re-reading it moves the rail, which is how About lands on General. */
-  section?: Section;
+  section: Section;
 };
 
+/** The chosen settings page. The sections themselves are listed by the sidebar. */
 export function SettingsRoute(props: SettingsRouteProps) {
-  const [section, setSection] = createSignal<Section>(props.section ?? "General");
-
-  // Opening settings *at* a section is a different act from opening settings:
-  // "About Forge Node" has to land on General even when the screen was last left on
-  // Appearance.
-  createEffect(() => {
-    if (props.section) setSection(props.section);
-  });
-
   const PANELS: Record<Section, () => JSX.Element> = {
     General: () => <General />,
     Agents: () => <Agents />,
     Keyboard: () => <KeyboardSection />,
     "Shared files": () => <SharedFiles />,
-    "Stats & Usage": () => <StatsSection />,
+    "Stats & usage": () => <StatsSection />,
     Appearance: () => <Appearance />,
   };
 
   return (
     <div class="settings-layer">
-      <Tabs
-        class="settings-route"
-        aria-label="Settings"
-        orientation="vertical"
-        value={section()}
-        onChange={(value) => setSection(value as Section)}
-        listClass="settings-rail"
-        triggerClass="forge-row settings-nav"
-        contentClass="settings-body"
-        tabs={SECTIONS.map((item) => {
-          const IconComp = SECTION_ICONS[item];
-          return {
-            value: item,
-            label: (
-              <span class="settings-nav-label">
-                <IconComp size={16} class="settings-nav-icon" strokeWidth={1.85} />
-                <span>{item}</span>
-              </span>
-            ),
-            content: PANELS[item],
-          };
-        })}
-      />
+      <div class="settings-body">
+        <Dynamic component={PANELS[props.section]} />
+      </div>
     </div>
   );
 }
@@ -413,10 +350,11 @@ function Agents() {
   }
 
   return (
-    <Page title="Agents" summary="Choose your default agent and customize how it launches.">
+    <Page title="Agents" summary="Choose the default agent and how each one launches.">
       <Group
         title="Default agent"
-        description="Start this agent with ⌘⇧A. Choose Ask to pick an agent each time."
+        description="Starts with ⌘⇧A. Ask opens the launch palette each time."
+        plain
       >
         <RadioGroup
           label="Default agent"
@@ -437,10 +375,7 @@ function Agents() {
                 >
                   {(provider) => <SessionGlyph providerId={provider()} size={14} />}
                 </Show>
-                <span class="agent-choice-label">{choice.label}</span>
-                <Show when={defaultAgentValue(preferred()) === defaultAgentValue(choice.value)}>
-                  <Icon name="check" class="forge-icon-accent" size={13} />
-                </Show>
+                <span class="agent-choice-label forge-truncate">{choice.label}</span>
               </>
             ),
           }))}
@@ -448,22 +383,17 @@ function Agents() {
       </Group>
 
       <Group
-        title="Available providers"
-        description="Disable a provider to hide it from agent selectors. Launch profiles can be disabled separately. Expand a provider to configure its executable."
+        title="Providers"
+        description={`${installed()} detected. Off hides a provider from every agent picker.`}
         aside={
-          <>
-            <Badge label={`${installed()} of ${forgeStore.providers.length} detected`}>
-              {installed()} detected
-            </Badge>
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => void refreshDetection().catch(() => undefined)}
-            >
-              <Icon name="refresh" class="forge-icon-muted" size={13} />
-              Refresh
-            </Button>
-          </>
+          <Button
+            variant="ghost"
+            size="xs"
+            iconLeading={<Icon name="refresh" class="forge-icon-muted" size={13} />}
+            onClick={() => void refreshDetection().catch(() => undefined)}
+          >
+            Rescan
+          </Button>
         }
       >
         <For
@@ -489,38 +419,37 @@ function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent })
 
   return (
     <Disclosure
-      class="provider-row"
+      class={visible() ? "provider-row" : "provider-row off"}
       summary={
-        <>
-          <SessionGlyph providerId={id()} size={16} />
-          <span class="provider-identity">
-            <span class="provider-name">{providerName(props.provider)}</span>
-            <span class="forge-caption provider-id">{id()}</span>
+        <span class="provider-identity">
+          <span class="provider-name">
+            {providerName(props.provider)}
+            <Show when={isDefault()}>
+              <Badge tone="accent">Default</Badge>
+            </Show>
           </span>
-          <Badge tone={providerInstalled(props.provider) ? "good" : "warn"}>
-            {providerDetectionLabel(props.provider)}
-          </Badge>
-          <Show when={!visible()}>
-            <Badge>Disabled</Badge>
-          </Show>
-        </>
+          <span class="provider-id">
+            {id()} · {providerDetectionLabel(props.provider)}
+          </span>
+        </span>
       }
       actions={
         <>
-          <Button
-            variant="secondary"
-            size="xs"
-            disabled={isDefault() || !visible() || !providerInstalled(props.provider)}
-            onClick={() =>
-              void setAppState(
-                DEFAULT_AGENT_KEY,
-                defaultAgentValue({ kind: "provider", id: id() }),
-              ).catch(() => undefined)
-            }
-          >
-            {isDefault() ? "Default" : "Set default"}
-          </Button>
-          <AgentVisibilityButton agentKey={id()} label={providerName(props.provider)} />
+          <Show when={!isDefault() && visible() && providerInstalled(props.provider)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                void setAppState(
+                  DEFAULT_AGENT_KEY,
+                  defaultAgentValue({ kind: "provider", id: id() }),
+                ).catch(() => undefined)
+              }
+            >
+              Make default
+            </Button>
+          </Show>
+          <AgentVisibilitySwitch agentKey={id()} label={providerName(props.provider)} />
         </>
       }
     >
@@ -542,7 +471,7 @@ function ProviderRow(props: { provider: ProviderInfo; preferred: DefaultAgent })
           />
           <Button
             variant="secondary"
-            size="xs"
+            size="sm"
             onClick={() =>
               void setProviderExecutable(id(), path().trim() || null).catch(() => undefined)
             }
@@ -579,128 +508,115 @@ function Appearance() {
     writeFlag(REDUCE_MOTION_KEY, next);
   }
 
+  const lineHeight = () =>
+    readScale(
+      EDITOR_LINE_HEIGHT_KEY,
+      EDITOR_LINE_HEIGHT_RANGE.min,
+      EDITOR_LINE_HEIGHT_RANGE.max,
+      EDITOR_LINE_HEIGHT_RANGE.fallback,
+    );
+
   return (
     <Page
       title="Appearance"
-      summary="The theme sets every surface at once, including the terminal's sixteen ANSI colours. Type sizes stay independent: the editor, the terminal and the chrome each keep their own."
+      summary="Theme, accent, density and type. Changes apply as you pick them."
     >
-      <ThemeSettings />
-
-      <Group title="Density">
-        <div class="settings-density">
-          <RadioGroup
-            label="Row density"
-            variant="segmented"
-            size="md"
-            value={density()}
-            options={DENSITIES.map((value) => ({ value, label: DENSITY_LABELS[value] }))}
-            onChange={(value) => chooseDensity(readDensity(value))}
-          />
-          <span class="settings-density-note">{DENSITY_NOTES[density()]}</span>
-        </div>
-      </Group>
-
-      <Group title="Type size">
-        <div class="settings-steppers">
-          <TypeStepper
-            label="Chrome"
-            noun="chrome text"
-            range={UI_FONT_SIZE_RANGE}
-            value={readScale(
-              UI_FONT_SIZE_KEY,
-              UI_FONT_SIZE_RANGE.min,
-              UI_FONT_SIZE_RANGE.max,
-              UI_FONT_SIZE_RANGE.fallback,
-            )}
-            format={(value) => `${value}px`}
-            onChange={(next) => {
-              applyUiFont(next);
-              writeChoice(UI_FONT_SIZE_KEY, String(next));
-            }}
-          />
-          <TypeStepper
-            label="Editor"
-            noun="editor text"
-            range={{ ...EDITOR_FONT_SIZE_RANGE, step: 1 }}
-            value={readScale(
-              EDITOR_FONT_SIZE_KEY,
-              EDITOR_FONT_SIZE_RANGE.min,
-              EDITOR_FONT_SIZE_RANGE.max,
-              EDITOR_FONT_SIZE_RANGE.fallback,
-            )}
-            format={(value) => `${value}px`}
-            onChange={(next) => writeChoice(EDITOR_FONT_SIZE_KEY, String(next))}
-          />
-          <TypeStepper
-            label="Terminal"
-            noun="terminal text"
-            range={{ ...TERMINAL_ZOOM_RANGE, step: TERMINAL_ZOOM_STEP }}
-            value={readScale(
-              TERMINAL_ZOOM_KEY,
-              TERMINAL_ZOOM_RANGE.min,
-              TERMINAL_ZOOM_RANGE.max,
-              TERMINAL_ZOOM_RANGE.fallback,
-            )}
-            format={(value) => `${Math.round(value * 100)}%`}
-            onChange={(next) => writeChoice(TERMINAL_ZOOM_KEY, String(next))}
-          />
-        </div>
-      </Group>
-
-      <Group>
-        <Row
-          label="Reduce motion"
-          description="Panels and menus appear without easing, on top of the system setting."
-          control={
-            <Switch
-              label="Reduce motion"
+      <div class="appearance-grid">
+        <div class="appearance-main">
+          <ThemeSettings />
+          <section class="appearance-row" aria-labelledby="density-title">
+            <h3 id="density-title" class="appearance-row-title">
+              Density
+            </h3>
+            <RadioGroup
+              label="Row density"
               hideLabel
-              checked={reduceMotion()}
-              onChange={setReduceMotion}
+              variant="segmented"
+              size="md"
+              value={density()}
+              options={DENSITIES.map((value) => ({ value, label: DENSITY_LABELS[value] }))}
+              onChange={(value) => chooseDensity(readDensity(value))}
             />
-          }
-        />
-      </Group>
+            <span class="history-spacer" />
+            <Switch label="Reduce motion" checked={reduceMotion()} onChange={setReduceMotion} />
+          </section>
+          <p class="appearance-row-note">{DENSITY_NOTES[density()]}</p>
+        </div>
 
-      <Group
-        title="Editor"
-        description="How the editor behaves. Autosave is off by default: no writing without being asked."
-      >
-        <Row
-          label="Autosave"
-          description="Write the open file when the editor loses focus, and after a second of stillness. Off by default because agents write these same files, and a save on a pause races whatever one is doing in the same checkout."
-          control={
-            <Switch
-              label="Autosave"
+        <div class="appearance-side">
+          <ThemePreview />
+          <Group title="Type size" plain>
+            <div class="settings-steppers">
+              <TypeStepper
+                label="Chrome"
+                noun="chrome text"
+                range={UI_FONT_SIZE_RANGE}
+                value={readScale(
+                  UI_FONT_SIZE_KEY,
+                  UI_FONT_SIZE_RANGE.min,
+                  UI_FONT_SIZE_RANGE.max,
+                  UI_FONT_SIZE_RANGE.fallback,
+                )}
+                format={(value) => `${value}`}
+                onChange={(next) => {
+                  applyUiFont(next);
+                  writeChoice(UI_FONT_SIZE_KEY, String(next));
+                }}
+              />
+              <TypeStepper
+                label="Editor"
+                noun="editor text"
+                range={{ ...EDITOR_FONT_SIZE_RANGE, step: 1 }}
+                value={readScale(
+                  EDITOR_FONT_SIZE_KEY,
+                  EDITOR_FONT_SIZE_RANGE.min,
+                  EDITOR_FONT_SIZE_RANGE.max,
+                  EDITOR_FONT_SIZE_RANGE.fallback,
+                )}
+                format={(value) => `${value}`}
+                onChange={(next) => writeChoice(EDITOR_FONT_SIZE_KEY, String(next))}
+              />
+              <TypeStepper
+                label="Terminal"
+                noun="terminal text"
+                range={{ ...TERMINAL_ZOOM_RANGE, step: TERMINAL_ZOOM_STEP }}
+                value={readScale(
+                  TERMINAL_ZOOM_KEY,
+                  TERMINAL_ZOOM_RANGE.min,
+                  TERMINAL_ZOOM_RANGE.max,
+                  TERMINAL_ZOOM_RANGE.fallback,
+                )}
+                format={(value) => `${Math.round(value * 100)}%`}
+                onChange={(next) => writeChoice(TERMINAL_ZOOM_KEY, String(next))}
+              />
+            </div>
+          </Group>
+          <Group title="Editor" plain>
+            <div class="settings-stepper">
+              <span class="settings-stepper-label">Autosave</span>
+              <Switch
+                label="Autosave"
+                hideLabel
+                checked={readFlag(AUTOSAVE_KEY, false)}
+                onChange={(on) => writeFlag(AUTOSAVE_KEY, on)}
+              />
+            </div>
+            <p class="appearance-row-note">
+              Off by default: agents write these same files, and a save on a pause races them.
+            </p>
+            <span class="settings-stepper-label">Line spacing</span>
+            <RadioGroup
+              label="Line spacing"
               hideLabel
-              checked={readFlag(AUTOSAVE_KEY, false)}
-              onChange={(on) => writeFlag(AUTOSAVE_KEY, on)}
-            />
-          }
-        />
-        <Row
-          label="Line spacing"
-          description="A multiplier on the type size. Looser is easier on a long file; tighter fits more of one on screen."
-          control={
-            <Select
-              aria-label="Line spacing"
-              value={String(
-                readScale(
-                  EDITOR_LINE_HEIGHT_KEY,
-                  EDITOR_LINE_HEIGHT_RANGE.min,
-                  EDITOR_LINE_HEIGHT_RANGE.max,
-                  EDITOR_LINE_HEIGHT_RANGE.fallback,
-                ),
-              )}
+              variant="segmented"
+              class="appearance-line-spacing"
+              value={String(lineHeight())}
               onChange={(next) => writeChoice(EDITOR_LINE_HEIGHT_KEY, next)}
-              options={LINE_HEIGHTS.map(({ value, label }) => ({
-                value: String(value),
-                label,
-              }))}
+              options={LINE_HEIGHTS.map(({ value, label }) => ({ value: String(value), label }))}
             />
-          }
-        />
-      </Group>
+          </Group>
+        </div>
+      </div>
     </Page>
   );
 }
@@ -724,8 +640,7 @@ function TypeStepper(props: {
       <span class="settings-stepper-label">{props.label}</span>
       <div class="settings-stepper-controls">
         <IconButton
-          variant="secondary"
-          size="md"
+          size="sm"
           label={`Smaller ${props.noun}`}
           disabled={!canStep(props.value, -1, props.range)}
           onClick={() => step(-1)}
@@ -736,8 +651,7 @@ function TypeStepper(props: {
           {props.format(props.value)}
         </output>
         <IconButton
-          variant="secondary"
-          size="md"
+          size="sm"
           label={`Larger ${props.noun}`}
           disabled={!canStep(props.value, 1, props.range)}
           onClick={() => step(1)}

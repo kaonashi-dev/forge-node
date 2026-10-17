@@ -225,13 +225,13 @@ export function CommandPalette(props: CommandPaletteProps) {
       </Show>
       <footer class="palette-footer">
         <span class="palette-footer-hint">
-          <Kbd>↑↓</Kbd> move
+          <Kbd bare>↑↓</Kbd> move
         </span>
         <span class="palette-footer-hint">
-          <Kbd>↵</Kbd> open
+          <Kbd bare>↵</Kbd> open
         </span>
         <span class="palette-footer-hint">
-          <For each={MODE_PREFIXES}>{(mode) => <Kbd>{mode.prefix}</Kbd>}</For> modes
+          <For each={MODE_PREFIXES}>{(mode) => <Kbd bare>{mode.prefix}</Kbd>}</For> modes
         </span>
         <span class="palette-footer-hint palette-footer-end">
           <Kbd>esc</Kbd> close

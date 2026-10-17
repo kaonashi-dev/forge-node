@@ -621,11 +621,26 @@ function presentTitle(value: string | null | undefined): string | null {
 }
 
 export function sessionTitle(session: Session): string {
+  const terminal = presentTitle(session.title.terminal);
+  const prompt = terminal === null || sessionIsAgent(session) ? null : promptPath(terminal);
   return (
     presentTitle(session.title.user) ??
-    presentTitle(session.title.terminal) ??
+    (prompt === null ? null : `${fallbackKind(session)} ${prompt}`) ??
+    terminal ??
     fallbackKind(session)
   );
+}
+
+const PROMPT_TITLE = /^[\w.-]+@[\w.-]+:\s*(\S.*)$/;
+
+/**
+ * The directory in a shell prompt's `user@host:path` title, home-relative.
+ * `user@host` is the same on every row of one machine, so it is dropped.
+ */
+export function promptPath(title: string): string | null {
+  const match = PROMPT_TITLE.exec(title.trim());
+  if (!match) return null;
+  return match[1].replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~");
 }
 
 export function sessionIsActive(state: SessionState): boolean {

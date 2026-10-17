@@ -456,7 +456,7 @@ function EditorSessionView(props: EditorViewProps) {
 
   return (
     <div class="editor-view">
-      <EditorBreadcrumbs path={chrome().path}>
+      <EditorBreadcrumbs>
         <SourceSwitch path={props.path} surface="editor" />
       </EditorBreadcrumbs>
 

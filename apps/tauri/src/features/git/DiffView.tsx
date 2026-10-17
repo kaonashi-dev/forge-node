@@ -1,7 +1,7 @@
 import { Show, createMemo, createSignal } from "solid-js";
 import { openEditorAt } from "../editor/open";
 import { DIFF_SPLIT_KEY, readFlag, writeFlag } from "../../state/preferences";
-import { Button, EmptyState, Skeleton } from "../../ui/index";
+import { Button, EmptyState, RadioGroup, Skeleton } from "../../ui/index";
 import { DiffFiles } from "./diff/DiffFiles";
 import { diffTotals, rebaseInProgress, readyToContinue } from "../../contracts/workbench";
 import { openFile } from "../files/commands";
@@ -17,8 +17,7 @@ export function DiffView() {
 
   const files = createMemo(() => gitStore.diff?.files ?? []);
 
-  function toggleSplit(): void {
-    const next = !split();
+  function setLayout(next: boolean): void {
     setSplit(next);
     writeFlag(DIFF_SPLIT_KEY, next);
   }
@@ -60,15 +59,25 @@ export function DiffView() {
         }
       >
         <header class="diff-header">
-          <span>{gitStore.diff?.branch ?? "detached"}</span>
+          <span class="diff-header-files">
+            {files().length === 1 ? "1 file" : `${files().length} files`}
+          </span>
           <span class="git-counts">
             <span class="added">+{diffTotals(gitStore.diff).additions}</span>
             <span class="deleted">−{diffTotals(gitStore.diff).deletions}</span>
           </span>
+          <span class="forge-caption">against HEAD</span>
           <span class="history-spacer" />
-          <Button variant="secondary" size="xs" selected={split()} onClick={toggleSplit}>
-            {split() ? "Split" : "Unified"}
-          </Button>
+          <RadioGroup
+            label="Patch layout"
+            variant="segmented"
+            value={split() ? "split" : "unified"}
+            onChange={(value) => setLayout(value === "split")}
+            options={[
+              { value: "unified", label: "Unified" },
+              { value: "split", label: "Split" },
+            ]}
+          />
         </header>
         <DiffFiles files={files()} split={split()} onOpenLine={openAt} />
         <Show when={gitStore.diff?.truncated}>

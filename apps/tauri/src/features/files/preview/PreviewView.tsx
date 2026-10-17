@@ -83,7 +83,7 @@ export function PreviewView(props: { workspace: string; path: string }) {
 
   return (
     <div class="preview-view">
-      <EditorBreadcrumbs path={props.path}>
+      <EditorBreadcrumbs>
         <SourceSwitch path={props.path} surface="preview" />
       </EditorBreadcrumbs>
       <div class="preview-body" classList={{ "preview-document": kind() === "markdown" }}>

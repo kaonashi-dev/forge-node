@@ -1,14 +1,13 @@
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { setAppState } from "../settings/commands";
 import { forgeStore } from "../../state/forgeStore";
-import { currentViews, openPrDetail, openPrReview } from "../../navigation/viewsStore";
+import { currentViews, openPrDetail } from "../../navigation/viewsStore";
 import { prKey } from "./PrDetailView";
 import {
   PR_SCOPES,
   PR_SCOPE_KEY,
   filterPullRequests,
   parseScope,
-  scopeCounts,
   failureCopy,
   scopeEmptyCopy,
   scopeLabel,
@@ -16,13 +15,18 @@ import {
 } from "./prFilters";
 import { decisionChip } from "./prDetail";
 import { Icon } from "../../theme/icons/index";
-import { Badge, Button, IconButton, ListCard, RadioGroup, SearchField } from "../../ui/index";
+import { Badge, IconButton, RadioGroup, SearchField } from "../../ui/index";
 import { refreshPullRequests } from "./commands";
 import { loading, setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
 import type { PullRequest } from "../../contracts/runtime";
 
 // Snapshot data is cached; remote refreshes complete through events.
+/** `owner/hellopay-backend` reads as the repository the person knows. */
+function repositoryName(repository: string): string {
+  return repository.slice(repository.lastIndexOf("/") + 1);
+}
+
 export function PullRequestPanel() {
   const [scope, setScope] = createSignal<PrScope>("all");
   const [query, setQuery] = createSignal("");
@@ -37,13 +41,7 @@ export function PullRequestPanel() {
     void setAppState(PR_SCOPE_KEY, parsed).catch(() => undefined);
   }
 
-  const counts = createMemo(() => scopeCounts(state().pull_requests));
-
-  /* Depends on the counts and nothing else, so a click on the control does not
-     hand it a fresh set of options. */
-  const scopeOptions = createMemo(() =>
-    PR_SCOPES.map((value) => ({ value, label: `${scopeLabel(value)} ${counts()[value]}` })),
-  );
+  const scopeOptions = PR_SCOPES.map((value) => ({ value, label: scopeLabel(value) }));
 
   const grouped = createMemo(() => {
     const workspace = forgeStore.workspaces.find((item) => item.id === activeWorkspace());
@@ -70,54 +68,44 @@ export function PullRequestPanel() {
     const key = prKey(pr);
     const selected = () => openKey() === key;
     const decision = () => decisionChip(pr.review_decision);
+    /* A review that is waiting on *you* is the one case the list says in ember. */
+    const tone = () => {
+      const chip = decision();
+      if (!chip) return null;
+      return chip.tone === "warn" && pr.relations.review_requested ? "attention" : chip.tone;
+    };
     return (
-      <ListCard
-        selected={selected()}
-        ident={`#${pr.number}`}
-        openLabel={`Open pull request #${pr.number}: ${pr.title}`}
-        onOpen={() => openPrDetail(key)}
-        title={pr.title}
-        aside={
-          <Show when={pr.is_draft}>
-            <Badge>draft</Badge>
-          </Show>
-        }
-        /* Below the card and not in its header: the header is a button, and a
-           button inside a button is not a control a keyboard can reach. */
-        actions={
-          <Button
-            variant={selected() ? "primary" : "secondary"}
-            size="xs"
-            aria-label={`Review pull request #${pr.number} with an agent, read-only`}
-            onClick={() => openPrReview(key)}
-          >
-            Review
-          </Button>
-        }
-        meta={
-          <>
-            <span class="pr-card-branches">
-              {pr.head_ref} → {pr.base_ref}
-            </span>
-            <span>{pr.author}</span>
+      <button
+        type="button"
+        class="forge-row pr-row"
+        aria-current={selected() ? "true" : undefined}
+        aria-label={`Open pull request #${pr.number}: ${pr.title}`}
+        onClick={() => openPrDetail(key)}
+      >
+        <span class="pr-row-line">
+          <span class="pr-row-number">#{pr.number}</span>
+          <span class="pr-row-title">{pr.title}</span>
+        </span>
+        <span class="pr-row-meta">
+          <span class="pr-row-repo forge-truncate">{repositoryName(pr.repository)}</span>
+          <Show when={!pr.is_draft} fallback={<Badge>Draft</Badge>}>
             <Show when={decision()}>
               {(chip) => (
-                <span class="pr-decision" data-tone={chip().tone}>
+                <span class="pr-decision" data-tone={tone()}>
                   {chip().label}
                 </span>
               )}
             </Show>
-          </>
-        }
-      />
+          </Show>
+        </span>
+      </button>
     );
   }
 
   return (
     <div class="panel-body pr-panel">
       <div class="pr-panel-head">
-        <h2 class="forge-section-label">Pull requests</h2>
-        <span class="history-spacer" />
+        <h2 class="pr-panel-title">Pull requests</h2>
         <Show when={state().refreshed_at}>
           {(at) => <span class="pr-synced">synced {new Date(at()).toLocaleTimeString()}</span>}
         </Show>
@@ -128,7 +116,7 @@ export function PullRequestPanel() {
           loading={loading.pull_requests}
           onClick={refresh}
         >
-          <Icon name="refresh" size={13} />
+          <Icon name="refresh" size={13} class="forge-icon-muted" />
         </IconButton>
       </div>
 
@@ -148,7 +136,7 @@ export function PullRequestPanel() {
         itemClass="pr-scope-item"
         value={scope()}
         onChange={pickScope}
-        options={scopeOptions()}
+        options={scopeOptions}
       />
 
       {/* A per-host failure that did not invalidate everything: the rest of the

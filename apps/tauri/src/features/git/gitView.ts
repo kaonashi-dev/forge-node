@@ -1,7 +1,6 @@
 // What the Git panel says about a checkout, as data a test can import without
 // Solid's server build.
 
-import { parsePatch, type PatchRow } from "./diff/patch";
 import type { DiffStatus, RebaseState } from "../../contracts/workbench";
 
 /** Git's own porcelain letter: `U` is unmerged, so an untracked file is `?`. */
@@ -76,32 +75,6 @@ export function commitMessage(text: string): { title: string; body: string } {
 export function commitLabel(files: number): string {
   if (files <= 0) return "Nothing to commit";
   return files === 1 ? "Commit 1 file" : `Commit ${files} files`;
-}
-
-export type HunkPreview = {
-  header: string;
-  rows: PatchRow[];
-  /** Lines of this hunk past `limit`. */
-  hiddenRows: number;
-  /** Hunks after this one. */
-  more: number;
-};
-
-/** The first hunk of a patch, cut to `limit` lines for the rail's preview. */
-export function firstHunk(patch: string, limit = 12): HunkPreview | null {
-  const rows = parsePatch(patch);
-  const starts = rows.flatMap((row, index) => (row.kind === "hunk" ? [index] : []));
-  const start = starts[0];
-  if (start === undefined) return null;
-  const end = starts[1] ?? rows.length;
-  const header = rows[start]!.text.match(/^@@[^@]*@@/)?.[0] ?? rows[start]!.text;
-  const body = rows.slice(start + 1, end).filter((row) => row.kind !== "meta");
-  return {
-    header,
-    rows: body.slice(0, limit),
-    hiddenRows: Math.max(0, body.length - limit),
-    more: starts.length - 1,
-  };
 }
 
 export function operationName(operation: string | null | undefined): string {

@@ -59,10 +59,6 @@ export async function createWorktree(
   await sendRuntimeCommand({ type: "create_worktree", project, branch, base, name });
 }
 
-export async function fetchRemote(project: string, remote: string | null = null): Promise<void> {
-  await sendRuntimeCommand({ type: "fetch_remote", project, remote });
-}
-
 // --- Projects, groups and checkouts -----------------------------------------
 //
 // Every one of these acks and then broadcasts: the row that changed redraws

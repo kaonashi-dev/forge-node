@@ -25,24 +25,38 @@ Day-to-day layout and behaviour details live next to the code:
 ## Layout (summary)
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│ title bar + session tabs                                      │
-├─────────────────────┬────────────────────────────────────────┤
-│ sidebar view strip  │  centre: terminal / workbench tabs      │
-│ then one view       │                                         │
+┌─────────────────────┬────────────────────────────────────────┐
+│ traffic lights      │ ┌ card ─────────────────────────────┐  │
+│ Jump to… ⌘K         │ │ session tabs        actions/pill  │  │
+│ view switcher       │ │ project / branch / path · state   │  │
+│ the active view     │ │ centre: terminal / workbench tabs │  │
+│ settings            │ │                                   │  │
+│                     │ └───────────────────────────────────┘  │
 └─────────────────────┴────────────────────────────────────────┘
 ```
 
-One left sidebar holds a strip of view icons above a single visible view, in the
-order Projects, Files, History, PR, Git. Projects stays
-mounted while another view is up. Whether it is open, its width and the active
-view live in `ui.sidebar.open` / `ui.sidebar.width` / `ui.sidebar.view`; theme metrics
-(`metrics.titleH`, the sidebar default, control ladder) come from `theme/tokens.ts`,
-never hardcoded hex in views.
+The sidebar runs to the top of the window and holds the traffic lights, Jump
+to (the palette), a segmented switcher for Projects, Files, History, PR and
+Git, the active view, and the Settings button; the daemon is named there
+only when it is not connected.
+Projects stays mounted while another view is up. Whether the sidebar is open,
+its width and the active view live in `ui.sidebar.open` / `ui.sidebar.width` /
+`ui.sidebar.view`; metrics (`metrics.stripH`, `metrics.locationH`, the sidebar
+default, the control ladder) come from `theme/tokens.ts`, never hardcoded hex
+in views.
 
-Each workspace has one Code entry in Projects and one Code tab in the title bar,
-available even before a file is opened. Individual editor sessions appear as file
-tabs inside Code. Closing the last file leaves Code open with its empty state.
+All the work sits in one card. Its strip carries the session tabs and the
+session's actions; a slim bar under it says where the card is and what the
+working tree looks like, so the terminal needs no header row of its own. Sessions
+waiting on the user are pinned above the Projects tree; in any other view, or
+with the sidebar hidden, a "N waiting" pill in the strip says so. Settings
+replace the sidebar's content with their sections and show the page in the
+card; Esc twice returns.
+
+Code is a tab in the card strip whenever a checkout is selected. Projects
+lists a checkout's Code row only while it has files open ("Code · N open").
+Individual editor sessions appear as file tabs inside Code. Closing the last
+file leaves Code open with its empty state.
 
 ## Files
 

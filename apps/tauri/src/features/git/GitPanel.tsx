@@ -18,7 +18,17 @@ import {
   stageConflict,
 } from "./rebaseActions";
 import { WorkingTreeRail } from "./WorkingTreeRail";
+import { fetchRemote } from "./commands";
 import { gitStore } from "./state";
+import { Icon } from "../../theme/icons/index";
+import type { Workspace } from "../../contracts/runtime";
+
+/** `forge-node · primary checkout`: which repository, and which of its checkouts. */
+function checkoutPlace(checkout: Workspace): string {
+  const project = forgeStore.projects.find((item) => item.id === checkout.project_id);
+  const kind = checkout.kind === "GitWorktree" ? "worktree" : "primary checkout";
+  return project ? `${project.name} · ${kind}` : kind;
+}
 
 /** The Git tab: where the checkout stands, a stopped replay, and the working tree. */
 export function GitPanel() {
@@ -99,16 +109,25 @@ export function GitPanel() {
                   </span>
                 )}
               </Show>
-              <span class="history-spacer" />
               <Show when={checkout().status.ahead !== null || checkout().status.behind !== null}>
                 <span
-                  class="git-upstream forge-caption"
+                  class="git-upstream"
                   aria-label={`${checkout().status.ahead ?? 0} ahead, ${checkout().status.behind ?? 0} behind the upstream`}
                 >
                   ↑{checkout().status.ahead ?? 0} ↓{checkout().status.behind ?? 0}
                 </span>
               </Show>
+              <span class="history-spacer" />
+              <Button
+                variant="ghost"
+                size="xs"
+                iconLeading={<Icon name="refresh" size={13} class="forge-icon-muted" />}
+                onClick={() => void fetchRemote(checkout().project_id).catch(() => undefined)}
+              >
+                Fetch
+              </Button>
             </div>
+            <p class="git-head-place forge-truncate">{checkoutPlace(checkout())}</p>
             <Show when={replaying()}>
               <p class="forge-caption git-head-note">
                 HEAD is detached while the replay is in flight — that is why nothing can be

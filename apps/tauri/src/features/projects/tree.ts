@@ -106,7 +106,11 @@ export function buildTree(
         }));
         return {
           id: workspace.id,
-          label: workspace.display_name ?? workspace.branch ?? basename(workspace.path),
+          label: checkoutLabel(
+            workspace.display_name ?? workspace.branch ?? basename(workspace.path),
+            project.name,
+            workspace.kind === "GitWorktree",
+          ),
           path: workspace.path,
           branch: workspace.branch,
           worktree: workspace.kind === "GitWorktree",
@@ -192,6 +196,27 @@ function pullRequestFor(
   };
 }
 
+/**
+ * A worktree named after its project repeats the project on every row under
+ * it: `hellopay-backend-amount-min` under `hellopay-backend` reads `amount-min`.
+ */
+export function checkoutLabel(label: string, project: string, worktree: boolean): string {
+  if (!worktree) return label;
+  const prefix = `${project}-`;
+  return label.startsWith(prefix) && label.length > prefix.length
+    ? label.slice(prefix.length)
+    : label;
+}
+
+/**
+ * The checkout a project row stands in for: a project with only its own
+ * checkout has no branch level, so its sessions hang off the project row.
+ */
+export function soleCheckout(project: ProjectNode): WorkspaceNode | null {
+  const [only, ...rest] = project.workspaces;
+  return only && rest.length === 0 && !only.worktree ? only : null;
+}
+
 function basename(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   return trimmed.slice(trimmed.lastIndexOf("/") + 1) || trimmed;
@@ -228,7 +253,11 @@ export type RailRow = {
  * A collapsed row's children are absent rather than marked, because a row that
  * cannot be seen must not be reachable by an arrow key.
  */
-export function railRows(groups: GroupNode[], collapsed: ReadonlySet<string>): RailRow[] {
+export function railRows(
+  groups: GroupNode[],
+  collapsed: ReadonlySet<string>,
+  hasCode: (workspace: string) => boolean = () => false,
+): RailRow[] {
   const rows: RailRow[] = [];
   const open = (id: string) => !collapsed.has(id);
 
@@ -263,6 +292,11 @@ export function railRows(groups: GroupNode[], collapsed: ReadonlySet<string>): R
       });
       if (!open(projectId)) continue;
 
+      const sole = soleCheckout(project);
+      if (sole) {
+        pushCheckoutChildren(rows, sole, projectId, groupDepth + 1, hasCode);
+        continue;
+      }
       for (const workspace of project.workspaces) {
         const workspaceId = `workspace:${workspace.id}`;
         rows.push({
@@ -275,32 +309,43 @@ export function railRows(groups: GroupNode[], collapsed: ReadonlySet<string>): R
           target: workspace.id,
         });
         if (!open(workspaceId)) continue;
-
-        rows.push({
-          id: `code:${workspace.id}`,
-          kind: "code",
-          depth: groupDepth + 2,
-          parent: workspaceId,
-          expandable: false,
-          expanded: false,
-          target: workspace.id,
-        });
-
-        for (const session of workspace.sessions) {
-          rows.push({
-            id: `session:${session.session.id}`,
-            kind: "session",
-            depth: groupDepth + 2 + session.depth,
-            parent: workspaceId,
-            expandable: false,
-            expanded: false,
-            target: session.session.id,
-          });
-        }
+        pushCheckoutChildren(rows, workspace, workspaceId, groupDepth + 2, hasCode);
       }
     }
   }
   return rows;
+}
+
+/** The Code row exists only while the checkout has files open. */
+function pushCheckoutChildren(
+  rows: RailRow[],
+  workspace: WorkspaceNode,
+  parent: string,
+  depth: number,
+  hasCode: (workspace: string) => boolean,
+): void {
+  if (hasCode(workspace.id)) {
+    rows.push({
+      id: `code:${workspace.id}`,
+      kind: "code",
+      depth,
+      parent,
+      expandable: false,
+      expanded: false,
+      target: workspace.id,
+    });
+  }
+  for (const session of workspace.sessions) {
+    rows.push({
+      id: `session:${session.session.id}`,
+      kind: "session",
+      depth: depth + session.depth,
+      parent,
+      expandable: false,
+      expanded: false,
+      target: session.session.id,
+    });
+  }
 }
 
 /**
