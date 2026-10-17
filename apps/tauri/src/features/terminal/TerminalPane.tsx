@@ -24,7 +24,14 @@ import {
   writeChoice,
 } from "../../state/preferences";
 import { LatencyProbe, PaintProbe, PAINT_BUDGET_MS } from "../../shared/cell-grid/latency";
-import { gridSize, measureCell, type CellMetrics } from "../../shared/cell-grid/metrics";
+import {
+  contentBox,
+  gridSize,
+  measureCell,
+  whenFontSettles,
+  type CellMetrics,
+  type ContentBox,
+} from "../../shared/cell-grid/metrics";
 import { readPalette } from "../../shared/cell-grid/palette";
 import { watchPixelRatio } from "../../shared/cell-grid/pixelRatio";
 import { TerminalRenderer, type LinkSpan } from "../../shared/cell-grid/renderer";
@@ -61,8 +68,9 @@ import { forgeStore } from "../../state/forgeStore";
 
 type LinkHit = { link: ScreenLink; spans: LinkSpan[] };
 
-/** Breathing room between the grid and the pane edges (`TERMINAL_PAD`). */
-const PAD = 8;
+/** Breathing room between the grid and the pane edges, from the layout tokens. */
+const PAD_X = tokens.terminalPadX;
+const PAD_Y = tokens.terminalPadY;
 /**
  * How long a resize settles before the PTY is told.
  *
@@ -196,6 +204,8 @@ export function TerminalPane(props: {
   let reporting: string | null = null;
   let lastReported = { col: -1, row: -1 };
   let lastSize = { cols: 0, rows: 0 };
+  /** The paintable box inside `host`, where the hidden textarea is parked. */
+  let gridBox: ContentBox = contentBox({ width: 0, height: 0 }, PAD_X, PAD_Y);
   let leaveContext: (() => void) | undefined;
   const showOverlay = debugEnabled();
 
@@ -367,8 +377,8 @@ export function TerminalPane(props: {
    * the only caret the platform knows about is this element's.
    */
   function placeCaret(): void {
-    const x = PAD + viewport.cursor.col * cell.width;
-    const y = PAD + viewport.cursor.line * cell.height;
+    const x = gridBox.x + viewport.cursor.col * cell.width;
+    const y = gridBox.y + viewport.cursor.line * cell.height;
     keys.style.left = `${Math.round(x)}px`;
     keys.style.top = `${Math.round(y)}px`;
   }
@@ -421,12 +431,10 @@ export function TerminalPane(props: {
 
   function measurePane(): void {
     if (!renderer) return;
-    const rect = host.getBoundingClientRect();
-    const width = Math.max(0, rect.width - PAD * 2);
-    const height = Math.max(0, rect.height - PAD * 2);
-    if (renderer.resize(width, height)) repaintAll = true;
+    gridBox = contentBox(host.getBoundingClientRect(), PAD_X, PAD_Y);
+    if (renderer.resize(gridBox.width, gridBox.height)) repaintAll = true;
 
-    const size = gridSize(width, height, cell);
+    const size = gridSize(gridBox.width, gridBox.height, cell);
     if (size.cols !== lastSize.cols || size.rows !== lastSize.rows) {
       lastSize = size;
       if (!props.session) setTerminalStore({ cols: size.cols, rows: size.rows });
@@ -435,8 +443,8 @@ export function TerminalPane(props: {
         void resizeTerminal(
           size.cols,
           size.rows,
-          Math.round(width),
-          Math.round(height),
+          Math.round(gridBox.width),
+          Math.round(gridBox.height),
           props.session,
         ).catch(() => undefined);
       }, RESIZE_DEBOUNCE_MS);
@@ -989,8 +997,10 @@ export function TerminalPane(props: {
     measurePane();
 
     // The bundled Geist Mono may not be resident on the first frame, and a
-    // cell box measured from the fallback shears every box-drawing TUI.
-    void document.fonts?.ready.then(remeasure).catch(() => undefined);
+    // cell box measured from the fallback shears every box-drawing TUI. The
+    // request is made by name — `fonts.ready` alone can resolve first — and a
+    // late weight still re-measures.
+    onCleanup(whenFontSettles(`${scaledSize(zoom())}px ${tokens.mono}`, remeasure));
 
     // The host attached before this canvas existed, so its first frame had
     // nowhere to go. Ask for it rather than wait for output.

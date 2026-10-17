@@ -663,6 +663,11 @@ export const metrics = {
   stripH: 46,
   openFilesH: 36,
   locationH: 32,
+  /** Breathing room between the grid and a pane edge, per axis. */
+  terminalPadX: 24,
+  terminalPadY: 16,
+  /** The Code pane's own padding, square and smaller than a terminal's. */
+  editorPad: 8,
   sidebarW: 300,
   handleW: 4,
   // Density moves `rowH`, `treeRowH` and the control ladder; this is the compact default.
@@ -811,6 +816,9 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--tab-h": "var(--forge-tab-h)",
   "--location-h": "var(--forge-location-h)",
   "--open-files-h": "var(--forge-open-files-h)",
+  "--terminal-pad-x": "var(--forge-terminal-pad-x)",
+  "--terminal-pad-y": "var(--forge-terminal-pad-y)",
+  "--editor-pad": "var(--forge-editor-pad)",
   /* The type scale and the two faces, so a rule names one layer, not both. */
   "--text-xs": "var(--forge-text-xs)",
   "--text-sm": "var(--forge-text-sm)",

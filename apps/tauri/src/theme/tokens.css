@@ -48,6 +48,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -204,6 +207,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -360,6 +366,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -516,6 +525,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -672,6 +684,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -828,6 +843,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -984,6 +1002,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -1140,6 +1161,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -1296,6 +1320,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -1452,6 +1479,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -1608,6 +1638,9 @@
   --forge-strip-h: 46px;
   --forge-open-files-h: 36px;
   --forge-location-h: 32px;
+  --forge-terminal-pad-x: 24px;
+  --forge-terminal-pad-y: 16px;
+  --forge-editor-pad: 8px;
   --forge-sidebar-w: 300px;
   --forge-handle-w: 4px;
   --forge-row-h: 26px;
@@ -1749,6 +1782,9 @@
   --tab-h: var(--forge-tab-h);
   --location-h: var(--forge-location-h);
   --open-files-h: var(--forge-open-files-h);
+  --terminal-pad-x: var(--forge-terminal-pad-x);
+  --terminal-pad-y: var(--forge-terminal-pad-y);
+  --editor-pad: var(--forge-editor-pad);
   --text-xs: var(--forge-text-xs);
   --text-sm: var(--forge-text-sm);
   --text-md: var(--forge-text-md);

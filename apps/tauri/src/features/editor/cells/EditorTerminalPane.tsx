@@ -30,7 +30,13 @@ import {
 } from "../../../state/preferences";
 import { forgeStore } from "../../../state/forgeStore";
 import { metrics as tokens } from "../../../theme/tokens";
-import { measureCell, gridSize, type CellMetrics } from "../../../shared/cell-grid/metrics";
+import {
+  contentBox,
+  measureCell,
+  gridSize,
+  whenFontSettles,
+  type CellMetrics,
+} from "../../../shared/cell-grid/metrics";
 import { readPalette } from "../../../shared/cell-grid/palette";
 import { watchPixelRatio } from "../../../shared/cell-grid/pixelRatio";
 import { TerminalRenderer } from "../../../shared/cell-grid/renderer";
@@ -47,7 +53,8 @@ import {
 } from "../conflict/commands";
 import { FindPanel } from "../FindPanel";
 
-const PAD = 8;
+/** Breathing room between the grid and the Code pane edge, from the tokens. */
+const PAD = tokens.editorPad;
 const RESIZE_DEBOUNCE_MS = 80;
 
 type EditorTerminalPaneProps = {
@@ -211,7 +218,17 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     measurePane();
   });
 
-  createEffect(() => {
+  createEffect(remeasure);
+
+  /**
+   * Re-measure the cell box: the preference, the font stack and a late-
+   * arriving face all move it.
+   *
+   * Called from the effect above when `app_state` lands or a size changes,
+   * and from `whenFontSettles` when the bundled Geist Mono becomes resident —
+   * a cell measured from the fallback shears every row.
+   */
+  function remeasure(): void {
     const size = readScale(
       EDITOR_FONT_SIZE_KEY,
       EDITOR_FONT_SIZE_RANGE.min,
@@ -231,23 +248,25 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     }
     repaintAll = true;
     measurePane();
-  });
+  }
 
   function measurePane(): void {
     if (!renderer || !host) return;
-    const rect = host.getBoundingClientRect();
-    const width = Math.max(0, rect.width - PAD * 2);
-    const height = Math.max(0, rect.height - PAD * 2);
-    if (renderer.resize(width, height)) repaintAll = true;
-    const size = gridSize(width, height, cell);
+    const box = contentBox(host.getBoundingClientRect(), PAD, PAD);
+    if (renderer.resize(box.width, box.height)) repaintAll = true;
+    const size = gridSize(box.width, box.height, cell);
     if (size.cols !== lastSize.cols || size.rows !== lastSize.rows) {
       lastSize = size;
       window.clearTimeout(resizeTimer);
       const id = props.session;
       resizeTimer = window.setTimeout(() => {
-        void resizeEditor(id, size.cols, size.rows, Math.round(width), Math.round(height)).catch(
-          () => undefined,
-        );
+        void resizeEditor(
+          id,
+          size.cols,
+          size.rows,
+          Math.round(box.width),
+          Math.round(box.height),
+        ).catch(() => undefined);
       }, RESIZE_DEBOUNCE_MS);
     }
     schedule();
@@ -260,6 +279,16 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     // scrollback offset that never changes here.
     renderer.followsScrollback = false;
     measurePane();
+    // The bundled Geist Mono may not be resident on the first frame, and a
+    // cell box measured from the fallback shears every row. `fonts.ready`
+    // alone can resolve first; the request is made by name.
+    const size = readScale(
+      EDITOR_FONT_SIZE_KEY,
+      EDITOR_FONT_SIZE_RANGE.min,
+      EDITOR_FONT_SIZE_RANGE.max,
+      EDITOR_FONT_SIZE_RANGE.fallback,
+    );
+    onCleanup(whenFontSettles(`${size}px ${tokens.mono}`, remeasure));
     const unsubscribe = editorCellsChannel.subscribe(onFrame);
     const observer = new ResizeObserver(() => measurePane());
     observer.observe(host);
