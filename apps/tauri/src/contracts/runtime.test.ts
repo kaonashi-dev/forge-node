@@ -39,9 +39,9 @@ describe("a shell prompt title", () => {
     const shell = session({
       kind: "Shell",
       agent_provider_id: null,
-      title: { user: null, terminal: "dev@mbp:/Users/dev/hellopay/admin-portal" },
+      title: { user: null, terminal: "dev@mbp:/Users/dev/acme/admin-portal" },
     });
-    expect(sessionTitle(shell)).toBe("Shell ~/hellopay/admin-portal");
+    expect(sessionTitle(shell)).toBe("Shell ~/acme/admin-portal");
     expect(promptPath("dev@mbp.local:~/src")).toBe("~/src");
     expect(promptPath("vim main.rs")).toBeNull();
   });

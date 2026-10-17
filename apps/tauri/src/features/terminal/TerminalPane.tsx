@@ -988,7 +988,7 @@ export function TerminalPane(props: {
     const stopRatio = watchPixelRatio(measurePane);
     measurePane();
 
-    // The bundled JetBrains Mono may not be resident on the first frame, and a
+    // The bundled Geist Mono may not be resident on the first frame, and a
     // cell box measured from the fallback shears every box-drawing TUI.
     void document.fonts?.ready.then(remeasure).catch(() => undefined);
 

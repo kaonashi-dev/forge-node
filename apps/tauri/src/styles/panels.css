@@ -657,9 +657,6 @@
 .pr-cards:empty {
   display: none;
 }
-.pr-card-branches {
-  font-family: var(--font-mono);
-}
 .pr-divider {
   align-items: center;
   display: flex;

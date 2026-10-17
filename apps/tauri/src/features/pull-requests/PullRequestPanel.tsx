@@ -22,7 +22,7 @@ import { activeWorkspace } from "../../state/workspace";
 import type { PullRequest } from "../../contracts/runtime";
 
 // Snapshot data is cached; remote refreshes complete through events.
-/** `owner/hellopay-backend` reads as the repository the person knows. */
+/** `owner/payments-api` reads as the repository the person knows. */
 function repositoryName(repository: string): string {
   return repository.slice(repository.lastIndexOf("/") + 1);
 }

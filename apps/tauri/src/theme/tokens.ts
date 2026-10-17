@@ -664,7 +664,6 @@ export const scale = {
     popup: 55,
     tooltip: 60,
   },
-  /** Elevation, moved out of the stylesheet so a surface reads it as a token. */
   /** Two depths: the card resting on the window, and anything floating over it. */
   shadow: {
     sm: "0 8px 20px rgb(0 0 0 / 40%)",

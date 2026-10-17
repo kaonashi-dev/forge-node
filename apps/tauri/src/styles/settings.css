@@ -1154,9 +1154,6 @@
   color: var(--fg-default);
 }
 @media (max-width: 760px) {
-  .settings-route {
-    grid-template-columns: 170px minmax(0, 1fr);
-  }
   .settings-body {
     padding: var(--space-16);
   }
@@ -1172,23 +1169,5 @@
   }
   .provider-row .forge-disclosure-head {
     flex-wrap: wrap;
-  }
-}
-@media (max-width: 520px) {
-  .settings-route {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  .settings-rail {
-    overflow-x: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--border-subtle);
-    padding: var(--space-8);
-  }
-  .settings-rail .forge-tab-list {
-    flex-direction: row;
-  }
-  .settings-nav {
-    flex-shrink: 0;
   }
 }

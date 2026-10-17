@@ -1325,8 +1325,6 @@ function SessionRow(props: {
   level?: number;
   /** Whether this row sits inside the rail's tree, or was lifted out of it. */
   inTree?: boolean;
-  /** Drawn in the Needs-you block: the whole row takes the attention shape. */
-  lifted?: boolean;
   /** The rail's keyboard cursor is on this row. */
   cursor?: boolean;
   onMenu?: (event: MouseEvent) => void;
@@ -1348,9 +1346,8 @@ function SessionRow(props: {
       aria-level={props.inTree ? (props.level ?? 1) + props.depth : undefined}
       aria-selected={props.inTree ? (props.cursor ?? active()) : undefined}
       aria-label={props.wantsYou ? `${props.label}, waiting on you for ${waited()}` : undefined}
-      aria-current={(active() && !props.lifted) || undefined}
+      aria-current={active() || undefined}
       classList={{
-        lifted: props.lifted === true,
         unread: props.unread && !active(),
         cursor: props.cursor === true,
       }}

@@ -228,7 +228,7 @@ config directory, each probed against an environment whose `ConfigDirSpec`
 variables point at that account (`agents::env_for_config_dir`, the same helper
 the launch uses, so a reading and a launch cannot disagree about which login
 they mean). Every reading carries the `profile_id` it came from, and Settings →
-Stats & Usage draws one subscription meter per account rather than one per
+Stats & usage draws one subscription meter per account rather than one per
 provider.
 
 On macOS the Keychain holds a single Claude login — the default account's — so a
@@ -551,7 +551,7 @@ what "reveal the transcript" has to point at.
 says what was actually spent. It reads the same transcript stores discovery
 walks, but for the one thing discovery ignores — the usage record on every
 billed turn — and aggregates them into a `domain::UsageAnalytics` for the
-settings screen's Stats & Usage page.
+settings screen's Stats & usage page.
 
 | Provider | Read from it |
 |----------|--------------|
