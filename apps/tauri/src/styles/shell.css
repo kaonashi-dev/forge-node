@@ -870,6 +870,13 @@
   color: var(--fg-default);
   gap: var(--space-10);
 }
+/* A sole checkout's branch gives up its width before the project name does. */
+.tree-row.project .tree-label {
+  flex: 1 1 auto;
+}
+.tree-row.project .tree-meta {
+  flex: 0 1000 auto;
+}
 /* A project row and, for a sole checkout, that checkout's marks beside it. */
 .project-line {
   align-items: center;
@@ -1595,21 +1602,20 @@
 /* ---------------------------------------------------------------- glass --- */
 
 /*
- * The Glass finish's structure; its colours are a palette transform
- * (`theme/glass.ts`). The sidebar frosts a backdrop that never moves, so its
- * blur is composited once rather than re-sampled under scrolling output: the
- * terminal is never behind it.
+ * The Glass finish's structure; its colours derive from the active base
+ * (`theme/glass.ts` and `glassVariables`). The window frame shows the base's
+ * glows at full strength because nothing is read on it; the sidebar damps the
+ * same glows with the window ground so its text stays legible.
  */
 :root[data-glass="true"] .app-shell {
   background: var(--glass-backdrop);
 }
 /* The sidebar floats like the card: the same 8px inset from every window edge
    and from the card (4px here plus the 4px resize handle), the same radius and
-   the same glass edge, so the window reads as two panes on one backdrop. */
+   the same glass edge. No backdrop blur: the glows are already smooth, so it
+   would only add a compositing layer. */
 :root[data-glass="true"] .sidebar {
   --bg-sidebar: transparent;
-  -webkit-backdrop-filter: blur(28px) saturate(1.5);
-  backdrop-filter: blur(28px) saturate(1.5);
   background: var(--glass-pane);
   border-radius: var(--radius-palette);
   box-shadow: inset 0 0 0 1px var(--glass-edge);

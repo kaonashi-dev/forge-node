@@ -979,7 +979,9 @@ export function ProjectsView() {
                                 fallback={
                                   <Show when={isOpen(project.id) && soleCheckout(project)}>
                                     {(sole) => (
-                                      <span class="tree-meta">{sole().branch ?? sole().label}</span>
+                                      <span class="tree-meta forge-truncate">
+                                        {sole().branch ?? sole().label}
+                                      </span>
                                     )}
                                   </Show>
                                 }

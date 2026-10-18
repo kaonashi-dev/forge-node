@@ -146,6 +146,16 @@
   --finish-select-tint: 8%;
   --finish-select-ring: inset 0 0 0 1px rgb(255 255 255 / 8%);
   --finish-card-depth: 0 18px 40px rgb(0 0 0 / 50%);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(62 53 89) 0%, rgb(62 53 89 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(37 68 74) 0%, rgb(37 68 74 / 0%) 100%),
+    rgb(12 12 13);
+  --glass-pane: rgb(12 12 13 / 60%);
+  --glass-edge: rgb(237 237 239 / 7%);
+  --glass-fill: rgb(237 237 239 / 6%);
+  --glass-fill-strong: rgb(237 237 239 / 14%);
+  --glass-tab: rgb(228 228 231 / 16%);
+  --glass-tab-ring: rgb(228 228 231 / 35%);
   --hue-tint: 15%;
   --hue-0: #5cc8c0;
   --hue-1: #7aa2f7;
@@ -305,6 +315,16 @@
   --finish-select-tint: 8%;
   --finish-select-ring: inset 0 0 0 1px rgb(0 0 0 / 6%);
   --finish-card-depth: 0 1px 2px rgb(0 0 0 / 5%), 0 12px 32px rgb(0 0 0 / 8%);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(201 178 234) 0%, rgb(201 178 234 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(180 208 215) 0%, rgb(180 208 215 / 0%) 100%),
+    rgb(244 244 242);
+  --glass-pane: rgb(244 244 242 / 60%);
+  --glass-edge: rgb(26 26 28 / 7%);
+  --glass-fill: rgb(26 26 28 / 6%);
+  --glass-fill-strong: rgb(26 26 28 / 14%);
+  --glass-tab: rgb(39 39 42 / 16%);
+  --glass-tab-ring: rgb(39 39 42 / 35%);
   --hue-tint: 12%;
   --hue-0: #0c6e68;
   --hue-1: #2e5cc2;
@@ -464,6 +484,16 @@
   --finish-select-tint: 14%;
   --finish-select-ring: none;
   --finish-card-depth: var(--shadow-md);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(72 57 76) 0%, rgb(72 57 76 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(35 58 55) 0%, rgb(35 58 55 / 0%) 100%),
+    rgb(18 18 17);
+  --glass-pane: rgb(18 18 17 / 60%);
+  --glass-edge: rgb(237 229 214 / 7%);
+  --glass-fill: rgb(237 229 214 / 6%);
+  --glass-fill-strong: rgb(237 229 214 / 14%);
+  --glass-tab: rgb(79 163 155 / 16%);
+  --glass-tab-ring: rgb(79 163 155 / 35%);
   --hue-tint: 15%;
   --hue-0: #5cc8c0;
   --hue-1: #7aa2f7;
@@ -623,6 +653,16 @@
   --finish-select-tint: 14%;
   --finish-select-ring: none;
   --finish-card-depth: var(--shadow-md);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(203 184 199) 0%, rgb(203 184 199 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(185 203 195) 0%, rgb(185 203 195 / 0%) 100%),
+    rgb(241 236 227);
+  --glass-pane: rgb(241 236 227 / 60%);
+  --glass-edge: rgb(38 35 31 / 7%);
+  --glass-fill: rgb(38 35 31 / 6%);
+  --glass-fill-strong: rgb(38 35 31 / 14%);
+  --glass-tab: rgb(41 118 111 / 16%);
+  --glass-tab-ring: rgb(41 118 111 / 35%);
   --hue-tint: 12%;
   --hue-0: #0d6b65;
   --hue-1: #2e5abc;
@@ -782,6 +822,16 @@
   --finish-select-tint: 14%;
   --finish-select-ring: none;
   --finish-card-depth: var(--shadow-md);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(84 59 70) 0%, rgb(84 59 70 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(58 73 58) 0%, rgb(58 73 58 / 0%) 100%),
+    rgb(40 40 40);
+  --glass-pane: rgb(40 40 40 / 60%);
+  --glass-edge: rgb(235 219 178 / 7%);
+  --glass-fill: rgb(235 219 178 / 6%);
+  --glass-fill-strong: rgb(235 219 178 / 14%);
+  --glass-tab: rgb(69 133 136 / 16%);
+  --glass-tab-ring: rgb(69 133 136 / 35%);
   --hue-tint: 15%;
   --hue-0: #5cc8c0;
   --hue-1: #98b1e5;
@@ -941,6 +991,16 @@
   --finish-select-tint: 14%;
   --finish-select-ring: none;
   --finish-card-depth: var(--shadow-md);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(77 53 65) 0%, rgb(77 53 65 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(50 67 53) 0%, rgb(50 67 53 / 0%) 100%),
+    rgb(29 32 33);
+  --glass-pane: rgb(29 32 33 / 60%);
+  --glass-edge: rgb(235 219 178 / 7%);
+  --glass-fill: rgb(235 219 178 / 6%);
+  --glass-fill-strong: rgb(235 219 178 / 14%);
+  --glass-tab: rgb(211 134 155 / 16%);
+  --glass-tab-ring: rgb(211 134 155 / 35%);
   --hue-tint: 15%;
   --hue-0: #72cbbe;
   --hue-1: #afbdd7;
@@ -1100,6 +1160,16 @@
   --finish-select-tint: 14%;
   --finish-select-ring: none;
   --finish-card-depth: var(--shadow-md);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(73 62 92) 0%, rgb(73 62 92 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(49 71 85) 0%, rgb(49 71 85 / 0%) 100%),
+    rgb(19 19 19);
+  --glass-pane: rgb(19 19 19 / 60%);
+  --glass-edge: rgb(250 250 250 / 7%);
+  --glass-fill: rgb(250 250 250 / 6%);
+  --glass-fill-strong: rgb(250 250 250 / 14%);
+  --glass-tab: rgb(167 139 250 / 16%);
+  --glass-tab-ring: rgb(167 139 250 / 35%);
   --hue-tint: 15%;
   --hue-0: #5cc8c0;
   --hue-1: #7aa2f7;
@@ -1259,6 +1329,16 @@
   --finish-select-tint: 14%;
   --finish-select-ring: none;
   --finish-card-depth: var(--shadow-md);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(216 180 164) 0%, rgb(216 180 164 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(199 202 158) 0%, rgb(199 202 158 / 0%) 100%),
+    rgb(235 219 178);
+  --glass-pane: rgb(235 219 178 / 60%);
+  --glass-edge: rgb(60 56 54 / 7%);
+  --glass-fill: rgb(60 56 54 / 6%);
+  --glass-fill-strong: rgb(60 56 54 / 14%);
+  --glass-tab: rgb(7 102 120 / 16%);
+  --glass-tab-ring: rgb(7 102 120 / 35%);
   --hue-tint: 12%;
   --hue-0: #126762;
   --hue-1: #3257ac;
@@ -1418,6 +1498,16 @@
   --finish-select-tint: 14%;
   --finish-select-ring: none;
   --finish-card-depth: var(--shadow-md);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(204 174 230) 0%, rgb(204 174 230 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(178 206 214) 0%, rgb(178 206 214 / 0%) 100%),
+    rgb(241 241 241);
+  --glass-pane: rgb(241 241 241 / 60%);
+  --glass-edge: rgb(23 23 23 / 7%);
+  --glass-fill: rgb(23 23 23 / 6%);
+  --glass-fill-strong: rgb(23 23 23 / 14%);
+  --glass-tab: rgb(91 33 182 / 16%);
+  --glass-tab-ring: rgb(91 33 182 / 35%);
   --hue-tint: 12%;
   --hue-0: #0c6e68;
   --hue-1: #2e5cc2;
@@ -1577,6 +1667,16 @@
   --finish-select-tint: 14%;
   --finish-select-ring: none;
   --finish-card-depth: var(--shadow-md);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(68 63 100) 0%, rgb(68 63 100 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(43 72 93) 0%, rgb(43 72 93 / 0%) 100%),
+    rgb(12 20 30);
+  --glass-pane: rgb(12 20 30 / 60%);
+  --glass-edge: rgb(250 250 250 / 7%);
+  --glass-fill: rgb(250 250 250 / 6%);
+  --glass-fill-strong: rgb(250 250 250 / 14%);
+  --glass-tab: rgb(125 207 255 / 16%);
+  --glass-tab-ring: rgb(125 207 255 / 35%);
   --hue-tint: 15%;
   --hue-0: #5cc8c0;
   --hue-1: #7aa2f7;
@@ -1736,6 +1836,16 @@
   --finish-select-tint: 14%;
   --finish-select-ring: none;
   --finish-card-depth: var(--shadow-md);
+  --glass-backdrop:
+    radial-gradient(110% 110% at 0% 0%, rgb(68 48 56) 0%, rgb(68 48 56 / 0%) 100%),
+    radial-gradient(110% 110% at 100% 100%, rgb(41 62 43) 0%, rgb(41 62 43 / 0%) 100%),
+    rgb(17 25 19);
+  --glass-pane: rgb(17 25 19 / 60%);
+  --glass-edge: rgb(199 199 199 / 7%);
+  --glass-fill: rgb(199 199 199 / 6%);
+  --glass-fill-strong: rgb(199 199 199 / 14%);
+  --glass-tab: rgb(142 192 124 / 16%);
+  --glass-tab-ring: rgb(142 192 124 / 35%);
   --hue-tint: 15%;
   --hue-0: #5cc8c0;
   --hue-1: #8baaec;
@@ -1897,16 +2007,7 @@
   --leading-prose: 1.7;
   --tracking-tight: -0.01em;
   --tracking-label: 0.1em;
-  --glass-backdrop:
-    radial-gradient(900px 600px at 10% 10%, rgb(43 37 80) 0%, rgb(43 37 80 / 0%) 60%),
-    radial-gradient(700px 500px at 0% 90%, rgb(18 58 74) 0%, rgb(18 58 74 / 0%) 60%), rgb(11 13 20);
-  --glass-pane: rgb(16 17 24 / 55%);
-  --glass-edge: rgb(255 255 255 / 7%);
-  --glass-fill: rgb(255 255 255 / 6%);
-  --glass-fill-strong: rgb(255 255 255 / 14%);
-  --glass-tab: rgb(138 180 255 / 16%);
-  --glass-tab-ring: rgb(138 180 255 / 35%);
-  --glass-card-depth: 0 30px 80px rgb(0 0 0 / 55%), 0 0 0 1px rgb(0 0 0 / 40%);
+  --glass-card-depth: 0 4px 16px rgb(0 0 0 / 35%), 0 0 0 1px rgb(0 0 0 / 40%);
   --opacity-disabled: 0.5;
   --opacity-dim: 0.55;
   --opacity-drag: 0.45;

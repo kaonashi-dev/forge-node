@@ -750,17 +750,10 @@ export const scale = {
   },
   tracking: { tight: "-0.01em", label: "0.1em" },
   opacity: { disabled: 0.5, dim: 0.55, drag: 0.45 },
-  /** The Glass finish's structure: a lit backdrop, frosted panes and their edges. Dark only. */
+  /** The Glass finish's base-independent structure; its colours come from `glassVariables`. */
   glass: {
-    backdrop:
-      "radial-gradient(900px 600px at 10% 10%, rgb(43 37 80) 0%, rgb(43 37 80 / 0%) 60%), radial-gradient(700px 500px at 0% 90%, rgb(18 58 74) 0%, rgb(18 58 74 / 0%) 60%), rgb(11 13 20)",
-    pane: "rgb(16 17 24 / 55%)",
-    edge: "rgb(255 255 255 / 7%)",
-    fill: "rgb(255 255 255 / 6%)",
-    "fill-strong": "rgb(255 255 255 / 14%)",
-    tab: "rgb(138 180 255 / 16%)",
-    "tab-ring": "rgb(138 180 255 / 35%)",
-    "card-depth": "0 30px 80px rgb(0 0 0 / 55%), 0 0 0 1px rgb(0 0 0 / 40%)",
+    // Tight enough that the 8px frame around the card keeps its colour.
+    "card-depth": "0 4px 16px rgb(0 0 0 / 35%), 0 0 0 1px rgb(0 0 0 / 40%)",
   },
   // Hover/focus/selection, menus/tooltips/toasts, sidebar and panel resize. Output repaints never animate.
   motion: {
@@ -1071,6 +1064,7 @@ export function toCssVariables(active: Palette): Record<string, string> {
     semanticColors(active, interaction),
     syntaxVariables(active),
     finishVariables(active),
+    glassVariables(active),
     hueVariables(active),
   );
   return variables;
@@ -1106,6 +1100,47 @@ function finishVariables(active: Palette): Record<string, string> {
     "--finish-card-depth": light
       ? "0 1px 2px rgb(0 0 0 / 5%), 0 12px 32px rgb(0 0 0 / 8%)"
       : "0 18px 40px rgb(0 0 0 / 50%)",
+  };
+}
+
+/** The frosted pane's opacity over the Glass backdrop. */
+export const GLASS_PANE_OPACITY = 60;
+
+// ANSI slots the backdrop glows take their hue from, so each base lights the
+// window in its own magenta and cyan. Each spreads from its corner past the
+// middle of the window, so the 8px frame carries colour along every edge.
+export const GLASS_GLOWS = [
+  { ansi: 5, share: 32, at: "110% 110% at 0% 0%" },
+  { ansi: 6, share: 28, at: "110% 110% at 100% 100%" },
+] as const;
+
+function rgb(color: number, alpha?: number): string {
+  const channels = `${(color >> 16) & 0xff} ${(color >> 8) & 0xff} ${color & 0xff}`;
+  return alpha === undefined ? `rgb(${channels})` : `rgb(${channels} / ${alpha}%)`;
+}
+
+/**
+ * The Glass finish's colours, read from the palette it is applied over: the
+ * backdrop glows over the window ground, the sidebar's pane damps them with
+ * that same ground, and edges, fills and the active tab are washes of the
+ * base's text and accent.
+ */
+function glassVariables(active: Palette): Record<string, string> {
+  const ground = parseHex(active.rail);
+  const text = parseHex(active.text);
+  const accent = parseHex(active.accent);
+  const glows = GLASS_GLOWS.map(({ ansi, share, at }) => {
+    const glow = mix(ground, parseHex(active.ansi[ansi]), pct(share));
+    return `radial-gradient(${at}, ${rgb(glow)} 0%, ${rgb(glow, 0)} 100%)`;
+  });
+  return {
+    "--glass-backdrop": [...glows, rgb(ground)].join(", "),
+    "--glass-pane": rgb(ground, GLASS_PANE_OPACITY),
+    "--glass-edge": rgb(text, 7),
+    "--glass-fill": rgb(text, 6),
+    "--glass-fill-strong": rgb(text, 14),
+    "--glass-tab": rgb(accent, 16),
+    "--glass-tab-ring": rgb(accent, 35),
   };
 }
 
