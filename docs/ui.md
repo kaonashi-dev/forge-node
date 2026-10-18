@@ -17,6 +17,7 @@ Day-to-day layout and behaviour details live next to the code:
 | Reusable explorer package (no Solid or Tauri) | `apps/tauri/packages/file-workbench/` |
 | Terminal Canvas | `apps/tauri/src/shared/cell-grid/` |
 | Control kit | `apps/tauri/src/ui/` |
+| Icons (own stroke set, one 16px grid) | `apps/tauri/src/theme/icons/` |
 | Theme tokens | `apps/tauri/src/theme/` + [theming.md](./theming.md) |
 | Actions / keymap | `apps/tauri/src/actions/` |
 | Ownership map and dependency rules | [frontend-architecture.md](./frontend-architecture.md) |
@@ -105,6 +106,22 @@ Call sites import from `apps/tauri/src/ui/` (Button, Dialog, Menu, …). Look is
 Forge CSS + tokens; interaction primitives are `@kobalte/core` behind that
 boundary. Structural chrome belongs to `app/shell/`, `app/palette/` and the
 owning feature; explorer rows are rendered by `packages/file-workbench`.
+
+## Icons
+
+Every mark in the shell is Forge's own stroke set — there is no icon library.
+`theme/icons/glyphs.tsx` holds the app's vocabulary (git, sessions, views) and
+`theme/icons/uiGlyphs.tsx` the chrome's marks (chevrons, search, settings).
+Both draw on one 16px grid at a 1.5 stroke with round caps and joins. A glyph
+has no fill of its own, so `currentColor` tints it: the neutral
+`forge-icon-muted`/`faint` marks are the default, and
+`.forge-icon-{accent,blue,green,amber,red,needs-you}` carry meaning. `region`
+fills one part at 20% when the mark names the chosen thing (`.glyph-region`),
+so a selected view never relies on colour alone.
+
+Brands are the exception: `BrandIcon` paints a provider logo as a mask, and
+`LangIcon` is the one mark that keeps colours because a file type's colour is
+the information. `?gallery` shows every glyph at rest and chosen.
 
 ## Keyboard
 

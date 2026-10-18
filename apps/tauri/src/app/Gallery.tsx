@@ -24,7 +24,7 @@ import {
   Tooltip,
   toast,
 } from "../ui/index";
-import { Icon, type ForgeIconName } from "../theme/icons/index";
+import { ICONS, Icon, type ForgeIconName } from "../theme/icons/index";
 import { playOnce } from "../theme/motion";
 import { HUE_COUNT } from "../theme/tokens";
 import { WorkMarker } from "../features/sessions/markers";
@@ -238,33 +238,11 @@ const CODE: SyntaxRun[][] = [
 
 const HUE_SLOTS = Array.from({ length: HUE_COUNT }, (_, index) => index);
 
-/** The glyphs Forge draws itself, as opposed to the lucide remainder. */
-const GLYPH_NAMES: ForgeIconName[] = [
-  "layers",
-  "folder",
-  "history",
-  "git-pull-request",
-  "git-branch",
-  "worktree",
-  "square-terminal",
-  "file-code",
-  "commit",
-  "fetch",
-  "push",
-  "patch",
-  "list-checks",
-  "merged",
-  "conflict",
-  "message-square-plus",
-  "spawn-child",
-  "folder-symlink",
-  "bell",
-  "idle",
-  "exited",
-  "failed",
-  "columns-2",
-  "command-palette",
-];
+/**
+ * Every glyph in the set, in registry order: the gallery is the review surface
+ * for the icon system, and the set is small enough to show whole.
+ */
+const GLYPH_NAMES = Object.keys(ICONS) as ForgeIconName[];
 
 /** The five icons that move once, each named for the event that plays it. */
 const ONE_SHOTS: {

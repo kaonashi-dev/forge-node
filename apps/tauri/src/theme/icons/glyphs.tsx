@@ -1,17 +1,27 @@
-import { For, splitProps, type Component } from "solid-js";
-import type { LucideProps } from "lucide-solid";
+import { For, splitProps, type Component, type JSX } from "solid-js";
 
 /**
  * One stroke on Forge's own 16px grid. `region` is the part that fills at 20%
  * when the glyph names the chosen thing (`.glyph-region` in `base.css`), so a
  * selected view never depends on colour alone.
+ *
+ * The drawing rules for every glyph — this file and `uiGlyphs.tsx` — live in
+ * that file's header. There is no icon-library artwork behind the set.
  */
-type Shape =
+export type Shape =
   | { path: string; region?: boolean }
   | { circle: readonly [cx: number, cy: number, r: number]; region?: boolean }
   | { rect: readonly [x: number, y: number, w: number, h: number, rx: number]; region?: boolean };
 
-function glyph(shapes: readonly Shape[]): Component<LucideProps> {
+/** The props every glyph accepts; unknown SVG attributes pass through. */
+export type GlyphProps = JSX.SvgSVGAttributes<SVGSVGElement> & {
+  size?: number | string;
+  strokeWidth?: number | string;
+  color?: string;
+  absoluteStrokeWidth?: boolean;
+};
+
+export function glyph(shapes: readonly Shape[]): Component<GlyphProps> {
   return (props) => {
     const [local, rest] = splitProps(props, [
       "size",

@@ -549,7 +549,7 @@ html[data-platform="macos"] .title-bar-inset {
 }
 
 /* Icons — mask tint glyphs */
-/* A lucide glyph is an inline SVG whose stroke is `currentColor`; the colour
+/* A Forge glyph is an inline SVG whose stroke is `currentColor`; the colour
    classes below set `color`, and the stroke follows. */
 .forge-icon {
   color: currentColor;
@@ -569,7 +569,7 @@ html[data-platform="macos"] .title-bar-inset {
     animation-duration: 1.6s;
   }
 }
-/* A brand mark has no lucide glyph, so it keeps the mask-tint the whole set
+/* A brand mark has no stroke glyph, so it keeps the mask-tint the whole set
    used before: the SVG is the mask, `currentColor` is the fill. */
 .forge-brand-icon {
   display: inline-block;

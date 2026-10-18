@@ -28,6 +28,7 @@ const NAMES: ForgeIconName[] = [
   "chevron-up",
   "close",
   "plus",
+  "minus",
   "folder-open",
   "folder",
   "file",
@@ -68,12 +69,12 @@ describe("forgeIcons", () => {
   });
 
   /**
-   * Brands and states are deliberately absent from the lucide registry: a
+   * Brands and states are deliberately absent from the stroke registry: a
    * provider logo is a `BrandIcon`, a session state is a geometric
-   * `StateMarker`. A brand name leaking back in here would put a logotype on the
-   * lucide path and lose the mask-tint the whole set depends on.
+   * `StateMarker`. A brand name leaking back in here would put a logotype on
+   * the stroke path and lose the mask-tint the brand set depends on.
    */
-  it("keeps brand and state marks out of the lucide registry", () => {
+  it("keeps brand and state marks out of the stroke registry", () => {
     for (const name of [
       "claude",
       "codex",

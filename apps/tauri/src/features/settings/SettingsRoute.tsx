@@ -1,5 +1,4 @@
 import { For, Show, createMemo, createResource, createSignal, type JSX } from "solid-js";
-import { Minus, Plus } from "lucide-solid";
 import {
   Badge,
   Button,
@@ -667,7 +666,7 @@ function TypeStepper(props: {
           disabled={!canStep(props.value, -1, props.range)}
           onClick={() => step(-1)}
         >
-          <Minus size={12} strokeWidth={1.8} aria-hidden="true" />
+          <Icon name="minus" size={12} />
         </IconButton>
         <output class="settings-stepper-value" aria-live="polite">
           {props.format(props.value)}
@@ -678,7 +677,7 @@ function TypeStepper(props: {
           disabled={!canStep(props.value, 1, props.range)}
           onClick={() => step(1)}
         >
-          <Plus size={12} strokeWidth={1.8} aria-hidden="true" />
+          <Icon name="plus" size={12} />
         </IconButton>
       </div>
     </div>

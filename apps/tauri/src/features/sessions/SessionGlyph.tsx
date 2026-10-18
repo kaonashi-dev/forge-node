@@ -26,8 +26,8 @@ type SessionGlyphProps = {
  *
  * A shared robot for every agent would make a workspace with four providers
  * unreadable, so a known provider draws its own `BrandIcon`; one without a logo
- * falls back to the lucide bot. Shells take the accent so they stay apart from
- * those marks.
+ * falls back to the Forge agent glyph. Shells take the accent so they stay apart
+ * from those marks.
  *
  * No mark carries a fill of its own: each is tinted by whatever the row it sits
  * in is already using, which is what keeps four providers in one list reading
