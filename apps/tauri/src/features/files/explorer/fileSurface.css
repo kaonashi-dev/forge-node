@@ -95,6 +95,7 @@
   color: var(--fg-strong);
   flex: none;
   gap: var(--space-8);
+  margin-top: var(--space-12);
   padding: var(--space-4) var(--space-8) var(--space-8);
   width: 100%;
 }

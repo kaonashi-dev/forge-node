@@ -7,6 +7,7 @@ import {
   on,
   onCleanup,
   onMount,
+  untrack,
 } from "solid-js";
 import { APP } from "../../actions/actions";
 import { enterContext, installKeymap, invokeAction, registerAction } from "../../actions/dispatch";
@@ -19,7 +20,7 @@ import { focusedTerminalId } from "../../features/terminal/focus";
 import { startAppRuntime } from "../lifecycle/index";
 import { startGitSync } from "../../features/git/gitSync";
 import { startCheckoutWatch } from "../integrations/checkoutWatch";
-import { forgeStore } from "../../state/forgeStore";
+import { forgeStore, snapshotLanded } from "../../state/forgeStore";
 import { dialogsStore, requestConfirm, setDialogsStore } from "../../state/dialogs";
 import { connectionStore, setNotice } from "../../state/connection";
 import {
@@ -48,6 +49,8 @@ import {
   closeOtherViews,
   closeViewsToRight,
 } from "../../features/editor/tabs";
+import { hasCode, openFileCount } from "../../navigation/views";
+import { projectHue } from "../../state/projectColors";
 import { centerSplit } from "../../navigation/centerSplitStore";
 import { openEditor } from "../../features/editor/open";
 import {
@@ -58,6 +61,7 @@ import {
   SIDEBAR_RANGE,
   SIDEBAR_WIDTH_KEY,
   THEME_BASE_KEY,
+  GLASS_KEY,
   UI_FONT_SIZE_KEY,
   bumpScale,
   readChoice,
@@ -70,8 +74,9 @@ import { CenterStack } from "./CenterStack";
 import type { Section } from "../../features/settings/sections";
 import { ESC_AGAIN_MS, isSecondEsc } from "../../features/settings/escAgain";
 import { defaultAgentFrom, resolveDefaultAgent } from "../../features/settings/defaultAgent";
-import { applyThemeBase, type ThemePreference } from "../../theme/ThemeProvider";
+import { applyThemeBase, type ThemePreference, applyGlass } from "../../theme/ThemeProvider";
 import { applyDensity, readDensity } from "../../theme/density";
+import { rememberTheme } from "../../theme/lastTheme";
 import { applyReduceMotion } from "../../theme/motion";
 import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
 import { ResizeHandle } from "./ResizeHandle";
@@ -152,6 +157,20 @@ export function AppShell() {
   // The daemon answers with the stored layout some milliseconds after the
   // window is already on screen. Seeding once — rather than tracking — keeps a
   // later snapshot from yanking a panel the user has since dragged.
+  /*
+   * The theme waits for the first snapshot, not for a non-empty `app_state`:
+   * a fresh daemon has stored nothing, and the browser-local echo applied at
+   * launch must give way to "no stored theme" as soon as the daemon has said so.
+   */
+  let themed = false;
+  createEffect(() => {
+    if (themed || !snapshotLanded()) return;
+    themed = true;
+    const base = untrack(() => forgeStore.app_state[THEME_BASE_KEY]) as ThemePreference | undefined;
+    applyGlass(untrack(() => forgeStore.app_state[GLASS_KEY]) === "true");
+    applyThemeBase(base ?? "calm-dark");
+    rememberTheme(base);
+  });
   let seeded = false;
   createEffect(() => {
     if (seeded || Object.keys(forgeStore.app_state).length === 0) return;
@@ -159,8 +178,6 @@ export function AppShell() {
     restoreSidebar();
     setSidebarWidth(readWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_RANGE));
     seedTabOrder();
-    const base = forgeStore.app_state[THEME_BASE_KEY] as ThemePreference | undefined;
-    if (base) applyThemeBase(base);
     // Density is written over `tokens.css` as an inline style, so it has to be
     // re-applied whenever the stored preference lands — the same round trip
     // the theme takes.
@@ -208,8 +225,8 @@ export function AppShell() {
   trackTabFocus();
   trackQuestions();
 
-  /** How many files, diffs and PRs are parked in the Code tab. */
-  const openViewCount = createMemo(() => currentViews().open.length);
+  /** How many files the Code tab holds; a patch, a pull request or a search is not one. */
+  const openViewCount = createMemo(() => openFileCount(currentViews()));
 
   /**
    * The checkout the window is in — the scope of the tab strip.
@@ -220,6 +237,27 @@ export function AppShell() {
    * than the one it started in.
    */
   const currentWorkspace = createMemo(sharedWorkspace);
+  /*
+   * The sidebar slides in when it comes back, and the card takes its new width
+   * once: animating the column instead would re-measure the terminal canvas
+   * on every frame of the transition.
+   */
+  const [sidebarRevealed, setSidebarRevealed] = createSignal(false);
+  createEffect(
+    on(
+      () => sidebarOpen() || settings(),
+      (open, was) => setSidebarRevealed(open && was === false),
+      { defer: true },
+    ),
+  );
+  /** The card's tabs and location bar wear the current checkout's project hue. */
+  const cardHue = createMemo(() => {
+    // Settings is about no project, so nothing in the card wears a hue there.
+    if (settings()) return undefined;
+    const id = currentWorkspace();
+    const project = forgeStore.workspaces.find((item) => item.id === id)?.project_id;
+    return project ? projectHue(project) : undefined;
+  });
 
   /**
    * The tabs, in the order the strip shows them.
@@ -649,7 +687,10 @@ export function AppShell() {
   return (
     <main
       class="app-shell"
-      classList={{ "sidebar-collapsed": !sidebarOpen() }}
+      classList={{
+        "sidebar-collapsed": !(sidebarOpen() || settings()),
+        "sidebar-revealed": sidebarRevealed(),
+      }}
       style={{ "--sidebar-w": `${sidebarWidth()}px` }}
     >
       <Show when={sidebarOpen() || settings()}>
@@ -672,7 +713,11 @@ export function AppShell() {
           onCommit={(width) => writeWidth(SIDEBAR_WIDTH_KEY, width)}
         />
       </Show>
-      <section class="work-card" aria-label="Work">
+      <section
+        class="work-card hued"
+        aria-label="Work"
+        style={cardHue() ? { "--project-hue": cardHue() } : undefined}
+      >
         <CardStrip
           settings={settings()}
           settingsSection={settingsSection() ?? "General"}
@@ -684,6 +729,7 @@ export function AppShell() {
           codeOpen={codeOpen()}
           codeActive={centerMode() === "code" && codeOpen()}
           codeCount={openViewCount()}
+          codeHasViews={hasCode(currentViews())}
           onSelectCode={showCode}
           onCloseCode={closeCode}
         />

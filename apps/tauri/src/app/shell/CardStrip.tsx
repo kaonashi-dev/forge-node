@@ -22,6 +22,7 @@ type CardStripProps = {
   codeOpen: boolean;
   codeActive: boolean;
   codeCount: number;
+  codeHasViews: boolean;
   onSelectCode: () => void;
   onCloseCode: () => void;
 };
@@ -47,7 +48,12 @@ export function CardStrip(props: CardStripProps) {
     <header class="card-strip" data-tauri-drag-region>
       <Show when={!props.sidebarOpen}>
         <div class="title-bar-inset" aria-hidden="true" data-tauri-drag-region />
-        <IconButton label="Show the sidebar" size="md" onClick={props.onShowSidebar}>
+        <IconButton
+          label="Show the sidebar"
+          size="md"
+          shortcut="toggle_sidebar"
+          onClick={props.onShowSidebar}
+        >
           <Icon name="panel-left-open" class="forge-icon-muted" />
         </IconButton>
       </Show>
@@ -74,6 +80,7 @@ export function CardStrip(props: CardStripProps) {
           codeOpen={props.codeOpen}
           codeActive={props.codeActive}
           codeCount={props.codeCount}
+          codeHasViews={props.codeHasViews}
           onSelectCode={props.onSelectCode}
           onCloseCode={props.onCloseCode}
         />

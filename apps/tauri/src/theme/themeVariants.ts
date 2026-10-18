@@ -40,15 +40,42 @@ export function withThemeColor(source: Palette, key: ThemeColor, color: string):
       result[surface] = shift(source[surface]);
     }
     if (source.border) result.border = shift(source.border);
+    if (source.finish) {
+      const { tab, rule, hover } = source.finish;
+      result.finish = { tab: shift(tab), rule: shift(rule), ...(hover && { hover: shift(hover) }) };
+    }
     result.ansi[0] = result.termBg;
   } else if (key === "text") {
     result.termFg = value;
+    if (source.fgDefault && value !== source.text.toLowerCase())
+      result.fgDefault = towardGround(source, "fgDefault", value);
     for (const index of [7, 15]) {
       if (source.ansi[index].toLowerCase() === source.text.toLowerCase())
         result.ansi[index] = value;
     }
   }
   return result;
+}
+
+/**
+ * A pinned role that sits a step below the foreground follows a new foreground
+ * by the same step toward the ground, instead of keeping the old base's grey.
+ */
+function towardGround(source: Palette, role: "fgDefault", text: string): string {
+  const from = parseHex(source.text);
+  const ground = parseHex(source.bg);
+  const pinned = parseHex(source[role] ?? source.text);
+  let widest = 0;
+  let step = 0;
+  for (const bits of [16, 8, 0]) {
+    const span = ((ground >> bits) & 255) - ((from >> bits) & 255);
+    if (Math.abs(span) > Math.abs(widest)) {
+      widest = span;
+      step = (((pinned >> bits) & 255) - ((from >> bits) & 255)) / span;
+    }
+  }
+  const amount = widest === 0 ? 0 : Math.max(0, Math.min(1, step));
+  return hex(mix(parseHex(text), ground, pct(amount * 100)));
 }
 
 function contrastLevel(value: number): number {

@@ -41,6 +41,20 @@ describe("theme variations", () => {
     expect(edited.ansi[7]).toBe(source.palette.ansi[7]);
   });
 
+  it.each(["calm-dark", "calm-light"] as const)(
+    "moves %s's pinned row text with a new foreground",
+    (base) => {
+      const palette = palettes[base];
+      const text = base === "calm-dark" ? "#f0e6d2" : "#20183a";
+      const edited = withThemeColor(palette, "text", text);
+      expect(edited.fgDefault).not.toBe(palette.fgDefault);
+      const before = contrast(parseHex(palette.fgDefault!), parseHex(palette.bg));
+      const after = contrast(parseHex(edited.fgDefault!), parseHex(edited.bg));
+      expect(Math.abs(after - before)).toBeLessThan(2);
+      expect(withThemeColor(palette, "text", palette.text).fgDefault).toBe(palette.fgDefault);
+    },
+  );
+
   it.each(["gruvbox-hard", "gruvbox-light"] as const)(
     "scales secondary contrast in %s without moving the chosen colors",
     (base) => {

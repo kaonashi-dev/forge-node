@@ -20,7 +20,13 @@ function event(key: string, code: string, meta = true): KeyboardEvent {
     altKey: false,
     shiftKey: false,
     metaKey: meta,
-  } as KeyboardEvent;
+    target: terminalTarget(),
+  } as unknown as KeyboardEvent;
+}
+
+/** The grid's own hidden textarea, the only place `TERMINAL` chords fire. */
+function terminalTarget(): EventTarget {
+  return { dataset: { pane: "terminal" } } as unknown as EventTarget;
 }
 
 const bindings: Binding[] = [
@@ -56,6 +62,16 @@ describe("resolve", () => {
 
   it("returns null when nothing matches", () => {
     expect(resolve(event("z", "KeyZ"), [APP], bindings, bound)).toBeNull();
+  });
+
+  // The editor's hidden textarea shares the `terminal-keys` class, so a
+  // `TERMINAL` context left active under the editor must not claim ⌘C: the
+  // chord has to reach the editor's own key handler with its default intact.
+  it("leaves a terminal chord alone when the target is another pane's textarea", () => {
+    const editor = { dataset: { pane: "editor" } } as unknown as EventTarget;
+    const stroke = { ...event("c", "KeyC"), target: editor } as KeyboardEvent;
+    expect(resolve(stroke, [TERMINAL], bindings, bound)).toBeNull();
+    expect(resolve(stroke, [TERMINAL, APP], bindings, bound)?.action).toBe("about");
   });
 
   it("matches Option+digit even when the layout produced a different character", () => {

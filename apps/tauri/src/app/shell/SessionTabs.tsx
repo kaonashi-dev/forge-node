@@ -4,7 +4,6 @@ import { sessionTabLabel, tabGround, type TabGround } from "../../features/sessi
 import type { Session } from "../../contracts/runtime";
 import { SessionGlyph } from "../../features/sessions/SessionGlyph";
 import { Icon } from "../../theme/icons/index";
-import { AttentionMarker, StateMarker } from "../../features/sessions/markers";
 import { ContextMenu, IconButton, type MenuItem } from "../../ui/index";
 import { SessionMenu } from "../../features/sessions/SessionMenu";
 import { hasQuestion } from "../../features/sessions/waiting";
@@ -31,14 +30,42 @@ type SessionTabsProps = {
   codeOpen: boolean;
   /** Whether Code, rather than a session, is what the window is showing. */
   codeActive: boolean;
-  /** How many files/diffs are parked inside it. */
+  /** How many files are open in it, for the badge. */
   codeCount: number;
+  /** Whether anything at all is open in it — a patch alone still has a close. */
+  codeHasViews: boolean;
   onSelectCode: () => void;
   onCloseCode: () => void;
 };
 
 export function SessionTabs(props: SessionTabsProps) {
   let scrollEl: HTMLDivElement | undefined;
+  let stripEl: HTMLDivElement | undefined;
+  /* One raised chip for the whole strip, so a switch glides it from the old
+     tab to the new one instead of lighting a second chip: measured when the
+     active tab, the order or a tab's width changes, never per frame. */
+  const [indicator, setIndicator] = createSignal<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  /* The first placement lands without gliding in from the strip's corner. */
+  const [placed, setPlaced] = createSignal(false);
+  const measureIndicator = () => {
+    const active = stripEl?.querySelector<HTMLElement>(".session-tab-wrap.active");
+    setIndicator(
+      active
+        ? {
+            x: active.offsetLeft,
+            y: active.offsetTop,
+            width: active.offsetWidth,
+            height: active.offsetHeight,
+          }
+        : null,
+    );
+    if (active && !placed()) requestAnimationFrame(() => setPlaced(true));
+  };
   const [overflowing, setOverflowing] = createSignal(false);
   /* Which edges of the scrollport hide a tab mid-pill. Drives the mask fade
      so a half-visible current tab dissolves instead of clipping square. */
@@ -100,7 +127,21 @@ export function SessionTabs(props: SessionTabsProps) {
     }
     const observer = new ResizeObserver(() => onScroll());
     observer.observe(scrollEl);
-    onCleanup(() => observer.disconnect());
+    // A retitled tab resizes the strip, not the scrollport.
+    const strip = new ResizeObserver(measureIndicator);
+    if (stripEl) strip.observe(stripEl);
+    onCleanup(() => {
+      observer.disconnect();
+      strip.disconnect();
+    });
+  });
+
+  createEffect(() => {
+    props.activeId;
+    props.codeActive;
+    props.tabOrder;
+    tabs().length;
+    queueMicrotask(measureIndicator);
   });
 
   // Tabs opening or closing changes scrollWidth without firing scroll or resize.
@@ -212,7 +253,21 @@ export function SessionTabs(props: SessionTabsProps) {
           ref={scrollEl}
           onScroll={onScroll}
         >
-          <div class="tab-strip" role="tablist" aria-label="Sessions">
+          <div class="tab-strip" role="tablist" aria-label="Sessions" ref={stripEl}>
+            <Show when={indicator()}>
+              {(place) => (
+                <span
+                  class="tab-indicator"
+                  classList={{ gliding: placed() }}
+                  aria-hidden="true"
+                  style={{
+                    transform: `translate(${place().x}px, ${place().y}px)`,
+                    width: `${place().width}px`,
+                    height: `${place().height}px`,
+                  }}
+                />
+              )}
+            </Show>
             {/* Code leads so Option+1 reaches the files. Sessions follow it. */}
             <Show when={props.codeOpen}>
               <div class="session-tab-wrap code-tab-wrap" classList={{ active: props.codeActive }}>
@@ -221,9 +276,14 @@ export function SessionTabs(props: SessionTabsProps) {
                   role="tab"
                   class="session-tab"
                   aria-selected={props.codeActive}
-                  aria-label={`Code, ${props.codeCount} open`}
+                  aria-label={
+                    props.codeCount > 0
+                      ? `Code, ${props.codeCount} ${props.codeCount === 1 ? "file" : "files"} open`
+                      : "Code"
+                  }
                   onClick={props.onSelectCode}
                 >
+                  <span class="hue-mark" aria-hidden="true" />
                   <Icon
                     name="file-code"
                     class={props.codeActive ? "forge-icon-accent" : "forge-icon-muted"}
@@ -236,9 +296,9 @@ export function SessionTabs(props: SessionTabsProps) {
                     </span>
                   </Show>
                 </button>
-                <Show when={props.codeCount > 0}>
+                <Show when={props.codeHasViews}>
                   <IconButton
-                    label="Close every open file"
+                    label="Close everything in Code"
                     hideTooltip
                     size="xs"
                     class="session-tab-close"
@@ -381,9 +441,8 @@ function SessionTab(props: SessionTabProps) {
         aria-selected={props.active}
         aria-label={props.waiting ? `${props.label}, waiting on you` : props.label}
       >
-        <Show when={props.waiting} fallback={<StateMarker session={props.session} />}>
-          <AttentionMarker />
-        </Show>
+        <span class="hue-mark" aria-hidden="true" />
+        {/* The glyph slot carries the state: a bell, a spinner, a check. */}
         <SessionGlyph
           providerId={props.session.agent_provider_id}
           session={props.session}

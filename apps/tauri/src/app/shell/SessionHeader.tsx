@@ -3,7 +3,6 @@ import { forgeStore } from "../../state/forgeStore";
 import { connectionStore } from "../../state/connection";
 import { now } from "../../runtime/clock";
 import { SessionGlyph } from "../../features/sessions/SessionGlyph";
-import { SessionActionBar } from "../../features/sessions/SessionActionBar";
 import { sessionTabLabel } from "../../features/sessions/attention";
 import { sessionsInWorkspace } from "../../features/sessions/sessionScope";
 import { hasQuestion } from "../../features/sessions/waiting";
@@ -94,9 +93,6 @@ export function SessionHeader(props: { sessionId?: string; onCloseSplit?: () => 
             )}
           </Show>
           <span class="session-header-spacer" />
-          <Show when={!props.sessionId}>
-            <SessionActionBar />
-          </Show>
           <Show when={props.onCloseSplit}>
             <IconButton label="Join panes" size="xs" onClick={props.onCloseSplit}>
               <Icon name="close" class="forge-icon-muted" size={14} />

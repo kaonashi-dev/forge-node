@@ -1,17 +1,22 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { LangIcon } from "../../../theme/icons/index";
 import { IconButton } from "../../../ui/index";
 import { PatchView } from "./PatchView";
 import { SplitPatchView } from "./SplitPatchView";
 import type { DiffFile } from "../../../contracts/workbench";
 import { statusLetter, statusWord } from "../gitView";
+import type { DiffReveal } from "./reveal";
 
 export function DiffFiles(props: {
   files: DiffFile[];
   split: boolean;
   onOpenLine: (path: string, line: number) => void;
+  /** A file to scroll to once its section exists; only the working-tree patch passes one. */
+  reveal?: DiffReveal | null;
+  onRevealed?: (request: DiffReveal) => void;
 }) {
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
+  const sections = new Map<string, HTMLElement>();
 
   function toggle(path: string): void {
     const next = new Set(collapsed());
@@ -20,12 +25,27 @@ export function DiffFiles(props: {
     setCollapsed(next);
   }
 
+  createEffect(() => {
+    const request = props.reveal;
+    if (!request || !props.files.some((file) => file.path === request.path)) return;
+    if (collapsed().has(request.path)) toggle(request.path);
+    props.onRevealed?.(request);
+    // After the section the request names has laid out its rows.
+    requestAnimationFrame(() => sections.get(request.path)?.scrollIntoView({ block: "start" }));
+  });
+
   return (
     <For each={props.files}>
       {(file) => {
         const open = () => !collapsed().has(file.path);
         return (
-          <section class="diff-file">
+          <section
+            class="diff-file"
+            ref={(element) => {
+              sections.set(file.path, element);
+              onCleanup(() => sections.delete(file.path));
+            }}
+          >
             <header class="forge-row diff-file-head">
               <IconButton
                 size="xs"

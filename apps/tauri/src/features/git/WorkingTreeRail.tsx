@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createSignal, onCleanup } from "solid-js";
 import { centerMode, currentViews, openCompare, openDiff } from "../../navigation/viewsStore";
 import { loading, setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
@@ -9,17 +9,13 @@ import { applyJuvaDraft, draftWithJuva, loadBranchCompare, loadDiff } from "./co
 import { commitLabel, commitMessage, statusLetter, statusWord } from "./gitView";
 import { refreshGit } from "./rebaseActions";
 import { gitStore } from "./state";
-import type { Chord } from "../../actions/keys";
+import { MOD, parseChord } from "../../actions/keys";
+import { revealDiffFile } from "./diff/reveal";
 
 /** Shown on the button only; the textarea's own key handler commits. */
-const COMMIT_CHORD: Chord = {
-  key: "enter",
-  code: "Enter",
-  ctrl: false,
-  alt: false,
-  shift: false,
-  meta: true,
-};
+const COMMIT_CHORD = parseChord(`${MOD}-enter`);
+/** How long the button says Committed before it reads Commit again. */
+const COMMITTED_MS = 1800;
 
 /**
  * The checkout's uncommitted work: the files, then a commit box. A file opens
@@ -33,6 +29,10 @@ export function WorkingTreeRail(props: { committable: boolean }) {
   const [message, setMessage] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  /** The commit that just landed, shown on the button for a beat. */
+  const [committed, setCommitted] = createSignal(false);
+  let committedTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(committedTimer));
 
   const files = () => gitStore.diff?.files ?? [];
   const onPatch = () => centerMode() === "code" && currentViews().active.kind === "diff";
@@ -49,6 +49,9 @@ export function WorkingTreeRail(props: { committable: boolean }) {
     void applyJuvaDraft(workspace, "CommitMessage", title, body)
       .then(() => {
         setMessage("");
+        setCommitted(true);
+        clearTimeout(committedTimer);
+        committedTimer = setTimeout(() => setCommitted(false), COMMITTED_MS);
         setLoading("diff", true);
         return loadDiff(workspace);
       })
@@ -97,6 +100,7 @@ export function WorkingTreeRail(props: { committable: boolean }) {
                   aria-label={`${file.path}, ${statusWord(file.status)}, ${file.additions} added, ${file.deletions} removed`}
                   onClick={() => {
                     setPicked(file.path);
+                    revealDiffFile(file.path);
                     openDiff();
                   }}
                 >
@@ -148,13 +152,26 @@ export function WorkingTreeRail(props: { committable: boolean }) {
             variant="primary"
             size="lg"
             class="git-commit-button"
-            disabled={!canCommit()}
+            disabled={!canCommit() && !committed()}
+            aria-disabled={committed() && !canCommit()}
             loading={busy()}
             onClick={commit}
           >
-            {commitLabel(files().length)}
-            <Show when={files().length > 0}>
-              <Kbd chord={COMMIT_CHORD} bare class="git-commit-chord" />
+            <Show
+              when={committed()}
+              fallback={
+                <>
+                  {commitLabel(files().length)}
+                  <Show when={files().length > 0}>
+                    <Kbd chord={COMMIT_CHORD} bare class="git-commit-chord" />
+                  </Show>
+                </>
+              }
+            >
+              <span class="git-committed settle-in">
+                <Icon name="check" size={14} class="glyph-draw" />
+                Committed
+              </span>
             </Show>
           </Button>
           <IconButton
@@ -167,6 +184,9 @@ export function WorkingTreeRail(props: { committable: boolean }) {
             <Icon name="sparkles" size={15} />
           </IconButton>
         </div>
+        <span class="forge-visually-hidden" role="status">
+          {committed() ? "Committed. Nothing was pushed." : ""}
+        </span>
         <p class="forge-caption git-commit-note">
           {props.committable
             ? "Stages every change above, then commits. Nothing is pushed."

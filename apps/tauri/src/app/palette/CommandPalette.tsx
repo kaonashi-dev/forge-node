@@ -32,6 +32,7 @@ import { filesStore, setFilesStore } from "../../features/files/state";
 import { gitStore } from "../../features/git/state";
 import { activeWorkspace } from "../../state/workspace";
 import { highlight } from "./highlight";
+import { projectHue } from "../../state/projectColors";
 
 /** Rows shown before the list scrolls. */
 const VISIBLE_ROWS = 12;
@@ -253,6 +254,21 @@ function WaitingNote(props: { session: string }) {
   );
 }
 
+/** A session or a checkout is a place, so it leads with its project's square. */
+function PlaceMark(props: { workspace: string | undefined }) {
+  const project = () =>
+    forgeStore.workspaces.find((item) => item.id === props.workspace)?.project_id;
+  return (
+    <span
+      class="palette-hue"
+      style={project() ? { "--project-hue": projectHue(project()!) } : undefined}
+      aria-hidden="true"
+    >
+      <span class="hue-mark" />
+    </span>
+  );
+}
+
 /**
  * The mark on a palette row.
  *
@@ -273,8 +289,29 @@ function PaletteGlyph(props: { entry: PaletteEntry }) {
       );
     }
     switch (choice.kind) {
+      case "focus_session": {
+        const session = forgeStore.sessions.find((item) => item.id === choice.session);
+        return (
+          <span class="palette-place">
+            <PlaceMark workspace={session?.workspace_id} />
+            <span class="forge-combobox-glyph">
+              <SessionGlyph
+                providerId={session?.agent_provider_id ?? null}
+                emphasis="dim"
+                size={14}
+              />
+            </span>
+          </span>
+        );
+      }
+      case "focus_workspace":
+        return (
+          <span class="palette-place">
+            <PlaceMark workspace={choice.workspace} />
+            <Icon name="git-branch" class="forge-icon-faint forge-combobox-glyph" size={14} />
+          </span>
+        );
       case "new_shell":
-      case "focus_session":
         return (
           <Icon name="square-terminal" class="forge-icon-faint forge-combobox-glyph" size={14} />
         );
@@ -284,8 +321,6 @@ function PaletteGlyph(props: { entry: PaletteEntry }) {
             <SessionGlyph providerId={choice.provider} emphasis="dim" size={14} />
           </span>
         );
-      case "focus_workspace":
-        return <Icon name="git-branch" class="forge-icon-faint forge-combobox-glyph" size={14} />;
       case "open_file":
         // The same mark the file tree draws (`LangIcon`), read off the same
         // name: two lists of the same paths that disagree about what a

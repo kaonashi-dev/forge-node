@@ -176,6 +176,46 @@
   box-shadow: var(--attention-halo);
 }
 
+/* Counts and times line up in columns and do not jitter as they tick. */
+.tree-meta,
+.ws-marks,
+.session-tab-count,
+.needs-you-waited,
+.git-counts,
+.git-section-count,
+.git-upstream,
+.card-location-mono,
+.palette-waiting,
+.pr-row-number,
+.pr-synced {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A chosen glyph fills one region at 20% of its own colour, so state never
+   rests on colour alone. */
+:is([data-selected], [aria-current="page"], [aria-current="true"]) .glyph-region {
+  fill: currentColor;
+  fill-opacity: 0.2;
+}
+
+/* A project's place, in its hue: always a square, because circles are states. */
+.hue-mark {
+  background: var(--project-hue);
+  /* Off the spacing scale: the ladder's smallest radius rounds 7px to a dot. */
+  border-radius: var(--space-2);
+  flex: none;
+  height: 7px;
+  width: 7px;
+}
+
+/* In a menu the square sits in the 14px glyph column. */
+.hue-mark-menu {
+  margin: 0 var(--space-3);
+}
+.hue-mark-default {
+  --project-hue: var(--hue-default);
+}
+
 /* The face a code surface asks for by name. */
 .terminal-canvas,
 .diff-view,
@@ -252,8 +292,16 @@ kbd {
 :root[data-reduce-motion="true"] *::after {
   transition: none !important;
 }
-:root[data-reduce-motion="true"] *:not(.forge-icon-spin, .forge-btn-spinner) {
+:root[data-reduce-motion="true"] *:not(.forge-icon-spin, .forge-btn-spinner),
+:root[data-reduce-motion="true"] *::before,
+:root[data-reduce-motion="true"] *::after {
   animation: none !important;
+}
+/* Nothing loops for a window nobody can see. */
+:root[data-window-hidden="true"] *,
+:root[data-window-hidden="true"] *::before,
+:root[data-window-hidden="true"] *::after {
+  animation-play-state: paused !important;
 }
 
 * {
@@ -461,6 +509,17 @@ html[data-platform="macos"] .title-bar-inset {
 }
 
 /* The sidebar runs to the top of the window on the window's own ground. */
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell.sidebar-revealed > .sidebar {
+    animation: sidebar-in var(--motion-slow) var(--motion-enter);
+  }
+}
+@keyframes sidebar-in {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+}
 .sidebar {
   --bg-sidebar: var(--bg-window);
   background: var(--bg-window);
@@ -483,13 +542,14 @@ html[data-platform="macos"] .title-bar-inset {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  position: relative;
 }
 .work-card > .center-stack {
   flex: 1;
 }
 
 /* Icons — mask tint glyphs */
-/* A lucide glyph is an inline SVG whose stroke is `currentColor`; the colour
+/* A Forge glyph is an inline SVG whose stroke is `currentColor`; the colour
    classes below set `color`, and the stroke follows. */
 .forge-icon {
   color: currentColor;
@@ -509,7 +569,7 @@ html[data-platform="macos"] .title-bar-inset {
     animation-duration: 1.6s;
   }
 }
-/* A brand mark has no lucide glyph, so it keeps the mask-tint the whole set
+/* A brand mark has no stroke glyph, so it keeps the mask-tint the whole set
    used before: the SVG is the mask, `currentColor` is the fill. */
 .forge-brand-icon {
   display: inline-block;
@@ -590,34 +650,163 @@ html[data-platform="macos"] .title-bar-inset {
 .forge-state-dot.forge-icon-green::before {
   opacity: var(--opacity-dim);
 }
+/* Working: a faint track and a quarter arc that turns while the work is live. */
 .forge-state-ring {
   --marker-size: 8px;
+  position: relative;
 }
 .forge-state-ring::before {
   border: 1.5px solid currentColor;
+  opacity: 0.28;
+}
+.forge-state-ring::after {
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-full);
+  border-top-color: currentColor;
+  content: "";
+  height: var(--marker-size);
+  position: absolute;
+  width: var(--marker-size);
 }
 .forge-state-halo {
   --marker-size: 7px;
+  position: relative;
 }
 .forge-state-halo::before {
   background: var(--attention);
   box-shadow: var(--attention-halo);
 }
-
-/* The bell a session waiting on a person shows in its glyph slot, next to the
-   spin `.forge-icon-spin` gives one that is still working. */
+/* Needs you breathes, and nothing else loops this slowly. A scaled layer
+   rather than a growing shadow, so the loop stays on the compositor. */
+.forge-state-halo::after,
+.forge-attention-dot::after {
+  background: var(--attention);
+  border-radius: var(--radius-full);
+  content: "";
+  height: 7px;
+  opacity: 0;
+  position: absolute;
+  width: 7px;
+}
+.forge-attention-dot {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  position: relative;
+}
 @media (prefers-reduced-motion: no-preference) {
-  .attention-pulse {
-    animation: attention-breathe 2.4s ease-in-out infinite;
+  /* A settled dot that was a ring a moment ago scales in, once. */
+  .forge-state-settled::before {
+    animation: state-settle var(--motion-slow) var(--motion-enter);
+  }
+  .forge-state-ring::after {
+    animation: forge-spin 900ms linear infinite;
+  }
+  .forge-state-halo::after,
+  .forge-attention-dot::after {
+    animation: needs-you-breathe var(--motion-breathe) ease-in-out infinite;
+  }
+  /* The bell swings once, when the session starts waiting. */
+  .glyph-ring-once {
+    animation: glyph-ring 900ms ease-in-out;
+    transform-origin: 50% 15%;
+  }
+  /* A check is drawn, not swapped in. */
+  .glyph-draw path {
+    animation: glyph-draw var(--motion-settle) var(--ease);
+    stroke-dasharray: 20;
+  }
+  /* A new worktree's branch draws itself. */
+  .glyph-draw-long :is(path, circle) {
+    animation: glyph-draw-long 600ms var(--ease);
+    stroke-dasharray: 40;
+  }
+  /* The fetch arrow lands once. */
+  .glyph-drop {
+    animation: glyph-drop 600ms ease-in-out;
+  }
+  /* A session or checkout that just arrived grows in under a wash that fades. */
+  .row-new {
+    animation:
+      row-enter var(--motion-slow) var(--motion-enter),
+      row-wash 600ms var(--motion-enter);
+  }
+  .settle-in {
+    animation: settle-in var(--motion-settle) var(--motion-enter);
   }
 }
-@keyframes attention-breathe {
+@keyframes needs-you-breathe {
   0%,
   100% {
-    opacity: 1;
+    opacity: 0.24;
+    transform: scale(1.85);
   }
   50% {
-    opacity: 0.65;
+    opacity: 0.04;
+    transform: scale(3.3);
+  }
+}
+@keyframes state-settle {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+}
+@keyframes glyph-ring {
+  0%,
+  100% {
+    transform: rotate(0);
+  }
+  20% {
+    transform: rotate(14deg);
+  }
+  45% {
+    transform: rotate(-12deg);
+  }
+  70% {
+    transform: rotate(6deg);
+  }
+}
+@keyframes glyph-draw {
+  from {
+    stroke-dashoffset: 20;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes glyph-draw-long {
+  from {
+    stroke-dashoffset: 40;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes glyph-drop {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(2.5px);
+  }
+}
+@keyframes row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+@keyframes row-wash {
+  from {
+    background-color: var(--accent-tint-bg);
+  }
+}
+@keyframes settle-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
   }
 }
 

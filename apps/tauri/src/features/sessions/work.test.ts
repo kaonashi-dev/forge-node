@@ -30,6 +30,17 @@ describe("sessionWork", () => {
       expect(sessionWork(session, quiet, NOW)).toBe(work);
     }
   });
+  it("does not call a session working because someone typed into it", () => {
+    const typed = agent("2026-08-30T11:59:59Z", {
+      activity: { state: "working", since: "2026-08-30T11:59:59Z", evidence: "input" },
+    });
+    expect(sessionWork(typed, quiet, NOW)).toBe("running");
+    const turn = agent("2026-08-30T11:59:59Z", {
+      activity: { state: "working", since: "2026-08-30T11:59:59Z", evidence: "hook" },
+    });
+    expect(sessionWork(turn, quiet, NOW)).toBe("working");
+  });
+
   it("stops claiming starting once an agent has sat at its prompt without a hook", () => {
     const at = (ms: number) => new Date(NOW - ms).toISOString();
     const launched = (since: string) =>

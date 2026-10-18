@@ -277,16 +277,12 @@ describe("buildTree session nesting", () => {
 
 describe("checkoutLabel", () => {
   it("drops the project prefix a worktree repeats", () => {
-    expect(checkoutLabel("hellopay-backend-amount-min", "hellopay-backend", true)).toBe(
-      "amount-min",
-    );
+    expect(checkoutLabel("payments-api-amount-min", "payments-api", true)).toBe("amount-min");
   });
   it("keeps a repository's own branch and an unrelated worktree name", () => {
-    expect(checkoutLabel("hellopay-backend-x", "hellopay-backend", false)).toBe(
-      "hellopay-backend-x",
-    );
-    expect(checkoutLabel("feat/ledger", "hellopay-backend", true)).toBe("feat/ledger");
-    expect(checkoutLabel("hellopay-backend-", "hellopay-backend", true)).toBe("hellopay-backend-");
+    expect(checkoutLabel("payments-api-x", "payments-api", false)).toBe("payments-api-x");
+    expect(checkoutLabel("feat/ledger", "payments-api", true)).toBe("feat/ledger");
+    expect(checkoutLabel("payments-api-", "payments-api", true)).toBe("payments-api-");
   });
 });
 

@@ -1,4 +1,5 @@
-import { Show, createMemo, createSignal } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { clearDiffReveal, pendingDiffReveal } from "./diff/reveal";
 import { openEditorAt } from "../editor/open";
 import { DIFF_SPLIT_KEY, readFlag, writeFlag } from "../../state/preferences";
 import { Button, EmptyState, RadioGroup, Skeleton } from "../../ui/index";
@@ -16,6 +17,19 @@ export function DiffView() {
   const [split, setSplit] = createSignal(readFlag(DIFF_SPLIT_KEY, false));
 
   const files = createMemo(() => gitStore.diff?.files ?? []);
+
+  // A request for a file the patch does not hold, or left over when the view
+  // closes, must not jump a later patch to it.
+  createEffect(() => {
+    const request = pendingDiffReveal();
+    if (request && gitStore.diff && !files().some((file) => file.path === request.path)) {
+      clearDiffReveal(request);
+    }
+  });
+  onCleanup(() => {
+    const request = pendingDiffReveal();
+    if (request) clearDiffReveal(request);
+  });
 
   function setLayout(next: boolean): void {
     setSplit(next);
@@ -79,7 +93,13 @@ export function DiffView() {
             ]}
           />
         </header>
-        <DiffFiles files={files()} split={split()} onOpenLine={openAt} />
+        <DiffFiles
+          files={files()}
+          split={split()}
+          onOpenLine={openAt}
+          reveal={pendingDiffReveal()}
+          onRevealed={clearDiffReveal}
+        />
         <Show when={gitStore.diff?.truncated}>
           <p class="panel-note">Some files were over budget and are not listed.</p>
         </Show>

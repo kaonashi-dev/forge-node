@@ -188,7 +188,7 @@ input queue. Workspace filesystem and Git effects remain daemon-owned.
 | Change | Look in |
 |--------|---------|
 | terminal rendering and selection | `shared/cell-grid/`, `features/terminal/TerminalPane.tsx` |
-| clipboard and terminal input | `shared/input/clipboard.ts`, `features/terminal/commands.ts`; host `runtime/input.rs` and `crates/terminal-input` encode PTY input |
+| clipboard and terminal input | `shared/input/clipboard.ts`, `features/terminal/commands.ts`; host `src-tauri/src/clipboard.rs` owns the system pasteboard, `runtime/input.rs` and `crates/terminal-input` encode PTY input |
 | editor pane (cells surface), chords, chrome, autosave | `features/editor/cells/`, `features/editor/editorChrome.ts`, `features/editor/editorAutosave.ts` |
 | DOM editor surface, key translation, windowing | `features/editor/dom/` |
 | editor/disk conflict UI | `features/editor/conflict/` |

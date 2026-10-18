@@ -83,12 +83,19 @@ export function Sidebar(props: SidebarProps) {
         <div class="title-bar-inset" aria-hidden="true" data-tauri-drag-region />
         <div class="sidebar-top-spacer" data-tauri-drag-region />
         <Show when={!props.settings}>
-          <IconButton label="Hide the sidebar" size="sm" onClick={props.onHide}>
+          <IconButton
+            label="Hide the sidebar"
+            size="sm"
+            shortcut="toggle_sidebar"
+            onClick={props.onHide}
+          >
             <Icon name="panel-left-close" class="forge-icon-muted" />
           </IconButton>
         </Show>
       </div>
-      <Show when={!props.settings} fallback={<SettingsNav {...props} />}>
+      {/* Hidden, not unmounted: Settings is a trip, and ProjectsView's scroll
+          and cursor must be where they were on the way back. */}
+      <div class="sidebar-work" hidden={props.settings}>
         <button
           type="button"
           class="sidebar-jump"
@@ -105,9 +112,13 @@ export function Sidebar(props: SidebarProps) {
           onChange={(value) => setSidebarView(value as SidebarView)}
           listClass="sidebar-views"
           triggerClass="sidebar-view-tab"
+          glide
           contentClass="sidebar-body"
           tabs={tabs}
         />
+      </div>
+      <Show when={props.settings}>
+        <SettingsNav {...props} />
       </Show>
       <SidebarFooter />
     </aside>
@@ -180,6 +191,7 @@ function SidebarFooter() {
       <IconButton
         label="Settings"
         size="sm"
+        shortcut="open_settings"
         class="sidebar-footer-settings"
         onClick={() => invokeAction("open_settings")}
       >

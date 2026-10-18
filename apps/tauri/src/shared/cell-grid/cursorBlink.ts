@@ -5,12 +5,10 @@
 // painted here at all (see the note at the top of `renderer.ts`).
 
 /**
- * Half a blink, in milliseconds.
- *
- * `xterm`'s rate, which every emulator since has copied closely enough that a
- * caret at any other speed reads as a different kind of object.
+ * Half a blink, in milliseconds: a 1.1s on/off cycle in steps, a hair slower
+ * than xterm's 1.06s and the same rate the DOM editor's caret keeps.
  */
-export const BLINK_MS = 530;
+export const BLINK_MS = 550;
 
 /** Whether the reader has asked the system for less movement. */
 export function prefersReducedMotion(): boolean {

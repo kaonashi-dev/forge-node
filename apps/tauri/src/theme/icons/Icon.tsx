@@ -14,12 +14,13 @@ type IconProps = {
 };
 
 /**
- * A lucide glyph, tinted by `currentColor`.
+ * A Forge glyph, tinted by `currentColor`.
  *
- * Stroke is pinned to 1.5: lucide ships at 2, which at 14px on a 26px row is a
- * heavier line than the chrome around it. Sizes stay on the 12/14/16 rung the
- * rest of the shell uses. The `.forge-icon-*` colour classes set `color`, which
- * the stroke inherits, so nothing here needs to know the palette.
+ * Stroke is pinned to 1.5, the weight the set is drawn at on its 16px grid;
+ * sizes stay on the 12/14/16 rung the rest of the shell uses. The
+ * `.forge-icon-*` colour classes set `color`, which the stroke inherits, so
+ * nothing here needs to know the palette: default/`muted` are the neutral
+ * marks most rows use, and the tone classes carry meaning where it exists.
  */
 export function Icon(props: IconProps) {
   return (

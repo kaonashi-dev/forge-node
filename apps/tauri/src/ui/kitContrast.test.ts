@@ -77,7 +77,7 @@ describe("kit tints keep text at AA", () => {
     }
 
     const dangerToast = over(p.surface, p.red, tint("--danger-tint-bg"));
-    check("danger toast detail", text("--fg-muted"), dangerToast);
+    check("danger toast detail", text("--fg-default"), dangerToast);
     check("danger toast icon text", text("--danger-text"), dangerToast);
     check("invalid field text", text("--fg-default"), dangerToast);
   });

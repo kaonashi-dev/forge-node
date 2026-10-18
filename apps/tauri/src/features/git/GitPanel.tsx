@@ -1,4 +1,6 @@
 import { For, Index, Show, createMemo, createSignal, onMount } from "solid-js";
+import { projectHue } from "../../state/projectColors";
+import { playOnce } from "../../theme/motion";
 import { forgeStore } from "../../state/forgeStore";
 import { activeWorkspace } from "../../state/workspace";
 import { rebaseInProgress, readyToContinue } from "../../contracts/workbench";
@@ -80,12 +82,13 @@ export function GitPanel() {
     <div class="panel-body git-panel">
       <Show when={workspace()}>
         {(checkout) => (
-          <header class="git-head">
+          <header class="git-head" style={{ "--project-hue": projectHue(checkout().project_id) }}>
             <div class="git-head-row">
               <Show
                 when={replaying() && rebase()?.head}
                 fallback={
                   <span class="git-branch forge-truncate">
+                    <span class="git-branch-line" aria-hidden="true" />
                     {checkout().branch ?? checkout().path}
                   </span>
                 }
@@ -121,8 +124,18 @@ export function GitPanel() {
               <Button
                 variant="ghost"
                 size="xs"
-                iconLeading={<Icon name="refresh" size={13} class="forge-icon-muted" />}
-                onClick={() => void fetchRemote(checkout().project_id).catch(() => undefined)}
+                iconLeading={<Icon name="fetch" size={13} class="forge-icon-muted" />}
+                onClick={(event) => {
+                  const target = event.currentTarget;
+                  const icon =
+                    target instanceof Element
+                      ? (target.querySelector(".forge-glyph") ?? undefined)
+                      : undefined;
+                  // The daemon acks when the fetch starts; that ack is what lands the arrow.
+                  void fetchRemote(checkout().project_id)
+                    .then(() => playOnce(icon, "glyph-drop"))
+                    .catch(() => undefined);
+                }}
               >
                 Fetch
               </Button>

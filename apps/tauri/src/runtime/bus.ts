@@ -41,6 +41,5 @@ export const editorCellsChannel = channel<CellsPayload>();
  * one has nothing to do with the other.
  */
 export const editorFrameChannel = channel<EditorFramePayload>();
-export const clipboardChannel = channel<string>();
 
 export const fileChangesChannel = channel<[workspace: string, path: string]>();

@@ -8,6 +8,7 @@ import {
   themePreference,
   type ThemePreference,
 } from "../../theme/ThemeProvider";
+import { rememberTheme } from "../../theme/lastTheme";
 import { MAX_THEME_BYTES, parseCustomTheme, type CustomTheme } from "../../theme/customTheme";
 import { hex, on, parseHex } from "../../theme/mix";
 import {
@@ -25,7 +26,7 @@ import {
   type Palette,
   type ThemeBaseId,
 } from "../../theme/tokens";
-import { Button, Switch, TextArea } from "../../ui/index";
+import { Button, RadioGroup, Switch, TextArea } from "../../ui/index";
 import { Icon } from "../../theme/icons/index";
 // Not through `ui/index`: the barrel is in the initial chunk, and the colour
 // primitives belong with Settings, which is loaded when it is first opened.
@@ -83,6 +84,7 @@ export function ThemeSettings() {
     try {
       await setAppState(THEME_BASE_KEY, next);
       persistedPreference = next;
+      rememberTheme(next);
       if (next.startsWith("{")) {
         setSavedCustom(next);
         await setAppState(CUSTOM_KEY, next);
@@ -183,32 +185,49 @@ export function ThemeSettings() {
           />
         }
       >
-        <div class="theme-cards" role="radiogroup" aria-label="Theme">
-          <For each={bases}>
-            {(id) => (
-              <ThemeCard
-                palette={palettes[id]}
-                label={THEME_LABELS[id]}
-                note={id.startsWith("calm-") ? (baseIsLight(id) ? "light" : "dark") : null}
-                selected={selected() === id}
-                disabled={busy()}
-                onChoose={() => void choose(id)}
-              />
-            )}
-          </For>
-          <Show when={custom()}>
-            {(saved) => (
-              <ThemeCard
-                palette={saved().theme.palette}
-                label={saved().theme.name}
-                note="custom"
-                selected={selected() === "custom"}
-                disabled={busy()}
-                onChoose={() => void choose(saved().source)}
-              />
-            )}
-          </Show>
-        </div>
+        <RadioGroup
+          label="Theme"
+          orientation="horizontal"
+          class="theme-cards"
+          itemClass="theme-card"
+          value={selected()}
+          onChange={(value) => {
+            const saved = custom();
+            if (value === "custom") {
+              if (saved) void choose(saved.source);
+            } else void choose(value as ThemeBaseId);
+          }}
+          options={[
+            ...bases.map((id) => ({
+              value: id,
+              label: THEME_LABELS[id],
+              disabled: busy(),
+              render: () => (
+                <ThemeCard
+                  palette={palettes[id]}
+                  label={THEME_LABELS[id]}
+                  note={id.startsWith("calm-") ? (baseIsLight(id) ? "light" : "dark") : null}
+                />
+              ),
+            })),
+            ...(custom()
+              ? [
+                  {
+                    value: "custom",
+                    label: custom()!.theme.name,
+                    disabled: busy(),
+                    render: () => (
+                      <ThemeCard
+                        palette={custom()!.theme.palette}
+                        label={custom()!.theme.name}
+                        note="custom"
+                      />
+                    ),
+                  },
+                ]
+              : []),
+          ]}
+        />
         <div class="theme-actions">
           <Button
             variant="ghost"
@@ -231,21 +250,26 @@ export function ThemeSettings() {
         <h3 id="accent-title" class="appearance-row-title">
           Accent
         </h3>
-        <div class="accent-swatches" role="radiogroup" aria-labelledby="accent-title">
-          <For each={ACCENT_SWATCHES[mode()]}>
-            {(swatch) => (
-              <button
-                type="button"
-                role="radio"
-                class="accent-swatch"
-                aria-checked={accentIs(swatch.color)}
-                aria-label={swatch.name}
-                disabled={busy()}
-                style={{ background: swatch.color }}
-                onClick={() => chooseAccent(swatch.color)}
-              />
-            )}
-          </For>
+        <div class="accent-choices">
+          <RadioGroup
+            label="Accent"
+            orientation="horizontal"
+            class="accent-swatches"
+            itemClass="accent-swatch"
+            value={ACCENT_SWATCHES[mode()].find((swatch) => accentIs(swatch.color))?.color ?? null}
+            onChange={chooseAccent}
+            options={ACCENT_SWATCHES[mode()].map((swatch) => ({
+              value: swatch.color,
+              label: swatch.name,
+              disabled: busy(),
+              render: () => (
+                <>
+                  <span class="accent-swatch-fill" style={{ background: swatch.color }} />
+                  <span class="forge-visually-hidden">{swatch.name}</span>
+                </>
+              ),
+            }))}
+          />
           <button
             type="button"
             class="accent-swatch accent-swatch-custom"
@@ -400,24 +424,10 @@ export function ThemeSettings() {
 }
 
 /** A miniature window in the palette's own grounds: rail, sidebar bars, the card. */
-function ThemeCard(props: {
-  palette: Palette;
-  label: string;
-  note: string | null;
-  selected: boolean;
-  disabled: boolean;
-  onChoose: () => void;
-}) {
+function ThemeCard(props: { palette: Palette; label: string; note: string | null }) {
   const colors = () => props.palette;
   return (
-    <button
-      type="button"
-      role="radio"
-      class="theme-card"
-      aria-checked={props.selected}
-      disabled={props.disabled}
-      onClick={props.onChoose}
-    >
+    <>
       <span class="theme-card-window" style={{ background: colors().rail }} aria-hidden="true">
         <span class="theme-card-side">
           <span style={{ background: colors().surfaceHi }} />
@@ -433,6 +443,6 @@ function ThemeCard(props: {
         <span class="forge-truncate">{props.label}</span>
         <Show when={props.note}>{(note) => <span class="theme-card-mode">{note()}</span>}</Show>
       </span>
-    </button>
+    </>
   );
 }

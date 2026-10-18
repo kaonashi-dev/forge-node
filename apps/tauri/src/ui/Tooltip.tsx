@@ -1,5 +1,7 @@
 import { Tooltip as Kobalte } from "@kobalte/core/tooltip";
-import type { JSX } from "solid-js";
+import { Show, type JSX } from "solid-js";
+import type { ActionId } from "../actions/actions";
+import { Kbd } from "./Kbd";
 import { tooltipAnchorRect, tooltipOverflowPadding } from "./tooltipInset";
 
 export type TooltipProps = {
@@ -12,6 +14,8 @@ export type TooltipProps = {
    * A `display: contents` span draws no box, so the tip anchors to its child.
    */
   contents?: boolean;
+  /** The action the control runs; its bound chord follows the name. */
+  shortcut?: ActionId;
 };
 
 /**
@@ -40,7 +44,12 @@ export function Tooltip(props: TooltipProps) {
         {props.children}
       </Kobalte.Trigger>
       <Kobalte.Portal>
-        <Kobalte.Content class="forge-tooltip">{props.label}</Kobalte.Content>
+        <Kobalte.Content class="forge-tooltip">
+          {props.label}
+          <Show when={props.shortcut}>
+            {(action) => <Kbd action={action()} bare class="forge-tooltip-kbd" />}
+          </Show>
+        </Kobalte.Content>
       </Kobalte.Portal>
     </Kobalte>
   );

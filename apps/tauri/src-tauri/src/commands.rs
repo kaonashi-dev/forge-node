@@ -1,7 +1,11 @@
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter as _, State};
 use tauri_plugin_dialog::DialogExt as _;
 
-use crate::runtime::{ConnectedPayload, HostStatus, Runtime, RuntimeCommand, WorkbenchCommand};
+use crate::clipboard;
+use crate::runtime::input;
+use crate::runtime::{
+    ConnectedPayload, HostStatus, NoticePayload, Runtime, RuntimeCommand, WorkbenchCommand,
+};
 
 #[tauri::command]
 pub fn host_status(runtime: State<'_, Runtime>) -> HostStatus {
@@ -34,6 +38,58 @@ pub fn send_workbench_command(
     command: WorkbenchCommand,
 ) -> Result<(), String> {
     runtime.send_workbench(command)
+}
+
+/// Paste the system clipboard into an open Code editor's buffer.
+///
+/// Answers whether the host could read the pasteboard; `false` sends the
+/// caller to its WebView fallback. The text never crosses the WebView: this
+/// reads it here, drops the read when a reconnect moved the connection while
+/// it waited, and enqueues the ordinary `PasteEditor` — the same clamped,
+/// bracketed, single-undo path the `paste` event takes.
+///
+/// The read runs on the blocking pool, because a pasteboard type another
+/// application produces on request can wait, and nothing here may run on the
+/// bridge thread that also carries keystrokes.
+#[tauri::command]
+pub async fn paste_editor_clipboard(
+    app: AppHandle,
+    runtime: State<'_, Runtime>,
+    session_id: domain::SessionId,
+) -> Result<bool, String> {
+    if !clipboard::can_read() {
+        return Ok(false);
+    }
+    // `None` is "between connections": there is no editor to paste into, and
+    // a generation captured there can never match the one after the read.
+    let Some(generation) = runtime.connection_generation() else {
+        return Ok(true);
+    };
+    let read = tauri::async_runtime::spawn_blocking(|| {
+        clipboard::read_text(input::MAX_EDITOR_PASTE_BYTES)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some(read) = read else {
+        return Ok(true);
+    };
+    if runtime.connection_generation() != Some(generation) {
+        return Ok(true);
+    }
+    if let Some(total) = read.total {
+        let _ = app.emit(
+            "runtime:notice",
+            NoticePayload {
+                reason: input::paste_cut_notice(read.text.len(), total),
+            },
+        );
+    }
+    runtime.send(RuntimeCommand::PasteEditor {
+        session_id,
+        text: read.text,
+        id: 0,
+    })?;
+    Ok(true)
 }
 
 /// Ask the platform for a directory, for "Add project".

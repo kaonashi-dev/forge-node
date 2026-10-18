@@ -1,5 +1,4 @@
 import { For, Show, createMemo, createResource, createSignal, type JSX } from "solid-js";
-import { Minus, Plus } from "lucide-solid";
 import {
   Badge,
   Button,
@@ -59,6 +58,8 @@ import {
 } from "../../theme/density";
 import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
 import { applyReduceMotion } from "../../theme/motion";
+import { applyGlass, glassPreference, themeBase } from "../../theme/ThemeProvider";
+import { baseIsLight } from "../../theme/tokens";
 import { DENSITY_NOTES, canStep, stepValue, type StepRange } from "./typeSteps";
 import {
   AUTOSAVE_KEY,
@@ -68,6 +69,7 @@ import {
   EDITOR_LINE_HEIGHT_KEY,
   EDITOR_LINE_HEIGHT_RANGE,
   REDUCE_MOTION_KEY,
+  GLASS_KEY,
   TERMINAL_ZOOM_KEY,
   TERMINAL_ZOOM_RANGE,
   TERMINAL_ZOOM_STEP,
@@ -540,6 +542,25 @@ function Appearance() {
             <span class="history-spacer" />
             <Switch label="Reduce motion" checked={reduceMotion()} onChange={setReduceMotion} />
           </section>
+          <section class="appearance-row" aria-labelledby="glass-title">
+            <h3 id="glass-title" class="appearance-row-title">
+              Glass
+            </h3>
+            <Switch
+              label="Frosted sidebar and pill tabs"
+              checked={glassPreference()}
+              disabled={baseIsLight(themeBase())}
+              onChange={(next) => {
+                applyGlass(next);
+                writeFlag(GLASS_KEY, next);
+              }}
+            />
+          </section>
+          <p class="appearance-row-note">
+            {baseIsLight(themeBase())
+              ? "Glass is drawn for dark themes; pick one to use it."
+              : "A lit backdrop, a translucent sidebar and a blue accent over the current theme."}
+          </p>
           <p class="appearance-row-note">{DENSITY_NOTES[density()]}</p>
         </div>
 
@@ -645,7 +666,7 @@ function TypeStepper(props: {
           disabled={!canStep(props.value, -1, props.range)}
           onClick={() => step(-1)}
         >
-          <Minus size={12} strokeWidth={1.8} aria-hidden="true" />
+          <Icon name="minus" size={12} />
         </IconButton>
         <output class="settings-stepper-value" aria-live="polite">
           {props.format(props.value)}
@@ -656,7 +677,7 @@ function TypeStepper(props: {
           disabled={!canStep(props.value, 1, props.range)}
           onClick={() => step(1)}
         >
-          <Plus size={12} strokeWidth={1.8} aria-hidden="true" />
+          <Icon name="plus" size={12} />
         </IconButton>
       </div>
     </div>

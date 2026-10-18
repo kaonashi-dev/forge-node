@@ -1,4 +1,4 @@
-import { Match, Switch } from "solid-js";
+import { Match, Switch, createEffect, createMemo, createSignal, on } from "solid-js";
 import { sessionAttention } from "./attention";
 import { now } from "../../runtime/clock";
 import type { Session } from "../../contracts/runtime";
@@ -26,8 +26,8 @@ type SessionGlyphProps = {
  *
  * A shared robot for every agent would make a workspace with four providers
  * unreadable, so a known provider draws its own `BrandIcon`; one without a logo
- * falls back to the lucide bot. Shells take the accent so they stay apart from
- * those marks.
+ * falls back to the Forge agent glyph. Shells take the accent so they stay apart
+ * from those marks.
  *
  * No mark carries a fill of its own: each is tinted by whatever the row it sits
  * in is already using, which is what keeps four providers in one list reading
@@ -36,11 +36,33 @@ type SessionGlyphProps = {
  */
 export function SessionGlyph(props: SessionGlyphProps) {
   const emphasis = () => props.emphasis ?? "full";
-  const work = () => {
+  const work = createMemo(() => {
     const session = props.session;
     if (!session) return undefined;
     return sessionWork(session, sessionAttention(session.id), now());
-  };
+  });
+  /*
+   * The bell swings and the check draws when the session *becomes* waiting or
+   * finished, not whenever the row mounts: switching checkouts or unfolding a
+   * card remounts glyphs whose state did not change.
+   */
+  const [arrived, setArrived] = createSignal<"needs-you" | "done" | null>(null);
+  createEffect(
+    on(
+      work,
+      (next, previous) => {
+        if (next === previous) return;
+        if (next === "needs-you") setArrived("needs-you");
+        else if (
+          (next === "idle" || next === "exited") &&
+          (previous === "working" || previous === "starting")
+        )
+          setArrived("done");
+        else setArrived(null);
+      },
+      { defer: true },
+    ),
+  );
   const face = () => {
     const session = props.session;
     if (!session) return "identity" as const;
@@ -66,7 +88,7 @@ export function SessionGlyph(props: SessionGlyphProps) {
       <Match when={face() === "needs-you"}>
         <Icon
           name="bell"
-          class="forge-icon-needs-you attention-pulse"
+          class={`forge-icon-needs-you ${arrived() === "needs-you" ? "glyph-ring-once" : ""}`}
           size={props.size}
           title="Needs you"
         />
@@ -82,7 +104,7 @@ export function SessionGlyph(props: SessionGlyphProps) {
       <Match when={face() === "done"}>
         <Icon
           name="check"
-          class={work() === "idle" ? "forge-icon-green" : "forge-icon-muted"}
+          class={`${arrived() === "done" ? "glyph-draw" : ""} ${work() === "idle" ? "forge-icon-green" : "forge-icon-muted"}`}
           size={props.size}
           title={work() === "idle" ? "Finished" : "Exited"}
         />

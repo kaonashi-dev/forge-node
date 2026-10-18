@@ -1,3 +1,4 @@
+import type { ActionId } from "../actions/actions";
 import { Button as Kobalte } from "@kobalte/core/button";
 import { Show, splitProps, type JSX } from "solid-js";
 import { Tooltip } from "./Tooltip";
@@ -25,6 +26,8 @@ export type ButtonProps = {
   /** Set when the button opens something that stays open. */
   "aria-expanded"?: boolean;
   "aria-label"?: string;
+  /** Inert but still at full strength, for a control showing a result for a beat. */
+  "aria-disabled"?: boolean;
   onClick?: (event: MouseEvent) => void;
   onMouseDown?: (event: MouseEvent) => void;
 };
@@ -97,6 +100,8 @@ export type IconButtonProps = Omit<
   /** Hides the tooltip but preserves the accessible label. */
   hideTooltip?: boolean;
   tooltipPlacement?: "top" | "bottom" | "left" | "right";
+  /** The action this button runs, so its tooltip can carry the chord. */
+  shortcut?: ActionId;
 };
 
 /** Includes a keyboard-accessible tooltip; native `title` is insufficient. */
@@ -110,6 +115,7 @@ export function IconButton(props: IconButtonProps) {
     "title",
     "hideTooltip",
     "tooltipPlacement",
+    "shortcut",
   ]);
   const button = (
     <Button
@@ -125,7 +131,11 @@ export function IconButton(props: IconButtonProps) {
   );
   return (
     <Show when={!own.hideTooltip} fallback={button}>
-      <Tooltip label={own.title ?? own.label} placement={own.tooltipPlacement}>
+      <Tooltip
+        label={own.title ?? own.label}
+        placement={own.tooltipPlacement}
+        shortcut={own.shortcut}
+      >
         {button}
       </Tooltip>
     </Show>

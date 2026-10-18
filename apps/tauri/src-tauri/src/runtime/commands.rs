@@ -134,7 +134,7 @@ pub enum RuntimeCommand {
         #[serde(default)]
         session_id: Option<SessionId>,
     },
-    /// Copy a dragged range, answered with a `runtime:clipboard` event.
+    /// Copy a dragged range; the host writes the system clipboard.
     ///
     /// Only the grid knows what a run's cells hold, so the text is cut here
     /// rather than reconstructed from what the canvas was given to paint.

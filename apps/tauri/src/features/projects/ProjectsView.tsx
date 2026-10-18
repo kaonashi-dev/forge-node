@@ -6,7 +6,6 @@ import {
   createMemo,
   createSelector,
   createSignal,
-  on,
 } from "solid-js";
 import { createStore } from "solid-js/store";
 import { applyRailTree } from "./railTree";
@@ -36,6 +35,7 @@ import { setAppState } from "../settings/commands";
 import { refreshWorkspaceStatus } from "../sessions/commands";
 import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
 import { centerMode, openCompare, showCode, viewsStore } from "../../navigation/viewsStore";
+import { openFileCount } from "../../navigation/views";
 import { focusSession, launchAgent, launchShell } from "../sessions/sessionActions";
 import {
   Badge,
@@ -74,7 +74,6 @@ function railRowId(id: string): string {
   return `rail-${encodeURIComponent(id)}`;
 }
 import { sessionDisplayTitle } from "../sessions/sessionTree";
-import { sidebarView } from "../../navigation/sidebarStore";
 import { waitedFor } from "../sessions/attention";
 import { hasQuestion, waitingSessions } from "../sessions/waiting";
 import { gitStore } from "../git/state";
@@ -83,6 +82,10 @@ import { AttentionMarker, StateMarker, WorkMarker } from "../sessions/markers";
 import { SessionGlyph } from "../sessions/SessionGlyph";
 import { draftWithJuva, loadBranchCompare } from "../git/commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
+import { projectHue, projectHueChoice, setProjectHue } from "../../state/projectColors";
+import { DEFAULT_HUE, HUE_NAMES } from "../../theme/tokens";
+import { justCreated } from "../../theme/motion";
+import { workspaceArrivals } from "./arrivals";
 
 const COLLAPSED_KEY = "ui.sidebar.collapsed";
 const WORKSPACE_ORDER_KEY = "ui.sidebar.workspace_order";
@@ -94,21 +97,18 @@ function focusCode(workspace: string): void {
   showCode();
 }
 
-/** Files a checkout has open in Code; the rail lists Code only while there are some. */
-function openFileCount(workspace: string): number {
-  return viewsStore.byWorkspace[workspace]?.open.length ?? 0;
+/** Files a checkout has open in Code. */
+function filesOpen(workspace: string): number {
+  const views = viewsStore.byWorkspace[workspace];
+  return views ? openFileCount(views) : 0;
 }
 
+/** The rail lists Code while the checkout has anything open there. */
 function codeShown(workspace: string): boolean {
   return (
-    openFileCount(workspace) > 0 || (centerMode() === "code" && activeWorkspace() === workspace)
+    (viewsStore.byWorkspace[workspace]?.open.length ?? 0) > 0 ||
+    (centerMode() === "code" && activeWorkspace() === workspace)
   );
-}
-
-/** The project the window is pointed at wears the accent on its avatar. */
-function projectCurrent(project: ProjectNode): boolean {
-  const workspace = activeWorkspace();
-  return project.workspaces.some((item) => item.id === workspace);
 }
 
 /** The loudest state anywhere under a folded project: one dot instead of a count. */
@@ -217,14 +217,22 @@ export function ProjectsView() {
   function projectMenu(node: ProjectNode): MenuItem[] {
     const project = forgeStore.projects.find((item) => item.id === node.id);
     const groups = forgeStore.project_groups;
-    return [
-      newWorktreeItem({ id: node.id, name: node.name }),
-      {
-        kind: "item",
-        label: "Shared files…",
-        icon: "folder-open",
-        run: () => setSharedFiles({ projectId: node.id, name: node.name }),
-      },
+    const sole = soleCheckout(node);
+    // A project with one checkout answers for it too; its rows already carry
+    // the new worktree, shared files and the path.
+    const own: MenuItem[] = sole
+      ? []
+      : [
+          newWorktreeItem({ id: node.id, name: node.name }),
+          {
+            kind: "item",
+            label: "Shared files…",
+            icon: "folder-open",
+            run: () => setSharedFiles({ projectId: node.id, name: node.name }),
+          },
+        ];
+    const items: MenuItem[] = [
+      ...own,
       {
         kind: "item",
         label: "Ignored worktrees…",
@@ -258,6 +266,33 @@ export function ProjectsView() {
           });
         },
       },
+      {
+        kind: "submenu",
+        label: "Color",
+        icon: "appearance",
+        items: [
+          {
+            kind: "item",
+            label: "Theme default",
+            detail: projectHueChoice(node.id) === null ? "Current" : HUE_NAMES[DEFAULT_HUE],
+            glyph: <span class="hue-mark hue-mark-menu hue-mark-default" />,
+            run: () => setProjectHue(node.id, null),
+          },
+          { kind: "rule" },
+          ...HUE_NAMES.map((name, slot) => ({
+            kind: "item" as const,
+            label: name,
+            detail: projectHueChoice(node.id) === slot ? "Current" : undefined,
+            glyph: (
+              <span
+                class="hue-mark hue-mark-menu"
+                style={{ "--project-hue": `var(--hue-${slot})` }}
+              />
+            ),
+            run: () => setProjectHue(node.id, slot),
+          })),
+        ],
+      },
       ...(groups.length > 0 || project?.project_group_id
         ? [
             { kind: "rule" as const },
@@ -281,15 +316,19 @@ export function ProjectsView() {
               : []),
           ]
         : []),
-      { kind: "rule" },
-      {
-        kind: "item",
-        label: "Copy path",
-        icon: "copy",
-        disabled: !project,
-        run: () =>
-          void navigator.clipboard.writeText(project?.root_path ?? "").catch(() => undefined),
-      },
+      ...(sole
+        ? []
+        : [
+            { kind: "rule" as const },
+            {
+              kind: "item" as const,
+              label: "Copy path",
+              icon: "copy" as const,
+              disabled: !project,
+              run: () =>
+                void navigator.clipboard.writeText(project?.root_path ?? "").catch(() => undefined),
+            },
+          ]),
       { kind: "rule" },
       {
         kind: "item",
@@ -304,6 +343,9 @@ export function ProjectsView() {
         run: () => setProjectDialogsStore("projectRemoval", node.id),
       },
     ];
+    return sole
+      ? [...workspaceMenu(sole), { kind: "rule" }, { kind: "heading", label: "Project" }, ...items]
+      : items;
   }
 
   /** A group's menu. Removing one never touches the project directories. */
@@ -523,6 +565,13 @@ export function ProjectsView() {
    */
   const [tree, setTree] = createStore<GroupNode[]>([]);
   createComputed(() => applyRailTree(setTree, buildTree(forgeStore, workspaceOrder(), tabOrder())));
+  // Stamps arrivals as the store gains them: a workspace change, never a frame.
+  createComputed(() =>
+    workspaceArrivals.note(
+      forgeStore.workspaces.map((item) => item.id),
+      Date.now(),
+    ),
+  );
 
   function persistProjectOrder(projectId: string, ids: string[]): void {
     const next = { ...workspaceOrder(), [projectId]: ids };
@@ -540,6 +589,50 @@ export function ProjectsView() {
    */
   const rows = createMemo(() => railRows(tree, collapsed(), codeShown));
   const [selected, setSelected] = createSignal<string | null>(null);
+
+  /*
+   * The current row's ground is one element that glides to the row picked
+   * next, like the tab strip's chip. Measured when what is current, what is
+   * folded or the tree's size changes, never per frame.
+   */
+  let treeEl: HTMLDivElement | undefined;
+  const [currentBox, setCurrentBox] = createSignal<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [currentPlaced, setCurrentPlaced] = createSignal(false);
+  function measureCurrent(): void {
+    const row = treeEl?.querySelector<HTMLElement>('.tree-row[aria-current="true"]');
+    if (!treeEl || !row || row.getClientRects().length === 0) {
+      setCurrentBox(null);
+      setCurrentPlaced(false);
+      return;
+    }
+    const outer = treeEl.getBoundingClientRect();
+    const inner = row.getBoundingClientRect();
+    setCurrentBox({
+      x: inner.left - outer.left,
+      y: inner.top - outer.top,
+      width: inner.width,
+      height: inner.height,
+    });
+    if (!currentPlaced()) requestAnimationFrame(() => setCurrentPlaced(true));
+  }
+  createEffect(() => {
+    connectionStore.activeSession;
+    centerMode();
+    activeWorkspace();
+    collapsed();
+    queueMicrotask(measureCurrent);
+  });
+  onMount(() => {
+    if (!treeEl || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measureCurrent);
+    observer.observe(treeEl);
+    onCleanup(() => observer.disconnect());
+  });
   const isSelected = createSelector(selected);
   const cursor = createMemo(() => {
     const id = selected();
@@ -607,29 +700,29 @@ export function ProjectsView() {
   onCleanup(releaseKeyboard);
 
   /*
-   * This view stays mounted while hidden, so neither cleanup nor a `focusout`
-   * is guaranteed to release SIDEBAR when it goes — not every engine sends one
-   * for a focused element that becomes `display: none` — and a live context
-   * would hand `MOD-Enter` to this tree instead of the terminal.
+   * This view stays mounted while hidden — behind another sidebar view or
+   * behind Settings — so neither cleanup nor a `focusout` is guaranteed to
+   * release SIDEBAR when it goes: not every engine sends one for a focused
+   * element that becomes `display: none`, and a live context would hand
+   * `MOD-Enter` to this tree instead of the terminal.
    *
-   * The scroll offset has the opposite problem: WKWebView drops it for a
-   * `display: none` box, and by the time this runs the attribute has already
-   * been applied. So the offset is kept from the scroll events and put back on
-   * the way in.
+   * WKWebView also drops the scroll offset of a `display: none` box, so the
+   * offset is kept from scroll events while the view has a height and put back
+   * when it has one again. A resize observer sees both ways of hiding.
    */
   let viewEl: HTMLDivElement | undefined;
   let keptScroll = 0;
 
-  createEffect(
-    on(
-      () => sidebarView() === "Projects",
-      (visible) => {
-        if (!visible) releaseKeyboard();
-        else if (viewEl) viewEl.scrollTop = keptScroll;
-      },
-      { defer: true },
-    ),
-  );
+  onMount(() => {
+    if (!viewEl || typeof ResizeObserver === "undefined") return;
+    const el = viewEl;
+    const observer = new ResizeObserver(() => {
+      if (el.clientHeight === 0) releaseKeyboard();
+      else if (el.scrollTop !== keptScroll) el.scrollTop = keptScroll;
+    });
+    observer.observe(el);
+    onCleanup(() => observer.disconnect());
+  });
 
   onMount(() => {
     const bound = [
@@ -678,7 +771,7 @@ export function ProjectsView() {
       class="projects-view"
       ref={viewEl}
       onScroll={(event) => {
-        if (sidebarView() === "Projects") keptScroll = event.currentTarget.scrollTop;
+        if (event.currentTarget.clientHeight > 0) keptScroll = event.currentTarget.scrollTop;
       }}
     >
       {/* A question that has been waiting is the one thing that must not need
@@ -760,6 +853,8 @@ export function ProjectsView() {
           chords act on, and the context entered on focus rather than on mount.
           `focusin`/`focusout` so focus moving between rows is not "leaving". */}
       <div
+        ref={treeEl}
+        class="rail-tree"
         role="tree"
         aria-label="Projects, checkouts and sessions"
         aria-activedescendant={rows()[cursor()] ? railRowId(rows()[cursor()].id) : undefined}
@@ -769,6 +864,20 @@ export function ProjectsView() {
           if (!event.currentTarget.contains(event.relatedTarget as Node | null)) releaseKeyboard();
         }}
       >
+        <Show when={currentBox()}>
+          {(box) => (
+            <span
+              class="rail-selection"
+              classList={{ gliding: currentPlaced() }}
+              aria-hidden="true"
+              style={{
+                transform: `translate(${box().x}px, ${box().y}px)`,
+                width: `${box().width}px`,
+                height: `${box().height}px`,
+              }}
+            />
+          )}
+        </Show>
         {/* An empty rail was a sentence and nothing else. The one thing there is
           to do here is the button, rather than a line of prose about a menu
           somewhere else. */}
@@ -827,92 +936,139 @@ export function ProjectsView() {
                     a rule on `.tree-row.project`. */}
                 <div class="tree-children" classList={{ nested: group.name !== null }} role="group">
                   <For each={group.projects}>
-                    {(project) => (
-                      <>
-                        <button
-                          type="button"
-                          id={railRowId(`project:${project.id}`)}
-                          class="forge-row tree-row project"
-                          role="treeitem"
-                          aria-level={group.name === null ? 1 : 2}
-                          aria-expanded={isOpen(project.id)}
-                          aria-selected={isSelected(`project:${project.id}`)}
-                          classList={{
-                            cursor: isSelected(`project:${project.id}`),
-                          }}
-                          onClick={() => {
-                            selectRow(`project:${project.id}`);
-                            const sole = soleCheckout(project);
-                            if (sole) focusWorkspace(sole.id);
-                            toggle(project.id);
-                          }}
-                          onContextMenu={(event) => openMenu(event, projectMenu(project))}
-                        >
-                          <span
-                            class="project-avatar"
-                            classList={{ current: projectCurrent(project) }}
-                            aria-hidden="true"
+                    {(project) => {
+                      const projectHover = createRowHover();
+                      const projectRevealed = () =>
+                        projectHover.hot() || isSelected(`project:${project.id}`);
+                      return (
+                        <>
+                          <div
+                            class="project-line"
+                            onPointerEnter={projectHover.enter}
+                            onPointerLeave={projectHover.leave}
                           >
-                            {project.icon ?? project.name.slice(0, 1).toUpperCase()}
-                          </span>
-                          <span class="tree-label forge-truncate">{project.name}</span>
-                          <Show
-                            when={isOpen(project.id) ? null : projectWork(project)}
-                            fallback={
-                              <Show when={isOpen(project.id) && soleCheckout(project)}>
-                                {(sole) => (
-                                  <span class="tree-meta">{sole().branch ?? sole().label}</span>
-                                )}
+                            <button
+                              type="button"
+                              id={railRowId(`project:${project.id}`)}
+                              class="forge-row tree-row project"
+                              role="treeitem"
+                              aria-level={group.name === null ? 1 : 2}
+                              aria-expanded={isOpen(project.id)}
+                              aria-selected={isSelected(`project:${project.id}`)}
+                              classList={{
+                                cursor: isSelected(`project:${project.id}`),
+                              }}
+                              onClick={() => {
+                                selectRow(`project:${project.id}`);
+                                const sole = soleCheckout(project);
+                                if (sole) focusWorkspace(sole.id);
+                                toggle(project.id);
+                              }}
+                              onContextMenu={(event) => openMenu(event, projectMenu(project))}
+                            >
+                              <span
+                                class="project-avatar hued"
+                                style={{ "--project-hue": projectHue(project.id) }}
+                                aria-hidden="true"
+                              >
+                                {project.icon ?? project.name.slice(0, 1).toUpperCase()}
+                              </span>
+                              <span class="tree-label forge-truncate">{project.name}</span>
+                              <Show
+                                when={isOpen(project.id) ? null : projectWork(project)}
+                                fallback={
+                                  <Show when={isOpen(project.id) && soleCheckout(project)}>
+                                    {(sole) => (
+                                      <span class="tree-meta forge-truncate">
+                                        {sole().branch ?? sole().label}
+                                      </span>
+                                    )}
+                                  </Show>
+                                }
+                              >
+                                {(work) => <WorkMarker work={work()} />}
                               </Show>
-                            }
-                          >
-                            {(work) => <WorkMarker work={work()} />}
+                            </button>
+                            <Show
+                              when={soleCheckout(project)}
+                              fallback={
+                                <span class="ws-marks">
+                                  <Show when={projectRevealed()}>
+                                    <RowActions
+                                      onMore={(event) => openMenu(event, projectMenu(project))}
+                                    />
+                                  </Show>
+                                </span>
+                              }
+                            >
+                              {(sole) => (
+                                <CheckoutMarks
+                                  workspace={sole()}
+                                  work={null}
+                                  onStart={(event) => openMenu(event, launchItems(sole().id))}
+                                  onMore={(event) => openMenu(event, projectMenu(project))}
+                                  reveal={projectRevealed()}
+                                />
+                              )}
+                            </Show>
+                          </div>
+                          <Show when={isOpen(project.id) && soleCheckout(project)}>
+                            {(sole) => (
+                              <div
+                                class="tree-guide hued"
+                                style={{ "--project-hue": projectHue(project.id) }}
+                              >
+                                <CheckoutChildren
+                                  workspace={sole()}
+                                  level={group.name === null ? 2 : 3}
+                                  selected={selected()}
+                                  onSessionMenu={(event, session) =>
+                                    openMenu(
+                                      event,
+                                      sessionMenuItems(session, sessionTitle(session)),
+                                    )
+                                  }
+                                />
+                              </div>
+                            )}
                           </Show>
-                        </button>
-                        <Show when={isOpen(project.id) && soleCheckout(project)}>
-                          {(sole) => (
-                            <div class="tree-guide">
-                              <CheckoutChildren
-                                workspace={sole()}
+                          <Show when={isOpen(project.id) && !soleCheckout(project)}>
+                            <div
+                              class="tree-guide hued"
+                              style={{ "--project-hue": projectHue(project.id) }}
+                            >
+                              <WorkspaceList
+                                workspaces={project.workspaces}
                                 level={group.name === null ? 2 : 3}
+                                order={workspaceOrder()[project.id] ?? []}
+                                onReorder={(ids) => persistProjectOrder(project.id, ids)}
+                                isOpen={isOpen}
                                 selected={selected()}
+                                onToggle={(workspace) => {
+                                  selectRow(`workspace:${workspace.id}`);
+                                  // Picking a checkout points the window at it, not
+                                  // just the rail: the tab strip, the launchers and
+                                  // the sidebar views are all scoped to the checkout,
+                                  // and a worktree with no sessions left had no other
+                                  // way to be selected — the card only folded.
+                                  focusWorkspace(workspace.id);
+                                  toggle(workspace.id);
+                                }}
+                                onMenu={(event, workspace) =>
+                                  openMenu(event, workspaceMenu(workspace))
+                                }
+                                onLaunch={(event, workspace) =>
+                                  openMenu(event, launchItems(workspace.id))
+                                }
                                 onSessionMenu={(event, session) =>
                                   openMenu(event, sessionMenuItems(session, sessionTitle(session)))
                                 }
                               />
                             </div>
-                          )}
-                        </Show>
-                        <Show when={isOpen(project.id) && !soleCheckout(project)}>
-                          <div class="tree-guide">
-                            <WorkspaceList
-                              workspaces={project.workspaces}
-                              level={group.name === null ? 2 : 3}
-                              order={workspaceOrder()[project.id] ?? []}
-                              onReorder={(ids) => persistProjectOrder(project.id, ids)}
-                              isOpen={isOpen}
-                              selected={selected()}
-                              onToggle={(workspace) => {
-                                selectRow(`workspace:${workspace.id}`);
-                                // Picking a checkout points the window at it, not
-                                // just the rail: the tab strip, the launchers and
-                                // the sidebar views are all scoped to the checkout,
-                                // and a worktree with no sessions left had no other
-                                // way to be selected — the card only folded.
-                                focusWorkspace(workspace.id);
-                                toggle(workspace.id);
-                              }}
-                              onMenu={(event, workspace) =>
-                                openMenu(event, workspaceMenu(workspace))
-                              }
-                              onSessionMenu={(event, session) =>
-                                openMenu(event, sessionMenuItems(session, sessionTitle(session)))
-                              }
-                            />
-                          </div>
-                        </Show>
-                      </>
-                    )}
+                          </Show>
+                        </>
+                      );
+                    }}
                   </For>
                 </div>
               </Show>
@@ -942,6 +1098,7 @@ function WorkspaceList(props: {
   selected: string | null;
   onToggle: (workspace: WorkspaceNode) => void;
   onMenu: (event: MouseEvent, workspace: WorkspaceNode) => void;
+  onLaunch: (event: MouseEvent, workspace: WorkspaceNode) => void;
   onSessionMenu: (event: MouseEvent, session: Session) => void;
 }) {
   let listEl: HTMLDivElement | undefined;
@@ -1045,6 +1202,7 @@ function WorkspaceList(props: {
               props.onToggle(workspace);
             }}
             onMenu={(event) => props.onMenu(event, workspace)}
+            onLaunch={(event) => props.onLaunch(event, workspace)}
             onSessionMenu={props.onSessionMenu}
             onHandlePointerDown={(event) => onHandlePointerDown(workspace.id, event)}
             onHandlePointerMove={(event) => onHandlePointerMove(workspace.id, event)}
@@ -1075,6 +1233,7 @@ function WorkspaceCard(props: {
   dropAfter: boolean;
   onToggle: () => void;
   onMenu: (event: MouseEvent) => void;
+  onLaunch: (event: MouseEvent) => void;
   onSessionMenu: (event: MouseEvent, session: Session) => void;
   onHandlePointerDown: (event: PointerEvent) => void;
   onHandlePointerMove: (event: PointerEvent) => void;
@@ -1093,15 +1252,14 @@ function WorkspaceCard(props: {
     ),
   );
   const codeActive = () => centerMode() === "code" && activeWorkspace() === props.workspace.id;
+  const arrived = workspaceArrivals.arrived(props.workspace.id, Date.now());
+  const rowHover = createRowHover();
   const current = createMemo(
     () =>
       codeActive() ||
       (centerMode() === "session" &&
         props.workspace.sessions.some((node) => node.session.id === connectionStore.activeSession)),
   );
-  const sync = createMemo(() => syncLabel(props.workspace.ahead, props.workspace.behind));
-  const changed = () =>
-    gitStore.diff?.workspace_id === props.workspace.id ? gitStore.diff.files.length : null;
 
   return (
     <div
@@ -1117,12 +1275,13 @@ function WorkspaceCard(props: {
         open: props.open,
         cursor: props.cursor,
         dragging: props.dragging,
+        "row-new": arrived,
         "drop-before": props.dropBefore,
         "drop-after": props.dropAfter,
       }}
       onContextMenu={props.onMenu}
     >
-      <div class="ws-row">
+      <div class="ws-row" onPointerEnter={rowHover.enter} onPointerLeave={rowHover.leave}>
         <button
           type="button"
           class="forge-row ws-head"
@@ -1135,60 +1294,22 @@ function WorkspaceCard(props: {
         >
           <Twisty open={props.open} />
           <Icon
-            name="git-branch"
+            name={props.workspace.worktree ? "worktree" : "git-branch"}
             size={12}
-            class={current() ? "forge-icon-accent" : "forge-icon-muted"}
+            class={`${current() ? "forge-icon-accent" : "forge-icon-muted"} ${arrived ? "glyph-draw-long" : ""}`}
           />
           <span class="tree-label ws-label forge-truncate">{props.workspace.label}</span>
           <Show when={!props.workspace.worktree}>
-            <Badge>primary</Badge>
-          </Show>
-          {/* Provisioning acks when it starts, so a checkout can be open
-              before its shared files have landed. */}
-          <Show when={sharesStore.applying.includes(props.workspace.id)}>
-            <Badge>setting up…</Badge>
+            <span class="tree-meta">primary</span>
           </Show>
         </button>
-        <span class="ws-marks">
-          <Show when={!props.open && work()}>{(state) => <WorkMarker work={state()} />}</Show>
-          {/* `measured_at: None` means "not measured", which is not the same as
-              clean — so an unmeasured checkout shows no mark at all. */}
-          <Show when={props.workspace.measured && props.workspace.dirty}>
-            <Tooltip label="Uncommitted changes" contents>
-              <span
-                class="ws-dirty"
-                role="img"
-                aria-label={
-                  changed() !== null ? `${changed()} uncommitted changes` : "Uncommitted changes"
-                }
-              >
-                ●{changed() ?? ""}
-              </span>
-            </Tooltip>
-          </Show>
-          <Show when={sync()}>
-            {(label) => (
-              <span class="ws-sync" aria-label="Ahead of or behind the remote">
-                {label()}
-              </span>
-            )}
-          </Show>
-          <Show when={props.workspace.pullRequest}>
-            {(pr) => (
-              <Tooltip label={prLabel(pr())} contents>
-                <Icon name="git-pull-request" size={13} class={PR_ICON_CLASS[prTone(pr())]} />
-              </Tooltip>
-            )}
-          </Show>
-          <IconButton
-            label="Start something here"
-            size="xs"
-            class="ws-start"
-            onClick={props.onMenu}
-          >
-            <Icon name="plus" size={13} />
-          </IconButton>
-        </span>
+        <CheckoutMarks
+          workspace={props.workspace}
+          work={props.open ? null : work()}
+          onStart={props.onLaunch}
+          onMore={props.onMenu}
+          reveal={rowHover.hot() || props.cursor}
+        />
       </div>
 
       <Show when={props.open}>
@@ -1206,6 +1327,112 @@ function WorkspaceCard(props: {
         />
       </Show>
     </div>
+  );
+}
+
+/** A checkout's trailing marks: work, changes, sync, pull request and its launcher. */
+function CheckoutMarks(props: {
+  workspace: WorkspaceNode;
+  work: ReturnType<typeof rollupWork>;
+  /** The launchers alone. */
+  onStart: (event: MouseEvent) => void;
+  /** Everything the row's context menu offers. */
+  onMore: (event: MouseEvent) => void;
+  /** Mount + and ⋯: the row is hovered, or it is the keyboard cursor and Tab must reach them. */
+  reveal: boolean;
+}) {
+  const sync = createMemo(() => syncLabel(props.workspace.ahead, props.workspace.behind));
+  const changed = () =>
+    gitStore.diff?.workspace_id === props.workspace.id ? gitStore.diff.files.length : null;
+  return (
+    <span class="ws-marks">
+      <span class="row-marks">
+        {/* Provisioning acks when it starts, so a checkout can be open
+          before its shared files have landed. */}
+        <Show when={sharesStore.applying.includes(props.workspace.id)}>
+          <Badge>setting up…</Badge>
+        </Show>
+        <Show when={props.work}>{(state) => <WorkMarker work={state()} />}</Show>
+        {/* `measured_at: None` means "not measured", which is not the same as
+          clean — so an unmeasured checkout shows no mark at all. */}
+        <Show when={props.workspace.measured && props.workspace.dirty}>
+          <Tooltip label="Uncommitted changes" contents>
+            <span
+              class="ws-dirty"
+              role="img"
+              aria-label={
+                changed() !== null ? `${changed()} uncommitted changes` : "Uncommitted changes"
+              }
+            >
+              ●{changed() ?? ""}
+            </span>
+          </Tooltip>
+        </Show>
+        <Show when={sync()}>
+          {(label) => (
+            <span class="ws-sync" aria-label="Ahead of or behind the remote">
+              {label()}
+            </span>
+          )}
+        </Show>
+        <Show when={props.workspace.pullRequest}>
+          {(pr) => (
+            <Tooltip label={prLabel(pr())} contents>
+              <Icon name="git-pull-request" size={13} class={PR_ICON_CLASS[prTone(pr())]} />
+            </Tooltip>
+          )}
+        </Show>
+      </span>
+      <Show when={props.reveal}>
+        <RowActions onStart={props.onStart} onMore={props.onMore} />
+      </Show>
+    </span>
+  );
+}
+
+/** How long a row keeps its actions after the pointer leaves, so they fade out. */
+const ROW_ACTIONS_LINGER_MS = 200;
+
+/**
+ * Whether the pointer is over a row, for mounting its + and ⋯ only while it
+ * is: a rail of a few hundred rows otherwise carries two hidden buttons and
+ * their tooltips on every one of them.
+ */
+function createRowHover() {
+  const [hot, setHot] = createSignal(false);
+  let linger: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(linger));
+  return {
+    hot,
+    enter: () => {
+      clearTimeout(linger);
+      setHot(true);
+    },
+    leave: () => {
+      clearTimeout(linger);
+      linger = setTimeout(() => setHot(false), ROW_ACTIONS_LINGER_MS);
+    },
+  };
+}
+
+/** + and ⋯, revealed on hover or focus while the row's marks step aside. */
+function RowActions(props: {
+  onStart?: (event: MouseEvent) => void;
+  onMore: (event: MouseEvent) => void;
+}) {
+  return (
+    <span class="row-actions">
+      <Show when={props.onStart}>
+        {(start) => (
+          <IconButton label="Start something here" size="xs" onClick={(event) => start()(event)}>
+            <Icon name="plus" size={13} />
+          </IconButton>
+        )}
+      </Show>
+      <IconButton label="More actions" size="xs" onClick={props.onMore}>
+        <Icon name="more-horizontal" size={13} />
+      </IconButton>
+    </span>
   );
 }
 
@@ -1238,8 +1465,8 @@ function CheckoutChildren(props: {
             class={codeActive() ? "forge-icon-accent" : "forge-icon-muted"}
           />
           <span class="tree-label forge-truncate">Code</span>
-          <Show when={openFileCount(props.workspace.id) > 0}>
-            <span class="tree-meta">{openFileCount(props.workspace.id)} open</span>
+          <Show when={filesOpen(props.workspace.id) > 0}>
+            <span class="tree-meta">{filesOpen(props.workspace.id)} open</span>
           </Show>
         </button>
       </Show>
@@ -1299,8 +1526,6 @@ function SessionRow(props: {
   level?: number;
   /** Whether this row sits inside the rail's tree, or was lifted out of it. */
   inTree?: boolean;
-  /** Drawn in the Needs-you block: the whole row takes the attention shape. */
-  lifted?: boolean;
   /** The rail's keyboard cursor is on this row. */
   cursor?: boolean;
   onMenu?: (event: MouseEvent) => void;
@@ -1308,6 +1533,8 @@ function SessionRow(props: {
   const active = () =>
     centerMode() === "session" && props.session.id === connectionStore.activeSession;
   const waited = () => waitedFor(props.session, now());
+  // Read once at mount: a row that was born moments ago announces itself.
+  const arrived = justCreated(props.session.created_at);
   return (
     <button
       type="button"
@@ -1322,11 +1549,11 @@ function SessionRow(props: {
       aria-level={props.inTree ? (props.level ?? 1) + props.depth : undefined}
       aria-selected={props.inTree ? (props.cursor ?? active()) : undefined}
       aria-label={props.wantsYou ? `${props.label}, waiting on you for ${waited()}` : undefined}
-      aria-current={(active() && !props.lifted) || undefined}
+      aria-current={active() || undefined}
       classList={{
-        lifted: props.lifted === true,
         unread: props.unread && !active(),
         cursor: props.cursor === true,
+        "row-new": arrived,
       }}
       style={{ "--tree-depth": String(props.depth) }}
       onClick={() => focusSession(props.session.id)}

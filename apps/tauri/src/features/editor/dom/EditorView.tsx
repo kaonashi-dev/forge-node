@@ -429,9 +429,9 @@ function EditorSessionView(props: EditorViewProps) {
 
   function onPaste(event: ClipboardEvent): void {
     event.preventDefault();
-    // An image or a file on the clipboard is not text this buffer can hold;
-    // `clipboardPaste` is what already knows the difference.
-    const paste = clipboardPaste(event.clipboardData);
+    // An image is not text this buffer can hold; the destination policy is
+    // what tells the two apart.
+    const paste = clipboardPaste(event.clipboardData, "editor");
     if (paste.kind === "text") push(textInput(paste.text));
   }
 

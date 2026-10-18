@@ -13,7 +13,7 @@ import {
   sendPaste,
   sendText,
 } from "./commands";
-import { cellsChannel, clipboardChannel } from "../../runtime/bus";
+import { cellsChannel } from "../../runtime/bus";
 import { setTerminalStore, terminalStore } from "./terminalStore";
 import { metrics as tokens } from "../../theme/tokens";
 import {
@@ -24,7 +24,14 @@ import {
   writeChoice,
 } from "../../state/preferences";
 import { LatencyProbe, PaintProbe, PAINT_BUDGET_MS } from "../../shared/cell-grid/latency";
-import { gridSize, measureCell, type CellMetrics } from "../../shared/cell-grid/metrics";
+import {
+  contentBox,
+  gridSize,
+  measureCell,
+  whenFontSettles,
+  type CellMetrics,
+  type ContentBox,
+} from "../../shared/cell-grid/metrics";
 import { readPalette } from "../../shared/cell-grid/palette";
 import { watchPixelRatio } from "../../shared/cell-grid/pixelRatio";
 import { TerminalRenderer, type LinkSpan } from "../../shared/cell-grid/renderer";
@@ -61,8 +68,9 @@ import { forgeStore } from "../../state/forgeStore";
 
 type LinkHit = { link: ScreenLink; spans: LinkSpan[] };
 
-/** Breathing room between the grid and the pane edges (`TERMINAL_PAD`). */
-const PAD = 8;
+/** Breathing room between the grid and the pane edges, from the layout tokens. */
+const PAD_X = tokens.terminalPadX;
+const PAD_Y = tokens.terminalPadY;
 /**
  * How long a resize settles before the PTY is told.
  *
@@ -196,6 +204,8 @@ export function TerminalPane(props: {
   let reporting: string | null = null;
   let lastReported = { col: -1, row: -1 };
   let lastSize = { cols: 0, rows: 0 };
+  /** The paintable box inside `host`, where the hidden textarea is parked. */
+  let gridBox: ContentBox = contentBox({ width: 0, height: 0 }, PAD_X, PAD_Y);
   let leaveContext: (() => void) | undefined;
   const showOverlay = debugEnabled();
 
@@ -367,8 +377,8 @@ export function TerminalPane(props: {
    * the only caret the platform knows about is this element's.
    */
   function placeCaret(): void {
-    const x = PAD + viewport.cursor.col * cell.width;
-    const y = PAD + viewport.cursor.line * cell.height;
+    const x = gridBox.x + viewport.cursor.col * cell.width;
+    const y = gridBox.y + viewport.cursor.line * cell.height;
     keys.style.left = `${Math.round(x)}px`;
     keys.style.top = `${Math.round(y)}px`;
   }
@@ -421,12 +431,10 @@ export function TerminalPane(props: {
 
   function measurePane(): void {
     if (!renderer) return;
-    const rect = host.getBoundingClientRect();
-    const width = Math.max(0, rect.width - PAD * 2);
-    const height = Math.max(0, rect.height - PAD * 2);
-    if (renderer.resize(width, height)) repaintAll = true;
+    gridBox = contentBox(host.getBoundingClientRect(), PAD_X, PAD_Y);
+    if (renderer.resize(gridBox.width, gridBox.height)) repaintAll = true;
 
-    const size = gridSize(width, height, cell);
+    const size = gridSize(gridBox.width, gridBox.height, cell);
     if (size.cols !== lastSize.cols || size.rows !== lastSize.rows) {
       lastSize = size;
       if (!props.session) setTerminalStore({ cols: size.cols, rows: size.rows });
@@ -435,8 +443,8 @@ export function TerminalPane(props: {
         void resizeTerminal(
           size.cols,
           size.rows,
-          Math.round(width),
-          Math.round(height),
+          Math.round(gridBox.width),
+          Math.round(gridBox.height),
           props.session,
         ).catch(() => undefined);
       }, RESIZE_DEBOUNCE_MS);
@@ -488,7 +496,7 @@ export function TerminalPane(props: {
 
   function onPaste(event: ClipboardEvent): void {
     event.preventDefault();
-    const paste = clipboardPaste(event.clipboardData);
+    const paste = clipboardPaste(event.clipboardData, isAgent() ? "agent" : "shell");
     if (paste.kind !== "empty") answered();
     if (paste.kind === "text") {
       void sendPaste(paste.text, probe.send(), props.session).catch(() => undefined);
@@ -979,18 +987,17 @@ export function TerminalPane(props: {
     renderer = new TerminalRenderer(canvas, cell, readPalette());
 
     const stopCells = cellsChannel.subscribe(onFrame);
-    const stopClipboard = clipboardChannel.subscribe((text) => {
-      void writeClipboard(text);
-    });
 
     const observer = new ResizeObserver(() => measurePane());
     observer.observe(host);
     const stopRatio = watchPixelRatio(measurePane);
     measurePane();
 
-    // The bundled JetBrains Mono may not be resident on the first frame, and a
-    // cell box measured from the fallback shears every box-drawing TUI.
-    void document.fonts?.ready.then(remeasure).catch(() => undefined);
+    // The bundled Geist Mono may not be resident on the first frame, and a
+    // cell box measured from the fallback shears every box-drawing TUI. The
+    // request is made by name — `fonts.ready` alone can resolve first — and a
+    // late weight still re-measures.
+    onCleanup(whenFontSettles(`${scaledSize(zoom())}px ${tokens.mono}`, remeasure));
 
     // The host attached before this canvas existed, so its first frame had
     // nowhere to go. Ask for it rather than wait for output.
@@ -1045,7 +1052,6 @@ export function TerminalPane(props: {
 
     onCleanup(() => {
       stopCells();
-      stopClipboard();
       observer.disconnect();
       stopRatio();
       themes.disconnect();
@@ -1081,6 +1087,7 @@ export function TerminalPane(props: {
       <canvas class="terminal-canvas" ref={canvas} />
       <textarea
         class="terminal-keys"
+        data-pane="terminal"
         ref={keys}
         aria-label="Terminal input"
         autocomplete="off"
@@ -1132,13 +1139,6 @@ export function TerminalPane(props: {
 }
 
 /**
- * Put text on the system clipboard.
- *
- * `navigator.clipboard` is the path a Tauri WebView takes; the `execCommand`
- * fallback is for the ones that still refuse it outside a user gesture, which a
- * key handler technically is not by the time an await has resolved.
- */
-/**
  * Read the clipboard for a paste the user asked for with a chord.
  *
  * The `paste` DOM event is the normal path and needs none of this; this is the
@@ -1151,27 +1151,5 @@ async function readClipboard(): Promise<string> {
     // A WebView that refuses the read outside a paste event: the `paste`
     // handler still works, so this is a fallback losing nothing.
     return "";
-  }
-}
-
-async function writeClipboard(text: string): Promise<void> {
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    return;
-  } catch {
-    // Fall through to the legacy path.
-  }
-  const scratch = document.createElement("textarea");
-  scratch.value = text;
-  scratch.setAttribute("aria-hidden", "true");
-  scratch.style.position = "fixed";
-  scratch.style.opacity = "0";
-  document.body.append(scratch);
-  scratch.select();
-  try {
-    document.execCommand("copy");
-  } finally {
-    scratch.remove();
   }
 }

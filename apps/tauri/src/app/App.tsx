@@ -6,7 +6,7 @@ import { ThemeProvider } from "../theme/ThemeProvider";
  * `?gallery` swaps the shell for the base-layer gallery — a dev review surface.
  *
  * Imported lazily so it is a chunk of its own: the gallery pulls in every
- * primitive and every lucide glyph it paints, and none of that belongs in the
+ * primitive and every glyph it paints, and none of that belongs in the
  * bundle the app opens with.
  */
 const Gallery = lazy(() => import("./Gallery").then((mod) => ({ default: mod.Gallery })));

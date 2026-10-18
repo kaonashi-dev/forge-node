@@ -7,7 +7,7 @@ import type {
   PullRequest,
   ShellSnapshot,
 } from "../contracts/runtime";
-import { applyShellSnapshot, emptySnapshot, forgeStore } from "./forgeStore";
+import { applyShellSnapshot, emptySnapshot, forgeStore, snapshotLanded } from "./forgeStore";
 import { loading, setLoading } from "./loading";
 
 /**
@@ -263,5 +263,13 @@ describe("a pull-request refresh", () => {
     applyShellSnapshot(withRefresh("2026-09-28T10:00:00Z"));
 
     expect(loading.pull_requests).toBe(true);
+  });
+});
+
+describe("snapshotLanded", () => {
+  it("is set by a snapshot that stores nothing, which a non-empty app_state check would miss", () => {
+    applyShellSnapshot(emptySnapshot());
+    expect(Object.keys(forgeStore.app_state)).toHaveLength(0);
+    expect(snapshotLanded()).toBe(true);
   });
 });

@@ -198,7 +198,7 @@ function pullRequestFor(
 
 /**
  * A worktree named after its project repeats the project on every row under
- * it: `hellopay-backend-amount-min` under `hellopay-backend` reads `amount-min`.
+ * it: `payments-api-amount-min` under `payments-api` reads `amount-min`.
  */
 export function checkoutLabel(label: string, project: string, worktree: boolean): string {
   if (!worktree) return label;

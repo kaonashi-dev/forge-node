@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  openFileCount,
   TERMINAL_VIEW,
   closeOthers,
   closeToRight,
@@ -168,3 +169,21 @@ describe("stepView", () => {
 function editor(path: string) {
   return { kind: "editor-terminal" as const, session: `s-${path}`, path };
 }
+
+describe("openFileCount", () => {
+  it("counts files and previews, never a patch, a pull request or a search", () => {
+    expect(
+      openFileCount({
+        open: [
+          { kind: "editor-terminal", session: "s", path: "/w/a.ts" },
+          { kind: "preview", path: "/w/README.md" },
+          { kind: "diff" },
+          { kind: "pr_detail", key: "x#1" },
+          { kind: "search" },
+        ],
+        active: { kind: "diff" },
+      }),
+    ).toBe(2);
+    expect(openFileCount({ open: [{ kind: "diff" }], active: { kind: "diff" } })).toBe(0);
+  });
+});

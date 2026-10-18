@@ -20,9 +20,10 @@ import { refreshPullRequests } from "./commands";
 import { loading, setLoading } from "../../state/loading";
 import { activeWorkspace } from "../../state/workspace";
 import type { PullRequest } from "../../contracts/runtime";
+import { projectHue } from "../../state/projectColors";
 
 // Snapshot data is cached; remote refreshes complete through events.
-/** `owner/hellopay-backend` reads as the repository the person knows. */
+/** `owner/payments-api` reads as the repository the person knows. */
 function repositoryName(repository: string): string {
   return repository.slice(repository.lastIndexOf("/") + 1);
 }
@@ -87,7 +88,16 @@ export function PullRequestPanel() {
           <span class="pr-row-title">{pr.title}</span>
         </span>
         <span class="pr-row-meta">
-          <span class="pr-row-repo forge-truncate">{repositoryName(pr.repository)}</span>
+          <span
+            class="pr-row-repo"
+            style={pr.project_id ? { "--project-hue": projectHue(pr.project_id) } : undefined}
+          >
+            {/* A repository no project claims gets no square: a hue would imply a link. */}
+            <Show when={pr.project_id}>
+              <span class="hue-mark" aria-hidden="true" />
+            </Show>
+            <span class="forge-truncate">{repositoryName(pr.repository)}</span>
+          </span>
           <Show when={!pr.is_draft} fallback={<Badge>Draft</Badge>}>
             <Show when={decision()}>
               {(chip) => (

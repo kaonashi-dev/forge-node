@@ -30,5 +30,6 @@ describe("type steppers", () => {
 
   it("has a note for every density", () => {
     for (const density of DENSITIES) expect(DENSITY_NOTES[density]).toMatch(/^Rows are \d+px/);
+    expect(DENSITY_NOTES.compact).toContain("28px");
   });
 });

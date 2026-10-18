@@ -27,6 +27,8 @@ export const CENTER_SPLIT_RATIO_KEY = "ui.center_split.ratio";
 export const DENSITY_KEY = "ui.density";
 /** `"true"` removes every transition in the app, on top of the OS setting. */
 export const REDUCE_MOTION_KEY = "ui.reduce_motion";
+/** `"true"` lays the Glass finish over a dark theme. */
+export const GLASS_KEY = "ui.glass";
 /**
  * Chrome type size, as the `sm` rung in pixels.
  *

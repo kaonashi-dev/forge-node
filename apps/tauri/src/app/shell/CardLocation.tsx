@@ -50,7 +50,12 @@ export function CardLocation() {
   return (
     <div class="card-location">
       <Show when={project()}>
-        {(item) => <span class="card-location-place forge-truncate">{item().name}</span>}
+        {(item) => (
+          <span class="card-location-place">
+            <span class="hue-mark" aria-hidden="true" />
+            <span class="forge-truncate">{item().name}</span>
+          </span>
+        )}
       </Show>
       <Show when={workspace()}>
         {(item) => (
@@ -59,7 +64,7 @@ export function CardLocation() {
               /
             </span>
             <span class="card-location-mono card-location-strong forge-truncate">
-              {item().branch ?? item().display_name ?? item().path}
+              {item().display_name ?? item().branch ?? item().path}
             </span>
             <Show when={path()}>
               {(file) => (

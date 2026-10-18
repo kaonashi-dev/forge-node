@@ -2311,6 +2311,16 @@ impl App {
             // copy leaves it. Emitted even standalone, because the terminal a
             // person ran this in is the one that owns their clipboard.
             self.clipboard_escape = osc52(&text);
+            if self.clipboard_escape.is_none() {
+                // The terminal drops a copy this large, so the register is the
+                // only place it lives; saying nothing would read as a complete
+                // copy of a document that was only half taken.
+                self.status = Some(format!(
+                    "copied in the editor only: {} KiB is over the terminal's {} KiB clipboard limit",
+                    text.len().div_ceil(1024),
+                    MAX_CLIPBOARD_BYTES / 1024,
+                ));
+            }
             self.register = text;
         }
         if let Some(count) = outcome.replaced {
@@ -3917,6 +3927,21 @@ mod tests {
     fn an_oversize_copy_emits_nothing() {
         assert!(osc52(&"a".repeat(MAX_CLIPBOARD_BYTES + 1)).is_none());
         assert!(osc52(&"a".repeat(MAX_CLIPBOARD_BYTES)).is_some());
+    }
+
+    /// The register still holds it, and the status says the terminal never
+    /// saw it: a copy that looks complete is what a person pastes from.
+    #[test]
+    fn an_oversize_copy_stays_in_the_editor_and_says_so() {
+        let text = "a".repeat(MAX_CLIPBOARD_BYTES + 1);
+        let mut app = app(&text, false);
+        app.handle_key(control('c'));
+        assert!(app.take_clipboard_escape().is_none());
+        assert_eq!(
+            app.status(),
+            Some("copied in the editor only: 65 KiB is over the terminal's 64 KiB clipboard limit")
+        );
+        assert_eq!(app.register.len(), text.len());
     }
 
     #[test]

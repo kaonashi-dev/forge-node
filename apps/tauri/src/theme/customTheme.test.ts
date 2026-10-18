@@ -58,3 +58,32 @@ describe("custom theme import", () => {
     ).toThrow("palette.bg");
   });
 });
+
+describe("custom theme finish", () => {
+  const theme = (palette: unknown) => JSON.stringify({ name: "Ink", mode: "dark", palette });
+
+  it("carries Calm's finish through an export and back", () => {
+    const parsed = parseCustomTheme(theme(palettes["calm-dark"]));
+    expect(parsed.palette.finish).toEqual(palettes["calm-dark"].finish);
+  });
+
+  it("leaves a palette without one to derive its tab and selection", () => {
+    expect(parseCustomTheme(theme(palettes["forge-dark"])).palette.finish).toBeUndefined();
+  });
+
+  it("keeps hover optional and rejects anything that is not a colour", () => {
+    const base = palettes["calm-dark"];
+    const noHover = parseCustomTheme(
+      theme({ ...base, finish: { tab: "#1c1c1f", rule: "#1f1f22" } }),
+    );
+    expect(noHover.palette.finish).toEqual({ tab: "#1c1c1f", rule: "#1f1f22" });
+    for (const finish of [
+      "#1c1c1f",
+      { tab: "#1c1c1f" },
+      { tab: "url(x)", rule: "#1f1f22" },
+      { tab: "#1c1c1f", rule: "#1f1f22", hover: "red" },
+    ]) {
+      expect(() => parseCustomTheme(theme({ ...base, finish }))).toThrow(/finish/);
+    }
+  });
+});

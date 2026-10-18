@@ -1,3 +1,6 @@
+import { densityOffset } from "../../theme/density";
+import { metrics } from "../../theme/tokens";
+
 export type StepRange = { min: number; max: number; step: number };
 
 /**
@@ -15,7 +18,10 @@ export function canStep(current: number, direction: 1 | -1, range: StepRange): b
   return stepValue(current, direction, range) !== Number(current.toFixed(2));
 }
 
+/** The tree row is what a person counts, so the note quotes its height. */
+const treeRow = (density: "compact" | "cozy") => metrics.treeRowH + densityOffset(density);
+
 export const DENSITY_NOTES = {
-  compact: "Rows are 26px — the most sessions visible at once.",
-  cozy: "Rows are 32px — easier to hit, fewer on screen.",
+  compact: `Rows are ${treeRow("compact")}px — the most sessions visible at once.`,
+  cozy: `Rows are ${treeRow("cozy")}px — easier to hit, fewer on screen.`,
 } as const;

@@ -317,7 +317,10 @@ and the pane's right-click **Copy** send the same Ctrl-C to the editor, which ow
 the selection even when it extends beyond the visible rows. Dismissing the
 context menu returns keyboard focus to the editor. ⌘V is deliberately unclaimed:
 the WebView's
-`paste` event is what carries the clipboard into the pane. `--read-only` refuses every edit at the transaction
+`paste` event is what carries the clipboard into the pane. The context menu's
+**Paste** reads the pasteboard through the host instead: `navigator.clipboard.readText`
+is refused by WKWebView even inside a gesture, and the text never crosses the
+WebView. `--read-only` refuses every edit at the transaction
 entry and says so instead of silently dropping keys.
 
 **The mouse moves the caret.** A left click places the caret; a second click on
@@ -739,7 +742,13 @@ version compatible with Rust 1.89.
 **A copy leaves through OSC 52.** `Ctrl-C` fills the editor's own register *and*
 emits `ESC ] 52 ; c ; <base64> BEL`; `terminal-core` captures the store,
 clamping it to `MAX_CLIPBOARD_BYTES` before it is kept, and the daemon
-broadcasts `ClipboardStore`. The Tauri host forwards it only for a terminal the
+broadcasts `ClipboardStore`. Over that cap nothing leaves: a copy too large for
+the terminal is kept in the register alone and the status row says which limit
+it hit. The renderer writes the escape inside the frame's DEC 2026 synchronized
+update, which is where the PTY test finds it
+(`a_drag_and_ctrl_c_leave_an_osc_52_inside_the_synchronized_update`). The Tauri
+host writes the system clipboard itself — one writer thread, never the thread
+that carries keystrokes — and only for a terminal the
 window is showing — the focused one or an open editor pane — because OSC 52 lets
 whatever runs in a PTY set the clipboard, and a background agent replacing it
 would be a real hazard. OSC 52's *read* is never answered, by the engine or by
