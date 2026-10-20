@@ -388,8 +388,13 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     };
   }
 
-  function report(event: MouseEvent | WheelEvent, button: string, kind: string): void {
-    const { col, row } = reportPoint(event);
+  function report(
+    event: MouseEvent | WheelEvent,
+    button: string,
+    kind: string,
+    point = reportPoint(event),
+  ): void {
+    const { col, row } = point;
     void sendEditorMouse(props.session, {
       button,
       kind,
@@ -438,12 +443,13 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
     const lines = Math.trunc(wheelRemainder);
     if (lines === 0) return;
     wheelRemainder -= lines;
-    // One report per line, flushed together on the next frame so the editor's
-    // drain-then-paint loop sees the burst as one queue rather than N paints.
+    // The editor reads one wheel report per line; measure the point once for
+    // the burst instead of once per report.
     const button = lines > 0 ? "wheel_up" : "wheel_down";
+    const point = reportPoint(event);
     const count = Math.abs(lines);
     for (let index = 0; index < count; index += 1) {
-      report(event, button, "press");
+      report(event, button, "press", point);
     }
   }
 

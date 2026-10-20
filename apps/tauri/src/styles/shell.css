@@ -114,6 +114,8 @@
   position: relative;
   touch-action: none;
   -webkit-user-drag: none;
+  /* The ground the inactive tab's close button masks the label with. */
+  --tab-close-ground: var(--bg-strip);
 }
 /* Hover only lifts the text: a hover ground would outshine the active chip. */
 .session-tab-wrap:hover {
@@ -129,6 +131,8 @@
 .session-tab-wrap.waiting:not(.active) {
   background: var(--attention-bg);
   color: var(--fg-strong);
+  /* `--attention-bg` is translucent; the close button needs the composite. */
+  --tab-close-ground: var(--attention-bg-solid);
 }
 .session-tab-wrap.ground-unread .session-tab-label {
   color: var(--fg);
@@ -201,8 +205,8 @@
    room, so revealing it on hover never moves the tabs beside it; the strip's
    ground under it hides the letters it covers. */
 .session-tab-wrap:not(.active) .session-tab-close {
-  background: var(--bg-strip);
-  box-shadow: calc(var(--space-8) * -1) 0 var(--space-8) var(--bg-strip);
+  background: var(--tab-close-ground);
+  box-shadow: calc(var(--space-8) * -1) 0 var(--space-8) var(--tab-close-ground);
   opacity: 0;
   pointer-events: none;
   position: absolute;
@@ -1210,14 +1214,16 @@
   color: var(--fg-strong);
   font-size: var(--text-lg);
 }
+.command-palette {
+  --palette-row-h: calc(var(--row-h) + var(--space-12));
+}
 .command-palette .forge-combobox-list {
-  max-height: calc(var(--palette-rows, 9) * 40px + 30px);
   padding: var(--space-6) var(--space-6) var(--space-8);
 }
 .command-palette .forge-combobox-row {
   font-size: var(--text-md);
   gap: var(--space-12);
-  height: 40px;
+  height: var(--palette-row-h);
   padding: 0 var(--space-12);
 }
 /* The selected row is the hold-Control list's focus indicator; an outline on
@@ -1231,6 +1237,7 @@
 }
 .tab-switcher-list {
   --palette-rows: 10;
+  --palette-row-h: calc(var(--row-h) + var(--space-10));
   padding: var(--space-6);
 }
 .tab-switcher-list .forge-combobox-row {
@@ -1266,7 +1273,6 @@
 .command-palette .forge-combobox-row {
   border-radius: 0;
   font-size: var(--text-md);
-  height: calc(var(--row-h) + var(--space-12));
   padding: 0 var(--space-16);
 }
 .palette-waiting {

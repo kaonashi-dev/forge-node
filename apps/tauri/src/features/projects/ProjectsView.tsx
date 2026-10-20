@@ -625,6 +625,7 @@ export function ProjectsView() {
     centerMode();
     activeWorkspace();
     collapsed();
+    rows();
     queueMicrotask(measureCurrent);
   });
   onMount(() => {
