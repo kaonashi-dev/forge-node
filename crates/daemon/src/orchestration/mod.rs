@@ -2908,23 +2908,26 @@ fn resume_blocked(
 }
 
 fn questions_for(inner: &Inner, run_id: RunId) -> Result<Vec<QuestionFact>, ProtocolError> {
-    let envelopes = inner.db.context().list_for_run(run_id).map_err(db_err)?;
-    let mut facts = Vec::new();
-    for envelope in &envelopes {
-        if envelope.kind != Some(ContextKind::Question) {
-            continue;
-        }
-        let answered = envelopes.iter().any(|other| {
-            other.kind == Some(ContextKind::Answer) && other.in_reply_to == Some(envelope.id)
-        }) || envelope.acked_at.is_some();
-        facts.push(QuestionFact {
+    let envelopes = inner
+        .db
+        .context()
+        .list_questions_for_run(run_id)
+        .map_err(db_err)?;
+    let answered: HashSet<ContextId> = envelopes
+        .iter()
+        .filter(|envelope| envelope.kind == Some(ContextKind::Answer))
+        .filter_map(|envelope| envelope.in_reply_to)
+        .collect();
+    Ok(envelopes
+        .iter()
+        .filter(|envelope| envelope.kind == Some(ContextKind::Question))
+        .map(|envelope| QuestionFact {
             id: envelope.id,
             task_id: envelope.task_id,
             text: envelope.instructions.clone().unwrap_or_default(),
-            answered,
-        });
-    }
-    Ok(facts)
+            answered: answered.contains(&envelope.id) || envelope.acked_at.is_some(),
+        })
+        .collect())
 }
 
 fn attempt_facts(inner: &Inner, attempts: &[Attempt]) -> Vec<AttemptFact> {
@@ -3330,15 +3333,22 @@ fn internal(message: &str) -> ProtocolError {
     ProtocolError::internal(message)
 }
 
-pub fn active_run_views(daemon: &Daemon) -> Vec<domain::orchestration::RunView> {
-    let limits = daemon.config_orchestration().limits();
-    let inner = daemon.lock();
+pub(crate) fn active_run_views(
+    inner: &Inner,
+    limits: &OrchestrationLimits,
+) -> Vec<domain::orchestration::RunView> {
     inner
         .ledger
         .runs
         .values()
         .filter(|run| run.status.is_open())
-        .filter_map(|run| view_locked(&inner, run.id, &limits).ok())
+        .filter_map(|run| match view_locked(inner, run.id, limits) {
+            Ok(view) => Some(view),
+            Err(error) => {
+                tracing::warn!(run_id = %run.id, %error, "omitting run from snapshot");
+                None
+            }
+        })
         .collect()
 }
 

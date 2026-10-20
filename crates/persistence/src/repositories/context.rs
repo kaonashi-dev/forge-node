@@ -133,6 +133,30 @@ impl<'a> ContextRepo<'a> {
         Ok(out)
     }
 
+    /// Only the envelopes a run view needs: its questions and their answers.
+    ///
+    /// A run view is built under the core lock, so loading every message body
+    /// for the run would put transcript-sized IO on the PTY path.
+    ///
+    /// # Errors
+    /// Returns [`DbError`] on a failed query, an undecodable row, or a JSON
+    /// deserialization failure.
+    pub fn list_questions_for_run(
+        &self,
+        run: domain::RunId,
+    ) -> Result<Vec<ContextEnvelope>, DbError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM context_envelopes WHERE run_id = ?1 \
+             AND kind IN ('question', 'answer') ORDER BY created_at ASC"
+        ))?;
+        let rows = stmt.query_map(params![run.to_string()], RawEnvelope::from_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?.into_domain()?);
+        }
+        Ok(out)
+    }
+
     /// Mark envelopes acknowledged. Unknown ids are ignored.
     pub fn ack(&self, ids: &[ContextId], at: domain::Timestamp) -> Result<(), DbError> {
         let stamp = ts_to_str(&at);

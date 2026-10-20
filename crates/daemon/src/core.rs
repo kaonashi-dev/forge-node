@@ -1198,9 +1198,6 @@ impl Daemon {
         }
     }
 
-    /// Recover from poison: `Inner` is a cache over SQLite, not an invariant a
-    /// panicking handler can silently corrupt. `expect` here made one bad
-    /// request a permanently dead daemon.
     pub(crate) fn orchestration_config(&self) -> crate::config::OrchestrationConfig {
         self.config.orchestration.clone()
     }
@@ -1209,6 +1206,9 @@ impl Daemon {
         &self.worktrees_root
     }
 
+    /// Recover from poison: `Inner` is a cache over SQLite, not an invariant a
+    /// panicking handler can silently corrupt. `expect` here made one bad
+    /// request a permanently dead daemon.
     pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|poisoned| {
             tracing::error!("daemon core lock was poisoned by a panicking handler; recovering");
@@ -1219,6 +1219,7 @@ impl Daemon {
     // --- Global ---
 
     fn snapshot(&self, with_history: bool) -> Response {
+        let limits = self.orchestration_config().limits();
         let (
             project_groups,
             projects,
@@ -1230,6 +1231,7 @@ impl Daemon {
             worktree_ignores,
             app_state,
             usage,
+            runs,
         ) = {
             let inner = self.lock();
             let providers = self.provider_infos_locked(&inner);
@@ -1255,6 +1257,7 @@ impl Daemon {
                 worktree_ignores,
                 app_state,
                 inner.usage.clone(),
+                crate::orchestration::active_run_views(&inner, &limits),
             )
         };
         // Filesystem IO: after the core lock, through the TTL cache.
@@ -1288,7 +1291,7 @@ impl Daemon {
             app_state,
             external_agents,
             pull_requests: Box::new(pull_requests),
-            runs: crate::orchestration::active_run_views(self),
+            runs,
             usage,
         };
         for event in self.take_pending_notices() {
@@ -3986,6 +3989,9 @@ impl Daemon {
         read_only: bool,
         options: domain::AgentLaunchOptions,
     ) -> Result<Response, ProtocolError> {
+        // Take before any validation: an early return must not leave the
+        // orchestration variables on a pooled worker for the next session.
+        let extra_env = crate::orchestration::take_spawn_env();
         self.ensure_env();
         if let Some(provider) = &provider_id {
             let descriptor = self
@@ -3997,7 +4003,6 @@ impl Daemon {
             agents::launch_options::validate(&descriptor, &options)
                 .map_err(|e| ProtocolError::invalid_request(e.to_string()))?;
         }
-        let extra_env = crate::orchestration::take_spawn_env();
         let _span = tracing::info_span!("session.create", %workspace_id, ?kind).entered();
 
         let profile = self.launch_profile(kind, provider_id.as_ref(), profile_id)?;
@@ -6256,6 +6261,9 @@ impl Daemon {
         text: &str,
         expected_revision: &str,
     ) -> SaveOutcome {
+        if text.len() > editor_control::MAX_DOCUMENT_BYTES {
+            return SaveOutcome::Failed("the document exceeds the editor's size budget".to_owned());
+        }
         let workspace_id = {
             let inner = self.lock();
             let Some(session) = inner.sessions.get(&session_id) else {
@@ -7324,11 +7332,16 @@ fn first_kill_signal(kind: SessionKind) -> nix::sys::signal::Signal {
 
 /// `kill(-pgid, 0)`.
 fn group_alive(pgid: i32) -> bool {
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pgid), None).is_ok()
+    pgid > 0 && nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pgid), None).is_ok()
 }
 
-/// Negative pid: a single-pid kill orphans grandchildren.
+/// Negative pid: a single-pid kill orphans grandchildren. A non-positive
+/// group would target the daemon's own process group.
 pub(crate) fn signal_group(pgid: i32, sig: nix::sys::signal::Signal) {
+    if pgid <= 0 {
+        tracing::warn!(pgid, "refusing to signal a non-positive process group");
+        return;
+    }
     let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pgid), sig);
 }
 
