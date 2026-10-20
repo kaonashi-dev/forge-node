@@ -190,7 +190,7 @@ pub fn run_git(repo: Option<&Path>, args: &[&str]) -> Result<GitOutput, GitError
 }
 
 /// Most a bounded capture keeps of either stream.
-const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Stderr kept by [`run_git_prefix`], whatever its stdout limit.
 const PREFIX_STDERR_BYTES: usize = 64 * 1024;
@@ -263,7 +263,14 @@ pub fn run_git_network(
     args: &[&str],
     timeout: Duration,
 ) -> Result<GitOutput, GitError> {
-    run_git_inner(repo, args, timeout, true, Capture::All).map(|(output, _)| output)
+    run_git_inner(
+        repo,
+        args,
+        timeout,
+        true,
+        Capture::Refuse(MAX_CAPTURE_BYTES),
+    )
+    .map(|(output, _)| output)
 }
 
 fn run_git_inner(
@@ -381,6 +388,24 @@ impl std::error::Error for OverLimit {}
 /// Capture each stream up to its limit; past it, `prefix` keeps what fit and
 /// reports a cut, otherwise the capture is refused. Either way the group is
 /// killed and the child reaped before returning.
+/// Wait for a grouped child with both streams capped.
+///
+/// The caller owns the deadline and the group kill; this only makes the
+/// capture bounded, so an executable that streams cannot grow the daemon.
+pub(crate) fn wait_bounded(
+    child: std::process::Child,
+    limit: usize,
+) -> Result<std::process::Output, GitError> {
+    bounded_output(child, limit, limit, false)
+        .map(|(output, _)| output)
+        .map_err(
+            |error| match error.get_ref().and_then(|inner| inner.downcast_ref()) {
+                Some(&OverLimit(limit)) => GitError::OutputLimit { limit },
+                None => GitError::Io(error),
+            },
+        )
+}
+
 fn bounded_output(
     mut child: std::process::Child,
     stdout_limit: usize,

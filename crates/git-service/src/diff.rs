@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 
-use crate::command::{run_git, run_git_bounded, GitError, GitOutput};
+use crate::command::{run_git, run_git_bounded, run_git_prefix, GitError, GitOutput};
 use crate::repository::current_branch;
 
 /// Context lines around each hunk.
@@ -46,6 +46,11 @@ pub const MAX_FILE_PATCH_BYTES: usize = 256 * 1024;
 
 /// Soft ceiling for how many changed files are described.
 pub const MAX_DIFF_FILES: usize = 500;
+
+/// Most of a path-listing command held before it is cut and the result is
+/// marked truncated. Far above 500 paths, so the file cap is what normally
+/// stops the parse; this only bounds a repository whose output is pathological.
+const MAX_PATH_LIST_BYTES: usize = 4 * 1024 * 1024;
 
 /// Most one batched `diff --patch` may write before it is abandoned for
 /// narrower reads. The batch covers every changed path, not only the ones the
@@ -125,8 +130,8 @@ pub fn working_tree_diff(
     // diff against even where `HEAD` alone would not.
     let head = base.is_some() || has_head(repo);
     let revs = [base.unwrap_or("HEAD")];
-    let entries = changed_paths(repo, base)?;
-    assemble(repo, entries, &revs, head, context)
+    let (entries, truncated) = changed_paths(repo, base)?;
+    assemble(repo, entries, truncated, &revs, head, context)
 }
 
 /// Collect the committed diff from `base` to `head`, ignoring the working tree.
@@ -145,19 +150,20 @@ pub fn commit_range_diff(
 ) -> Result<WorkingTreeDiff, GitError> {
     let context = context.min(MAX_DIFF_CONTEXT_LINES);
     let revs = [base, head];
-    let entries = named_paths(repo, &revs)?;
-    assemble(repo, entries, &revs, true, context)
+    let (entries, truncated) = named_paths(repo, &revs)?;
+    assemble(repo, entries, truncated, &revs, true, context)
 }
 
 fn assemble(
     repo: &Path,
     entries: Vec<Entry>,
+    mut truncated: bool,
     revs: &[&str],
     head: bool,
     context: u32,
 ) -> Result<WorkingTreeDiff, GitError> {
     let branch = current_branch(repo).ok().flatten();
-    let mut truncated = entries.len() > MAX_DIFF_FILES;
+    truncated |= entries.len() > MAX_DIFF_FILES;
     let entries: Vec<Entry> = entries.into_iter().take(MAX_DIFF_FILES).collect();
 
     let stats = if head {
@@ -252,53 +258,65 @@ fn has_head(repo: &Path) -> bool {
 /// delimited by a NUL instead of being shell-quoted, so no unescaping is
 /// needed and no path is silently mangled. `--no-renames` keeps one record per
 /// path, which is what a per-file viewer can display.
-fn changed_paths(repo: &Path, base: Option<&str>) -> Result<Vec<Entry>, GitError> {
-    let mut entries = match base {
+fn changed_paths(repo: &Path, base: Option<&str>) -> Result<(Vec<Entry>, bool), GitError> {
+    let (mut entries, mut truncated) = match base {
         // `status` only ever describes the working tree against `HEAD`.
         // Against an older base it would miss every path a commit changed
         // and left clean, which is most of what a session did.
         Some(base) => named_paths(repo, &[base])?,
-        None => Vec::new(),
+        None => (Vec::new(), false),
     };
-    let seen: std::collections::HashSet<String> =
-        entries.iter().map(|entry| entry.path.clone()).collect();
-    for entry in status_paths(repo)? {
+    let mut seen: HashSet<String> = entries.iter().map(|entry| entry.path.clone()).collect();
+    let (status, status_cut) = status_paths(repo)?;
+    truncated |= status_cut;
+    for entry in status {
         // With a base, `status` is only here for the untracked files git's
         // own `diff` cannot see; everything else it would say is already
         // covered, and covered against the right side.
         if base.is_some() && !entry.untracked {
             continue;
         }
-        if seen.contains(&entry.path) {
+        if !seen.insert(entry.path.clone()) {
             continue;
+        }
+        if entries.len() > MAX_DIFF_FILES {
+            truncated = true;
+            break;
         }
         entries.push(entry);
     }
-    Ok(entries)
+    Ok((entries, truncated))
 }
 
 /// Everything that differs between `revs`, in git's order: one rev compares
 /// with the working tree, two compare commits.
-fn named_paths(repo: &Path, revs: &[&str]) -> Result<Vec<Entry>, GitError> {
+fn named_paths(repo: &Path, revs: &[&str]) -> Result<(Vec<Entry>, bool), GitError> {
     let args = diff_args(
         &["--no-ext-diff", "--no-renames", "--name-status", "-z"],
         revs,
         ".",
     );
-    let out = run_git(Some(repo), &args)?;
-    if !out.success() {
+    let (out, cut) = run_git_prefix(Some(repo), &args, MAX_PATH_LIST_BYTES)?;
+    if !cut && !out.success() {
         // An unreachable base is the caller's problem to report, not a
         // reason to fail the read: it falls back and says which base it used.
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     }
+    // A cut buffer may end mid-record; keep only complete NUL-terminated ones.
+    let stdout = complete_records(&out.stdout, cut);
 
     // With `-z` the status letter and the path are two separate NUL fields,
     // which is what makes a path with a newline in it survive the trip.
     let mut entries = Vec::new();
-    let mut fields = out.stdout.split('\0');
+    let mut truncated = cut;
+    let mut fields = stdout.split('\0');
     while let (Some(code), Some(path)) = (fields.next(), fields.next()) {
         if code.is_empty() || path.is_empty() {
             continue;
+        }
+        if entries.len() > MAX_DIFF_FILES {
+            truncated = true;
+            break;
         }
         entries.push(Entry {
             path: path.to_string(),
@@ -306,7 +324,7 @@ fn named_paths(repo: &Path, revs: &[&str]) -> Result<Vec<Entry>, GitError> {
             untracked: false,
         });
     }
-    Ok(entries)
+    Ok((entries, truncated))
 }
 
 /// One letter of `diff --name-status`, in the viewer's vocabulary.
@@ -320,7 +338,7 @@ fn classify_name_status(code: &str) -> FileChange {
 }
 
 /// Every path git's `status` considers changed, untracked ones included.
-fn status_paths(repo: &Path) -> Result<Vec<Entry>, GitError> {
+fn status_paths(repo: &Path) -> Result<(Vec<Entry>, bool), GitError> {
     const ARGS: [&str; 7] = [
         "status",
         "--porcelain=v1",
@@ -330,13 +348,20 @@ fn status_paths(repo: &Path) -> Result<Vec<Entry>, GitError> {
         "--",
         ".",
     ];
-    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?;
+    let (out, cut) = run_git_prefix(Some(repo), &ARGS, MAX_PATH_LIST_BYTES)?;
+    let out = if cut { out } else { out.ok(&ARGS)? };
+    let stdout = complete_records(&out.stdout, cut);
 
     let mut entries = Vec::new();
-    for record in out.stdout.split('\0') {
+    let mut truncated = cut;
+    for record in stdout.split('\0') {
         // `XY <path>`: two status columns, a space, then the path.
         if record.len() < 4 {
             continue;
+        }
+        if entries.len() > MAX_DIFF_FILES {
+            truncated = true;
+            break;
         }
         let (code, path) = record.split_at(3);
         let path = path.to_string();
@@ -350,7 +375,18 @@ fn status_paths(repo: &Path) -> Result<Vec<Entry>, GitError> {
             untracked,
         });
     }
-    Ok(entries)
+    Ok((entries, truncated))
+}
+
+/// Drop a trailing partial record from a prefix capture.
+fn complete_records(bytes: &str, cut: bool) -> &str {
+    if !cut {
+        return bytes;
+    }
+    match bytes.rfind('\0') {
+        Some(end) => &bytes[..=end],
+        None => "",
+    }
 }
 
 /// Map a porcelain `XY` pair onto what the viewer shows.
@@ -388,13 +424,17 @@ fn numstat(repo: &Path, revs: &[&str]) -> Result<HashMap<String, (u32, u32, bool
         revs,
         ".",
     );
-    let out = run_git(Some(repo), &args)?;
-    if !out.success() {
+    let (out, cut) = run_git_prefix(Some(repo), &args, MAX_PATH_LIST_BYTES)?;
+    if !cut && !out.success() {
         return Ok(HashMap::new());
     }
+    let stdout = complete_records(&out.stdout, cut);
 
     let mut stats = HashMap::new();
-    for record in out.stdout.split('\0') {
+    for record in stdout.split('\0') {
+        if stats.len() > MAX_DIFF_FILES {
+            break;
+        }
         // `<added>\t<deleted>\t<path>`, and `-` in place of a count is git's
         // way of saying "binary, there are no lines to count".
         let mut fields = record.splitn(3, '\t');
@@ -745,8 +785,8 @@ pub struct SummaryOfChanges {
 pub fn change_summary(repo: &Path, base: Option<&str>) -> Result<SummaryOfChanges, GitError> {
     let branch = current_branch(repo).ok().flatten();
     let head = base.is_some() || has_head(repo);
-    let entries = changed_paths(repo, base)?;
-    let mut truncated = entries.len() > MAX_DIFF_FILES;
+    let (entries, cut) = changed_paths(repo, base)?;
+    let mut truncated = cut || entries.len() > MAX_DIFF_FILES;
     let entries: Vec<Entry> = entries.into_iter().take(MAX_DIFF_FILES).collect();
 
     let stats = if head {
@@ -1158,6 +1198,24 @@ mod tests {
         assert_eq!(since.files[0].path, "a.txt");
         assert_eq!(since.files[0].status, FileChange::Modified);
         assert!(since.files[0].patch.contains("+TWO"));
+    }
+
+    #[test]
+    fn more_changed_files_than_the_cap_are_reported_as_truncated() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        repo_with_commit(repo);
+        let base = crate::repository::head_commit(repo).unwrap();
+        for index in 0..MAX_DIFF_FILES + 5 {
+            std::fs::write(repo.join(format!("file-{index}.txt")), "one\n").unwrap();
+        }
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-m", "many files"]);
+        let head = crate::repository::head_commit(repo).unwrap();
+
+        let diff = commit_range_diff(repo, &base, &head, DIFF_CONTEXT_LINES).unwrap();
+        assert_eq!(diff.files.len(), MAX_DIFF_FILES);
+        assert!(diff.truncated);
     }
 
     #[test]

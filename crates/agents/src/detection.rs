@@ -8,7 +8,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
@@ -171,6 +171,11 @@ fn run_args(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
 
     // The probe runs under the resolved login environment, not the
     // daemon's own environment.
@@ -215,20 +220,37 @@ fn run_args(
             Err(error) => ProbeOutcome::Failed(error),
         },
         Err(RecvTimeoutError::Timeout) => {
-            // A hung probe: killing the child closes the pipes so the reader
+            // A hung probe: killing the group closes the pipes so the reader
             // and notifier threads unwind on their own.
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_grouped_child(&mut child);
             ProbeOutcome::TimedOut
         }
         Err(RecvTimeoutError::Disconnected) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_grouped_child(&mut child);
             ProbeOutcome::Failed(std::io::Error::other(
                 "version probe reader thread disconnected",
             ))
         }
     }
+}
+
+/// Kill a probe's whole group, then the direct child as a fallback.
+///
+/// A wrapper script that does not `exec` leaves its own child holding the
+/// pipes; killing only the wrapper would strand that descendant.
+pub(crate) fn kill_grouped_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        if let Ok(pid) = i32::try_from(child.id()) {
+            // SIGKILL = 9; negative pid means the process group.
+            let _ = unsafe { kill(-pid, 9) };
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Read a captured pipe into a buffer, tolerating read errors.

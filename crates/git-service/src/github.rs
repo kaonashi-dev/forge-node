@@ -761,7 +761,10 @@ fn run_gh(cli: &GitHubCli, cwd: Option<&Path>, args: &[String]) -> Result<GhOutp
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        let _ = tx.send(crate::command::wait_bounded(
+            child,
+            crate::command::MAX_CAPTURE_BYTES,
+        ));
     });
 
     match rx.recv_timeout(cli.timeout) {
@@ -770,7 +773,7 @@ fn run_gh(cli: &GitHubCli, cwd: Option<&Path>, args: &[String]) -> Result<GhOutp
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             status: output.status.code().unwrap_or(-1),
         }),
-        Ok(Err(error)) => Err(GitError::Io(error)),
+        Ok(Err(error)) => Err(error),
         Err(mpsc::RecvTimeoutError::Timeout) => {
             kill_process_group(pid);
             // Do not return while the worker still owns an unreaped child, but do

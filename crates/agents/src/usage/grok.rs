@@ -10,7 +10,7 @@
 //! The spawn reuses [`domain::AcpSpec::args`] rather than spelling
 //! `agent stdio` again — one fact, declared once, in `builtins`.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -25,6 +25,12 @@ use serde_json::Value;
 /// agent (or attach to a running leader) rather than print a string, and
 /// stingy next to the 5-minute sweep it runs inside.
 const TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Most of the ACP stream one reading may hold.
+///
+/// The billing reply is one short JSON line; a child that streams instead
+/// must not grow the reader thread's buffer without bound.
+const MAX_STREAM_BYTES: u64 = 1024 * 1024;
 
 /// Our id for `initialize`; the reply is waited for so the billing call cannot
 /// race the handshake.
@@ -83,6 +89,11 @@ fn ask_for_billing(executable: &Path, args: &[String], env: &ResolvedEnvironment
             command.env("PATH", joined);
         }
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
 
     let mut child = command
         .spawn()
@@ -92,8 +103,7 @@ fn ask_for_billing(executable: &Path, args: &[String], env: &ResolvedEnvironment
     let result = converse(&mut child);
     // Killed either way: this child is an agent waiting for work, not a probe
     // that exits on its own.
-    let _ = child.kill();
-    let _ = child.wait();
+    crate::detection::kill_grouped_child(&mut child);
     result
 }
 
@@ -107,7 +117,10 @@ fn converse(child: &mut Child) -> Option<Value> {
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        for line in BufReader::new(stdout.take(MAX_STREAM_BYTES))
+            .lines()
+            .map_while(Result::ok)
+        {
             let Ok(value) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
