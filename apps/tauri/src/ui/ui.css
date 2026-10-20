@@ -1767,8 +1767,9 @@
   flex: none;
 }
 .forge-combobox-list {
-  /* Plus one group heading, so the last visible row is not cut in half. */
-  max-height: calc(var(--palette-rows, 9) * var(--row-h) + 30px);
+  /* Plus one group heading, so the last visible row is not cut in half. A
+     list whose rows are taller than the base row height sets `--palette-row-h`. */
+  max-height: calc(var(--palette-rows, 9) * var(--palette-row-h, var(--row-h)) + 30px);
   overflow-y: auto;
   padding: var(--space-4);
 }

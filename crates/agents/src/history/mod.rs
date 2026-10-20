@@ -1474,9 +1474,9 @@ fn has_extension(path: &Path, ext: &str) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some(ext)
 }
 
-/// Parse a small JSON file, or `None` if it is missing or malformed.
+/// Parse a small JSON file, or `None` if it is missing, oversized or malformed.
 fn read_json(path: &Path) -> Option<Value> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    bounded::json(path)
 }
 
 /// `Some(trimmed)` when a string has readable content.

@@ -294,7 +294,8 @@ impl OrchestrationConfig {
         let permission = match self.agent_may_integrate.trim() {
             "none" => domain::orchestration::IntegratePermission::None,
             "merge" => domain::orchestration::IntegratePermission::Merge,
-            _ => domain::orchestration::IntegratePermission::Pr,
+            "pr" => domain::orchestration::IntegratePermission::Pr,
+            _ => domain::orchestration::IntegratePermission::Unrecognized,
         };
         domain::orchestration::OrchestrationLimits {
             max_active_attempts_per_run: self.max_active_attempts_per_run,
@@ -567,6 +568,29 @@ mod tests {
         assert_eq!(c.git.fetch_timeout(), git_service::GIT_NETWORK_TIMEOUT);
         c.git.fetch_timeout_secs = 45;
         assert_eq!(c.git.fetch_timeout(), std::time::Duration::from_secs(45));
+    }
+
+    #[test]
+    fn an_unknown_integration_permission_fails_closed() {
+        let permissions = ["none", "merge", "pr", "no", ""];
+        let parsed: Vec<_> = permissions
+            .into_iter()
+            .map(|value| {
+                let mut c = Config::default();
+                c.orchestration.agent_may_integrate = value.to_owned();
+                c.orchestration.limits().agent_may_integrate
+            })
+            .collect();
+        assert_eq!(
+            parsed,
+            [
+                domain::orchestration::IntegratePermission::None,
+                domain::orchestration::IntegratePermission::Merge,
+                domain::orchestration::IntegratePermission::Pr,
+                domain::orchestration::IntegratePermission::Unrecognized,
+                domain::orchestration::IntegratePermission::Unrecognized,
+            ]
+        );
     }
 
     #[test]

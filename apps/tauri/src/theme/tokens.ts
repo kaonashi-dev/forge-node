@@ -858,6 +858,8 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   "--select-bg": "color-mix(in srgb, var(--accent) var(--finish-select-tint), transparent)",
   "--select-ring": "var(--finish-select-ring)",
   "--attention-bg": "color-mix(in srgb, var(--attention) 13%, transparent)",
+  /* The opaque version, for a child that must mask what is underneath it. */
+  "--attention-bg-solid": "color-mix(in srgb, var(--attention) 13%, var(--bg-strip))",
   "--attention-ring": "none",
   /* Ember washes: the pinned needs-you card and the strip's waiting pill, at rest and under the pointer. */
   "--attention-wash": "color-mix(in srgb, var(--attention) 9%, transparent)",

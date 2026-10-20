@@ -158,6 +158,7 @@ impl Store {
                 self.worktree_ignores.clear();
                 self.app_state.clear();
                 self.usage.clear();
+                self.runs.clear();
                 self.pull_requests = PullRequestState::default();
                 self.terminals.clear();
                 self.pending_bell.clear();

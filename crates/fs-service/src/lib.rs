@@ -601,9 +601,16 @@ pub fn write_file(
     text: &str,
     expected_revision: &str,
 ) -> Result<(), FsError> {
+    if text.len() > MAX_FILE_BYTES {
+        return Err(FsError::TooLarge {
+            size: text.len() as u64,
+            limit: MAX_FILE_BYTES,
+        });
+    }
     let root = canonicalize_root(root)?;
     let path = resolve_inside(&root, relative)?;
-    if path.exists() {
+    let existed = path.symlink_metadata().is_ok();
+    if existed {
         let current = read_file(&root, relative)?;
         if current.binary || current.too_large {
             return Err(FsError::RevisionMismatch { current });
@@ -636,7 +643,15 @@ pub fn write_file(
     if let Some(perms) = mode {
         let _ = fs::set_permissions(&tmp, perms);
     }
-    if let Err(error) = fs::rename(&tmp, &path) {
+    // A file that did not exist may have appeared while it was being written.
+    // An exclusive rename at commit refuses to replace it; a plain `rename`
+    // would silently lose the other writer's file.
+    let committed = if existed {
+        fs::rename(&tmp, &path)
+    } else {
+        entry_move::rename(&root, &tmp, &path)
+    };
+    if let Err(error) = committed {
         let _ = fs::remove_file(&tmp);
         return Err(error.into());
     }
@@ -2934,6 +2949,15 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
             FsError::RevisionMismatch { current } => assert_eq!(current.text, "agent"),
             other => panic!("expected mismatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn write_refuses_text_over_the_file_budget() {
+        let tmp = git_repo();
+        let text = "a".repeat(MAX_FILE_BYTES + 1);
+        let err = write_file(tmp.path(), "huge.txt", &text, "").unwrap_err();
+        assert!(matches!(err, FsError::TooLarge { .. }));
+        assert!(!tmp.path().join("huge.txt").exists());
     }
 
     #[test]
