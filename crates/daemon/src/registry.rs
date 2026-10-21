@@ -291,6 +291,7 @@ fn cli_skips(kind: ClientKind, event: &DaemonEvent) -> bool {
                 | DaemonEvent::TerminalBell { .. }
                 | DaemonEvent::ClipboardStore { .. }
                 | DaemonEvent::EditorFrame { .. }
+                | DaemonEvent::EditorFocusRequested { .. }
                 | DaemonEvent::ProviderUsageChanged { .. }
         )
 }

@@ -17,5 +17,6 @@ implemented. Do not restore them from `plan/`.
 | ADR-010 | Sessions form a logical graph (parent/child, depth ≤ 8), not the process tree | [`domain.md`](./domain.md) |
 | ADR-011 | One VT engine, in the daemon. The client is a passive cell replica | [`terminal.md`](./terminal.md), `crates/client` |
 | ADR-012 | The GUI never does `std::fs` on a workspace. Files, search, and writes go through the daemon | `crates/fs-service`, [`protocol.md`](./protocol.md) |
+| ADR-013 | Go to definition is an ordered chain of daemon-side providers — opt-in language servers, a SCIP index, the bundled tree-sitter index, opt-in ctags, then the grep heuristic — merged by confidence. Only a resolver may make the editor jump without asking. Language servers are daemon-owned, lazy, bounded and never configured by a repository. A place outside the checkout travels as an opaque id and opens read-only | `crates/fs-service/src/definition.rs`, `crates/languages`, `crates/syntax-index`, `crates/external-index`, `crates/lsp-client`, `crates/daemon/src/{definitions,lsp}.rs`, [`editor.md`](./editor.md) |
 
 There is no ADR-001 in the tree.

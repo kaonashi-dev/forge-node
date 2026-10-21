@@ -2,6 +2,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { editorCellsChannel, editorFrameChannel } from "../../../runtime/bus";
 import type { CellsPayload, EditorFramePayload } from "../../../contracts/terminal";
 import { openEditorTerminal } from "../../../navigation/viewsStore";
+import { openTerminalEditor } from "../../../features/editor/cells/commands";
+import { AUTOSAVE_KEY, readFlag } from "../../../state/preferences";
 
 export function bindEditorEvents(): Promise<UnlistenFn[]> {
   return Promise.all([
@@ -19,5 +21,19 @@ export function bindEditorEvents(): Promise<UnlistenFn[]> {
     }>("runtime:editor_opened", (event) => {
       openEditorTerminal(event.payload.session_id, event.payload.path, event.payload.workspace);
     }),
+    // A definition jump landed in another editor session. `open_editor` finds
+    // that live session by path, so the tab arrives as `editor_opened` like
+    // any other open, carrying the autosave preference.
+    listen<{ session_id: string; workspace: string; path: string }>(
+      "runtime:editor_focus",
+      (event) => {
+        void openTerminalEditor(
+          event.payload.workspace,
+          event.payload.path,
+          undefined,
+          readFlag(AUTOSAVE_KEY, false),
+        ).catch(() => undefined);
+      },
+    ),
   ]);
 }

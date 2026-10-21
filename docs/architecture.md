@@ -58,7 +58,13 @@ editor-cli       standalone/integrated editor host      → binary forge-editor
 agents           provider registry, verified detection, five built-ins
                  (claude, codex, opencode, cursor, grok)
 git-service      git CLI wrapper (LC_ALL=C, 30s local timeout), repo + worktree ops
-fs-service       workspace list/read/write/search; paths stay inside the checkout
+fs-service       workspace list/read/write/search; paths stay inside the checkout;
+                 the go-to-definition provider trait and the grep heuristic
+languages        language and language-server registry (languages.toml + user
+                 overrides); root markers; no I/O but `exists`
+syntax-index     tree-sitter tags/locals definition provider (grep-then-parse)
+external-index   opt-in ctags and SCIP definition providers
+lsp-client       blocking std-thread LSP client: framing, lifecycle, definition
 persistence      SQLite (WAL + FK), migrations, repositories, orphan reconciliation
 client           sync UDS client + passive CellGrid replica (no tokio)
 daemon           the runtime: core dispatcher, server, registry, terminal loop,
@@ -78,14 +84,16 @@ terminal-input} → domain`).
 
 Dependency direction is one-way and enforced by `Cargo.toml`:
 `forge-tauri → {client, domain}`, `client → {protocol, terminal-input, domain}`,
-`daemon → {agents, client, editor-control, fs-service, git-service, persistence,
-protocol, terminal-core, terminal-input, domain}`, `fs-service → git-service`,
+`daemon → {agents, client, editor-control, fs-service, git-service, languages,
+syntax-index, external-index, lsp-client, persistence, protocol, terminal-core,
+terminal-input, domain}`, `fs-service → {git-service, languages}`,
+`{syntax-index, external-index} → {fs-service, git-service, languages}`,
 `editor-cli → {editor-core, editor-control}` and `test-support → {domain,
 terminal-core}`. `forgectl` is `forge-ctl → client → protocol → domain`; its
 binary and library never depend on `daemon` (only its integration tests boot
 one).
 Every other crate depends on `domain` alone or on nothing (`editor-core`,
-`editor-control`), there is no cycle, and the host depends on neither
+`editor-control`, `languages`, `lsp-client`), there is no cycle, and the host depends on neither
 `protocol` nor `terminal-core` directly. The GUI renders `domain::terminal` wire types, it does
 not emulate. ADR numbers cited in code are indexed in [decisions.md](./decisions.md).
 

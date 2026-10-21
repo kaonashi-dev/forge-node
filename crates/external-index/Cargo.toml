@@ -1,0 +1,24 @@
+[package]
+name = "external-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+fs-service.workspace = true
+git-service.workspace = true
+languages.workspace = true
+nix.workspace = true
+# `scip` pins this exact version; a direct edge for `Message::parse_from_bytes`
+# must name the same one.
+protobuf = "=3.7.2"
+scip = "0.10"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

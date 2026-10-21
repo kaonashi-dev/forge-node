@@ -82,6 +82,7 @@ export type ActionId =
   | "find_in_project"
   | "save_file"
   | "go_to_definition"
+  | "go_back"
   | "file_tree_next"
   | "file_tree_previous"
   | "file_tree_collapse"
@@ -298,6 +299,12 @@ export const ACTIONS: Action[] = [
     id: "go_to_definition",
     label: "Go To Definition",
     detail: "Where the name under the caret is declared",
+    palette: false,
+  },
+  {
+    id: "go_back",
+    label: "Go Back",
+    detail: "Where the last definition jump started",
     palette: false,
   },
   /* U3. Everything below had a chord and no palette row, or the reverse. */
@@ -633,6 +640,9 @@ export function defaultBindings(): Binding[] {
      * which is the reason it can afford to lend the letter out at all.
      */
     bind(`${MOD}-b`, "go_to_definition", EDITOR),
+    // VS Code's chord. `ctrl--` is free on macOS, where zoom is `cmd`; on
+    // Linux `ctrl` is `MOD`, so the chord takes an `alt` rather than zoom out.
+    bind(isMac() ? "ctrl--" : "ctrl-alt--", "go_back", EDITOR),
     // Both the arrows and the `hjkl` block, in the tree's own context — the
     // one surface where the two audiences overlap completely.
     bind("down", "file_tree_next", FILES),

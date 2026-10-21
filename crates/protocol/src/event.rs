@@ -90,6 +90,16 @@ pub enum DaemonEvent {
         session_id: SessionId,
         frame: EditorFrame,
     },
+    /// Show this editor session: a definition jump landed in it.
+    ///
+    /// The editor that asked cannot open a second buffer, and the daemon has
+    /// no tabs; the GUI attaches the session and focuses its tab, the same way
+    /// it would for a file it opened itself.
+    EditorFocusRequested {
+        session_id: SessionId,
+        workspace_id: WorkspaceId,
+        path: String,
+    },
     /// Sent only to attached subscribers.
     TerminalDelta {
         /// The terminal the delta belongs to.

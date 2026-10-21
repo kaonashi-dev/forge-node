@@ -135,6 +135,9 @@ pub(crate) struct Inner {
     /// Live editor control ports. Runtime-only; dropped when the supervisor
     /// ends. A full queue answers busy rather than dropping a request_id.
     editors: HashMap<SessionId, crate::editor::CommandPort>,
+    /// Read-only editors holding a file outside the checkout, by the id
+    /// `definitions` minted for it. Runtime-only, like `editors`.
+    external_editors: HashMap<SessionId, u64>,
     pub(crate) ledger: crate::orchestration::Ledger,
 }
 
@@ -160,6 +163,11 @@ pub struct Daemon {
     /// Own lock: `git ls-files` must not sit on the core lock or re-walk every
     /// palette keystroke. Invalidated on `FileChanged` and path mutations.
     file_index: crate::file_index::Cache,
+    /// Go to definition: providers, in-flight lookups and external places,
+    /// each behind its own lock.
+    pub(crate) definitions: crate::definitions::Definitions,
+    /// Language servers; own lock, and only a definition lookup starts one.
+    lsp: crate::lsp::Manager,
     /// The two sides of a refused editor save, per session.
     ///
     /// Own lock, like `pull_requests` and for the same reason: `GetEditorConflict`
@@ -372,10 +380,13 @@ impl Daemon {
             term_selection: None,
             worktree_ignores,
             editors: HashMap::new(),
+            external_editors: HashMap::new(),
             ledger,
         };
 
         let attention_assets = install_attention_assets(&worktrees_root);
+        let definitions = crate::definitions::Definitions::new(&config.definitions);
+        let lsp = crate::lsp::Manager::new(&config.lsp);
 
         Ok(Arc::new(Daemon {
             context_writer,
@@ -390,6 +401,8 @@ impl Daemon {
             pull_requests: Mutex::new(crate::pull_requests::Cache::default()),
             usage_stats: Mutex::new(crate::usage_stats::Cache::default()),
             file_index: crate::file_index::Cache::default(),
+            definitions,
+            lsp,
             instance_id,
             version,
             started_at: Timestamp::now(),
@@ -4109,6 +4122,7 @@ impl Daemon {
         }
     }
 
+    /// Open a workspace file in a new editor session.
     ///
     /// The buffer is read here, through `fs-service`, off the core lock; the
     /// editor process never touches the checkout. The control socket is bound
@@ -4153,7 +4167,20 @@ impl Daemon {
                 ),
             ));
         }
+        self.spawn_editor_session(workspace_id, opened, line, read_only, autosave, None)
+    }
 
+    /// Bind, register and spawn an editor for a buffer already read.
+    fn spawn_editor_session(
+        self: &Arc<Self>,
+        workspace_id: WorkspaceId,
+        opened: fs_service::FileContents,
+        line: Option<u32>,
+        read_only: bool,
+        autosave: bool,
+        external: Option<u64>,
+    ) -> Result<Response, ProtocolError> {
+        self.ensure_env();
         let session_id = SessionId::new();
         let supervisor = crate::editor::Supervisor::bind(session_id).map_err(|e| {
             ProtocolError::new(
@@ -4215,6 +4242,9 @@ impl Daemon {
             inner
                 .editors
                 .insert(session_id, crate::editor::CommandPort::new(commands_tx));
+            if let Some(id) = external {
+                inner.external_editors.insert(session_id, id);
+            }
             (spec, session)
         };
 
@@ -4275,6 +4305,8 @@ impl Daemon {
                 request_id,
                 line,
                 column,
+                utf16: false,
+                from: None,
             },
         )?;
         Ok(Response::Ack)
@@ -4806,6 +4838,7 @@ impl Daemon {
 
     /// Blocking kill on shutdown. Detached SIGKILL dies with the process.
     pub fn shutdown_sessions(&self) {
+        self.lsp.shutdown_all();
         // Snapshot first: killing is the point of no return, and a command
         // recorded after it would be the shell's, not the program's.
         self.snapshot_launch_commands();
@@ -6035,39 +6068,106 @@ impl Daemon {
 
     /// Where a symbol is declared, for the editor's go-to-definition.
     ///
-    /// Runs on the editor control thread, with filesystem work outside the core lock.
+    /// Runs on its own lookup thread, never under the core lock: the lock is
+    /// taken only to read the session's target and root.
     pub(crate) fn editor_definitions(
         self: &Arc<Self>,
         session_id: SessionId,
-        symbol: &str,
-    ) -> (Vec<editor_control::WirePlace>, bool) {
-        let Ok((workspace_id, relative)) = self.editor_target(session_id) else {
-            return (Vec::new(), false);
-        };
-        let Ok(root) = self.workspace_path(workspace_id) else {
-            return (Vec::new(), false);
-        };
-        let found =
-            fs_service::search_definitions(&root, &relative, symbol, editor_control::MAX_PLACES);
-        match found {
-            Ok(results) => (
-                results
-                    .matches
-                    .into_iter()
-                    .take(editor_control::MAX_PLACES)
-                    .map(|hit| editor_control::WirePlace {
-                        path: hit.path,
-                        line: hit.line,
-                        text: hit.text,
-                    })
-                    .collect(),
-                results.truncated,
-            ),
-            Err(error) => {
-                tracing::debug!(%session_id, %error, "definition search failed");
-                (Vec::new(), true)
+        request: crate::definitions::Request,
+        cancel: &AtomicBool,
+    ) -> editor_control::DaemonMessage {
+        let crate::definitions::Request {
+            request_id,
+            symbol,
+            position,
+            text,
+        } = request;
+        let answer = |places, truncated, exact, source: &str, note| {
+            editor_control::DaemonMessage::Definitions {
+                request_id,
+                symbol: symbol.clone(),
+                places,
+                truncated,
+                exact,
+                source: source.to_owned(),
+                note,
             }
+        };
+        let Ok((workspace_id, relative)) = self.editor_target(session_id) else {
+            return answer(Vec::new(), false, false, "", None);
+        };
+        if self.editor_external_id(session_id).is_some() {
+            return answer(
+                Vec::new(),
+                false,
+                false,
+                "",
+                Some("this file is outside the checkout".to_owned()),
+            );
         }
+        let Some(root) = self
+            .workspace_path(workspace_id)
+            .ok()
+            .and_then(|root| root.canonicalize().ok())
+        else {
+            return answer(Vec::new(), false, false, "", None);
+        };
+        let query = fs_service::definition::DefinitionQuery {
+            root: &root,
+            source: &relative,
+            symbol: &symbol,
+            position: position.map(|at| fs_service::definition::Position {
+                line: at.line,
+                utf16_column: at.column,
+            }),
+            buffer: text.as_deref(),
+            limit: editor_control::MAX_PLACES,
+            deadline: Instant::now() + self.definitions.timeout(),
+            cancel,
+        };
+        self.ensure_env();
+        let env = self.lock().env.get().clone();
+        let lsp = self.lsp.enabled().then(|| crate::lsp::LspProvider {
+            manager: &self.lsp,
+            env: &env,
+            definition_timeout: self.config.lsp.definition_timeout(),
+        });
+        let first = lsp
+            .as_ref()
+            .map(|provider| provider as &dyn fs_service::definition::DefinitionProvider);
+        let chain = self.definitions.chain(first, &env.path_entries);
+        let resolved = fs_service::definition::resolve(&chain, &query);
+        let exact = resolved.decided_by.is_some()
+            && resolved.candidates.len() == 1
+            && resolved.candidates[0].confidence >= fs_service::definition::Confidence::Indexed;
+        let places = resolved
+            .candidates
+            .into_iter()
+            .map(|candidate| {
+                let (path, external) = match candidate.target {
+                    fs_service::definition::Target::Workspace(path) => (path, None),
+                    fs_service::definition::Target::External(path) => {
+                        let place = self.definitions.mint(workspace_id, path);
+                        (place.display, Some(place.id))
+                    }
+                };
+                editor_control::WirePlace {
+                    path,
+                    line: candidate.line,
+                    text: candidate.text,
+                    column: candidate.column,
+                    external,
+                }
+            })
+            .collect();
+        let note = (!resolved.notes.is_empty()).then(|| resolved.notes.join("; "));
+        answer(
+            places,
+            resolved.truncated,
+            exact,
+            resolved.decided_by.unwrap_or("search"),
+            note,
+        )
     }
 
     /// Run the configured checker and keep what it said about this buffer.
@@ -6111,17 +6211,16 @@ impl Daemon {
         git_service::file_hunk(&root, relative, line).ok().flatten()
     }
 
-    /// Open a second file for an editor that cannot open one itself.
+    /// Follow a definition out of an editor that cannot open a second file.
     ///
-    /// One buffer per process, so following a definition is a request. The
-    /// answer is an ordinary editor session in the same workspace, which the
-    /// GUI already opens on `EditorOpened` — this is the same path a click in
-    /// the file tree takes, not a second kind of editor.
+    /// The editor that already holds the file moves its caret (one buffer per
+    /// file, never a rival draft); otherwise a new editor opens, read-only when
+    /// the file is outside the checkout. Either way the GUI is asked to show
+    /// it, because only the GUI has tabs.
     pub(crate) fn editor_open_path(
         self: &Arc<Self>,
         session_id: SessionId,
-        path: &str,
-        line: u32,
+        target: crate::editor::OpenTarget,
     ) -> Result<(), ProtocolError> {
         let workspace_id = {
             let inner = self.lock();
@@ -6131,12 +6230,128 @@ impl Daemon {
                 .map(|s| s.workspace_id)
                 .ok_or_else(|| ProtocolError::invalid_request("no such editor session"))?
         };
-        self.create_editor_session(workspace_id, path, Some(line), false, false)
-            .map(|_| ())
+        let external = match target.external {
+            Some(id) => Some(
+                self.definitions
+                    .external(workspace_id, id)
+                    .ok_or_else(|| ProtocolError::not_found("that place is no longer known"))?,
+            ),
+            None => None,
+        };
+        let path = external
+            .as_ref()
+            .map_or_else(|| target.path.clone(), |place| place.display.clone());
+        let from = target.from.map(|mut from| {
+            if let Some(id) = self.editor_external_id(session_id) {
+                from.external = Some(id);
+            }
+            from
+        });
+        let live = {
+            let inner = self.lock();
+            inner
+                .sessions
+                .values()
+                .find(|session| {
+                    session.kind == SessionKind::Editor
+                        && session.workspace_id == workspace_id
+                        && !session.state.is_terminal()
+                        && inner.editors.contains_key(&session.id)
+                        && session
+                            .editor
+                            .as_ref()
+                            .is_some_and(|editor| editor.path == path)
+                        && inner.external_editors.get(&session.id).copied()
+                            == external.as_ref().map(|place| place.id)
+                })
+                .map(|session| session.id)
+        };
+        let shown = match live {
+            Some(id) => id,
+            None => {
+                let created = match &external {
+                    Some(place) => self.create_external_editor_session(place, target.line)?,
+                    None => self.create_editor_session(
+                        workspace_id,
+                        &target.path,
+                        Some(target.line),
+                        false,
+                        false,
+                    )?,
+                };
+                match created {
+                    Response::SessionCreated { session_id, .. } => session_id,
+                    _ => return Ok(()),
+                }
+            }
+        };
+        let request_id = self.next_editor_request_id();
+        self.send_editor_command(
+            shown,
+            crate::editor::Outgoing::Reveal {
+                request_id,
+                line: target.line,
+                column: Some(target.column),
+                utf16: true,
+                from,
+            },
+        )?;
+        self.registry
+            .broadcast_domain(DaemonEvent::EditorFocusRequested {
+                session_id: shown,
+                workspace_id,
+                path,
+            });
+        Ok(())
+    }
+
+    /// The external-place id a read-only editor was opened for, if any.
+    pub(crate) fn editor_external_id(&self, session_id: SessionId) -> Option<u64> {
+        self.lock().external_editors.get(&session_id).copied()
+    }
+
+    /// Open a file outside the checkout that a resolver named, read-only.
+    ///
+    /// Read through `fs-service` with the file's own directory as the root, so
+    /// the document budget, the binary check and the symlink refusal are the
+    /// ones every other read gets.
+    fn create_external_editor_session(
+        self: &Arc<Self>,
+        place: &crate::definitions::ExternalPlace,
+        line: u32,
+    ) -> Result<Response, ProtocolError> {
+        let (Some(dir), Some(name)) = (
+            place.path.parent(),
+            place.path.file_name().and_then(|name| name.to_str()),
+        ) else {
+            return Err(ProtocolError::invalid_request("not a file"));
+        };
+        let _operation = self.editor_file_operation();
+        let mut opened = fs_service::read_file(dir, name).map_err(fs_err)?;
+        if opened.binary || opened.too_large {
+            return Err(ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                format!("{} is not text this editor can hold", place.display),
+            ));
+        }
+        opened.path.clone_from(&place.display);
+        self.spawn_editor_session(
+            place.workspace_id,
+            opened,
+            Some(line),
+            true,
+            false,
+            Some(place.id),
+        )
     }
 
     pub(crate) fn drop_editor_port(&self, session_id: SessionId) {
-        self.lock().editors.remove(&session_id);
+        {
+            let mut inner = self.lock();
+            inner.editors.remove(&session_id);
+            inner.external_editors.remove(&session_id);
+        }
+        self.definitions.forget_session(session_id);
         self.clear_editor_conflict(session_id);
     }
 
@@ -6644,6 +6859,7 @@ impl Daemon {
                 return;
             }
             self.sweep_idle_sessions();
+            self.lsp.sweep(Instant::now());
             let step = Duration::from_secs(5);
             let mut slept = Duration::ZERO;
             while slept < PERIOD {

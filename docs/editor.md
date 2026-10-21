@@ -266,7 +266,8 @@ the host's.
 | Ctrl-P | toggle closing brackets as you type |
 | Ctrl-Space | complete from the buffer's own words; Up/Down choose, Enter accepts |
 | Alt-I / Alt-W | show whitespace / wrap long lines |
-| Alt-D | go to the definition of the word at the caret |
+| F12 / Alt-D | go to the definition of the name at the caret (⌘B in the GUI) |
+| Alt-O | go back to where the last definition jump started (⌃- in the GUI on macOS, Ctrl-Alt-- elsewhere) |
 | Alt-Enter | what the change on this line replaced |
 | Alt-C | run the configured checker and mark what it found |
 | Ctrl-R | replace (Tab switches field, **Enter** replaces this match, **Ctrl-R** replaces the rest) |
@@ -332,7 +333,7 @@ a column of them; a click on the gutter's fold marker folds that block; a click
 on the overview ruler jumps to the line it stands for; the wheel scrolls the
 viewport — on the cell surface the caret follows only when the scroll would push
 it off screen, and scrolling the DOM surface never moves it. Command-click and Ctrl-click ask where the
-identifier under the pointer is declared, the same request as Alt-D. The cell
+identifier under the pointer is declared, the same request as F12. The cell
 surface reports Command as Control, because an SGR mouse report has no Command
 bit. The editor turns on mouse capture on entry
 (`EnableMouseCapture`), so a real terminal reports the events and the Code pane
@@ -579,18 +580,32 @@ question is asked says so, since the working tree may have moved since the
 gutter was drawn.
 
 **Go to definition is a request, not a lookup.** The editor never opens the
-checkout, so `Alt-D` — and Command-click or Ctrl-click on the identifier —
-sends the word at the caret to the daemon, which greps the
-tree through `fs-service`. The symbol is validated as an identifier on both
-sides before it reaches `git grep` — a name that arrives from a caret must never
-be able to become a regex (`SearchKind::Definition`). What comes back is
-*candidates*, capped at 64: the ranking is a heuristic, so the editor offers the
-list rather than jumping somewhere it cannot justify, and a single candidate is
-still a list because a wrong answer taken silently is the worst of the three
-outcomes. Following one is another request — one buffer per process means the
-editor cannot open a second — and the daemon opens it as an ordinary editor
-session, the same path a click in the file tree takes. The search runs on the
-editor's control thread, off the core lock and off the PTY's paint thread.
+checkout, so F12 (or Alt-D, ⌘B in the GUI, Command-click or Ctrl-click on the
+identifier) sends the name at the caret to the daemon, together with the caret
+— 1-based line, UTF-16 column — and, while the buffer has unsaved changes, its
+text. A word alone cannot resolve `this.release`; the caret and the buffer are
+what let a resolver answer for this buffer rather than for the file on disk.
+The name, `$` included, is validated as an identifier on both sides before it
+reaches `git grep` — a name that arrives from a caret must never be able to
+become a regex (`SearchKind::Definition`).
+
+The daemon asks a chain of providers (below) on a lookup thread of its own, so
+a slow one never holds the editor's control loop; a newer lookup from the same
+editor cancels the older one. What comes back is capped at 64 and is
+*candidates* unless a resolver decided: only a language server, a binding in
+scope at the caret or a fresh SCIP index may send a single place the editor
+follows without asking. A heuristic or syntactic single candidate is still a
+list, because a wrong answer taken silently is the worst of the three outcomes.
+An empty answer names why when a provider knows ("rust-analyzer is indexing").
+
+Following a place in the same buffer moves the caret. Following one in another
+file is another request — one buffer per process — and the daemon moves the
+caret in the editor that already holds that file, or opens one, then
+broadcasts `EditorFocusRequested` so the GUI shows that tab. A place outside the
+checkout (a crate in `~/.cargo/registry`, a toolchain's sources) is named by an
+opaque id the daemon minted when a resolver returned it; the editor never sends
+a path back, and the file opens read-only with no git marks and no disk sync.
+Every jump remembers where it started, across files: Alt-O goes back.
 
 The cell surface shows up to five locations and a separate selected signature,
 leaving Enter/Escape instructions visible even with a long path. Up/Down or
@@ -598,8 +613,10 @@ Tab/Shift-Tab chooses a candidate; Enter follows it and Escape cancels. The DOM
 surface publishes the selected candidate through editor status, with the same
 keys. Replies must match the pending request; typing, moving, cancelling or
 retargeting the file invalidates the lookup so a late reply cannot steal input.
-Candidates from the current file rank first, then the same language family,
-before the result cap is applied. This improves locality, not type resolution.
+The grep heuristic ranks declarations before local bindings and members
+wherever they are; within each, the current file comes first, then its language
+family in its directory, then that family anywhere, then the rest, before the
+result cap is applied. This improves locality, not type resolution.
 
 TypeScript and JavaScript editors also search installed declaration files
 (`.d.ts`, `.d.mts`, `.d.cts`) in packages imported by the current file. This covers
@@ -612,52 +629,70 @@ internal package symlinks; it never follows a package outside that boundary.
 This remains a candidate search, without receiver-type resolution or an LSP.
 
 Directly named npm imports restrict dependency reads to the declaring package;
-aliases (`import { Queue as Jobs }`) search the exported name.
-Signature matching ignores quoted delimiters and same-line comments; qualified
-calls and other non-signature heads do not build a multiline signature. The best K candidates are selected
-before sorting, and a full list stops dependency traversal without reading more
-types. Canonically identical dependency paths are scanned only once per request.
+aliases (`import { Queue as Jobs }`) search the exported name. Installed
+declarations rank after workspace declarations and before workspace locals and
+members; a list already full of declarations stops dependency traversal without
+reading more types. Canonically identical dependency paths are scanned only
+once per request.
 
-Python (`.py`, `.pyi`) candidates include async functions, annotated assignments
-and `self`/`cls` attribute bindings. Kotlin (`.kt`, `.kts`) candidates include
-`fun`, generic and extension functions, extension properties and `typealias`.
-Neither resolves imports, inheritance or overloads semantically. Multiline
-comment/docstring bodies can still resemble declarations: the grep context is
-not a whole-file parse. Searches read saved files, not the unsaved editor buffer.
+The heuristic is grep, then read. One `git grep -l -w -F` names the files that
+mention the word (a directory outside Git is walked instead). Prose and data
+files — Markdown, JSON, YAML, TOML, CSS, HTML, text — and `*.min.*` bundles are
+dropped; the rest are read closest first, so the budget is spent where the
+answer most likely is rather than in path order, and reading stops once enough
+declarations sit closer than the next file. Each file is read with its
+language's comments and strings from `crates/languages`, carried across lines:
+a declaration inside a block comment, a docstring or a template string is never
+a candidate, and a Rust lifetime is not a character literal. Brace bodies are
+tracked, so an enum variant, a struct field or a class property counts while an
+object-literal key or an import list (`import { type Session }`) does not.
+Reserved words (`if`, `while`, `return`, …) are not searched at all.
 
-Multiline signatures use up to twelve following lines and 4 KiB per signature.
-Dependency scans are bounded to 32 imported packages, 8,192 directory entries,
-16 MiB total and the ordinary 2 MiB file cap. An exhausted budget is shown as a
-partial search, including when it found no candidates.
+Beyond declaring keywords (`fn`, `class`, `def`, `func`, …) and bindings (`let`,
+`const`, `val`, …), candidates include typed functions in Java, C, C++, C# and
+Dart (`static int helper(`, `Task<int> Run(`), C `#define` and `typedef` names,
+Rust enum variants and struct fields, Go `x :=` and struct fields, Ruby
+`def self.name`, Lisp `(defun name`, SQL `CREATE TABLE`, TypeScript class
+members and `#private` methods, Python async functions, annotated assignments
+and `self`/`cls` attributes, and Kotlin `fun`, generic and extension functions,
+extension properties and `typealias`. A keyword-less `name(args) {` counts only
+in TypeScript, the C family and shell scripts; in Kotlin and Swift it is as
+often a call with a trailing lambda. Nothing resolves imports, inheritance or
+overloads semantically. The heuristic reads saved files; the syntax index and a
+language server read the unsaved buffer of the file being edited.
 
-### Definition backend alternatives
+A search reads at most 512 files and 32 MiB, each under the ordinary 2 MiB file
+cap. Multiline signatures use up to twelve following lines and 4 KiB; a longer
+line, such as a minified bundle's, is skipped without marking the search
+partial. Dependency scans are bounded to 32 imported packages, 8,192 directory
+entries, 16 MiB total and the same file cap. An exhausted budget, a candidate
+over the file cap or a cut file list is shown as a partial search, including
+when it found no candidates.
 
-Research checked on 2026-10-08; these backends are not installed or enabled by
-Forge. LSP is a protocol, not a performance guarantee. Relative cost below is
-architectural, not an RSS or latency benchmark.
+### Definition providers
 
-| Backend | What it buys | Cost / limitation |
-|---|---|---|
-| Current bounded grep | TS/Python/Kotlin declaration candidates, no persistent index or extra runtime | No scope or receiver types; saved files only. |
-| [Universal Ctags](https://docs.ctags.io/en/latest/man/ctags.1.html) / tree-sitter | A syntax-aware symbol index; fewer comment false positives and richer language coverage | Ctags adds an external executable and index invalidation; tree-sitter adds grammars. Neither is a semantic resolver. Verify the installed parsers with `--list-languages`. |
-| [TypeScript language server](https://github.com/typescript-language-server/typescript-language-server) / direct tsserver | `tsconfig` aliases, imports, overloads, receiver types and live buffers | The LSP wrapper sits over tsserver; using tsserver directly removes the wrapper, not the project graph or its memory cost. |
-| [Native TypeScript LSP](https://github.com/microsoft/typescript-go) | The same semantic direction with a native runtime and LSP transport | Best TS candidate to benchmark. Preview and release CLI names differ; pin and verify the installed version, project references and source-definition behavior. |
-| [Jedi API](https://jedi.readthedocs.io/en/stable/docs/api.html#jedi.Script.goto) / [Jedi LSP](https://github.com/pappasam/jedi-language-server) | Python `Script.goto(..., follow_imports=True)` with the selected virtualenv and unsaved source | A narrow Python-only option; direct API needs a managed worker. Jedi LSP is in maintenance mode. Its suggested Rust successor [Zuban](https://github.com/zubanls/zuban) also supports goto, but has AGPL/commercial licensing to review before distribution. |
-| [Official Kotlin LSP](https://kotlinlang.org/docs/kotlin-lsp.html) | IntelliJ-backed Kotlin semantics and Gradle/Maven project models | JVM, project import and indexing; the current standalone distribution requires JDK 25. Not the lightweight default. |
+`fs_service::definition::resolve` asks the providers in order, merges what they
+say (the same file and line keeps the higher confidence) and stops at the first
+*authoritative* answer that is not empty. Within one confidence the provider's
+own order stands, which is what keeps a declaration elsewhere above a closer
+local binding. ADR-013.
 
-Prefer the current fallback by default and an **opt-in, lazy semantic backend**
-for a workspace that needs it. A production LSP client belongs in a daemon-owned
-worker, never in the WebView, core lock or PTY paint loop. One bounded queue and
-one server per workspace/language, coalesced lookups, idle eviction, deadlines,
-bounded frames/stderr and group kill/reaping are prerequisites, not follow-ups.
-The editor control request must first carry the buffer version, caret position
-and unsaved contents (or edits): a word alone cannot resolve `this.release`.
-Negotiate UTF-8/UTF-16 positions, support both `Location` and `LocationLink`,
-correlate/cancel replies, and revalidate every returned file URI inside the
-checkout before opening it. Do not auto-install tools or execute a repository's
-configuration. Benchmark cold start, warm definition p95, RSS and idle CPU on
-real TS, Python and Kotlin projects before choosing a backend or claiming it is
-lighter.
+| Provider | Confidence | On by default | What it is |
+|---|---|---|---|
+| Language server (`[lsp]`) | semantic, authoritative | no | rust-analyzer, typescript-language-server, gopls, pyright, clangd, or any server the config adds. Lazy, one per (server, root), probed before launch, at most `max_servers`, stopped when idle, restarted with backoff and given up after three crashes in five minutes. UTF-16 positions only; `Location` and `LocationLink` both read. While it starts or indexes it answers with a note and the next provider answers. |
+| SCIP (`[definitions] scip`) | indexed, authoritative at a caret | no | A prebuilt `index.scip` at the checkout root, read with `metadata()` first and capped at 256 MiB. It answers only for a file no newer than the index, and never for unsaved edits. |
+| Syntax index (`[definitions] syntax`) | syntactic; a local binding is authoritative | yes | Tree-sitter for Rust, TypeScript/TSX, JavaScript, Python and Go with Forge's own `tags.scm` and `locals.scm`. Grep first, then parse only the files that mention the name, closest first, within 256 files and 16 MiB; definitions are cached per file by length and mtime. A binding in scope at the caret wins outright. |
+| Universal Ctags (`[definitions] ctags`) | indexed, never authoritative | no | Installed by the person (GPL, never bundled); the probe refuses macOS's BSD `ctags`. One `ctags --output-format=json` run over the files `git grep -l` named. |
+| Grep heuristic | heuristic | always last | The heuristic below, plus installed `.d.ts` declarations for TypeScript. |
+
+The syntax index lives in the daemon, not in `forge-editor`; the passage on
+tree-sitter below is about the editor's own highlighting. Adding a language to
+it is data plus one grammar line: an entry in `crates/languages/languages.toml`,
+query files under `crates/syntax-index/queries/`, and a fixture test. Adding a
+language server needs no code at all: `[lsp.servers.<id>]` and
+`[lsp.languages.<id>] servers = [...]` in the config TOML. A repository can
+never name a server, its command or its options, because starting one runs the
+checkout's build scripts.
 
 ### Local completion and syntax
 
@@ -671,7 +706,8 @@ transaction, so undo takes the completion and leaves what was typed. A key the
 list does not own closes it and still reaches the document, because typing on is
 how a person narrows what they meant.
 
-**tree-sitter: not now, and here is the test it has to pass.** It would buy the
+**tree-sitter for highlighting: not now, and here is the test it has to pass.**
+(Go to definition does use it, in the daemon; see Definition providers.) It would buy the
 long tail of grammars and a real parse tree, and the scanner here is a
 hand-rolled approximation that will keep needing arms. Against that: the editor
 is a standalone binary that must build with no network and no C toolchain beyond

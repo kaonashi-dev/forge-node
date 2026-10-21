@@ -33,6 +33,7 @@ import { metrics as tokens } from "../../../theme/tokens";
 import { measureCell } from "../../../shared/cell-grid/metrics";
 import { clipboardPaste } from "../../../shared/input/clipboard";
 import { inputFor, modifiersOf, textInput } from "./editorKeys";
+import { BACK_INPUT, DEFINITION_INPUT, bindEditorNavigation } from "../navigation";
 import { editorInputBatch } from "./editorInputBatch";
 import { sameWindow, scrollForCaret, windowFor, type EditorWindow } from "./editorWindow";
 import type {
@@ -191,6 +192,8 @@ function EditorSessionView(props: EditorViewProps) {
   let viewFrame = 0;
   /** The version on screen; an older frame is a reorder, not an update. */
   let shownVersion = -1;
+  let releaseNavigation = (): void => undefined;
+  onCleanup(() => releaseNavigation());
 
   /** Ask the host for the window this scroll position needs. */
   function publishView(): void {
@@ -647,10 +650,15 @@ function EditorSessionView(props: EditorViewProps) {
           onFocus={() => {
             setFocused(true);
             push({ Focus: true });
+            releaseNavigation();
+            releaseNavigation = bindEditorNavigation((which) =>
+              push(which === "definition" ? DEFINITION_INPUT : BACK_INPUT),
+            );
           }}
           onBlur={() => {
             setFocused(false);
             push({ Focus: false });
+            releaseNavigation();
           }}
         />
       </div>

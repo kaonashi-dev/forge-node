@@ -724,9 +724,9 @@ mod integrated {
                 .daemon
                 .next(deadline.saturating_duration_since(Instant::now()))
             {
-                Some(EditorMessage::FindDefinition { request_id, symbol }) => {
-                    break (request_id, symbol)
-                }
+                Some(EditorMessage::FindDefinition {
+                    request_id, symbol, ..
+                }) => break (request_id, symbol),
                 Some(_) => continue,
                 None => panic!("no definition request"),
             }
@@ -740,8 +740,13 @@ mod integrated {
                 path: path.into(),
                 line: 204,
                 text: "private async release(payin: Payin, tx: Prisma.TransactionClient) {".into(),
+                column: 0,
+                external: None,
             }],
             truncated: false,
+            exact: false,
+            source: "grep".into(),
+            note: None,
         });
         editor.expect("Enter opens");
         editor.expect("Esc cancels");
@@ -803,6 +808,8 @@ mod integrated {
             request_id: 7,
             line: 3,
             column: Some(4),
+            utf16: false,
+            from: None,
         });
         // Both directions of the wire count from 1, so the reported position
         // is the one that was asked for.

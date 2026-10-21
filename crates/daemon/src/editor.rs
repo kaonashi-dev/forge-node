@@ -56,6 +56,10 @@ pub enum Outgoing {
         request_id: u64,
         line: u32,
         column: Option<u32>,
+        /// `column` counts UTF-16 units rather than display columns.
+        utf16: bool,
+        /// Where the definition jump that led here started.
+        from: Option<editor_control::WireLocation>,
     },
     GetState {
         request_id: u64,
@@ -107,10 +111,14 @@ impl Outgoing {
                 request_id,
                 line,
                 column,
+                utf16,
+                from,
             } => DaemonMessage::Reveal {
                 request_id,
                 line,
                 column,
+                utf16,
+                from,
             },
             Self::GetState { request_id } => DaemonMessage::GetState { request_id },
             Self::Reload {
@@ -291,6 +299,16 @@ fn bind_socket(socket_path: &Path) -> io::Result<UnixListener> {
     Ok(listener)
 }
 
+/// Where an editor asked to follow a definition, as [`EditorMessage::OpenPath`] named it.
+pub struct OpenTarget {
+    pub path: String,
+    pub line: u32,
+    /// 1-based UTF-16; 0 keeps the start of the line.
+    pub column: u32,
+    pub external: Option<u64>,
+    pub from: Option<editor_control::WireLocation>,
+}
+
 /// What one buffer is opened with.
 ///
 /// Grouped rather than passed one by one: they travel together from the
@@ -422,8 +440,14 @@ fn serve(
     }
     // The buffer is open; the editor is usable.
     daemon.set_editor_running(session_id);
+    // A file outside the checkout has no git marks and no checkout path to
+    // watch; it is read-only, and what is on disk there is not ours to sync.
+    let external = daemon.editor_external_id(session_id).is_some();
     // Marks are decoration: a git failure must not take the buffer with it.
     let push_marks = |daemon: &Arc<Daemon>, path: &str, text: &str| {
+        if external {
+            return;
+        }
         if let Some(marks) = daemon.editor_git_marks(session_id, path, text) {
             daemon.publish_editor_git_marks(session_id, path, marks);
         }
@@ -504,9 +528,10 @@ fn serve(
     let mut revision = buffer.revision.clone();
     drop(buffer);
     let mut disk_sync = disk::Sync::default();
-    if disk_sync
-        .refresh(&daemon, session_id, &revision, &writer)
-        .is_err()
+    if !external
+        && disk_sync
+            .refresh(&daemon, session_id, &revision, &writer)
+            .is_err()
     {
         return;
     }
@@ -527,7 +552,7 @@ fn serve(
         let _ = stream.set_read_timeout(wait.map(|wait| wait.max(Duration::from_millis(1))));
         match decoder.read::<EditorMessage>(&mut stream) {
             Ok(EditorMessage::State { state, request_id }) => {
-                if request_id == Some(DISK_STATE_REQUEST) {
+                if request_id == Some(DISK_STATE_REQUEST) && !external {
                     if let Err(error) = disk_sync.refresh(&daemon, session_id, &revision, &writer) {
                         tracing::debug!(%session_id, %error, "editor disk sync failed");
                         return;
@@ -684,15 +709,20 @@ fn serve(
                 }
                 daemon.finish_editor_reload(session_id, request_id);
             }
-            Ok(EditorMessage::FindDefinition { request_id, symbol }) => {
-                let (places, truncated) = daemon.editor_definitions(session_id, &symbol);
-                let answer = DaemonMessage::Definitions {
+            Ok(EditorMessage::FindDefinition {
+                request_id,
+                symbol,
+                position,
+                text,
+                ..
+            }) => {
+                let request = crate::definitions::Request {
                     request_id,
                     symbol,
-                    places,
-                    truncated,
+                    position,
+                    text: text.filter(|text| text.len() <= editor_control::MAX_DOCUMENT_BYTES),
                 };
-                if send(&writer, &answer).is_err() {
+                if spawn_lookup(&daemon, session_id, request, &writer).is_err() {
                     return;
                 }
             }
@@ -739,10 +769,20 @@ fn serve(
                 request_id,
                 path: wanted,
                 line,
+                column,
+                external,
+                from,
             }) => {
                 // A refusal is worth saying: the candidate came from a grep of
                 // a tree that may have moved since.
-                if let Err(error) = daemon.editor_open_path(session_id, &wanted, line) {
+                let target = OpenTarget {
+                    path: wanted.clone(),
+                    line,
+                    column,
+                    external,
+                    from,
+                };
+                if let Err(error) = daemon.editor_open_path(session_id, target) {
                     let answer = DaemonMessage::SaveRefused {
                         request_id,
                         reason: format!("could not open {wanted}: {}", error.message),
@@ -774,6 +814,53 @@ fn serve(
             }
         }
     }
+}
+
+/// Answer a definition lookup from its own thread.
+///
+/// The read loop must keep serving saves and frames while providers work, so
+/// the lookup answers through the shared writer when it is done. A lookup the
+/// next one superseded says nothing: the editor correlates replies anyway, and
+/// a stale answer is a frame for nothing. `Err` only when the writer is gone.
+fn spawn_lookup(
+    daemon: &Arc<Daemon>,
+    session_id: SessionId,
+    request: crate::definitions::Request,
+    writer: &Arc<Mutex<UnixStream>>,
+) -> Result<(), ControlError> {
+    let Some(cancel) = daemon.definitions.begin(session_id) else {
+        return send(
+            writer,
+            &DaemonMessage::Definitions {
+                request_id: request.request_id,
+                symbol: request.symbol,
+                places: Vec::new(),
+                truncated: true,
+                exact: false,
+                source: String::new(),
+                note: Some("too many lookups are running; try again".to_owned()),
+            },
+        );
+    };
+    let thread_daemon = Arc::clone(daemon);
+    let thread_writer = Arc::clone(writer);
+    let thread_cancel = Arc::clone(&cancel);
+    let spawned = std::thread::Builder::new()
+        .name("forge-definition".to_owned())
+        .spawn(move || {
+            let answer = thread_daemon.editor_definitions(session_id, request, &thread_cancel);
+            if !thread_cancel.load(Ordering::Relaxed) {
+                if let Err(error) = send(&thread_writer, &answer) {
+                    tracing::debug!(%session_id, %error, "definition answer not delivered");
+                }
+            }
+            thread_daemon.definitions.finish(session_id, &thread_cancel);
+        });
+    if let Err(error) = spawned {
+        daemon.definitions.finish(session_id, &cancel);
+        tracing::warn!(%session_id, %error, "could not start a definition lookup");
+    }
+    Ok(())
 }
 
 /// Write one frame through the shared write half.
@@ -1117,6 +1204,8 @@ mod tests {
             request_id: 1,
             line: 10,
             column: None,
+            utf16: false,
+            from: None,
         })
         .unwrap();
         assert!(matches!(rx.recv().unwrap(), Outgoing::GitMarks { marks, .. } if marks.is_empty()));

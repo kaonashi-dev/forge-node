@@ -44,6 +44,7 @@ import { Viewport } from "../../../shared/cell-grid/viewport";
 import { clipboardPaste } from "../../../shared/input/clipboard";
 import { CursorBlink, prefersReducedMotion } from "../../../shared/cell-grid/cursorBlink";
 import { editorKeyForChord } from "./editorChords";
+import { BACK_KEY, DEFINITION_KEY, bindEditorNavigation } from "../navigation";
 import type { CellsPayload } from "../../../contracts/terminal";
 import { LatencyProbe } from "../../../shared/cell-grid/latency";
 import {
@@ -76,6 +77,8 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
 
   const viewport = new Viewport();
   const probe = new LatencyProbe();
+  let releaseNavigation = (): void => undefined;
+  onCleanup(() => releaseNavigation());
   let renderer: TerminalRenderer | null = null;
   let cell: CellMetrics = measureCell(tokens.monoSize, tokens.mono, tokens.monoLineHeight);
   const dirty = new Set<number>();
@@ -579,6 +582,11 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
           }}
           onFocus={() => {
             focused = true;
+            releaseNavigation();
+            releaseNavigation = bindEditorNavigation((which) => {
+              const key = which === "definition" ? DEFINITION_KEY : BACK_KEY;
+              void sendEditorKey(props.session, key, probe.send()).catch(() => undefined);
+            });
             blink.run(!prefersReducedMotion());
             // The cursor is painted over the row, so the row it sits on is
             // dirty even though no cell changed.
@@ -587,6 +595,7 @@ export function EditorTerminalPane(props: EditorTerminalPaneProps) {
           }}
           onBlur={() => {
             focused = false;
+            releaseNavigation();
             blink.run(false);
             dirty.add(viewport.cursor.line);
             schedule();

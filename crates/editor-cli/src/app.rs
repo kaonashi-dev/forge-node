@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use editor_control::{
-    EditorStateWire, WireDiagnostic, WireEdit, WireFind, WireFindCommand, WireMark, WireMarkKind,
-    WirePlace, MAX_FIND_COUNT, MAX_FIND_PATTERN_BYTES,
+    EditorStateWire, WireDiagnostic, WireEdit, WireFind, WireFindCommand, WireLocation, WireMark,
+    WireMarkKind, WirePlace, WirePosition, MAX_FIND_COUNT, MAX_FIND_PATTERN_BYTES,
 };
 use editor_core::{
     execute, metrics, Command, Document, Edit, Grammar, Origin, Query, Range, Refusal, Selection,
@@ -66,10 +66,9 @@ pub enum Prompt {
     },
     /// Candidate declarations for a symbol, to choose between.
     ///
-    /// Candidates and not a jump: the daemon ranks them with a heuristic, so
-    /// the editor offers the list rather than moving somewhere it cannot
-    /// justify. One candidate is still a list — a wrong single answer taken
-    /// silently is the worst of the three outcomes.
+    /// Only an `exact` answer with one place is followed without asking; a
+    /// single heuristic candidate is still a list, because a wrong answer
+    /// taken silently is the worst of the three outcomes.
     Definitions {
         symbol: String,
         places: Vec<WirePlace>,
@@ -91,6 +90,34 @@ pub(crate) fn definition_header(
         count
     )
 }
+
+/// A definition lookup the control loop has to send.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lookup {
+    pub request_id: u64,
+    pub symbol: String,
+    pub position: WirePosition,
+    pub document_version: u64,
+    /// The buffer, only while it differs from the saved file.
+    pub text: Option<String>,
+}
+
+/// A place the control loop has to ask the daemon to open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenRequest {
+    pub request_id: u64,
+    pub path: String,
+    pub line: u32,
+    pub column: u32,
+    pub external: Option<u64>,
+    pub from: Option<WireLocation>,
+}
+
+/// Places "go back" remembers; the oldest is dropped past this.
+const MAX_JUMPS: usize = 64;
+
+/// Longest name a lookup sends, the same bound `fs-service` applies.
+const MAX_SYMBOL_BYTES: usize = 128;
 
 /// Largest copy that travels as an OSC 52.
 ///
@@ -245,10 +272,12 @@ pub struct App {
     /// The save request the control loop has not sent yet.
     outbox: Option<(u64, String, u64)>,
     /// A definition lookup the control loop has not sent yet.
-    lookup: Option<(u64, String)>,
+    lookup: Option<Lookup>,
     pending_lookup: Option<(u64, u64, usize)>,
     /// A file the control loop has to ask the daemon to open.
-    open_request: Option<(u64, String, u32)>,
+    open_request: Option<OpenRequest>,
+    /// Where definition jumps started, newest last.
+    jumps: Vec<WireLocation>,
     /// A change-details request the control loop has not sent yet.
     details_request: Option<(u64, u32)>,
     /// A diagnostics run the control loop has not asked for yet.
@@ -438,6 +467,7 @@ impl App {
             lookup: None,
             pending_lookup: None,
             open_request: None,
+            jumps: Vec::new(),
             details_request: None,
             diagnostics_request: None,
             // The daemon mints ids from 1 for its own requests; the editor's
@@ -1202,18 +1232,97 @@ impl App {
             self.status = Some("go to definition needs the daemon".to_string());
             return;
         }
-        let (start, end) =
-            editor_core::movement::word_span(self.document.text(), self.document.caret());
-        let symbol = self.document.text().as_str()[start..end].to_string();
+        let text = self.document.text();
+        let (start, end) = definition_span(text.as_str(), self.document.caret());
+        let symbol = text.as_str()[start..end].to_string();
         if symbol.is_empty() || !is_identifier(&symbol) {
             self.status = Some("no symbol under the caret".to_string());
             return;
         }
+        let at = text.line_col(start);
+        let position = WirePosition {
+            line: u32::try_from(at.line + 1).unwrap_or(u32::MAX),
+            column: editor_control::utf16_column(text.line(at.line), at.column),
+        };
         let request_id = self.next_request_id;
         self.next_request_id += 1;
-        self.lookup = Some((request_id, symbol));
+        self.lookup = Some(Lookup {
+            request_id,
+            symbol,
+            position,
+            document_version: self.document.version().0,
+            text: self.document.is_dirty().then(|| text.as_str().to_string()),
+        });
         self.pending_lookup = Some((request_id, self.document.version().0, self.document.caret()));
         self.status = Some("looking…".to_string());
+    }
+
+    /// Where the primary caret is, as the jump list and the wire count.
+    fn here(&self) -> WireLocation {
+        let text = self.document.text();
+        let at = self.document.caret_line_col();
+        WireLocation {
+            path: self.path.to_string_lossy().into_owned(),
+            line: u32::try_from(at.line + 1).unwrap_or(u32::MAX),
+            column: editor_control::utf16_column(text.line(at.line), at.column),
+            external: None,
+        }
+    }
+
+    fn remember_jump(&mut self, from: WireLocation) {
+        if self.jumps.len() >= MAX_JUMPS {
+            self.jumps.remove(0);
+        }
+        self.jumps.push(from);
+    }
+
+    /// Go to a declaration: in place when it is this buffer, otherwise ask the
+    /// daemon, which owns every other buffer.
+    fn follow(&mut self, place: &WirePlace) {
+        let from = self.here();
+        if place.external.is_none() && place.path == from.path {
+            self.remember_jump(from);
+            self.reveal_utf16(place.line as usize, place.column);
+            self.status = None;
+            return;
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.open_request = Some(OpenRequest {
+            request_id,
+            path: place.path.clone(),
+            line: place.line,
+            column: place.column,
+            external: place.external,
+            from: Some(from),
+        });
+        self.status = Some(format!("opening {}", place.path));
+    }
+
+    /// Return to where the last definition jump started.
+    fn go_back(&mut self) {
+        let Some(back) = self.jumps.pop() else {
+            self.status = Some("no earlier place to go back to".to_string());
+            return;
+        };
+        if back.external.is_none() && back.path == self.path.to_string_lossy() {
+            self.reveal_utf16(back.line as usize, back.column);
+            return;
+        }
+        if !self.integrated {
+            return;
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.status = Some(format!("back to {}", back.path));
+        self.open_request = Some(OpenRequest {
+            request_id,
+            path: back.path,
+            line: back.line,
+            column: back.column,
+            external: back.external,
+            from: None,
+        });
     }
 
     fn cancel_definition_lookup(&mut self) {
@@ -1270,22 +1379,26 @@ impl App {
     }
 
     /// Take the definition request the control loop has to send.
-    pub fn take_definition_request(&mut self) -> Option<(u64, String)> {
+    pub fn take_definition_request(&mut self) -> Option<Lookup> {
         self.lookup.take()
     }
 
     /// Take the open request the control loop has to send.
-    pub fn take_open_request(&mut self) -> Option<(u64, String, u32)> {
+    pub fn take_open_request(&mut self) -> Option<OpenRequest> {
         self.open_request.take()
     }
 
     /// The daemon answered a definition lookup.
+    ///
+    /// `exact` with a single place jumps; anything else is a list to choose from.
     pub fn definitions_arrived(
         &mut self,
         request_id: u64,
         symbol: String,
         places: Vec<WirePlace>,
         truncated: bool,
+        exact: bool,
+        note: Option<String>,
     ) {
         let Some((pending, version, caret)) = self.pending_lookup else {
             return;
@@ -1299,11 +1412,15 @@ impl App {
         }
         self.damage_all = true;
         if places.is_empty() {
-            self.status = Some(if truncated {
-                format!("{symbol}: no declaration found (search incomplete)")
-            } else {
-                format!("{symbol}: not declared anywhere I can see")
+            self.status = Some(match note {
+                Some(note) => format!("{symbol}: no declaration found ({note})"),
+                None if truncated => format!("{symbol}: no declaration found (search incomplete)"),
+                None => format!("{symbol}: not declared anywhere I can see"),
             });
+            return;
+        }
+        if exact && places.len() == 1 {
+            self.follow(&places[0]);
             return;
         }
         self.status = None;
@@ -1362,6 +1479,39 @@ impl App {
         self.autosave_at = None;
         self.close_after_save = false;
         self.status = Some(reason.to_string());
+    }
+
+    /// The daemon's `Reveal`: a definition jump (UTF-16 column, and where it
+    /// came from) or an ordinary reveal (display column).
+    pub fn reveal_from(
+        &mut self,
+        line: usize,
+        column: Option<u32>,
+        utf16: bool,
+        from: Option<WireLocation>,
+    ) {
+        if let Some(from) = from {
+            self.remember_jump(from);
+        }
+        if utf16 {
+            self.reveal_utf16(line, column.unwrap_or(0));
+        } else {
+            self.reveal(line, column.map(|column| column as usize));
+        }
+    }
+
+    /// Move to a 1-based line and 1-based UTF-16 column; 0 keeps the goto's.
+    fn reveal_utf16(&mut self, line: usize, column: u32) {
+        self.goto_line(line);
+        if column > 0 {
+            let text = self.document.text();
+            let at = self.document.caret_line_col();
+            let offset = text.line_start(at.line)
+                + editor_control::byte_for_utf16(text.line(at.line), column);
+            self.document.set_selection(Selection::caret(offset));
+            self.ensure_visible();
+        }
+        self.damage_all = true;
     }
 
     /// Move the viewport to a line, for the daemon's `Reveal` request.
@@ -2573,6 +2723,7 @@ impl App {
             }
             EditorAction::Complete => self.open_completion(),
             EditorAction::FindDefinition => self.find_definition(),
+            EditorAction::GoBack => self.go_back(),
             EditorAction::ChangeDetails => self.ask_change_details(),
             EditorAction::RunDiagnostics => self.run_diagnostics(),
             EditorAction::ToggleSpecialChars => {
@@ -2737,10 +2888,7 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if let Some(place) = places.get(selected) {
-                        let request_id = self.next_request_id;
-                        self.next_request_id += 1;
-                        self.open_request = Some((request_id, place.path.clone(), place.line));
-                        self.status = Some(format!("opening {}", place.path));
+                        self.follow(place);
                     }
                 }
                 KeyCode::Esc => {}
@@ -3257,7 +3405,10 @@ impl App {
             (KeyCode::Char('e'), true, _) => Action::Editor(EditorAction::ToggleRegex),
             (KeyCode::Char('p'), true, _) => Action::Editor(EditorAction::ToggleCloseBrackets),
             (KeyCode::Char(' '), true, _) => Action::Editor(EditorAction::Complete),
-            (KeyCode::Char('d'), _, true) => Action::Editor(EditorAction::FindDefinition),
+            (KeyCode::Char('d'), _, true) | (KeyCode::F(12), false, false) => {
+                Action::Editor(EditorAction::FindDefinition)
+            }
+            (KeyCode::Char('o'), _, true) => Action::Editor(EditorAction::GoBack),
             (KeyCode::Enter, _, true) => Action::Editor(EditorAction::ChangeDetails),
             (KeyCode::Char('c'), _, true) => Action::Editor(EditorAction::RunDiagnostics),
             (KeyCode::Char('i'), _, true) => Action::Editor(EditorAction::ToggleSpecialChars),
@@ -3346,6 +3497,8 @@ enum EditorAction {
     ToggleWrap,
     Complete,
     FindDefinition,
+    /// Return to where the last definition jump started.
+    GoBack,
     ChangeDetails,
     RunDiagnostics,
     ToggleWholeWord,
@@ -3412,11 +3565,40 @@ fn describe(refusal: Refusal) -> String {
 /// a refusal costs no round trip: a symbol that reaches `git grep` is a name,
 /// never anything that could be read as a pattern.
 fn is_identifier(word: &str) -> bool {
-    !word.is_empty()
-        && !word.starts_with(|c: char| c.is_ascii_digit())
-        && word
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    let mut chars = word.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    word.len() <= MAX_SYMBOL_BYTES
+        && (first.is_alphabetic() || first == '_' || first == '$')
+        && chars.all(is_name_char)
+}
+
+fn is_name_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
+}
+
+/// The identifier around `caret`, `$` included.
+///
+/// Not `movement::word_span`: a word motion stops at `$`, but `$store` is one
+/// name to the languages that allow it.
+fn definition_span(text: &str, caret: usize) -> (usize, usize) {
+    let mut caret = caret.min(text.len());
+    while !text.is_char_boundary(caret) {
+        caret -= 1;
+    }
+    let start = text[..caret]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_name_char(*c))
+        .last()
+        .map_or(caret, |(index, _)| index);
+    let end = text[caret..]
+        .char_indices()
+        .take_while(|(_, c)| is_name_char(*c))
+        .last()
+        .map_or(caret, |(index, c)| caret + index + c.len_utf8());
+    (start, end)
 }
 
 fn on_off(value: bool) -> &'static str {
@@ -3451,6 +3633,11 @@ pub const HELP: &[(&str, &str)] = &[
         "replace; Tab switches field, Enter one, Ctrl-R all",
     ),
     ("Ctrl-G", "go to line"),
+    (
+        "F12 / Alt-D",
+        "go to the definition of the name at the caret",
+    ),
+    ("Alt-O", "go back to where the last definition jump started"),
     ("Ctrl-P", "toggle closing brackets as you type"),
     (
         "Alt-F / Alt-Shift-F",
@@ -4964,7 +5151,7 @@ mod tests {
                 0,
                 modifiers,
             ));
-            let (_, symbol) = app.take_definition_request().expect("a lookup");
+            let Lookup { symbol, .. } = app.take_definition_request().expect("a lookup");
             assert_eq!(symbol, "PayinEvents");
             assert_eq!(
                 app.document().selection().range(),
@@ -5586,6 +5773,8 @@ mod tests {
             path: path.to_string(),
             line,
             text: text.to_string(),
+            column: 0,
+            external: None,
         }
     }
 
@@ -5599,7 +5788,9 @@ mod tests {
             app.handle_key(key(KeyCode::Right));
         }
         app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
-        let (request_id, symbol) = app.take_definition_request().expect("a lookup");
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().expect("a lookup");
         assert_eq!(symbol, "answer");
 
         app.definitions_arrived(
@@ -5610,12 +5801,14 @@ mod tests {
                 place("other.rs", 9, "fn answer() {}"),
             ],
             false,
+            false,
+            None,
         );
         assert!(matches!(app.prompt(), Some(Prompt::Definitions { .. })));
 
         app.handle_key(key(KeyCode::Down));
         app.handle_key(key(KeyCode::Enter));
-        let (_, path, line) = app.take_open_request().expect("an open");
+        let OpenRequest { path, line, .. } = app.take_open_request().expect("an open");
         assert_eq!((path.as_str(), line), ("other.rs", 9));
     }
 
@@ -5646,8 +5839,10 @@ mod tests {
         app.set_integrated();
         app.resize(60, 10);
         app.find_definition();
-        let (request_id, symbol) = app.take_definition_request().unwrap();
-        app.definitions_arrived(request_id, symbol, Vec::new(), false);
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().unwrap();
+        app.definitions_arrived(request_id, symbol, Vec::new(), false, false, None);
         assert!(app.prompt().is_none());
         assert_eq!(
             app.status(),
@@ -5660,17 +5855,24 @@ mod tests {
         let mut app = app("release\n", false);
         app.set_integrated();
         app.find_definition();
-        let (old, symbol) = app.take_definition_request().unwrap();
+        let Lookup {
+            request_id: old,
+            symbol,
+            ..
+        } = app.take_definition_request().unwrap();
         app.find_definition();
-        let (current, _) = app.take_definition_request().unwrap();
+        let Lookup {
+            request_id: current,
+            ..
+        } = app.take_definition_request().unwrap();
         let places = vec![place(
             "service.ts",
             204,
             "private async release(payin: Payin) {",
         )];
-        app.definitions_arrived(old, symbol.clone(), places.clone(), false);
+        app.definitions_arrived(old, symbol.clone(), places.clone(), false, false, None);
         assert!(app.prompt().is_none());
-        app.definitions_arrived(current, symbol.clone(), places.clone(), false);
+        app.definitions_arrived(current, symbol.clone(), places.clone(), false, false, None);
         assert!(matches!(app.prompt(), Some(Prompt::Definitions { .. })));
         app.handle_key(key(KeyCode::Esc));
 
@@ -5681,9 +5883,16 @@ mod tests {
             control('f'),
         ] {
             app.find_definition();
-            let (request_id, _) = app.take_definition_request().unwrap();
+            let Lookup { request_id, .. } = app.take_definition_request().unwrap();
             app.handle_key(input);
-            app.definitions_arrived(request_id, symbol.clone(), places.clone(), false);
+            app.definitions_arrived(
+                request_id,
+                symbol.clone(),
+                places.clone(),
+                false,
+                false,
+                None,
+            );
             assert!(!matches!(app.prompt(), Some(Prompt::Definitions { .. })));
         }
     }
@@ -5693,13 +5902,17 @@ mod tests {
         let mut app = app("release\n", false);
         app.set_integrated();
         app.find_definition();
-        let (request_id, symbol) = app.take_definition_request().unwrap();
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().unwrap();
         app.run(Command::InsertText("x".into()));
         app.definitions_arrived(
             request_id,
             symbol,
             vec![place("service.ts", 204, "release() {}")],
             false,
+            false,
+            None,
         );
         assert!(app.prompt().is_none());
         assert_ne!(app.status(), Some("looking…"));
@@ -5710,7 +5923,9 @@ mod tests {
         let mut app = app("release\n", false);
         app.set_headless();
         app.find_definition();
-        let (request_id, symbol) = app.take_definition_request().unwrap();
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().unwrap();
         app.definitions_arrived(
             request_id,
             symbol,
@@ -5719,6 +5934,8 @@ mod tests {
                 place("service.kt", 3, "fun release() {}"),
             ],
             true,
+            false,
+            None,
         );
         let status = app.wire_state().status;
         assert!(status.contains("Enter opens"));
@@ -5728,7 +5945,7 @@ mod tests {
         assert!(app.wire_state().status.contains("service.kt:3"));
         app.handle_key(key(KeyCode::BackTab));
         app.handle_key(key(KeyCode::Enter));
-        let (_, path, line) = app.take_open_request().unwrap();
+        let OpenRequest { path, line, .. } = app.take_open_request().unwrap();
         assert_eq!((path.as_str(), line), ("service.py", 2));
     }
 
@@ -5739,7 +5956,9 @@ mod tests {
         let mut app = app("release\n", false);
         app.set_headless();
         app.find_definition();
-        let (request_id, symbol) = app.take_definition_request().unwrap();
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().unwrap();
         app.definitions_arrived(
             request_id,
             symbol,
@@ -5749,6 +5968,8 @@ mod tests {
                 place("service.kt", 3, "fun release() {}"),
             ],
             false,
+            false,
+            None,
         );
         app.handle_key(key(KeyCode::Tab));
         app.handle_key(key(KeyCode::Tab));
@@ -5763,14 +5984,18 @@ mod tests {
         app.set_integrated();
         app.resize(80, 10);
         app.find_definition();
-        let (request_id, symbol) = app.take_definition_request().unwrap();
-        app.definitions_arrived(request_id, symbol, Vec::new(), true);
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().unwrap();
+        app.definitions_arrived(request_id, symbol, Vec::new(), true, false, None);
         assert_eq!(
             app.status(),
             Some("upsertJobScheduler: no declaration found (search incomplete)")
         );
         app.find_definition();
-        let (request_id, symbol) = app.take_definition_request().unwrap();
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().unwrap();
         app.definitions_arrived(
             request_id,
             symbol,
@@ -5780,6 +6005,8 @@ mod tests {
                 "upsertJobScheduler(id: string): Promise<void>;",
             )],
             true,
+            false,
+            None,
         );
         app.handle_key(key(KeyCode::Down));
         assert!(matches!(
@@ -5790,10 +6017,167 @@ mod tests {
             })
         ));
         app.handle_key(key(KeyCode::Enter));
-        let (_, path, line) = app.take_open_request().unwrap();
+        let OpenRequest { path, line, .. } = app.take_open_request().unwrap();
         assert_eq!(
             (path.as_str(), line),
             ("node_modules/bullmq/queue.d.ts", 12)
+        );
+    }
+
+    fn exact(path: &str, line: u32, column: u32) -> WirePlace {
+        WirePlace {
+            column,
+            ..place(path, line, "")
+        }
+    }
+
+    #[test]
+    fn a_lookup_carries_the_name_start_in_utf16_and_the_text_only_when_dirty() {
+        let mut app = app("é = $store.x;\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.handle_key(key(KeyCode::Right));
+        for _ in 0..5 {
+            app.handle_key(key(KeyCode::Right));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        let lookup = app.take_definition_request().expect("a lookup");
+        assert_eq!(lookup.symbol, "$store");
+        assert_eq!(lookup.position, WirePosition { line: 1, column: 5 });
+        assert_eq!(lookup.text, None, "a clean buffer is read from disk");
+
+        app.run(Command::InsertText(" ".into()));
+        app.find_definition();
+        let lookup = app.take_definition_request().expect("a lookup");
+        assert!(lookup.text.is_some_and(|text| text.starts_with('é')));
+    }
+
+    #[test]
+    fn an_exact_answer_in_this_file_jumps_and_alt_o_comes_back() {
+        let mut app = app("fn answer() {}\nlet x = answer();\n", false);
+        app.set_integrated();
+        app.resize(60, 10);
+        app.goto_line(2);
+        for _ in 0..9 {
+            app.handle_key(key(KeyCode::Right));
+        }
+        let start = app.document().caret();
+        app.find_definition();
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().unwrap();
+        app.definitions_arrived(
+            request_id,
+            symbol,
+            vec![exact("fixture.txt", 1, 4)],
+            false,
+            true,
+            None,
+        );
+        assert!(
+            app.prompt().is_none(),
+            "an exact single answer is not a list"
+        );
+        assert_eq!(app.document().caret(), 3);
+        assert!(app.take_open_request().is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT));
+        assert_eq!(app.document().caret(), start);
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT));
+        assert_eq!(app.status(), Some("no earlier place to go back to"));
+    }
+
+    #[test]
+    fn an_exact_answer_elsewhere_asks_the_daemon_and_says_where_it_came_from() {
+        let mut app = app("answer();\n", false);
+        app.set_integrated();
+        app.find_definition();
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().unwrap();
+        app.definitions_arrived(
+            request_id,
+            symbol,
+            vec![exact("src/lib.rs", 7, 8)],
+            false,
+            true,
+            None,
+        );
+        let open = app.take_open_request().expect("an open");
+        assert_eq!(
+            (open.path.as_str(), open.line, open.column),
+            ("src/lib.rs", 7, 8)
+        );
+        let from = open.from.expect("the jump's origin");
+        assert_eq!(
+            (from.path.as_str(), from.line, from.column),
+            ("fixture.txt", 1, 1)
+        );
+    }
+
+    #[test]
+    fn a_reveal_from_another_file_can_be_gone_back_from() {
+        let mut app = app("a\nb\nc\n", false);
+        app.set_integrated();
+        app.reveal_from(
+            3,
+            Some(1),
+            true,
+            Some(WireLocation {
+                path: "src/main.rs".into(),
+                line: 12,
+                column: 5,
+                external: None,
+            }),
+        );
+        assert_eq!(app.caret_position().0, 3);
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT));
+        let back = app.take_open_request().expect("back to the other file");
+        assert_eq!(
+            (back.path.as_str(), back.line, back.column),
+            ("src/main.rs", 12, 5)
+        );
+        assert!(back.from.is_none(), "going back pushes nothing");
+    }
+
+    #[test]
+    fn an_empty_answer_names_the_providers_reason() {
+        let mut app = app("answer\n", false);
+        app.set_integrated();
+        app.find_definition();
+        let Lookup {
+            request_id, symbol, ..
+        } = app.take_definition_request().unwrap();
+        app.definitions_arrived(
+            request_id,
+            symbol,
+            Vec::new(),
+            false,
+            false,
+            Some("rust-analyzer is indexing".into()),
+        );
+        assert_eq!(
+            app.status(),
+            Some("answer: no declaration found (rust-analyzer is indexing)")
+        );
+    }
+
+    #[test]
+    fn identifiers_include_dollar_and_stop_at_the_name_budget() {
+        assert!(is_identifier("$store"));
+        assert!(is_identifier("_x9"));
+        assert!(!is_identifier("9x"));
+        assert!(!is_identifier(&"a".repeat(MAX_SYMBOL_BYTES + 1)));
+        assert_eq!(definition_span("a.$b_c(", 4), (2, 6));
+        assert_eq!(
+            definition_span("x y", 1),
+            (0, 1),
+            "the end of a word is on it"
+        );
+        assert_eq!(
+            definition_span("é", 1),
+            (0, 2),
+            "a caret inside a char backs off"
         );
     }
 

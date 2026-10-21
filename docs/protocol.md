@@ -226,6 +226,7 @@ Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 | `FactoryReset` | Discard the metadata replica and bootstrap again. |
 | `ClipboardStore { terminal_id, text }` | A terminal's OSC 52 clipboard write; clipboard reads are not exposed to the child. |
 | `EditorFrame { session_id, frame }` | A bounded line window for the passive DOM editor surface. |
+| `EditorFocusRequested { session_id, workspace_id, path }` | A definition jump landed in this editor session (revealed in place or newly opened); the GUI attaches it and focuses its tab. |
 | `ProviderUsageChanged { usage }` | Replaces all account allowance readings; never merge with the old set. |
 | `JuvaDraftReady { workspace_id, draft, fell_back }` | Completion of `DraftWithJuva`, with editable text and whether a configured remote endpoint fell back. |
 | `PullRequestDraftReady { workspace_id, session_id, draft }` | An agent handed back a pull-request draft through `SubmitPullRequestDraft`; editable text, stored nowhere. |
@@ -300,7 +301,7 @@ reader thread, `flume` channels — no tokio, no GUI toolkit):
   `PROTOCOL_VERSION` and `ClientKind::Gui`; callers do not supply one.
   `connect_as(..., ClientKind::Cli)` is what `forgectl` uses. A CLI connection
   is not sent `TerminalActivity`, `TerminalBell`, `ClipboardStore`,
-  `EditorFrame`, or `ProviderUsageChanged`. Orchestration requests and events
+  `EditorFrame`, `EditorFocusRequested`, or `ProviderUsageChanged`. Orchestration requests and events
   (runs, tasks, attempts, the board, inbox) are documented with the run ledger
   in [orchestration.md](./orchestration.md).
 - `request(body)` / `request_timeout(body, dur)` block until the matching

@@ -1,0 +1,14 @@
+(struct_item name: (type_identifier) @name) @definition.class
+(enum_item name: (type_identifier) @name) @definition.class
+(union_item name: (type_identifier) @name) @definition.class
+(trait_item name: (type_identifier) @name) @definition.interface
+(type_item name: (type_identifier) @name) @definition.type
+(associated_type name: (type_identifier) @name) @definition.type
+(function_item name: (identifier) @name) @definition.function
+(function_signature_item name: (identifier) @name) @definition.function
+(const_item name: (identifier) @name) @definition.constant
+(static_item name: (identifier) @name) @definition.constant
+(enum_variant name: (identifier) @name) @definition.variant
+(field_declaration name: (field_identifier) @name) @definition.field
+(mod_item name: (identifier) @name) @definition.module
+(macro_definition name: (identifier) @name) @definition.macro

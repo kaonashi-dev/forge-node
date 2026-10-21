@@ -335,8 +335,10 @@ fn handle_control(
             request_id,
             line,
             column,
+            utf16,
+            from,
         } => {
-            app.reveal(line as usize, column.map(|value| value as usize));
+            app.reveal_from(line as usize, column, utf16, from);
             control.send(&EditorMessage::Revealed { request_id })?;
         }
         DaemonMessage::GetState { request_id } => {
@@ -386,8 +388,11 @@ fn handle_control(
             symbol,
             places,
             truncated,
+            exact,
+            note,
+            ..
         } => {
-            app.definitions_arrived(request_id, symbol, places, truncated);
+            app.definitions_arrived(request_id, symbol, places, truncated, exact, note);
         }
         DaemonMessage::Diagnostics { command, items, .. } => {
             app.diagnostics_arrived(command, items);
@@ -469,8 +474,14 @@ fn flush_save(app: &mut App, control: &mut ControlChannel) -> anyhow::Result<()>
 
 /// Send the definition lookup and the open request, if the last key made one.
 fn flush_lookups(app: &mut App, control: &mut ControlChannel) -> anyhow::Result<()> {
-    if let Some((request_id, symbol)) = app.take_definition_request() {
-        control.send(&EditorMessage::FindDefinition { request_id, symbol })?;
+    if let Some(lookup) = app.take_definition_request() {
+        control.send(&EditorMessage::FindDefinition {
+            request_id: lookup.request_id,
+            symbol: lookup.symbol,
+            position: Some(lookup.position),
+            document_version: lookup.document_version,
+            text: lookup.text,
+        })?;
     }
     if let Some(request_id) = app.take_diagnostics_request() {
         control.send(&EditorMessage::RunDiagnostics { request_id })?;
@@ -478,11 +489,14 @@ fn flush_lookups(app: &mut App, control: &mut ControlChannel) -> anyhow::Result<
     if let Some((request_id, line)) = app.take_details_request() {
         control.send(&EditorMessage::ChangeDetails { request_id, line })?;
     }
-    if let Some((request_id, path, line)) = app.take_open_request() {
+    if let Some(open) = app.take_open_request() {
         control.send(&EditorMessage::OpenPath {
-            request_id,
-            path,
-            line,
+            request_id: open.request_id,
+            path: open.path,
+            line: open.line,
+            column: open.column,
+            external: open.external,
+            from: open.from,
         })?;
     }
     Ok(())

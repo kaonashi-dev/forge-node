@@ -122,6 +122,40 @@ executable = ""                 # empty searches the login-shell PATH, then the
 diagnostics_command = []        # e.g. ["cargo", "check", "--message-format=short"]
                                 # or ["oxlint"]
 
+[definitions]
+# Go to definition asks providers in order — a ready language server ([lsp]),
+# a SCIP index, the bundled syntax index, ctags — and the grep heuristic always
+# answers last. One lookup per editor runs at a time; a newer one cancels it.
+timeout_ms = 3000               # every provider together; 200..30000
+syntax = true                   # tree-sitter for Rust, TypeScript/JS, Python, Go
+ctags = false                   # Universal Ctags, if you installed it (GPL, so
+ctags_executable = "ctags"      # never bundled; macOS's BSD ctags is refused)
+scip = false                    # read a prebuilt index at the checkout root; it
+scip_indexes = ["index.scip"]   # answers only for files older than the index
+
+[lsp]
+# Language servers, for go to definition. Off by default: a server runs your
+# checkout's build scripts and proc-macros, and rust-analyzer alone can hold
+# gigabytes. Started lazily by the first lookup in a human editor session —
+# never for an agent, never by opening a file — one per (server, project root),
+# and only after its `--version` probe succeeds. Servers come only from this
+# file and the built-ins, never from a repository. While a server is starting
+# or indexing, the other providers answer.
+enabled = false
+max_servers = 4                 # the least recently used one is stopped
+idle_shutdown_secs = 600        # 0 keeps servers until the daemon exits
+definition_timeout_ms = 2000
+initialize_timeout_secs = 120
+# Override a built-in (rust-analyzer, typescript-language-server, gopls,
+# pyright, clangd) field by field, or add a server and point a language at it:
+#   [lsp.servers.rust-analyzer]
+#   command = "/opt/homebrew/bin/rust-analyzer"
+#   [lsp.servers.ruby-lsp]
+#   command = "ruby-lsp"
+#   root_markers = [["Gemfile"]]
+#   [lsp.languages.ruby]
+#   servers = ["ruby-lsp"]
+
 [juva]
 # Where Juva gets its prose. Off by default, and it stays useful off: every
 # draft falls back to the deterministic local one, so a missing key or a hung
