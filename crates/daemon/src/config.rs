@@ -15,6 +15,8 @@ pub struct Config {
     pub github: GithubConfig,
     pub juva: JuvaConfig,
     pub editor: EditorConfig,
+    pub definitions: DefinitionsConfig,
+    pub lsp: LspConfig,
     pub daemon: DaemonConfig,
     pub orchestration: OrchestrationConfig,
 }
@@ -214,6 +216,96 @@ pub struct EditorConfig {
     /// when the DOM one has everything the TUI has.
     #[serde(default)]
     pub surface: EditorSurface,
+}
+
+/// Which providers answer go to definition after any language server.
+///
+/// The grep heuristic always answers last; these only add precision in front
+/// of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DefinitionsConfig {
+    /// Wall-clock budget for one lookup, every provider together.
+    pub timeout_ms: u64,
+    /// The bundled tree-sitter index (Rust, TypeScript, JavaScript, Python, Go).
+    pub syntax: bool,
+    /// Universal Ctags, when installed. GPL, so it is never bundled; the
+    /// probe refuses the BSD `ctags` macOS ships.
+    pub ctags: bool,
+    pub ctags_executable: String,
+    /// Read a prebuilt SCIP index from the checkout root. Precise while the
+    /// index is newer than the file asked about, and ignored once it is not.
+    pub scip: bool,
+    pub scip_indexes: Vec<String>,
+}
+
+impl Default for DefinitionsConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 3_000,
+            syntax: true,
+            ctags: false,
+            ctags_executable: "ctags".to_owned(),
+            scip: false,
+            scip_indexes: vec!["index.scip".to_owned()],
+        }
+    }
+}
+
+impl DefinitionsConfig {
+    #[must_use]
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.timeout_ms.clamp(200, 30_000))
+    }
+}
+
+/// Language servers for go to definition. Off by default: a server runs the
+/// checkout's build scripts and can hold gigabytes, which is a choice only the
+/// person can make.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LspConfig {
+    pub enabled: bool,
+    /// Servers alive at once; the least recently used idle one is stopped.
+    pub max_servers: usize,
+    /// Stop a server nobody has asked anything for this long. `0` never.
+    pub idle_shutdown_secs: u64,
+    /// How long a definition request may take before the next provider answers.
+    pub definition_timeout_ms: u64,
+    pub initialize_timeout_secs: u64,
+    /// `[lsp.languages.<id>]`: `extensions`, `servers` (ids, best first).
+    pub languages: std::collections::BTreeMap<String, languages::LanguageOverride>,
+    /// `[lsp.servers.<id>]`: any built-in field, or a whole new server.
+    pub servers: std::collections::BTreeMap<String, languages::ServerOverride>,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_servers: 4,
+            idle_shutdown_secs: 600,
+            definition_timeout_ms: 2_000,
+            initialize_timeout_secs: 120,
+            languages: std::collections::BTreeMap::new(),
+            servers: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl LspConfig {
+    #[must_use]
+    pub fn definition_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.definition_timeout_ms.clamp(100, 30_000))
+    }
+
+    #[must_use]
+    pub fn registry(&self) -> languages::Registry {
+        languages::Registry::with_overrides(&languages::Overrides {
+            languages: self.languages.clone(),
+            servers: self.servers.clone(),
+        })
+    }
 }
 
 /// What an integrated editor session draws with.

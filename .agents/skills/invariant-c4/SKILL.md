@@ -18,6 +18,7 @@ Grep the diff; do not rely on memory.
 - [ ] Tauri colours/metrics from `apps/tauri/src/theme/tokens.ts`; repeated UI from `apps/tauri/src/ui`.
 - [ ] `domain` serializable; `protocol` framing; `#[non_exhaustive]` wildcards.
 - [ ] `forgectl` (`forge-ctl`) depends only on `client → protocol → domain`; neither its binary nor its library depends on `daemon` (its integration tests may boot one).
+- [ ] Language and language-server facts live in `crates/languages` (data in `languages.toml`); no other crate matches on an extension or a server id. Definition providers implement `fs_service::definition::DefinitionProvider`; `syntax-index`, `external-index` and `lsp-client` are linked only into the daemon, never into `forge-editor` or the Tauri host.
 
 Example greps:
 

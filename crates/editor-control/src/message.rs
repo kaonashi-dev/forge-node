@@ -55,11 +55,18 @@ pub enum DaemonMessage {
     SetAutosave { request_id: u64, autosave: bool },
     /// Change display metadata without replacing the document or its undo history.
     Retarget { path: String },
-    /// Move the caret to a line (and optionally a display column).
+    /// Move the caret to a line (and optionally a column).
     Reveal {
         request_id: u64,
         line: u32,
+        /// A display column, or a UTF-16 one when `utf16` says so.
         column: Option<u32>,
+        /// Definition jumps count UTF-16, like every other position here.
+        #[serde(default)]
+        utf16: bool,
+        /// Where the jump that led here started, for the jump list.
+        #[serde(default)]
+        from: Option<WireLocation>,
     },
     /// Answer [`EditorMessage::State`] with an uncaptured snapshot.
     GetState { request_id: u64 },
@@ -110,12 +117,12 @@ pub enum DaemonMessage {
     /// The *keep mine* half. The daemon cannot write the draft on its own — it
     /// does not have it — so the save stays a request the editor makes.
     Save { request_id: u64 },
-    /// Candidate declarations for a symbol the editor asked about.
+    /// Where a symbol the editor asked about is declared.
     ///
-    /// The answer to [`EditorMessage::FindDefinition`]. *Candidates*, not a
-    /// resolution: `fs-service` ranks them with a heuristic, so the editor
-    /// offers the list rather than jumping somewhere it cannot justify. Capped
-    /// by the daemon before it is sent.
+    /// The answer to [`EditorMessage::FindDefinition`], best first and capped
+    /// by the daemon. Candidates unless `exact`: only a resolver (a language
+    /// server, a local binding, a fresh index) may send a single place the
+    /// editor follows without asking.
     Definitions {
         request_id: u64,
         /// Echoed, because the editor may have moved on.
@@ -123,6 +130,14 @@ pub enum DaemonMessage {
         places: Vec<WirePlace>,
         #[serde(default)]
         truncated: bool,
+        #[serde(default)]
+        exact: bool,
+        /// Which provider decided ("lsp", "syntax", "grep"), for the status.
+        #[serde(default)]
+        source: String,
+        /// Why the answer is weaker than it could be ("indexing").
+        #[serde(default)]
+        note: Option<String>,
     },
     /// What the changed block at a line replaced.
     ///
@@ -279,18 +294,40 @@ pub enum EditorMessage {
     /// The daemon owns the checkout, so the editor cannot grep it. `symbol` is
     /// validated as an identifier on both sides before it reaches `git grep`:
     /// a name that arrives from a click must never be able to become a regex
-    /// (`SearchKind::Definition`, AGENTS.md).
-    FindDefinition { request_id: u64, symbol: String },
-    /// Open another file in the workbench, at a line.
+    /// (`SearchKind::Definition`, AGENTS.md). The caret and, while the buffer
+    /// is dirty, its text are what let a resolver answer for this buffer
+    /// rather than for the file on disk.
+    FindDefinition {
+        request_id: u64,
+        symbol: String,
+        #[serde(default)]
+        position: Option<WirePosition>,
+        #[serde(default)]
+        document_version: u64,
+        /// The unsaved buffer, within [`crate::MAX_DOCUMENT_BYTES`].
+        #[serde(default)]
+        text: Option<String>,
+    },
+    /// Open a definition in the workbench.
     ///
     /// The editor holds one buffer per process and cannot open a second, so
-    /// following a definition is a request: the daemon opens the file the way
-    /// the GUI would have.
+    /// following a definition into another file is a request: the daemon
+    /// moves the caret in the editor that already holds the file, or opens
+    /// one, and asks the GUI to show it.
     OpenPath {
         request_id: u64,
         /// Workspace-relative, as [`DaemonMessage::Definitions`] gave it.
         path: String,
         line: u32,
+        /// 1-based UTF-16, 0 for the start of the line.
+        #[serde(default)]
+        column: u32,
+        /// A place outside the checkout, by the id the daemon minted for it.
+        #[serde(default)]
+        external: Option<u64>,
+        /// Where the jump started; `None` for a jump back, which pushes nothing.
+        #[serde(default)]
+        from: Option<WireLocation>,
     },
     /// What did the changed block at this line replace?
     ///
@@ -391,15 +428,45 @@ pub struct WireDiagnostic {
     pub message: String,
 }
 
-/// One place a symbol is declared, or a diagnostic points at.
+/// One place a symbol is declared.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WirePlace {
-    /// Workspace-relative.
+    /// Workspace-relative, or a display path when `external` is set.
     pub path: String,
     /// 1-based.
     pub line: u32,
     /// The line's text, so a list reads without a second read per row.
     pub text: String,
+    /// 1-based UTF-16 column of the name, 0 when unknown.
+    #[serde(default)]
+    pub column: u32,
+    /// Outside the checkout: the id [`EditorMessage::OpenPath`] must echo.
+    /// The editor never sends an absolute path back.
+    #[serde(default)]
+    pub external: Option<u64>,
+}
+
+/// A caret: 1-based line and 1-based UTF-16 column.
+///
+/// UTF-16 because that is what a language server counts by default and what
+/// the DOM surface already sends; one unit end to end leaves one conversion,
+/// in the editor, next to the line text it needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WirePosition {
+    pub line: u32,
+    pub column: u32,
+}
+
+/// A place in some buffer, for the jump list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireLocation {
+    /// Workspace-relative, or a display path when `external` is set.
+    pub path: String,
+    pub line: u32,
+    /// 1-based UTF-16.
+    pub column: u32,
+    #[serde(default)]
+    pub external: Option<u64>,
 }
 
 /// Most places one answer carries.

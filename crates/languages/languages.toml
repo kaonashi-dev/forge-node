@@ -1,0 +1,327 @@
+# Built-in languages and language servers.
+#
+# Data, not code: adding a language is an entry here (and, for a syntax index,
+# a grammar plus query files in `crates/syntax-index`). The user's config TOML
+# overrides any field under `[lsp]`; nothing in a repository can.
+#
+# `family` groups languages that resolve each other's names (a `.tsx` file
+# imports from `.ts`), and is what "same language" means when candidates are
+# ranked by closeness. `declarations = false` marks prose and data formats
+# whose lines must never be offered as a declaration.
+
+[[language]]
+id = "rust"
+extensions = ["rs"]
+grammar = "rust"
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+quotes = ["\""]
+servers = ["rust-analyzer"]
+
+[[language]]
+id = "typescript"
+extensions = ["ts", "mts", "cts"]
+family = "typescript"
+grammar = "typescript"
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+servers = ["typescript-language-server"]
+
+[[language]]
+id = "tsx"
+extensions = ["tsx"]
+family = "typescript"
+lsp_id = "typescriptreact"
+grammar = "tsx"
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+servers = ["typescript-language-server"]
+
+[[language]]
+id = "javascript"
+extensions = ["js", "mjs", "cjs"]
+family = "typescript"
+grammar = "javascript"
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+servers = ["typescript-language-server"]
+
+[[language]]
+id = "jsx"
+extensions = ["jsx"]
+family = "typescript"
+lsp_id = "javascriptreact"
+grammar = "javascript"
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+servers = ["typescript-language-server"]
+
+[[language]]
+id = "python"
+extensions = ["py", "pyi", "pyw"]
+grammar = "python"
+line_comments = ["#"]
+block_comments = []
+quotes = ["\"", "'"]
+servers = ["pyright"]
+
+[[language]]
+id = "go"
+extensions = ["go"]
+grammar = "go"
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+servers = ["gopls"]
+
+[[language]]
+id = "kotlin"
+extensions = ["kt", "kts"]
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+
+[[language]]
+id = "java"
+extensions = ["java"]
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+typed_declarations = true
+
+[[language]]
+id = "c"
+extensions = ["c", "h"]
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+quotes = ["\"", "'"]
+typed_declarations = true
+servers = ["clangd"]
+
+[[language]]
+id = "cpp"
+extensions = ["cc", "cpp", "cxx", "hh", "hpp", "hxx", "ipp"]
+family = "c"
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+quotes = ["\"", "'"]
+typed_declarations = true
+servers = ["clangd"]
+
+[[language]]
+id = "objective-c"
+extensions = ["m", "mm"]
+family = "c"
+lsp_id = "objective-c"
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+quotes = ["\"", "'"]
+typed_declarations = true
+servers = ["clangd"]
+
+[[language]]
+id = "csharp"
+extensions = ["cs"]
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+typed_declarations = true
+
+[[language]]
+id = "swift"
+extensions = ["swift"]
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+quotes = ["\""]
+
+[[language]]
+id = "scala"
+extensions = ["scala", "sc"]
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+
+[[language]]
+id = "dart"
+extensions = ["dart"]
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+typed_declarations = true
+
+[[language]]
+id = "ruby"
+extensions = ["rb", "rake", "gemspec"]
+filenames = ["Rakefile", "Gemfile"]
+line_comments = ["#"]
+block_comments = [["=begin", "=end"]]
+quotes = ["\"", "'"]
+
+[[language]]
+id = "php"
+extensions = ["php"]
+line_comments = ["//", "#"]
+block_comments = [["/*", "*/"]]
+quotes = ["\"", "'"]
+
+[[language]]
+id = "lua"
+extensions = ["lua"]
+line_comments = ["--"]
+block_comments = [["--[[", "]]"]]
+quotes = ["\"", "'"]
+
+[[language]]
+id = "elixir"
+extensions = ["ex", "exs"]
+line_comments = ["#"]
+block_comments = []
+quotes = ["\"", "'"]
+
+[[language]]
+id = "haskell"
+extensions = ["hs"]
+line_comments = ["--"]
+block_comments = [["{-", "-}"]]
+quotes = ["\""]
+
+[[language]]
+id = "elisp"
+extensions = ["el"]
+family = "lisp"
+line_comments = [";"]
+block_comments = []
+quotes = ["\""]
+
+[[language]]
+id = "clojure"
+extensions = ["clj", "cljs", "cljc", "edn"]
+family = "lisp"
+line_comments = [";"]
+block_comments = []
+quotes = ["\""]
+
+[[language]]
+id = "shell"
+extensions = ["sh", "bash", "zsh"]
+lsp_id = "shellscript"
+line_comments = ["#"]
+block_comments = []
+quotes = ["\"", "'"]
+
+[[language]]
+id = "sql"
+extensions = ["sql", "psql", "pgsql", "mysql"]
+line_comments = ["--"]
+block_comments = [["/*", "*/"]]
+quotes = ["'", "\""]
+
+[[language]]
+id = "prisma"
+extensions = ["prisma"]
+line_comments = ["//"]
+block_comments = []
+
+[[language]]
+id = "hcl"
+extensions = ["tf", "tfvars", "hcl"]
+line_comments = ["#", "//"]
+block_comments = [["/*", "*/"]]
+quotes = ["\""]
+
+[[language]]
+id = "css"
+extensions = ["css", "scss", "less"]
+line_comments = []
+block_comments = [["/*", "*/"]]
+quotes = ["\"", "'"]
+declarations = false
+
+[[language]]
+id = "html"
+extensions = ["html", "htm", "vue", "svelte"]
+line_comments = []
+block_comments = [["<!--", "-->"]]
+quotes = ["\"", "'"]
+declarations = false
+
+[[language]]
+id = "markdown"
+extensions = ["md", "markdown", "mdx"]
+line_comments = []
+block_comments = []
+quotes = []
+declarations = false
+
+[[language]]
+id = "json"
+extensions = ["json", "jsonc", "json5"]
+line_comments = []
+block_comments = []
+quotes = ["\""]
+declarations = false
+
+[[language]]
+id = "yaml"
+extensions = ["yaml", "yml"]
+line_comments = ["#"]
+block_comments = []
+quotes = ["\"", "'"]
+declarations = false
+
+[[language]]
+id = "toml"
+extensions = ["toml"]
+line_comments = ["#"]
+block_comments = []
+quotes = ["\"", "'"]
+declarations = false
+
+[[language]]
+id = "text"
+extensions = ["txt", "log", "csv", "tsv", "lock"]
+line_comments = []
+block_comments = []
+quotes = []
+declarations = false
+
+# Servers. A server is launched only when `[lsp] enabled = true`, only for a
+# human editor session, and only after `probe` succeeds against the resolved
+# binary. `root_markers` is searched upward from the file, never past the
+# checkout; an inner list is one priority level. `outermost` takes the top-most
+# directory with a marker (a Cargo workspace), `nearest` the closest one (a
+# package inside a monorepo).
+
+[server.rust-analyzer]
+command = "rust-analyzer"
+args = []
+root_markers = [["Cargo.lock"], ["Cargo.toml"]]
+root_strategy = "outermost"
+probe = { args = ["--version"], expect = "rust-analyzer" }
+# `cargo.targetDir` keeps rust-analyzer's `cargo check` off the `target/` lock
+# an agent's `cargo test` is waiting on, at the price of a second build dir.
+initialization_options = { cargo = { targetDir = true }, files = { watcher = "server" }, checkOnSave = false }
+
+[server.typescript-language-server]
+command = "typescript-language-server"
+args = ["--stdio"]
+root_markers = [["tsconfig.json", "jsconfig.json"], ["package.json"]]
+root_strategy = "nearest"
+probe = { args = ["--version"], expect = "" }
+
+[server.gopls]
+command = "gopls"
+args = []
+root_markers = [["go.work"], ["go.mod"]]
+root_strategy = "outermost"
+probe = { args = ["version"], expect = "gopls" }
+
+[server.pyright]
+command = "pyright-langserver"
+args = ["--stdio"]
+root_markers = [["pyrightconfig.json", "pyproject.toml"], ["setup.py", "setup.cfg", "requirements.txt"]]
+root_strategy = "nearest"
+# `pyright-langserver` has no version flag of its own; the probe asks the
+# `pyright` CLI that ships beside it.
+probe = { command = "pyright", args = ["--version"], expect = "pyright" }
+
+[server.clangd]
+command = "clangd"
+args = []
+root_markers = [["compile_commands.json", "compile_flags.txt", ".clangd"]]
+root_strategy = "nearest"
+probe = { args = ["--version"], expect = "clangd" }

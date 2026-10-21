@@ -303,6 +303,29 @@ if mode == "definition" or (mode == "definition_nestjs" and path.endswith(".serv
             ("line", pack_int(place["line"])),
         ]))])))
 
+if mode == "definition_follow":
+    if path == "a.rs":
+        sock.sendall(find_definition(1500, "answer"))
+        _, body = await_message(sock, "Definitions")
+        place = body["places"][0]
+        sock.sendall(frame(pack_map([("OpenPath", pack_map([
+            ("request_id", pack_int(1501)),
+            ("path", pack_str(place["path"])),
+            ("line", pack_int(place["line"])),
+            ("column", pack_int(place.get("column") or 0)),
+            ("from", pack_map([
+                ("path", pack_str("a.rs")),
+                ("line", pack_int(1)),
+                ("column", pack_int(9)),
+            ])),
+        ]))])))
+    else:
+        _, body = await_message(sock, "Reveal")
+        origin = body.get("from") or {}
+        with open(".forge-editor-reveal", "w") as fh:
+            fh.write("%s %s %s %s:%s\n" % (body["line"], body.get("column"), body.get("utf16"),
+                                           origin.get("path"), origin.get("column")))
+
 if mode == "copy":
     # Written only once the test has attached: the escape is a single burst,
     # and a client that subscribed after it would wait for a store that has
@@ -1057,6 +1080,51 @@ fn the_editor_can_follow_a_nestjs_dependency_method_into_ignored_types() {
         matches!(event, DaemonEvent::SessionUpdated(session) if session.state == SessionState::Running
             && session.editor.as_ref().is_some_and(|state| state.path == target && state.line == 2))
     }).expect("following the candidate must open the dependency declaration at its line");
+}
+
+/// Following a definition into a file another editor already holds moves that
+/// editor's caret and asks the GUI to show it; a second editor of the same
+/// file would be a rival draft.
+#[test]
+fn following_a_definition_reveals_it_in_the_editor_that_holds_the_file() {
+    let harness = common::Harness::new();
+    install_editor_mode(&harness, "definition_follow", None);
+    let repo = test_support::init_repo().expect("git repo");
+    fs::write(repo.path().join("a.rs"), "let x = answer();\n").unwrap();
+    fs::write(
+        repo.path().join("lib.rs"),
+        "pub fn answer() -> u8 {\n    42\n}\n",
+    )
+    .unwrap();
+    commit_all(repo.path(), "seed");
+    let running = harness.boot();
+    let client = running.connect("editor-definition-follow");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (holder, _) = create_editor(&client, &events, workspace, "lib.rs", None);
+    create_editor(&client, &events, workspace, "a.rs", None);
+
+    let reveal = await_receipt(&repo.path().join(".forge-editor-reveal"));
+    assert_eq!(
+        reveal.trim(),
+        "1 8 True a.rs:9",
+        "line, UTF-16 column and origin"
+    );
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::EditorFocusRequested { session_id, path, .. }
+            if *session_id == holder && path == "lib.rs")
+    })
+    .expect("the GUI must be asked to show the editor that holds the file");
+    let Response::Snapshot { sessions, .. } =
+        client.request(Request::GetSnapshot).expect("GetSnapshot")
+    else {
+        panic!("expected Snapshot");
+    };
+    let editors = sessions
+        .iter()
+        .filter(|session| session.kind == domain::SessionKind::Editor)
+        .count();
+    assert_eq!(editors, 2, "no second editor of lib.rs");
 }
 
 /// A copy in the editor reaches the host, not just the editor's own register.

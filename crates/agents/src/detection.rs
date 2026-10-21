@@ -140,7 +140,7 @@ fn run_probe(program: &Path, probe: &VersionProbe, env: &ResolvedEnvironment) ->
 /// `None` covers every failure — spawn, timeout, non-zero exit — because the
 /// only other caller, [`crate::usage`], treats them all the same way: no
 /// reading rather than a wrong one.
-pub(crate) fn run_to_completion(
+pub fn run_to_completion(
     program: &Path,
     args: &[String],
     timeout_ms: u64,
@@ -281,7 +281,7 @@ fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
 
 /// Search `path_entries` in order for an executable file named `name` and
 /// return the first hit as an absolute-when-the-entry-is path.
-pub(crate) fn find_executable(name: &str, path_entries: &[PathBuf]) -> Option<PathBuf> {
+pub fn find_executable(name: &str, path_entries: &[PathBuf]) -> Option<PathBuf> {
     path_entries.iter().find_map(|dir| {
         let candidate = dir.join(name);
         is_executable_file(&candidate).then_some(candidate)

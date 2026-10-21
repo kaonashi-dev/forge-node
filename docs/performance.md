@@ -202,6 +202,7 @@ the allocation.
 | a prefix kept, the group killed, the cut reported | `git_service::run_git_prefix` (content search, change context, `grep_word`) |
 | one reused record buffer that skips an oversized record unheld | `agents::jsonl` (history, analytics) |
 | per-stream `.take(cap)` then drain to a sink so the child still exits | `daemon::diagnostics`, `shares::apply::run_in` |
+| bounded grep list, per-file `metadata()` before `.take(cap + 1)`, and parse budgets | `fs-service::heuristic`, `syntax-index`, `external-index::ctags` |
 
 A bounded scan that silently truncates is worse than one that refuses: report
 `skipped`/`truncated` rather than looking exhaustive.

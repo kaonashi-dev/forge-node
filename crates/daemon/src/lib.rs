@@ -7,6 +7,7 @@
 pub mod config;
 mod context_xfer;
 pub mod core;
+mod definitions;
 mod diagnostics;
 pub mod editor;
 pub mod editor_wire;
@@ -17,6 +18,7 @@ pub mod idle;
 pub mod juva;
 pub mod lockfile;
 pub mod logging;
+mod lsp;
 pub mod orchestration;
 pub mod paths;
 mod prompts;

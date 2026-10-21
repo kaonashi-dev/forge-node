@@ -19,6 +19,7 @@ description: Runtime invariant checklist (C5). Use when the diff touches daemon 
 - [ ] `PRAGMA synchronous = NORMAL` stays: deliberate under WAL.
 - [ ] Cross-session prompts use paste, never raw keys; CR only with hook-confirmed idle, even for `Now`. Unbracketed LF/TAB are flattened. Input/hook/submission ordering uses the writer lock outside the core lock; prompt auditing uses a separate SQLite connection. Cross-project dispatch never creates a graph parent.
 - [ ] `GetWorkspaceDiff` / file ops / `GetUsageAnalytics`: local sync reads.
+- [ ] Go to definition runs on its own lookup thread (one per editor, the newer cancels the older, `MAX_LOOKUPS` overall), never on the editor's control reader and never under the core lock. Language servers live in `daemon::lsp` behind their own `Mutex`, start only from a lookup, are probed before launch, never take `FORGE_*` session variables and are stopped at shutdown. A place outside the checkout is an opaque id minted by `daemon::definitions` and opens read-only, without git marks or disk sync.
 - [ ] "Resolve with AI" launches an ordinary agent session. Its rebase prompt permits `--continue` only after staging reviewed resolutions and running relevant checks; ambiguous intent or failed verification stops for a human decision. Merge and cherry-pick prompts leave paths unstaged and continuation to the person.
 
 Example:

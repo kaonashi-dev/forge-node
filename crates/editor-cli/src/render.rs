@@ -669,7 +669,9 @@ mod tests {
             app.set_integrated();
             app.resize(width, height);
             app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
-            let (request_id, symbol) = app.take_definition_request().unwrap();
+            let crate::app::Lookup {
+                request_id, symbol, ..
+            } = app.take_definition_request().unwrap();
             app.definitions_arrived(
                 request_id,
                 symbol,
@@ -679,8 +681,12 @@ mod tests {
                     line: 204,
                     text: "private async release(payin: Payin, tx: Prisma.TransactionClient) {"
                         .into(),
+                    column: 0,
+                    external: None,
                 }],
                 false,
+                false,
+                None,
             );
             let status = status_text(&app);
             assert!(status.contains("Enter opens"));

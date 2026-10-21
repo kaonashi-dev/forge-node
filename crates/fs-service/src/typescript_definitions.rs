@@ -3,9 +3,10 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use super::heuristic::scan_text;
 use super::{
-    definition_rank_with_context, read_file, resolve_inside, FsError, SearchMatch, SearchResults,
-    MAX_DEFINITION_SIGNATURE_BYTES, MAX_DIRECTORY_PATH_BYTES, MAX_FILE_BYTES,
+    read_file, resolve_inside, FsError, SearchMatch, SearchResults, MAX_DIRECTORY_PATH_BYTES,
+    MAX_FILE_BYTES,
 };
 
 const MAX_PACKAGES: usize = 32;
@@ -196,55 +197,21 @@ impl Scanner<'_> {
             self.results.truncated = true;
             return;
         };
-        let mut block_comment = false;
-        let mut lines = text.lines().enumerate();
-        while let Some((index, line)) = lines.next() {
-            let code = uncomment_line(line, &mut block_comment);
-            if !code.contains(self.symbol) {
-                continue;
-            }
-            if code.len() > MAX_DEFINITION_SIGNATURE_BYTES {
-                self.results.truncated = true;
-                continue;
-            }
-            let following = lines.clone().map(|(_, line)| line);
-            let Some((column, _)) = definition_rank_with_context(code, following, self.symbol)
-            else {
-                continue;
-            };
+        let mut found = Vec::new();
+        scan_text(relative, &text, self.symbol, &mut found);
+        for hit in found {
             if self.results.matches.len() >= self.limit {
                 self.results.truncated = true;
                 return;
             }
             self.results.matches.push(SearchMatch {
                 path: relative.to_string(),
-                line: index as u32 + 1,
-                column: column + line[..line.len() - code.len()].chars().count() as u32,
-                text: super::context_line(line),
+                line: hit.line,
+                column: hit.column,
+                text: hit.text,
                 before: Vec::new(),
                 after: Vec::new(),
             });
-        }
-    }
-}
-
-fn uncomment_line<'a>(mut line: &'a str, block: &mut bool) -> &'a str {
-    loop {
-        if *block {
-            let Some((_, rest)) = line.split_once("*/") else {
-                return "";
-            };
-            *block = false;
-            line = rest;
-        } else if line.trim_start().starts_with("/*") {
-            *block = true;
-            line = line.trim_start().strip_prefix("/*").unwrap_or("");
-        } else {
-            return if line.trim_start().starts_with("//") {
-                ""
-            } else {
-                line
-            };
         }
     }
 }
@@ -546,6 +513,23 @@ mod tests {
             imported_binding("import { from as Source } from 'package';", "Source"),
             Some(("package", "from"))
         );
+    }
+
+    #[test]
+    fn installed_declarations_outrank_a_workspace_local() {
+        let tmp = fixture();
+        fs::write(
+            tmp.path().join(SOURCE),
+            "import { Queue } from 'bullmq';\nfunction f() {\n  const Queue = make();\n}\n",
+        )
+        .unwrap();
+        let found = search_definitions(tmp.path(), SOURCE, "Queue", 64).unwrap();
+        let lines: Vec<_> = found
+            .matches
+            .iter()
+            .map(|hit| (hit.path.as_str(), hit.line))
+            .collect();
+        assert_eq!(lines, [(TYPES, 1), (SOURCE, 3)]);
     }
 
     #[test]

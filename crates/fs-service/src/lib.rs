@@ -12,7 +12,9 @@ use std::path::{Component, Path, PathBuf};
 use git_service::{discover_root, run_git, run_git_bounded, run_git_prefix, GitError};
 use thiserror::Error;
 
+pub mod definition;
 mod entry_move;
+mod heuristic;
 mod name_search;
 mod typescript_definitions;
 
@@ -75,16 +77,6 @@ fn path_under_dependency_dir(rel: &str) -> bool {
         .any(is_dependency_dir_name)
 }
 
-/// Raw `git grep` hits a definition search will read before giving up.
-///
-/// A definition search greps for the bare word and throws most of it away, so
-/// its cap cannot be the one on the answer: `new` matches thousands of lines
-/// and none of the first two hundred need be a declaration. This bounds the
-/// parse instead, and the excess is reported as `truncated`.
-const MAX_DEFINITION_SCAN: usize = 5_000;
-const DEFINITION_CONTEXT_LINES: usize = 12;
-const MAX_DEFINITION_SIGNATURE_BYTES: usize = 4096;
-const MAX_DEFINITION_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 /// `git grep` output kept for a content search. The parser stops at
 /// [`MAX_SEARCH_RESULTS`] hits; this bounds what a match-heavy tree or a
 /// minified line costs before it gets there.
@@ -223,7 +215,8 @@ pub enum SearchKind {
     Name,
     /// Fixed-string line match against file contents (`git grep -F`).
     Content,
-    /// Lines that declare the queried symbol (`git grep -w -F`, then filtered).
+    /// Lines that declare the queried symbol: files from `git grep -l -w -F`,
+    /// then each read and scanned in its own language.
     Definition,
 }
 
@@ -894,11 +887,14 @@ pub fn search_files(
     match kind {
         SearchKind::Name => search_by_name(root, query, limit),
         SearchKind::Content => search_by_content(root, query, limit),
-        SearchKind::Definition => search_by_definition(root, query, limit, None),
+        SearchKind::Definition => {
+            heuristic::search(&canonicalize_root(root)?, query, limit, None).map(|(found, _)| found)
+        }
     }
 }
 
-/// Declaration candidates, including installed types from the current file's npm imports.
+/// Declaration candidates, best first: workspace declarations, then installed types from
+/// the current file's npm imports, then workspace locals and members.
 /// Dependency reads stay inside the checkout and report exhausted budgets as `truncated`.
 pub fn search_definitions(
     root: &Path,
@@ -915,9 +911,28 @@ pub fn search_definitions(
         .unwrap_or(relative);
     let limit = limit.clamp(1, MAX_SEARCH_RESULTS);
     let symbol = symbol.trim();
-    let mut results = search_by_definition(&root, symbol, limit, Some(relative))?;
-    if is_identifier(symbol) {
-        typescript_definitions::append(&root, relative, symbol, limit, &mut results);
+    let (mut results, declarations) = heuristic::search(&root, symbol, limit, Some(relative))?;
+    if heuristic::is_searchable(symbol) {
+        // An installed declaration outranks a workspace local or member.
+        let locals = results.matches.split_off(declarations);
+        let mut installed = SearchResults {
+            matches: Vec::new(),
+            truncated: false,
+        };
+        typescript_definitions::append(
+            &root,
+            relative,
+            symbol,
+            limit - declarations,
+            &mut installed,
+        );
+        results.truncated |= installed.truncated;
+        results.matches.extend(installed.matches);
+        results.matches.extend(locals);
+        if results.matches.len() > limit {
+            results.matches.truncate(limit);
+            results.truncated = true;
+        }
     }
     Ok(results)
 }
@@ -1302,15 +1317,7 @@ fn whole_records(stdout: &str, cut: bool) -> &[u8] {
 const CONTEXT_ARG: &str = "3";
 
 fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchResults, FsError> {
-    search_content_walk_with_context(root, query, limit, SEARCH_CONTEXT_LINES)
-}
-
-fn search_content_walk_with_context(
-    root: &Path,
-    query: &str,
-    limit: usize,
-    context_lines: usize,
-) -> Result<SearchResults, FsError> {
+    let context_lines = SEARCH_CONTEXT_LINES;
     let tree = list_via_walk(root)?;
     let mut matches = Vec::new();
     let mut truncated = tree.truncated;
@@ -1368,15 +1375,7 @@ fn context_line(line: &str) -> String {
 /// on, so `query` is what tells them apart: the grep was `-F`, so a line is a
 /// hit exactly when it contains the needle. `None` takes every record as a hit.
 fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResults {
-    parse_grep_z_with_context(stdout, query, limit, SEARCH_CONTEXT_LINES)
-}
-
-fn parse_grep_z_with_context(
-    stdout: &[u8],
-    query: Option<&str>,
-    limit: usize,
-    context_lines: usize,
-) -> SearchResults {
+    let context_lines = SEARCH_CONTEXT_LINES;
     // Records are path\0line\0text\n; `--\n` separates non-adjacent groups.
     let mut matches: Vec<SearchMatch> = Vec::new();
     let mut truncated = false;
@@ -1448,516 +1447,6 @@ fn parse_grep_z_with_context(
         }
     }
     SearchResults { matches, truncated }
-}
-
-/* --------------------------------------------------------- definitions --- */
-
-const DECLARING_KEYWORDS: &[&str] = &[
-    "fn",
-    "func",
-    "function",
-    "class",
-    "struct",
-    "enum",
-    "trait",
-    "interface",
-    "impl",
-    "type",
-    "typedef",
-    "def",
-    "fun",
-    "typealias",
-    "defn",
-    "mod",
-    "module",
-    "namespace",
-    "package",
-    "union",
-    "macro_rules",
-    "record",
-    "object",
-    "protocol",
-    "extension",
-    "sub",
-    "proc",
-];
-
-/// Keywords that bind a name to a value. A declaration, but often a local one.
-const BINDING_KEYWORDS: &[&str] = &["const", "let", "var", "static", "val"];
-
-/// Words that may stand between the start of a line and a declared name.
-const MODIFIERS: &[&str] = &[
-    "pub",
-    "export",
-    "default",
-    "async",
-    "public",
-    "private",
-    "protected",
-    "internal",
-    "override",
-    "final",
-    "abstract",
-    "readonly",
-    "static",
-    "declare",
-    "virtual",
-    "inline",
-    "extern",
-    "unsafe",
-    "get",
-    "set",
-    "suspend",
-    "operator",
-    "infix",
-    "tailrec",
-    "expect",
-    "actual",
-    "open",
-    "sealed",
-    "data",
-    "lateinit",
-    "external",
-];
-
-/// Ranks, best first. A sort key, never sent over the wire.
-const RANK_DECLARING: u8 = 0;
-const RANK_BINDING: u8 = 1;
-const RANK_HEAD: u8 = 2;
-
-fn search_by_definition(
-    root: &Path,
-    symbol: &str,
-    limit: usize,
-    preferred: Option<&str>,
-) -> Result<SearchResults, FsError> {
-    if !is_identifier(symbol) {
-        return Ok(SearchResults {
-            matches: Vec::new(),
-            truncated: false,
-        });
-    }
-    let root = canonicalize_root(root)?;
-    let raw = if is_git_repo(&root) {
-        grep_word(&root, symbol)?
-    } else {
-        search_content_walk_with_context(
-            &root,
-            symbol,
-            MAX_DEFINITION_SCAN,
-            DEFINITION_CONTEXT_LINES,
-        )?
-    };
-    Ok(declarations_from(raw, symbol, limit, preferred))
-}
-
-/// Whether `symbol` is a name a language could have declared.
-///
-/// The gate that keeps the grep a fixed-string search: anything else — a
-/// space, a quote, a metacharacter — is answered with no hits rather than
-/// handed to git.
-fn is_identifier(symbol: &str) -> bool {
-    let mut chars = symbol.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if symbol.len() > 128 {
-        return false;
-    }
-    if !(first.is_alphabetic() || first == '_' || first == '$') {
-        return false;
-    }
-    chars.all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-}
-
-fn grep_word(root: &Path, symbol: &str) -> Result<SearchResults, FsError> {
-    // `git grep` exits 1 when there are no matches — that is success.
-    let context = DEFINITION_CONTEXT_LINES.to_string();
-    let (out, cut) = run_git_prefix(
-        Some(root),
-        &[
-            "grep",
-            "-n",
-            "-I",
-            "--no-color",
-            "--untracked",
-            "-z",
-            "-w",
-            "-F",
-            "-A",
-            &context,
-            "-e",
-            symbol,
-            "--",
-            ".",
-        ],
-        MAX_DEFINITION_OUTPUT_BYTES,
-    )?;
-    if !cut && out.status != 0 && out.status != 1 {
-        return Err(FsError::Git(GitError::CommandFailed {
-            args: vec!["grep".into(), "-w".into(), "-F".into(), symbol.into()],
-            stderr: out.stderr,
-            status: out.status,
-        }));
-    }
-    if (!cut && out.status == 1) || out.stdout.is_empty() {
-        return Ok(SearchResults {
-            matches: Vec::new(),
-            truncated: cut,
-        });
-    }
-    let mut results = parse_grep_z_with_context(
-        whole_records(&out.stdout, cut),
-        Some(symbol),
-        MAX_DEFINITION_SCAN,
-        DEFINITION_CONTEXT_LINES,
-    );
-    results.truncated |= cut;
-    Ok(results)
-}
-
-/// Keep the hits that declare `symbol`, best kind of declaration first.
-#[cfg(test)]
-fn declarations(raw: SearchResults, symbol: &str, limit: usize) -> SearchResults {
-    declarations_from(raw, symbol, limit, None)
-}
-
-fn declarations_from(
-    raw: SearchResults,
-    symbol: &str,
-    limit: usize,
-    preferred: Option<&str>,
-) -> SearchResults {
-    let mut scanned = raw.truncated;
-    let mut scored: Vec<(u8, u8, usize, SearchMatch)> = Vec::new();
-    for (order, hit) in raw.matches.into_iter().enumerate() {
-        if hit.text.len() > MAX_DEFINITION_SIGNATURE_BYTES {
-            scanned = true;
-            continue;
-        }
-        let Some((column, rank)) = definition_rank_for_path(
-            &hit.path,
-            &hit.text,
-            hit.after.iter().map(String::as_str),
-            symbol,
-        ) else {
-            continue;
-        };
-        scored.push((
-            definition_proximity(&hit.path, preferred),
-            rank,
-            order,
-            SearchMatch {
-                path: hit.path,
-                line: hit.line,
-                column,
-                text: hit.text,
-                before: Vec::new(),
-                after: Vec::new(),
-            },
-        ));
-    }
-    let compare = |a: &(u8, u8, usize, SearchMatch), b: &(u8, u8, usize, SearchMatch)| {
-        (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2))
-    };
-    let truncated = scanned || scored.len() > limit;
-    if scored.len() > limit {
-        scored.select_nth_unstable_by(limit, compare);
-    }
-    scored.truncate(limit);
-    scored.sort_unstable_by(compare);
-    SearchResults {
-        matches: scored.into_iter().map(|(_, _, _, hit)| hit).collect(),
-        truncated,
-    }
-}
-
-fn definition_proximity(path: &str, preferred: Option<&str>) -> u8 {
-    match preferred {
-        Some(source) if path == source => 0,
-        Some(source) if definition_language(path) == definition_language(source) => 1,
-        _ => 2,
-    }
-}
-
-fn definition_language(path: &str) -> &'static str {
-    match language_for(path) {
-        "typescript" | "tsx" | "javascript" => "typescript",
-        language => language,
-    }
-}
-
-fn definition_rank_for_path<'a>(
-    path: &str,
-    line: &str,
-    following: impl Iterator<Item = &'a str>,
-    symbol: &str,
-) -> Option<(u32, u8)> {
-    if line.len() > MAX_DEFINITION_SIGNATURE_BYTES {
-        return None;
-    }
-    let language = definition_language(path);
-    if !matches!(language, "python" | "kotlin") {
-        return definition_rank_with_context(line, following, symbol);
-    }
-    for (index, _) in line.match_indices(symbol) {
-        if !is_whole_word(line, index, symbol.len()) {
-            continue;
-        }
-        let before = line[..index].trim();
-        let after = line[index + symbol.len()..].trim_start();
-        let binding = language == "python"
-            && matches!(before, "" | "self." | "cls.")
-            && (after.starts_with('=') && !after.starts_with("==")
-                || after.starts_with(':') && !after.starts_with(":="));
-        let kotlin = language == "kotlin"
-            && before
-                .split_whitespace()
-                .find(|word| !MODIFIERS.contains(word))
-                .is_some_and(|word| matches!(word, "fun" | "val" | "var"))
-            && !before.contains(['=', ';', '{', '(', ')'])
-            && (after.starts_with('(') || after.starts_with(':') || after.starts_with('='));
-        if (binding || kotlin) && code_at(line, index) {
-            let rank = if kotlin && before.split_whitespace().any(|word| word == "fun") {
-                RANK_DECLARING
-            } else {
-                RANK_BINDING
-            };
-            return Some((line[..index].chars().count() as u32 + 1, rank));
-        }
-    }
-    definition_rank_with_context(line, following, symbol)
-}
-
-/// Returns the 1-based column and rank of a declaration candidate.
-fn definition_rank(line: &str, symbol: &str) -> Option<(u32, u8)> {
-    definition_rank_in_signature(line, line.len(), symbol)
-}
-
-fn definition_rank_with_context<'a>(
-    line: &str,
-    following: impl Iterator<Item = &'a str>,
-    symbol: &str,
-) -> Option<(u32, u8)> {
-    if line.len() > MAX_DEFINITION_SIGNATURE_BYTES {
-        return None;
-    }
-    if let Some(rank) = definition_rank(line, symbol) {
-        return Some(rank);
-    }
-    if !line.match_indices(symbol).any(|(index, _)| {
-        is_whole_word(line, index, symbol.len())
-            && signature_head_rank(&line[..index]).is_some()
-            && line[index + symbol.len()..]
-                .trim_start()
-                .starts_with(['(', '<', '?'])
-            && code_at(line, index)
-    }) {
-        return None;
-    }
-    let mut signature = line.to_string();
-    for next in following.take(DEFINITION_CONTEXT_LINES) {
-        if signature.len() + next.len() + 1 > MAX_DEFINITION_SIGNATURE_BYTES {
-            break;
-        }
-        signature.push('\n');
-        signature.push_str(next);
-        if let Some(rank) = definition_rank_in_signature(&signature, line.len(), symbol) {
-            return Some(rank);
-        }
-    }
-    definition_rank_in_signature(&signature, line.len(), symbol)
-}
-
-fn definition_rank_in_signature(
-    signature: &str,
-    first_line_bytes: usize,
-    symbol: &str,
-) -> Option<(u32, u8)> {
-    let mut best: Option<(u32, u8)> = None;
-    for (index, _) in signature[..first_line_bytes].match_indices(symbol) {
-        if !is_whole_word(signature, index, symbol.len()) {
-            continue;
-        }
-        let Some(rank) = rank_at(&signature[..index], &signature[index + symbol.len()..]) else {
-            continue;
-        };
-        if !code_at(signature, index) {
-            continue;
-        }
-        let column = signature[..index].chars().count() as u32 + 1;
-        if best.is_none_or(|(_, previous)| rank < previous) {
-            best = Some((column, rank));
-        }
-    }
-    best
-}
-
-fn rank_at(before: &str, after: &str) -> Option<u8> {
-    let head = before.trim_end();
-    let binding_head = head.strip_suffix("mut").map(str::trim_end);
-    if binding_head
-        .is_some_and(|prefix| matches!(prefix.split_whitespace().last(), Some("let" | "static")))
-    {
-        return Some(RANK_BINDING);
-    }
-    let previous = head.rsplit(char::is_whitespace).next().unwrap_or("");
-    let previous = previous.strip_suffix(['!', '*']).unwrap_or(previous);
-    let previous = previous.split('<').next().unwrap_or(previous);
-    if DECLARING_KEYWORDS.contains(&previous) {
-        return Some(RANK_DECLARING);
-    }
-    if BINDING_KEYWORDS.contains(&previous) {
-        return Some(RANK_BINDING);
-    }
-
-    let rank = signature_head_rank(head)?;
-    let after = after.trim_start();
-    let after = after.strip_prefix('?').unwrap_or(after);
-    let signature = signature_tail(after)?;
-    if !signature.starts_with('(') {
-        return None;
-    }
-    if rank == RANK_DECLARING || method_declaration(signature) {
-        return Some(rank);
-    }
-    None
-}
-
-fn signature_head_rank(head: &str) -> Option<u8> {
-    let head = head.trim();
-    if head.contains(['{', '=', '.', ';']) {
-        return None;
-    }
-    let mut words = head.split_whitespace().map(keyword_token);
-    let first = words.next().unwrap_or("");
-    if DECLARING_KEYWORDS.contains(&first) {
-        return Some(RANK_DECLARING);
-    }
-    let bare =
-        first.is_empty() || MODIFIERS.contains(&first) && words.all(|w| MODIFIERS.contains(&w));
-    if bare {
-        return Some(RANK_HEAD);
-    }
-    None
-}
-
-// A call ends at `)`; a method continues with a body or a return type.
-fn method_declaration(signature: &str) -> bool {
-    let mut depth = 0usize;
-    for (index, character) in code_chars(signature) {
-        match character {
-            '(' => depth += 1,
-            ')' => {
-                let Some(next) = depth.checked_sub(1) else {
-                    return false;
-                };
-                depth = next;
-                if depth == 0 {
-                    let tail = signature[index + 1..].trim_start();
-                    return tail.starts_with('{') || tail.starts_with(':');
-                }
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-// Generic parameters can contain nested types and function constraints.
-fn signature_tail(after: &str) -> Option<&str> {
-    let after = after.trim_start();
-    if !after.starts_with('<') {
-        return Some(after);
-    }
-    let mut depth = 0usize;
-    for (index, character) in code_chars(after) {
-        match character {
-            '<' => depth += 1,
-            '>' if !after[..index].ends_with('=') => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(after[index + 1..].trim_start());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// The identifier inside a token: `impl<T>` is `impl`, `macro_rules!` is
-/// `macro_rules`, `(` is nothing.
-fn keyword_token(raw: &str) -> &str {
-    let start = raw
-        .find(|c: char| c.is_alphanumeric() || c == '_')
-        .unwrap_or(raw.len());
-    let rest = &raw[start..];
-    let end = rest
-        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .unwrap_or(rest.len());
-    &rest[..end]
-}
-
-fn is_whole_word(line: &str, index: usize, len: usize) -> bool {
-    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    let before = line[..index].chars().next_back();
-    let after = line[index + len..].chars().next();
-    !before.is_some_and(word) && !after.is_some_and(word)
-}
-
-fn code_at(text: &str, index: usize) -> bool {
-    code_chars(text)
-        .take_while(|(at, _)| *at <= index)
-        .any(|(at, _)| at == index)
-}
-
-fn code_chars(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
-    let mut characters = text.char_indices().peekable();
-    std::iter::from_fn(move || {
-        while let Some((index, character)) = characters.next() {
-            match character {
-                '\'' | '"' | '`' => {
-                    let mut escaped = false;
-                    for (_, next) in characters.by_ref() {
-                        if escaped {
-                            escaped = false;
-                        } else if next == '\\' {
-                            escaped = true;
-                        } else if next == character {
-                            break;
-                        }
-                    }
-                }
-                // `#[inline] fn f()` is a Rust attribute, not a comment.
-                '#' if !text[index + 1..].starts_with(['[', '!']) => {
-                    for (_, next) in characters.by_ref() {
-                        if next == '\n' {
-                            break;
-                        }
-                    }
-                }
-                '/' if characters.peek().is_some_and(|(_, next)| *next == '/') => {
-                    for (_, next) in characters.by_ref() {
-                        if next == '\n' {
-                            break;
-                        }
-                    }
-                }
-                '/' if characters.peek().is_some_and(|(_, next)| *next == '*') => {
-                    characters.next();
-                    while let Some((_, next)) = characters.next() {
-                        if next == '*' && characters.peek().is_some_and(|(_, next)| *next == '/') {
-                            characters.next();
-                            break;
-                        }
-                    }
-                }
-                _ => return Some((index, character)),
-            }
-        }
-        None
-    })
 }
 
 fn is_binary(buf: &[u8]) -> bool {
@@ -2289,138 +1778,6 @@ mod tests {
     }
 
     #[test]
-    fn definition_rank_reads_the_shapes_a_declaration_has() {
-        // A declaring keyword right before the name, whatever the language.
-        assert_eq!(
-            definition_rank("pub fn open_file(p: &str) {", "open_file"),
-            Some((8, 0))
-        );
-        assert_eq!(
-            definition_rank("export function openFile() {", "openFile"),
-            Some((17, 0))
-        );
-        assert_eq!(
-            definition_rank("class OpenFile {", "OpenFile"),
-            Some((7, 0))
-        );
-        assert_eq!(
-            definition_rank("impl<T> OpenFile<T> {", "OpenFile"),
-            Some((9, 0))
-        );
-        assert_eq!(
-            definition_rank("macro_rules! open_file {", "open_file"),
-            Some((14, 0))
-        );
-        // Go puts the receiver between the keyword and the name.
-        assert_eq!(
-            definition_rank("func (r *Repo) openFile(p string) {", "openFile"),
-            Some((16, 0))
-        );
-        // A binding is a declaration, but a weaker one: it is often a local.
-        assert_eq!(
-            definition_rank("const openFile = (p) => {", "openFile"),
-            Some((7, 1))
-        );
-        // A method has no keyword at all — a name, a signature, an open brace.
-        assert_eq!(
-            definition_rank("  openFile(p: string): void {", "openFile"),
-            Some((3, 2))
-        );
-    }
-
-    /// The half that matters: a mention offered as a definition is worse than
-    /// no answer, so every shape that merely *uses* the name has to be refused.
-    #[test]
-    fn definition_rank_refuses_a_mention() {
-        assert_eq!(definition_rank("  openFile(path);", "openFile"), None);
-        assert_eq!(
-            definition_rank("  const x = openFile(path);", "openFile"),
-            None
-        );
-        assert_eq!(
-            definition_rank("import { openFile } from \"./api\";", "openFile"),
-            None
-        );
-        assert_eq!(definition_rank("  if (openFile) {", "openFile"), None);
-        // A body on one line is a body, not a signature.
-        assert_eq!(
-            definition_rank("function outer() { return openFile(1) }", "openFile"),
-            None
-        );
-        // `-w` is git's word boundary; this is ours, for the walk fallback.
-        assert_eq!(definition_rank("fn reopenFile() {", "openFile"), None);
-        assert_eq!(definition_rank("fn openFileTwice() {", "openFile"), None);
-    }
-
-    #[test]
-    fn declarations_rank_keywords_over_bare_heads_and_keep_grep_order() {
-        let raw = SearchResults {
-            matches: vec![
-                hit("a.ts", 1, "  openFile(p: string) {"),
-                hit("b.ts", 2, "  openFile(p);"),
-                hit("c.rs", 3, "pub fn openFile() {"),
-                hit("d.ts", 4, "const openFile = () => {"),
-            ],
-            truncated: false,
-        };
-        let kept = declarations(raw, "openFile", 10);
-        assert_eq!(
-            kept.matches
-                .iter()
-                .map(|m| m.path.as_str())
-                .collect::<Vec<_>>(),
-            ["c.rs", "d.ts", "a.ts"]
-        );
-        assert!(!kept.truncated);
-    }
-
-    #[test]
-    fn declarations_report_truncation_of_the_kept_hits_not_the_raw_ones() {
-        let raw = SearchResults {
-            matches: vec![
-                hit("a.rs", 1, "fn openFile() {"),
-                hit("b.rs", 2, "fn openFile() {"),
-            ],
-            truncated: false,
-        };
-        assert!(declarations(raw, "openFile", 1).truncated);
-    }
-
-    /// The gate that keeps the grep a fixed-string search.
-    #[test]
-    fn only_an_identifier_reaches_git() {
-        assert!(is_identifier("openFile"));
-        assert!(is_identifier("_private"));
-        assert!(is_identifier("$el"));
-        assert!(!is_identifier(""));
-        assert!(!is_identifier("open file"));
-        assert!(!is_identifier(".*"));
-        assert!(!is_identifier("2fast"));
-    }
-
-    #[test]
-    fn definition_rank_accepts_mutable_bindings_and_generic_methods() {
-        for (line, symbol) in [
-            ("let mut cache = Cache::new();", "cache"),
-            ("static mut CACHE: usize = 0;", "CACHE"),
-            ("  static find<T>(key: T): T {", "find"),
-            ("  find<T extends Map<string, V>>(key: T) {", "find"),
-            ("  find<T extends () => void>(key: T) {", "find"),
-        ] {
-            assert!(definition_rank(line, symbol).is_some(), "{line}");
-        }
-        for line in [
-            "find<T>(key);",
-            "return find<T>(key);",
-            "const result = find<T>(key);",
-            "object.find<T>(key);",
-            "find<T(key) {",
-        ] {
-            assert_eq!(definition_rank(line, "find"), None, "{line}");
-        }
-    }
-
-    #[test]
     fn grep_records_preserve_paths_lines_and_limits() {
         let raw = b"first.ts\x002\0lookup();\nsecond\nfile.ts\x009\0lookup<T>(): T;\n";
         let all = parse_grep_z(raw, None, 10);
@@ -2489,44 +1846,6 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
     }
 
     #[test]
-    fn typescript_declaration_matrix() {
-        for line in [
-            "export async function lookup<T>(value: T): Promise<T> {",
-            "export function* lookup() { yield 1; }",
-            "export const lookup = <T>(value: T) => value;",
-            "export type lookup<T> = { value: T };",
-            "export interface lookup<T> { value: T; }",
-            "  lookup(value: string): void;",
-            "  lookup?(value: string): void;",
-            "  abstract lookup<T>(value: T): T;",
-            "  lookup(value: string) { return value; }",
-            "  public async lookup<T>(value: T): Promise<T> { return value; }",
-            "  get lookup(): string { return this.value; }",
-            "  private async lookup(value: string = ')'): Promise<void> {",
-            "  lookup<T extends '>('>(value: T): T {",
-            "#[inline] pub fn lookup() {}",
-        ] {
-            assert!(definition_rank(line, "lookup").is_some(), "{line}");
-        }
-        for line in [
-            "lookup(value);",
-            "await lookup(value);",
-            "return lookup(value);",
-            "object.lookup(value);",
-            "const value = lookup(value);",
-            "import { lookup } from './service';",
-            "export { lookup };",
-            "const value = condition ? lookup(value) : other;",
-            "// export function lookup() {}",
-            "/* const lookup = () => {}; */",
-            "const example = 'function lookup() {}';",
-            "const example = `class lookup {}`;",
-        ] {
-            assert_eq!(definition_rank(line, "lookup"), None, "{line}");
-        }
-    }
-
-    #[test]
     fn typescript_definition_search_uses_real_git() {
         let tmp = git_repo();
         fs::write(
@@ -2566,62 +1885,6 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         .unwrap();
         assert_eq!(classes.matches.len(), 1);
         assert_eq!(classes.matches[0].line, 2);
-    }
-
-    #[test]
-    fn definition_mentions_do_not_read_or_allocate_following_context() {
-        for line in [
-            "this.release(payin, tx);",
-            "await release(payin);",
-            "// function release() {}",
-        ] {
-            let following =
-                std::iter::from_fn(|| -> Option<&str> { panic!("a mention read following lines") });
-            assert_eq!(
-                definition_rank_with_context(line, following, "release"),
-                None
-            );
-        }
-    }
-
-    #[test]
-    fn python_and_kotlin_declaration_matrix() {
-        for (path, line) in [
-            ("service.py", "async def release(self, payin):"),
-            ("service.pyi", "def release(payin: Payin) -> None: ..."),
-            ("service.py", "release = lambda payin: payin"),
-            ("service.py", "release: Callable[[Payin], None]"),
-            ("service.py", "  self.release = handler"),
-            ("service.kt", "private suspend fun release(payin: Payin) {}"),
-            ("service.kt", "private fun <T> release(payin: T): T = payin"),
-            ("service.kt", "fun Payin.release(): Unit {}"),
-            ("service.kt", "inline fun <T> List<T>.release() = size"),
-            ("service.kts", "val Payin.release: Boolean get() = settled"),
-            ("service.kt", "typealias release = (Payin) -> Unit"),
-        ] {
-            assert!(
-                definition_rank_for_path(path, line, std::iter::empty(), "release").is_some(),
-                "{path}: {line}"
-            );
-        }
-        for (path, line) in [
-            ("service.py", "await release(payin)"),
-            ("service.py", "from other import release"),
-            ("service.py", "if release == handler:"),
-            ("service.py", "release == handler"),
-            ("service.py", "# def release(payin):"),
-            ("service.py", "example = 'def release(payin):'"),
-            ("service.kt", "payin.release()"),
-            ("service.kt", "val result = payin.release()"),
-            ("service.kt", "import api.release"),
-            ("service.kt", "// fun Payin.release() {}"),
-        ] {
-            assert_eq!(
-                definition_rank_for_path(path, line, std::iter::empty(), "release"),
-                None,
-                "{path}: {line}"
-            );
-        }
     }
 
     #[test]

@@ -392,6 +392,13 @@ struct EditorFramePayload {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct EditorFocusPayload {
+    session_id: SessionId,
+    workspace: WorkspaceId,
+    path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct EditorOpened {
     session_id: SessionId,
     terminal_id: TerminalId,
@@ -986,6 +993,23 @@ fn emit_side_event(app: &AppHandle, event: &DaemonEvent) {
                     workspace: *workspace_id,
                     url: url.clone(),
                     error: error.clone(),
+                },
+            );
+        }
+        // A definition jump landed in another editor. The WebView answers
+        // with an ordinary `OpenEditor`, which finds that live session, so
+        // the tab, the attach and the autosave preference take one path.
+        DaemonEvent::EditorFocusRequested {
+            session_id,
+            workspace_id,
+            path,
+        } => {
+            let _ = app.emit(
+                "runtime:editor_focus",
+                EditorFocusPayload {
+                    session_id: *session_id,
+                    workspace: *workspace_id,
+                    path: path.clone(),
                 },
             );
         }
@@ -2739,6 +2763,8 @@ fn changes_shell(event: &DaemonEvent, store: &Store) -> bool {
         // A draft is a read with its own event, for the same reason.
         DaemonEvent::JuvaDraftReady { .. } => false,
         DaemonEvent::PullRequestDraftReady { .. } => false,
+        // A request to show a tab, answered by the WebView through `OpenEditor`.
+        DaemonEvent::EditorFocusRequested { .. } => false,
         // Terminal output is not shell state. Attached frames became `damage`
         // above; an unattached terminal's frames must not republish the
         // snapshot on the delta rung either.

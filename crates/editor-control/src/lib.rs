@@ -18,8 +18,8 @@ pub mod view;
 
 pub use message::{
     version_matches, DaemonMessage, EditorMessage, EditorStateWire, WireDiagnostic, WireEdit,
-    WireFind, WireFindCommand, WireMark, WireMarkKind, WirePlace, WireSeverity,
-    MAX_CARET_LINE_BYTES, MAX_FIND_COUNT, MAX_FIND_PATTERN_BYTES, MAX_PLACES,
+    WireFind, WireFindCommand, WireLocation, WireMark, WireMarkKind, WirePlace, WirePosition,
+    WireSeverity, MAX_CARET_LINE_BYTES, MAX_FIND_COUNT, MAX_FIND_PATTERN_BYTES, MAX_PLACES,
 };
 pub use view::{
     modifiers, EditorInput, ViewFrame, ViewRequest, ViewRow, WireCaret, WireDecoration,
@@ -30,7 +30,36 @@ pub use view::{
 
 /// Version of the control wire. The handshake refuses any other value, the way
 /// `protocol::PROTOCOL_VERSION` does for the client wire.
-pub const CONTROL_VERSION: u16 = 6;
+pub const CONTROL_VERSION: u16 = 7;
+
+/// 1-based UTF-16 column of the byte at `byte` in `line`.
+///
+/// Wire positions count UTF-16 (`WirePosition`); a `byte` inside a character
+/// or past the end counts up to that point.
+#[must_use]
+pub fn utf16_column(line: &str, byte: usize) -> u32 {
+    let units: usize = line
+        .char_indices()
+        .take_while(|(index, _)| *index < byte)
+        .map(|(_, c)| c.len_utf16())
+        .sum();
+    u32::try_from(units + 1).unwrap_or(u32::MAX)
+}
+
+/// Byte offset in `line` of a 1-based UTF-16 column, clamped to the line and
+/// to the start of a character a column lands inside.
+#[must_use]
+pub fn byte_for_utf16(line: &str, column: u32) -> usize {
+    let mut remaining = column.saturating_sub(1) as usize;
+    for (index, c) in line.char_indices() {
+        let width = c.len_utf16();
+        if remaining < width {
+            return index;
+        }
+        remaining -= width;
+    }
+    line.len()
+}
 
 /// Hard cap for one decoded control frame.
 ///
@@ -137,6 +166,18 @@ fn read_remaining(reader: &mut impl Read, bytes: &mut [u8], read: &mut usize) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn utf16_columns_count_surrogate_pairs_and_round_trip() {
+        let line = "a😀é b";
+        let b = line.find('b').unwrap();
+        assert_eq!(super::utf16_column(line, 0), 1);
+        assert_eq!(super::utf16_column(line, b), 6);
+        assert_eq!(super::byte_for_utf16(line, 6), b);
+        assert_eq!(super::byte_for_utf16(line, 3), 1);
+        assert_eq!(super::byte_for_utf16(line, 0), 0);
+        assert_eq!(super::byte_for_utf16(line, 99), line.len());
+    }
+
     use super::*;
     use super::{WireMark, WireMarkKind};
     use std::io::Cursor;
@@ -221,6 +262,28 @@ mod tests {
                 request_id: 2,
                 line: 10,
                 column: Some(4),
+                utf16: true,
+                from: Some(WireLocation {
+                    path: "src/lib.rs".into(),
+                    line: 3,
+                    column: 9,
+                    external: None,
+                }),
+            },
+            DaemonMessage::Definitions {
+                request_id: 9,
+                symbol: "thing".into(),
+                places: vec![WirePlace {
+                    path: "~/.cargo/registry/src/x/lib.rs".into(),
+                    line: 4,
+                    text: "pub fn thing() {}".into(),
+                    column: 8,
+                    external: Some(12),
+                }],
+                truncated: false,
+                exact: true,
+                source: "lsp".into(),
+                note: None,
             },
             DaemonMessage::GetState { request_id: 3 },
             DaemonMessage::Find {
@@ -297,6 +360,26 @@ mod tests {
                 document_version: 1,
             },
             EditorMessage::Revealed { request_id: 2 },
+            EditorMessage::FindDefinition {
+                request_id: 4,
+                symbol: "thing".into(),
+                position: Some(WirePosition { line: 2, column: 5 }),
+                document_version: 7,
+                text: Some("let thing = 1;\nthing\n".into()),
+            },
+            EditorMessage::OpenPath {
+                request_id: 5,
+                path: "src/b.rs".into(),
+                line: 4,
+                column: 8,
+                external: None,
+                from: Some(WireLocation {
+                    path: "src/a.rs".into(),
+                    line: 2,
+                    column: 5,
+                    external: None,
+                }),
+            },
             EditorMessage::Applied {
                 request_id: 4,
                 document_version: 6,
