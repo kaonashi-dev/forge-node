@@ -842,6 +842,13 @@ impl Shared {
         if process.group_gone || self.pid <= 0 {
             return;
         }
+        // A reaped leader whose group is empty must not be signalled again:
+        // the pgid is its old pid, and a recycled pid may now lead someone
+        // else's group.
+        if process.status.is_some() && !group_alive(self.pid) {
+            process.group_gone = true;
+            return;
+        }
         let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(-self.pid), signal);
         if process.child.is_some() && process.status.is_none() {
             let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(self.pid), signal);

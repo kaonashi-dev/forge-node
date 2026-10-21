@@ -604,6 +604,15 @@ fn enough_close_declarations_stop_the_reads() {
 }
 
 #[test]
+fn a_multibyte_character_after_an_escape_keeps_the_mask_aligned() {
+    let text = "let path = \"C:\\ñandú\";\nstruct Target;\n";
+    let syntax = super::mask::Syntax::of(None);
+    let masked = super::mask::mask(text, &syntax);
+    assert_eq!(masked.len(), text.len(), "masking must preserve every byte");
+    assert_eq!(masked.lines().count(), text.lines().count());
+}
+
+#[test]
 fn a_plain_directory_is_walked_instead() {
     let tmp = tempfile::tempdir().unwrap();
     fs::write(

@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 32` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 33` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 

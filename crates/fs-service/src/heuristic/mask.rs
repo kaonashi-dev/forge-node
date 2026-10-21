@@ -189,7 +189,11 @@ pub(super) fn mask(text: &str, syntax: &Syntax<'_>) -> String {
                     break;
                 };
                 if byte == b'\\' {
-                    let end = (i + 2).min(bytes.len());
+                    // Blank the escaped character whole: cutting a UTF-8
+                    // sequence would make the masked text longer than the
+                    // source and shift every later offset.
+                    let escaped = text[i + 1..].chars().next().map_or(0, char::len_utf8);
+                    let end = i + 1 + escaped;
                     blank(&mut out[i..end]);
                     i = end;
                     continue;

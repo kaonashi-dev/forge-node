@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -80,6 +81,9 @@ pub(crate) struct Manager {
     registry: languages::Registry,
     slots: Mutex<HashMap<Key, Slot>>,
     probes: Mutex<HashMap<PathBuf, Probed>>,
+    /// Set under `slots` before it is drained: a lookup that finishes starting
+    /// a server after the daemon began exiting must not adopt it.
+    closed: AtomicBool,
 }
 
 impl Manager {
@@ -89,6 +93,7 @@ impl Manager {
             config: config.clone(),
             slots: Mutex::new(HashMap::new()),
             probes: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
         }
     }
 
@@ -135,14 +140,17 @@ impl Manager {
 
     /// Stop every server; the daemon is exiting.
     pub(crate) fn shutdown_all(&self) {
-        let all: Vec<Arc<Running>> = self
-            .lock_slots()
-            .drain()
-            .filter_map(|(_, slot)| match slot {
-                Slot::Running(running) => Some(running),
-                _ => None,
-            })
-            .collect();
+        let all: Vec<Arc<Running>> = {
+            let mut slots = self.lock_slots();
+            self.closed.store(true, Ordering::Release);
+            slots
+                .drain()
+                .filter_map(|(_, slot)| match slot {
+                    Slot::Running(running) => Some(running),
+                    _ => None,
+                })
+                .collect()
+        };
         for running in all {
             running.server.shutdown(SHUTDOWN_GRACE);
         }
@@ -164,6 +172,9 @@ impl Manager {
         let now = Instant::now();
         let history = {
             let mut slots = self.lock_slots();
+            if self.closed.load(Ordering::Acquire) {
+                return Err("the daemon is shutting down".to_owned());
+            }
             let history = match slots.remove(key) {
                 None => CrashHistory::default(),
                 Some(Slot::Starting) => {
@@ -219,20 +230,33 @@ impl Manager {
             history
         };
         let started = self.start(spec, key, env, history);
-        let evicted = {
+        let (evicted, closed) = {
             let mut slots = self.lock_slots();
-            match &started {
-                Ok(running) => {
-                    slots.insert(key.clone(), Slot::Running(Arc::clone(running)));
+            if self.closed.load(Ordering::Acquire) {
+                slots.remove(key);
+                (Vec::new(), true)
+            } else {
+                match &started {
+                    Ok(running) => {
+                        slots.insert(key.clone(), Slot::Running(Arc::clone(running)));
+                    }
+                    Err(_) => {
+                        slots.remove(key);
+                    }
                 }
-                Err(_) => {
-                    slots.remove(key);
-                }
+                (self.evict_over_budget(&mut slots, key), false)
             }
-            self.evict_over_budget(&mut slots, key)
         };
         for running in evicted {
             running.server.shutdown(SHUTDOWN_GRACE);
+        }
+        if closed {
+            // The daemon exited while this server was starting; it is too
+            // late to adopt it into the map the shutdown already drained.
+            if let Ok(running) = started {
+                running.server.shutdown(SHUTDOWN_GRACE);
+            }
+            return Err("the daemon is shutting down".to_owned());
         }
         started
     }
@@ -558,6 +582,8 @@ fn declaring_line(path: &Path, index: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Write};
+
     use super::*;
 
     fn environment(vars: Vec<(String, String)>, path_entries: Vec<PathBuf>) -> ResolvedEnvironment {
@@ -628,57 +654,130 @@ mod tests {
         .is_none());
     }
 
-    const FAKE_SERVER: &str = r#"#!/usr/bin/python3
-import json, sys
-if sys.argv[1:] == ["--version"]:
-    print("fake-lsp 1.0")
-    sys.exit(0)
-inp, out = sys.stdin.buffer, sys.stdout.buffer
-def send(message):
-    body = json.dumps(message).encode()
-    out.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
-    out.flush()
-opened = {}
-while True:
-    length = 0
-    while True:
-        line = inp.readline()
-        if not line:
-            sys.exit(0)
-        if line in (b"\r\n", b"\n"):
-            break
-        if line.lower().startswith(b"content-length:"):
-            length = int(line.split(b":")[1])
-    message = json.loads(inp.read(length))
-    method = message.get("method")
-    if method == "initialize":
-        send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {"definitionProvider": True}}})
-    elif method == "textDocument/didOpen":
-        opened[message["params"]["textDocument"]["uri"]] = message["params"]["textDocument"]["text"]
-    elif method == "textDocument/didChange":
-        opened[message["params"]["textDocument"]["uri"]] = message["params"]["contentChanges"][-1]["text"]
-    elif method == "textDocument/definition":
-        uri = message["params"]["textDocument"]["uri"]
-        target = uri.rsplit("/", 1)[0] + "/lib.rs"
-        line = 1 if "unsaved" in opened.get(uri, "") else 0
-        send({"jsonrpc": "2.0", "id": message["id"], "result": [
-            {"uri": target, "range": {"start": {"line": line, "character": 7}, "end": {"line": line, "character": 13}}}]})
-    elif method == "shutdown":
-        send({"jsonrpc": "2.0", "id": message["id"], "result": None})
-    elif method == "exit":
-        sys.exit(0)
-"#;
+    const FAKE_SERVER_ENV: &str = "DAEMON_FAKE_LSP";
+
+    /// Re-executed by the fake server script; a no-op in an ordinary run.
+    #[test]
+    fn fake_server_entry() {
+        if std::env::var_os(FAKE_SERVER_ENV).is_none() {
+            return;
+        }
+        let input = std::io::stdin();
+        let mut input = BufReader::new(input.lock());
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/fd/3")
+            .expect("fd 3 carries the LSP channel");
+        let mut opened: HashMap<String, String> = HashMap::new();
+        loop {
+            let Some(message) = read_frame(&mut input) else {
+                return;
+            };
+            let id = message.get("id").cloned();
+            match message["method"].as_str().unwrap_or_default() {
+                "initialize" => reply(
+                    &mut output,
+                    id.as_ref(),
+                    serde_json::json!({"capabilities": {"definitionProvider": true}}),
+                ),
+                "textDocument/didOpen" | "textDocument/didChange" => {
+                    let params = &message["params"];
+                    let uri = params["textDocument"]["uri"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let text = params["contentChanges"]
+                        .as_array()
+                        .and_then(|changes| changes.last())
+                        .and_then(|change| change["text"].as_str())
+                        .or_else(|| params["textDocument"]["text"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    opened.insert(uri, text);
+                }
+                "textDocument/definition" => {
+                    let params = &message["params"];
+                    let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+                    let directory = uri.rsplit_once('/').map_or("", |(directory, _)| directory);
+                    let line = opened
+                        .get(uri)
+                        .map_or(0, |text| u64::from(text.contains("unsaved")));
+                    reply(
+                        &mut output,
+                        id.as_ref(),
+                        serde_json::json!([{
+                            "uri": format!("{directory}/lib.rs"),
+                            "range": {
+                                "start": {"line": line, "character": 7},
+                                "end": {"line": line, "character": 13},
+                            },
+                        }]),
+                    );
+                }
+                "shutdown" => reply(&mut output, id.as_ref(), serde_json::Value::Null),
+                "exit" => return,
+                _ => {}
+            }
+        }
+    }
+
+    fn read_frame(input: &mut impl BufRead) -> Option<serde_json::Value> {
+        let mut length = None;
+        loop {
+            let mut line = String::new();
+            if input.read_line(&mut line).ok()? == 0 {
+                return None;
+            }
+            let line = line.trim_end();
+            if line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("Content-Length:") {
+                length = value.trim().parse::<usize>().ok();
+            }
+        }
+        let mut body = vec![0; length?];
+        input.read_exact(&mut body).ok()?;
+        serde_json::from_slice(&body).ok()
+    }
+
+    fn reply(output: &mut impl Write, id: Option<&serde_json::Value>, result: serde_json::Value) {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+        }))
+        .expect("a fake reply serializes");
+        output
+            .write_all(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes())
+            .unwrap();
+        output.write_all(&body).unwrap();
+        output.flush().unwrap();
+    }
+
+    /// A server that identifies itself to the probe and speaks LSP on fd 3,
+    /// because libtest's banner owns stdout.
+    fn fake_server_script() -> String {
+        let exe = std::env::current_exe().unwrap();
+        let exe = exe.to_string_lossy().replace('\'', r"'\''");
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+    echo "fake-lsp 1.0"
+    exit 0
+fi
+DAEMON_FAKE_LSP=1 exec '{exe}' lsp::tests::fake_server_entry --exact --nocapture --test-threads=1 3>&1 1>&2
+"#
+        )
+    }
 
     /// The whole path a lookup takes through a server: probe, start, open the
     /// buffer the editor sent, ask, and turn the answer into a candidate.
     #[test]
     fn a_probed_server_answers_for_the_buffer_and_is_stopped_on_shutdown() {
-        if !Path::new("/usr/bin/python3").exists() {
-            return;
-        }
         let scratch = tempfile::tempdir().unwrap();
         let server = scratch.path().join("fake-lsp");
-        std::fs::write(&server, FAKE_SERVER).unwrap();
+        std::fs::write(&server, fake_server_script()).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
         let root = tempfile::tempdir().unwrap();
