@@ -184,7 +184,7 @@
 .forge-btn-spinner {
   animation: forge-spin 0.7s linear infinite;
   border: 1.5px solid currentColor;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-full);
   border-top-color: transparent;
   flex: none;
   height: 12px;
@@ -1246,7 +1246,7 @@
   align-items: center;
   background: var(--line);
   border: 0;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-full);
   display: flex;
   flex: none;
   height: 20px;

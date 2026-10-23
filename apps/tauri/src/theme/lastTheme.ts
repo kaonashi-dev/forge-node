@@ -37,3 +37,30 @@ export function rememberTheme(
     // Private windows and blocked storage only lose the head start.
   }
 }
+
+/** The finishes echoed beside the base, so the first paint is already at their size. */
+export type Finishes = { glass: boolean; trim: boolean };
+
+const FINISHES_KEY = "forge.theme.finishes";
+
+export function recallFinishes(storage: Storage | undefined = local()): Finishes {
+  try {
+    const raw = storage?.getItem(FINISHES_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : undefined;
+    if (parsed && typeof parsed === "object") {
+      const { glass, trim } = parsed as Record<string, unknown>;
+      return { glass: glass === true, trim: trim === true };
+    }
+  } catch {
+    // A corrupt echo is the same as none.
+  }
+  return { glass: false, trim: false };
+}
+
+export function rememberFinishes(finishes: Finishes, storage: Storage | undefined = local()): void {
+  try {
+    storage?.setItem(FINISHES_KEY, JSON.stringify(finishes));
+  } catch {
+    // Private windows and blocked storage only lose the head start.
+  }
+}

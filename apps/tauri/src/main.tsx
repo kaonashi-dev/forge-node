@@ -1,14 +1,14 @@
 import { render } from "solid-js/web";
 import { App } from "./app/App";
-import { applyThemeBase } from "./theme/ThemeProvider";
-import { recallTheme } from "./theme/lastTheme";
+import { applyAppearance } from "./theme/ThemeProvider";
+import { recallFinishes, recallTheme } from "./theme/lastTheme";
 import { pauseLoopsWhileHidden } from "./theme/motion";
 import "./theme/tokens.css";
 import "./styles/index.css";
 import "@forge-node/file-workbench/style.css";
 import "./features/files/explorer/fileSurface.css";
 
-applyThemeBase(recallTheme() ?? "calm-dark");
+applyAppearance(recallTheme() ?? "calm-dark", recallFinishes());
 pauseLoopsWhileHidden();
 
 const isMac =

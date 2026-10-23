@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recallTheme, rememberTheme } from "./lastTheme";
+import { recallFinishes, recallTheme, rememberFinishes, rememberTheme } from "./lastTheme";
 
 function memory() {
   const values = new Map<string, string>();
@@ -34,5 +34,16 @@ describe("last theme echo", () => {
     };
     expect(recallTheme(broken)).toBeUndefined();
     expect(() => rememberTheme("ocean", broken)).not.toThrow();
+  });
+
+  it("echoes the finishes and reads anything malformed as both off", () => {
+    const storage = memory();
+    expect(recallFinishes(storage)).toEqual({ glass: false, trim: false });
+    rememberFinishes({ glass: true, trim: true }, storage);
+    expect(recallFinishes(storage)).toEqual({ glass: true, trim: true });
+    storage.setItem("forge.theme.finishes", "{not json");
+    expect(recallFinishes(storage)).toEqual({ glass: false, trim: false });
+    storage.setItem("forge.theme.finishes", '{"trim":"true"}');
+    expect(recallFinishes(storage)).toEqual({ glass: false, trim: false });
   });
 });

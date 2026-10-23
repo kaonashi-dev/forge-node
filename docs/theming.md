@@ -109,10 +109,14 @@ right after Geist Mono, so its icons fill the codepoints Geist Mono lacks.
 
 Density (`ui.density`: `compact` 26px file rows and 28px tree rows, or `cozy`, 6px taller; the retired
 `default`/`comfortable` ids map onto them) overlays row height and the control
-ladder; UI font size (`ui.font_size`, half-pixel steps from 12 to 16) overlays
-`--forge-text-*`. Reduce motion (`ui.reduce_motion`) sets
-`data-reduce-motion` on the root, which removes every transition on top of the
-OS setting.
+ladder; Trim (`ui.trim`) is a finish beside Glass, not a density: it lowers
+chrome heights, tightens the shell's layout gaps and flattens the radius rungs
+while leaving row height, grid padding and circles (`--radius-full`) alone. Its
+flag and Glass's are echoed to `localStorage` beside the theme base, so the
+first paint is already at their size. UI font size
+(`ui.font_size`, half-pixel steps from 12 to 16) overlays `--forge-text-*`.
+Reduce motion (`ui.reduce_motion`) sets `data-reduce-motion` on the root, which
+removes every transition on top of the OS setting.
 
 The type scale is 24/600 page title (`--text-xl`), 15 and 14/600 headings
 (`--text-lg`, `--text-md`), 13 rows, tabs, buttons and body (`--text-sm`, the

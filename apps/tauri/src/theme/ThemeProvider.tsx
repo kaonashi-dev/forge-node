@@ -1,4 +1,5 @@
 import { type JSX, createSignal, onCleanup, onMount } from "solid-js";
+import { applyTrimChrome } from "./trim";
 import { applyDensity, isDensity } from "./density";
 import {
   applyTheme,
@@ -11,6 +12,7 @@ import { applyUiFont } from "./uiFont";
 
 import { parseCustomTheme } from "./customTheme";
 import { withGlass } from "./glass";
+import { type Finishes, rememberFinishes } from "./lastTheme";
 
 const DEFAULT_BASE: ThemeBaseId = "calm-dark";
 
@@ -23,15 +25,31 @@ const SYSTEM_LIGHT: ThemeBaseId = "calm-light";
 const [base, setBase] = createSignal<ThemeBaseId>(DEFAULT_BASE, { equals: false });
 const [preference, setPreference] = createSignal<ThemePreference>(DEFAULT_BASE);
 const [glass, setGlass] = createSignal(false);
+const [trim, setTrim] = createSignal(false);
 
 /** Whether the Glass finish is asked for; it only takes effect on a dark base. */
 export const glassPreference = glass;
 
+export const trimPreference = trim;
+
 /** Turns the Glass finish on or off and repaints the current theme under it. */
 export function applyGlass(on: boolean): void {
   if (glass() === on) return;
-  setGlass(on);
-  applyThemeBase(preference());
+  applyAppearance(preference(), { glass: on, trim: trim() });
+}
+
+/** Turns the Trim finish on or off and repaints the current theme under it. */
+export function applyTrim(on: boolean): void {
+  if (trim() === on) return;
+  applyAppearance(preference(), { glass: glass(), trim: on });
+}
+
+/** Sets a base and both finishes with one theme pass rather than one per flag. */
+export function applyAppearance(next: ThemePreference, finishes: Finishes): void {
+  setGlass(finishes.glass);
+  setTrim(finishes.trim);
+  rememberFinishes(finishes);
+  applyThemeBase(next);
 }
 
 // JS-rendered surfaces must refresh even when one custom palette replaces another.
@@ -69,9 +87,9 @@ export function applyThemeBase(next: ThemePreference = DEFAULT_BASE): void {
   if (glassy) document.documentElement.dataset.glass = "true";
   else delete document.documentElement.dataset.glass;
   applyTheme(glassy ? withGlass(palettes[resolved]) : palettes[resolved]);
-  // `applyTheme` rewrites every `--forge-*` metric, including the ones density
-  // and UI font overlay. Put those back from `dataset` so a theme switch does
-  // not snap the chrome to the defaults.
+  // `applyTheme` rewrites every `--forge-*` metric, including the ones density,
+  // Trim and UI font overlay. Put those back so a theme switch does not snap
+  // the chrome to the defaults.
   restoreChromeOverlays();
   setPreference(resolved === DEFAULT_BASE && next !== SYSTEM_BASE ? DEFAULT_BASE : next);
   setBase(resolved);
@@ -79,6 +97,7 @@ export function applyThemeBase(next: ThemePreference = DEFAULT_BASE): void {
 
 function restoreChromeOverlays(): void {
   const { dataset } = document.documentElement;
+  applyTrimChrome(trim());
   if (isDensity(dataset.density)) applyDensity(dataset.density);
   const font = Number.parseFloat(dataset.uiFont ?? "");
   if (Number.isFinite(font)) applyUiFont(font);

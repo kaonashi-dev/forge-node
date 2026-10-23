@@ -58,12 +58,19 @@ import {
 } from "../../theme/density";
 import { UI_FONT_SIZE_RANGE, applyUiFont } from "../../theme/uiFont";
 import { applyReduceMotion } from "../../theme/motion";
-import { applyGlass, glassPreference, themeBase } from "../../theme/ThemeProvider";
+import {
+  applyTrim,
+  applyGlass,
+  trimPreference,
+  glassPreference,
+  themeBase,
+} from "../../theme/ThemeProvider";
 import { baseIsLight } from "../../theme/tokens";
 import { DENSITY_NOTES, canStep, stepValue, type StepRange } from "./typeSteps";
 import {
   AUTOSAVE_KEY,
   DENSITY_KEY,
+  TRIM_KEY,
   EDITOR_FONT_SIZE_KEY,
   EDITOR_FONT_SIZE_RANGE,
   EDITOR_LINE_HEIGHT_KEY,
@@ -521,7 +528,7 @@ function Appearance() {
   return (
     <Page
       title="Appearance"
-      summary="Theme, accent, density and type. Changes apply as you pick them."
+      summary="Theme, accent, density, layout and type. Changes apply as you pick them."
     >
       <div class="appearance-grid">
         <div class="appearance-main">
@@ -542,6 +549,7 @@ function Appearance() {
             <span class="history-spacer" />
             <Switch label="Reduce motion" checked={reduceMotion()} onChange={setReduceMotion} />
           </section>
+          <p class="appearance-row-note">{DENSITY_NOTES[density()]}</p>
           <section class="appearance-row" aria-labelledby="glass-title">
             <h3 id="glass-title" class="appearance-row-title">
               Glass
@@ -561,7 +569,23 @@ function Appearance() {
               ? "Glass is drawn for dark themes; pick one to use it."
               : "A lit backdrop, a translucent sidebar and a blue accent over the current theme."}
           </p>
-          <p class="appearance-row-note">{DENSITY_NOTES[density()]}</p>
+          <section class="appearance-row" aria-labelledby="trim-title">
+            <h3 id="trim-title" class="appearance-row-title">
+              Trim
+            </h3>
+            <Switch
+              label="Tighter chrome and square corners"
+              checked={trimPreference()}
+              onChange={(next) => {
+                applyTrim(next);
+                writeFlag(TRIM_KEY, next);
+              }}
+            />
+          </section>
+          <p class="appearance-row-note">
+            Pulls the window, rail and tabs in, and rounds every corner less. Row height stays with
+            Density above.
+          </p>
         </div>
 
         <div class="appearance-side">

@@ -1654,3 +1654,118 @@
 :root[data-glass="true"] .tab-indicator::after {
   display: none;
 }
+
+/* ----------------------------------------------------------------- trim --- */
+
+/*
+ * The Trim finish beside Glass: the same chrome with the air pulled out.
+ * Heights and radii are absent here on purpose: `theme/trim.ts` writes them
+ * as metric overlays because `applyTheme` owns those inline. This block only
+ * closes the layout gaps those metrics do not cover. The top and left insets
+ * stay put: the macOS traffic lights are positioned from the window edge and
+ * each title row reserves the remaining space from its own padding.
+ */
+:root[data-trim="true"] .app-shell {
+  padding: var(--space-8) var(--space-4) var(--space-4) 0;
+}
+/* Restated because the shorthand above outranks base.css's collapsed rule, and
+   `.title-bar-inset` assumes the card starts 8px in. */
+:root[data-trim="true"] .app-shell.sidebar-collapsed {
+  padding-left: var(--space-8);
+}
+/* The floating sidebar matches the card's 4px right and bottom inset; only the
+   top keeps 8px, for the traffic lights. */
+:root[data-trim="true"][data-glass="true"] .sidebar {
+  margin-left: var(--space-4);
+}
+:root[data-trim="true"] .sidebar {
+  padding: var(--space-8) var(--space-4) 0 var(--space-12);
+}
+:root[data-trim="true"] .sidebar-jump {
+  margin-top: var(--space-6);
+  padding: 0 var(--space-8);
+}
+:root[data-trim="true"] .sidebar-back {
+  margin-bottom: var(--space-8);
+}
+:root[data-trim="true"] .sidebar-views {
+  margin-top: var(--space-6);
+}
+:root[data-trim="true"] .sidebar-group-label {
+  padding: var(--space-2) var(--space-8) var(--space-6);
+}
+:root[data-trim="true"] .sidebar-footer {
+  height: var(--control-lg);
+}
+:root[data-trim="true"] .rail-head {
+  padding: var(--space-8) var(--space-4) var(--space-2) var(--space-6);
+}
+:root[data-trim="true"] .needs-you-block {
+  gap: var(--space-2);
+  margin: var(--space-6) 0 0;
+}
+:root[data-trim="true"] .needs-you-card {
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-8);
+}
+:root[data-trim="true"] .needs-you-place {
+  padding-left: var(--space-12);
+}
+:root[data-trim="true"] .tree-group + .tree-group {
+  margin-top: var(--space-4);
+}
+:root[data-trim="true"] .tree-row {
+  padding: 0 var(--space-6) 0 calc(var(--space-6) + var(--tree-depth, 0) * var(--space-10));
+}
+:root[data-trim="true"] .tree-row.group {
+  height: var(--space-20);
+}
+:root[data-trim="true"] .tree-row.project {
+  gap: var(--space-8);
+}
+:root[data-trim="true"] .tree-guide {
+  margin-left: var(--space-12);
+  padding-left: var(--space-8);
+}
+:root[data-trim="true"] .project-avatar {
+  height: var(--space-16);
+  width: var(--space-16);
+}
+:root[data-trim="true"] .project-line:has(> .ws-marks) {
+  padding-right: var(--space-2);
+}
+:root[data-trim="true"] .ws-card > .ws-sessions {
+  margin-left: var(--space-10);
+  padding-left: var(--space-6);
+}
+:root[data-trim="true"] .card-strip {
+  gap: var(--space-1);
+  padding: 0 var(--space-6) 0 var(--space-8);
+}
+:root[data-trim="true"] .tab-strip {
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+}
+:root[data-trim="true"] .session-tab-wrap {
+  padding-right: var(--space-2);
+}
+:root[data-trim="true"] .session-tab {
+  gap: var(--space-6);
+  padding: 0 var(--space-2) 0 var(--space-8);
+}
+:root[data-trim="true"] .tab-indicator::after {
+  left: var(--space-6);
+  right: var(--space-6);
+}
+:root[data-trim="true"] .card-location {
+  gap: var(--space-6);
+  padding: 0 var(--space-10) 0 var(--space-12);
+}
+:root[data-trim="true"] .card-crumbs {
+  gap: var(--space-6);
+  padding-left: var(--space-8);
+}
+:root[data-trim="true"] .notice {
+  bottom: var(--space-8);
+  padding: var(--space-6) var(--space-8);
+}

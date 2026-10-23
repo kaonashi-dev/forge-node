@@ -55,6 +55,7 @@ import { centerSplit } from "../../navigation/centerSplitStore";
 import { openEditor } from "../../features/editor/open";
 import {
   DENSITY_KEY,
+  TRIM_KEY,
   REDUCE_MOTION_KEY,
   EDITOR_FONT_SIZE_KEY,
   EDITOR_FONT_SIZE_RANGE,
@@ -74,7 +75,7 @@ import { CenterStack } from "./CenterStack";
 import type { Section } from "../../features/settings/sections";
 import { ESC_AGAIN_MS, isSecondEsc } from "../../features/settings/escAgain";
 import { defaultAgentFrom, resolveDefaultAgent } from "../../features/settings/defaultAgent";
-import { applyThemeBase, type ThemePreference, applyGlass } from "../../theme/ThemeProvider";
+import { applyAppearance, type ThemePreference } from "../../theme/ThemeProvider";
 import { applyDensity, readDensity } from "../../theme/density";
 import { rememberTheme } from "../../theme/lastTheme";
 import { applyReduceMotion } from "../../theme/motion";
@@ -167,8 +168,10 @@ export function AppShell() {
     if (themed || !snapshotLanded()) return;
     themed = true;
     const base = untrack(() => forgeStore.app_state[THEME_BASE_KEY]) as ThemePreference | undefined;
-    applyGlass(untrack(() => forgeStore.app_state[GLASS_KEY]) === "true");
-    applyThemeBase(base ?? "calm-dark");
+    applyAppearance(base ?? "calm-dark", {
+      glass: untrack(() => forgeStore.app_state[GLASS_KEY]) === "true",
+      trim: untrack(() => forgeStore.app_state[TRIM_KEY]) === "true",
+    });
     rememberTheme(base);
   });
   let seeded = false;

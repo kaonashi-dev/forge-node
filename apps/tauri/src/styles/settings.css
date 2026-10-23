@@ -18,6 +18,9 @@
   padding: var(--space-32);
   scrollbar-gutter: stable;
 }
+:root[data-trim="true"] .settings-body {
+  padding: var(--space-20);
+}
 .settings-body > * {
   margin-inline: auto;
   max-width: 760px;
