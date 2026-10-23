@@ -14,6 +14,9 @@
   overflow-y: auto;
   padding: 0;
 }
+:root[data-trim="true"] .panel-body {
+  gap: var(--space-4);
+}
 .panel-note {
   color: var(--fg-subtle);
   font-size: var(--text-xs);

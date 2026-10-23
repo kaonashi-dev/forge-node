@@ -1,12 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createComputed, createRoot } from "solid-js";
-import { applyThemeBase, themeBase, themePreference, type ThemePreference } from "./ThemeProvider";
+import {
+  applyTrim,
+  applyThemeBase,
+  themeBase,
+  themePreference,
+  type ThemePreference,
+} from "./ThemeProvider";
 import { baseIsLight, palettes } from "./tokens";
 
 beforeEach(() => {
-  vi.stubGlobal("document", { documentElement: { dataset: {}, style: { setProperty: vi.fn() } } });
+  vi.stubGlobal("document", {
+    documentElement: { dataset: {}, style: { setProperty: vi.fn(), removeProperty: vi.fn() } },
+  });
 });
 afterEach(() => {
+  applyTrim(false);
   applyThemeBase("calm-dark");
   vi.unstubAllGlobals();
 });
@@ -30,14 +39,16 @@ describe("theme selection", () => {
       expect(themePreference()).toBe("calm-dark");
     }
   });
-  it("reapplies density and UI font after a theme switch", () => {
+  it("reapplies density, Trim and UI font after a theme switch", () => {
     document.documentElement.dataset.density = "cozy";
     document.documentElement.dataset.uiFont = "14";
+    applyTrim(true);
     applyThemeBase("ocean");
     expect(document.documentElement.style.setProperty).toHaveBeenCalledWith(
       "--forge-row-h",
       "32px",
     );
+    expect(document.documentElement.style.setProperty).toHaveBeenCalledWith("--radius-pill", "4px");
     expect(document.documentElement.style.setProperty).toHaveBeenCalledWith(
       "--forge-text-sm",
       "14px",

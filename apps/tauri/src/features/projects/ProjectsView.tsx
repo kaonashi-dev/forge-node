@@ -78,6 +78,7 @@ import { waitedFor } from "../sessions/attention";
 import { hasQuestion, waitingSessions } from "../sessions/waiting";
 import { gitStore } from "../git/state";
 import { BrandIcon, Icon } from "../../theme/icons/index";
+import { trimPreference } from "../../theme/ThemeProvider";
 import { AttentionMarker, StateMarker, WorkMarker } from "../sessions/markers";
 import { SessionGlyph } from "../sessions/SessionGlyph";
 import { draftWithJuva, loadBranchCompare } from "../git/commands";
@@ -626,6 +627,8 @@ export function ProjectsView() {
     activeWorkspace();
     collapsed();
     rows();
+    // Trim moves rows sideways without resizing the tree, so the observer misses it.
+    trimPreference();
     queueMicrotask(measureCurrent);
   });
   onMount(() => {

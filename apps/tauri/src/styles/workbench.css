@@ -772,7 +772,7 @@
 .pr-person-mark {
   align-items: center;
   background: var(--surface-hi);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-full);
   color: var(--fg-muted);
   display: inline-flex;
   flex: none;
@@ -785,7 +785,7 @@
    the network, and nothing here can promise it contrasts with a label. */
 .pr-label-dot {
   background: var(--fg-subtle);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-full);
   flex: none;
   height: var(--space-8);
   width: var(--space-8);

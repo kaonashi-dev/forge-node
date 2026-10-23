@@ -29,6 +29,8 @@ export const DENSITY_KEY = "ui.density";
 export const REDUCE_MOTION_KEY = "ui.reduce_motion";
 /** `"true"` lays the Glass finish over a dark theme. */
 export const GLASS_KEY = "ui.glass";
+/** `"true"` switches the shell to the Trim finish: tighter chrome, flatter corners. */
+export const TRIM_KEY = "ui.trim";
 /**
  * Chrome type size, as the `sm` rung in pixels.
  *
