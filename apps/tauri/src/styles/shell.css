@@ -1661,25 +1661,31 @@
  * The Trim finish beside Glass: the same chrome with the air pulled out.
  * Heights and radii are absent here on purpose: `theme/trim.ts` writes them
  * as metric overlays because `applyTheme` owns those inline. This block only
- * closes the layout gaps those metrics do not cover. The top and left insets
- * stay put: the macOS traffic lights are positioned from the window edge and
- * each title row reserves the remaining space from its own padding.
+ * closes the layout gaps those metrics do not cover. The top inset stays put:
+ * the macOS traffic lights are positioned from the window edge, and each title
+ * row reserves the remaining space from its own distance to that edge.
  */
 :root[data-trim="true"] .app-shell {
   padding: var(--space-8) var(--space-4) var(--space-4) 0;
 }
-/* Restated because the shorthand above outranks base.css's collapsed rule, and
-   `.title-bar-inset` assumes the card starts 8px in. */
 :root[data-trim="true"] .app-shell.sidebar-collapsed {
-  padding-left: var(--space-8);
+  padding-left: var(--space-4);
 }
-/* The floating sidebar matches the card's 4px right and bottom inset; only the
-   top keeps 8px, for the traffic lights. */
-:root[data-trim="true"][data-glass="true"] .sidebar {
-  margin-left: var(--space-4);
+/* The card starts 4px nearer the window edge, so the strip reserves 4px more
+   to keep its first control clear of the traffic lights. */
+:root[data-trim="true"] .card-strip > .title-bar-inset {
+  width: max(0px, calc(var(--traffic-light-end) - var(--space-16)));
 }
 :root[data-trim="true"] .sidebar {
   padding: var(--space-8) var(--space-4) 0 var(--space-12);
+}
+/* The floating sidebar matches the card's 4px window inset, and the resize
+   handle alone is the 4px between them; only the top keeps 8px, for the
+   traffic lights. Glass draws the sidebar's own edge, so its content keeps
+   8px off that edge. */
+:root[data-trim="true"][data-glass="true"] .sidebar {
+  margin: 0 0 0 var(--space-4);
+  padding-right: var(--space-8);
 }
 :root[data-trim="true"] .sidebar-jump {
   margin-top: var(--space-6);
@@ -1724,7 +1730,7 @@
   gap: var(--space-8);
 }
 :root[data-trim="true"] .tree-guide {
-  margin-left: var(--space-12);
+  margin-left: var(--space-14);
   padding-left: var(--space-8);
 }
 :root[data-trim="true"] .project-avatar {
@@ -1735,7 +1741,6 @@
   padding-right: var(--space-2);
 }
 :root[data-trim="true"] .ws-card > .ws-sessions {
-  margin-left: var(--space-10);
   padding-left: var(--space-6);
 }
 :root[data-trim="true"] .card-strip {

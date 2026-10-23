@@ -39,7 +39,7 @@ describe("theme selection", () => {
       expect(themePreference()).toBe("calm-dark");
     }
   });
-  it("reapplies density, compact chrome and UI font after a theme switch", () => {
+  it("reapplies density, Trim and UI font after a theme switch", () => {
     document.documentElement.dataset.density = "cozy";
     document.documentElement.dataset.uiFont = "14";
     applyTrim(true);

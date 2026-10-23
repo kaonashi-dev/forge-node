@@ -574,7 +574,7 @@ function Appearance() {
               Trim
             </h3>
             <Switch
-              label="Tighter chrome and square corners"
+              label="Tighter chrome and flatter corners"
               checked={trimPreference()}
               onChange={(next) => {
                 applyTrim(next);
