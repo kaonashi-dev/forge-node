@@ -349,13 +349,7 @@ pub fn list_directory(root: &Path, relative: &str) -> Result<DirectoryListing, F
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
 
-    // A `Link` share in the main checkout points into `.git/forge-shares`;
-    // `check-ignore` refuses to run there (status 128), and nothing inside
-    // the git dir is subject to `.gitignore` anyway.
-    let in_git_dir = dir
-        .strip_prefix(&root)
-        .is_ok_and(|inner| inner.components().any(|c| c.as_os_str() == ".git"));
-    let ignored = if is_git_repo(&root) && !in_git_dir {
+    let ignored = if is_git_repo(&root) {
         ignored_paths_among(
             &dir,
             entries
@@ -409,6 +403,11 @@ fn ignored_paths_among<'a>(
         args.push("--");
         args.extend(literal.iter().map(String::as_str));
         let out = run_git(Some(root), &args)?;
+        // A directory inside a git dir (a `Link` share's store, a submodule's
+        // `.git/modules`) has no work tree, and nothing there is ignorable.
+        if out.status == 128 && out.stderr.contains("must be run in a work tree") {
+            return Ok(HashSet::new());
+        }
         if out.status != 0 && out.status != 1 {
             out.ok(&args)?;
             continue;
@@ -2173,6 +2172,21 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         assert_eq!(listing.entries.len(), 1);
         assert_eq!(listing.entries[0].path, "ai-docs/plan.md");
         assert!(!listing.entries[0].ignored);
+    }
+
+    #[test]
+    fn list_directory_inside_a_git_dir_not_named_dot_git() {
+        let tmp = git_repo();
+        assert!(Command::new("git")
+            .args(["init", "--bare", "-q", "store"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+
+        let listing = list_directory(tmp.path(), "store").unwrap();
+        assert!(listing.entries.iter().any(|e| e.path == "store/HEAD"));
+        assert!(listing.entries.iter().all(|e| !e.ignored));
     }
 
     #[test]
