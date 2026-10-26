@@ -1931,6 +1931,7 @@
   --select-bg: color-mix(in srgb, var(--accent) var(--finish-select-tint), transparent);
   --select-ring: var(--finish-select-ring);
   --attention-bg: color-mix(in srgb, var(--attention) 13%, transparent);
+  --attention-bg-solid: color-mix(in srgb, var(--attention) 13%, var(--bg-strip));
   --attention-ring: none;
   --attention-wash: color-mix(in srgb, var(--attention) 9%, transparent);
   --attention-wash-hover: color-mix(in srgb, var(--attention) 14%, transparent);
@@ -1958,6 +1959,7 @@
   --focus-ring-offset: 2px;
   --focus-ring-inset: inset 0 0 0 var(--focus-ring-width) var(--ring);
   --focus-ring-shadow: 0 0 0 2px var(--bg-panel), 0 0 0 4px var(--ring);
+  --focus-ring-halo: 0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent);
   --space-1: 1px;
   --space-2: 2px;
   --space-3: 3px;

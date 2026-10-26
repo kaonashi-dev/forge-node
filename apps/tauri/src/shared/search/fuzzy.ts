@@ -1,17 +1,19 @@
+import { foldQuery } from "./needle";
+
 // Subsequence scoring for the palette.
 //
 // Matches at a word boundary and runs of consecutive matches score higher,
 // which is what makes "nt" find "New Terminal" ahead of "Agent Settings".
 
 /**
- * The lowercased, space-stripped query characters a match is scored against.
+ * The `foldQuery` characters a match is scored against.
  *
  * Hoisted out of the per-candidate loop by `filter`: the needle is invariant
  * across candidates, and in the file scope the candidate set is the whole
  * repository listing.
  */
 export function needleOf(query: string): string[] {
-  return [...query.toLowerCase()].filter((character) => character !== " ");
+  return [...foldQuery(query)];
 }
 
 /**

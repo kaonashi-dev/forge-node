@@ -892,6 +892,8 @@ const SEMANTIC_FORWARDS: Record<string, string> = {
   /* For a focusable thing whose container clips an outside outline. */
   "--focus-ring-inset": "inset 0 0 0 var(--focus-ring-width) var(--ring)",
   "--focus-ring-shadow": "0 0 0 2px var(--bg-panel), 0 0 0 4px var(--ring)",
+  /* A text field already turns its border to the accent; this only softens the edge. */
+  "--focus-ring-halo": "0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent)",
 };
 
 function semanticColors(

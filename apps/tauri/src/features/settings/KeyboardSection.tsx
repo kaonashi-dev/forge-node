@@ -18,6 +18,7 @@ import {
 import { describeChord, specFromEvent, type Chord } from "../../actions/keys";
 import { Badge, Button, FilterHeader, Kbd } from "../../ui/index";
 import { Group, Page } from "./SettingsLayout";
+import { hasAllTerms, termsOf } from "../../shared/search/terms";
 
 /** The chords worth learning first, read from the live table so a rebinding shows here too. */
 const ESSENTIALS: ReadonlyArray<{ action: ActionId; label: string }> = [
@@ -47,29 +48,35 @@ export function KeyboardSection() {
       context: ContextId;
       chord: Chord | null;
       argument?: number;
+      haystack: string;
     }> = [];
+    const push = (
+      action: ActionId,
+      context: ContextId,
+      chord: Chord | null,
+      argument?: number,
+    ): void => {
+      const described = chord ? describeChord(chord) : "";
+      const haystack = `${actionLabel(action, argument)} ${action} ${described}`.toLowerCase();
+      out.push({ action, context, chord, argument, haystack });
+    };
     for (const action of ACTIONS) {
       const own = table.filter((binding) => binding.action === action.id);
       if (own.length === 0) {
-        out.push({ action: action.id, context: defaultContextFor(action.id), chord: null });
+        push(action.id, defaultContextFor(action.id), null);
         continue;
       }
       for (const binding of own) {
-        out.push({
-          action: action.id,
-          context: binding.context,
-          chord: binding.chord,
-          argument: binding.argument,
-        });
+        push(action.id, binding.context, binding.chord, binding.argument);
       }
     }
-    const needle = query().trim().toLowerCase();
-    if (needle === "") return out;
-    return out.filter((row) => {
-      const label = actionLabel(row.action, row.argument).toLowerCase();
-      const chord = row.chord ? describeChord(row.chord).toLowerCase() : "";
-      return label.includes(needle) || row.action.includes(needle) || chord.includes(needle);
-    });
+    return out;
+  });
+
+  const shown = createMemo(() => {
+    const terms = termsOf(query());
+    if (terms.length === 0) return rows();
+    return rows().filter((row) => hasAllTerms(row.haystack, terms));
   });
 
   /**
@@ -165,7 +172,7 @@ export function KeyboardSection() {
             </tr>
           </thead>
           <tbody>
-            <For each={rows()}>
+            <For each={shown()}>
               {(row) => {
                 const id = () => `${row.context}:${row.action}:${row.argument ?? ""}`;
                 const listening = () => capturing() === id();

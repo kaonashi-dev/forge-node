@@ -10,7 +10,6 @@ export function newWorktreeItem(project: { id: string; name: string } | undefine
   return {
     kind: "item",
     label: "New worktree…",
-    detail: "Start a workspace on a new or existing branch",
     icon: "git-branch",
     disabled: !project,
     run: () => {

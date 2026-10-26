@@ -8,6 +8,7 @@
 // Its own module so a node test can import it without Solid's server build.
 
 import type { PullRequest, PullRequestFailure } from "../../contracts/runtime";
+import { hasAllTerms, termsOf } from "../../shared/search/terms";
 
 /** `app_state` key holding the last scope, so the panel opens where it was. */
 export const PR_SCOPE_KEY = "ui.pr_scope";
@@ -74,25 +75,30 @@ function inScope(pr: PullRequest, scope: PrScope): boolean {
   }
 }
 
+export type IndexedPullRequest = { pr: PullRequest; haystack: string };
+
 /**
- * Case-insensitive match over the fields a person would search by.
+ * Lowercase each pull request's searchable fields once per refresh, so a filter
+ * keystroke only filters.
  *
  * The body is deliberately not searched: it arrives truncated, so a hit or a
  * miss in it would depend on where the daemon cut the text.
  */
-function matches(pr: PullRequest, needle: string): boolean {
-  const haystack = [
-    pr.title,
-    pr.repository,
-    pr.author,
-    pr.head_ref,
-    pr.base_ref,
-    `#${pr.number}`,
-    ...pr.labels.map((label) => label.name),
-  ]
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(needle);
+export function indexPullRequests(pullRequests: readonly PullRequest[]): IndexedPullRequest[] {
+  return pullRequests.map((pr) => ({
+    pr,
+    haystack: [
+      pr.title,
+      pr.repository,
+      pr.author,
+      pr.head_ref,
+      pr.base_ref,
+      `#${pr.number}`,
+      ...pr.labels.map((label) => label.name),
+    ]
+      .join(" ")
+      .toLowerCase(),
+  }));
 }
 
 /**
@@ -104,15 +110,15 @@ function matches(pr: PullRequest, needle: string): boolean {
  * re-sorting it here would be a second opinion with less information.
  */
 export function filterPullRequests(
-  pullRequests: readonly PullRequest[],
+  indexed: readonly IndexedPullRequest[],
   scope: PrScope,
   query: string,
   project: string | null,
 ): { mine: PullRequest[]; others: PullRequest[] } {
-  const needle = query.trim().toLowerCase();
-  const kept = pullRequests.filter(
-    (pr) => inScope(pr, scope) && (needle === "" || matches(pr, needle)),
-  );
+  const terms = termsOf(query);
+  const kept = indexed
+    .filter(({ pr, haystack }) => inScope(pr, scope) && hasAllTerms(haystack, terms))
+    .map(({ pr }) => pr);
   return {
     mine: kept.filter((pr) => project !== null && pr.project_id === project),
     others: kept.filter((pr) => project === null || pr.project_id !== project),

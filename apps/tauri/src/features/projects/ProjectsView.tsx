@@ -237,14 +237,12 @@ export function ProjectsView() {
       {
         kind: "item",
         label: "Ignored worktrees…",
-        detail: "Undo a folder Forge was told to stop adopting",
         icon: "filter",
         run: () => setIgnoredWorktrees({ projectId: node.id, name: node.name }),
       },
       {
         kind: "item",
         label: "Refresh project",
-        detail: "Re-detect the git root, branches and worktrees",
         icon: "refresh",
         run: () => void refreshProject(node.id).catch(() => undefined),
       },
@@ -334,7 +332,6 @@ export function ProjectsView() {
       {
         kind: "item",
         label: "Remove project…",
-        detail: "Stop tracking it here; the dialog says what happens on disk",
         icon: "trash",
         destructive: true,
         disabled: !project,
@@ -390,7 +387,6 @@ export function ProjectsView() {
       {
         kind: "item",
         label: "Remove group",
-        detail: "The projects stay; only the grouping goes",
         icon: "trash",
         destructive: true,
         run: () => void removeProjectGroup(id).catch(() => undefined),
@@ -464,7 +460,6 @@ export function ProjectsView() {
       {
         kind: "item",
         label: "Rename…",
-        detail: "An empty name falls back to the branch",
         icon: "edit",
         run: () => {
           requestTextInput({
@@ -482,7 +477,6 @@ export function ProjectsView() {
             {
               kind: "item" as const,
               label: "Ignore worktrees in this folder",
-              detail: "Forge stops adopting anything under it",
               icon: "filter" as const,
               disabled: !project,
               run: () => {
@@ -508,7 +502,6 @@ export function ProjectsView() {
             {
               kind: "item" as const,
               label: "Remove worktree",
-              detail: "Never deletes the branch",
               icon: "trash" as const,
               destructive: true,
               run: () => {

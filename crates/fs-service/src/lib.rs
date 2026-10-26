@@ -403,6 +403,11 @@ fn ignored_paths_among<'a>(
         args.push("--");
         args.extend(literal.iter().map(String::as_str));
         let out = run_git(Some(root), &args)?;
+        // A directory inside a git dir (a `Link` share's store, a submodule's
+        // `.git/modules`) has no work tree, and nothing there is ignorable.
+        if out.status == 128 && out.stderr.contains("must be run in a work tree") {
+            return Ok(HashSet::new());
+        }
         if out.status != 0 && out.status != 1 {
             out.ok(&args)?;
             continue;
@@ -1252,6 +1257,8 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
     }
     // Fixed-string (`-F`): find-in-project takes typed text, not a regex. `-e`
     // still wraps the needle so a query that starts with `-` is not a flag.
+    // `-i` folds ASCII only, because `run_git` pins `LC_ALL=C`; `find_folded`
+    // must fold the same way or a hit would be miscounted as context.
     // `git grep` exits 1 when there are no matches — that is success. A cut
     // grep was killed, so its status says nothing.
     let (out, cut) = run_git_prefix(
@@ -1264,6 +1271,7 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
             "--untracked",
             "-z",
             "-F",
+            "-i",
             "-C",
             CONTEXT_ARG,
             "-e",
@@ -1283,6 +1291,7 @@ fn search_by_content(root: &Path, query: &str, limit: usize) -> Result<SearchRes
                 "--untracked".into(),
                 "-z".into(),
                 "-F".into(),
+                "-i".into(),
                 "-e".into(),
                 query.into(),
             ],
@@ -1319,6 +1328,8 @@ const CONTEXT_ARG: &str = "3";
 fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchResults, FsError> {
     let context_lines = SEARCH_CONTEXT_LINES;
     let tree = list_via_walk(root)?;
+    let folded_query = query.to_ascii_lowercase();
+    let mut scratch = String::new();
     let mut matches = Vec::new();
     let mut truncated = tree.truncated;
     for entry in tree.entries {
@@ -1334,7 +1345,7 @@ fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchR
         }
         let lines: Vec<&str> = contents.text.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
-            if let Some(col) = line.find(query) {
+            if let Some(col) = find_folded(line, &folded_query, &mut scratch) {
                 if matches.len() >= limit {
                     truncated = true;
                     break;
@@ -1358,6 +1369,17 @@ fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchR
     Ok(SearchResults { matches, truncated })
 }
 
+/// Byte offset of `needle` in `haystack`, ignoring ASCII case like `git grep -i` under `LC_ALL=C`.
+///
+/// `folded_needle` is already ASCII-lowercased and `scratch` is reused across
+/// lines; ASCII folding preserves length, so the offset holds in `haystack`.
+fn find_folded(haystack: &str, folded_needle: &str, scratch: &mut String) -> Option<usize> {
+    scratch.clear();
+    scratch.push_str(haystack);
+    scratch.make_ascii_lowercase();
+    scratch.find(folded_needle)
+}
+
 fn context_line(line: &str) -> String {
     if line.len() <= MAX_CONTEXT_LINE_BYTES {
         return line.to_string();
@@ -1372,8 +1394,9 @@ fn context_line(line: &str) -> String {
 /// Read `git grep -z -n` output into hits, `limit` of them at most.
 ///
 /// With `-C`, git marks a context line exactly as it marks a hit once `-z` is
-/// on, so `query` is what tells them apart: the grep was `-F`, so a line is a
-/// hit exactly when it contains the needle. `None` takes every record as a hit.
+/// on, so `query` is what tells them apart: the grep was `-F -i`, so a line is
+/// a hit exactly when it contains the needle up to ASCII case. `None` takes
+/// every record as a hit.
 fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResults {
     let context_lines = SEARCH_CONTEXT_LINES;
     // Records are path\0line\0text\n; `--\n` separates non-adjacent groups.
@@ -1383,6 +1406,8 @@ fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResul
     let mut remaining = text.as_ref();
     let mut recent: VecDeque<(u32, &str)> = VecDeque::new();
     let mut recent_path = "";
+    let folded_query = query.map(str::to_ascii_lowercase);
+    let mut scratch = String::new();
     while !remaining.is_empty() {
         if let Some(rest) = remaining.strip_prefix("--\n") {
             remaining = rest;
@@ -1403,7 +1428,9 @@ fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResul
             recent.clear();
             recent_path = path;
         }
-        let hit = query.is_none_or(|needle| line_text.contains(needle));
+        let hit = folded_query
+            .as_deref()
+            .is_none_or(|needle| find_folded(line_text, needle, &mut scratch).is_some());
         if let Some(last) = matches.last().filter(|_| matches.len() >= limit) {
             // Past the cap, a record is either the tail of the last hit's
             // context or proof that another hit follows.
@@ -2132,6 +2159,36 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         assert!(nested.entries[0].ignored);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn list_directory_follows_a_link_into_the_git_dir() {
+        let tmp = git_repo();
+        let store = tmp.path().join(".git/forge-shares/ai-docs");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("plan.md"), "x").unwrap();
+        std::os::unix::fs::symlink(&store, tmp.path().join("ai-docs")).unwrap();
+
+        let listing = list_directory(tmp.path(), "ai-docs").unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, "ai-docs/plan.md");
+        assert!(!listing.entries[0].ignored);
+    }
+
+    #[test]
+    fn list_directory_inside_a_git_dir_not_named_dot_git() {
+        let tmp = git_repo();
+        assert!(Command::new("git")
+            .args(["init", "--bare", "-q", "store"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success());
+
+        let listing = list_directory(tmp.path(), "store").unwrap();
+        assert!(listing.entries.iter().any(|e| e.path == "store/HEAD"));
+        assert!(listing.entries.iter().all(|e| !e.ignored));
+    }
+
     #[test]
     fn list_directory_skips_dependency_children() {
         let tmp = git_repo();
@@ -2396,6 +2453,26 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         assert!(r.matches[0].text.contains("world"));
         assert_eq!(r.matches[0].before, ["hello"]);
         assert!(r.matches[0].after.is_empty());
+    }
+
+    #[test]
+    fn content_search_ignores_case_and_keeps_the_line_as_written() {
+        let tmp = git_repo();
+        fs::write(tmp.path().join("a.rs"), "Hello World\nhello world\nother\n").unwrap();
+        let r = search_files(tmp.path(), "hello WORLD", SearchKind::Content, 50).unwrap();
+        let lines: Vec<_> = r
+            .matches
+            .iter()
+            .map(|m| (m.line, m.text.as_str()))
+            .collect();
+        assert_eq!(lines, [(1, "Hello World"), (2, "hello world")]);
+        assert_eq!(r.matches[1].before, ["Hello World"]);
+
+        let plain = tempfile::tempdir().unwrap();
+        fs::write(plain.path().join("a.txt"), "say HeLLo\n").unwrap();
+        let walked = search_files(plain.path(), "hello", SearchKind::Content, 50).unwrap();
+        assert_eq!(walked.matches.len(), 1);
+        assert_eq!(walked.matches[0].column, 5);
     }
 
     /// The capture stops before a minified line is resident, and the cut
