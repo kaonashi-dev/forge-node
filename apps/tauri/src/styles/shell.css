@@ -1224,7 +1224,7 @@
   font-size: var(--text-md);
   gap: var(--space-12);
   height: var(--palette-row-h);
-  padding: 0 var(--space-12);
+  padding: 0 var(--space-16);
 }
 /* The selected row is the hold-Control list's focus indicator; an outline on
    the list would be clipped by the card. */
@@ -1269,11 +1269,6 @@
 }
 .command-palette .forge-combobox-group {
   padding: var(--space-10) var(--space-16) var(--space-4);
-}
-.command-palette .forge-combobox-row {
-  border-radius: 0;
-  font-size: var(--text-md);
-  padding: 0 var(--space-16);
 }
 .palette-waiting {
   color: var(--attention-text);
