@@ -1,5 +1,14 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
-import { AlertDialog, Badge, Button, Menu, Select, Switch, TextField } from "../../ui/index";
+import {
+  AlertDialog,
+  Badge,
+  Button,
+  buttonClass,
+  Menu,
+  Select,
+  Switch,
+  TextField,
+} from "../../ui/index";
 import { Icon } from "../../theme/icons/index";
 import { Group, Page, Row } from "../settings/SettingsLayout";
 import { forgeStore } from "../../state/forgeStore";
@@ -404,7 +413,8 @@ export function SharedFiles(props: { projectId?: string; workspaceId?: string } 
                             />
                             <Menu
                               triggerLabel={`Actions for ${rule.path}`}
-                              trigger={<Icon name="settings" size={14} />}
+                              triggerClass={buttonClass("sm", "ghost", true)}
+                              trigger={<Icon name="settings" size={14} class="forge-icon-muted" />}
                               placement="bottom-end"
                               items={[
                                 {
