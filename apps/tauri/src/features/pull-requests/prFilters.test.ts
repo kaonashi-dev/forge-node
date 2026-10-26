@@ -2,11 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   PR_SCOPES,
   failureCopy,
-  filterPullRequests,
+  filterPullRequests as filterIndexed,
+  indexPullRequests,
   parseScope,
   scopeEmptyCopy,
+  type PrScope,
 } from "./prFilters";
 import type { PullRequest, PullRequestFailure } from "../../contracts/runtime";
+
+const filterPullRequests = (
+  rows: PullRequest[],
+  scope: PrScope,
+  query: string,
+  project: string | null,
+) => filterIndexed(indexPullRequests(rows), scope, query, project);
 
 function pr(extra: Partial<PullRequest> = {}): PullRequest {
   return {

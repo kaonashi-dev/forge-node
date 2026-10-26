@@ -1329,6 +1329,8 @@ const CONTEXT_ARG: &str = "3";
 fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchResults, FsError> {
     let context_lines = SEARCH_CONTEXT_LINES;
     let tree = list_via_walk(root)?;
+    let folded_query = query.to_ascii_lowercase();
+    let mut scratch = String::new();
     let mut matches = Vec::new();
     let mut truncated = tree.truncated;
     for entry in tree.entries {
@@ -1344,7 +1346,7 @@ fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchR
         }
         let lines: Vec<&str> = contents.text.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
-            if let Some(col) = find_folded(line, query) {
+            if let Some(col) = find_folded(line, &folded_query, &mut scratch) {
                 if matches.len() >= limit {
                     truncated = true;
                     break;
@@ -1369,13 +1371,14 @@ fn search_content_walk(root: &Path, query: &str, limit: usize) -> Result<SearchR
 }
 
 /// Byte offset of `needle` in `haystack`, ignoring ASCII case like `git grep -i` under `LC_ALL=C`.
-fn find_folded(haystack: &str, needle: &str) -> Option<usize> {
-    let (hay, want) = (haystack.as_bytes(), needle.as_bytes());
-    if want.is_empty() {
-        return Some(0);
-    }
-    hay.windows(want.len())
-        .position(|window| window.eq_ignore_ascii_case(want))
+///
+/// `folded_needle` is already ASCII-lowercased and `scratch` is reused across
+/// lines; ASCII folding preserves length, so the offset holds in `haystack`.
+fn find_folded(haystack: &str, folded_needle: &str, scratch: &mut String) -> Option<usize> {
+    scratch.clear();
+    scratch.push_str(haystack);
+    scratch.make_ascii_lowercase();
+    scratch.find(folded_needle)
 }
 
 fn context_line(line: &str) -> String {
@@ -1404,6 +1407,8 @@ fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResul
     let mut remaining = text.as_ref();
     let mut recent: VecDeque<(u32, &str)> = VecDeque::new();
     let mut recent_path = "";
+    let folded_query = query.map(str::to_ascii_lowercase);
+    let mut scratch = String::new();
     while !remaining.is_empty() {
         if let Some(rest) = remaining.strip_prefix("--\n") {
             remaining = rest;
@@ -1424,7 +1429,9 @@ fn parse_grep_z(stdout: &[u8], query: Option<&str>, limit: usize) -> SearchResul
             recent.clear();
             recent_path = path;
         }
-        let hit = query.is_none_or(|needle| find_folded(line_text, needle).is_some());
+        let hit = folded_query
+            .as_deref()
+            .is_none_or(|needle| find_folded(line_text, needle, &mut scratch).is_some());
         if let Some(last) = matches.last().filter(|_| matches.len() >= limit) {
             // Past the cap, a record is either the tail of the last hit's
             // context or proof that another hit follows.

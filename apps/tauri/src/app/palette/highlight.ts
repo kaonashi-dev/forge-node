@@ -1,3 +1,5 @@
+import { foldQuery } from "../../shared/search/needle";
+
 export type Segment = { text: string; hit: boolean };
 
 /**
@@ -10,7 +12,7 @@ export type Segment = { text: string; hit: boolean };
  * that reads as the reason for the match.
  */
 export function highlight(label: string, query: string): Segment[] {
-  const needle = query.toLowerCase().replace(/\s+/g, "");
+  const needle = foldQuery(query);
   if (needle === "") return [{ text: label, hit: false }];
   const hay = label.toLowerCase();
   // Lowercasing can change a string's length (`İ`), and then no index lines up.

@@ -19,6 +19,10 @@ describe("palette match highlight", () => {
     expect(lit("entries.ts", "srcpal")).toEqual([]);
   });
 
+  it("normalizes the query the way the daemon ranked it", () => {
+    expect(lit("AppShell.tsx", "./AppShell.tsx")).toEqual(["AppShell.tsx"]);
+  });
+
   it("keeps the label whole", () => {
     const segments = highlight("Open File…", "fi");
     expect(segments.map((segment) => segment.text).join("")).toBe("Open File…");

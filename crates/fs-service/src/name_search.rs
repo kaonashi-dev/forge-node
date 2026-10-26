@@ -98,12 +98,20 @@ fn name_score(path: &str, needle: &str, match_score: u16, exact: bool, path_quer
         return score;
     }
     let base = path.rsplit('/').next().unwrap_or(path);
-    if base.eq_ignore_ascii_case(needle) {
+    if same_without_spaces(base, needle) {
         score += BASENAME_BONUS + EXACT_BONUS;
     } else if subsequence(base, needle) {
         score += BASENAME_BONUS;
     }
     score.saturating_sub(slash_count(path))
+}
+
+/// `needle` has had its whitespace dropped, so `Release Notes.md` must too.
+fn same_without_spaces(base: &str, needle: &str) -> bool {
+    base.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_ascii_lowercase())
+        .eq(needle.chars().map(|c| c.to_ascii_lowercase()))
 }
 
 fn slash_count(path: &str) -> u32 {
@@ -113,9 +121,6 @@ fn slash_count(path: &str) -> u32 {
 fn subsequence(haystack: &str, needle: &str) -> bool {
     let mut hay = haystack.chars().flat_map(char::to_lowercase);
     for wanted in needle.chars().flat_map(char::to_lowercase) {
-        if wanted == ' ' {
-            continue;
-        }
         loop {
             match hay.next() {
                 Some(got) if got == wanted => break,
@@ -186,6 +191,15 @@ mod tests {
         assert_eq!(spaced.matches.len(), 2);
         let dotted = search_names(&paths, "./SRC/appshell", 10);
         assert_eq!(dotted.matches.len(), 2);
+    }
+
+    #[test]
+    fn a_basename_with_spaces_typed_exactly_earns_the_exact_bonus() {
+        let needle = needle_of("Release Notes.md");
+        assert_eq!(
+            name_score("docs/Release Notes.md", &needle, 0, false, false),
+            BASENAME_BONUS + EXACT_BONUS - 1
+        );
     }
 
     #[test]

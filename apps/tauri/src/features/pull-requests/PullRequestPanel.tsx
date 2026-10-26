@@ -7,6 +7,7 @@ import {
   PR_SCOPES,
   PR_SCOPE_KEY,
   filterPullRequests,
+  indexPullRequests,
   parseScope,
   failureCopy,
   scopeEmptyCopy,
@@ -44,14 +45,11 @@ export function PullRequestPanel() {
 
   const scopeOptions = PR_SCOPES.map((value) => ({ value, label: scopeLabel(value) }));
 
+  const indexed = createMemo(() => indexPullRequests(state().pull_requests));
+
   const grouped = createMemo(() => {
     const workspace = forgeStore.workspaces.find((item) => item.id === activeWorkspace());
-    return filterPullRequests(
-      state().pull_requests,
-      scope(),
-      query(),
-      workspace?.project_id ?? null,
-    );
+    return filterPullRequests(indexed(), scope(), query(), workspace?.project_id ?? null);
   });
 
   /** The pull request whose tab is on screen, so its card reads as selected. */
