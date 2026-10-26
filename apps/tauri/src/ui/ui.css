@@ -258,8 +258,7 @@
 }
 /* The input inside draws no ring of its own, so the box carries it. */
 .forge-field:has(.forge-field-input:focus-visible) {
-  outline: var(--focus-ring-width) solid var(--ring);
-  outline-offset: var(--focus-ring-offset);
+  box-shadow: var(--focus-ring-halo);
 }
 /* The tint is laid over an opaque ground: a field and a toast sit on anything. */
 .forge-field[data-invalid="true"] {
