@@ -837,7 +837,7 @@
 .tree-group {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
 }
 .tree-group + .tree-group {
   margin-top: var(--space-10);
@@ -845,7 +845,7 @@
 .tree-children {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
 }
 /* The reset is `.forge-row`; what is left makes this row a tree row. */
 .tree-row {
@@ -961,7 +961,7 @@
   border-left: 1px solid var(--hue-guide, var(--border-subtle));
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
   margin-left: var(--space-16);
   padding-left: var(--space-10);
 }
@@ -1126,7 +1126,7 @@
 .ws-sessions {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
 }
 .ws-card > .ws-sessions {
   border-left: 1px solid var(--hue-guide, var(--border-subtle));
@@ -1714,6 +1714,9 @@
 }
 :root[data-trim="true"] .tree-group + .tree-group {
   margin-top: var(--space-4);
+}
+:root[data-trim="true"] :is(.tree-group, .tree-children, .tree-guide, .ws-sessions) {
+  gap: var(--space-2);
 }
 :root[data-trim="true"] .tree-row {
   padding: 0 var(--space-6) 0 calc(var(--space-6) + var(--tree-depth, 0) * var(--space-10));
