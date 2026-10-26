@@ -1,4 +1,5 @@
 import { createEffect } from "solid-js";
+import { loadRebaseState } from "../../features/git/commands";
 import { refreshDiff } from "../../features/git/decorations";
 import { forgeStore } from "../../state/forgeStore";
 import {
@@ -33,7 +34,8 @@ export function checkoutMoved(before: CheckoutMark | null, after: CheckoutMark |
 const COALESCE_MS = 150;
 
 /**
- * Re-read the tree and the diff when the active checkout's status changes.
+ * Re-read the tree, the diff and the stopped replay when the active checkout's
+ * status changes.
  *
  * Marks are remembered per workspace id, so switching away and back is not a
  * movement; a status that changed while away is. Returns the teardown.
@@ -42,12 +44,15 @@ export function startCheckoutWatch(): () => void {
   const marks = new Map<string, CheckoutMark>();
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  function rereadTree(): void {
+  function rereadCheckout(): void {
     // Re-resolved at fire time: the checkout on screen during the wait may
     // not be the one the movement was seen in.
     const workspace = activeWorkspace();
     if (!workspace) return;
     invalidateDirectories(workspace);
+    // Each step a rebase replays from a terminal moves HEAD, and the panel's
+    // step and conflicts are only ever what the last read saw.
+    void loadRebaseState(workspace).catch(() => undefined);
     if (!filesStore.tree && !loading.tree) return;
     beginWorkbenchRequest("tree");
     void loadFileTree(workspace).catch((error) => failWorkbenchRequest("tree", error));
@@ -65,7 +70,7 @@ export function startCheckoutWatch(): () => void {
     if (timer !== undefined) return;
     timer = setTimeout(() => {
       timer = undefined;
-      rereadTree();
+      rereadCheckout();
     }, COALESCE_MS);
     refreshDiff();
   });
