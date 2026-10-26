@@ -384,3 +384,32 @@ fn an_expired_sync_deadline_publishes_on_the_next_feed() {
         "an expired synchronized frame must appear without a closing sequence, got {shown:?}"
     );
 }
+
+#[test]
+fn a_clear_refilled_within_one_feed_rewrites_its_generation() {
+    let mut e = engine(8, 2);
+    e.feed(b"a\r\nb\r\nc\r\n");
+    let before = e.scrollback_generation();
+    let len = e.scrollback_len();
+    e.feed(b"\x1b[2J\x1b[3J\x1b[Hw\r\nx\r\ny\r\nz\r\n");
+    assert!(
+        e.scrollback_len() >= len,
+        "the refill outgrows the history it replaced"
+    );
+    assert_ne!(
+        e.scrollback_generation(),
+        before,
+        "a replica must not keep the cleared rows at the refilled addresses"
+    );
+}
+
+#[test]
+fn a_clear_buffered_by_a_synchronized_update_rewrites_its_generation_on_release() {
+    let mut e = engine(8, 2);
+    e.feed(b"a\r\nb\r\nc\r\n");
+    // Output ahead of the BSU publishes this chunk while the clear is still held.
+    e.feed(b"d\x1b[?2026h\x1b[2J\x1b[3J\x1b[Hw\r\nx\r\ny\r\nz\r\n");
+    let held = e.scrollback_generation();
+    e.feed(b"\x1b[?2026l");
+    assert_ne!(e.scrollback_generation(), held);
+}

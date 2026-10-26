@@ -4,6 +4,8 @@
 //! `domain::terminal`; this crate produces snapshots and row deltas from them.
 
 pub mod engine;
+#[cfg(feature = "engine-alacritty")]
+mod history_clear;
 pub mod input;
 pub mod pty;
 pub mod snapshot;
