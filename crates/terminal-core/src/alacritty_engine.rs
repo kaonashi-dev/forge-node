@@ -31,6 +31,7 @@ use domain::{
 };
 
 use crate::engine::TerminalEngine;
+use crate::history_clear::HistoryClearScan;
 
 pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 pub const MAX_SCROLLBACK_LINES: usize = 100_000;
@@ -121,6 +122,8 @@ pub struct AlacrittyEngine {
     pty_writes: Vec<u8>,
     clipboard: Option<String>,
     history_generation: u64,
+    clear_scan: HistoryClearScan,
+    clear_pending: bool,
 }
 
 impl AlacrittyEngine {
@@ -160,6 +163,8 @@ impl AlacrittyEngine {
             pty_writes: Vec::new(),
             clipboard: None,
             history_generation: 0,
+            clear_scan: HistoryClearScan::default(),
+            clear_pending: false,
         }
     }
 
@@ -192,6 +197,7 @@ impl AlacrittyEngine {
         self.processor.stop_sync(&mut self.term);
         self.seq += 1;
         self.history_generation += 1;
+        self.clear_pending = false;
         self.drain_proxy();
         true
     }
@@ -389,6 +395,7 @@ impl TerminalEngine for AlacrittyEngine {
             return expired;
         }
         let history_len = self.scrollback_len();
+        self.clear_pending |= self.clear_scan.feed(bytes);
         self.seq += 1;
         self.processor.advance(&mut self.term, bytes);
         // Match alacritty_terminal's own event loop: when every byte in this
@@ -398,10 +405,15 @@ impl TerminalEngine for AlacrittyEngine {
         // chunk length and publishes one complete frame.
         let publish_damage = expired || self.processor.sync_bytes_count() < bytes.len();
         let new_len = self.scrollback_len();
-        // Growth below the cap keeps absolute history indices. A shrink is a
-        // clear/reset. Unchanged length plus Full is a saturated ring or a
-        // rewrite whose addresses cannot be proven stable.
-        if new_len < history_len
+        // Growth below the cap keeps absolute history indices, unless the
+        // history was emptied first and refilled within this chunk. A shrink
+        // is a clear/reset. Unchanged length plus Full is a saturated ring or
+        // a rewrite whose addresses cannot be proven stable.
+        let cleared = publish_damage && self.clear_pending;
+        // A clear still buffered by an open synchronized update lands with its ESU.
+        self.clear_pending &= self.processor.sync_bytes_count() > 0;
+        if cleared
+            || new_len < history_len
             || (new_len == history_len
                 && new_len > 0
                 && publish_damage
