@@ -35,18 +35,28 @@ export function groupContentHits(matches: SearchMatch[]): ContentHitGroup[] {
 export type HitSegment = { text: string; hit: boolean };
 
 /**
+ * Lowercase A–Z only: the daemon's `git grep -F -i` runs under `LC_ALL=C`, and
+ * a Unicode fold could change a string's length and shift every offset.
+ */
+export function foldAscii(text: string): string {
+  return text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
+/**
  * Every occurrence of `needle`, left to right and never overlapping — the same
- * case-sensitive fixed string `git grep -F` matched, so a highlight cannot
- * disagree with the hit count.
+ * ASCII-case-insensitive fixed string the daemon matched, so a highlight cannot
+ * disagree with the hit count. Hits keep the line's own spelling.
  */
 export function hitSegments(text: string, needle: string): HitSegment[] {
   const segments: HitSegment[] = [];
   let from = 0;
   if (needle.length > 0) {
-    for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, from)) {
+    const hay = foldAscii(text);
+    const want = foldAscii(needle);
+    for (let at = hay.indexOf(want); at >= 0; at = hay.indexOf(want, from)) {
       if (at > from) segments.push({ text: text.slice(from, at), hit: false });
-      segments.push({ text: needle, hit: true });
-      from = at + needle.length;
+      segments.push({ text: text.slice(at, at + want.length), hit: true });
+      from = at + want.length;
     }
   }
   if (from < text.length) segments.push({ text: text.slice(from), hit: false });
@@ -64,7 +74,7 @@ export const ROW_HIT_LEAD = 12;
  */
 export function rowHitSegments(text: string, needle: string, lead = ROW_HIT_LEAD): HitSegment[] {
   const line = text.trim();
-  const first = needle.length > 0 ? line.indexOf(needle) : -1;
+  const first = needle.length > 0 ? foldAscii(line).indexOf(foldAscii(needle)) : -1;
   if (first <= lead) return hitSegments(line, needle);
   let cut = first - lead;
   // Never start inside a surrogate pair.

@@ -4,7 +4,7 @@
 //! a query without `/` still prefers `entries.ts` over a hit in a folder named
 //! `entries`.
 
-use neo_frizbee::{Config, Matcher, SortStrategy};
+use neo_frizbee::{CaseMatching, Config, Matcher, SortStrategy};
 
 use crate::{EntryKind, FileEntry, FileTree, SearchMatch, SearchResults, MAX_SEARCH_RESULTS};
 
@@ -16,7 +16,8 @@ const EXACT_BONUS: u32 = 500;
 #[must_use]
 pub fn search_names(tree: &FileTree, query: &str, limit: usize) -> SearchResults {
     let limit = limit.clamp(1, MAX_SEARCH_RESULTS);
-    let needle = query.trim();
+    let needle = needle_of(query);
+    let needle = needle.as_str();
     if needle.is_empty() {
         return SearchResults {
             matches: Vec::new(),
@@ -30,8 +31,11 @@ pub fn search_names(tree: &FileTree, query: &str, limit: usize) -> SearchResults
         .filter(|entry| !entry.ignored && entry.kind == EntryKind::File)
         .collect();
     let haystacks: Vec<&str> = files.iter().map(|entry| entry.path.as_str()).collect();
+    // `Smart` would make one capital in the query demand an exact case; the
+    // matching-case bonus still ranks the exact spelling first under `Ignore`.
     let config = Config::default()
         .max_typos(Some(0))
+        .casing(CaseMatching::Ignore)
         .sort(SortStrategy::IndexAsc);
     let hits = Matcher::new(needle, &config).match_list(&haystacks);
 
@@ -75,6 +79,14 @@ pub fn search_names(tree: &FileTree, query: &str, limit: usize) -> SearchResults
             .collect(),
         truncated,
     }
+}
+
+/// The query as the matcher sees it: spaces dropped, as the palette's own
+/// fuzzy does, so `app shell` is `appshell`; a pasted `./src/x` is `src/x`.
+fn needle_of(query: &str) -> String {
+    let trimmed = query.trim();
+    let relative = trimmed.strip_prefix("./").unwrap_or(trimmed);
+    relative.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 fn name_score(path: &str, needle: &str, match_score: u16, exact: bool, path_query: bool) -> u32 {
@@ -161,6 +173,19 @@ mod tests {
         assert_eq!(camel.matches[0].path, "FooBar.rs");
         let run = search_names(&tree(&["zshell.rs", "zsxhxe.rs"]), "she", 10);
         assert_eq!(run.matches[0].path, "zshell.rs");
+    }
+
+    #[test]
+    fn ignores_case_and_spaces_but_ranks_the_exact_spelling_first() {
+        let paths = tree(&["src/appShell.ts", "src/AppShell.tsx", "src/other.ts"]);
+        let hits = search_names(&paths, "AppShell", 10);
+        let found: Vec<_> = hits.matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(found, ["src/AppShell.tsx", "src/appShell.ts"]);
+
+        let spaced = search_names(&paths, "app shell", 10);
+        assert_eq!(spaced.matches.len(), 2);
+        let dotted = search_names(&paths, "./SRC/appshell", 10);
+        assert_eq!(dotted.matches.len(), 2);
     }
 
     #[test]

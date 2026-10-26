@@ -18,6 +18,7 @@ import {
 import { describeChord, specFromEvent, type Chord } from "../../actions/keys";
 import { Badge, Button, FilterHeader, Kbd } from "../../ui/index";
 import { Group, Page } from "./SettingsLayout";
+import { hasAllTerms, termsOf } from "../../shared/search/terms";
 
 /** The chords worth learning first, read from the live table so a rebinding shows here too. */
 const ESSENTIALS: ReadonlyArray<{ action: ActionId; label: string }> = [
@@ -63,12 +64,12 @@ export function KeyboardSection() {
         });
       }
     }
-    const needle = query().trim().toLowerCase();
-    if (needle === "") return out;
+    const terms = termsOf(query());
+    if (terms.length === 0) return out;
     return out.filter((row) => {
-      const label = actionLabel(row.action, row.argument).toLowerCase();
-      const chord = row.chord ? describeChord(row.chord).toLowerCase() : "";
-      return label.includes(needle) || row.action.includes(needle) || chord.includes(needle);
+      const chord = row.chord ? describeChord(row.chord) : "";
+      const haystack = `${actionLabel(row.action, row.argument)} ${row.action} ${chord}`;
+      return hasAllTerms(haystack.toLowerCase(), terms);
     });
   });
 

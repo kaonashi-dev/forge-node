@@ -10,6 +10,7 @@ import { Icon } from "../../theme/icons/index";
 import { Button, FilterHeader, ListCard, Menu, Tooltip, buttonClass, toast } from "../../ui/index";
 import { deleteExternalSession } from "./commands";
 import { activeWorkspace } from "../../state/workspace";
+import { hasAllTerms, termsOf } from "../../shared/search/terms";
 
 type Scope = "checkout" | "project" | "everywhere";
 
@@ -46,14 +47,14 @@ export function HistoryPanel() {
   );
 
   const sessions = createMemo(() => {
-    const needle = query().trim().toLowerCase();
+    const terms = termsOf(query());
     const current = workspace();
     const within = scope();
     return indexed()
       .filter(({ session, haystack }) => {
         if (within === "checkout" && session.workspace_id !== current?.id) return false;
         if (within === "project" && session.project_id !== current?.project_id) return false;
-        return needle === "" || haystack.includes(needle);
+        return hasAllTerms(haystack, terms);
       })
       .map(({ session }) => session);
   });

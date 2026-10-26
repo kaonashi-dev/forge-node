@@ -8,6 +8,7 @@
 // Its own module so a node test can import it without Solid's server build.
 
 import type { PullRequest, PullRequestFailure } from "../../contracts/runtime";
+import { hasAllTerms, termsOf } from "../../shared/search/terms";
 
 /** `app_state` key holding the last scope, so the panel opens where it was. */
 export const PR_SCOPE_KEY = "ui.pr_scope";
@@ -80,7 +81,7 @@ function inScope(pr: PullRequest, scope: PrScope): boolean {
  * The body is deliberately not searched: it arrives truncated, so a hit or a
  * miss in it would depend on where the daemon cut the text.
  */
-function matches(pr: PullRequest, needle: string): boolean {
+function matches(pr: PullRequest, terms: readonly string[]): boolean {
   const haystack = [
     pr.title,
     pr.repository,
@@ -92,7 +93,7 @@ function matches(pr: PullRequest, needle: string): boolean {
   ]
     .join(" ")
     .toLowerCase();
-  return haystack.includes(needle);
+  return hasAllTerms(haystack, terms);
 }
 
 /**
@@ -109,9 +110,9 @@ export function filterPullRequests(
   query: string,
   project: string | null,
 ): { mine: PullRequest[]; others: PullRequest[] } {
-  const needle = query.trim().toLowerCase();
+  const terms = termsOf(query);
   const kept = pullRequests.filter(
-    (pr) => inScope(pr, scope) && (needle === "" || matches(pr, needle)),
+    (pr) => inScope(pr, scope) && (terms.length === 0 || matches(pr, terms)),
   );
   return {
     mine: kept.filter((pr) => project !== null && pr.project_id === project),

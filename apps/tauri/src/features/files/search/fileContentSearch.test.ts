@@ -46,7 +46,7 @@ describe("groupContentHits", () => {
 });
 
 describe("hitSegments", () => {
-  it("marks every occurrence, case-sensitively, without overlap", () => {
+  it("marks every occurrence without overlap", () => {
     expect(hitSegments("aaa Wompi wompi", "aa")).toEqual([
       { text: "aa", hit: true },
       { text: "a Wompi wompi", hit: false },
@@ -62,6 +62,21 @@ describe("hitSegments", () => {
   it("leaves a line with no hit whole", () => {
     expect(hitSegments("nothing", "wompi")).toEqual([{ text: "nothing", hit: false }]);
     expect(hitSegments("", "wompi")).toEqual([]);
+  });
+});
+
+describe("hitSegments case", () => {
+  it("ignores ASCII case and keeps the line's own spelling", () => {
+    expect(hitSegments("Wompi or WOMPI", "wompi")).toEqual([
+      { text: "Wompi", hit: true },
+      { text: " or ", hit: false },
+      { text: "WOMPI", hit: true },
+    ]);
+  });
+
+  // `git grep -i` runs under `LC_ALL=C`, so the daemon never matched these.
+  it("folds no letter outside ASCII", () => {
+    expect(hitSegments("ÉCLAIR", "é")).toEqual([{ text: "ÉCLAIR", hit: false }]);
   });
 });
 
