@@ -349,7 +349,13 @@ pub fn list_directory(root: &Path, relative: &str) -> Result<DirectoryListing, F
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let ignored = if is_git_repo(&root) {
+    // A `Link` share in the main checkout points into `.git/forge-shares`;
+    // `check-ignore` refuses to run there (status 128), and nothing inside
+    // the git dir is subject to `.gitignore` anyway.
+    let in_git_dir = dir
+        .strip_prefix(&root)
+        .is_ok_and(|inner| inner.components().any(|c| c.as_os_str() == ".git"));
+    let ignored = if is_git_repo(&root) && !in_git_dir {
         ignored_paths_among(
             &dir,
             entries
@@ -2130,6 +2136,21 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         assert_eq!(nested.entries.len(), 1);
         assert_eq!(nested.entries[0].path, "plan/nested/more.md");
         assert!(nested.entries[0].ignored);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_directory_follows_a_link_into_the_git_dir() {
+        let tmp = git_repo();
+        let store = tmp.path().join(".git/forge-shares/ai-docs");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("plan.md"), "x").unwrap();
+        std::os::unix::fs::symlink(&store, tmp.path().join("ai-docs")).unwrap();
+
+        let listing = list_directory(tmp.path(), "ai-docs").unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        assert_eq!(listing.entries[0].path, "ai-docs/plan.md");
+        assert!(!listing.entries[0].ignored);
     }
 
     #[test]
