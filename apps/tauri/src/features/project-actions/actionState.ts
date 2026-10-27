@@ -41,11 +41,32 @@ export function indexActionSessions(sessions: readonly Session[]): ActionSession
 }
 
 /** The live session if there is one, else the most recent run still in the store. */
-export function chipState(index: ActionSessions, workspaceId: string, actionId: string): ChipState {
+export function latestRun(
+  index: ActionSessions,
+  workspaceId: string,
+  actionId: string,
+): Session | null {
   const runs = index.get(key(workspaceId, actionId));
-  if (!runs || runs.length === 0) return { phase: "idle" };
-  const session = runs.find(isLive) ?? runs[0]!;
-  return sessionPhase(session);
+  if (!runs || runs.length === 0) return null;
+  return runs.find(isLive) ?? runs[0]!;
+}
+
+export function chipState(index: ActionSessions, workspaceId: string, actionId: string): ChipState {
+  const session = latestRun(index, workspaceId, actionId);
+  return session ? sessionPhase(session) : { phase: "idle" };
+}
+
+/**
+ * Where a running task serves, for "open in the browser": the URL it printed
+ * once ready, else its port on localhost. `null` before it is up, once it has
+ * stopped, or while its port belongs to another process.
+ */
+export function browserUrl(session: Session): string | null {
+  const state = sessionPhase(session);
+  if (state.phase === "ready" && state.url) return state.url;
+  const port = session.action?.port ?? null;
+  const up = state.phase === "ready" || state.phase === "running" || state.phase === "timed_out";
+  return up && port !== null ? `http://localhost:${port}` : null;
 }
 
 export function sessionPhase(session: Session): ChipState {

@@ -34,6 +34,7 @@ export type ForgeIconName =
   | "refresh"
   | "copy"
   | "external-link"
+  | "globe"
   | "play"
   | "stop"
   | "activity"
@@ -94,6 +95,7 @@ export const ICONS: Record<ForgeIconName, Component<GlyphProps>> = {
   refresh: UI_GLYPHS.refresh,
   copy: UI_GLYPHS.copy,
   "external-link": UI_GLYPHS.externalLink,
+  globe: UI_GLYPHS.globe,
   play: UI_GLYPHS.play,
   stop: UI_GLYPHS.stop,
   activity: UI_GLYPHS.activity,

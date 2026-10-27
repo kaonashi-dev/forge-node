@@ -2476,9 +2476,11 @@ fn write_input(
     if bytes.is_empty() {
         return Ok(Effect::nothing());
     }
-    client
-        .write_terminal_input(pane.terminal, bytes)
-        .map_err(CommandError::from_client)?;
+    match client.write_terminal_input(pane.terminal, bytes) {
+        Ok(()) => {}
+        Err(error) if terminal_gone(&error) => return Ok(Effect::nothing()),
+        Err(error) => return Err(CommandError::from_client(error)),
+    }
     *pane.pending_echo = (*pane.pending_echo).max(id);
     // Typing is how a permission prompt gets answered, so it is what spends the
     // attention mark. `answer_attention` reports the edge, and only the edge
@@ -3119,14 +3121,23 @@ fn resize_and_reattach(
     terminal_id: TerminalId,
     size: PtySize,
 ) -> Result<(), CommandError> {
-    client
-        .resize_terminal(terminal_id, size)
-        .map_err(CommandError::from_client)?;
+    match client.resize_terminal(terminal_id, size) {
+        Ok(()) => {}
+        Err(error) if terminal_gone(&error) => return Ok(()),
+        Err(error) => return Err(CommandError::from_client(error)),
+    }
     let snapshot = client
         .attach_terminal(terminal_id, size)
         .map_err(CommandError::from_client)?;
     store.attach_terminal(terminal_id, &snapshot);
     Ok(())
+}
+
+/// The process ended between the keystroke or resize and its write: the
+/// `SessionUpdated` that says so is already on its way, so this is not an error
+/// to show. A second Ctrl+C after the first one killed the program lands here.
+fn terminal_gone(error: &client::ClientError) -> bool {
+    matches!(error, client::ClientError::Protocol(p) if p.code == client::ErrorCode::NotFound)
 }
 
 /// Cache the payload the `connect` command answers from.

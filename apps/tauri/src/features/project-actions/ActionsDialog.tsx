@@ -2,21 +2,36 @@ import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js"
 import { createStore, produce } from "solid-js/store";
 import type { ActionKind, ActionReady, ProjectAction } from "../../contracts/runtime";
 import { forgeStore } from "../../state/forgeStore";
-import { Icon } from "../../theme/icons";
+import { Icon, type ForgeIconName } from "../../theme/icons";
 import {
   Button,
   Checkbox,
   Dialog,
   Disclosure,
   IconButton,
+  SearchField,
   Select,
   Switch,
   TextField,
 } from "../../ui/index";
-import { buildDraft, duplicateLabels, toActionSet, type DraftRow } from "./actionDraft";
+import {
+  buildDraft,
+  duplicateLabels,
+  matchesQuery,
+  toActionSet,
+  type DraftRow,
+} from "./actionDraft";
 import { KIND_LABELS } from "./actionState";
 import { actionsStore, type ActionsDialogTarget } from "./actionsStore";
 import { setProjectActions, suggestActions } from "./commands";
+
+const KIND_ICONS: Record<ActionKind, ForgeIconName> = {
+  dev: "play",
+  test: "list-checks",
+  lint: "sparkles",
+  build: "layers",
+  custom: "square-terminal",
+};
 
 const KINDS = (Object.keys(KIND_LABELS) as ActionKind[]).map((value) => ({
   value,
@@ -41,6 +56,7 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
   const [drafted, setDrafted] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [query, setQuery] = createSignal("");
 
   void suggestActions(props.target.workspaceId).catch((e: unknown) => setError(String(e)));
 
@@ -91,7 +107,12 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
     );
   }
 
+  function remove(index: number): void {
+    setRows(produce((list) => void list.splice(index, 1)));
+  }
+
   function add(): void {
+    setQuery("");
     setRows(rows.length, {
       action: {
         id: crypto.randomUUID(),
@@ -126,7 +147,9 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
       .finally(() => setSaving(false));
   }
 
-  const has = (origin: DraftRow["origin"]) => rows.some((row) => row.origin === origin);
+  const shown = (row: DraftRow) => matchesQuery(row, query());
+  const has = (origin: DraftRow["origin"]) =>
+    rows.some((row) => row.origin === origin && shown(row));
 
   // Iterates the store's own rows, so typing in a field never remounts it.
   const section = (
@@ -136,7 +159,7 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
   ) => (
     <For each={rows}>
       {(row, index) => (
-        <Show when={row.origin === origin}>
+        <Show when={row.origin === origin && shown(row)}>
           <ActionRow
             row={row}
             rows={rows}
@@ -153,6 +176,7 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
               )
             }
             onMove={movable ? (by) => move(index(), by) : undefined}
+            onRemove={origin === "saved" ? () => remove(index()) : undefined}
           />
         </Show>
       )}
@@ -196,6 +220,16 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
         when={drafted()}
         fallback={<p class="forge-dialog-copy">Reading the project’s manifests…</p>}
       >
+        <Show when={rows.length > 0}>
+          <SearchField
+            class="actions-dialog-search"
+            value={query()}
+            onChange={setQuery}
+            onClear={() => setQuery("")}
+            aria-label="Filter actions"
+            placeholder="Filter by label, command or file"
+          />
+        </Show>
         <Show when={has("saved")}>
           <h3 class="actions-dialog-heading">Saved</h3>
           {section("saved", () => "Keep", true)}
@@ -235,6 +269,9 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
             </>
           )}
         </Show>
+        <Show when={rows.length > 0 && !rows.some(shown)}>
+          <p class="forge-dialog-copy">No action matches “{query().trim()}”.</p>
+        </Show>
         <Show when={rows.length === 0}>
           <p class="forge-dialog-copy">
             Nothing to suggest at this checkout’s root. Add an action for any command you run often.
@@ -253,6 +290,7 @@ function ActionRow(props: {
   onPatch: (change: Partial<ProjectAction>) => void;
   onDepends: (ids: string[]) => void;
   onMove?: (by: number) => void;
+  onRemove?: () => void;
 }) {
   const action = () => props.row.action;
   const ready = () => action().ready ?? ({ kind: "none" } as ActionReady);
@@ -303,6 +341,7 @@ function ActionRow(props: {
           onChange={(label) => props.onPatch({ label })}
           aria-label="Label"
           placeholder="label"
+          leading={<Icon name={KIND_ICONS[action().kind] ?? "square-terminal"} size={13} />}
         />
         <TextField
           class="action-row-command"
@@ -325,18 +364,31 @@ function ActionRow(props: {
           checked={action().pinned}
           onChange={(pinned) => props.onPatch({ pinned })}
         />
-        <Show when={props.onMove}>
-          {(move) => (
-            <span class="action-row-order">
-              <IconButton label="Move up" size="xs" onClick={() => move()(-1)}>
-                <Icon name="chevron-up" size={12} />
+        <span class="action-row-order">
+          <Show when={props.onMove}>
+            {(move) => (
+              <>
+                <IconButton label="Move up" size="xs" onClick={() => move()(-1)}>
+                  <Icon name="chevron-up" size={12} />
+                </IconButton>
+                <IconButton label="Move down" size="xs" onClick={() => move()(1)}>
+                  <Icon name="chevron-down" size={12} />
+                </IconButton>
+              </>
+            )}
+          </Show>
+          <Show when={props.onRemove}>
+            {(remove) => (
+              <IconButton
+                label={`Delete ${action().label || "this action"}`}
+                size="xs"
+                onClick={() => remove()()}
+              >
+                <Icon name="trash" size={12} />
               </IconButton>
-              <IconButton label="Move down" size="xs" onClick={() => move()(1)}>
-                <Icon name="chevron-down" size={12} />
-              </IconButton>
-            </span>
-          )}
-        </Show>
+            )}
+          </Show>
+        </span>
       </div>
       <Show when={props.row.drift || props.row.detectedFrom}>
         <div class="action-row-meta">

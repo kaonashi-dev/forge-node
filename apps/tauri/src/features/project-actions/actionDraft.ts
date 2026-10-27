@@ -1,9 +1,4 @@
-import type {
-  ActionKind,
-  ActionSuggestion,
-  ProjectAction,
-  RepoActionsFile,
-} from "../../contracts/runtime";
+import type { ActionSuggestion, ProjectAction, RepoActionsFile } from "../../contracts/runtime";
 
 export type DraftOrigin = "saved" | "suggested" | "repo";
 
@@ -19,8 +14,6 @@ export type DraftRow = {
   /** A saved repository action whose file has changed since it was imported. */
   drift: boolean;
 };
-
-const PRECHECKED: readonly ActionKind[] = ["dev", "test", "lint"];
 
 type Mint = () => string;
 
@@ -49,11 +42,10 @@ function fromSuggestion(
 }
 
 /**
- * Saved actions first, then detected suggestions that are not saved yet
- * (servers, tests and linters prechecked), then what the repository file
- * offers (never prechecked: importing is the consent). A repository action
- * already saved from an older version of the file is offered again as an
- * update, unchecked.
+ * Saved actions first, then detected suggestions that are not saved yet, then
+ * what the repository file offers. Nothing new is prechecked: ticking a row is
+ * the consent to save it. A repository action already saved from an older
+ * version of the file is offered again as an update.
  */
 export function buildDraft(
   projectId: string,
@@ -79,7 +71,7 @@ export function buildDraft(
     rows.push({
       action: fromSuggestion(suggestion, projectId, mint(), now),
       origin: "suggested",
-      include: PRECHECKED.includes(suggestion.kind),
+      include: false,
       detectedFrom: suggestion.detected_from,
       dependsOnLabels: suggestion.depends_on ?? [],
       drift: false,
@@ -135,4 +127,13 @@ export function duplicateLabels(rows: readonly DraftRow[]): string[] {
     seen.set(label, (seen.get(label) ?? 0) + 1);
   }
   return [...seen].filter(([, count]) => count > 1).map(([label]) => label);
+}
+
+/** Whether a row's label, command or source file contains `query`, ignoring case. */
+export function matchesQuery(row: DraftRow, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return [row.action.label, row.action.command, row.detectedFrom ?? ""].some((field) =>
+    field.toLowerCase().includes(needle),
+  );
 }

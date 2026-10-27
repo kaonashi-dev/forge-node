@@ -23,7 +23,7 @@ const labels = (items: ReturnType<typeof actionMenuItems>) =>
   items.map((item) => (item.kind === "item" ? item.label : item.kind));
 
 describe("the run menu", () => {
-  it("runs idle actions and shows, opens or stops the live one in this checkout", () => {
+  it("keeps each action on one row, a live one carrying its own browser, restart and stop", () => {
     const index = indexActionSessions([
       sessionFixture({
         id: "s",
@@ -43,16 +43,17 @@ describe("the run menu", () => {
       [action("test", 1), action("dev", 0)],
       index,
     );
-    expect(labels(items)).toEqual([
-      "Show dev",
-      "Open http://localhost:5173/",
+    expect(labels(items)).toEqual(["dev", "test", "rule", "Edit actions…"]);
+    const live = items[0]!;
+    expect(live.kind === "item" && [live.icon, live.detail]).toEqual(["activity", ":5173"]);
+    expect(live.kind === "item" && live.buttons?.map((b) => b.label)).toEqual([
+      "Open http://localhost:5173/ in the browser",
+      "Restart dev",
       "Stop dev",
-      "Run test",
-      "rule",
-      "Edit actions…",
     ]);
+    expect(items[1]!.kind === "item" && items[1]!.icon).toBe("play");
     const elsewhere = actionMenuItems("other", { id: "p", name: "api" }, [action("dev", 0)], index);
-    expect(labels(elsewhere)).toEqual(["Run dev", "rule", "Edit actions…"]);
+    expect(labels(elsewhere)).toEqual(["dev", "rule", "Edit actions…"]);
   });
 
   it("offers setup when the project has no actions", () => {

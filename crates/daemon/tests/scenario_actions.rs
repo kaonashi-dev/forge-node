@@ -590,3 +590,77 @@ fn a_failed_dependency_fails_its_dependent_and_a_waiting_one_can_be_stopped() {
     assert_eq!(error_code(error), protocol::ErrorCode::InvalidRequest);
     daemon.kill_leftover_sessions();
 }
+
+#[test]
+fn stopping_a_task_or_interrupting_it_reports_it_exited() {
+    let (harness, repo) = setup();
+    let daemon = harness.boot();
+    let client = daemon.connect("actions");
+    let events = client.events();
+    let workspace_id = common::add_main_workspace(&client, repo.path());
+    let project_id = project_id(&client);
+    let dev = action(project_id, "dev", "read -r line");
+    let watch = action(project_id, "watch", "echo watching; read -r line");
+    save(&client, project_id, &[dev.clone(), watch.clone()]);
+
+    let (stopped, _) = started(run(&client, workspace_id, dev.id));
+    client
+        .request(Request::KillSession {
+            session_id: stopped,
+        })
+        .expect("KillSession");
+    let exited = wait_for_session(&events, stopped, |s| !s.state.is_active());
+    assert!(
+        matches!(exited.state, SessionState::Exited { .. }),
+        "{:?}",
+        exited.state
+    );
+    assert_eq!(exited.terminal_id, None);
+
+    let (interrupted, terminal_id) = started(run(&client, workspace_id, watch.id));
+    common::attach_and_read_line(&client, &events, terminal_id, "watching");
+    common::write_input(&client, terminal_id, "\u{3}");
+    let exited = wait_for_session(&events, interrupted, |s| !s.state.is_active());
+    assert!(
+        matches!(exited.state, SessionState::Exited { .. }),
+        "{:?}",
+        exited.state
+    );
+    // The slot is free again: a run starts a new session rather than naming this one.
+    assert!(matches!(
+        run(&client, workspace_id, watch.id),
+        Response::SessionCreated { .. }
+    ));
+    daemon.kill_leftover_sessions();
+}
+
+#[test]
+fn restarting_a_running_task_relaunches_it_in_the_same_session() {
+    let (harness, repo) = setup();
+    let daemon = harness.boot();
+    let client = daemon.connect("actions");
+    let events = client.events();
+    let workspace_id = common::add_main_workspace(&client, repo.path());
+    let project_id = project_id(&client);
+    let dev = action(project_id, "dev", "echo serving; read -r line");
+    save(&client, project_id, std::slice::from_ref(&dev));
+
+    let (session_id, first) = started(run(&client, workspace_id, dev.id));
+    common::attach_and_read_line(&client, &events, first, "serving");
+    let response = client
+        .request(Request::RestartSession { session_id })
+        .expect("RestartSession on a running task");
+    assert!(matches!(response, Response::Ack), "{response:?}");
+
+    let relaunched = wait_for_session(&events, session_id, |s| {
+        s.state == SessionState::Running && s.terminal_id.is_some_and(|t| t != first)
+    });
+    let second = relaunched.terminal_id.expect("a new terminal");
+    common::attach_and_read_line(&client, &events, second, "serving");
+    // Still one run of the action, so the slot names this session.
+    assert!(matches!(
+        run(&client, workspace_id, dev.id),
+        Response::ActionAlreadyRunning { session_id: id } if id == session_id
+    ));
+    daemon.kill_leftover_sessions();
+}

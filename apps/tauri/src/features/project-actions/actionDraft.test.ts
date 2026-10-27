@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ActionSuggestion, ProjectAction, RepoActionsFile } from "../../contracts/runtime";
-import { buildDraft, duplicateLabels, toActionSet } from "./actionDraft";
+import { buildDraft, duplicateLabels, matchesQuery, toActionSet } from "./actionDraft";
 
 function suggestion(
   label: string,
@@ -44,7 +44,7 @@ const ids = () => {
 };
 
 describe("actions dialog draft", () => {
-  it("prechecks servers, tests and linters but not builds or saved ones' twins", () => {
+  it("prechecks nothing new and skips suggestions already saved", () => {
     const rows = buildDraft(
       "p",
       [saved("s1", "test")],
@@ -59,8 +59,8 @@ describe("actions dialog draft", () => {
     );
     expect(rows.map((r) => [r.action.label, r.origin, r.include])).toEqual([
       ["test", "saved", true],
-      ["dev", "suggested", true],
-      ["lint", "suggested", true],
+      ["dev", "suggested", false],
+      ["lint", "suggested", false],
       ["build", "suggested", false],
     ]);
   });
@@ -102,6 +102,7 @@ describe("actions dialog draft", () => {
       null,
       ids(),
     );
+    for (const row of rows) row.include = true;
     const set = toActionSet(rows);
     expect(set.map((a) => [a.label, a.position])).toEqual([
       ["dev", 0],
@@ -112,6 +113,8 @@ describe("actions dialog draft", () => {
 
   it("reports labels that would collide ignoring case", () => {
     const rows = buildDraft("p", [saved("s", "Dev")], [suggestion("dev", "dev")], null, ids());
+    expect(duplicateLabels(rows)).toEqual([]);
+    rows[1]!.include = true;
     expect(duplicateLabels(rows)).toEqual(["dev"]);
     rows[1]!.include = false;
     expect(duplicateLabels(rows)).toEqual([]);
@@ -123,5 +126,13 @@ describe("actions dialog draft", () => {
     const rows = buildDraft("p", [db, dev], [], null, ids());
     rows[0]!.include = false;
     expect(toActionSet(rows)[0]!.depends_on).toEqual([]);
+  });
+
+  it("filters by label, command or source file, ignoring case", () => {
+    const [row] = buildDraft("p", [], [suggestion("Storybook", "dev")], null, ids());
+    expect(matchesQuery(row!, "  ")).toBe(true);
+    expect(matchesQuery(row!, "story")).toBe(true);
+    expect(matchesQuery(row!, "package")).toBe(true);
+    expect(matchesQuery(row!, "vite")).toBe(false);
   });
 });

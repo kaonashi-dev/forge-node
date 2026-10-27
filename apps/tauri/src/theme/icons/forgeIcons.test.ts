@@ -16,6 +16,7 @@ const NAMES: ForgeIconName[] = [
   "refresh",
   "copy",
   "external-link",
+  "globe",
   "edit",
   "trash",
   "agent",

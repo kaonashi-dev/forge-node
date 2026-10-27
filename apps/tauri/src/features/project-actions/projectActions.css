@@ -37,6 +37,9 @@
 .actions-dialog-warn {
   color: var(--warning-text);
 }
+.actions-dialog-search {
+  margin-top: var(--space-4);
+}
 .action-row {
   border-bottom: 1px solid var(--border-subtle);
   display: flex;

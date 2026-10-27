@@ -4957,7 +4957,7 @@ impl Daemon {
         signal_group(pgid, first_kill_signal(kind));
 
         // Re-check pgid before SIGKILL: the kernel may have recycled it.
-        let grace = self.config.kill_grace();
+        let grace = self.kill_grace();
         let daemon = self.clone();
         std::thread::spawn(move || {
             std::thread::sleep(grace);
@@ -4966,6 +4966,11 @@ impl Daemon {
             }
         });
         Ok(Response::Ack)
+    }
+
+    /// How long a stopped session has between SIGTERM (or SIGHUP) and SIGKILL.
+    pub(crate) fn kill_grace(&self) -> Duration {
+        self.config.kill_grace()
     }
 
     /// Guards the delayed SIGKILL in [`Daemon::kill_session`].
@@ -5235,7 +5240,7 @@ impl Daemon {
             .get(&session_id)
             .is_some_and(|s| s.kind == SessionKind::Task);
         if is_task {
-            return self.restart_task(session_id);
+            return self.restart_action_session(session_id);
         }
         self.ensure_env();
         let (provider_id, profile_id, kind) = {

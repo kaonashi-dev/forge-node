@@ -6,7 +6,7 @@ import { Icon } from "../../theme/icons";
 import { EmptyState, IconButton } from "../../ui/index";
 import { killSession, restartSession } from "../sessions/commands";
 import { focusSession } from "../sessions/sessionActions";
-import { isActive, urlBadge, type ChipState } from "./actionState";
+import { browserUrl, isActive, urlBadge, type ChipState } from "./actionState";
 import { groupProcesses, type ProcessRow } from "./processes";
 
 const DOT: Record<ChipState["phase"], string> = {
@@ -81,10 +81,7 @@ export function ProcessesPanel() {
 
 function ProcessLine(props: { row: ProcessRow }) {
   const state = () => props.row.state;
-  const url = () => {
-    const current = state();
-    return current.phase === "ready" ? current.url : null;
-  };
+  const url = () => browserUrl(props.row.session);
   return (
     <div class="process-row" data-phase={state().phase}>
       <Icon name={props.row.live ? "activity" : "exited"} size={12} class={DOT[state().phase]} />
@@ -107,7 +104,7 @@ function ProcessLine(props: { row: ProcessRow }) {
               onClick={() => void openUrl(href()).catch(() => undefined)}
             >
               {status(props.row, now())}
-              <Icon name="external-link" size={11} />
+              <Icon name="globe" size={11} />
             </button>
           )}
         </Show>
@@ -123,6 +120,13 @@ function ProcessLine(props: { row: ProcessRow }) {
             </IconButton>
           }
         >
+          <IconButton
+            label={`Restart ${props.row.label}`}
+            size="xs"
+            onClick={() => void restartSession(props.row.session.id).catch(() => undefined)}
+          >
+            <Icon name="refresh" size={12} />
+          </IconButton>
           <IconButton
             label={`Stop ${props.row.label}`}
             size="xs"

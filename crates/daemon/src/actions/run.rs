@@ -391,6 +391,9 @@ const MAX_DEPENDENCY_WAIT: Duration = Duration::from_secs(15 * 60);
 /// Added to the slowest dependency's own readiness timeout.
 const DEPENDENCY_SLACK: Duration = Duration::from_secs(60);
 
+/// How long a restart waits, past the kill grace, for the old process to go.
+const RESTART_SLACK: Duration = Duration::from_secs(5);
+
 /// Wake every task waiting on its dependencies; drop the ones that stopped.
 pub(crate) fn wake_waiters(inner: &mut Inner) {
     inner.task_waiters.retain(|waiter| {
@@ -461,6 +464,68 @@ fn verdict(inner: &Inner, deps: &[Dependency]) -> Verdict {
 }
 
 impl Daemon {
+    /// Restart a task whether or not it is still running. A live one is
+    /// stopped first and relaunched from its own thread once it has exited,
+    /// so the request acks without waiting out the kill grace.
+    pub(crate) fn restart_action_session(
+        self: &Arc<Self>,
+        session_id: SessionId,
+    ) -> Result<Response, ProtocolError> {
+        let wake_rx = {
+            let mut inner = self.lock();
+            let session = inner
+                .sessions
+                .get(&session_id)
+                .ok_or_else(|| ProtocolError::not_found("session"))?;
+            if session.state.is_terminal() {
+                drop(inner);
+                return self.restart_task(session_id);
+            }
+            let (wake_tx, wake_rx) = flume::bounded(1);
+            inner.task_waiters.push(wake_tx);
+            wake_rx
+        };
+        self.kill_session(session_id)?;
+        let deadline = Instant::now() + self.kill_grace() + RESTART_SLACK;
+        let daemon = Arc::clone(self);
+        std::thread::Builder::new()
+            .name("action-restart".into())
+            .spawn(move || daemon.restart_once_exited(session_id, &wake_rx, deadline))
+            .map_err(|error| {
+                ProtocolError::new(ErrorCode::Internal, format!("cannot restart: {error}"))
+            })?;
+        Ok(Response::Ack)
+    }
+
+    fn restart_once_exited(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        wake: &flume::Receiver<()>,
+        deadline: Instant,
+    ) {
+        loop {
+            let exited = self
+                .lock()
+                .sessions
+                .get(&session_id)
+                .map(|session| session.state.is_terminal());
+            match exited {
+                None => return,
+                Some(true) => {
+                    if let Err(error) = self.restart_task(session_id) {
+                        self.mark_session_failed(session_id, format!("restart failed: {error}"));
+                    }
+                    return;
+                }
+                Some(false) => {}
+            }
+            if wake.recv_deadline(deadline).is_err() {
+                tracing::warn!(%session_id, "task did not exit in time to restart");
+                return;
+            }
+        }
+    }
+
     /// Start (or reuse) each dependency, then park the dependent as `Starting`
     /// with no process until they let it go.
     fn queue_action(

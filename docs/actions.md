@@ -38,7 +38,10 @@ section**: two clicks or two windows cannot start it twice. Resolving the
 happen before that section, off the lock.
 
 - **Editing** an action changes the next run, not the live one. `RestartSession`
-  on a `Task` re-resolves the action as it is now.
+  on a `Task` re-resolves the action as it is now, and it also accepts a
+  running one: the daemon stops it as `KillSession` would, acks, and relaunches
+  it in the same session from an `action-restart` thread once it has exited
+  (bounded by the kill grace plus a few seconds).
 - **Deleting** an action leaves its live sessions running, untagged; a restart
   re-runs the command they last ran.
 - **`single_instance = false`** starts a new session every time.

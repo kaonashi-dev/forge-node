@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { sessionFixture } from "../../contracts/sessions.fixture";
 import type { ActionRun, ProjectAction, Session } from "../../contracts/runtime";
-import { chipOrder, chipState, indexActionSessions, isActive, urlBadge } from "./actionState";
+import {
+  browserUrl,
+  chipOrder,
+  chipState,
+  indexActionSessions,
+  isActive,
+  urlBadge,
+} from "./actionState";
 
 function task(
   id: string,
@@ -131,5 +138,20 @@ describe("action chips", () => {
     expect(urlBadge("https://app.test/", null)).toBe("app.test");
     expect(urlBadge(null, 3000)).toBe(":3000");
     expect(urlBadge(null, null)).toBeNull();
+  });
+
+  it("opens the printed URL, else the port once the server is up", () => {
+    expect(browserUrl(task("a", { state: "ready", url: "http://127.0.0.1:5174/" }))).toBe(
+      "http://127.0.0.1:5174/",
+    );
+    expect(browserUrl(task("b", { state: "unprobed" }))).toBe("http://localhost:5173");
+    expect(browserUrl(task("c", { state: "timed_out" }))).toBe("http://localhost:5173");
+    expect(browserUrl(task("d", { state: "probing" }))).toBeNull();
+    expect(browserUrl(task("e", { state: "port_in_use", port: 5173 }))).toBeNull();
+    expect(
+      browserUrl(
+        task("f", { state: "unprobed" }, { state: { Exited: { code: 0, signal: null } } }),
+      ),
+    ).toBeNull();
   });
 });
