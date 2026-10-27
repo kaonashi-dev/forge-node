@@ -425,6 +425,9 @@ fn request_name(request: &Request) -> &'static str {
         Request::SetProviderExecutable { .. } => "SetProviderExecutable",
         Request::SaveAgentProfile { .. } => "SaveAgentProfile",
         Request::RemoveAgentProfile { .. } => "RemoveAgentProfile",
+        Request::SuggestActions { .. } => "SuggestActions",
+        Request::SetProjectActions { .. } => "SetProjectActions",
+        Request::RunAction { .. } => "RunAction",
         // `Request` is `#[non_exhaustive]`: a variant this daemon does not know
         // still gets a span, without ever formatting its body.
         _ => "Unknown",

@@ -18,12 +18,12 @@ use agents::AgentRegistry;
 use domain::{
     AgentActivity, AgentDescriptor, AgentProfile, AgentProfileId, AgentProviderId,
     ChildWorkspacePolicy, ContextArtifactRef, ContextEnvelope, ContextId, DetectionResult,
-    DetectionStatus, EnvSource, IgnoreScope, LaunchAgentRequest, Project, ProjectGroup,
-    ProjectGroupId, ProjectId, PtySize, ResolvedEnvironment, ScrollbackRows, Session, SessionId,
-    SessionKind, SessionRole, SessionState, SessionTitle, ShareCleanup, ShareRule, ShareRuleId,
-    ShareStrategy, ShareTrigger, SpawnSpec, TerminalId, Timestamp, Workspace, WorkspaceId,
-    WorkspaceKind, WorkspaceStatus, WorktreeIgnore, DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH,
-    MAX_SHARE_RULES, MAX_WORKTREE_IGNORES,
+    DetectionStatus, EnvSource, IgnoreScope, LaunchAgentRequest, Project, ProjectAction,
+    ProjectActionId, ProjectGroup, ProjectGroupId, ProjectId, PtySize, ResolvedEnvironment,
+    ScrollbackRows, Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle,
+    ShareCleanup, ShareRule, ShareRuleId, ShareStrategy, ShareTrigger, SpawnSpec, TerminalId,
+    Timestamp, Workspace, WorkspaceId, WorkspaceKind, WorkspaceStatus, WorktreeIgnore,
+    DEFAULT_SCROLLBACK_TAIL, MAX_GRAPH_DEPTH, MAX_SHARE_RULES, MAX_WORKTREE_IGNORES,
 };
 use persistence::Db;
 use protocol::{
@@ -132,6 +132,12 @@ pub(crate) struct Inner {
     /// The rescan reads them without a query; `SetWorktreeIgnores` replaces a
     /// project's list in the same critical section as its rows.
     worktree_ignores: HashMap<ProjectId, Vec<WorktreeIgnore>>,
+    /// Project actions in display order, loaded once and replaced with their
+    /// rows, so `RunAction` decides under the lock without a query.
+    pub(crate) project_actions: HashMap<ProjectId, Vec<ProjectAction>>,
+    /// Wakes for tasks waiting on their dependencies; pinged on every session
+    /// state or readiness change, non-blocking, and empty while none waits.
+    pub(crate) task_waiters: Vec<flume::Sender<()>>,
     /// Live editor control ports. Runtime-only; dropped when the supervisor
     /// ends. A full queue answers busy rather than dropping a request_id.
     editors: HashMap<SessionId, crate::editor::CommandPort>,
@@ -349,6 +355,14 @@ impl Daemon {
                 .push(rule);
         }
 
+        let mut project_actions: HashMap<ProjectId, Vec<ProjectAction>> = HashMap::new();
+        for action in db.actions().list_all().map_err(|e| e.to_string())? {
+            project_actions
+                .entry(action.project_id)
+                .or_default()
+                .push(action);
+        }
+
         let context_writer = db.context_writer().map_err(|e| e.to_string())?;
         let inner = Inner {
             db,
@@ -379,6 +393,8 @@ impl Daemon {
             env_fallback_noticed: false,
             term_selection: None,
             worktree_ignores,
+            project_actions,
+            task_waiters: Vec::new(),
             editors: HashMap::new(),
             external_editors: HashMap::new(),
             ledger,
@@ -1141,6 +1157,15 @@ impl Daemon {
             Request::DetectShareCandidates { project_id } => {
                 self.detect_share_candidates(project_id)
             }
+            Request::SuggestActions { workspace_id } => self.suggest_actions(workspace_id),
+            Request::RunAction {
+                workspace_id,
+                action_id,
+            } => self.run_action(workspace_id, action_id),
+            Request::SetProjectActions {
+                project_id,
+                actions,
+            } => self.set_project_actions(project_id, actions),
             Request::SetProjectShares { project_id, rules } => {
                 self.set_project_shares(project_id, rules)
             }
@@ -1242,6 +1267,7 @@ impl Daemon {
             agent_profiles,
             worktree_shares,
             worktree_ignores,
+            project_actions,
             app_state,
             usage,
             runs,
@@ -1259,6 +1285,13 @@ impl Daemon {
                     .cmp(&b.project_id)
                     .then_with(|| a.path.cmp(&b.path))
             });
+            let mut project_actions: Vec<ProjectAction> =
+                inner.project_actions.values().flatten().cloned().collect();
+            project_actions.sort_by(|a, b| {
+                a.project_id
+                    .cmp(&b.project_id)
+                    .then_with(|| a.position.cmp(&b.position))
+            });
             (
                 inner.project_groups.values().cloned().collect::<Vec<_>>(),
                 inner.projects.values().cloned().collect::<Vec<_>>(),
@@ -1268,6 +1301,7 @@ impl Daemon {
                 inner.profiles.clone(),
                 worktree_shares,
                 worktree_ignores,
+                project_actions,
                 app_state,
                 inner.usage.clone(),
                 crate::orchestration::active_run_views(&inner, &limits),
@@ -1301,6 +1335,7 @@ impl Daemon {
             agent_profiles,
             worktree_shares,
             worktree_ignores,
+            project_actions,
             app_state,
             external_agents,
             pull_requests: Box::new(pull_requests),
@@ -1817,6 +1852,7 @@ impl Daemon {
         inner.projects.remove(&project_id);
         // The rows cascade in SQLite; the cache is not a table.
         inner.worktree_ignores.remove(&project_id);
+        inner.project_actions.remove(&project_id);
         drop(inner);
 
         // Replica drops by id: sessions before their workspace/project.
@@ -3317,6 +3353,101 @@ impl Daemon {
         ))
     }
 
+    /// Bounded reads of the workspace root, off the core lock.
+    fn suggest_actions(&self, workspace_id: WorkspaceId) -> Result<Response, ProtocolError> {
+        let (root, saved) = {
+            let inner = self.lock();
+            let ws = inner
+                .workspaces
+                .get(&workspace_id)
+                .ok_or_else(|| ProtocolError::not_found("workspace"))?;
+            let saved = inner
+                .project_actions
+                .get(&ws.project_id)
+                .cloned()
+                .unwrap_or_default();
+            (ws.path.clone(), saved)
+        };
+        let (files, truncated) = crate::actions::detect::read_root(&root);
+        let mut suggestions = crate::actions::detect::suggest(&files);
+        crate::actions::detect::mark_saved(&mut suggestions, &saved);
+        let repo_file = crate::actions::repo::read(&root, &saved);
+        Ok(Response::ActionSuggestions {
+            workspace_id,
+            suggestions,
+            repo_file,
+            truncated,
+        })
+    }
+
+    fn set_project_actions(
+        &self,
+        project_id: ProjectId,
+        actions: Vec<ProjectAction>,
+    ) -> Result<Response, ProtocolError> {
+        let actions = crate::actions::validate_set(project_id, actions)
+            .map_err(|e| ProtocolError::new(ErrorCode::InvalidRequest, e.0))?;
+        let untagged = {
+            let mut inner = self.lock();
+            if !inner.projects.contains_key(&project_id) {
+                return Err(ProtocolError::not_found("project"));
+            }
+            inner
+                .db
+                .actions()
+                .replace_for_project(project_id, &actions)
+                .map_err(|e| {
+                    ProtocolError::new(ErrorCode::Conflict, format!("cannot save actions: {e}"))
+                })?;
+            let kept: HashSet<ProjectActionId> = actions.iter().map(|a| a.id).collect();
+            let workspaces: HashSet<WorkspaceId> = inner
+                .workspaces
+                .values()
+                .filter(|ws| ws.project_id == project_id)
+                .map(|ws| ws.id)
+                .collect();
+            let mut untagged = Vec::new();
+            for session in inner.sessions.values_mut() {
+                let gone = session
+                    .action
+                    .as_ref()
+                    .is_some_and(|run| !kept.contains(&run.action_id));
+                if gone && workspaces.contains(&session.workspace_id) {
+                    session.action = None;
+                    untagged.push(session.clone());
+                }
+            }
+            let positioned = actions
+                .iter()
+                .cloned()
+                .zip(0u32..)
+                .map(|(action, position)| ProjectAction { position, ..action })
+                .collect();
+            inner.project_actions.insert(project_id, positioned);
+            untagged
+        };
+        self.broadcast_actions(project_id);
+        for session in untagged {
+            self.registry
+                .broadcast_domain(DaemonEvent::SessionUpdated(session));
+        }
+        Ok(Response::Ack)
+    }
+
+    fn broadcast_actions(&self, project_id: ProjectId) {
+        let actions = self
+            .lock()
+            .project_actions
+            .get(&project_id)
+            .cloned()
+            .unwrap_or_default();
+        self.registry
+            .broadcast_domain(DaemonEvent::ProjectActionsChanged {
+                project_id,
+                actions,
+            });
+    }
+
     fn broadcast_shares(&self, project_id: ProjectId) {
         let rules = {
             let inner = self.lock();
@@ -4062,6 +4193,7 @@ impl Daemon {
                 )
                 .map(|launch| launch.with_options(options.clone())),
                 None,
+                None,
                 &cwd,
                 id,
                 &extra_env,
@@ -4091,6 +4223,7 @@ impl Daemon {
                 } else {
                     AgentActivity::unknown()
                 },
+                action: None,
             };
             inner.db.sessions().upsert(&session).map_err(db_err)?;
             inner.sessions.insert(id, session.clone());
@@ -4222,6 +4355,7 @@ impl Daemon {
                 ended_at: None,
                 base_commit: None,
                 activity: AgentActivity::unknown(),
+                action: None,
             };
             let spec = self.build_spawn_spec(
                 &mut inner,
@@ -4233,6 +4367,7 @@ impl Daemon {
                     line,
                     read_only,
                 }),
+                None,
                 &ws.path,
                 session_id,
                 &[],
@@ -4741,7 +4876,7 @@ impl Daemon {
     }
 
     /// Invalid transitions are races (EOF after `Failed`); log and keep the current state.
-    fn set_session_state(
+    pub(crate) fn set_session_state(
         inner: &mut Inner,
         session_id: SessionId,
         next: SessionState,
@@ -4786,6 +4921,7 @@ impl Daemon {
             .db
             .sessions()
             .update_state(session_id, &snapshot.state, ended_at);
+        crate::actions::run::wake_waiters(inner);
         Some(snapshot)
     }
 
@@ -4801,7 +4937,14 @@ impl Daemon {
                 .get(&session_id)
                 .ok_or_else(|| ProtocolError::not_found("session"))?;
             let Some(term_id) = session.terminal_id else {
-                return Ok(Response::Ack); // nothing running
+                // A task waiting on its dependencies has no process yet.
+                let waiting =
+                    session.kind == SessionKind::Task && session.state == SessionState::Starting;
+                drop(inner);
+                if waiting {
+                    self.mark_session_failed(session_id, "stopped before it started".to_owned());
+                }
+                return Ok(Response::Ack);
             };
             let rt = inner.terminals.get(&term_id);
             (rt.map(|r| r.process_group), session.kind)
@@ -5086,6 +5229,14 @@ impl Daemon {
     }
 
     fn restart_session(self: &Arc<Self>, session_id: SessionId) -> Result<Response, ProtocolError> {
+        let is_task = self
+            .lock()
+            .sessions
+            .get(&session_id)
+            .is_some_and(|s| s.kind == SessionKind::Task);
+        if is_task {
+            return self.restart_task(session_id);
+        }
         self.ensure_env();
         let (provider_id, profile_id, kind) = {
             let inner = self.lock();
@@ -5141,6 +5292,7 @@ impl Daemon {
                 .cloned()
                 .ok_or_else(|| ProtocolError::not_found("workspace"))?;
             let cwd = ws.path.clone();
+            let shell_command = session.launch_command.clone();
             let resume = inner.resumed_from.get(&session_id).cloned();
             let read_only = inner.read_only.contains(&session_id);
             let options = inner
@@ -5161,6 +5313,7 @@ impl Daemon {
                 )
                 .map(|launch| launch.with_options(options)),
                 None,
+                shell_command.as_deref(),
                 &cwd,
                 session_id,
                 &[],
@@ -5269,19 +5422,20 @@ impl Daemon {
 
     // Kind, launch, cwd, and the orchestration env are independent inputs.
     #[allow(clippy::too_many_arguments)]
-    fn build_spawn_spec(
+    pub(crate) fn build_spawn_spec(
         &self,
         inner: &mut Inner,
         kind: SessionKind,
         agent: Option<AgentLaunch>,
         editor: Option<EditorLaunch>,
+        shell_command: Option<&str>,
         cwd: &Path,
         session_id: SessionId,
         extra_env: &[(String, String)],
     ) -> Result<SpawnSpec, ProtocolError> {
         let env: ResolvedEnvironment = self.resolved_env(inner);
         let mut spec = match kind {
-            SessionKind::Shell => {
+            SessionKind::Shell | SessionKind::Task => {
                 let mut vars: Vec<(String, String)> = env.vars.clone();
                 let term = self.session_term(inner, &vars);
                 upsert_var(&mut vars, "TERM", &term.term);
@@ -5294,19 +5448,11 @@ impl Daemon {
                 } else {
                     vec![]
                 };
-                // A resurrected shell re-runs what it ran when the daemon went
-                // down. `-c` takes the whole line as one argument, so a
-                // command with spaces and pipes survives intact. Absent at
-                // creation time: a new shell just prompts.
-                if let Some(command) = inner
-                    .sessions
-                    .get(&session_id)
-                    .and_then(|s| s.launch_command.clone())
-                    .map(|c| c.trim().to_owned())
-                    .filter(|c| !c.is_empty())
-                {
+                // `-c` takes the whole line as one argument, so a command with
+                // spaces and pipes survives intact. Without one a shell prompts.
+                if let Some(command) = shell_command.map(str::trim).filter(|c| !c.is_empty()) {
                     args.push("-c".to_owned());
-                    args.push(command);
+                    args.push(command.to_owned());
                 }
                 SpawnSpec {
                     program: env.shell.clone(),
@@ -5492,11 +5638,23 @@ impl Daemon {
         Ok(spec)
     }
 
-    fn spawn_terminal(
+    pub(crate) fn spawn_terminal(
         self: &Arc<Self>,
         session_id: SessionId,
         spec: SpawnSpec,
         run_to_running: bool,
+    ) -> Result<TerminalId, String> {
+        self.spawn_terminal_watching(session_id, spec, run_to_running, None)
+    }
+
+    /// [`Self::spawn_terminal`] with an action's output watch, handed to the
+    /// PTY thread before it reads so the first line cannot slip past it.
+    pub(crate) fn spawn_terminal_watching(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        spec: SpawnSpec,
+        run_to_running: bool,
+        watch: Option<crate::actions::ready::OutputWatch>,
     ) -> Result<TerminalId, String> {
         let _span = tracing::info_span!("terminal.spawn", %session_id).entered();
         let size = PtySize {
@@ -5567,7 +5725,7 @@ impl Daemon {
             .broadcast_domain(DaemonEvent::SessionUpdated(session));
 
         let daemon = self.clone();
-        std::thread::spawn(move || pty_loop(daemon, terminal_id, reader));
+        std::thread::spawn(move || pty_loop(daemon, terminal_id, reader, watch));
 
         Ok(terminal_id)
     }
@@ -6835,6 +6993,10 @@ impl Daemon {
                 .as_ref()
                 .map_or("Agent", |p| p.as_str()),
             SessionKind::Editor => "Editor",
+            SessionKind::Task => session
+                .action
+                .as_ref()
+                .map_or("Task", |run| run.label.as_str()),
             _ => "Shell",
         };
         let name = session.title.resolve(what);
@@ -7155,7 +7317,7 @@ impl Daemon {
     /// capture behind `&mut Inner` is only a fallback. `env_capture` makes a
     /// request that arrives during the startup capture wait for it rather than
     /// start a second shell, or a first one under the lock.
-    fn ensure_env(&self) {
+    pub(crate) fn ensure_env(&self) {
         if self.lock().env.is_resolved() {
             return;
         }
@@ -7537,7 +7699,8 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// SIGHUP for shells, SIGTERM for agents.
+/// SIGHUP for shells; SIGTERM for agents and tasks, which a server such as
+/// `docker compose up` treats as a request to shut down cleanly.
 fn first_kill_signal(kind: SessionKind) -> nix::sys::signal::Signal {
     if kind == SessionKind::Shell {
         nix::sys::signal::Signal::SIGHUP
@@ -7735,7 +7898,7 @@ fn install_attention_assets(worktrees_root: &Path) -> Option<agents::AttentionAs
     }
 }
 
-fn db_err(e: persistence::DbError) -> ProtocolError {
+pub(crate) fn db_err(e: persistence::DbError) -> ProtocolError {
     ProtocolError::new(ErrorCode::Internal, format!("persistence: {e}"))
 }
 
@@ -7756,7 +7919,7 @@ fn validate_project_group_name(name: &str) -> Result<&str, ProtocolError> {
     Ok(name)
 }
 
-struct AgentLaunch {
+pub(crate) struct AgentLaunch {
     provider_id: AgentProviderId,
     profile: Option<AgentProfile>,
     /// `None` when the profile brings its own binary.
@@ -7829,7 +7992,7 @@ pub(crate) enum SaveOutcome {
 }
 
 /// What one editor spawn needs that the session row cannot carry.
-struct EditorLaunch {
+pub(crate) struct EditorLaunch {
     /// The supervisor's control socket, bound before the spawn.
     control_socket: PathBuf,
     /// Workspace-relative display path; the buffer's real content arrives over
@@ -7918,6 +8081,10 @@ fn session_fallback_title(session: &Session) -> &str {
             .as_ref()
             .map_or("Agent", |id| id.as_str()),
         SessionKind::Editor => "Editor",
+        SessionKind::Task => session
+            .action
+            .as_ref()
+            .map_or("Task", |run| run.label.as_str()),
         // `SessionKind` is `#[non_exhaustive]`: Shell, and any future kind.
         _ => "Shell",
     }
@@ -8273,6 +8440,7 @@ mod tests {
             ended_at: None,
             base_commit: None,
             activity: AgentActivity::unknown(),
+            action: None,
         };
         inner
             .db
@@ -11811,6 +11979,7 @@ mod tests {
             ended_at: None,
             base_commit: None,
             activity: AgentActivity::unknown(),
+            action: None,
         };
         assert_eq!(session_fallback_title(&session), "Editor");
     }

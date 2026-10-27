@@ -1,5 +1,5 @@
 {
-  "protocol_version": 32,
+  "protocol_version": 34,
   "client_version": "0.1.0",
   "client_kind": "Gui"
 }

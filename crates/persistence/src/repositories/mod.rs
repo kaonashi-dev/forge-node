@@ -6,6 +6,7 @@
 //! and stable TEXT tags (never via serde) so column values stay readable and do
 //! not drift if a serde representation changes.
 
+pub mod actions;
 pub mod agent_profiles;
 pub mod app_state;
 pub mod context;
@@ -18,6 +19,7 @@ pub mod sessions;
 pub mod shares;
 pub mod workspaces;
 
+pub use actions::ActionRepo;
 pub use agent_profiles::AgentProfileRepo;
 pub use app_state::AppStateRepo;
 pub use context::ContextRepo;
@@ -117,6 +119,7 @@ pub(crate) fn session_kind_to_str(kind: SessionKind) -> Result<&'static str, DbE
         SessionKind::Shell => Ok("Shell"),
         SessionKind::Agent => Ok("Agent"),
         SessionKind::Editor => Ok("Editor"),
+        SessionKind::Task => Ok("Task"),
         other => Err(DbError::Encode(format!(
             "unhandled SessionKind variant: {other:?}"
         ))),
@@ -128,6 +131,7 @@ pub(crate) fn session_kind_from_str(s: &str) -> Result<SessionKind, DbError> {
         "Shell" => Ok(SessionKind::Shell),
         "Agent" => Ok(SessionKind::Agent),
         "Editor" => Ok(SessionKind::Editor),
+        "Task" => Ok(SessionKind::Task),
         _ => Err(DbError::decode_msg("SessionKind", s, "unknown kind tag")),
     }
 }

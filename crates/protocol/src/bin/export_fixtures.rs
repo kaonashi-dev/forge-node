@@ -126,6 +126,7 @@ fn sample_session() -> Session {
         ended_at: None,
         base_commit: Some("4f2b1ac".to_string()),
         activity: domain::AgentActivity::unknown(),
+        action: None,
     }
 }
 
@@ -384,6 +385,66 @@ fn sample_share_rule() -> ShareRule {
         enabled: true,
         position: 0,
         created_at: ts(),
+    }
+}
+
+fn action_id() -> domain::ProjectActionId {
+    id("0b")
+}
+
+fn sample_project_action() -> domain::ProjectAction {
+    domain::ProjectAction {
+        id: action_id(),
+        project_id: project_id(),
+        label: "dev".to_string(),
+        command: "bun run dev -- --port {port}".to_string(),
+        kind: domain::ActionKind::Dev,
+        cwd: None,
+        single_instance: true,
+        pinned: true,
+        ready: domain::ActionReady::Port { timeout_secs: 60 },
+        port: Some(domain::ActionPort {
+            base: 5173,
+            per_worktree: true,
+        }),
+        depends_on: vec![],
+        source: domain::ActionSource::Detected,
+        position: 0,
+        created_at: ts(),
+    }
+}
+
+fn sample_task_session() -> Session {
+    Session {
+        kind: SessionKind::Task,
+        agent_provider_id: None,
+        launch_command: Some("bun run dev -- --port 5174".to_string()),
+        action: Some(Box::new(domain::ActionRun {
+            action_id: action_id(),
+            label: "dev".to_string(),
+            port: Some(5174),
+            readiness: domain::ActionReadiness::Ready {
+                url: Some("http://localhost:5174/".to_string()),
+            },
+        })),
+        ..sample_session()
+    }
+}
+
+fn sample_action_suggestion() -> domain::ActionSuggestion {
+    domain::ActionSuggestion {
+        label: "test".to_string(),
+        command: "bun run test".to_string(),
+        kind: domain::ActionKind::Test,
+        pinned: false,
+        cwd: None,
+        single_instance: true,
+        ready: domain::ActionReady::None,
+        port: None,
+        depends_on: vec![],
+        source: domain::ActionSource::Detected,
+        detected_from: "package.json".to_string(),
+        saved_as: None,
     }
 }
 
@@ -889,6 +950,66 @@ fn main() {
     );
     write(
         &out,
+        "request_set_project_actions",
+        &Request::SetProjectActions {
+            project_id: project_id(),
+            actions: vec![sample_project_action()],
+        },
+    );
+    write(
+        &out,
+        "request_run_action",
+        &Request::RunAction {
+            workspace_id: workspace_id(),
+            action_id: action_id(),
+        },
+    );
+    write(
+        &out,
+        "response_action_suggestions",
+        &Response::ActionSuggestions {
+            workspace_id: workspace_id(),
+            suggestions: vec![sample_action_suggestion()],
+            repo_file: Some(domain::RepoActionsFile {
+                file_hash: "ab".repeat(32),
+                actions: vec![domain::ActionSuggestion {
+                    source: domain::ActionSource::Repo {
+                        file_hash: "ab".repeat(32),
+                    },
+                    detected_from: ".forge/actions.toml".to_string(),
+                    ..sample_action_suggestion()
+                }],
+                error: None,
+                drift: vec![action_id()],
+            }),
+            truncated: false,
+        },
+    );
+    write(
+        &out,
+        "response_action_already_running",
+        &Response::ActionAlreadyRunning {
+            session_id: session_id(),
+        },
+    );
+    write(
+        &out,
+        "response_action_queued",
+        &Response::ActionQueued {
+            session_id: session_id(),
+        },
+    );
+    write(&out, "task_session", &sample_task_session());
+    write(
+        &out,
+        "event_project_actions_changed",
+        &DaemonEvent::ProjectActionsChanged {
+            project_id: project_id(),
+            actions: vec![sample_project_action()],
+        },
+    );
+    write(
+        &out,
         "request_set_project_shares",
         &Request::SetProjectShares {
             project_id: project_id(),
@@ -1166,6 +1287,7 @@ fn sample_snapshot_response() -> Response {
         agent_profiles: vec![],
         worktree_shares: vec![],
         worktree_ignores: vec![],
+        project_actions: vec![sample_project_action()],
         app_state: vec![("sidebar_width".to_string(), "280".to_string())],
         external_agents: vec![],
         pull_requests: Box::new(PullRequestState::default()),
@@ -1191,6 +1313,7 @@ fn populated_snapshot_response() -> Response {
         agent_profiles: vec![sample_agent_profile()],
         worktree_shares: vec![sample_share_rule()],
         worktree_ignores: vec![sample_worktree_ignore()],
+        project_actions: vec![sample_project_action()],
         app_state: vec![("ui.theme_base".to_string(), "gruvbox".to_string())],
         external_agents: vec![],
         pull_requests: Box::new(sample_pull_request_state()),

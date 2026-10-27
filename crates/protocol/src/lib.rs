@@ -38,7 +38,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// every new request with an undecodable frame and no `Response` — the caller
 /// waits on a reply that never comes. Equality at connect turns that stall
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
-pub const PROTOCOL_VERSION: u32 = 33;
+pub const PROTOCOL_VERSION: u32 = 34;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -210,6 +210,7 @@ mod tests {
             ended_at: None,
             base_commit: None,
             activity: domain::AgentActivity::unknown(),
+            action: None,
         }
     }
 
@@ -345,6 +346,7 @@ mod tests {
             agent_profiles: vec![sample_profile()],
             worktree_shares: vec![],
             worktree_ignores: vec![],
+            project_actions: vec![],
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
             pull_requests: Box::new(sample_pull_request_state()),

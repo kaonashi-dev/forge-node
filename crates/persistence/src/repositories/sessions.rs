@@ -254,6 +254,7 @@ impl RawSession {
             base_commit: self.base_commit,
             // Runtime-only, like `terminal_id`. A restarted row has no hook state.
             activity: domain::AgentActivity::unknown(),
+            action: None,
         })
     }
 }

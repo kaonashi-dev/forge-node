@@ -489,6 +489,29 @@ CREATE INDEX idx_attempts_workspace       ON attempts (workspace_id);
 CREATE INDEX idx_task_deps_after          ON task_deps (after_task_id);
 ";
 
+/// One-click commands a project runs in its workspaces.
+///
+/// `spec` is JSON for the `worktree_shares.strategy` reason: the probe, port,
+/// dependencies and source are shapes nothing queries inside. `kind` is a tag
+/// column like every other domain enum here. Labels are unique per project
+/// ignoring case, because a palette entry and a chip name an action by label.
+pub const PROJECT_ACTIONS: &str = "\
+CREATE TABLE project_actions (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    label      TEXT NOT NULL,
+    command    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    spec       TEXT NOT NULL,
+    pinned     INTEGER NOT NULL,
+    position   INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_project_actions_project ON project_actions (project_id);
+CREATE UNIQUE INDEX idx_project_actions_label ON project_actions (project_id, label COLLATE NOCASE);
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -507,5 +530,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(ORCHESTRATION),
         M::up(RUN_ENVELOPE_HISTORY),
         M::up(FOREIGN_KEY_INDEXES),
+        M::up(PROJECT_ACTIONS),
     ])
 }

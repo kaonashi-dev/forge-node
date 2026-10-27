@@ -9,12 +9,12 @@
 
 use domain::orchestration::{BoardEntry, RunView};
 use domain::{
-    AgentDescriptor, AgentProfile, AttemptId, BranchCompare, BranchRef, ChangeContext,
-    ContextEnvelope, ContextId, DetectionResult, DiffFile, ExternalAgentSession,
-    ExternalTranscript, FileContents, FileTree, ImageContents, JuvaDraft, Project, ProjectGroup,
-    ProjectId, ProviderUsage, PullRequestState, RebaseState, Remote, RunId, ScrollbackRows,
-    SearchResults, Session, SessionChanges, SessionId, SessionTranscript, ShareAction,
-    ShareCandidate, ShareRule, ShareStatusEntry, TaskId, TerminalId, TerminalSnapshot,
+    ActionSuggestion, AgentDescriptor, AgentProfile, AttemptId, BranchCompare, BranchRef,
+    ChangeContext, ContextEnvelope, ContextId, DetectionResult, DiffFile, ExternalAgentSession,
+    ExternalTranscript, FileContents, FileTree, ImageContents, JuvaDraft, Project, ProjectAction,
+    ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState, Remote, RepoActionsFile,
+    RunId, ScrollbackRows, SearchResults, Session, SessionChanges, SessionId, SessionTranscript,
+    ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TaskId, TerminalId, TerminalSnapshot,
     UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceReview, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
@@ -122,6 +122,10 @@ pub enum Response {
         /// `worktree_shares`: the GUI edits them and must show the truth after
         /// a rescan collects a tombstone without a round trip.
         worktree_ignores: Vec<WorktreeIgnore>,
+        /// Every project's actions, in display order. Same reasoning as
+        /// `worktree_shares`.
+        #[serde(default)]
+        project_actions: Vec<ProjectAction>,
         app_state: Vec<(String, String)>,
         /// Agent sessions discovered on disk that the daemon did not launch
         /// (e.g. Claude Code transcripts). Read-only history.
@@ -153,6 +157,29 @@ pub enum Response {
         /// The repository's default branch (`origin/HEAD`, else `HEAD`'s), the
         /// base a new branch starts from when the user does not pick one.
         default_branch: Option<String>,
+    },
+    /// Answers `SuggestActions`.
+    ActionSuggestions {
+        /// The workspace read.
+        workspace_id: WorkspaceId,
+        /// Detected from manifests, in a stable order.
+        suggestions: Vec<ActionSuggestion>,
+        /// `None` when the workspace has no `.forge/actions.toml`.
+        repo_file: Option<RepoActionsFile>,
+        /// A file was skipped for its size, so the list is a floor.
+        truncated: bool,
+    },
+    /// A single-instance action is already live in that workspace, answering
+    /// `RunAction`; the caller focuses this session.
+    ActionAlreadyRunning {
+        /// The live session.
+        session_id: SessionId,
+    },
+    /// The action's session exists but waits for its dependencies, answering
+    /// `RunAction`. It spawns, or fails with a reason, through `SessionUpdated`.
+    ActionQueued {
+        /// The waiting session.
+        session_id: SessionId,
     },
     /// Ignored paths a project could share, answering `DetectShareCandidates`.
     ShareCandidates {

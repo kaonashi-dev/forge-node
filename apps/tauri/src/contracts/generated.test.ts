@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { Session } from "./runtime";
+import type { ActionSuggestion, ProjectAction, RepoActionsFile, Session } from "./runtime";
 import {
   FIXTURE_NAMES,
   request_create_editor_session,
   request_create_agent_session,
   request_send_session_prompt,
   response_prompt_delivery,
+  response_action_suggestions,
   response_snapshot_populated,
   session_editor,
+  task_session,
 } from "./generated/fixtures";
 
 describe("generated fixtures", () => {
@@ -36,6 +38,21 @@ describe("generated fixtures", () => {
    * session and its request only do that once they are actually exported, and
    * the exporter is only re-run by hand.
    */
+  it("fixtures_cover_project_actions", () => {
+    const session: Session = task_session;
+    expect(session.kind).toBe("Task");
+    expect(session.action?.readiness).toEqual({ state: "ready", url: "http://localhost:5174/" });
+
+    const actions: ProjectAction[] = [...response_snapshot_populated.Snapshot.project_actions];
+    expect(actions[0]?.ready).toEqual({ kind: "port", timeout_secs: 60 });
+
+    const answer = response_action_suggestions.ActionSuggestions;
+    const suggestions: ActionSuggestion[] = [...answer.suggestions];
+    const repo: RepoActionsFile | null = answer.repo_file;
+    expect(suggestions[0]?.detected_from).toBe("package.json");
+    expect(repo?.actions[0]?.source).toEqual({ kind: "repo", file_hash: "ab".repeat(32) });
+  });
+
   it("fixtures_cover_the_editor_session", () => {
     expect(FIXTURE_NAMES).toContain("session_editor.json");
     expect(FIXTURE_NAMES).toContain("request_create_editor_session.json");

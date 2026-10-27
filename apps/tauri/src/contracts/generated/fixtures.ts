@@ -18,7 +18,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   Hello: {
-    protocol_version: 32,
+    protocol_version: 34,
     client_version: "0.1.0",
     client_kind: "Gui",
   },
@@ -82,13 +82,14 @@ export const daemon_message_event = {
         since: "1970-01-01T00:00:00Z",
         evidence: null,
       },
+      action: null,
     },
   },
 } as const;
 
 export const daemon_message_hello_ack = {
   HelloAck: {
-    protocol_version: 32,
+    protocol_version: 34,
     daemon_version: "0.1.0",
     instance_id: "forge-daemon-0001",
     started_at: "2026-08-30T12:00:00Z",
@@ -98,7 +99,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   HelloReject: {
-    daemon_protocol_version: 32,
+    daemon_protocol_version: 34,
     reason: "protocol version mismatch",
   },
 } as const;
@@ -179,6 +180,38 @@ export const event_file_changed = {
   FileChanged: {
     workspace_id: "00000000-0000-7000-8000-000000000003",
     path: "src/main.rs",
+  },
+} as const;
+
+export const event_project_actions_changed = {
+  ProjectActionsChanged: {
+    project_id: "00000000-0000-7000-8000-000000000001",
+    actions: [
+      {
+        id: "00000000-0000-7000-8000-00000000000b",
+        project_id: "00000000-0000-7000-8000-000000000001",
+        label: "dev",
+        command: "bun run dev -- --port {port}",
+        kind: "dev",
+        cwd: null,
+        single_instance: true,
+        pinned: true,
+        ready: {
+          kind: "port",
+          timeout_secs: 60,
+        },
+        port: {
+          base: 5173,
+          per_worktree: true,
+        },
+        depends_on: [],
+        source: {
+          kind: "detected",
+        },
+        position: 0,
+        created_at: "2026-08-30T12:00:00Z",
+      },
+    ],
   },
 } as const;
 
@@ -357,6 +390,7 @@ export const event_session_created = {
       since: "1970-01-01T00:00:00Z",
       evidence: null,
     },
+    action: null,
   },
 } as const;
 
@@ -393,6 +427,7 @@ export const event_session_updated = {
       since: "1970-01-01T00:00:00Z",
       evidence: null,
     },
+    action: null,
   },
 } as const;
 
@@ -672,13 +707,13 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  protocol_version: 32,
+  protocol_version: 34,
   client_version: "0.1.0",
   client_kind: "Gui",
 } as const;
 
 export const hello_ack = {
-  protocol_version: 32,
+  protocol_version: 34,
   daemon_version: "0.1.0",
   instance_id: "forge-daemon-0001",
   started_at: "2026-08-30T12:00:00Z",
@@ -686,7 +721,7 @@ export const hello_ack = {
 } as const;
 
 export const hello_reject = {
-  daemon_protocol_version: 32,
+  daemon_protocol_version: 34,
   reason: "protocol version mismatch",
 } as const;
 
@@ -873,6 +908,13 @@ export const request_resize_terminal = {
   },
 } as const;
 
+export const request_run_action = {
+  RunAction: {
+    workspace_id: "00000000-0000-7000-8000-000000000003",
+    action_id: "00000000-0000-7000-8000-00000000000b",
+  },
+} as const;
+
 export const request_send_session_prompt = {
   SendSessionPrompt: {
     caller_session_id: null,
@@ -880,6 +922,38 @@ export const request_send_session_prompt = {
     text: "Inspect the failing test",
     submit: true,
     when: "Queue",
+  },
+} as const;
+
+export const request_set_project_actions = {
+  SetProjectActions: {
+    project_id: "00000000-0000-7000-8000-000000000001",
+    actions: [
+      {
+        id: "00000000-0000-7000-8000-00000000000b",
+        project_id: "00000000-0000-7000-8000-000000000001",
+        label: "dev",
+        command: "bun run dev -- --port {port}",
+        kind: "dev",
+        cwd: null,
+        single_instance: true,
+        pinned: true,
+        ready: {
+          kind: "port",
+          timeout_secs: 60,
+        },
+        port: {
+          base: 5173,
+          per_worktree: true,
+        },
+        depends_on: [],
+        source: {
+          kind: "detected",
+        },
+        position: 0,
+        created_at: "2026-08-30T12:00:00Z",
+      },
+    ],
   },
 } as const;
 
@@ -919,6 +993,67 @@ export const request_write_terminal_input = {
 } as const;
 
 export const response_ack = "Ack" as const;
+
+export const response_action_already_running = {
+  ActionAlreadyRunning: {
+    session_id: "00000000-0000-7000-8000-000000000004",
+  },
+} as const;
+
+export const response_action_queued = {
+  ActionQueued: {
+    session_id: "00000000-0000-7000-8000-000000000004",
+  },
+} as const;
+
+export const response_action_suggestions = {
+  ActionSuggestions: {
+    workspace_id: "00000000-0000-7000-8000-000000000003",
+    suggestions: [
+      {
+        label: "test",
+        command: "bun run test",
+        kind: "test",
+        pinned: false,
+        ready: {
+          kind: "none",
+        },
+        port: null,
+        depends_on: [],
+        source: {
+          kind: "detected",
+        },
+        detected_from: "package.json",
+        saved_as: null,
+      },
+    ],
+    repo_file: {
+      file_hash: "abababababababababababababababababababababababababababababababab",
+      actions: [
+        {
+          label: "test",
+          command: "bun run test",
+          kind: "test",
+          pinned: false,
+          ready: {
+            kind: "none",
+          },
+          port: null,
+          depends_on: [],
+          source: {
+            kind: "repo",
+            file_hash: "abababababababababababababababababababababababababababababababab",
+          },
+          detected_from: ".forge/actions.toml",
+          saved_as: null,
+        },
+      ],
+      error: null,
+      drift: ["00000000-0000-7000-8000-00000000000b"],
+    },
+    truncated: false,
+  },
+} as const;
 
 export const response_attach_ack = {
   AttachAck: {
@@ -1306,12 +1441,39 @@ export const response_snapshot = {
           since: "1970-01-01T00:00:00Z",
           evidence: null,
         },
+        action: null,
       },
     ],
     providers: [],
     agent_profiles: [],
     worktree_shares: [],
     worktree_ignores: [],
+    project_actions: [
+      {
+        id: "00000000-0000-7000-8000-00000000000b",
+        project_id: "00000000-0000-7000-8000-000000000001",
+        label: "dev",
+        command: "bun run dev -- --port {port}",
+        kind: "dev",
+        cwd: null,
+        single_instance: true,
+        pinned: true,
+        ready: {
+          kind: "port",
+          timeout_secs: 60,
+        },
+        port: {
+          base: 5173,
+          per_worktree: true,
+        },
+        depends_on: [],
+        source: {
+          kind: "detected",
+        },
+        position: 0,
+        created_at: "2026-08-30T12:00:00Z",
+      },
+    ],
     app_state: [["sidebar_width", "280"]],
     external_agents: [],
     pull_requests: {
@@ -1394,6 +1556,7 @@ export const response_snapshot_populated = {
           since: "1970-01-01T00:00:00Z",
           evidence: null,
         },
+        action: null,
       },
     ],
     providers: [
@@ -1471,6 +1634,32 @@ export const response_snapshot_populated = {
         project_id: "00000000-0000-7000-8000-000000000001",
         path: "/repo/.claude/worktrees",
         scope: "subtree",
+        created_at: "2026-08-30T12:00:00Z",
+      },
+    ],
+    project_actions: [
+      {
+        id: "00000000-0000-7000-8000-00000000000b",
+        project_id: "00000000-0000-7000-8000-000000000001",
+        label: "dev",
+        command: "bun run dev -- --port {port}",
+        kind: "dev",
+        cwd: null,
+        single_instance: true,
+        pinned: true,
+        ready: {
+          kind: "port",
+          timeout_secs: 60,
+        },
+        port: {
+          base: 5173,
+          per_worktree: true,
+        },
+        depends_on: [],
+        source: {
+          kind: "detected",
+        },
+        position: 0,
         created_at: "2026-08-30T12:00:00Z",
       },
     ],
@@ -1694,6 +1883,7 @@ export const session = {
     since: "1970-01-01T00:00:00Z",
     evidence: null,
   },
+  action: null,
 } as const;
 
 export const session_editor = {
@@ -1748,6 +1938,7 @@ export const session_editor = {
     since: "1970-01-01T00:00:00Z",
     evidence: null,
   },
+  action: null,
 } as const;
 
 export const session_role_custom = {
@@ -1770,6 +1961,43 @@ export const session_state_failed = {
 export const session_state_orphaned = "Orphaned" as const;
 
 export const session_state_running = "Running" as const;
+
+export const task_session = {
+  id: "00000000-0000-7000-8000-000000000004",
+  workspace_id: "00000000-0000-7000-8000-000000000003",
+  kind: "Task",
+  role: "Generic",
+  parent_session_id: null,
+  root_session_id: "00000000-0000-7000-8000-000000000004",
+  terminal_id: "00000000-0000-7000-8000-000000000005",
+  editor: null,
+  agent_provider_id: null,
+  agent_profile_id: null,
+  title: {
+    user: "auth refactor",
+    terminal: "~/forge",
+  },
+  state: "Running",
+  created_at: "2026-08-30T12:00:00Z",
+  launch_command: "bun run dev -- --port 5174",
+  last_activity_at: "2026-08-30T12:00:00Z",
+  ended_at: null,
+  base_commit: "4f2b1ac",
+  activity: {
+    state: "unknown",
+    since: "1970-01-01T00:00:00Z",
+    evidence: null,
+  },
+  action: {
+    action_id: "00000000-0000-7000-8000-00000000000b",
+    label: "dev",
+    port: 5174,
+    readiness: {
+      state: "ready",
+      url: "http://localhost:5174/",
+    },
+  },
+} as const;
 
 export const term_modes = {
   alt_screen: true,
@@ -1971,25 +2199,25 @@ export const theme = {
     "calm-dark": {
       label: "Calm Dark",
       palette: {
-        bg: "#131315",
+        bg: "#111112",
         rail: "#0c0c0d",
         sidebar: "#0c0c0d",
-        strip: "#0f0f11",
+        strip: "#0e0e0f",
         surface: "#1c1c1f",
-        surfaceHi: "#26262a",
-        editor: "#131315",
+        surfaceHi: "#2a2a2e",
+        editor: "#111112",
         step: "#2a2a2f",
         text: "#ededef",
         muted: "#a0a0a8",
         faint: "#7e7e87",
-        accent: "#a78bfa",
+        accent: "#e4e4e7",
         needsYou: "#f59e4b",
         needsYouDeep: "#c2620f",
         green: "#4ade80",
         red: "#f87171",
         amber: "#e3b341",
         blue: "#7aa2f7",
-        termBg: "#131315",
+        termBg: "#111112",
         termFg: "#c9c9cf",
         gitAdded: "#4ade80",
         gitModified: "#e3b341",
@@ -1999,8 +2227,13 @@ export const theme = {
         gitIgnored: "#5a5a62",
         fgDefault: "#c9c9cf",
         fgSubtle: "#8a8a93",
-        border: "#1e1e21",
+        border: "#222225",
         needsYouText: "#f7b276",
+        finish: {
+          tab: "#1c1c1f",
+          rule: "#1f1f22",
+          hover: "#19191c",
+        },
         ansi: [
           "#1c1c1f",
           "#f87171",
@@ -2035,7 +2268,7 @@ export const theme = {
         text: "#1a1a1c",
         muted: "#5e5e66",
         faint: "#67676f",
-        accent: "#6d28d9",
+        accent: "#27272a",
         needsYou: "#a04a08",
         needsYouDeep: "#7c3a06",
         green: "#15803d",
@@ -2051,8 +2284,12 @@ export const theme = {
         gitConflict: "#a04a08",
         gitIgnored: "#67676f",
         fgDefault: "#2e2e33",
-        fgSubtle: "#62626a",
+        fgSubtle: "#6d6d75",
         border: "#e4e4e7",
+        finish: {
+          tab: "#ffffff",
+          rule: "#e9e9eb",
+        },
         ansi: [
           "#ffffff",
           "#b91c1c",
@@ -2593,6 +2830,7 @@ export const FIXTURE_NAMES = [
   "event_daemon_shutting_down.json",
   "event_factory_reset.json",
   "event_file_changed.json",
+  "event_project_actions_changed.json",
   "event_project_added.json",
   "event_project_group_created.json",
   "event_project_group_removed.json",
@@ -2641,11 +2879,16 @@ export const FIXTURE_NAMES = [
   "request_refresh_workspace_status.json",
   "request_remove_share_rule.json",
   "request_resize_terminal.json",
+  "request_run_action.json",
   "request_send_session_prompt.json",
+  "request_set_project_actions.json",
   "request_set_project_shares.json",
   "request_write_file.json",
   "request_write_terminal_input.json",
   "response_ack.json",
+  "response_action_already_running.json",
+  "response_action_queued.json",
+  "response_action_suggestions.json",
   "response_attach_ack.json",
   "response_branch_compare.json",
   "response_directory_listing.json",
@@ -2670,6 +2913,7 @@ export const FIXTURE_NAMES = [
   "session_state_failed.json",
   "session_state_orphaned.json",
   "session_state_running.json",
+  "task_session.json",
   "term_modes.json",
   "terminal_delta.json",
   "terminal_snapshot.json",

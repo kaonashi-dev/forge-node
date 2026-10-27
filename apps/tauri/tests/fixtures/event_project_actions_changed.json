@@ -1,0 +1,31 @@
+{
+  "ProjectActionsChanged": {
+    "project_id": "00000000-0000-7000-8000-000000000001",
+    "actions": [
+      {
+        "id": "00000000-0000-7000-8000-00000000000b",
+        "project_id": "00000000-0000-7000-8000-000000000001",
+        "label": "dev",
+        "command": "bun run dev -- --port {port}",
+        "kind": "dev",
+        "cwd": null,
+        "single_instance": true,
+        "pinned": true,
+        "ready": {
+          "kind": "port",
+          "timeout_secs": 60
+        },
+        "port": {
+          "base": 5173,
+          "per_worktree": true
+        },
+        "depends_on": [],
+        "source": {
+          "kind": "detected"
+        },
+        "position": 0,
+        "created_at": "2026-08-30T12:00:00Z"
+      }
+    ]
+  }
+}

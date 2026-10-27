@@ -4,6 +4,7 @@
 //! No I/O, Git, or PTY. Depends on `serde`, `uuid`, `time`, `thiserror`, and
 //! `compact_str`. Glossary: `docs/domain.md`.
 
+pub mod action;
 pub mod agent;
 pub mod branch;
 pub mod change;
@@ -27,6 +28,12 @@ pub mod workspace;
 pub mod worktree_ignore;
 
 // Re-export the most commonly used types at the crate root.
+pub use action::{
+    resolve_command, ActionKind, ActionPort, ActionReadiness, ActionReady, ActionRun, ActionSource,
+    ActionSuggestion, ProjectAction, RepoActionsFile, ACTION_PORT_SPAN, MAX_ACTION_COMMAND_BYTES,
+    MAX_ACTION_DEPENDENCIES, MAX_ACTION_LABEL_BYTES, MAX_PROJECT_ACTIONS, MAX_READY_PATTERN_BYTES,
+    MAX_READY_TIMEOUT_SECS, PORT_PLACEHOLDER,
+};
 pub use agent::{
     AcpSpec, AgentCapabilities, AgentDescriptor, AgentLaunchOptions, AgentProfile,
     ChildWorkspacePolicy, ConfigDirSpec, DetectionResult, DetectionStatus, EffortSpec,
@@ -54,8 +61,9 @@ pub use file::{
     SearchMatch, SearchResults, SymlinkTarget,
 };
 pub use ids::{
-    AgentProfileId, AgentProviderId, AttemptId, ClientId, ContextId, ProjectGroupId, ProjectId,
-    RunId, SessionId, ShareRuleId, TaskId, TerminalId, Timestamp, WorkspaceId,
+    AgentProfileId, AgentProviderId, AttemptId, ClientId, ContextId, ProjectActionId,
+    ProjectGroupId, ProjectId, RunId, SessionId, ShareRuleId, TaskId, TerminalId, Timestamp,
+    WorkspaceId,
 };
 pub use pr_review::{
     builtin_recipes, compose_review_prompt, recipe_or_default, ReviewRecipe, CUSTOM_RECIPE,

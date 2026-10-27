@@ -1,4 +1,4 @@
-export type SessionKind = "Shell" | "Agent" | "Editor" | string;
+export type SessionKind = "Shell" | "Agent" | "Editor" | "Task" | string;
 
 /** Buffer metadata for an `Editor` session. Runtime-only; never document text. */
 export type EditorState = {
@@ -120,6 +120,8 @@ export type Session = {
    * the same unit of work. `null` when there was no HEAD to read.
    */
   base_commit?: string | null;
+  /** The project action a `Task` session runs. Runtime-only: `null` after a daemon restart. */
+  action?: ActionRun | null;
 };
 
 export type ProjectGroup = {
@@ -437,6 +439,80 @@ export type PullRequestState = {
   refreshed_at: string | null;
 };
 
+export type ActionKind = "dev" | "test" | "lint" | "build" | "custom";
+
+export type ActionReady =
+  | { kind: "none" }
+  | { kind: "port"; timeout_secs: number }
+  | { kind: "output"; pattern: string; timeout_secs: number };
+
+export type ActionPort = { base: number; per_worktree: boolean };
+
+export type ActionSource =
+  | { kind: "detected" }
+  | { kind: "manual" }
+  | { kind: "repo"; file_hash: string };
+
+export type ProjectAction = {
+  id: string;
+  project_id: string;
+  /** Unique within the project, ignoring case. */
+  label: string;
+  /** May carry `{port}`, replaced by the port resolved at launch. */
+  command: string;
+  kind: ActionKind;
+  /** Relative to the workspace root; `null` is the root. */
+  cwd?: string | null;
+  single_instance: boolean;
+  pinned: boolean;
+  ready?: ActionReady;
+  port?: ActionPort | null;
+  depends_on?: readonly string[];
+  source: ActionSource;
+  position: number;
+  created_at: string;
+};
+
+export type ActionReadiness =
+  | { state: "waiting"; on: readonly string[] }
+  | { state: "probing" }
+  | { state: "ready"; url: string | null }
+  | { state: "timed_out" }
+  | { state: "port_in_use"; port: number }
+  | { state: "unprobed" };
+
+export type ActionRun = {
+  action_id: string;
+  /** Copied at launch, so a deleted action still names its run. */
+  label: string;
+  port: number | null;
+  readiness: ActionReadiness;
+};
+
+export type ActionSuggestion = {
+  label: string;
+  command: string;
+  kind: ActionKind;
+  pinned: boolean;
+  cwd?: string | null;
+  single_instance?: boolean;
+  ready?: ActionReady;
+  port?: ActionPort | null;
+  /** Labels of other suggestions from the same source. */
+  depends_on?: readonly string[];
+  source: ActionSource;
+  detected_from: string;
+  saved_as: string | null;
+};
+
+export type RepoActionsFile = {
+  file_hash: string;
+  actions: readonly ActionSuggestion[];
+  error: string | null;
+  /** Saved actions imported from an earlier version of the file. */
+  drift: readonly string[];
+};
+
 export type ShareStrategy =
   | { kind: "copy" }
   | { kind: "clone" }
@@ -545,6 +621,8 @@ export type ShellSnapshot = {
    * it once the worktree is really gone.
    */
   worktree_ignores: WorktreeIgnore[];
+  /** Every project's actions, in display order. */
+  project_actions: ProjectAction[];
   session_attention: Record<string, SessionAttentionFlags>;
   /**
    * Persisted GUI preferences. The daemon stays authoritative: writes
@@ -622,6 +700,10 @@ function presentTitle(value: string | null | undefined): string | null {
 
 export function sessionTitle(session: Session): string {
   const terminal = presentTitle(session.title.terminal);
+  // A dev server retitles its terminal as it likes; the action names the tab.
+  if (session.kind === "Task") {
+    return presentTitle(session.title.user) ?? session.action?.label ?? terminal ?? "Task";
+  }
   const prompt = terminal === null || sessionIsAgent(session) ? null : promptPath(terminal);
   return (
     presentTitle(session.title.user) ??

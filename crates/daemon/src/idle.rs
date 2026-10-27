@@ -87,10 +87,11 @@ impl IdlePolicy {
         if !session.state.is_active() {
             return IdleAction::Keep;
         }
-        // A shell at a prompt is a resting state, not a leak; and an editor
-        // session is never stopped at all: ending one could discard a buffer
-        // the daemon cannot reconstruct. Both exemptions are unconditional.
-        if session.kind == SessionKind::Shell && !self.include_shells {
+        // A shell at a prompt is a resting state, not a leak, and a task is
+        // a server that is quiet while nobody calls it; both follow the shell
+        // rule. An editor session is never stopped at all: ending one could
+        // discard a buffer the daemon cannot reconstruct.
+        if matches!(session.kind, SessionKind::Shell | SessionKind::Task) && !self.include_shells {
             return IdleAction::Keep;
         }
         if session.kind == SessionKind::Editor {
@@ -201,6 +202,7 @@ mod tests {
             ended_at: None,
             base_commit: None,
             activity: domain::AgentActivity::unknown(),
+            action: None,
         }
     }
 

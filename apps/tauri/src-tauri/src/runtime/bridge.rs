@@ -1850,6 +1850,12 @@ fn run_command(
                 .map_err(CommandError::from_client)?;
             Ok(Effect::nothing())
         }
+        RuntimeCommand::SetProjectActions { project, actions } => {
+            client
+                .set_project_actions(project, actions)
+                .map_err(CommandError::from_client)?;
+            Ok(Effect::nothing())
+        }
         RuntimeCommand::SetProjectShares { project, rules } => {
             client
                 .set_project_shares(project, rules)
@@ -4034,6 +4040,7 @@ mod tests {
             ended_at: None,
             base_commit: None,
             activity: domain::AgentActivity::unknown(),
+            action: None,
         }
     }
 
