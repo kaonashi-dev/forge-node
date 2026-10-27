@@ -37,6 +37,10 @@ import { openComposeForWorkspace } from "../pull-requests/PrComposeView";
 import { centerMode, openCompare, showCode, viewsStore } from "../../navigation/viewsStore";
 import { openFileCount } from "../../navigation/views";
 import { focusSession, launchAgent, launchShell } from "../sessions/sessionActions";
+import { ActionBadge } from "../project-actions/ActionBadge";
+import { actionMenuItems } from "../project-actions/actionMenu";
+import { indexActionSessions } from "../project-actions/actionState";
+import { requestActionsDialog } from "../project-actions/actionsStore";
 import {
   Badge,
   Button,
@@ -143,6 +147,8 @@ const PR_ICON_CLASS: Record<PrTone, string> = {
  * because some earlier build wrote a key for it.
  */
 export function ProjectsView() {
+  // Rebuilt when the sessions store changes; every chip only looks its key up.
+  const actionSessions = createMemo(() => indexActionSessions(forgeStore.sessions));
   const [sharedFiles, setSharedFiles] = createSignal<{
     projectId: string;
     workspaceId?: string;
@@ -232,8 +238,21 @@ export function ProjectsView() {
             run: () => setSharedFiles({ projectId: node.id, name: node.name }),
           },
         ];
+    const main =
+      forgeStore.workspaces.find((ws) => ws.project_id === node.id && ws.kind === "Main") ??
+      forgeStore.workspaces.find((ws) => ws.project_id === node.id);
     const items: MenuItem[] = [
       ...own,
+      {
+        kind: "item",
+        label: "Actions…",
+        icon: "play",
+        disabled: !main,
+        run: () => {
+          if (main)
+            requestActionsDialog({ projectId: node.id, workspaceId: main.id, name: node.name });
+        },
+      },
       {
         kind: "item",
         label: "Ignored worktrees…",
@@ -392,6 +411,15 @@ export function ProjectsView() {
         run: () => void removeProjectGroup(id).catch(() => undefined),
       },
     ];
+  }
+
+  /** The ▶ menu of a checkout: its project's actions, run or live there. */
+  function runMenu(workspaceId: string): MenuItem[] {
+    const projectId = forgeStore.workspaces.find((ws) => ws.id === workspaceId)?.project_id;
+    const project = forgeStore.projects.find((item) => item.id === projectId);
+    if (!project) return [];
+    const actions = forgeStore.project_actions.filter((a) => a.project_id === project.id);
+    return actionMenuItems(workspaceId, project, actions, actionSessions());
   }
 
   function workspaceMenu(node: WorkspaceNode): MenuItem[] {
@@ -1003,6 +1031,7 @@ export function ProjectsView() {
                                   workspace={sole()}
                                   work={null}
                                   onStart={(event) => openMenu(event, launchItems(sole().id))}
+                                  onActions={(event) => openMenu(event, runMenu(sole().id))}
                                   onMore={(event) => openMenu(event, projectMenu(project))}
                                   reveal={projectRevealed()}
                                 />
@@ -1057,6 +1086,9 @@ export function ProjectsView() {
                                 onLaunch={(event, workspace) =>
                                   openMenu(event, launchItems(workspace.id))
                                 }
+                                onActions={(event, workspace) =>
+                                  openMenu(event, runMenu(workspace.id))
+                                }
                                 onSessionMenu={(event, session) =>
                                   openMenu(event, sessionMenuItems(session, sessionTitle(session)))
                                 }
@@ -1096,6 +1128,7 @@ function WorkspaceList(props: {
   onToggle: (workspace: WorkspaceNode) => void;
   onMenu: (event: MouseEvent, workspace: WorkspaceNode) => void;
   onLaunch: (event: MouseEvent, workspace: WorkspaceNode) => void;
+  onActions: (event: MouseEvent, workspace: WorkspaceNode) => void;
   onSessionMenu: (event: MouseEvent, session: Session) => void;
 }) {
   let listEl: HTMLDivElement | undefined;
@@ -1200,6 +1233,7 @@ function WorkspaceList(props: {
             }}
             onMenu={(event) => props.onMenu(event, workspace)}
             onLaunch={(event) => props.onLaunch(event, workspace)}
+            onActions={(event) => props.onActions(event, workspace)}
             onSessionMenu={props.onSessionMenu}
             onHandlePointerDown={(event) => onHandlePointerDown(workspace.id, event)}
             onHandlePointerMove={(event) => onHandlePointerMove(workspace.id, event)}
@@ -1231,6 +1265,7 @@ function WorkspaceCard(props: {
   onToggle: () => void;
   onMenu: (event: MouseEvent) => void;
   onLaunch: (event: MouseEvent) => void;
+  onActions: (event: MouseEvent) => void;
   onSessionMenu: (event: MouseEvent, session: Session) => void;
   onHandlePointerDown: (event: PointerEvent) => void;
   onHandlePointerMove: (event: PointerEvent) => void;
@@ -1304,6 +1339,7 @@ function WorkspaceCard(props: {
           workspace={props.workspace}
           work={props.open ? null : work()}
           onStart={props.onLaunch}
+          onActions={props.onActions}
           onMore={props.onMenu}
           reveal={rowHover.hot() || props.cursor}
         />
@@ -1333,6 +1369,8 @@ function CheckoutMarks(props: {
   work: ReturnType<typeof rollupWork>;
   /** The launchers alone. */
   onStart: (event: MouseEvent) => void;
+  /** The project's actions for this checkout. */
+  onActions?: (event: MouseEvent) => void;
   /** Everything the row's context menu offers. */
   onMore: (event: MouseEvent) => void;
   /** Mount + and ⋯: the row is hovered, or it is the keyboard cursor and Tab must reach them. */
@@ -1381,7 +1419,7 @@ function CheckoutMarks(props: {
         </Show>
       </span>
       <Show when={props.reveal}>
-        <RowActions onStart={props.onStart} onMore={props.onMore} />
+        <RowActions onStart={props.onStart} onActions={props.onActions} onMore={props.onMore} />
       </Show>
     </span>
   );
@@ -1415,10 +1453,18 @@ function createRowHover() {
 /** + and ⋯, revealed on hover or focus while the row's marks step aside. */
 function RowActions(props: {
   onStart?: (event: MouseEvent) => void;
+  onActions?: (event: MouseEvent) => void;
   onMore: (event: MouseEvent) => void;
 }) {
   return (
     <span class="row-actions">
+      <Show when={props.onActions}>
+        {(open) => (
+          <IconButton label="Run an action here" size="xs" onClick={(event) => open()(event)}>
+            <Icon name="play" size={12} />
+          </IconButton>
+        )}
+      </Show>
       <Show when={props.onStart}>
         {(start) => (
           <IconButton label="Start something here" size="xs" onClick={(event) => start()(event)}>
@@ -1564,6 +1610,9 @@ function SessionRow(props: {
         emphasis={active() || props.wantsYou ? "full" : "dim"}
       />
       <SessionLabel label={props.label} />
+      <Show when={props.session.action}>
+        <ActionBadge session={props.session} />
+      </Show>
       <Show when={props.wantsYou} fallback={<StateMarker session={props.session} />}>
         <AttentionMarker />
       </Show>

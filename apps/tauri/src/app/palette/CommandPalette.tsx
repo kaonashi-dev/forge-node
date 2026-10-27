@@ -111,8 +111,8 @@ export function CommandPalette(props: CommandPaletteProps) {
     const base =
       scope() === "files"
         ? []
-        : paletteEntries(forgeStore, connectionStore.activeSession).filter((entry) =>
-            admits(scope(), entry.group),
+        : paletteEntries(forgeStore, connectionStore.activeSession, activeWorkspace()).filter(
+            (entry) => admits(scope(), entry.group),
           );
     const ranked = rank(base, text());
     const listed = files();
@@ -311,6 +311,8 @@ function PaletteGlyph(props: { entry: PaletteEntry }) {
             <Icon name="git-branch" class="forge-icon-faint forge-combobox-glyph" size={14} />
           </span>
         );
+      case "run_action":
+        return <Icon name="play" class="forge-icon-faint forge-combobox-glyph" size={14} />;
       case "new_shell":
         return (
           <Icon name="square-terminal" class="forge-icon-faint forge-combobox-glyph" size={14} />

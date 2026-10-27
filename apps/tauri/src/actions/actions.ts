@@ -107,6 +107,8 @@ export type ActionId =
   | "reopen_closed_tab"
   | "toggle_git"
   | "toggle_history"
+  | "toggle_processes"
+  | "configure_actions"
   | "session_handoff"
   | "session_spawn_child"
   | "session_send_context"
@@ -238,7 +240,7 @@ export const ACTIONS: Action[] = [
   {
     id: "cycle_sidebar_views",
     label: "Next Sidebar View",
-    detail: "Walk History, PR and Git in turn",
+    detail: "Walk History, PR, Git and Processes in turn",
     palette: true,
     repeats: false,
   },
@@ -399,6 +401,19 @@ export const ACTIONS: Action[] = [
     detail: "Show the history view in the sidebar",
     palette: true,
     repeats: false,
+  },
+  {
+    id: "toggle_processes",
+    label: "Processes",
+    detail: "Running and recent project actions, across every project",
+    palette: true,
+    repeats: false,
+  },
+  {
+    id: "configure_actions",
+    label: "Configure Actions…",
+    detail: "The one-click commands of this checkout's project",
+    palette: true,
   },
   {
     id: "close_other_views",

@@ -144,6 +144,13 @@ import { Icon } from "../../theme/icons/index";
 import { IconButton, ToastRegion } from "../../ui/index";
 import { openFile, warmFileTree as warmTree } from "../../features/files/commands";
 import { gitStore, setGitStore } from "../../features/git/state";
+import { ActionsDialog } from "../../features/project-actions/ActionsDialog";
+import {
+  actionsStore,
+  requestActionsDialog,
+  setActionsStore,
+} from "../../features/project-actions/actionsStore";
+import { runAction } from "../../features/project-actions/commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
 
 const NOTICE_DISMISS_MS = 6000;
@@ -240,6 +247,18 @@ export function AppShell() {
    * than the one it started in.
    */
   const currentWorkspace = createMemo(sharedWorkspace);
+
+  function configureActions(): void {
+    const workspace = forgeStore.workspaces.find((item) => item.id === currentWorkspace());
+    const project = forgeStore.projects.find((item) => item.id === workspace?.project_id);
+    if (workspace && project) {
+      requestActionsDialog({
+        projectId: project.id,
+        workspaceId: workspace.id,
+        name: project.name,
+      });
+    }
+  }
   /*
    * The sidebar slides in when it comes back, and the card takes its new width
    * once: animating the column instead would re-measure the terminal canvas
@@ -437,6 +456,9 @@ export function AppShell() {
       case "new_shell":
         void launchShell(currentWorkspace()).catch(() => undefined);
         break;
+      case "run_action":
+        void runAction(entry.choice.workspace, entry.choice.action).catch(() => undefined);
+        break;
       case "new_agent":
         void launchAgent(entry.choice.provider, entry.choice.profile, currentWorkspace()).catch(
           () => undefined,
@@ -537,6 +559,8 @@ export function AppShell() {
       registerAction("toggle_pull_requests", () => toggleView("PR")),
       registerAction("toggle_git", () => toggleView("Git")),
       registerAction("toggle_history", () => toggleView("History")),
+      registerAction("toggle_processes", () => toggleView("Processes")),
+      registerAction("configure_actions", configureActions),
       registerAction("cycle_sidebar_views", cycleSidebarView),
       // The same three functions the overlay over the terminal calls, so a
       // palette entry cannot drift from the button beside it.
@@ -780,6 +804,11 @@ export function AppShell() {
           draft={gitStore.juvaDraft!}
           onDismiss={() => setGitStore("juvaDraft", null)}
         />
+      </Show>
+      <Show when={actionsStore.dialog}>
+        {(target) => (
+          <ActionsDialog target={target()} onDismiss={() => setActionsStore({ dialog: null })} />
+        )}
       </Show>
       <Show when={projectDialogsStore.projectRemoval}>
         {(project) => (

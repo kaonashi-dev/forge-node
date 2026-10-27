@@ -7,4 +7,5 @@ export const VIEW_ICONS: Record<SidebarView, ForgeIconName> = {
   History: "history",
   PR: "git-pull-request",
   Git: "git-branch",
+  Processes: "activity",
 };

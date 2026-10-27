@@ -58,6 +58,9 @@ const NAMES: ForgeIconName[] = [
   "exited",
   "failed",
   "command-palette",
+  "play",
+  "stop",
+  "activity",
 ];
 
 describe("forgeIcons", () => {

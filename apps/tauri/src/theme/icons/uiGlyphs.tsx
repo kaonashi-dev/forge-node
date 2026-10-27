@@ -74,6 +74,13 @@ export const UI_GLYPHS = {
     { path: "M9.7 2.6h3.7v3.7" },
     { path: "M13.1 2.9 8.8 7.2" },
   ]),
+  play: glyph([
+    { path: "M5 3.4v9.2a.6.6 0 0 0 .9.5l7.3-4.6a.6.6 0 0 0 0-1L5.9 2.9a.6.6 0 0 0-.9.5z" },
+  ]),
+  stop: glyph([
+    { path: "M4.6 3.6h6.8a1 1 0 0 1 1 1v6.8a1 1 0 0 1-1 1H4.6a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1z" },
+  ]),
+  activity: glyph([{ path: "M1.8 8.4h2.6l1.8-4.6 3.4 8.6 1.8-4h2.8" }]),
   edit: glyph([{ path: "M11.3 2.7l2 2-8.4 8.4-2.6.6.6-2.6z" }, { path: "M9.8 4.2l2 2" }]),
   trash: glyph([
     { path: "M2.8 4.2h10.4" },

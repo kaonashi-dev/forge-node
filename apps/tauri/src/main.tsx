@@ -7,6 +7,7 @@ import "./theme/tokens.css";
 import "./styles/index.css";
 import "@forge-node/file-workbench/style.css";
 import "./features/files/explorer/fileSurface.css";
+import "./features/project-actions/projectActions.css";
 
 applyAppearance(recallTheme() ?? "calm-dark", recallFinishes());
 pauseLoopsWhileHidden();

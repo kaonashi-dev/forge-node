@@ -169,6 +169,7 @@ export type PaletteChoice =
   | { kind: "new_agent"; provider: string; profile: string | null }
   | { kind: "focus_session"; session: string }
   | { kind: "focus_workspace"; workspace: string }
+  | { kind: "run_action"; workspace: string; action: string }
   | { kind: "open_file"; path: string };
 
 export type PaletteEntry = {
@@ -196,8 +197,31 @@ export type PaletteEntry = {
 };
 
 /** Every entry the palette knows, in presentation order. */
-export function paletteEntries(store: ShellSnapshot, activeSession: string | null): PaletteEntry[] {
+export function paletteEntries(
+  store: ShellSnapshot,
+  activeSession: string | null,
+  workspace: string | null = null,
+): PaletteEntry[] {
   const entries: PaletteEntry[] = [];
+
+  // The checkout the window is on runs its project's actions.
+  const projectId = store.workspaces.find((item) => item.id === workspace)?.project_id;
+  if (workspace && projectId) {
+    const actions = store.project_actions
+      .filter((action) => action.project_id === projectId)
+      .sort((a, b) => a.position - b.position);
+    for (const action of actions) {
+      entries.push({
+        label: `Run: ${action.label}`,
+        group: CREATE,
+        hint: null,
+        note: action.command,
+        enabled: true,
+        search: `run ${action.label} ${action.command}`,
+        choice: { kind: "run_action", workspace, action: action.id },
+      });
+    }
+  }
 
   for (const launchable of store.launchables) {
     entries.push({

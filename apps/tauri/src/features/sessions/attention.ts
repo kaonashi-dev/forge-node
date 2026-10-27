@@ -27,7 +27,7 @@ export function shellTabLabel(session: Session, sessions: Session[]): string {
   if (session.title.user?.trim()) {
     return session.title.user;
   }
-  const shells = sessions.filter((item) => item.agent_provider_id == null);
+  const shells = sessions.filter((item) => item.agent_provider_id == null && item.kind !== "Task");
   const number = shells.filter((other) => other.id < session.id).length + 1;
   return `Terminal ${number}`;
 }
@@ -35,7 +35,7 @@ export function shellTabLabel(session: Session, sessions: Session[]): string {
 export function sessionTabLabel(session: Session, sessions: Session[]): string {
   // The strip no longer receives editors; if one reaches here it is named for
   // its file, never numbered as a terminal.
-  if (session.kind === "Editor") {
+  if (session.kind === "Editor" || session.kind === "Task") {
     return sessionTitle(session);
   }
   if (session.agent_provider_id != null) {
