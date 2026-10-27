@@ -38,7 +38,7 @@ src/
 `features/` today: `terminal`, `editor` (`cells/`, `dom/`, `conflict/`),
 `files` (`explorer/`, `directories/`, `index/`, `watches/`, `operations/`,
 `search/`, `preview/`, `references/`), `git`, `pull-requests`, `sessions`,
-`projects`, `settings`. Commands and answer state belong with their
+`projects`, `project-actions`, `settings`. Commands and answer state belong with their
 capability; names include `commands.ts`, `state.ts` and feature-specific stores.
 There is no required `components/` + `services/` split inside a feature.
 `contracts/generated/` is not hand-edited: regenerate it from the Rust wire
@@ -76,7 +76,8 @@ Peer feature allowances are enumerated in
 [`scripts/boundaries.ts`](../apps/tauri/scripts/boundaries.ts) (`PEER_EDGES`): `editor → files`;
 `files → editor, git, settings, terminal`; `git → editor, files,
 pull-requests, sessions, settings`;
-`projects → git, pull-requests, sessions, settings`; `pull-requests → editor,
+`projects → git, project-actions, pull-requests, sessions, settings`;
+`project-actions → sessions`; `pull-requests → editor,
 files, git, sessions, settings`; `sessions → editor, git, settings,
 terminal`; `settings → projects, sessions, terminal`; `terminal →
 files`. Several allowances are reciprocal. They currently permit every module
@@ -119,6 +120,7 @@ the gate alongside this check.
 | `features/git/state.ts` | diff, review, rebase, branches, Juva draft |
 | `features/settings/state.ts` | usage analytics |
 | `features/projects/dialogs.ts`, `features/sessions/dialogs.ts`, `state/dialogs.ts` | dialog request slots by owner |
+| `features/project-actions/actionsStore.ts` | action suggestions and the actions dialog slot |
 | `navigation/viewsStore.ts` | parked centre views, centre mode, reveals; passive only |
 | `navigation/centerSplitStore.ts`, `navigation/centerSplit.ts` | the Cmd+D centre split: kind, extra session and terminal, focused pane, stored ratio |
 | `navigation/sidebarStore.ts`, `navigation/tabOrder.ts`, `navigation/tabMru.ts`, `navigation/tabSwitcher.ts` | sidebar view choice, strip order, focus ring over every pane (Code views and sessions), switcher gesture |
@@ -205,6 +207,7 @@ input queue. Workspace filesystem and Git effects remain daemon-owned.
 | pull request list/detail/compose/review | `features/pull-requests/` |
 | session launch, menus, context, history, attention | `features/sessions/` |
 | projects, worktrees, ignores, share rules | `features/projects/` |
+| project actions: the ▶ run menu, task badges, the actions dialog, the Processes view | `features/project-actions/` |
 | settings sections, profiles, usage | `features/settings/` |
 | window composition, tabs, palette, dialogs | `app/shell/`, `app/palette/` |
 | centre split (Cmd+D panes) | `navigation/centerSplitStore.ts`, `navigation/centerSplit.ts`, `features/sessions/sessionActions.ts`, `app/shell/CenterStack.tsx` |

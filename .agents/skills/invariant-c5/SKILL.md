@@ -16,6 +16,7 @@ description: Runtime invariant checklist (C5). Use when the diff touches daemon 
 - [ ] `pull_requests`, `external_agents` and `usage_stats` caches keep their own `Mutex`, never the core one.
 - [ ] The socket lock and the data-dir lock are both held before SQLite opens.
 - [ ] `SessionKind::Editor` is exempt from idle stop by kind, unconditionally.
+- [ ] Project actions: `RunAction`'s single-instance check and session creation share one critical section; `cwd` and port probes run before it, off the lock. `Session::action` has no column. `.forge/actions.toml` is only ever imported (approved copy + file hash), never executed in place. A cross-crate `SessionKind` match handles `Task` explicitly where `Shell` is special-cased (persistence codec, spawn spec, idle, titles).
 - [ ] `PRAGMA synchronous = NORMAL` stays: deliberate under WAL.
 - [ ] Cross-session prompts use paste, never raw keys; CR only with hook-confirmed idle, even for `Now`. Unbracketed LF/TAB are flattened. Input/hook/submission ordering uses the writer lock outside the core lock; prompt auditing uses a separate SQLite connection. Cross-project dispatch never creates a graph parent.
 - [ ] `GetWorkspaceDiff` / file ops / `GetUsageAnalytics`: local sync reads.
