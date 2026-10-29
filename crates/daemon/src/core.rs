@@ -6023,6 +6023,11 @@ impl Daemon {
                     if let Some(session) = inner.sessions.get_mut(&session_id) {
                         session.title.terminal = title.clone();
                         session_update = Some(session.clone());
+    /// Emit damage held back while `terminal_id` had no subscriber.
+    pub(crate) fn flush_terminal(self: &Arc<Self>, terminal_id: TerminalId) {
+        self.pump_terminal_batch(terminal_id, &[], false, true, false);
+    }
+
                         // Rows are purged at the next start unless history persists.
                         if self.config.sessions.persist_history {
                             title_write = Some((session_id, title));

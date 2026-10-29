@@ -309,15 +309,16 @@ async fn read_loop(
             });
 
             // Apply/clear the subscription only on a successful attach/detach.
-            if let Some((attach, terminal_id)) = sub {
-                if response.is_ok() {
-                    if attach {
-                        daemon.registry().subscribe(client_id, terminal_id);
-                    } else {
-                        daemon.registry().unsubscribe(client_id, terminal_id);
-                    }
+            // An attach subscribes after its `AttachAck` is queued: a delta ahead
+            // of the snapshot is discarded by a client that has no grid yet.
+            let attached = match sub {
+                Some((true, terminal_id)) if response.is_ok() => Some(terminal_id),
+                Some((false, terminal_id)) if response.is_ok() => {
+                    daemon.registry().unsubscribe(client_id, terminal_id);
+                    None
                 }
-            }
+                _ => None,
+            };
 
             // A dropped response is not recoverable for the client: it blocks on
             // its `request_id` with no timeout of its own. The outbound
@@ -337,6 +338,14 @@ async fn read_loop(
                     "could not deliver a response; dropping the client connection"
                 );
                 daemon.registry().unregister(client_id);
+            } else if let Some(terminal_id) = attached {
+                daemon.registry().subscribe(client_id, terminal_id);
+                // Output pumped between the snapshot and the subscription was
+                // held back as unsubscribed damage, and a quiet child never
+                // pumps again to release it.
+                let flush = daemon.clone();
+                let _ =
+                    tokio::task::spawn_blocking(move || flush.flush_terminal(terminal_id)).await;
             }
         });
 
