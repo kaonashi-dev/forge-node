@@ -34,6 +34,7 @@ describe("the run menu", () => {
           label: "dev",
           port: 5173,
           readiness: { state: "ready", url: "http://localhost:5173/" },
+          started_at: null,
         },
       }),
     ]);

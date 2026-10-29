@@ -22,7 +22,12 @@ import {
   type DraftRow,
 } from "./actionDraft";
 import { KIND_LABELS } from "./actionState";
-import { actionsStore, type ActionsDialogTarget } from "./actionsStore";
+import {
+  actionsStore,
+  forgetSuggestions,
+  setActionsStore,
+  type ActionsDialogTarget,
+} from "./actionsStore";
 import { setProjectActions, suggestActions } from "./commands";
 
 const KIND_ICONS: Record<ActionKind, ForgeIconName> = {
@@ -58,6 +63,8 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
   const [error, setError] = createSignal<string | null>(null);
   const [query, setQuery] = createSignal("");
 
+  // A cached answer predates the last save and the repo file's last edit.
+  forgetSuggestions(props.target.workspaceId);
   void suggestActions(props.target.workspaceId).catch((e: unknown) => setError(String(e)));
 
   // Drafted once, when the suggestions land: a later broadcast must not wipe
@@ -138,14 +145,25 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
     });
   }
 
+  // The command only queues the set; the daemon's verdict arrives as `actionsSave`.
   function save(): void {
     setSaving(true);
     setError(null);
-    setProjectActions(props.target.projectId, toActionSet(rows))
-      .then(props.onDismiss)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setSaving(false));
+    setActionsStore("actionsSave", null);
+    setProjectActions(props.target.projectId, toActionSet(rows)).catch((e: unknown) => {
+      setSaving(false);
+      setError(e instanceof Error ? e.message : String(e));
+    });
   }
+
+  createEffect(() => {
+    const result = actionsStore.actionsSave;
+    if (!result || result.project !== props.target.projectId) return;
+    setActionsStore("actionsSave", null);
+    setSaving(false);
+    if (result.error) setError(result.error);
+    else props.onDismiss();
+  });
 
   const shown = (row: DraftRow) => matchesQuery(row, query());
   const has = (origin: DraftRow["origin"]) =>

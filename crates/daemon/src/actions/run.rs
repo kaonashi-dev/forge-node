@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use domain::{
     resolve_command, ActionKind, ActionReadiness, ActionReady, ActionRun, AgentActivity,
     ProjectAction, ProjectActionId, Session, SessionId, SessionKind, SessionRole, SessionState,
-    SessionTitle, Timestamp, WorkspaceId,
+    SessionTitle, Timestamp, WorkspaceId, PORT_PLACEHOLDER,
 };
 use protocol::{DaemonEvent, ErrorCode, ProtocolError, Response};
 
@@ -57,6 +57,37 @@ fn reserved_ports(inner: &Inner) -> HashSet<u16> {
         .filter(|session| session.state.is_active())
         .filter_map(|session| session.action.as_ref()?.port)
         .collect()
+}
+
+/// Bounds re-choosing a port another launch claimed while this one probed.
+const PORT_CLAIM_ATTEMPTS: u32 = 4;
+
+/// Whether a session created since `launch` was prepared now holds its port.
+/// A port reported in use was knowingly shared, so it never counts.
+fn port_claimed(inner: &Inner, launch: &TaskLaunch) -> bool {
+    launch.run.port.is_some_and(|port| {
+        !matches!(launch.run.readiness, ActionReadiness::PortInUse { .. })
+            && reserved_ports(inner).contains(&port)
+    })
+}
+
+fn port_contended() -> ProtocolError {
+    ProtocolError::conflict("another action kept taking the chosen port; try again")
+}
+
+/// The project's single action whose command template is the untagged task's
+/// `launch_command`, which stores the template for exactly this. Two actions
+/// with one command are ambiguous, so neither is adopted.
+fn adopt(inner: &Inner, session: &Session) -> Option<ProjectAction> {
+    let command = session.launch_command.as_deref()?;
+    let project_id = inner.workspaces.get(&session.workspace_id)?.project_id;
+    let mut matching = inner
+        .project_actions
+        .get(&project_id)?
+        .iter()
+        .filter(|action| action.command == command);
+    let action = matching.next()?;
+    matching.next().is_none().then(|| action.clone())
 }
 
 fn find_action(
@@ -121,16 +152,27 @@ impl Daemon {
         if !action.depends_on.is_empty() {
             return self.queue_action(workspace_id, &action);
         }
-        let launch = prepare(&action, &root, &reserved, None)?;
+        let mut launch = prepare(&action, &root, &reserved, None)?;
 
         let session_id = SessionId::new();
-        let (spec, session) = {
+        let mut attempts = 0;
+        let (spec, session) = loop {
             let mut inner = self.lock();
             // The authoritative check: the one above only spared the port probe.
             if action.single_instance {
                 if let Some(session_id) = live_session(&inner, workspace_id, action_id) {
                     return Ok(Response::ActionAlreadyRunning { session_id });
                 }
+            }
+            if port_claimed(&inner, &launch) {
+                attempts += 1;
+                if attempts >= PORT_CLAIM_ATTEMPTS {
+                    return Err(port_contended());
+                }
+                let reserved = reserved_ports(&inner);
+                drop(inner);
+                launch = prepare(&action, &root, &reserved, None)?;
+                continue;
             }
             let now = Timestamp::now();
             let session = Session {
@@ -147,8 +189,7 @@ impl Daemon {
                 title: SessionTitle::default(),
                 state: SessionState::Starting,
                 created_at: now,
-                // Kept for `persist_history`: an orphaned task restarts with it.
-                launch_command: Some(launch.command.clone()),
+                launch_command: Some(action.command.clone()),
                 last_activity_at: now,
                 ended_at: None,
                 base_commit: None,
@@ -162,7 +203,7 @@ impl Daemon {
                 .upsert(&session)
                 .map_err(crate::core::db_err)?;
             inner.sessions.insert(session_id, session.clone());
-            (spec, session)
+            break (spec, session);
         };
 
         self.registry
@@ -189,8 +230,9 @@ impl Daemon {
     }
 
     /// Restart a finished `Task` with the action's *current* definition, so an
-    /// edit made while it ran applies now. One whose action was deleted
-    /// re-runs the command it last ran, untagged.
+    /// edit made while it ran applies now. An untagged one (its tag is
+    /// runtime-only, so every task after a daemon restart) re-adopts the one
+    /// action with its command; failing that it re-runs that command, untagged.
     pub(crate) fn restart_task(
         self: &Arc<Self>,
         session_id: SessionId,
@@ -208,11 +250,12 @@ impl Daemon {
                     "session is not in a terminal state",
                 ));
             }
-            let current = session.action.as_ref().and_then(|run| {
-                find_action(&inner, session.workspace_id, run.action_id)
+            let current = match &session.action {
+                Some(run) => find_action(&inner, session.workspace_id, run.action_id)
                     .ok()
-                    .map(|(action, _)| action)
-            });
+                    .map(|(action, _)| action),
+                None => adopt(&inner, &session),
+            };
             let root = inner
                 .workspaces
                 .get(&session.workspace_id)
@@ -224,12 +267,13 @@ impl Daemon {
             return self.requeue_task(session_id, session.workspace_id, action);
         }
         let prior_port = session.action.as_ref().and_then(|run| run.port);
-        let launch = match &current {
+        let mut launch = match &current {
             Some(action) => Some(prepare(action, &root, &reserved, prior_port)?),
             None => None,
         };
 
-        let (spec, updated) = {
+        let mut attempts = 0;
+        let (spec, updated) = loop {
             let mut inner = self.lock();
             if current.as_ref().is_some_and(|action| {
                 action.single_instance
@@ -239,10 +283,27 @@ impl Daemon {
                     "this action is already running in this workspace",
                 ));
             }
+            if let (Some(action), Some(claimed)) = (&current, &launch) {
+                if port_claimed(&inner, claimed) {
+                    attempts += 1;
+                    if attempts >= PORT_CLAIM_ATTEMPTS {
+                        return Err(port_contended());
+                    }
+                    let reserved = reserved_ports(&inner);
+                    drop(inner);
+                    launch = Some(prepare(action, &root, &reserved, None)?);
+                    continue;
+                }
+            }
             let spec = match &launch {
                 Some(launch) => self.task_spawn_spec(&mut inner, &root, session_id, launch)?,
                 None => {
                     let command = session.launch_command.clone().unwrap_or_default();
+                    if command.contains(PORT_PLACEHOLDER) {
+                        return Err(ProtocolError::precondition_failed(
+                            "its action is gone and the command needs a port; run it from the actions instead",
+                        ));
+                    }
                     self.plain_task_spec(&mut inner, &root, session_id, &command)?
                 }
             };
@@ -253,9 +314,9 @@ impl Daemon {
                             "session cannot restart from its current state",
                         )
                     })?;
-            if let Some(launch) = &launch {
+            if let (Some(action), Some(launch)) = (&current, &launch) {
                 updated.action = Some(Box::new(launch.run.clone()));
-                updated.launch_command = Some(launch.command.clone());
+                updated.launch_command = Some(action.command.clone());
                 if let Some(stored) = inner.sessions.get_mut(&session_id) {
                     stored.action = updated.action.clone();
                     stored.launch_command = updated.launch_command.clone();
@@ -266,7 +327,7 @@ impl Daemon {
                     .upsert(&updated)
                     .map_err(crate::core::db_err)?;
             }
-            (spec, updated)
+            break (spec, updated);
         };
 
         self.registry
@@ -381,15 +442,39 @@ fn prepare(
             label: action.label.clone(),
             port,
             readiness,
+            started_at: Some(Timestamp::now()),
         },
         env,
     })
 }
 
 /// Longest a task waits for its dependencies, whatever their own timeouts say.
+/// A step such as a build has no timeout of its own, so it is given all of it.
 const MAX_DEPENDENCY_WAIT: Duration = Duration::from_secs(15 * 60);
-/// Added to the slowest dependency's own readiness timeout.
+/// Added to the slowest dependency chain's own readiness timeouts.
 const DEPENDENCY_SLACK: Duration = Duration::from_secs(60);
+
+/// How long `action` may wait on its dependency chain: each link waits for its
+/// own dependencies before it starts, so the times add along a chain.
+fn dependency_budget(actions: &[ProjectAction], action: &ProjectAction, depth: usize) -> Duration {
+    if depth > super::MAX_DEPENDENCY_DEPTH {
+        return MAX_DEPENDENCY_WAIT;
+    }
+    action
+        .depends_on
+        .iter()
+        .filter_map(|id| actions.iter().find(|candidate| candidate.id == *id))
+        .map(|dep| {
+            let own = match dep.ready.timeout_secs() {
+                Some(secs) => Duration::from_secs(secs),
+                None if dep.kind == ActionKind::Dev => Duration::ZERO,
+                None => MAX_DEPENDENCY_WAIT,
+            };
+            own.saturating_add(dependency_budget(actions, dep, depth + 1))
+        })
+        .max()
+        .unwrap_or(Duration::ZERO)
+}
 
 /// How long a restart waits, past the kill grace, for the old process to go.
 const RESTART_SLACK: Duration = Duration::from_secs(5);
@@ -570,6 +655,7 @@ impl Daemon {
                     readiness: ActionReadiness::Waiting {
                         on: action.depends_on.clone(),
                     },
+                    started_at: None,
                 })),
             };
             inner
@@ -597,7 +683,6 @@ impl Daemon {
         action: &ProjectAction,
     ) -> Result<(Vec<Dependency>, Instant), ProtocolError> {
         let mut deps = Vec::with_capacity(action.depends_on.len());
-        let mut wait = Duration::ZERO;
         for dep_id in &action.depends_on {
             let dep = {
                 let inner = self.lock();
@@ -614,7 +699,6 @@ impl Daemon {
                     ))
                 }
             };
-            wait = wait.max(Duration::from_secs(dep.ready.timeout_secs().unwrap_or(0)));
             deps.push(Dependency {
                 serves: dep.kind == ActionKind::Dev || dep.ready != ActionReady::None,
                 action_id: dep.id,
@@ -622,7 +706,19 @@ impl Daemon {
                 session_id,
             });
         }
-        let deadline = Instant::now() + (wait + DEPENDENCY_SLACK).min(MAX_DEPENDENCY_WAIT);
+        let wait = {
+            let inner = self.lock();
+            let project_actions = inner
+                .workspaces
+                .get(&workspace_id)
+                .and_then(|ws| inner.project_actions.get(&ws.project_id))
+                .map_or(&[][..], Vec::as_slice);
+            dependency_budget(project_actions, action, 0)
+        };
+        let deadline = Instant::now()
+            + wait
+                .saturating_add(DEPENDENCY_SLACK)
+                .min(MAX_DEPENDENCY_WAIT);
         Ok((deps, deadline))
     }
 
@@ -682,6 +778,7 @@ impl Daemon {
                 readiness: ActionReadiness::Waiting {
                     on: action.depends_on.clone(),
                 },
+                started_at: None,
             };
             updated.action = Some(Box::new(run));
             if let Some(stored) = inner.sessions.get_mut(&session_id) {
@@ -776,9 +873,20 @@ impl Daemon {
                 .map_err(|_| ProtocolError::not_found("its action was removed while it waited"))?;
             (action, root, reserved_ports(&inner))
         };
-        let launch = prepare(&action, &root, &reserved, None)?;
-        let spec = {
+        let mut launch = prepare(&action, &root, &reserved, None)?;
+        let mut attempts = 0;
+        let spec = loop {
             let mut inner = self.lock();
+            if port_claimed(&inner, &launch) {
+                attempts += 1;
+                if attempts >= PORT_CLAIM_ATTEMPTS {
+                    return Err(port_contended());
+                }
+                let reserved = reserved_ports(&inner);
+                drop(inner);
+                launch = prepare(&action, &root, &reserved, None)?;
+                continue;
+            }
             let spec = self.task_spawn_spec(&mut inner, &root, session_id, &launch)?;
             let Some(session) = inner.sessions.get_mut(&session_id) else {
                 return Ok(());
@@ -787,14 +895,14 @@ impl Daemon {
                 return Ok(());
             }
             session.action = Some(Box::new(launch.run.clone()));
-            session.launch_command = Some(launch.command.clone());
+            session.launch_command = Some(action.command.clone());
             let snapshot = session.clone();
             inner
                 .db
                 .sessions()
                 .upsert(&snapshot)
                 .map_err(crate::core::db_err)?;
-            spec
+            break spec;
         };
         let watch = output_watch(session_id, &action, &launch.run);
         self.spawn_terminal_watching(session_id, spec, true, watch)
@@ -806,5 +914,64 @@ impl Daemon {
             &launch.run.readiness,
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domain::{ActionSource, ProjectId};
+
+    fn action(
+        kind: ActionKind,
+        ready: ActionReady,
+        depends_on: &[&ProjectAction],
+    ) -> ProjectAction {
+        ProjectAction {
+            id: ProjectActionId::new(),
+            project_id: ProjectId::new(),
+            label: "a".to_owned(),
+            command: "true".to_owned(),
+            kind,
+            cwd: None,
+            single_instance: true,
+            pinned: false,
+            ready,
+            port: None,
+            depends_on: depends_on.iter().map(|dep| dep.id).collect(),
+            source: ActionSource::Manual,
+            position: 0,
+            created_at: Timestamp::now(),
+        }
+    }
+
+    fn port(timeout_secs: u64) -> ActionReady {
+        ActionReady::Port { timeout_secs }
+    }
+
+    #[test]
+    fn a_step_dependency_gets_the_whole_cap_not_the_slack() {
+        let build = action(ActionKind::Build, ActionReady::None, &[]);
+        let test = action(ActionKind::Test, ActionReady::None, &[&build]);
+        assert_eq!(
+            dependency_budget(&[build.clone(), test.clone()], &test, 0),
+            MAX_DEPENDENCY_WAIT
+        );
+    }
+
+    #[test]
+    fn probe_timeouts_add_along_a_chain() {
+        let db = action(ActionKind::Custom, port(30), &[]);
+        let api = action(ActionKind::Dev, port(90), &[&db]);
+        let web = action(ActionKind::Dev, ActionReady::None, &[&api]);
+        let unprobed = action(ActionKind::Dev, ActionReady::None, &[]);
+        let all = [db, api, web.clone(), unprobed.clone()];
+        assert_eq!(dependency_budget(&all, &web, 0), Duration::from_secs(120));
+        let after_unprobed = action(ActionKind::Test, ActionReady::None, &[&unprobed]);
+        assert_eq!(
+            dependency_budget(&all, &after_unprobed, 0),
+            Duration::ZERO,
+            "an unprobed server lets its dependents go once it runs"
+        );
     }
 }

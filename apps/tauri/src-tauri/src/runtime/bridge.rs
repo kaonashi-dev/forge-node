@@ -598,6 +598,12 @@ fn runtime_loop(
                                 AgentProfileSavePayload { profile, error },
                             );
                         }
+                        if let Some((project, error)) = effect.actions_save {
+                            let _ = app.emit(
+                                "runtime:actions_save",
+                                ActionsSavePayload { project, error },
+                            );
+                        }
                     }
                     // A refusal leaves the connection alone: the shell says
                     // what happened and stays where it is.
@@ -905,6 +911,12 @@ struct AgentProfileSavePayload {
     error: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct ActionsSavePayload {
+    project: ProjectId,
+    error: Option<String>,
+}
+
 /// Forward an OSC 52 clipboard store, but only from a terminal on screen.
 ///
 /// The guard is the point: OSC 52 lets whatever runs in a PTY set the person's
@@ -1091,6 +1103,8 @@ struct Effect {
     worktree_create_failed: Option<(ProjectId, String, String)>,
     /// Profile validation belongs beside the values the user can correct.
     profile_save: Option<(AgentProfileId, Option<String>)>,
+    /// An action set the daemon refused stays in the dialog that drafted it.
+    actions_save: Option<(ProjectId, Option<String>)>,
     /// Kill a live session, then `CloseSession` once it is terminal.
     pending_close: Option<SessionId>,
     /// A restart (or a close of an already-dead session) drops a pending kill.
@@ -1851,10 +1865,7 @@ fn run_command(
             Ok(Effect::nothing())
         }
         RuntimeCommand::SetProjectActions { project, actions } => {
-            client
-                .set_project_actions(project, actions)
-                .map_err(CommandError::from_client)?;
-            Ok(Effect::nothing())
+            set_project_actions_effect(project, client.set_project_actions(project, actions))
         }
         RuntimeCommand::SetProjectShares { project, rules } => {
             client
@@ -2145,6 +2156,24 @@ fn save_agent_profile_effect(
             error => Err(error),
         },
     }
+}
+
+fn set_project_actions_effect(
+    project: ProjectId,
+    result: Result<(), client::ClientError>,
+) -> Result<Effect, CommandError> {
+    let refusal = match result {
+        Ok(()) => None,
+        Err(client::ClientError::Protocol(error)) => Some(error.message),
+        Err(error) => match CommandError::from_client(error) {
+            CommandError::Refused(reason) => Some(reason),
+            error => return Err(error),
+        },
+    };
+    Ok(Effect {
+        actions_save: Some((project, refusal)),
+        ..Effect::default()
+    })
 }
 
 fn attach_editor(
@@ -3954,6 +3983,31 @@ mod tests {
         assert_eq!(
             effect.profile_save,
             Some((profile, Some("profile name already exists".to_string())))
+        );
+    }
+
+    #[test]
+    fn an_action_set_refusal_returns_to_its_dialog() {
+        let project = ProjectId::new();
+        let error = client::ProtocolError::new(
+            client::ErrorCode::InvalidRequest,
+            "dependencies nest more than 4 deep",
+        );
+        let effect = set_project_actions_effect(project, Err(client::ClientError::Protocol(error)))
+            .expect("a validation error leaves the connection alive");
+
+        assert_eq!(
+            effect.actions_save,
+            Some((
+                project,
+                Some("dependencies nest more than 4 deep".to_string())
+            ))
+        );
+        assert_eq!(
+            set_project_actions_effect(project, Ok(()))
+                .expect("a saved set")
+                .actions_save,
+            Some((project, None))
         );
     }
 

@@ -487,6 +487,8 @@ export type ActionRun = {
   label: string;
   port: number | null;
   readiness: ActionReadiness;
+  /** When this run's process was spawned; a restart resets it. `null` while queued. */
+  started_at: string | null;
 };
 
 export type ActionSuggestion = {

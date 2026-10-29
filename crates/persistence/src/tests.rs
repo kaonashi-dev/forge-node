@@ -1573,6 +1573,7 @@ fn a_task_session_round_trips_without_its_runtime_action() {
         label: "dev".into(),
         port: Some(5173),
         readiness: domain::ActionReadiness::Probing,
+        started_at: Some(Timestamp::now()),
     }));
     db.sessions().upsert(&session).unwrap();
 

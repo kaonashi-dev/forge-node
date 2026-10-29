@@ -27,7 +27,13 @@ function run(id: string, ws: string, label: string, created: string, live: boole
     workspace_id: ws,
     created_at: created,
     state: live ? "Running" : { Exited: { code: 1, signal: null } },
-    action: { action_id: label, label, port: null, readiness: { state: "unprobed" } },
+    action: {
+      action_id: label,
+      label,
+      port: null,
+      readiness: { state: "unprobed" },
+      started_at: null,
+    },
   });
 }
 

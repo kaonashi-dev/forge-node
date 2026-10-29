@@ -109,13 +109,13 @@ pub(super) fn read_capped(path: &Path, cap: u64) -> Capped {
     let Ok(file) = std::fs::File::open(path) else {
         return Capped::Absent;
     };
+    // One byte past the cap: a file that grew after `metadata()` is refused, not truncated.
     let mut bytes = Vec::new();
-    if file
-        .take(MAX_MANIFEST_BYTES)
-        .read_to_end(&mut bytes)
-        .is_err()
-    {
+    if file.take(cap + 1).read_to_end(&mut bytes).is_err() {
         return Capped::Absent;
+    }
+    if bytes.len() as u64 > cap {
+        return Capped::TooLarge;
     }
     String::from_utf8(bytes).map_or(Capped::Absent, Capped::Text)
 }

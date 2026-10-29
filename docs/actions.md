@@ -18,9 +18,12 @@ cannot start again in the same workspace, and the click focuses the live one.
   SIGTERM on stop, which a server such as `docker compose up` treats as a clean
   shutdown.
 - **`Session.action: Option<ActionRun>`** is runtime-only, like `terminal_id`:
-  the action id, a copied label, the resolved port and the readiness. A daemon
-  restart purges sessions (or orphans them under `persist_history`), so nothing
-  counts as running afterwards.
+  the action id, a copied label, the resolved port, the readiness and when the
+  process was spawned (`started_at`, reset by a restart, unlike `created_at`).
+  A daemon restart purges sessions (or orphans them under `persist_history`),
+  so nothing counts as running afterwards. `launch_command` stores the action's
+  command *template*, so restarting such an untagged task re-adopts the one
+  action with that command, with its `cwd`, port and environment.
 
 ## Running
 
@@ -35,7 +38,9 @@ cannot start again in the same workspace, and the click focuses the live one.
 The single-instance check and the session's creation are **one critical
 section**: two clicks or two windows cannot start it twice. Resolving the
 `cwd` (canonicalized, inside the checkout) and choosing a port (a bind probe)
-happen before that section, off the lock.
+happen before that section, off the lock. That section re-checks the chosen
+port against the live action sessions, and a launch whose port was taken
+meanwhile chooses again rather than sharing it.
 
 - **Editing** an action changes the next run, not the live one. `RestartSession`
   on a `Task` re-resolves the action as it is now, and it also accepts a
@@ -43,7 +48,8 @@ happen before that section, off the lock.
   it in the same session from an `action-restart` thread once it has exited
   (bounded by the kill grace plus a few seconds).
 - **Deleting** an action leaves its live sessions running, untagged; a restart
-  re-runs the command they last ran.
+  re-runs the command they last ran. A queued run of it has no process to keep,
+  so it fails ("its action was removed").
 - **`single_instance = false`** starts a new session every time.
 
 ### Ports
@@ -60,7 +66,7 @@ many servers ignore `PORT` (`vite --port {port}`).
 | `ready` | Probe |
 |---------|-------|
 | `none` | `Unprobed`; running is all there is to know |
-| `port { timeout_secs }` | TCP connect to `127.0.0.1:<port>` every 500 ms on its own thread |
+| `port { timeout_secs }` | TCP connect to `127.0.0.1:<port>` or `[::1]:<port>` every 500 ms on its own thread |
 | `output { pattern, timeout_secs }` | case-insensitive **literal** substring of the output, ANSI stripped |
 
 The output watch is owned by the task's PTY thread, handed to it before the
@@ -81,8 +87,12 @@ reuses each dependency in the same workspace, then parks the dependent as
 lets it go once it serves; any other (a migration) once it exits 0. A
 dependency that exits non-zero, times out or is closed fails the dependent
 with a reason. The waiter blocks on a bounded channel that session state and
-readiness changes ping, so it does not poll; `KillSession` on a waiting task
-fails it ("stopped before it started").
+readiness changes ping, so it does not poll; `KillSession` on a waiting task,
+or one whose PTY is still spawning, fails it ("stopped before it started")
+and the spawn kills and reaps what it started. The waiter's
+deadline adds the readiness timeouts along the longest dependency chain,
+plus a minute; a step dependency has no timeout of its own and is given the
+whole 15-minute cap.
 
 ## Suggestions
 

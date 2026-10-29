@@ -19,7 +19,7 @@ function task(
     id,
     kind: "Task",
     workspace_id: "ws",
-    action: { action_id: "dev", label: "dev", port: 5173, readiness },
+    action: { action_id: "dev", label: "dev", port: 5173, readiness, started_at: null },
     ...extra,
   });
 }

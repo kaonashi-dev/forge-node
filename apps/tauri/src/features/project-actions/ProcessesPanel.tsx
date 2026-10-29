@@ -45,7 +45,7 @@ function status(row: ProcessRow, at: number): string {
     case "failed":
       return "failed";
     default:
-      return elapsed(row.session.created_at, at);
+      return elapsed(row.session.action?.started_at ?? row.session.created_at, at);
   }
 }
 

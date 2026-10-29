@@ -120,6 +120,10 @@ pub struct ActionRun {
     pub label: String,
     pub port: Option<u16>,
     pub readiness: ActionReadiness,
+    /// When this run's process was spawned; a restart resets it, unlike the
+    /// session's `created_at`. `None` while it waits for its dependencies.
+    #[serde(default)]
+    pub started_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

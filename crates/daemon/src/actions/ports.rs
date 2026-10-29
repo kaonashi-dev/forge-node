@@ -1,7 +1,9 @@
 //! Port choice for an action, by bind probe. Runs off the core lock.
 
 use std::collections::HashSet;
-use std::net::{Ipv4Addr, TcpListener};
+use std::io::ErrorKind;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
+use std::time::Duration;
 
 use domain::{ActionPort, ACTION_PORT_SPAN};
 
@@ -53,10 +55,35 @@ fn in_range(spec: ActionPort, port: u16) -> bool {
     }
 }
 
-/// Whether nothing listens on the loopback port. A server bound to another
-/// interface only is not seen; the readiness probe connects to loopback too.
+/// Both loopbacks: Node resolves `localhost` to `::1` first on macOS, so a dev
+/// server is as likely to be on IPv6 only as on IPv4 only.
+const LOOPBACKS: [IpAddr; 2] = [
+    IpAddr::V4(Ipv4Addr::LOCALHOST),
+    IpAddr::V6(Ipv6Addr::LOCALHOST),
+];
+
+/// A refused loopback connect returns at once; this only bounds a wedged one.
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Whether something accepts connections on either loopback.
+#[must_use]
+pub fn answers(port: u16) -> bool {
+    LOOPBACKS
+        .iter()
+        .any(|ip| TcpStream::connect_timeout(&SocketAddr::new(*ip, port), CONNECT_TIMEOUT).is_ok())
+}
+
+/// Whether the port can be bound on both loopbacks and nothing answers on it.
+/// The connect catches a wildcard listener, which `SO_REUSEADDR` lets a
+/// loopback bind coexist with; a host without IPv6 does not count as taken.
 fn is_free(port: u16) -> bool {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+    let bindable = LOOPBACKS
+        .iter()
+        .all(|ip| match TcpListener::bind((*ip, port)) {
+            Ok(_) => true,
+            Err(error) => ip.is_ipv6() && error.kind() == ErrorKind::AddrNotAvailable,
+        });
+    bindable && !answers(port)
 }
 
 #[cfg(test)]
@@ -67,6 +94,20 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         (listener, port)
+    }
+
+    #[test]
+    fn a_port_held_on_ipv6_loopback_only_is_taken() {
+        let Ok(listener) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) else {
+            return;
+        };
+        let port = listener.local_addr().unwrap().port();
+        let spec = ActionPort {
+            base: port,
+            per_worktree: false,
+        };
+        assert_eq!(choose(spec, &HashSet::new(), None), PortChoice::Taken(port));
+        assert!(answers(port), "the readiness probe sees it too");
     }
 
     #[test]

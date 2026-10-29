@@ -6,7 +6,6 @@
 //! batch from then on. The port probe is its own thread, bounded by the
 //! action's timeout and by the session leaving `Running`.
 
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,7 +17,6 @@ use crate::core::Daemon;
 /// Bytes of recent, escape-stripped output kept to find a match that straddles
 /// two reads and the URL on its line.
 const TAIL_BYTES: usize = 4096;
-const PORT_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const PORT_RETRY: Duration = Duration::from_millis(500);
 
 /// A literal, case-insensitive search of a terminal's output, ANSI stripped.
@@ -164,12 +162,11 @@ impl Daemon {
     /// stops running. A port that opens notifies nobody, which is what makes
     /// this sleep-and-check loop the exception rather than the defect.
     fn probe_port(&self, session_id: SessionId, port: u16, deadline: Instant) {
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         loop {
             if !self.is_probing(session_id) {
                 return;
             }
-            if TcpStream::connect_timeout(&addr, PORT_CONNECT_TIMEOUT).is_ok() {
+            if super::ports::answers(port) {
                 self.set_readiness(
                     session_id,
                     ActionReadiness::Ready {

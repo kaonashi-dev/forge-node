@@ -426,6 +426,7 @@ fn sample_task_session() -> Session {
             readiness: domain::ActionReadiness::Ready {
                 url: Some("http://localhost:5174/".to_string()),
             },
+            started_at: Some(ts()),
         })),
         ..sample_session()
     }

@@ -1015,6 +1015,8 @@ export const response_action_suggestions = {
         command: "bun run test",
         kind: "test",
         pinned: false,
+        cwd: null,
+        single_instance: true,
         ready: {
           kind: "none",
         },
@@ -1035,6 +1037,8 @@ export const response_action_suggestions = {
           command: "bun run test",
           kind: "test",
           pinned: false,
+          cwd: null,
+          single_instance: true,
           ready: {
             kind: "none",
           },
@@ -1996,6 +2000,7 @@ export const task_session = {
       state: "ready",
       url: "http://localhost:5174/",
     },
+    started_at: "2026-08-30T12:00:00Z",
   },
 } as const;
 

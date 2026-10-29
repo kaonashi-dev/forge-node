@@ -3406,15 +3406,46 @@ impl Daemon {
                 .filter(|ws| ws.project_id == project_id)
                 .map(|ws| ws.id)
                 .collect();
-            let mut untagged = Vec::new();
-            for session in inner.sessions.values_mut() {
-                let gone = session
-                    .action
-                    .as_ref()
-                    .is_some_and(|run| !kept.contains(&run.action_id));
-                if gone && workspaces.contains(&session.workspace_id) {
-                    session.action = None;
-                    untagged.push(session.clone());
+            let gone: Vec<SessionId> = inner
+                .sessions
+                .values()
+                .filter(|session| {
+                    workspaces.contains(&session.workspace_id)
+                        && session
+                            .action
+                            .as_ref()
+                            .is_some_and(|run| !kept.contains(&run.action_id))
+                })
+                .map(|session| session.id)
+                .collect();
+            let mut untagged = Vec::with_capacity(gone.len());
+            for session_id in gone {
+                // A queued task has no process to keep running untagged, and its
+                // waiter stops watching once the tag is gone: fail it instead.
+                let queued = inner.sessions.get(&session_id).is_some_and(|session| {
+                    session.state == SessionState::Starting && session.terminal_id.is_none()
+                });
+                if queued {
+                    Self::set_session_state(
+                        &mut inner,
+                        session_id,
+                        SessionState::Failed {
+                            reason: "its action was removed".to_owned(),
+                        },
+                        None,
+                    );
+                }
+                if let Some(session) = inner.sessions.get_mut(&session_id) {
+                    // `launch_command` holds the template; untagged, it must be
+                    // the command that ran, port and all, for a later restart.
+                    if let (Some(run), Some(command)) =
+                        (session.action.take(), session.launch_command.as_mut())
+                    {
+                        *command = domain::resolve_command(command, run.port);
+                    }
+                    let snapshot = session.clone();
+                    let _ = inner.db.sessions().upsert(&snapshot);
+                    untagged.push(snapshot);
                 }
             }
             let positioned = actions
@@ -4937,7 +4968,8 @@ impl Daemon {
                 .get(&session_id)
                 .ok_or_else(|| ProtocolError::not_found("session"))?;
             let Some(term_id) = session.terminal_id else {
-                // A task waiting on its dependencies has no process yet.
+                // A task waiting on its dependencies, or one whose PTY is still
+                // spawning, has no process yet; the spawn reaps what it started.
                 let waiting =
                     session.kind == SessionKind::Task && session.state == SessionState::Starting;
                 drop(inner);
@@ -5712,18 +5744,25 @@ impl Daemon {
                     Some(terminal_id),
                 )
             } else {
-                let session = inner
-                    .sessions
-                    .get_mut(&session_id)
-                    .ok_or("session left Starting during spawn")?;
-                session.terminal_id = Some(terminal_id);
-                Some(session.clone())
+                inner.sessions.get_mut(&session_id).map(|session| {
+                    session.terminal_id = Some(terminal_id);
+                    session.clone()
+                })
             };
-            let Some(snapshot) = session else {
-                inner.terminals.remove(&terminal_id);
-                return Err("session left Starting during spawn".into());
-            };
-            snapshot
+            match session {
+                Some(snapshot) => snapshot,
+                None => {
+                    let orphan = inner.terminals.remove(&terminal_id);
+                    drop(inner);
+                    // A stop that landed while the PTY was spawning wins: no
+                    // `pty_loop` will reap this child, so it is killed and reaped here.
+                    if let Some(mut orphan) = orphan {
+                        signal_group(orphan.process_group, nix::sys::signal::Signal::SIGKILL);
+                        reap_child(orphan.child_pid, orphan.pty.as_mut());
+                    }
+                    return Err("session left Starting during spawn".into());
+                }
+            }
         };
 
         self.registry
@@ -5984,6 +6023,11 @@ impl Daemon {
                 rt.pending_damage = false;
                 rt.last_emit = Some(now);
             }
+    /// Emit damage held back while `terminal_id` had no subscriber.
+    pub(crate) fn flush_terminal(self: &Arc<Self>, terminal_id: TerminalId) {
+        self.pump_terminal_batch(terminal_id, &[], false, true, false);
+    }
+
             next_wake = rt.engine.sync_deadline();
             if subscribed && rt.pending_damage {
                 next_wake = Some(next_wake.map_or(emit_at, |sync| sync.min(emit_at)));
@@ -6023,11 +6067,6 @@ impl Daemon {
                     if let Some(session) = inner.sessions.get_mut(&session_id) {
                         session.title.terminal = title.clone();
                         session_update = Some(session.clone());
-    /// Emit damage held back while `terminal_id` had no subscriber.
-    pub(crate) fn flush_terminal(self: &Arc<Self>, terminal_id: TerminalId) {
-        self.pump_terminal_batch(terminal_id, &[], false, true, false);
-    }
-
                         // Rows are purged at the next start unless history persists.
                         if self.config.sessions.persist_history {
                             title_write = Some((session_id, title));

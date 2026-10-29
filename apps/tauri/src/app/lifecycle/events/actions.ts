@@ -1,7 +1,12 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "../../../ui/index";
 import type { ActionSuggestion, RepoActionsFile } from "../../../contracts/runtime";
-import { applySuggestions, setActionsError } from "../../../features/project-actions/actionsStore";
+import {
+  applySuggestions,
+  setActionsError,
+  setActionsStore,
+  type ActionsSaveResult,
+} from "../../../features/project-actions/actionsStore";
 import { focusSession } from "../../../features/sessions/sessionActions";
 import { forgeStore } from "../../../state/forgeStore";
 import type { Failure } from "../workbenchAnswer";
@@ -40,6 +45,9 @@ export function bindActionsEvents(): Promise<UnlistenFn[]> {
       }
       focusSession(payload.session);
     }),
+    listen<ActionsSaveResult>("runtime:actions_save", ({ payload }) =>
+      setActionsStore("actionsSave", payload),
+    ),
     listen<Failure>("workbench:action_failed", ({ payload }) =>
       toast({ title: "The action did not start", detail: payload.error, tone: "danger" }),
     ),
