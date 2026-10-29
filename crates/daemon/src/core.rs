@@ -138,6 +138,8 @@ pub(crate) struct Inner {
     /// Wakes for tasks waiting on their dependencies; pinged on every session
     /// state or readiness change, non-blocking, and empty while none waits.
     pub(crate) task_waiters: Vec<flume::Sender<()>>,
+    /// Tasks a client stopped, closed once they exit. Runtime-only.
+    pub(crate) close_on_exit: HashSet<SessionId>,
     /// Live editor control ports. Runtime-only; dropped when the supervisor
     /// ends. A full queue answers busy rather than dropping a request_id.
     editors: HashMap<SessionId, crate::editor::CommandPort>,
@@ -395,6 +397,7 @@ impl Daemon {
             worktree_ignores,
             project_actions,
             task_waiters: Vec::new(),
+            close_on_exit: HashSet::new(),
             editors: HashMap::new(),
             external_editors: HashMap::new(),
             ledger,
@@ -1051,7 +1054,7 @@ impl Daemon {
                 workspace_policy,
                 initial_prompt,
             ),
-            Request::KillSession { session_id } => self.kill_session(session_id),
+            Request::KillSession { session_id } => self.stop_session(session_id),
             Request::CloseSession { session_id } => self.close_session(session_id),
             Request::RestartSession { session_id } => self.restart_session(session_id),
             Request::RenameSession { session_id, title } => self.rename_session(session_id, title),
@@ -4956,6 +4959,50 @@ impl Daemon {
         Some(snapshot)
     }
 
+    /// `KillSession` from a client. A stopped `Task` is closed once it has
+    /// exited: kept, it would be an exited row, and opening one runs it again.
+    /// Internal kills (a restart, a sweep) go through [`Self::kill_session`]
+    /// and keep the row.
+    fn stop_session(self: &Arc<Self>, session_id: SessionId) -> Result<Response, ProtocolError> {
+        {
+            let mut inner = self.lock();
+            let live_task = inner.sessions.get(&session_id).is_some_and(|session| {
+                session.kind == SessionKind::Task && session.state.is_active()
+            });
+            if live_task {
+                inner.close_on_exit.insert(session_id);
+            }
+        }
+        match self.kill_session(session_id) {
+            Ok(response) => {
+                // A queued task is failed synchronously; it has no exit to wait for.
+                self.close_if_stopped(session_id);
+                Ok(response)
+            }
+            Err(error) => {
+                self.lock().close_on_exit.remove(&session_id);
+                Err(error)
+            }
+        }
+    }
+
+    /// Close a session [`Self::stop_session`] marked, once it is terminal.
+    fn close_if_stopped(self: &Arc<Self>, session_id: SessionId) {
+        let due = {
+            let mut inner = self.lock();
+            let ended = inner
+                .sessions
+                .get(&session_id)
+                .is_some_and(|session| session.state.is_terminal());
+            ended && inner.close_on_exit.remove(&session_id)
+        };
+        if due {
+            if let Err(error) = self.close_session(session_id) {
+                tracing::warn!(%session_id, %error, "could not close a stopped task");
+            }
+        }
+    }
+
     pub(crate) fn kill_session(
         self: &Arc<Self>,
         session_id: SessionId,
@@ -5226,6 +5273,7 @@ impl Daemon {
     fn remove_session_cache(inner: &mut Inner, session_id: SessionId) {
         crate::orchestration::forget_session(inner, session_id);
         inner.sessions.remove(&session_id);
+        inner.close_on_exit.remove(&session_id);
         inner.idle_warned.remove(&session_id);
         inner.resumed_from.remove(&session_id);
         inner.read_only.remove(&session_id);
@@ -5975,6 +6023,11 @@ impl Daemon {
             .subscribed
     }
 
+    /// Emit damage held back while `terminal_id` had no subscriber.
+    pub(crate) fn flush_terminal(self: &Arc<Self>, terminal_id: TerminalId) {
+        self.pump_terminal_batch(terminal_id, &[], false, true, false);
+    }
+
     pub(crate) fn pump_terminal_batch(
         self: &Arc<Self>,
         terminal_id: TerminalId,
@@ -6023,11 +6076,6 @@ impl Daemon {
                 rt.pending_damage = false;
                 rt.last_emit = Some(now);
             }
-    /// Emit damage held back while `terminal_id` had no subscriber.
-    pub(crate) fn flush_terminal(self: &Arc<Self>, terminal_id: TerminalId) {
-        self.pump_terminal_batch(terminal_id, &[], false, true, false);
-    }
-
             next_wake = rt.engine.sync_deadline();
             if subscribed && rt.pending_damage {
                 next_wake = Some(next_wake.map_or(emit_at, |sync| sync.min(emit_at)));
@@ -6184,6 +6232,7 @@ impl Daemon {
             }
             self.registry
                 .broadcast_domain(DaemonEvent::SessionUpdated(session));
+            self.close_if_stopped(session_id);
         }
     }
 

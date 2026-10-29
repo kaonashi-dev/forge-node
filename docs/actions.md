@@ -50,6 +50,11 @@ meanwhile chooses again rather than sharing it.
 - **Deleting** an action leaves its live sessions running, untagged; a restart
   re-runs the command they last ran. A queued run of it has no process to keep,
   so it fails ("its action was removed").
+- **Stopping** a run (`KillSession` from any client) closes its session once
+  it has exited, waiting or not: a row left behind would be an exited session,
+  and opening one runs it again. A run that exits by itself, or is interrupted
+  from its terminal, stays so its output can be read. A restart's own kill
+  keeps the session.
 - **`single_instance = false`** starts a new session every time.
 
 ### Ports
@@ -89,7 +94,7 @@ dependency that exits non-zero, times out or is closed fails the dependent
 with a reason. The waiter blocks on a bounded channel that session state and
 readiness changes ping, so it does not poll; `KillSession` on a waiting task,
 or one whose PTY is still spawning, fails it ("stopped before it started")
-and the spawn kills and reaps what it started. The waiter's
+and closes it, and the spawn kills and reaps what it started. The waiter's
 deadline adds the readiness timeouts along the longest dependency chain,
 plus a minute; a step dependency has no timeout of its own and is given the
 whole 15-minute cap.

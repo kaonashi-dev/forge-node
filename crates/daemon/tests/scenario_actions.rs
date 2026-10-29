@@ -576,6 +576,10 @@ fn a_failed_dependency_fails_its_dependent_and_a_waiting_one_can_be_stopped() {
         web_session,
         |s| matches!(&s.state, SessionState::Failed { reason } if reason.contains("before it started")),
     );
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::SessionRemoved { session_id } if *session_id == web_session)
+    })
+    .expect("a stopped queued task is closed too");
 
     let mut cycle_a = action(project_id, "a", "true");
     let mut cycle_b = action(project_id, "b", "true");
@@ -592,7 +596,7 @@ fn a_failed_dependency_fails_its_dependent_and_a_waiting_one_can_be_stopped() {
 }
 
 #[test]
-fn stopping_a_task_or_interrupting_it_reports_it_exited() {
+fn a_stopped_task_is_closed_and_an_interrupted_one_stays_exited() {
     let (harness, repo) = setup();
     let daemon = harness.boot();
     let client = daemon.connect("actions");
@@ -609,13 +613,12 @@ fn stopping_a_task_or_interrupting_it_reports_it_exited() {
             session_id: stopped,
         })
         .expect("KillSession");
-    let exited = wait_for_session(&events, stopped, |s| !s.state.is_active());
-    assert!(
-        matches!(exited.state, SessionState::Exited { .. }),
-        "{:?}",
-        exited.state
-    );
-    assert_eq!(exited.terminal_id, None);
+    // An exited row would rerun the server the moment it was opened again.
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::SessionRemoved { session_id } if *session_id == stopped)
+    })
+    .expect("a stopped task is closed once it exits");
+    assert!(common::session(&client, stopped).is_none());
 
     let (interrupted, terminal_id) = started(run(&client, workspace_id, watch.id));
     common::attach_and_read_line(&client, &events, terminal_id, "watching");
@@ -625,6 +628,10 @@ fn stopping_a_task_or_interrupting_it_reports_it_exited() {
         matches!(exited.state, SessionState::Exited { .. }),
         "{:?}",
         exited.state
+    );
+    assert!(
+        common::session(&client, interrupted).is_some(),
+        "a task that ended by itself keeps its output"
     );
     // The slot is free again: a run starts a new session rather than naming this one.
     assert!(matches!(
