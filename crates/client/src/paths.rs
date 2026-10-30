@@ -31,8 +31,17 @@ impl SocketQuery {
     }
 }
 
+/// Why a daemon socket path could not be resolved.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum SocketPathError {
+    /// No candidate path fits in a Unix socket address.
+    #[error("daemon socket path is too long: {0}")]
+    TooLong(PathBuf),
+}
+
 /// The socket a client should open.
-pub fn resolve_socket(query: &SocketQuery) -> Result<PathBuf, String> {
+pub fn resolve_socket(query: &SocketQuery) -> Result<PathBuf, SocketPathError> {
     if let Some(path) = &query.forge_socket {
         return Ok(path.clone());
     }
@@ -54,14 +63,11 @@ pub fn resolve_socket(query: &SocketQuery) -> Result<PathBuf, String> {
     if fits(&path) {
         Ok(path)
     } else {
-        Err(format!(
-            "daemon socket path is too long: {}",
-            path.display()
-        ))
+        Err(SocketPathError::TooLong(path))
     }
 }
 
-pub fn socket_path() -> Result<PathBuf, String> {
+pub fn socket_path() -> Result<PathBuf, SocketPathError> {
     resolve_socket(&SocketQuery::from_env())
 }
 

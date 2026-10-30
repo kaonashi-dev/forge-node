@@ -1568,10 +1568,11 @@ impl App {
         let socket = match socket {
             Some(path) => path,
             None => client::socket_path().map_err(|error| {
+                let message = error.to_string();
                 self.fail(
                     3,
                     "unreachable",
-                    &error,
+                    &message,
                     json!({}),
                     vec![vec!["forgectl".into(), "status".into()]],
                 )

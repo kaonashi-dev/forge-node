@@ -87,6 +87,7 @@ const BINARY_PROBE: usize = 8 * 1024;
 
 /// What went wrong talking to the workspace filesystem.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum FsError {
     /// The path escaped the workspace root.
     #[error("path escapes workspace: {0}")]
@@ -640,6 +641,23 @@ pub fn write_file(
     }
     if let Some(perms) = mode {
         let _ = fs::set_permissions(&tmp, perms);
+    }
+    if existed {
+        // Re-check after the bytes are on disk: a writer that landed during the
+        // write must not be lost. The rename is not a compare-and-swap, so this
+        // narrows the window rather than closing it; a hard guarantee needs a
+        // swap-and-verify commit.
+        let current = match read_file(&root, relative) {
+            Ok(current) => current,
+            Err(error) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(error);
+            }
+        };
+        if current.revision != expected_revision {
+            let _ = fs::remove_file(&tmp);
+            return Err(FsError::RevisionMismatch { current });
+        }
     }
     // A file that did not exist may have appeared while it was being written.
     // An exclusive rename at commit refuses to replace it; a plain `rename`

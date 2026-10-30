@@ -93,6 +93,7 @@ pub struct Location {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LspError {
     #[error("cannot start language server: {0}")]
     Spawn(#[source] std::io::Error),

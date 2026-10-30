@@ -217,9 +217,18 @@ pub fn prune(repo: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Whether a worktree removal may discard uncommitted state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Force {
+    /// Pass `--force` to `git worktree remove`.
+    Yes,
+    /// Refuse a dirty worktree.
+    No,
+}
+
 /// Remove the worktree at `path`, then prune stale administrative entries.
 ///
-/// Never deletes the branch. With `force = false` git itself refuses to remove a
+/// Never deletes the branch. With [`Force::No`] git itself refuses to remove a
 /// dirty worktree; callers should consult [`precheck_remove`] first.
 ///
 /// A `path` that no longer exists on disk is not an error: the removal reduces
@@ -228,7 +237,7 @@ pub fn prune(repo: &Path) -> Result<(), GitError> {
 /// # Errors
 /// - [`GitError::CommandFailed`] if `git worktree remove`/`prune` fails.
 /// - [`GitError::NonUtf8Path`] if `path` is not valid UTF-8.
-pub fn remove(repo: &Path, path: &Path, force: bool) -> Result<(), GitError> {
+pub fn remove(repo: &Path, path: &Path, force: Force) -> Result<(), GitError> {
     let path_str = path_to_str(path)?;
 
     // `git worktree remove` refuses a path that is no longer on disk ("is not
@@ -238,7 +247,7 @@ pub fn remove(repo: &Path, path: &Path, force: bool) -> Result<(), GitError> {
     // left of it, and that is exactly what `prune` drops.
     if path.exists() {
         let mut args: Vec<&str> = vec!["worktree", "remove"];
-        if force {
+        if matches!(force, Force::Yes) {
             args.push("--force");
         }
         args.push("--");
@@ -248,7 +257,7 @@ pub fn remove(repo: &Path, path: &Path, force: bool) -> Result<(), GitError> {
 
     prune(repo)?;
 
-    tracing::debug!(target: "git", force, "worktree.remove");
+    tracing::debug!(target: "git", ?force, "worktree.remove");
     Ok(())
 }
 

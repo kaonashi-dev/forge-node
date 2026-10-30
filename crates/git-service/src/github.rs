@@ -793,7 +793,10 @@ fn run_gh(cli: &GitHubCli, cwd: Option<&Path>, args: &[String]) -> Result<GhOutp
 }
 
 fn kill_process_group(pid: u32) {
-    #[allow(clippy::cast_possible_wrap)]
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "a pid always fits in i32 on unix"
+    )]
     let raw = pid as i32;
     let _ = nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(-raw),

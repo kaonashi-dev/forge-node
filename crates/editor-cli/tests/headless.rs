@@ -488,7 +488,10 @@ fn a_window_of_very_long_lines_is_clipped_to_the_budget() {
 
 /// `std::io::Write` is used by the harness only; the editor never wrote a byte
 /// to a terminal here, which is the whole claim.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "the harness uses Write; the editor itself does not"
+)]
 fn _harness_writes_nothing(_: &mut dyn Write) {}
 
 /// Extending a selection publishes it, in the same units the caret uses.

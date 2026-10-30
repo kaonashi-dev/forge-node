@@ -52,7 +52,7 @@ pub fn write_pty(writer: &SharedWriter, bytes: &[u8]) -> std::io::Result<()> {
 
 pub struct TerminalRuntime {
     /// Reserved for diagnostics/stats; the map key is the id at runtime.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "reserved for diagnostics and stats")]
     pub id: TerminalId,
     pub session_id: SessionId,
     pub pty: Box<dyn PtyHandle>,
@@ -68,7 +68,7 @@ pub struct TerminalRuntime {
     pub pending_damage: bool,
     pub size: PtySize,
     /// Reserved for diagnostics/stats; killing uses `process_group`.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "reserved for diagnostics and stats")]
     pub child_pid: u32,
     pub process_group: i32,
     /// Last terminal-reported (OSC 0/2) title we propagated to the session.

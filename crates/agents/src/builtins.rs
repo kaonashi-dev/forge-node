@@ -221,7 +221,10 @@ fn opencode_config_dir() -> Option<ConfigDirSpec> {
 /// and take no default args; only the id, display name, candidate list,
 /// expected marker, config directory, resume, prompt and read-only spellings
 /// differ.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one positional field per descriptor capability keeps the built-in table readable"
+)]
 fn descriptor(
     id: &str,
     display_name: &str,

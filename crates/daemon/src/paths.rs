@@ -15,6 +15,7 @@ pub const MAX_SOCKET_PATH_LEN: usize = 100;
 
 /// Errors resolving paths.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PathError {
     #[error("socket path too long: {len} bytes (max {max}) at {path}")]
     SocketPathTooLong {
@@ -120,7 +121,14 @@ fn socket_path_from(forge_socket: Option<std::ffi::OsString>) -> Result<PathBuf,
             .map(PathBuf::from),
         uid: uid(),
     })
-    .map_err(|_| PathError::NoRuntimeDir)
+    .map_err(|error| match error {
+        client::SocketPathError::TooLong(path) => PathError::SocketPathTooLong {
+            len: path.as_os_str().len(),
+            max: client::MAX_SOCKET_PATH_LEN,
+            path: path.display().to_string(),
+        },
+        _ => PathError::NoRuntimeDir,
+    })
 }
 
 /// The singleton follows the socket namespace, including `FORGE_SOCKET`.

@@ -10,11 +10,12 @@ mod paths;
 mod store;
 
 pub use clamp::{read_capped, CappedBytes};
-pub use paths::{resolve_socket, socket_path, SocketQuery, MAX_SOCKET_PATH_LEN};
+pub use paths::{resolve_socket, socket_path, SocketPathError, SocketQuery, MAX_SOCKET_PATH_LEN};
 
 pub use domain::{DirectoryListing, SymlinkTarget};
 pub use ipc::{
     ActionLaunch, ActionSuggestions, Branches, Client, ClientError, DaemonInfo, SendContextResult,
+    StopSessions,
 };
 pub use protocol::{
     DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ProtocolCodecError, ProtocolError,

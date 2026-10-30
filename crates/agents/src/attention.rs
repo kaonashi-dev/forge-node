@@ -28,11 +28,13 @@ pub struct AttentionAssets {
 }
 
 /// Embedded OpenCode plugin source.
+#[must_use]
 pub fn opencode_plugin_source() -> &'static str {
     include_str!("forge-attention.js")
 }
 
 /// Embedded BEL script source.
+#[must_use]
 pub fn ring_bell_source() -> &'static str {
     include_str!("forge-ring-bell.sh")
 }
@@ -274,10 +276,9 @@ fn ensure_cursor_hooks(home: &Path, ring_bell: &Path) -> std::io::Result<bool> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(
-        &path,
-        format!("{}\n", serde_json::to_string_pretty(&root).unwrap()),
-    )?;
+    let body = serde_json::to_string_pretty(&root)
+        .map_err(|error| std::io::Error::other(format!("serialize hooks: {error}")))?;
+    std::fs::write(&path, format!("{body}\n"))?;
     Ok(true)
 }
 

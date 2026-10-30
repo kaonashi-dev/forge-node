@@ -54,19 +54,25 @@ fn parent(root: &File, relative: &Path, create: bool) -> io::Result<File> {
             return Err(io::Error::other("invalid directory component"));
         };
         let name = CString::new(name.as_bytes())?;
-        // The descriptors and C string remain live; NOFOLLOW rejects replaced parents.
+        // SAFETY: `directory` and `name` are live for the call; `name` is
+        // NUL-terminated and `openat` retains neither pointer. NOFOLLOW rejects
+        // a replaced parent.
         let mut fd = unsafe { openat(directory.as_raw_fd(), name.as_ptr(), DIRECTORY_FLAGS) };
         if fd < 0 && create && io::Error::last_os_error().kind() == io::ErrorKind::NotFound {
+            // SAFETY: same descriptor and NUL-terminated name; `mkdirat` reads
+            // only the mode.
             let created = unsafe { mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o777) };
             if created < 0 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
                 return Err(io::Error::last_os_error());
             }
+            // SAFETY: the parent was created above; the same live pointers apply.
             fd = unsafe { openat(directory.as_raw_fd(), name.as_ptr(), DIRECTORY_FLAGS) };
         }
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        // A successful openat transfers this descriptor to File's sole ownership.
+        // SAFETY: a successful `openat` returned a fresh descriptor with no
+        // other owner; `File` takes sole ownership.
         directory = unsafe { File::from_raw_fd(fd) };
     }
     Ok(directory)
@@ -117,6 +123,9 @@ pub(super) fn rename(root: &Path, source: &Path, target: &Path) -> io::Result<()
         ) -> c_int;
     }
     // Parent descriptors anchor both lookups; EXCL/NOREPLACE protects the final entry.
+    // SAFETY: both parent descriptors and both NUL-terminated names are live
+    // for the call, which only reads them; EXCL refuses a destination that
+    // appeared after the caller's check.
     #[cfg(target_os = "macos")]
     let result = unsafe {
         renameatx_np(
@@ -127,6 +136,8 @@ pub(super) fn rename(root: &Path, source: &Path, target: &Path) -> io::Result<()
             RENAME_EXCLUSIVE,
         )
     };
+    // SAFETY: the Linux call has the same live-descriptor and live-name
+    // contract as the macOS branch.
     #[cfg(target_os = "linux")]
     let result = unsafe {
         renameat2(
@@ -191,11 +202,14 @@ fn entry_name(path: &Path) -> io::Result<CString> {
 }
 
 fn open_nofollow(parent: &File, name: &CString) -> io::Result<File> {
+    // SAFETY: `parent` and `name` are live for the call; `name` is
+    // NUL-terminated and the descriptor is not retained by the callee.
     let fd = unsafe { openat(parent.as_raw_fd(), name.as_ptr(), FILE_READ_FLAGS) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
-    // `openat` transferred this descriptor; `File` is its only owner.
+    // SAFETY: `openat` transferred this fresh descriptor; `File` is its only
+    // owner.
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
@@ -214,6 +228,8 @@ fn copy_regular(
         return Err(CopyError::TooLarge { size: meta.len() });
     }
     let target_parent = parent(root, target.parent().unwrap_or(Path::new("")), true)?;
+    // SAFETY: the parent descriptor and NUL-terminated name are live; the mode
+    // argument is read only because `O_CREAT` is set.
     let fd = unsafe {
         openat(
             target_parent.as_raw_fd(),
@@ -225,6 +241,8 @@ fn copy_regular(
     if fd < 0 {
         return Err(io::Error::last_os_error().into());
     }
+    // SAFETY: a successful `openat` returned a fresh descriptor; `File` takes
+    // sole ownership.
     let mut dest = unsafe { File::from_raw_fd(fd) };
     let copied = match io::copy(&mut source.take(limit + 1), &mut dest) {
         Ok(copied) => copied,
@@ -255,6 +273,8 @@ fn copy_symlink(
 ) -> Result<(), CopyError> {
     let link = read_link(source_parent, source_name)?;
     let target_parent = parent(root, target.parent().unwrap_or(Path::new("")), true)?;
+    // SAFETY: both C strings are NUL-terminated and live for the call; the
+    // parent descriptor is live and `symlinkat` copies the target.
     let result = unsafe {
         symlinkat(
             link.as_ptr(),
@@ -271,6 +291,9 @@ fn copy_symlink(
 
 fn read_link(parent: &File, name: &CString) -> io::Result<CString> {
     let mut buf = vec![0u8; 4096];
+    // SAFETY: the parent and NUL-terminated name are live, and `buf` is a
+    // writable allocation of the length passed; `readlinkat` writes at most
+    // that many bytes.
     let read = unsafe {
         readlinkat(
             parent.as_raw_fd(),
@@ -292,5 +315,7 @@ fn read_link(parent: &File, name: &CString) -> io::Result<CString> {
 }
 
 fn remove_entry(parent: &File, name: &CString) {
+    // SAFETY: the parent descriptor and NUL-terminated name are live for the
+    // call; `unlinkat` reads neither after returning.
     let _ = unsafe { unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
 }

@@ -245,7 +245,8 @@ pub(crate) fn kill_grouped_child(child: &mut Child) {
             fn kill(pid: i32, signal: i32) -> i32;
         }
         if let Ok(pid) = i32::try_from(child.id()) {
-            // SIGKILL = 9; negative pid means the process group.
+            // SAFETY: `kill` reads only its two integer arguments; the negative
+            // pid is the child's process group, set by `process_group(0)`.
             let _ = unsafe { kill(-pid, 9) };
         }
     }
@@ -281,6 +282,7 @@ fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
 
 /// Search `path_entries` in order for an executable file named `name` and
 /// return the first hit as an absolute-when-the-entry-is path.
+#[must_use]
 pub fn find_executable(name: &str, path_entries: &[PathBuf]) -> Option<PathBuf> {
     path_entries.iter().find_map(|dir| {
         let candidate = dir.join(name);

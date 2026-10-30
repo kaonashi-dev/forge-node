@@ -57,7 +57,10 @@ pub enum ProtocolCodecError {
 /// Returns [`ProtocolCodecError::Encode`] if serialization fails, or
 /// [`ProtocolCodecError::FrameTooLarge`] if the payload exceeds
 /// [`MAX_FRAME_SIZE`].
-#[allow(clippy::cast_possible_truncation)] // length is checked <= MAX_FRAME_SIZE < u32::MAX
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "length is checked <= MAX_FRAME_SIZE < u32::MAX"
+)]
 pub fn encode_frame<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtocolCodecError> {
     let mut writer = FrameWriter {
         bytes: vec![0; LEN_PREFIX],

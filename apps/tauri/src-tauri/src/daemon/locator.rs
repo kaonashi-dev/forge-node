@@ -52,6 +52,7 @@ impl Locator {
             xdg_runtime_dir: self.xdg_runtime_dir.clone(),
             uid: self.uid,
         })
+        .map_err(|error| error.to_string())
     }
 
     pub fn daemon_executable(&self) -> Result<PathBuf, String> {

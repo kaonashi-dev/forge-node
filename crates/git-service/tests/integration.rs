@@ -6,7 +6,7 @@ use git_service::command::run_git;
 use git_service::{
     create, current_branch, default_remote, discover_root, fetch, has_remote, ignored_paths,
     list_branches, list_refs, list_remotes, list_worktrees, precheck_remove, prune, remove, status,
-    GitError,
+    Force, GitError,
 };
 use std::path::Path;
 use tempfile::{tempdir, TempDir};
@@ -38,19 +38,19 @@ fn setup(repo: &Path, args: &[&str]) {
 
 /// Create a temp repo on `main` with one commit and a configured local identity.
 fn init_repo() -> TempDir {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("tempdir");
     let p = dir.path();
     setup(p, &["-c", "init.defaultBranch=main", "init"]);
     setup(p, &["config", "user.email", "test@example.com"]);
     setup(p, &["config", "user.name", "Forge Test"]);
-    std::fs::write(p.join("README.md"), "hello\n").unwrap();
+    std::fs::write(p.join("README.md"), "hello\n").expect("write README");
     setup(p, &["add", "."]);
     setup(p, &["-c", "commit.gpgsign=false", "commit", "-m", "init"]);
     dir
 }
 
 fn canon(p: &Path) -> std::path::PathBuf {
-    std::fs::canonicalize(p).unwrap()
+    std::fs::canonicalize(p).expect("canonicalize")
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn create_new_branch_worktree_then_list_and_remove() {
     assert!(precheck_remove(repo.path(), &wt_path).unwrap().dirty);
 
     // Force-remove (it is dirty) and confirm it disappears from the listing.
-    remove(repo.path(), &wt_path, true).unwrap();
+    remove(repo.path(), &wt_path, Force::Yes).unwrap();
     let after = list_worktrees(repo.path()).unwrap();
     assert!(after.iter().all(|w| canon(&w.path) != wt_canon));
 
@@ -182,7 +182,7 @@ fn remove_worktree_whose_directory_was_deleted_by_hand() {
 
     // The unforced removal is the one the GUI issues first, and it succeeds:
     // pruning is the whole repair once the directory is gone.
-    remove(repo.path(), &wt_path, false).unwrap();
+    remove(repo.path(), &wt_path, Force::No).unwrap();
     let after = list_worktrees(repo.path()).unwrap();
     assert!(after.iter().all(|w| canon(&w.path) != wt_canon));
 
@@ -398,7 +398,7 @@ fn init_origin_with(branches: &[&str]) -> TempDir {
             dir.path().join(format!("{}.txt", branch.replace('/', "-"))),
             "x\n",
         )
-        .unwrap();
+        .expect("write branch file");
         setup(dir.path(), &["add", "."]);
         setup(
             dir.path(),

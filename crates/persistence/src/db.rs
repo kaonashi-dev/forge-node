@@ -66,8 +66,22 @@ pub struct Db {
     location: PathBuf,
 }
 
+impl std::fmt::Debug for Db {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Db")
+            .field("location", &self.location)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone)]
 pub struct ContextWriter(Arc<Mutex<Connection>>);
+
+impl std::fmt::Debug for ContextWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContextWriter").finish_non_exhaustive()
+    }
+}
 
 impl ContextWriter {
     pub fn insert(&self, envelope: &domain::ContextEnvelope) -> Result<(), DbError> {

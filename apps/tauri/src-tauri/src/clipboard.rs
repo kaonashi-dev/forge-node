@@ -116,11 +116,15 @@ mod platform {
         // pasteboard hands back autoreleased objects.
         autoreleasepool(|_| {
             let pasteboard = NSPasteboard::generalPasteboard();
+            // SAFETY: `NSPasteboardTypeString` is an AppKit-owned static that
+            // lives for the process; the call only borrows it.
             let data = pasteboard.dataForType(unsafe { NSPasteboardTypeString })?;
             let length = data.len();
             if length == 0 {
                 return None;
             }
+            // SAFETY: `data` owns the bytes for the duration of the
+            // autorelease pool, and `length` is that buffer's length.
             let bytes = unsafe { data.as_bytes_unchecked() };
             if length <= limit {
                 return Some(ClipboardText {
@@ -145,6 +149,8 @@ mod platform {
             let pasteboard = NSPasteboard::generalPasteboard();
             let string = NSString::from_str(text);
             pasteboard.clearContents();
+            // SAFETY: the pasteboard type is an AppKit-owned static valid for
+            // the process; the method copies the string.
             let _ = pasteboard.setString_forType(&string, unsafe { NSPasteboardTypeString });
         });
     }

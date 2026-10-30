@@ -31,6 +31,7 @@ pub struct Query {
 ///
 /// Only a regular expression can be invalid: a literal is always a literal.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum QueryError {
     /// The pattern is longer than [`MAX_PATTERN_BYTES`].
     TooLong { limit: usize },
@@ -46,6 +47,8 @@ impl std::fmt::Display for QueryError {
         }
     }
 }
+
+impl std::error::Error for QueryError {}
 
 thread_local! {
     /// The last compiled pattern, keyed on what it was compiled from.

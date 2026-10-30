@@ -46,6 +46,7 @@ pub fn set_spawn_env(env: Vec<(String, String)>) {
     SPAWN_ENV.with(|slot| *slot.borrow_mut() = env);
 }
 
+#[must_use]
 pub fn take_spawn_env() -> Vec<(String, String)> {
     SPAWN_ENV.with(|slot| std::mem::take(&mut *slot.borrow_mut()))
 }
@@ -752,8 +753,10 @@ pub fn note_session_exit(daemon: &Daemon, session_id: SessionId) {
     }
 }
 
-// Fields of `CreateRun`, kept flat so the handler matches the request.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fields of CreateRun, kept flat so the handler matches the request"
+)]
 fn create_run(
     daemon: &Arc<Daemon>,
     caller: Option<SessionId>,
@@ -1002,8 +1005,10 @@ fn update_brief(
     Ok(Response::Ack)
 }
 
-// Fields of `CreateTask`, kept flat so the handler matches the request.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fields of CreateTask, kept flat so the handler matches the request"
+)]
 fn create_task(
     daemon: &Daemon,
     caller: Option<SessionId>,
@@ -2565,6 +2570,7 @@ fn set_state(
             domain::orchestration::BoardValueError::NotJson => {
                 ProtocolError::invalid_request("board value is not json")
             }
+            _ => ProtocolError::invalid_request("board value is invalid"),
         })?;
     }
     let mut inner = daemon.lock();
@@ -2576,6 +2582,11 @@ fn set_state(
         .board
         .get(&(run_id, key.to_owned()))
         .map(|e| e.version);
+    let key_state = if current.is_none() && !delete {
+        domain::orchestration::BoardKeyState::New
+    } else {
+        domain::orchestration::BoardKeyState::Existing
+    };
     if board_is_full(
         inner
             .ledger
@@ -2583,7 +2594,7 @@ fn set_state(
             .keys()
             .filter(|(id, _)| *id == run_id)
             .count(),
-        current.is_none() && !delete,
+        key_state,
     ) {
         return Err(policy(RailRefusal {
             rail: "max_board_keys",

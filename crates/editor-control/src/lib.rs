@@ -78,6 +78,7 @@ pub const MAX_DOCUMENT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Why a control message could not travel.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ControlError {
     /// The socket itself failed.
     #[error("control io: {0}")]
@@ -127,7 +128,7 @@ pub fn read_frame<M: DeserializeOwned>(reader: &mut impl Read) -> Result<M, Cont
 }
 
 /// Retains partial headers and payloads when a read deadline expires.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct FrameReader {
     header: [u8; 4],
     header_read: usize,

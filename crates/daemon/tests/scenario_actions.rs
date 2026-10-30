@@ -325,9 +325,9 @@ fn readiness_of(
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
+        .expect("bind free port")
         .local_addr()
-        .unwrap()
+        .expect("local addr")
         .port()
 }
 

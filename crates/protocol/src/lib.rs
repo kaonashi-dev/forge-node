@@ -42,9 +42,10 @@ pub const PROTOCOL_VERSION: u32 = 34;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-// `Request` is the decoded frame. Boxing `body` would not shrink that
-// allocation; handlers move it immediately.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Request is the decoded frame; boxing body would not shrink that allocation and handlers move it immediately"
+)]
 pub enum ClientMessage {
     Hello(Hello),
     /// A request correlated by `request_id` with its future response.
@@ -470,7 +471,10 @@ mod tests {
         }
         #[derive(Serialize)]
         enum FutureDaemonMessage {
-            #[allow(dead_code)]
+            #[allow(
+                dead_code,
+                reason = "a stand-in variant that keeps this enum's size comparable"
+            )]
             HelloAck(HelloAck),
             Response {
                 request_id: u64,

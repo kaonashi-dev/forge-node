@@ -47,7 +47,10 @@ impl Color {
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)] // each arm masks or bounds to a byte first
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "each arm masks or bounds to a byte first"
+    )]
     const fn unpacked(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::Default),

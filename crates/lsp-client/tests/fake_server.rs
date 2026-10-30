@@ -86,15 +86,15 @@ impl Fake {
     }
 
     fn send(&mut self, message: &Value) {
-        let body = serde_json::to_vec(message).unwrap();
+        let body = serde_json::to_vec(message).expect("serialize fake message");
         self.send_raw(&body);
     }
 
     fn send_raw(&mut self, body: &[u8]) {
         let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
         frame.extend_from_slice(body);
-        self.output.write_all(&frame).unwrap();
-        self.output.flush().unwrap();
+        self.output.write_all(&frame).expect("write fake frame");
+        self.output.flush().expect("flush fake frame");
     }
 
     fn reply(&mut self, id: &Value, result: Value) {
@@ -215,7 +215,7 @@ impl Fake {
                 let child = std::process::Command::new("/bin/sleep")
                     .arg("30")
                     .spawn()
-                    .unwrap();
+                    .expect("spawn sleep");
                 eprintln!("grandchild {}", child.id());
                 self.grandchild = Some(child);
             }
@@ -280,7 +280,7 @@ impl Fake {
             6 => {
                 let mut body =
                     serde_json::to_vec(&json!({"jsonrpc": "2.0", "id": id, "result": null}))
-                        .unwrap();
+                        .expect("serialize fake reply");
                 body.extend(std::iter::repeat_n(b' ', 16 * 1024));
                 self.send_raw(&body);
             }
@@ -322,7 +322,7 @@ fn start(mode: &str) -> Fixture {
 }
 
 fn start_with(mode: &str, limits: Limits, settings: Value) -> Fixture {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("fake server tempdir");
     let trap = if mode == "stubborn" {
         "trap '' TERM; "
     } else {
@@ -338,7 +338,7 @@ fn start_with(mode: &str, limits: Limits, settings: Value) -> Fixture {
             "-c".into(),
             script,
             std::env::current_exe()
-                .unwrap()
+                .expect("current exe")
                 .to_string_lossy()
                 .into_owned(),
         ],
@@ -349,7 +349,7 @@ fn start_with(mode: &str, limits: Limits, settings: Value) -> Fixture {
         limits,
     };
     Fixture {
-        server: Server::start(config).unwrap(),
+        server: Server::start(config).expect("start fake server"),
         root,
     }
 }
@@ -387,7 +387,7 @@ fn eventually(what: &str, check: impl Fn() -> bool) {
 }
 
 fn group_gone(pgid: u32) -> bool {
-    let pgid = i32::try_from(pgid).unwrap();
+    let pgid = i32::try_from(pgid).expect("pgid fits i32");
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pgid), None) == Err(nix::errno::Errno::ESRCH)
 }
 

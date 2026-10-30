@@ -16,7 +16,10 @@
 //! deadline instead of sleeping a fixed amount, so the suite stays honest on
 //! slow CI machines.
 
-#![allow(dead_code)] // Each test binary uses a different subset of the harness.
+#![allow(
+    dead_code,
+    reason = "each test binary uses a different subset of the harness"
+)]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

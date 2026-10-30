@@ -121,6 +121,11 @@ async fn read_frame(reader: &mut (impl AsyncReadExt + Unpin)) -> std::io::Result
 /// the bound; this only lets a frame go out in one write.
 const SEND_BUFFER_BYTES: usize = 1024 * 1024;
 
+/// Requests one connection may have in flight before the reader waits for one.
+/// Handlers are blocking tasks (a `git status` can take the ADR-008 budget), so
+/// an unbounded `JoinSet` is an unbounded amount of blocked work.
+const MAX_IN_FLIGHT: usize = 64;
+
 /// Handle a single client connection: handshake, then request/event pumping.
 async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::Result<()> {
     if let Err(error) = nix::sys::socket::setsockopt(
@@ -263,6 +268,10 @@ async fn read_loop(
             request = request_name(&body),
             client = %client_id,
         );
+
+        if in_flight.len() >= MAX_IN_FLIGHT {
+            let _ = in_flight.join_next().await;
+        }
 
         let handler_daemon = daemon.clone();
         let file_watch = Arc::clone(&file_watch);

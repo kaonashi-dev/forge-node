@@ -27,3 +27,6 @@ insta.workspace = true
 # Only the OSC 52 tests encode a payload; the engine itself decodes through
 # alacritty, which owns the parsing.
 base64.workspace = true
+
+[lints]
+workspace = true
