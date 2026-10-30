@@ -609,6 +609,9 @@ pub fn write_file(
     let root = canonicalize_root(root)?;
     let path = resolve_inside(&root, relative)?;
     let existed = path.symlink_metadata().is_ok();
+    // Stamped before the read, so a write that lands between the two shows up
+    // either in the revision or in the stamp.
+    let stamp = existed.then(|| FileStamp::of(&path)).flatten();
     if existed {
         let current = read_file(&root, relative)?;
         if current.binary || current.too_large {
@@ -642,21 +645,16 @@ pub fn write_file(
     if let Some(perms) = mode {
         let _ = fs::set_permissions(&tmp, perms);
     }
-    if existed {
-        // Re-check after the bytes are on disk: a writer that landed during the
-        // write must not be lost. The rename is not a compare-and-swap, so this
-        // narrows the window rather than closing it; a hard guarantee needs a
-        // swap-and-verify commit.
-        let current = match read_file(&root, relative) {
-            Ok(current) => current,
-            Err(error) => {
-                let _ = fs::remove_file(&tmp);
-                return Err(error);
-            }
-        };
-        if current.revision != expected_revision {
+    // A writer that landed while the bytes were written must not be lost. The
+    // rename is not a compare-and-swap, so this narrows the window rather than
+    // closing it; a file deleted meanwhile is recreated.
+    if let Some(stamp) = stamp {
+        if FileStamp::of(&path).is_some_and(|now| now != stamp) {
             let _ = fs::remove_file(&tmp);
-            return Err(FsError::RevisionMismatch { current });
+            return Err(match read_file(&root, relative) {
+                Ok(current) => FsError::RevisionMismatch { current },
+                Err(error) => error,
+            });
         }
     }
     // A file that did not exist may have appeared while it was being written.
@@ -672,6 +670,28 @@ pub fn write_file(
         return Err(error.into());
     }
     Ok(())
+}
+
+/// Identity and change marks that any write through a path moves.
+#[derive(Debug, PartialEq, Eq)]
+struct FileStamp {
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl FileStamp {
+    fn of(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(path).ok()?;
+        Some(Self {
+            ino: meta.ino(),
+            len: meta.len(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+        })
+    }
 }
 
 /// A temp name next to `path` that no concurrent save can pick.

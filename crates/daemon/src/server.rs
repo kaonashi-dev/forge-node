@@ -121,10 +121,14 @@ async fn read_frame(reader: &mut (impl AsyncReadExt + Unpin)) -> std::io::Result
 /// the bound; this only lets a frame go out in one write.
 const SEND_BUFFER_BYTES: usize = 1024 * 1024;
 
-/// Requests one connection may have in flight before the reader waits for one.
-/// Handlers are blocking tasks (a `git status` can take the ADR-008 budget), so
-/// an unbounded `JoinSet` is an unbounded amount of blocked work.
-const MAX_IN_FLIGHT: usize = 64;
+/// Blocking handlers one connection may run at once. A `git status` can take
+/// the ADR-008 budget, so unbounded handlers are unbounded blocked threads.
+/// Terminal input and resizes skip this queue so they never wait behind reads.
+const MAX_BLOCKING_HANDLERS: usize = 64;
+
+/// Requests one connection may have accepted but unfinished before the reader
+/// stops reading; bounds the decoded payloads held by waiting handlers.
+const MAX_IN_FLIGHT: usize = 1024;
 
 /// Handle a single client connection: handshake, then request/event pumping.
 async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::Result<()> {
@@ -229,6 +233,7 @@ async fn read_loop(
     read_half: &mut (impl AsyncReadExt + Unpin),
 ) -> std::io::Result<()> {
     let mut in_flight = tokio::task::JoinSet::new();
+    let handler_slots = Arc::new(tokio::sync::Semaphore::new(MAX_BLOCKING_HANDLERS));
     let file_watch = Arc::new(Mutex::new(None));
 
     while let Some(payload) = read_frame(read_half).await? {
@@ -273,11 +278,21 @@ async fn read_loop(
             let _ = in_flight.join_next().await;
         }
 
+        let urgent = matches!(
+            body,
+            Request::WriteTerminalInput { .. } | Request::ResizeTerminal { .. }
+        );
         let handler_daemon = daemon.clone();
         let file_watch = Arc::clone(&file_watch);
+        let handler_slots = Arc::clone(&handler_slots);
         in_flight.spawn(async move {
             let daemon = handler_daemon;
             let dispatch = daemon.clone();
+            let _slot = if urgent {
+                None
+            } else {
+                handler_slots.acquire_owned().await.ok()
+            };
             let response = tokio::task::spawn_blocking(move || {
                 let _entered = span.entered();
                 if let Request::WatchFiles {

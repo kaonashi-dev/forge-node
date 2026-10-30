@@ -671,18 +671,18 @@ pub fn compare_and_set(current: Option<u64>, if_version: u64) -> CasOutcome {
     }
 }
 
-/// Whether the board already holds the key being written.
+/// Whether a board write adds a key, the only kind the key cap refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BoardKeyState {
-    /// The write introduces a new key.
-    New,
-    /// The key is already on the board.
-    Existing,
+pub enum BoardWrite {
+    /// A set of a key the board does not hold yet.
+    AddsKey,
+    /// An update of a held key, or any delete.
+    KeepsKeyCount,
 }
 
 #[must_use]
-pub fn board_is_full(existing_keys: usize, key: BoardKeyState) -> bool {
-    key == BoardKeyState::New && existing_keys >= MAX_BOARD_KEYS
+pub fn board_is_full(existing_keys: usize, write: BoardWrite) -> bool {
+    write == BoardWrite::AddsKey && existing_keys >= MAX_BOARD_KEYS
 }
 
 #[must_use]
@@ -1125,8 +1125,8 @@ mod tests {
             board_value(r#"{"mode":"stream"}"#).unwrap(),
             r#"{"mode":"stream"}"#
         );
-        assert!(board_is_full(MAX_BOARD_KEYS, BoardKeyState::New));
-        assert!(!board_is_full(MAX_BOARD_KEYS, BoardKeyState::Existing));
+        assert!(board_is_full(MAX_BOARD_KEYS, BoardWrite::AddsKey));
+        assert!(!board_is_full(MAX_BOARD_KEYS, BoardWrite::KeepsKeyCount));
     }
 
     #[test]

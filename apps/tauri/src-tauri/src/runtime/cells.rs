@@ -191,7 +191,6 @@ pub fn encode_row(row: &Row) -> WireRow {
 }
 
 /// Build the frame for a damaged viewport.
-#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn frame(
     terminal: TerminalId,

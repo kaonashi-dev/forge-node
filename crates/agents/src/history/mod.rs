@@ -1371,7 +1371,7 @@ pub enum DeleteError {
     #[error("the run is recorded in a shared store")]
     Shared,
     /// The transcript could not be removed from disk.
-    #[error("could not remove the transcript")]
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 

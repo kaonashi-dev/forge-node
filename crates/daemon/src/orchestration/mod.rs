@@ -2582,10 +2582,10 @@ fn set_state(
         .board
         .get(&(run_id, key.to_owned()))
         .map(|e| e.version);
-    let key_state = if current.is_none() && !delete {
-        domain::orchestration::BoardKeyState::New
+    let write = if current.is_none() && !delete {
+        domain::orchestration::BoardWrite::AddsKey
     } else {
-        domain::orchestration::BoardKeyState::Existing
+        domain::orchestration::BoardWrite::KeepsKeyCount
     };
     if board_is_full(
         inner
@@ -2594,7 +2594,7 @@ fn set_state(
             .keys()
             .filter(|(id, _)| *id == run_id)
             .count(),
-        key_state,
+        write,
     ) {
         return Err(policy(RailRefusal {
             rail: "max_board_keys",

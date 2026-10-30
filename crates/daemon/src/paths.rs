@@ -25,6 +25,8 @@ pub enum PathError {
     },
     #[error("no writable runtime directory found for the daemon socket")]
     NoRuntimeDir,
+    #[error(transparent)]
+    Socket(client::SocketPathError),
     #[error("refusing to use {path}: {reason}")]
     NotPrivate { path: String, reason: String },
     #[error("could not determine platform data directories")]
@@ -127,7 +129,7 @@ fn socket_path_from(forge_socket: Option<std::ffi::OsString>) -> Result<PathBuf,
             max: client::MAX_SOCKET_PATH_LEN,
             path: path.display().to_string(),
         },
-        _ => PathError::NoRuntimeDir,
+        other => PathError::Socket(other),
     })
 }
 

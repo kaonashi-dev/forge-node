@@ -1216,7 +1216,10 @@ fn flush_pending_closes(pending: &mut HashSet<SessionId>, store: &Store, client:
 /// attachment, the split column, the editor attachments, the viewport size and
 /// the echo watermark. Bundling them into a struct would only move the same fields
 /// behind a name and make every borrow in the loop go through it.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one connection's mutable state, borrowed separately"
+)]
 fn run_command(
     command: RuntimeCommand,
     client: &Client,

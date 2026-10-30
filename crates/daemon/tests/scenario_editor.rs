@@ -4,6 +4,11 @@
 //! stand-in that speaks the control protocol, so the suite does not depend on
 //! a previously built `forge-editor` binary, and so a crash is just `sys.exit`.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a panicking helper is the test's assertion"
+)]
+
 mod common;
 
 use std::fs;

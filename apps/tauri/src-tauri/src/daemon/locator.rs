@@ -21,9 +21,15 @@ pub struct Locator {
     socket_override: Option<PathBuf>,
     daemon_override: Option<PathBuf>,
     current_exe: Option<PathBuf>,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        allow(dead_code, reason = "read only on macOS")
+    )]
     tmpdir: Option<PathBuf>,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(dead_code, reason = "read only on Linux")
+    )]
     xdg_runtime_dir: Option<PathBuf>,
     uid: u32,
 }

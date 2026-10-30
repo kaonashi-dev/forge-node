@@ -13,7 +13,7 @@ pub use policy::{
     parse_address, parse_wait_kinds, pointer_decision, pointer_line, promote_ready,
     reconcile_restart, resolve_address, resolve_prefix, run_was_interrupted, settle_report,
     task_status_after_loss, task_status_after_report, valid_board_key, ActivityTrigger, Address,
-    AddressError, AttemptFact, BoardKeyState, BoardValueError, CasOutcome, DeliveryTarget,
+    AddressError, AttemptFact, BoardValueError, BoardWrite, CasOutcome, DeliveryTarget,
     LiveAttempt, ParsedAddress, PointerDecision, PrefixError, QuestionFact, ReportRefuse,
     RestartReconcile, WaitKind, WaitParseError,
 };

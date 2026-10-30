@@ -4197,7 +4197,6 @@ impl Daemon {
         let _span = tracing::info_span!("session.create", %workspace_id, ?kind).entered();
 
         let profile = self.launch_profile(kind, provider_id.as_ref(), profile_id)?;
-        self.ensure_profile_config_dir(profile.as_ref())?;
 
         // Version probe is a subprocess: never under the core lock.
         let verified_program = match (kind, provider_id.as_ref()) {
@@ -4211,8 +4210,10 @@ impl Daemon {
             .lock()
             .workspaces
             .get(&workspace_id)
-            .map(|ws| ws.path.clone());
-        let base_commit = baseline_path.as_deref().and_then(git_service::head_commit);
+            .map(|ws| ws.path.clone())
+            .ok_or_else(|| ProtocolError::not_found("workspace"))?;
+        self.ensure_profile_config_dir(profile.as_ref())?;
+        let base_commit = git_service::head_commit(&baseline_path);
 
         let (cwd, spawn_spec, session) = {
             let mut inner = self.lock();
@@ -5363,12 +5364,12 @@ impl Daemon {
         };
         // Missing profile is a refusal: dropping `CLAUDE_CONFIG_DIR` would log into someone else.
         let profile = self.launch_profile(kind, provider_id.as_ref(), profile_id)?;
-        self.ensure_profile_config_dir(profile.as_ref())?;
         let verified_program = match provider_id.as_ref() {
             Some(_) if profile_has_executable(profile.as_ref()) => None,
             Some(id) => Some(self.verified_agent_executable(id)?),
             None => None,
         };
+        self.ensure_profile_config_dir(profile.as_ref())?;
 
         let (spec, session) = {
             let mut inner = self.lock();
@@ -5543,7 +5544,7 @@ impl Daemon {
         let mut spec = match kind {
             SessionKind::Shell | SessionKind::Task => {
                 let mut vars: Vec<(String, String)> = env.vars.clone();
-                let term = self.session_term(inner, &vars);
+                let term = self.session_term(&vars);
                 upsert_var(&mut vars, "TERM", &term.term);
                 if let Some(dir) = &term.terminfo_dir {
                     upsert_var(&mut vars, "TERMINFO", &dir.to_string_lossy());
@@ -5656,7 +5657,7 @@ impl Daemon {
                     )
                 })?;
                 let mut vars: Vec<(String, String)> = env.vars.clone();
-                let term = self.session_term(inner, &vars);
+                let term = self.session_term(&vars);
                 upsert_var(&mut vars, "TERM", &term.term);
                 if let Some(dir) = &term.terminfo_dir {
                     upsert_var(&mut vars, "TERMINFO", &dir.to_string_lossy());
@@ -7222,23 +7223,20 @@ impl Daemon {
     }
 
     /// Create a profile's config directory before the core lock is taken.
+    /// Call it after the launch is validated, so a refusal leaves no directory.
     fn ensure_profile_config_dir(
         &self,
         profile: Option<&AgentProfile>,
     ) -> Result<(), ProtocolError> {
-        let Some(profile) = profile else {
+        let Some(profile) = profile.filter(|p| p.config_dir.is_some()) else {
             return Ok(());
         };
-        let (descriptor, env) = {
+        let target = {
             let mut inner = self.lock();
             let descriptor = inner.agents.descriptor(&profile.provider_id).cloned();
-            let env = self.resolved_env(&mut inner);
-            (descriptor, env)
+            descriptor.zip(profile_config_dir(profile, inner.env.get()))
         };
-        let Some(descriptor) = descriptor else {
-            return Ok(());
-        };
-        let Some(dir) = profile_config_dir(profile, &env) else {
+        let Some((descriptor, dir)) = target else {
             return Ok(());
         };
         agents::ensure_config_dir(&descriptor, &dir).map_err(|error| {
@@ -7367,34 +7365,12 @@ impl Daemon {
         }
     }
 
-    /// Cached. A fallback raises a notice rather than silently ignoring `[sessions].term`.
-    fn session_term(&self, _inner: &mut Inner, vars: &[(String, String)]) -> TermSelection {
-        if let Some(selection) = self.term_selection.get() {
-            return selection.clone();
-        }
-        // Fallback for a caller that skipped `ensure_env`; the normal path
-        // resolves this once in `ensure_env`, off the core lock.
-        let selection =
-            terminfo::resolve(&self.config.sessions.term, self.config.terminfo_dir(), vars);
-        if let Some(requested) = &selection.fell_back_from {
-            self.notice(
-                NoticeLevel::Warning,
-                format!(
-                    "no terminfo entry for `{requested}`; shell sessions will use \
-                     `{}` instead. Install the entry or point \
-                     `[sessions].terminfo_dir` at the database that has it.",
-                    selection.term
-                ),
-            );
-        } else {
-            tracing::info!(
-                term = %selection.term,
-                terminfo = ?selection.terminfo_dir,
-                "resolved the session TERM"
-            );
-        }
-        let _ = self.term_selection.set(selection.clone());
-        selection
+    /// Cached. Fallback for a caller that skipped `ensure_env`, which resolves
+    /// this off the core lock.
+    fn session_term(&self, vars: &[(String, String)]) -> TermSelection {
+        self.term_selection
+            .get_or_init(|| self.resolve_term(vars))
+            .clone()
     }
 
     /// Ack when the refresh *starts*; results arrive as `AgentDetectionChanged`.
@@ -7480,14 +7456,12 @@ impl Daemon {
             .env_capture
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut env = {
-            let inner = self.lock();
-            if inner.env.is_resolved() {
-                self.ensure_term_selection();
-                return;
-            }
-            inner.env.clone()
-        };
+        let resolved = self.lock().env.is_resolved();
+        if resolved {
+            self.ensure_term_selection();
+            return;
+        }
+        let mut env = self.lock().env.clone();
         env.get();
         let mut inner = self.lock();
         if !inner.env.is_resolved() {
@@ -7506,11 +7480,14 @@ impl Daemon {
             let mut inner = self.lock();
             self.resolved_env(&mut inner).vars
         };
-        let selection = terminfo::resolve(
-            &self.config.sessions.term,
-            self.config.terminfo_dir(),
-            &vars,
-        );
+        self.term_selection.get_or_init(|| self.resolve_term(&vars));
+    }
+
+    /// Probes the terminfo database; a fallback raises a notice rather than
+    /// silently ignoring `[sessions].term`.
+    fn resolve_term(&self, vars: &[(String, String)]) -> TermSelection {
+        let selection =
+            terminfo::resolve(&self.config.sessions.term, self.config.terminfo_dir(), vars);
         if let Some(requested) = &selection.fell_back_from {
             self.notice(
                 NoticeLevel::Warning,
@@ -7528,7 +7505,7 @@ impl Daemon {
                 "resolved the session TERM"
             );
         }
-        let _ = self.term_selection.set(selection);
+        selection
     }
 
     /// Re-capture the shell environment off the core lock.

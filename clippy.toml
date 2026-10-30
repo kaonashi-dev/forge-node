@@ -1,4 +1,2 @@
 # A panic in a test is the assertion; production paths use `expect("reason")`.
 allow-unwrap-in-tests = true
-allow-expect-in-tests = true
-allow-print-in-tests = true
