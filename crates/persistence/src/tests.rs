@@ -5,11 +5,12 @@
 use std::path::PathBuf;
 
 use domain::{
-    AgentActivity, AgentProfile, AgentProfileId, AgentProviderId, ContextArtifactKind,
-    ContextArtifactRef, ContextEnvelope, ContextId, GitContextRef, IgnoreScope, Project,
-    ProjectGroup, ProjectGroupId, ProjectId, Session, SessionId, SessionKind, SessionRole,
-    SessionState, SessionTitle, ShareRule, ShareRuleId, ShareStrategy, Timestamp, Workspace,
-    WorkspaceId, WorkspaceKind, WorkspaceStatus, WorktreeIgnore,
+    ActionKind, ActionPort, ActionReady, ActionSource, AgentActivity, AgentProfile, AgentProfileId,
+    AgentProviderId, ContextArtifactKind, ContextArtifactRef, ContextEnvelope, ContextId,
+    GitContextRef, IgnoreScope, Project, ProjectAction, ProjectActionId, ProjectGroup,
+    ProjectGroupId, ProjectId, Session, SessionId, SessionKind, SessionRole, SessionState,
+    SessionTitle, ShareRule, ShareRuleId, ShareStrategy, Timestamp, Workspace, WorkspaceId,
+    WorkspaceKind, WorkspaceStatus, WorktreeIgnore,
 };
 
 use crate::Db;
@@ -76,6 +77,7 @@ fn mk_session(workspace_id: WorkspaceId, state: SessionState) -> Session {
         ended_at: None,
         base_commit: None,
         activity: AgentActivity::unknown(),
+        action: None,
     }
 }
 
@@ -92,8 +94,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 14,
-        "fourteen migrations applied => user_version == 14"
+        version, 15,
+        "fifteen migrations applied => user_version == 15"
     );
 
     for table in [
@@ -107,6 +109,7 @@ fn migrations_apply_and_user_version_advances() {
         "agent_profiles",
         "worktree_shares",
         "worktree_ignores",
+        "project_actions",
         "runs",
         "tasks",
         "task_deps",
@@ -153,7 +156,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 14);
+    assert_eq!(version, 15);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -749,6 +752,7 @@ fn session_roundtrip_custom_role_states_and_graph() {
         ended_at: Some(Timestamp::now()),
         base_commit: None,
         activity: AgentActivity::unknown(),
+        action: None,
     };
     db.sessions().upsert(&root).unwrap();
 
@@ -804,6 +808,7 @@ fn session_roundtrip_custom_role_states_and_graph() {
         // what proves migration 9 landed.
         base_commit: Some("9f1c0de4c0ffee0000000000000000000000cafe".to_owned()),
         activity: AgentActivity::unknown(),
+        action: None,
     };
     db.sessions().upsert(&child).unwrap();
     assert_eq!(db.sessions().get(child_id).unwrap().unwrap(), child);
@@ -1023,15 +1028,14 @@ fn reconcile_orphaned_marks_only_live_sessions() {
 
 #[test]
 fn sessions_schema_is_unchanged() {
-    // Feature 19 adds `SessionKind::Editor`, a TEXT tag in an unconstrained
-    // column — no migration. A schema version bump here would mean a migration
-    // was appended, which this feature does not do.
+    // `Editor` and `Task` are TEXT tags in an unconstrained column, so neither
+    // needed a migration of `sessions`.
     let db = Db::open_in_memory().unwrap();
     let version: i64 = db
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 14, "foreign-key indexes are migration 14");
+    assert_eq!(version, 15, "project actions are migration 15");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1162,6 +1166,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         "agent_profiles",
         "worktree_shares",
         "worktree_ignores",
+        "project_actions",
         "runs",
         "tasks",
         "task_deps",
@@ -1181,7 +1186,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 14, "reset retains the migrated schema");
+    assert_eq!(version, 15, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -1464,4 +1469,116 @@ fn an_unknown_ignore_scope_is_a_decode_error_not_a_panic() {
         matches!(error, crate::DbError::Decode(_)),
         "expected a decode error, got {error:?}"
     );
+}
+
+fn mk_action(project: ProjectId, label: &str, kind: ActionKind) -> ProjectAction {
+    ProjectAction {
+        id: ProjectActionId::new(),
+        project_id: project,
+        label: label.to_owned(),
+        command: format!("bun run {label}"),
+        kind,
+        cwd: None,
+        single_instance: true,
+        pinned: false,
+        ready: ActionReady::None,
+        port: None,
+        depends_on: Vec::new(),
+        source: ActionSource::Manual,
+        position: 7,
+        created_at: Timestamp::now(),
+    }
+}
+
+#[test]
+fn a_projects_actions_round_trip_in_the_order_they_were_given() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/p-actions");
+    db.projects().upsert(&project).unwrap();
+
+    let docker = mk_action(project.id, "docker up", ActionKind::Custom);
+    let mut dev = mk_action(project.id, "dev", ActionKind::Dev);
+    dev.cwd = Some("web".into());
+    dev.pinned = true;
+    dev.ready = ActionReady::Port { timeout_secs: 60 };
+    dev.port = Some(ActionPort {
+        base: 5173,
+        per_worktree: true,
+    });
+    dev.depends_on = vec![docker.id];
+    dev.source = ActionSource::Repo {
+        file_hash: "ab".repeat(32),
+    };
+    db.actions()
+        .replace_for_project(project.id, &[dev.clone(), docker.clone()])
+        .unwrap();
+
+    let back = db.actions().list_for_project(project.id).unwrap();
+    assert_eq!(back.len(), 2);
+    assert_eq!(back[0], ProjectAction { position: 0, ..dev });
+    assert_eq!(
+        back[1],
+        ProjectAction {
+            position: 1,
+            ..docker
+        }
+    );
+}
+
+#[test]
+fn two_actions_cannot_share_a_label_in_any_case_and_a_failed_set_keeps_the_old_one() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/p-actions-2");
+    db.projects().upsert(&project).unwrap();
+    let good = vec![mk_action(project.id, "test", ActionKind::Test)];
+    db.actions().replace_for_project(project.id, &good).unwrap();
+
+    let clashing = vec![
+        mk_action(project.id, "Dev", ActionKind::Dev),
+        mk_action(project.id, "dev", ActionKind::Dev),
+    ];
+    assert!(db
+        .actions()
+        .replace_for_project(project.id, &clashing)
+        .is_err());
+    let back = db.actions().list_for_project(project.id).unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].label, "test");
+}
+
+#[test]
+fn removing_a_project_removes_its_actions() {
+    let db = Db::open_in_memory().unwrap();
+    let project = mk_project("/tmp/p-actions-3");
+    db.projects().upsert(&project).unwrap();
+    db.actions()
+        .replace_for_project(
+            project.id,
+            &[mk_action(project.id, "lint", ActionKind::Lint)],
+        )
+        .unwrap();
+
+    db.projects().delete(project.id).unwrap();
+    assert!(db.actions().list_all().unwrap().is_empty());
+}
+
+#[test]
+fn a_task_session_round_trips_without_its_runtime_action() {
+    let (db, _project, workspace_id) = db_with_workspace();
+    let mut session = mk_session(workspace_id, SessionState::Running);
+    session.kind = SessionKind::Task;
+    session.launch_command = Some("bun run dev".into());
+    session.action = Some(Box::new(domain::ActionRun {
+        action_id: ProjectActionId::new(),
+        label: "dev".into(),
+        port: Some(5173),
+        readiness: domain::ActionReadiness::Probing,
+        started_at: Some(Timestamp::now()),
+    }));
+    db.sessions().upsert(&session).unwrap();
+
+    let loaded = db.sessions().get(session.id).unwrap().unwrap();
+    assert_eq!(loaded.kind, SessionKind::Task);
+    assert_eq!(loaded.launch_command.as_deref(), Some("bun run dev"));
+    assert_eq!(loaded.action, None);
 }

@@ -9,9 +9,9 @@ use domain::orchestration::{
 use domain::{
     ActivityState, AgentProfile, AgentProfileId, AgentProviderId, AttemptId, ChildWorkspacePolicy,
     CommitPlan, ContextEnvelope, ContextKind, EditorFindCommand, EditorInputEvent, JuvaKind,
-    ProjectGroupId, ProjectId, PtySize, PullRequestDraft, RunId, SessionId, SessionKind,
-    SessionRole, ShareCleanup, ShareRule, ShareRuleId, TaskId, TerminalId, WorkspaceId,
-    WorktreeIgnore,
+    ProjectAction, ProjectActionId, ProjectGroupId, ProjectId, PtySize, PullRequestDraft, RunId,
+    SessionId, SessionKind, SessionRole, ShareCleanup, ShareRule, ShareRuleId, TaskId, TerminalId,
+    WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -917,6 +917,38 @@ pub enum Request {
     RemoveAgentProfile {
         /// The profile to delete.
         profile_id: AgentProfileId,
+    },
+
+    /// Actions the workspace's own files suggest, and what its
+    /// `.forge/actions.toml` offers for import → `ActionSuggestions`.
+    ///
+    /// A local, synchronous, bounded read of the workspace root like
+    /// `DetectShareCandidates`. It writes nothing and runs nothing: a
+    /// repository's file is only ever offered, never executed in place.
+    SuggestActions {
+        /// The workspace whose root is read.
+        workspace_id: WorkspaceId,
+    },
+    /// Replace a project's whole action set → `Ack`; `ProjectActionsChanged`.
+    ///
+    /// A live session of an action the set drops keeps running untagged.
+    SetProjectActions {
+        /// The project whose actions these are.
+        project_id: ProjectId,
+        /// The actions, in display order.
+        actions: Vec<ProjectAction>,
+    },
+    /// Run an action in a workspace of its project → `SessionCreated`, or
+    /// `ActionQueued` while its dependencies come up, or `ActionAlreadyRunning`
+    /// when a single-instance action is already live there.
+    ///
+    /// The live check and the session's creation are one critical section, so
+    /// two clicks or two windows cannot start it twice.
+    RunAction {
+        /// The workspace to run in.
+        workspace_id: WorkspaceId,
+        /// The action to run.
+        action_id: ProjectActionId,
     },
 
     /// Ignored paths a project could share → `ShareCandidates`.

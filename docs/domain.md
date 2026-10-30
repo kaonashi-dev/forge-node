@@ -30,7 +30,7 @@ Source: `crates/domain/src/`.
 ## Identifiers (`ids.rs`)
 
 - `ProjectGroupId`, `ProjectId`, `WorkspaceId`, `SessionId`, `TerminalId`, `ClientId`,
-  `ContextId`, `RunId`, `TaskId`, `AttemptId`, `ShareRuleId` are newtypes over **UUID v7**. v7 is time-ordered, so sorting by
+  `ContextId`, `RunId`, `TaskId`, `AttemptId`, `ShareRuleId`, `ProjectActionId` are newtypes over **UUID v7**. v7 is time-ordered, so sorting by
   id gives creation order for free (sidebar ordering, session lists).
 - `AgentProfileId` is a UUID v7 too: a launch profile (§13.4) is a saved row
   the user can rename, so its identity cannot be its name.
@@ -99,7 +99,7 @@ upstream by itself.
 
 | Field | Notes |
 |-------|-------|
-| `kind` | `Shell`, `Agent` or `Editor`. Editors own unsaved buffers and are unconditionally exempt from idle stopping. |
+| `kind` | `Shell`, `Agent`, `Editor` or `Task`. Editors own unsaved buffers and are unconditionally exempt from idle stopping. A `Task` runs a project action's command and ends with it ([actions.md](./actions.md)). |
 | `role` | `Generic` by default; `Orchestrator`, `Planner`, `Researcher`, `Executor`, `Reviewer`, `Tester`, `Custom(String)` are tags for the future orchestrator and carry no behavior today. |
 | `parent_session_id` / `root_session_id` | The graph. Roots have `parent = None` and `root == id`. |
 | `terminal_id` | `Some` only while a PTY exists. `None` in `Failed`/`Orphaned` and while a restart is pending. |
@@ -111,6 +111,7 @@ upstream by itself.
 | `editor` | Buffer metadata for an `Editor` session (`EditorState`: path, caret, dirty/read-only, viewport, find, `conflict` flag); `None` for every other kind. **Runtime-only**: never a column, `None` on load. |
 | `launch_command` | Foreground command a shell session was running, so a restart re-runs it; `None` is a fresh shell. |
 | `base_commit` | The commit the session started from, resolved once with `git rev-parse HEAD` at creation; `None` when there was no HEAD. Persisted (migration 9), unlike `terminal_id`. |
+| `action` | The project action a `Task` runs: id, copied label, resolved port, readiness. **Runtime-only**, like `terminal_id`; cleared when the action is deleted. |
 | `activity` | `AgentActivity { state, since, evidence }`: the last word from a provider hook or typed input. **Runtime-only**, like `last_activity_at`; `ActivityState` is `Unknown` / `Starting` / `Working` / `Waiting` / `Idle`. Silence does not change it. |
 
 #### State machine

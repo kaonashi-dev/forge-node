@@ -35,7 +35,11 @@
   gap: var(--space-6);
   height: var(--row-h);
 }
+/* Virtualised rows sit edge to edge at a fixed height, so a transparent border
+   insets the fill instead of a gap: a hovered row never touches the selected one. */
 .fw-host .fw-tree-row {
+  background-clip: padding-box;
+  border-block: 1px solid transparent;
   border-radius: var(--radius-row);
   color: var(--fg-default);
   padding-inline-end: var(--space-8);

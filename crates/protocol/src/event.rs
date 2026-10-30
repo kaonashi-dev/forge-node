@@ -2,10 +2,10 @@
 
 use domain::orchestration::{Attempt, Run, Task};
 use domain::{
-    AgentProfile, DetectionResult, EditorFrame, JuvaDraft, Project, ProjectGroup, ProjectGroupId,
-    ProjectId, ProviderUsage, PullRequestDraft, PullRequestState, RunId, Session, SessionId,
-    ShareAction, ShareRule, ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot, Workspace,
-    WorkspaceId, WorktreeIgnore,
+    AgentProfile, DetectionResult, EditorFrame, JuvaDraft, Project, ProjectAction, ProjectGroup,
+    ProjectGroupId, ProjectId, ProviderUsage, PullRequestDraft, PullRequestState, RunId, Session,
+    SessionId, ShareAction, ShareRule, ShareTrigger, TerminalDelta, TerminalId, TerminalSnapshot,
+    Workspace, WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -140,6 +140,13 @@ pub enum DaemonEvent {
         project_id: ProjectId,
         /// Every rule of that project, in application order.
         rules: Vec<ShareRule>,
+    },
+    /// Replaces this project's whole action set.
+    ProjectActionsChanged {
+        /// The project whose actions these are.
+        project_id: ProjectId,
+        /// Every action of that project, in display order.
+        actions: Vec<ProjectAction>,
     },
     /// Replaces this project's whole ignore-rule set, including collected tombstones.
     ProjectWorktreeIgnoresChanged {

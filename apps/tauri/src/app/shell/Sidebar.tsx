@@ -1,6 +1,7 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
 import { FileTreePanel } from "../../features/files/explorer/FileTreePanel";
 import { GitPanel } from "../../features/git/GitPanel";
+import { ProcessesPanel } from "../../features/project-actions/ProcessesPanel";
 import { HistoryPanel } from "../../features/sessions/HistoryPanel";
 import { PullRequestPanel } from "../../features/pull-requests/PullRequestPanel";
 import { VIEW_ICONS } from "../../navigation/sidebarViews";
@@ -24,6 +25,7 @@ const VIEW_LABELS: Record<SidebarView, string> = {
   History: "History",
   PR: "Pull requests",
   Git: "Git",
+  Processes: "Processes",
 };
 
 type SidebarProps = {
@@ -54,6 +56,7 @@ export function Sidebar(props: SidebarProps) {
     History: () => <HistoryPanel />,
     PR: () => <PullRequestPanel />,
     Git: () => <GitPanel />,
+    Processes: () => <ProcessesPanel />,
   };
 
   const tabs: TabDef[] = SIDEBAR_VIEWS.map((item) => ({

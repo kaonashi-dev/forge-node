@@ -598,6 +598,12 @@ fn runtime_loop(
                                 AgentProfileSavePayload { profile, error },
                             );
                         }
+                        if let Some((project, error)) = effect.actions_save {
+                            let _ = app.emit(
+                                "runtime:actions_save",
+                                ActionsSavePayload { project, error },
+                            );
+                        }
                     }
                     // A refusal leaves the connection alone: the shell says
                     // what happened and stays where it is.
@@ -905,6 +911,12 @@ struct AgentProfileSavePayload {
     error: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct ActionsSavePayload {
+    project: ProjectId,
+    error: Option<String>,
+}
+
 /// Forward an OSC 52 clipboard store, but only from a terminal on screen.
 ///
 /// The guard is the point: OSC 52 lets whatever runs in a PTY set the person's
@@ -1091,6 +1103,8 @@ struct Effect {
     worktree_create_failed: Option<(ProjectId, String, String)>,
     /// Profile validation belongs beside the values the user can correct.
     profile_save: Option<(AgentProfileId, Option<String>)>,
+    /// An action set the daemon refused stays in the dialog that drafted it.
+    actions_save: Option<(ProjectId, Option<String>)>,
     /// Kill a live session, then `CloseSession` once it is terminal.
     pending_close: Option<SessionId>,
     /// A restart (or a close of an already-dead session) drops a pending kill.
@@ -1850,6 +1864,9 @@ fn run_command(
                 .map_err(CommandError::from_client)?;
             Ok(Effect::nothing())
         }
+        RuntimeCommand::SetProjectActions { project, actions } => {
+            set_project_actions_effect(project, client.set_project_actions(project, actions))
+        }
         RuntimeCommand::SetProjectShares { project, rules } => {
             client
                 .set_project_shares(project, rules)
@@ -2139,6 +2156,24 @@ fn save_agent_profile_effect(
             error => Err(error),
         },
     }
+}
+
+fn set_project_actions_effect(
+    project: ProjectId,
+    result: Result<(), client::ClientError>,
+) -> Result<Effect, CommandError> {
+    let refusal = match result {
+        Ok(()) => None,
+        Err(client::ClientError::Protocol(error)) => Some(error.message),
+        Err(error) => match CommandError::from_client(error) {
+            CommandError::Refused(reason) => Some(reason),
+            error => return Err(error),
+        },
+    };
+    Ok(Effect {
+        actions_save: Some((project, refusal)),
+        ..Effect::default()
+    })
 }
 
 fn attach_editor(
@@ -2470,9 +2505,11 @@ fn write_input(
     if bytes.is_empty() {
         return Ok(Effect::nothing());
     }
-    client
-        .write_terminal_input(pane.terminal, bytes)
-        .map_err(CommandError::from_client)?;
+    match client.write_terminal_input(pane.terminal, bytes) {
+        Ok(()) => {}
+        Err(error) if terminal_gone(&error) => return Ok(Effect::nothing()),
+        Err(error) => return Err(CommandError::from_client(error)),
+    }
     *pane.pending_echo = (*pane.pending_echo).max(id);
     // Typing is how a permission prompt gets answered, so it is what spends the
     // attention mark. `answer_attention` reports the edge, and only the edge
@@ -3113,14 +3150,23 @@ fn resize_and_reattach(
     terminal_id: TerminalId,
     size: PtySize,
 ) -> Result<(), CommandError> {
-    client
-        .resize_terminal(terminal_id, size)
-        .map_err(CommandError::from_client)?;
+    match client.resize_terminal(terminal_id, size) {
+        Ok(()) => {}
+        Err(error) if terminal_gone(&error) => return Ok(()),
+        Err(error) => return Err(CommandError::from_client(error)),
+    }
     let snapshot = client
         .attach_terminal(terminal_id, size)
         .map_err(CommandError::from_client)?;
     store.attach_terminal(terminal_id, &snapshot);
     Ok(())
+}
+
+/// The process ended between the keystroke or resize and its write: the
+/// `SessionUpdated` that says so is already on its way, so this is not an error
+/// to show. A second Ctrl+C after the first one killed the program lands here.
+fn terminal_gone(error: &client::ClientError) -> bool {
+    matches!(error, client::ClientError::Protocol(p) if p.code == client::ErrorCode::NotFound)
 }
 
 /// Cache the payload the `connect` command answers from.
@@ -3941,6 +3987,31 @@ mod tests {
     }
 
     #[test]
+    fn an_action_set_refusal_returns_to_its_dialog() {
+        let project = ProjectId::new();
+        let error = client::ProtocolError::new(
+            client::ErrorCode::InvalidRequest,
+            "dependencies nest more than 4 deep",
+        );
+        let effect = set_project_actions_effect(project, Err(client::ClientError::Protocol(error)))
+            .expect("a validation error leaves the connection alive");
+
+        assert_eq!(
+            effect.actions_save,
+            Some((
+                project,
+                Some("dependencies nest more than 4 deep".to_string())
+            ))
+        );
+        assert_eq!(
+            set_project_actions_effect(project, Ok(()))
+                .expect("a saved set")
+                .actions_save,
+            Some((project, None))
+        );
+    }
+
+    #[test]
     fn a_full_runtime_queue_refuses_another_command() {
         let (commands, receiver) = flume::bounded(1);
         let runtime = Runtime {
@@ -4034,6 +4105,7 @@ mod tests {
             ended_at: None,
             base_commit: None,
             activity: domain::AgentActivity::unknown(),
+            action: None,
         }
     }
 

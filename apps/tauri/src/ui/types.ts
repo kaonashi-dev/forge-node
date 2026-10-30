@@ -27,6 +27,13 @@ export type ButtonVariant =
   | "attention"
   | "attention-soft";
 
+/** An icon button at the end of a menu item, run instead of the item's own action. */
+export type MenuItemButton = {
+  label: string;
+  icon: ForgeIconName;
+  run: () => void;
+};
+
 /**
  * One entry in a menu, as data.
  *
@@ -41,9 +48,13 @@ export type MenuItem =
       detail?: string;
       disabled?: boolean;
       icon?: ForgeIconName;
+      /** A colour class for `icon`, such as `forge-icon-green`, when it carries state. */
+      iconClass?: string;
       /** Overrides `icon` when the mark is not one of the shell's glyphs. */
       glyph?: JSX.Element;
       destructive?: boolean;
+      /** Pointer-only shortcuts; keyboard users reach the same actions elsewhere. */
+      buttons?: readonly MenuItemButton[];
       run: () => void;
     }
   | {

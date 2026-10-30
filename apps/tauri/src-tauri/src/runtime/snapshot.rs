@@ -159,6 +159,7 @@ pub struct ShellSnapshot {
     /// Every project's file-sharing rules, in application order, for
     /// the settings section that edits them.
     pub worktree_shares: Vec<domain::ShareRule>,
+    pub project_actions: Vec<domain::ProjectAction>,
     /// Every project's worktree-ignore rules, for the settings dialog
     /// that undoes them.
     pub worktree_ignores: Vec<domain::WorktreeIgnore>,
@@ -208,6 +209,7 @@ impl ShellSnapshot {
             launchables: launchables(store),
             agent_profiles: store.agent_profiles.clone(),
             worktree_shares: store.worktree_shares.clone(),
+            project_actions: store.project_actions.clone(),
             worktree_ignores: store.worktree_ignores.clone(),
             session_attention,
             app_state: store.app_state.iter().cloned().collect(),
@@ -328,6 +330,7 @@ mod tests {
                 since: now,
                 evidence: Some(domain::ActivityEvidence::Hook),
             },
+            action: None,
         };
         let store = Store::new();
         assert!(session_wants_you(&store, &session, None));

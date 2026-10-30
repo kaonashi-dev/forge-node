@@ -1,3 +1,4 @@
+use crate::action::ActionRun;
 use crate::ids::{AgentProfileId, AgentProviderId, SessionId, TerminalId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -15,6 +16,9 @@ pub enum SessionKind {
     Agent,
     /// `forge-editor` in a PTY, with a control channel reporting [`EditorState`].
     Editor,
+    /// A project action's command under `$SHELL -l -c`; it ends when the
+    /// command does, so its state is the action's.
+    Task,
 }
 
 /// Exit status travels through `SessionUpdated`, not a separate exit event.
@@ -274,6 +278,13 @@ pub struct Session {
     /// typed input move it. Silence does not.
     #[serde(default)]
     pub activity: AgentActivity,
+    /// The project action a `Task` session runs, with its port and readiness.
+    ///
+    /// Runtime-only like [`Self::terminal_id`]: never a column, `None` on load,
+    /// so a restarted daemon counts nothing as running. Cleared when the action
+    /// is deleted, which leaves the session to run its stored command.
+    #[serde(default)]
+    pub action: Option<Box<ActionRun>>,
 }
 
 /// What a provider hook or a typed keystroke last said about a session.
@@ -553,6 +564,7 @@ mod tests {
             ended_at: None,
             base_commit: None,
             activity: AgentActivity::unknown(),
+            action: None,
         };
         let json = serde_json::to_value(&session).unwrap();
         assert!(

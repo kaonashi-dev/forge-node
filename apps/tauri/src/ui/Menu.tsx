@@ -105,12 +105,19 @@ function MenuItems(props: { items: MenuItem[] }) {
             </DropdownMenu.Sub>
           );
         }
+        // A button press bubbles on to the item, so the menu still closes the
+        // way it does for any selection; the item then runs the button's action.
+        let pressed: (() => void) | null = null;
         return (
           <DropdownMenu.Item
             class="context-item"
             classList={{ destructive: item.destructive }}
             disabled={item.disabled}
-            onSelect={item.run}
+            onSelect={() => {
+              const run = pressed ?? item.run;
+              pressed = null;
+              run();
+            }}
           >
             <span class="context-item-main">
               <Show
@@ -120,7 +127,10 @@ function MenuItems(props: { items: MenuItem[] }) {
                     {(icon) => (
                       <Icon
                         name={icon()}
-                        class={item.destructive ? "forge-icon-red" : "forge-icon-muted"}
+                        class={
+                          item.iconClass ??
+                          (item.destructive ? "forge-icon-red" : "forge-icon-muted")
+                        }
                         size={14}
                       />
                     )}
@@ -137,6 +147,23 @@ function MenuItems(props: { items: MenuItem[] }) {
                   {detail()}
                 </DropdownMenu.ItemDescription>
               )}
+            </Show>
+            <Show when={item.buttons?.length}>
+              <span class="context-item-buttons">
+                <For each={item.buttons}>
+                  {(button) => (
+                    <span
+                      class="context-item-button"
+                      role="presentation"
+                      title={button.label}
+                      aria-label={button.label}
+                      onPointerUp={() => (pressed = button.run)}
+                    >
+                      <Icon name={button.icon} size={13} />
+                    </span>
+                  )}
+                </For>
+              </span>
             </Show>
           </DropdownMenu.Item>
         );

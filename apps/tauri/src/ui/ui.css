@@ -423,6 +423,7 @@
   box-shadow: var(--overlay-shadow);
   display: flex;
   flex-direction: column;
+  gap: var(--space-2);
   max-height: var(--kb-popper-content-available-height, 100dvh);
   max-width: var(--kb-popper-content-available-width, 100dvw);
   min-width: min(200px, var(--kb-popper-content-available-width, 100dvw));
@@ -462,6 +463,7 @@
 .forge-select-listbox {
   display: flex;
   flex-direction: column;
+  gap: var(--space-2);
   width: 100%;
 }
 .context-item {
@@ -507,6 +509,24 @@
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+}
+.context-item-buttons {
+  display: inline-flex;
+  gap: var(--space-2);
+  margin-right: calc(var(--space-4) * -1);
+}
+.context-item-button {
+  align-items: center;
+  border-radius: var(--radius-control);
+  color: var(--fg-muted);
+  display: inline-flex;
+  height: var(--control-xs);
+  justify-content: center;
+  width: var(--control-xs);
+}
+.context-item-button:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
 }
 .context-heading {
   color: var(--fg-subtle);

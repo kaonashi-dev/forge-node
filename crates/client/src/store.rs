@@ -6,9 +6,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use domain::{
-    AgentProfile, Cursor, ExternalAgentSession, Project, ProjectGroup, ProviderUsage, PtySize,
-    PullRequestState, Row, ScrollbackRows, Session, ShareRule, TermModes, TerminalDelta,
-    TerminalId, TerminalSnapshot, Workspace, WorktreeIgnore,
+    AgentProfile, Cursor, ExternalAgentSession, Project, ProjectAction, ProjectGroup,
+    ProviderUsage, PtySize, PullRequestState, Row, ScrollbackRows, Session, ShareRule, TermModes,
+    TerminalDelta, TerminalId, TerminalSnapshot, Workspace, WorktreeIgnore,
 };
 use protocol::{DaemonEvent, ProviderInfo, Response};
 
@@ -60,6 +60,8 @@ pub struct Store {
     /// In application order.
     pub worktree_shares: Vec<ShareRule>,
     pub worktree_ignores: Vec<WorktreeIgnore>,
+    /// In display order.
+    pub project_actions: Vec<ProjectAction>,
     pub app_state: Vec<(String, String)>,
     /// Latest usage per account: a provider reports one
     /// reading for its default login and one per profile that moved its config
@@ -94,6 +96,7 @@ impl Store {
                 agent_profiles,
                 worktree_shares,
                 worktree_ignores,
+                project_actions,
                 app_state,
                 external_agents,
                 pull_requests,
@@ -108,6 +111,7 @@ impl Store {
                 self.agent_profiles = agent_profiles;
                 self.worktree_shares = worktree_shares;
                 self.worktree_ignores = worktree_ignores;
+                self.project_actions = project_actions;
                 self.app_state = app_state;
                 self.external_agents = external_agents;
                 self.pull_requests = *pull_requests;
@@ -156,6 +160,7 @@ impl Store {
                 self.agent_profiles.clear();
                 self.worktree_shares.clear();
                 self.worktree_ignores.clear();
+                self.project_actions.clear();
                 self.app_state.clear();
                 self.usage.clear();
                 self.runs.clear();
@@ -192,6 +197,8 @@ impl Store {
                     .retain(|rule| rule.project_id != *project_id);
                 self.worktree_ignores
                     .retain(|rule| rule.project_id != *project_id);
+                self.project_actions
+                    .retain(|action| action.project_id != *project_id);
                 self.external_agents
                     .retain(|session| session.project_id != *project_id);
                 EventOutcome::Applied
@@ -292,6 +299,15 @@ impl Store {
                 self.worktree_shares
                     .retain(|rule| rule.project_id != *project_id);
                 self.worktree_shares.extend(rules.iter().cloned());
+                EventOutcome::Applied
+            }
+            DaemonEvent::ProjectActionsChanged {
+                project_id,
+                actions,
+            } => {
+                self.project_actions
+                    .retain(|action| action.project_id != *project_id);
+                self.project_actions.extend(actions.iter().cloned());
                 EventOutcome::Applied
             }
             DaemonEvent::ProjectWorktreeIgnoresChanged { project_id, rules } => {
@@ -699,6 +715,7 @@ mod tests {
             ended_at: None,
             base_commit: None,
             activity: domain::AgentActivity::unknown(),
+            action: None,
         }
     }
 
@@ -790,6 +807,7 @@ mod tests {
             providers: vec![],
             agent_profiles: vec![],
             worktree_shares: vec![],
+            project_actions: vec![],
             worktree_ignores: vec![],
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
@@ -818,6 +836,7 @@ mod tests {
             providers: vec![],
             agent_profiles: vec![],
             worktree_shares: vec![],
+            project_actions: vec![],
             worktree_ignores: vec![],
             app_state: vec![
                 ("sidebar_width".to_string(), "280".to_string()),

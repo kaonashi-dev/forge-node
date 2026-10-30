@@ -93,6 +93,7 @@ uuid_id!(
 uuid_id!(ContextId);
 uuid_id!(AgentProfileId);
 uuid_id!(ShareRuleId);
+uuid_id!(ProjectActionId);
 uuid_id!(
     /// One orchestration run: an objective, a controller, and a board.
     RunId

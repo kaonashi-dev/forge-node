@@ -1,0 +1,54 @@
+{
+  "ActionSuggestions": {
+    "workspace_id": "00000000-0000-7000-8000-000000000003",
+    "suggestions": [
+      {
+        "label": "test",
+        "command": "bun run test",
+        "kind": "test",
+        "pinned": false,
+        "cwd": null,
+        "single_instance": true,
+        "ready": {
+          "kind": "none"
+        },
+        "port": null,
+        "depends_on": [],
+        "source": {
+          "kind": "detected"
+        },
+        "detected_from": "package.json",
+        "saved_as": null
+      }
+    ],
+    "repo_file": {
+      "file_hash": "abababababababababababababababababababababababababababababababab",
+      "actions": [
+        {
+          "label": "test",
+          "command": "bun run test",
+          "kind": "test",
+          "pinned": false,
+          "cwd": null,
+          "single_instance": true,
+          "ready": {
+            "kind": "none"
+          },
+          "port": null,
+          "depends_on": [],
+          "source": {
+            "kind": "repo",
+            "file_hash": "abababababababababababababababababababababababababababababababab"
+          },
+          "detected_from": ".forge/actions.toml",
+          "saved_as": null
+        }
+      ],
+      "error": null,
+      "drift": [
+        "00000000-0000-7000-8000-00000000000b"
+      ]
+    },
+    "truncated": false
+  }
+}

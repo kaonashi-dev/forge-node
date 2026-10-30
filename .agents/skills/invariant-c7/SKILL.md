@@ -17,6 +17,7 @@ Read `docs/performance.md` if any box is unclear.
 - [ ] New `Inner` maps: one owner, one deletion path on close.
 - [ ] Cross-session prompts are capped at 8 KiB before cleaning; one queued slot rejects replacement, belongs to a terminal generation, clears on exit/restart/removal, and never replays an uncertain write.
 - [ ] No sleep-and-check unless waiting on non-wakeable condition.
+- [ ] An action's output watch scans on its PTY thread after the pump, keeps a bounded tail, and is dropped once it settles; nothing action-related runs inside `pump_terminal_batch`. Manifests are `metadata()`-checked and `.take(cap)`-read (256 KiB, 64 KiB for `.forge/actions.toml`).
 - [ ] Timeout commands: `.process_group(0)`, kill negative pgid.
 - [ ] Every `spawn()` reaped; coalescing flags cleared on `Drop` failure paths.
 - [ ] Id-minting mutations return the id; no snapshot reload to guess created ids.

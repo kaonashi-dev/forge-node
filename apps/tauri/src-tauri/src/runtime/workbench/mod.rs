@@ -2,6 +2,7 @@
 //! Correlated results belong to the requesting WebView interaction, never the Store.
 //! The shared client serializes socket writes and correlates daemon replies.
 
+mod actions;
 mod commands;
 mod editor;
 mod files;
@@ -182,6 +183,12 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             git::mark_conflict_resolved(app, client, workspace, paths)
         }
         WorkbenchCommand::ListBranches { project } => git::list_branches(app, client, project),
+        WorkbenchCommand::SuggestActions { workspace } => {
+            actions::suggest_actions(app, client, workspace)
+        }
+        WorkbenchCommand::RunAction { workspace, action } => {
+            actions::run_action(app, client, workspace, action)
+        }
         WorkbenchCommand::DetectShareCandidates { project } => {
             projects::detect_share_candidates(app, client, project)
         }

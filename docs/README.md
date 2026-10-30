@@ -19,6 +19,7 @@ must match the code.
 | [terminal.md](./terminal.md) | PTY → engine → delta pipeline, sequence/resync, backpressure, kill semantics, shell environment |
 | [editor.md](./editor.md) | document engine, daemon control wire, cells/DOM surfaces and previews |
 | [agents.md](./agents.md) | built-in providers, detection algorithm, launch spec |
+| [actions.md](./actions.md) | project actions: one-click tasks, single instance, ports, readiness, dependencies, `.forge/actions.toml` trust |
 | [worktrees.md](./worktrees.md) | project discovery, managed worktree placement/slugs, create/remove safety rules |
 | [persistence.md](./persistence.md) | SQLite schema, migration rules, startup reconciliation |
 | [ui.md](./ui.md) | the window layout, theme tokens, terminal rendering and the keyboard map |

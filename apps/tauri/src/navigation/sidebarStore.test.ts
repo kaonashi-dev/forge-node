@@ -73,7 +73,7 @@ it("keeps Projects, Files and History as the first three views", () => {
 
 describe("CYCLED_VIEWS", () => {
   it("is exactly the views without a number chord", () => {
-    expect(CYCLED_VIEWS).toEqual(["History", "PR", "Git"]);
+    expect(CYCLED_VIEWS).toEqual(["History", "PR", "Git", "Processes"]);
   });
 });
 
@@ -89,7 +89,8 @@ describe("cycleTarget", () => {
   it("walks the cycle in strip order and wraps", () => {
     expect(cycleTarget("History", true)).toBe("PR");
     expect(cycleTarget("PR", true)).toBe("Git");
-    expect(cycleTarget("Git", true)).toBe("History");
+    expect(cycleTarget("Git", true)).toBe("Processes");
+    expect(cycleTarget("Processes", true)).toBe("History");
   });
 });
 

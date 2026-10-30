@@ -1079,11 +1079,11 @@
 }
 /* A row's + and ⋯ sit over its trailing marks, hidden until the row is
    hovered or one of them has focus; the marks then step aside. */
-/* The marks keep room for both actions, so revealing them covers nothing
-   but the marks they replace. */
+/* The marks keep room for the row's actions (run, start, more), so revealing
+   them covers nothing but the marks they replace. */
 .ws-marks {
   justify-content: flex-end;
-  min-width: calc(2 * var(--control-xs) + var(--space-2));
+  min-width: calc(3 * var(--control-xs) + 2 * var(--space-2));
   position: relative;
 }
 .row-marks {
@@ -1131,6 +1131,7 @@
 .ws-card > .ws-sessions {
   border-left: 1px solid var(--hue-guide, var(--border-subtle));
   margin-left: var(--space-14);
+  margin-top: var(--space-3);
   padding-left: var(--space-8);
 }
 /* Mount-only entrance: the list is a `Show`, so collapse unmounts with no exit. */
@@ -1739,6 +1740,7 @@
   padding-right: var(--space-2);
 }
 :root[data-trim="true"] .ws-card > .ws-sessions {
+  margin-top: var(--space-2);
   padding-left: var(--space-6);
 }
 :root[data-trim="true"] .card-strip {

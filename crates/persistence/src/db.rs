@@ -9,8 +9,8 @@ use rusqlite::{params, Connection};
 
 use crate::migrations::migrations;
 use crate::repositories::{
-    AgentProfileRepo, AppStateRepo, ContextRepo, IgnoreRepo, OrchestrationRepo, ProjectGroupRepo,
-    ProjectRepo, ProviderOverrideRepo, SessionRepo, ShareRepo, WorkspaceRepo,
+    ActionRepo, AgentProfileRepo, AppStateRepo, ContextRepo, IgnoreRepo, OrchestrationRepo,
+    ProjectGroupRepo, ProjectRepo, ProviderOverrideRepo, SessionRepo, ShareRepo, WorkspaceRepo,
 };
 
 /// Errors produced by the persistence layer.
@@ -292,6 +292,11 @@ impl Db {
     #[must_use]
     pub fn agent_profiles(&self) -> AgentProfileRepo<'_> {
         AgentProfileRepo::new(&self.conn)
+    }
+
+    #[must_use]
+    pub fn actions(&self) -> ActionRepo<'_> {
+        ActionRepo::new(&self.conn)
     }
 
     #[must_use]

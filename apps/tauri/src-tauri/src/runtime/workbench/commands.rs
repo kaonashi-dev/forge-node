@@ -169,6 +169,15 @@ pub enum WorkbenchCommand {
     ListBranches {
         project: ProjectId,
     },
+    /// What a workspace's manifests and `.forge/actions.toml` suggest.
+    SuggestActions {
+        workspace: WorkspaceId,
+    },
+    /// Run a project action; the answer names the session to focus.
+    RunAction {
+        workspace: WorkspaceId,
+        action: domain::ProjectActionId,
+    },
     /// Ignored paths a project could share between its worktrees.
     DetectShareCandidates {
         project: ProjectId,

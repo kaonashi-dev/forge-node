@@ -28,7 +28,7 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
 
 - **Append only.** Add a new `M::up(...)` to `migrations()`; never edit or
   reorder an existing one, or already-migrated databases will diverge.
-- Fourteen migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
+- Fifteen migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
   `PROJECT_GROUPS`, `AGENT_PROFILES`, `PROJECT_ICONS`,
   `WORKSPACE_DISPLAY_NAMES`, `SESSION_LAUNCH_COMMAND`, `WORKTREE_SHARES`,
   `SESSION_BASE_COMMIT`, `PROFILE_CONFIG_DIR`, `WORKTREE_IGNORES`,
@@ -37,7 +37,8 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
   `RUN_ENVELOPE_HISTORY` (run messages outlive the sessions that wrote and
   received them; plain handoffs keep their lifecycle through triggers), and
   `FOREIGN_KEY_INDEXES` (the child columns a parent delete searches, so the
-  startup session purge does not scan `runs` and `attempts` once per row).
+  startup session purge does not scan `runs` and `attempts` once per row),
+  and `PROJECT_ACTIONS` (below).
   Session activity is not a column. A restart reconciles live attempts to lost
   and an active run to interrupted before the socket is bound. Factory reset
   deletes those tables with the rest of the application rows.
@@ -162,6 +163,22 @@ global `[worktrees] copy` / `setup_script` from `config.toml` is synthesised
 into rules and applied. One engine, two sources — and a project with rules
 ignores the global list entirely, because merging them would make it
 impossible to remove an inherited entry.
+
+## Schema (v15 — `PROJECT_ACTIONS`)
+
+```sql
+project_actions   (id PK, project_id FK→projects ON DELETE CASCADE, label,
+                   command, kind, spec, pinned, position, created_at)
+                  UNIQUE (project_id, label COLLATE NOCASE)
+```
+
+A project's one-click commands ([actions.md](./actions.md)). `spec` is JSON
+for the `worktree_shares.strategy` reason: the `cwd`, single-instance flag,
+readiness probe, port, dependencies and source are shapes nothing queries
+inside. `kind` is a tag column like every other enum here. Labels are unique
+ignoring case because a chip and a palette entry name an action by label. A
+run's session (`SessionKind::Task`) is an ordinary `sessions` row; which action
+it runs is runtime-only.
 
 ## Repositories (`repositories/`)
 

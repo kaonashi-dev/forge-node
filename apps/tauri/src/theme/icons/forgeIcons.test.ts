@@ -16,6 +16,7 @@ const NAMES: ForgeIconName[] = [
   "refresh",
   "copy",
   "external-link",
+  "globe",
   "edit",
   "trash",
   "agent",
@@ -58,6 +59,9 @@ const NAMES: ForgeIconName[] = [
   "exited",
   "failed",
   "command-palette",
+  "play",
+  "stop",
+  "activity",
 ];
 
 describe("forgeIcons", () => {

@@ -8,9 +8,10 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use domain::{PtySize, SessionId, TerminalId};
+use domain::{ActionReadiness, PtySize, SessionId, TerminalId};
 use terminal_core::{AlacrittyEngine, DeltaBuilder, PtyHandle, PtyReader, TerminalEngine};
 
+use crate::actions::ready::{OutputWatch, Scan};
 use crate::core::Daemon;
 
 /// Emit floor, not PTY read cadence: ~8 ms ⇒ ≤125/s.
@@ -109,12 +110,24 @@ pub(crate) struct PumpStatus {
 }
 
 /// Drain bounded batches independently of the emission clock; block when there is no work.
-pub fn pty_loop(daemon: Arc<Daemon>, terminal_id: TerminalId, mut reader: Box<dyn PtyReader>) {
+///
+/// `watch` is an action's ready pattern: scanned after the pump, outside the
+/// core lock, and dropped once it settles.
+pub fn pty_loop(
+    daemon: Arc<Daemon>,
+    terminal_id: TerminalId,
+    mut reader: Box<dyn PtyReader>,
+    mut watch: Option<OutputWatch>,
+) {
     let mut buf = [0u8; READ_BUF];
     let mut deadline: Option<Instant> = None;
     let mut last_note = Instant::now() - ACTIVITY_NOTE;
     loop {
-        let timeout = deadline.map(|end| end.saturating_duration_since(Instant::now()));
+        let wake = match (deadline, watch.as_ref().map(OutputWatch::deadline)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let timeout = wake.map(|end| end.saturating_duration_since(Instant::now()));
         let mut eof = false;
         let mut len = match reader.read_timeout(&mut buf, timeout) {
             Ok(Some(0)) => break,
@@ -146,6 +159,17 @@ pub fn pty_loop(daemon: Arc<Daemon>, terminal_id: TerminalId, mut reader: Box<dy
         deadline = daemon
             .pump_terminal_batch(terminal_id, &buf[..len], note, false, false)
             .next_wake;
+        if let Some(active) = watch.as_mut() {
+            let settled = match active.scan(&buf[..len], Instant::now()) {
+                Scan::Pending => None,
+                Scan::Ready(url) => Some(ActionReadiness::Ready { url }),
+                Scan::TimedOut => Some(ActionReadiness::TimedOut),
+            };
+            if let Some(readiness) = settled {
+                daemon.set_readiness(active.session_id(), readiness);
+                watch = None;
+            }
+        }
         if eof {
             break;
         }

@@ -565,6 +565,7 @@ mod tests {
                 launch_command: None,
                 base_commit: None,
                 activity: domain::AgentActivity::starting(now),
+                action: None,
             });
             store.projects.push(project);
             store.workspaces.push(workspace);

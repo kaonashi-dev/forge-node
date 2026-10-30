@@ -2,6 +2,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { connect } from "../../runtime/host";
 import { startDocumentWatch } from "../../features/files/watches/documentWatch";
 import { startWorkspaceFocus } from "../integrations/workspaceFocus";
+import { bindActionsEvents } from "./events/actions";
 import { bindTerminalEvents } from "./events/terminal";
 import { bindEditorEvents } from "./events/editor";
 import { bindFilesEvents } from "./events/files";
@@ -29,6 +30,7 @@ export async function startAppRuntime(options: StartAppRuntimeOptions = {}): Pro
       bindFilesEvents,
       bindGitEvents,
       bindProjectsEvents,
+      bindActionsEvents,
       bindSettingsEvents,
       bindSessionEvents,
     ]);

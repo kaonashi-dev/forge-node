@@ -12,9 +12,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use domain::{
-    AgentProfile, AgentProfileId, AgentProviderId, ProjectId, PtySize, SessionId, SessionRole,
-    ShareAction, ShareCandidate, ShareCleanup, ShareRule, ShareRuleId, ShareStatusEntry,
-    TerminalId, WorkspaceId, WorktreeIgnore,
+    AgentProfile, AgentProfileId, AgentProviderId, ProjectAction, ProjectActionId, ProjectId,
+    PtySize, SessionId, SessionRole, ShareAction, ShareCandidate, ShareCleanup, ShareRule,
+    ShareRuleId, ShareStatusEntry, TerminalId, WorkspaceId, WorktreeIgnore,
 };
 use protocol::{
     decode_payload, encode_frame, ClientKind, ClientMessage, DaemonEvent, DaemonMessage,
@@ -106,6 +106,28 @@ pub struct Branches {
     pub remotes: Vec<domain::Remote>,
     /// The repository's default branch, the base for a new one.
     pub default_branch: Option<String>,
+}
+
+/// What `RunAction` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionLaunch {
+    Started {
+        session_id: SessionId,
+        terminal_id: TerminalId,
+    },
+    /// The session exists and spawns once its dependencies are ready.
+    Queued { session_id: SessionId },
+    /// A single-instance action was already live; focus this session.
+    AlreadyRunning { session_id: SessionId },
+}
+
+/// Answers `SuggestActions`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionSuggestions {
+    pub suggestions: Vec<domain::ActionSuggestion>,
+    pub repo_file: Option<domain::RepoActionsFile>,
+    /// A file was skipped for its size, so the list is a floor.
+    pub truncated: bool,
 }
 
 /// A oneshot sender delivering one request's result to its blocked caller.
@@ -1351,6 +1373,77 @@ impl Client {
         self.expect_ack(Request::RemoveAgentProfile { profile_id })
     }
 
+    /// What the workspace's files suggest, and what its repository file offers.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when the daemon refuses or the answer is not
+    /// [`Response::ActionSuggestions`].
+    pub fn suggest_actions(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<ActionSuggestions, ClientError> {
+        match self.request(Request::SuggestActions { workspace_id })? {
+            Response::ActionSuggestions {
+                suggestions,
+                repo_file,
+                truncated,
+                ..
+            } => Ok(ActionSuggestions {
+                suggestions,
+                repo_file,
+                truncated,
+            }),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "ActionSuggestions",
+            }),
+        }
+    }
+
+    /// Replaces the project's whole action set.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when the daemon refuses the set.
+    pub fn set_project_actions(
+        &self,
+        project_id: ProjectId,
+        actions: Vec<ProjectAction>,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::SetProjectActions {
+            project_id,
+            actions,
+        })
+    }
+
+    /// Runs an action, or names the live session a single-instance one already has.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when the daemon refuses the run.
+    pub fn run_action(
+        &self,
+        workspace_id: WorkspaceId,
+        action_id: ProjectActionId,
+    ) -> Result<ActionLaunch, ClientError> {
+        match self.request(Request::RunAction {
+            workspace_id,
+            action_id,
+        })? {
+            Response::SessionCreated {
+                session_id,
+                terminal_id,
+            } => Ok(ActionLaunch::Started {
+                session_id,
+                terminal_id,
+            }),
+            Response::ActionQueued { session_id } => Ok(ActionLaunch::Queued { session_id }),
+            Response::ActionAlreadyRunning { session_id } => {
+                Ok(ActionLaunch::AlreadyRunning { session_id })
+            }
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "SessionCreated",
+            }),
+        }
+    }
+
     /// Ignored paths eligible for sharing between workspaces.
     ///
     /// # Errors
@@ -1924,6 +2017,7 @@ mod tests {
             agent_profiles: vec![],
             worktree_shares: vec![],
             worktree_ignores: vec![],
+            project_actions: vec![],
             app_state: vec![("sidebar_width".to_string(), "280".to_string())],
             external_agents: vec![],
             pull_requests: Box::new(domain::PullRequestState::default()),

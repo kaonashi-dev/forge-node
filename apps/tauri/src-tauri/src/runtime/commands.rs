@@ -461,6 +461,11 @@ pub enum RuntimeCommand {
     RemoveAgentProfile {
         profile: AgentProfileId,
     },
+    /// Replaces the project's whole action set.
+    SetProjectActions {
+        project: ProjectId,
+        actions: Vec<domain::ProjectAction>,
+    },
     /// Replaces the whole file-sharing rule set.
     SetProjectShares {
         project: ProjectId,
