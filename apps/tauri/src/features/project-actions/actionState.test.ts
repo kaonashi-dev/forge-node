@@ -5,6 +5,7 @@ import {
   browserUrl,
   chipOrder,
   chipState,
+  finishedRun,
   indexActionSessions,
   isActive,
   urlBadge,
@@ -90,6 +91,13 @@ describe("action chips", () => {
     const state = chipState(index, "ws", "dev");
     expect(state).toEqual({ phase: "exited", sessionId: "second", code: 2 });
     expect(isActive(state)).toBe(false);
+  });
+
+  it("reruns only a finished session in place", () => {
+    expect(finishedRun({ phase: "exited", sessionId: "s", code: 0 })).toBe("s");
+    expect(finishedRun({ phase: "failed", sessionId: "s", reason: "x" })).toBe("s");
+    expect(finishedRun({ phase: "running", sessionId: "s" })).toBeNull();
+    expect(finishedRun({ phase: "idle" })).toBeNull();
   });
 
   it("maps readiness, a dependency wait and a failure", () => {

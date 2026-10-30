@@ -54,7 +54,8 @@ meanwhile chooses again rather than sharing it.
   it has exited, waiting or not: a row left behind would be an exited session,
   and opening one runs it again. A run that exits by itself, or is interrupted
   from its terminal, stays so its output can be read. A restart's own kill
-  keeps the session.
+  keeps the session, and a restart sent while a stop is still waiting for the
+  exit cancels the close: the later gesture wins.
 - **`single_instance = false`** starts a new session every time.
 
 ### Ports

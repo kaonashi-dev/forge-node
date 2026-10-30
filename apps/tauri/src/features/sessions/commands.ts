@@ -34,7 +34,7 @@ export async function closeSession(sessionId: string): Promise<void> {
   await sendRuntimeCommand({ type: "close_session", session_id: sessionId });
 }
 
-/** Stops the process but retains the session row. */
+/** Stops the process and keeps the session row, except a live task, which the daemon closes once it exits. */
 export async function killSession(sessionId: string): Promise<void> {
   await sendRuntimeCommand({ type: "kill_session", session_id: sessionId });
 }

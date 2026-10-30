@@ -110,6 +110,11 @@ export function isActive(state: ChipState): state is LiveChipState {
   );
 }
 
+/** The finished run to start again in place, so a rerun does not leave another row behind. */
+export function finishedRun(state: ChipState): string | null {
+  return state.phase === "exited" || state.phase === "failed" ? state.sessionId : null;
+}
+
 /** Pinned first, then the rest, each in saved order. */
 export function chipOrder(actions: readonly ProjectAction[]): {
   pinned: ProjectAction[];

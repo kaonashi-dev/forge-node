@@ -18,6 +18,7 @@ import {
   buildDraft,
   duplicateLabels,
   matchesQuery,
+  neighbourIndex,
   toActionSet,
   type DraftRow,
 } from "./actionDraft";
@@ -103,13 +104,14 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
     setRows(index, "action", (action) => ({ ...action, ...change }));
   }
 
-  function move(index: number, by: number): void {
-    const target = index + by;
-    if (target < 0 || target >= rows.length) return;
+  function move(index: number, by: -1 | 1): void {
+    const target = neighbourIndex(rows, index, by, shown);
+    if (target === null) return;
     setRows(
       produce((list) => {
-        const [row] = list.splice(index, 1);
-        list.splice(target, 0, row!);
+        const row = list[index]!;
+        list[index] = list[target]!;
+        list[target] = row;
       }),
     );
   }
@@ -194,6 +196,7 @@ export function ActionsDialog(props: { target: ActionsDialogTarget; onDismiss: (
               )
             }
             onMove={movable ? (by) => move(index(), by) : undefined}
+            canMove={(by) => neighbourIndex(rows, index(), by, shown) !== null}
             onRemove={origin === "saved" ? () => remove(index()) : undefined}
           />
         </Show>
@@ -307,7 +310,8 @@ function ActionRow(props: {
   onInclude: (include: boolean) => void;
   onPatch: (change: Partial<ProjectAction>) => void;
   onDepends: (ids: string[]) => void;
-  onMove?: (by: number) => void;
+  onMove?: (by: -1 | 1) => void;
+  canMove: (by: -1 | 1) => boolean;
   onRemove?: () => void;
 }) {
   const action = () => props.row.action;
@@ -386,10 +390,20 @@ function ActionRow(props: {
           <Show when={props.onMove}>
             {(move) => (
               <>
-                <IconButton label="Move up" size="xs" onClick={() => move()(-1)}>
+                <IconButton
+                  label="Move up"
+                  size="xs"
+                  disabled={!props.canMove(-1)}
+                  onClick={() => move()(-1)}
+                >
                   <Icon name="chevron-up" size={12} />
                 </IconButton>
-                <IconButton label="Move down" size="xs" onClick={() => move()(1)}>
+                <IconButton
+                  label="Move down"
+                  size="xs"
+                  disabled={!props.canMove(1)}
+                  onClick={() => move()(1)}
+                >
                   <Icon name="chevron-down" size={12} />
                 </IconButton>
               </>

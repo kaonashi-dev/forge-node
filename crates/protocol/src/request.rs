@@ -750,6 +750,8 @@ pub enum Request {
         initial_prompt: Option<String>,
     },
     /// Kill a session's process (SIGKILL semantics) → `Ack`; `SessionUpdated`.
+    /// A live `Task` is then closed once it exits (`SessionRemoved`): its
+    /// exited row would rerun the action when opened.
     KillSession {
         /// The session to kill.
         session_id: SessionId,

@@ -152,9 +152,9 @@ DaemonMessage::Event    (DaemonEvent)
 | | `SetEditorAutosave { session_id, autosave }` | Turn saving-on-a-pause on or off for a live editor session → `Ack`. The caller's own preference; the daemon carries it across and holds no opinion about it. |
 | | `RevealInEditorSession { session_id, line, column }` | Moves the caret in a live editor session → `Ack`. What a second jump into an already-open file does, instead of opening a rival session. `NotFound` when no editor holds that id, `PreconditionFailed` when its command queue is saturated — the caller retries rather than the request id being dropped. |
 | | `CreateChildSession { parent_session_id, kind, provider_id, profile_id, role, workspace_policy, initial_prompt }` | Child under a parent; workspace chosen by `ChildWorkspacePolicy`: `SameWorkspace`, `ExistingWorkspace`, or `NewManagedWorktree { branch_hint, base }`. The latter creates the workspace first and generates a branch when the hint is absent or blank. `initial_prompt` seeds an agent child. |
-| | `KillSession { session_id }` | Signals the process group; `SessionUpdated` → `Exited` when the PTY closes. |
+| | `KillSession { session_id }` | Signals the process group; `SessionUpdated` → `Exited` when the PTY closes. A live `Task` is then closed (`SessionRemoved`), and one still waiting on its dependencies is failed and closed at once; see `docs/actions.md`. |
 | | `CloseSession { session_id }` | Removes the session. **Rejected while active** (`PreconditionFailed`). Children re-parent to the grandparent (`SessionUpdated` for each), then `SessionRemoved { session_id }` is broadcast. |
-| | `RestartSession { session_id }` | Only from `Exited`/`Failed`/`Orphaned`; new `TerminalId`. |
+| | `RestartSession { session_id }` | Only from `Exited`/`Failed`/`Orphaned`; new `TerminalId`. A `Task` may also be live: it is stopped and relaunched in the same session once it exits, and a relaunch that then fails leaves it `Failed` with the reason. |
 | | `RenameSession { session_id, title }` | `None` clears the user title. |
 | | `SetSessionRole { session_id, role }` | `SessionUpdated`. |
 | | `CreateContextEnvelope { envelope }` | Persists it. |
