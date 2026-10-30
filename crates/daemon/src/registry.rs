@@ -32,6 +32,9 @@ struct ClientHandle {
     subscriptions: HashSet<TerminalId>,
     /// Terminals for which this client fell behind and needs a resync.
     behind: HashSet<TerminalId>,
+    /// Subscribed with its snapshot but not yet sent its `AttachAck`, with
+    /// whether a delta went past it meanwhile.
+    attaching: HashMap<TerminalId, bool>,
     finished: HashMap<TerminalId, DaemonEvent>,
 }
 
@@ -70,6 +73,7 @@ impl ClientRegistry {
                 inbox_session: None,
                 subscriptions: HashSet::new(),
                 behind: HashSet::new(),
+                attaching: HashMap::new(),
                 finished: HashMap::new(),
             },
         );
@@ -137,11 +141,39 @@ impl ClientRegistry {
         }
     }
 
+    /// Subscribe while the attach snapshot is taken, under the core lock, so
+    /// no delta can fall between the snapshot and the subscription. Deltas
+    /// are withheld until [`Self::finish_attach`]: one queued ahead of the
+    /// `AttachAck` would be discarded by a client that has no grid yet.
+    pub fn begin_attach(&self, id: ClientId, terminal_id: TerminalId) {
+        if let Some(c) = self.lock_clients().get_mut(&id) {
+            c.subscriptions.insert(terminal_id);
+            c.behind.remove(&terminal_id);
+            c.attaching.insert(terminal_id, false);
+        }
+    }
+
+    /// The `AttachAck` is queued. Returns whether a delta was withheld, in
+    /// which case the client is marked behind and needs a resync.
+    #[must_use]
+    pub fn finish_attach(&self, id: ClientId, terminal_id: TerminalId) -> bool {
+        let mut clients = self.lock_clients();
+        let Some(c) = clients.get_mut(&id) else {
+            return false;
+        };
+        let missed = c.attaching.remove(&terminal_id).unwrap_or(false);
+        if missed && c.subscriptions.contains(&terminal_id) {
+            c.behind.insert(terminal_id);
+        }
+        missed
+    }
+
     /// Unsubscribe a client from a terminal (`DetachTerminal`).
     pub fn unsubscribe(&self, id: ClientId, terminal_id: TerminalId) {
         if let Some(c) = self.lock_clients().get_mut(&id) {
             c.subscriptions.remove(&terminal_id);
             c.behind.remove(&terminal_id);
+            c.attaching.remove(&terminal_id);
             c.finished.remove(&terminal_id);
         }
     }
@@ -190,6 +222,10 @@ impl ClientRegistry {
         let mut resync_event: Option<DaemonEvent> = None;
         for c in clients.values_mut() {
             if !c.subscriptions.contains(&terminal_id) {
+                continue;
+            }
+            if let Some(missed) = c.attaching.get_mut(&terminal_id) {
+                *missed = true;
                 continue;
             }
             if c.behind.contains(&terminal_id) {
@@ -250,15 +286,15 @@ impl ClientRegistry {
         }
     }
 
-    /// Preserve the final grid for lagging clients before its engine is reaped.
+    /// Preserve the final grid for lagging clients, and for attaching ones a
+    /// delta already went past, before its engine is reaped.
     pub fn finish_terminal(&self, terminal: TerminalId, snapshot: impl FnOnce() -> DaemonEvent) {
         let mut clients = self.lock_clients();
         let mut snapshot = Some(snapshot);
         let mut event = None;
-        for client in clients
-            .values_mut()
-            .filter(|client| client.behind.contains(&terminal))
-        {
+        for client in clients.values_mut().filter(|client| {
+            client.behind.contains(&terminal) || client.attaching.get(&terminal) == Some(&true)
+        }) {
             if event.is_none() {
                 event = snapshot.take().map(|build| build());
             }
@@ -347,6 +383,31 @@ mod tests {
         reg.route_terminal_delta(term, &delta_event(term, 1), || resync_event(term));
         assert_eq!(rx_a.len(), 1, "subscriber a gets the delta");
         // b is not subscribed → nothing routed to it.
+    }
+
+    #[test]
+    fn a_delta_routed_during_an_attach_becomes_a_resync_after_the_ack() {
+        let reg = ClientRegistry::new();
+        let watching = ClientId::new();
+        let attaching = ClientId::new();
+        let rx_watching = reg.register(watching);
+        let rx_attaching = reg.register(attaching);
+        let term = TerminalId::new();
+        reg.subscribe(watching, term);
+        reg.begin_attach(attaching, term);
+
+        reg.route_terminal_delta(term, &delta_event(term, 1), || resync_event(term));
+        assert_eq!(rx_watching.len(), 1);
+        assert!(rx_attaching.is_empty(), "withheld until the ack is queued");
+
+        assert!(reg.finish_attach(attaching, term));
+        assert!(reg.needs_resync(attaching));
+        reg.recover(attaching, |_| Some(resync_event(term)));
+        assert!(matches!(
+            rx_attaching.try_recv(),
+            Ok(DaemonMessage::Event(DaemonEvent::TerminalResync { .. }))
+        ));
+        assert!(!reg.finish_attach(attaching, term), "settled once");
     }
 
     #[test]

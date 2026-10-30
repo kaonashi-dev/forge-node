@@ -105,19 +105,12 @@ function MenuItems(props: { items: MenuItem[] }) {
             </DropdownMenu.Sub>
           );
         }
-        // A button press bubbles on to the item, so the menu still closes the
-        // way it does for any selection; the item then runs the button's action.
-        let pressed: (() => void) | null = null;
-        return (
+        const main = (
           <DropdownMenu.Item
             class="context-item"
             classList={{ destructive: item.destructive }}
             disabled={item.disabled}
-            onSelect={() => {
-              const run = pressed ?? item.run;
-              pressed = null;
-              run();
-            }}
+            onSelect={() => item.run()}
           >
             <span class="context-item-main">
               <Show
@@ -148,24 +141,31 @@ function MenuItems(props: { items: MenuItem[] }) {
                 </DropdownMenu.ItemDescription>
               )}
             </Show>
-            <Show when={item.buttons?.length}>
-              <span class="context-item-buttons">
-                <For each={item.buttons}>
-                  {(button) => (
-                    <span
-                      class="context-item-button"
-                      role="presentation"
-                      title={button.label}
-                      aria-label={button.label}
-                      onPointerUp={() => (pressed = button.run)}
-                    >
-                      <Icon name={button.icon} size={13} />
-                    </span>
-                  )}
-                </For>
-              </span>
-            </Show>
           </DropdownMenu.Item>
+        );
+        if (!item.buttons?.length) return main;
+        // Siblings, not children: a control nested in a menuitem is out of
+        // the arrow-key order, while a sibling item is in it by DOM position.
+        return (
+          <div class="context-item-row" role="none">
+            {main}
+            <span class="context-item-buttons" role="none">
+              <For each={item.buttons}>
+                {(button) => (
+                  <DropdownMenu.Item
+                    class="context-item-button"
+                    disabled={item.disabled}
+                    textValue={button.label}
+                    aria-label={button.label}
+                    title={button.label}
+                    onSelect={() => button.run()}
+                  >
+                    <Icon name={button.icon} size={13} />
+                  </DropdownMenu.Item>
+                )}
+              </For>
+            </span>
+          </div>
         );
       }}
     </For>

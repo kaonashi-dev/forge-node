@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ActionSuggestion, ProjectAction, RepoActionsFile } from "../../contracts/runtime";
-import { buildDraft, duplicateLabels, matchesQuery, toActionSet } from "./actionDraft";
+import {
+  buildDraft,
+  duplicateLabels,
+  matchesQuery,
+  neighbourIndex,
+  toActionSet,
+} from "./actionDraft";
 
 function suggestion(
   label: string,
@@ -134,5 +140,21 @@ describe("actions dialog draft", () => {
     expect(matchesQuery(row!, "story")).toBe(true);
     expect(matchesQuery(row!, "package")).toBe(true);
     expect(matchesQuery(row!, "vite")).toBe(false);
+  });
+
+  it("moves among the rows a section shows, skipping hidden and other-origin rows", () => {
+    const rows = buildDraft(
+      "p",
+      [saved("a", "api"), saved("b", "build"), saved("c", "check")],
+      [suggestion("dev", "dev")],
+      null,
+      ids(),
+    );
+    const all = () => true;
+    expect(neighbourIndex(rows, 2, 1, all)).toBeNull();
+    expect(neighbourIndex(rows, 0, -1, all)).toBeNull();
+    const notBuild = (row: (typeof rows)[number]) => row.action.label !== "build";
+    expect(neighbourIndex(rows, 2, -1, notBuild)).toBe(0);
+    expect(neighbourIndex(rows, 0, 1, notBuild)).toBe(2);
   });
 });

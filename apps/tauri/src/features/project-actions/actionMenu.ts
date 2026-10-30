@@ -5,6 +5,7 @@ import { killSession, restartSession } from "../sessions/commands";
 import { focusSession } from "../sessions/sessionActions";
 import {
   browserUrl,
+  finishedRun,
   isActive,
   latestRun,
   sessionPhase,
@@ -34,9 +35,10 @@ function liveStatus(state: LiveChipState): { detail: string; iconClass: string }
 }
 
 /**
- * What a checkout's ▶ offers: one row per project action — an idle one runs,
- * a live one shows its terminal and carries its own browser, restart and stop, so
- * several running at once stay one row each — then the actions dialog.
+ * What a checkout's ▶ offers: one row per project action — an idle one runs
+ * (in its finished session, if it left one), a live one shows its terminal and
+ * carries its own browser, restart and stop, so several running at once stay
+ * one row each — then the actions dialog.
  */
 export function actionMenuItems(
   workspaceId: string,
@@ -49,11 +51,15 @@ export function actionMenuItems(
     const session = latestRun(index, workspaceId, action.id);
     const state = session ? sessionPhase(session) : ({ phase: "idle" } as const);
     if (!session || !isActive(state)) {
+      const finished = finishedRun(state);
       items.push({
         kind: "item",
         label: action.label,
         icon: "play",
-        run: () => void runAction(workspaceId, action.id).catch(() => undefined),
+        run: () =>
+          void (finished ? restartSession(finished) : runAction(workspaceId, action.id)).catch(
+            () => undefined,
+          ),
       });
       continue;
     }

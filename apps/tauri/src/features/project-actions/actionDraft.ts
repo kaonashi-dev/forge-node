@@ -137,3 +137,22 @@ export function matchesQuery(row: DraftRow, query: string): boolean {
     field.toLowerCase().includes(needle),
   );
 }
+
+/**
+ * The index `by` steps from `index` among the rows a section shows: same
+ * origin, passing `shown`. Rows between them are hidden or belong to another
+ * section, so a move swaps the two and leaves those where they are.
+ */
+export function neighbourIndex(
+  rows: readonly DraftRow[],
+  index: number,
+  by: -1 | 1,
+  shown: (row: DraftRow) => boolean,
+): number | null {
+  const origin = rows[index]?.origin;
+  for (let at = index + by; at >= 0 && at < rows.length; at += by) {
+    const row = rows[at]!;
+    if (row.origin === origin && shown(row)) return at;
+  }
+  return null;
+}

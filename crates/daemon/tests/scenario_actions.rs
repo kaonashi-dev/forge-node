@@ -671,3 +671,53 @@ fn restarting_a_running_task_relaunches_it_in_the_same_session() {
     ));
     daemon.kill_leftover_sessions();
 }
+
+#[test]
+fn a_restart_after_a_stop_keeps_the_session_and_a_failed_one_says_why() {
+    let (harness, repo) = setup();
+    let daemon = harness.boot();
+    let client = daemon.connect("actions");
+    let events = client.events();
+    let workspace_id = common::add_main_workspace(&client, repo.path());
+    let project_id = project_id(&client);
+    // The trap holds the exit for a second, so the restart lands while the stop is pending.
+    let mut dev = action(
+        project_id,
+        "dev",
+        "trap 'read -r -t 1 x; exit 0' TERM; echo serving; read -r line",
+    );
+    save(&client, project_id, std::slice::from_ref(&dev));
+
+    let (session_id, first) = started(run(&client, workspace_id, dev.id));
+    common::attach_and_read_line(&client, &events, first, "serving");
+    client
+        .request(Request::KillSession { session_id })
+        .expect("KillSession");
+    let response = client
+        .request(Request::RestartSession { session_id })
+        .expect("RestartSession while the stop is pending");
+    assert!(matches!(response, Response::Ack), "{response:?}");
+    let relaunched = wait_for_session(&events, session_id, |s| {
+        s.state == SessionState::Running && s.terminal_id.is_some_and(|t| t != first)
+    });
+    assert!(
+        common::session(&client, session_id).is_some(),
+        "the later restart wins over the earlier stop"
+    );
+
+    dev.cwd = Some("gone".to_owned());
+    save(&client, project_id, std::slice::from_ref(&dev));
+    let second = relaunched.terminal_id.expect("a new terminal");
+    common::attach_and_read_line(&client, &events, second, "serving");
+    client
+        .request(Request::RestartSession { session_id })
+        .expect("RestartSession acks before the relaunch is attempted");
+    let failed = wait_for_session(&events, session_id, |s| {
+        matches!(s.state, SessionState::Failed { .. })
+    });
+    let SessionState::Failed { reason } = failed.state else {
+        unreachable!()
+    };
+    assert!(reason.contains("gone does not exist"), "{reason}");
+    daemon.kill_leftover_sessions();
+}

@@ -1108,7 +1108,7 @@ impl Daemon {
             }
 
             Request::AttachTerminal { terminal_id, size } => {
-                self.attach_terminal(terminal_id, size)
+                self.attach_terminal(terminal_id, size, None)
             }
             Request::DetachTerminal { .. } => Ok(Response::Ack),
             Request::WriteTerminalInput { terminal_id, bytes } => {
@@ -5822,11 +5822,27 @@ impl Daemon {
         Ok(terminal_id)
     }
 
+    /// `AttachTerminal` from `client`, subscribed together with its snapshot.
+    /// The server must call [`crate::registry::ClientRegistry::finish_attach`] once the
+    /// `AttachAck` is queued, or the client never receives a delta.
+    pub(crate) fn attach_client(
+        &self,
+        client: domain::ClientId,
+        terminal_id: TerminalId,
+        size: PtySize,
+    ) -> Result<Response, ProtocolError> {
+        if self.resetting.load(Ordering::SeqCst) {
+            return Err(ProtocolError::conflict("factory reset is in progress"));
+        }
+        self.attach_terminal(terminal_id, size, Some(client))
+    }
+
     /// Adopt `size` only for the first subscriber. Later attaches use `ResizeTerminal`.
     fn attach_terminal(
         &self,
         terminal_id: TerminalId,
         size: PtySize,
+        client: Option<domain::ClientId>,
     ) -> Result<Response, ProtocolError> {
         let _span = tracing::info_span!("terminal.attach", %terminal_id).entered();
         let size = size.sanitized();
@@ -5846,6 +5862,9 @@ impl Daemon {
                 .delta_builder
                 .snapshot(&rt.engine, DEFAULT_SCROLLBACK_TAIL);
             snap.seq = rt.emit_seq;
+            if let Some(client) = client {
+                self.registry.begin_attach(client, terminal_id);
+            }
             let update = Self::touch_activity(&mut inner, terminal_id, false);
             (snap, update)
         };
@@ -6021,11 +6040,6 @@ impl Daemon {
     ) -> bool {
         self.pump_terminal_batch(terminal_id, bytes, note, true, false)
             .subscribed
-    }
-
-    /// Emit damage held back while `terminal_id` had no subscriber.
-    pub(crate) fn flush_terminal(self: &Arc<Self>, terminal_id: TerminalId) {
-        self.pump_terminal_batch(terminal_id, &[], false, true, false);
     }
 
     pub(crate) fn pump_terminal_batch(

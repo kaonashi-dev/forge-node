@@ -152,58 +152,29 @@ impl Daemon {
         if !action.depends_on.is_empty() {
             return self.queue_action(workspace_id, &action);
         }
-        let mut launch = prepare(&action, &root, &reserved, None)?;
+        let launch = prepare(&action, &root, &reserved, None)?;
 
         let session_id = SessionId::new();
-        let mut attempts = 0;
-        let (spec, session) = loop {
-            let mut inner = self.lock();
+        let (created, launch) = self.commit_launch(&action, &root, launch, |inner, launch| {
             // The authoritative check: the one above only spared the port probe.
             if action.single_instance {
-                if let Some(session_id) = live_session(&inner, workspace_id, action_id) {
-                    return Ok(Response::ActionAlreadyRunning { session_id });
+                if let Some(running) = live_session(inner, workspace_id, action_id) {
+                    return Ok(Err(running));
                 }
             }
-            if port_claimed(&inner, &launch) {
-                attempts += 1;
-                if attempts >= PORT_CLAIM_ATTEMPTS {
-                    return Err(port_contended());
-                }
-                let reserved = reserved_ports(&inner);
-                drop(inner);
-                launch = prepare(&action, &root, &reserved, None)?;
-                continue;
-            }
-            let now = Timestamp::now();
-            let session = Session {
-                id: session_id,
-                workspace_id,
-                kind: SessionKind::Task,
-                role: SessionRole::Generic,
-                parent_session_id: None,
-                root_session_id: session_id,
-                terminal_id: None,
-                editor: None,
-                agent_provider_id: None,
-                agent_profile_id: None,
-                title: SessionTitle::default(),
-                state: SessionState::Starting,
-                created_at: now,
-                launch_command: Some(action.command.clone()),
-                last_activity_at: now,
-                ended_at: None,
-                base_commit: None,
-                activity: AgentActivity::unknown(),
-                action: Some(Box::new(launch.run.clone())),
-            };
-            let spec = self.task_spawn_spec(&mut inner, &root, session_id, &launch)?;
+            let session = task_session(session_id, workspace_id, &action, launch.run.clone());
+            let spec = self.task_spawn_spec(inner, &root, session_id, launch)?;
             inner
                 .db
                 .sessions()
                 .upsert(&session)
                 .map_err(crate::core::db_err)?;
             inner.sessions.insert(session_id, session.clone());
-            break (spec, session);
+            Ok(Ok((spec, session)))
+        })?;
+        let (spec, session) = match created {
+            Ok(created) => created,
+            Err(session_id) => return Ok(Response::ActionAlreadyRunning { session_id }),
         };
 
         self.registry
@@ -211,12 +182,7 @@ impl Daemon {
         let watch = output_watch(session_id, &action, &launch.run);
         match self.spawn_terminal_watching(session_id, spec, true, watch) {
             Ok(terminal_id) => {
-                self.start_readiness(
-                    session_id,
-                    &action.ready,
-                    launch.run.port,
-                    &launch.run.readiness,
-                );
+                self.start_readiness(session_id, terminal_id, &action, &launch.run);
                 Ok(Response::SessionCreated {
                     session_id,
                     terminal_id,
@@ -266,68 +232,46 @@ impl Daemon {
         if let Some(action) = current.as_ref().filter(|a| !a.depends_on.is_empty()) {
             return self.requeue_task(session_id, session.workspace_id, action);
         }
-        let prior_port = session.action.as_ref().and_then(|run| run.port);
-        let mut launch = match &current {
-            Some(action) => Some(prepare(action, &root, &reserved, prior_port)?),
-            None => None,
-        };
-
-        let mut attempts = 0;
-        let (spec, updated) = loop {
-            let mut inner = self.lock();
-            if current.as_ref().is_some_and(|action| {
-                action.single_instance
-                    && live_session(&inner, session.workspace_id, action.id).is_some()
-            }) {
-                return Err(ProtocolError::conflict(
-                    "this action is already running in this workspace",
-                ));
-            }
-            if let (Some(action), Some(claimed)) = (&current, &launch) {
-                if port_claimed(&inner, claimed) {
-                    attempts += 1;
-                    if attempts >= PORT_CLAIM_ATTEMPTS {
-                        return Err(port_contended());
-                    }
-                    let reserved = reserved_ports(&inner);
-                    drop(inner);
-                    launch = Some(prepare(action, &root, &reserved, None)?);
-                    continue;
-                }
-            }
-            let spec = match &launch {
-                Some(launch) => self.task_spawn_spec(&mut inner, &root, session_id, launch)?,
-                None => {
-                    let command = session.launch_command.clone().unwrap_or_default();
-                    if command.contains(PORT_PLACEHOLDER) {
-                        return Err(ProtocolError::precondition_failed(
-                            "its action is gone and the command needs a port; run it from the actions instead",
+        let (spec, updated) = match &current {
+            Some(action) => {
+                let prior_port = session.action.as_ref().and_then(|run| run.port);
+                let launch = prepare(action, &root, &reserved, prior_port)?;
+                self.commit_launch(action, &root, launch, |inner, launch| {
+                    if action.single_instance
+                        && live_session(inner, session.workspace_id, action.id).is_some()
+                    {
+                        return Err(ProtocolError::conflict(
+                            "this action is already running in this workspace",
                         ));
                     }
-                    self.plain_task_spec(&mut inner, &root, session_id, &command)?
-                }
-            };
-            let mut updated =
-                Self::set_session_state(&mut inner, session_id, SessionState::Starting, None)
-                    .ok_or_else(|| {
-                        ProtocolError::precondition_failed(
-                            "session cannot restart from its current state",
-                        )
-                    })?;
-            if let (Some(action), Some(launch)) = (&current, &launch) {
-                updated.action = Some(Box::new(launch.run.clone()));
-                updated.launch_command = Some(action.command.clone());
-                if let Some(stored) = inner.sessions.get_mut(&session_id) {
-                    stored.action = updated.action.clone();
-                    stored.launch_command = updated.launch_command.clone();
-                }
-                inner
-                    .db
-                    .sessions()
-                    .upsert(&updated)
-                    .map_err(crate::core::db_err)?;
+                    let spec = self.task_spawn_spec(inner, &root, session_id, launch)?;
+                    let mut updated = restart_state(inner, session_id)?;
+                    updated.action = Some(Box::new(launch.run.clone()));
+                    updated.launch_command = Some(action.command.clone());
+                    if let Some(stored) = inner.sessions.get_mut(&session_id) {
+                        stored.action.clone_from(&updated.action);
+                        stored.launch_command.clone_from(&updated.launch_command);
+                    }
+                    inner
+                        .db
+                        .sessions()
+                        .upsert(&updated)
+                        .map_err(crate::core::db_err)?;
+                    Ok((spec, updated))
+                })?
+                .0
             }
-            break (spec, updated);
+            None => {
+                let command = session.launch_command.clone().unwrap_or_default();
+                if command.contains(PORT_PLACEHOLDER) {
+                    return Err(ProtocolError::precondition_failed(
+                        "its action is gone and the command needs a port; run it from the actions instead",
+                    ));
+                }
+                let mut inner = self.lock();
+                let spec = self.plain_task_spec(&mut inner, &root, session_id, &command)?;
+                (spec, restart_state(&mut inner, session_id)?)
+            }
         };
 
         self.registry
@@ -337,9 +281,9 @@ impl Daemon {
             .zip(updated.action.as_deref())
             .and_then(|(action, run)| output_watch(session_id, action, run));
         match self.spawn_terminal_watching(session_id, spec, true, watch) {
-            Ok(_) => {
+            Ok(terminal_id) => {
                 if let (Some(action), Some(run)) = (&current, &updated.action) {
-                    self.start_readiness(session_id, &action.ready, run.port, &run.readiness);
+                    self.start_readiness(session_id, terminal_id, action, run);
                 }
                 Ok(Response::Ack)
             }
@@ -390,6 +334,80 @@ impl Daemon {
             &[],
         )
     }
+
+    /// Run `commit` under the core lock with a launch whose port no session
+    /// created since it was prepared holds, re-preparing off the lock when one does.
+    fn commit_launch<T>(
+        &self,
+        action: &ProjectAction,
+        root: &Path,
+        mut launch: TaskLaunch,
+        mut commit: impl FnMut(&mut Inner, &TaskLaunch) -> Result<T, ProtocolError>,
+    ) -> Result<(T, TaskLaunch), ProtocolError> {
+        let mut attempts = 1;
+        loop {
+            let mut inner = self.lock();
+            if !port_claimed(&inner, &launch) {
+                let committed = commit(&mut inner, &launch)?;
+                return Ok((committed, launch));
+            }
+            if attempts >= PORT_CLAIM_ATTEMPTS {
+                return Err(port_contended());
+            }
+            attempts += 1;
+            let reserved = reserved_ports(&inner);
+            drop(inner);
+            launch = prepare(action, root, &reserved, None)?;
+        }
+    }
+}
+
+fn task_session(
+    session_id: SessionId,
+    workspace_id: WorkspaceId,
+    action: &ProjectAction,
+    run: ActionRun,
+) -> Session {
+    let now = Timestamp::now();
+    Session {
+        id: session_id,
+        workspace_id,
+        kind: SessionKind::Task,
+        role: SessionRole::Generic,
+        parent_session_id: None,
+        root_session_id: session_id,
+        terminal_id: None,
+        editor: None,
+        agent_provider_id: None,
+        agent_profile_id: None,
+        title: SessionTitle::default(),
+        state: SessionState::Starting,
+        created_at: now,
+        launch_command: Some(action.command.clone()),
+        last_activity_at: now,
+        ended_at: None,
+        base_commit: None,
+        activity: AgentActivity::unknown(),
+        action: Some(Box::new(run)),
+    }
+}
+
+fn waiting_run(action: &ProjectAction) -> ActionRun {
+    ActionRun {
+        action_id: action.id,
+        label: action.label.clone(),
+        port: None,
+        readiness: ActionReadiness::Waiting {
+            on: action.depends_on.clone(),
+        },
+        started_at: None,
+    }
+}
+
+fn restart_state(inner: &mut Inner, session_id: SessionId) -> Result<Session, ProtocolError> {
+    Daemon::set_session_state(inner, session_id, SessionState::Starting, None).ok_or_else(|| {
+        ProtocolError::precondition_failed("session cannot restart from its current state")
+    })
 }
 
 fn output_watch(
@@ -566,6 +584,8 @@ impl Daemon {
                 drop(inner);
                 return self.restart_task(session_id);
             }
+            // A Stop still waiting for its exit would close the session this restarts.
+            inner.close_on_exit.remove(&session_id);
             let (wake_tx, wake_rx) = flume::bounded(1);
             inner.task_waiters.push(wake_tx);
             wake_rx
@@ -598,7 +618,7 @@ impl Daemon {
                 None => return,
                 Some(true) => {
                     if let Err(error) = self.restart_task(session_id) {
-                        self.mark_session_failed(session_id, format!("restart failed: {error}"));
+                        self.fail_restart(session_id, format!("restart failed: {error}"));
                     }
                     return;
                 }
@@ -608,6 +628,34 @@ impl Daemon {
                 tracing::warn!(%session_id, "task did not exit in time to restart");
                 return;
             }
+        }
+    }
+
+    /// Report a restart that was acked but failed before it relaunched. The
+    /// session still shows the old run's exit, and `Exited` cannot become
+    /// `Failed`, so it passes through `Starting`. Any other state means a
+    /// concurrent restart (or the failed spawn itself) already answered.
+    fn fail_restart(self: &Arc<Self>, session_id: SessionId, reason: String) {
+        let failed = {
+            let mut inner = self.lock();
+            let exited = inner
+                .sessions
+                .get(&session_id)
+                .is_some_and(|session| matches!(session.state, SessionState::Exited { .. }));
+            if !exited {
+                return;
+            }
+            Self::set_session_state(&mut inner, session_id, SessionState::Starting, None);
+            Self::set_session_state(
+                &mut inner,
+                session_id,
+                SessionState::Failed { reason },
+                None,
+            )
+        };
+        if let Some(session) = failed {
+            self.registry
+                .broadcast_domain(DaemonEvent::SessionUpdated(session));
         }
     }
 
@@ -628,36 +676,7 @@ impl Daemon {
                     return Ok(Response::ActionAlreadyRunning { session_id });
                 }
             }
-            let now = Timestamp::now();
-            let session = Session {
-                id: session_id,
-                workspace_id,
-                kind: SessionKind::Task,
-                role: SessionRole::Generic,
-                parent_session_id: None,
-                root_session_id: session_id,
-                terminal_id: None,
-                editor: None,
-                agent_provider_id: None,
-                agent_profile_id: None,
-                title: SessionTitle::default(),
-                state: SessionState::Starting,
-                created_at: now,
-                launch_command: Some(action.command.clone()),
-                last_activity_at: now,
-                ended_at: None,
-                base_commit: None,
-                activity: AgentActivity::unknown(),
-                action: Some(Box::new(ActionRun {
-                    action_id: action.id,
-                    label: action.label.clone(),
-                    port: None,
-                    readiness: ActionReadiness::Waiting {
-                        on: action.depends_on.clone(),
-                    },
-                    started_at: None,
-                })),
-            };
+            let session = task_session(session_id, workspace_id, action, waiting_run(action));
             inner
                 .db
                 .sessions()
@@ -764,23 +783,8 @@ impl Daemon {
                     "this action is already running in this workspace",
                 ));
             }
-            let mut updated =
-                Self::set_session_state(&mut inner, session_id, SessionState::Starting, None)
-                    .ok_or_else(|| {
-                        ProtocolError::precondition_failed(
-                            "session cannot restart from its current state",
-                        )
-                    })?;
-            let run = ActionRun {
-                action_id: action.id,
-                label: action.label.clone(),
-                port: None,
-                readiness: ActionReadiness::Waiting {
-                    on: action.depends_on.clone(),
-                },
-                started_at: None,
-            };
-            updated.action = Some(Box::new(run));
+            let mut updated = restart_state(&mut inner, session_id)?;
+            updated.action = Some(Box::new(waiting_run(action)));
             if let Some(stored) = inner.sessions.get_mut(&session_id) {
                 stored.action.clone_from(&updated.action);
             }
@@ -873,26 +877,14 @@ impl Daemon {
                 .map_err(|_| ProtocolError::not_found("its action was removed while it waited"))?;
             (action, root, reserved_ports(&inner))
         };
-        let mut launch = prepare(&action, &root, &reserved, None)?;
-        let mut attempts = 0;
-        let spec = loop {
-            let mut inner = self.lock();
-            if port_claimed(&inner, &launch) {
-                attempts += 1;
-                if attempts >= PORT_CLAIM_ATTEMPTS {
-                    return Err(port_contended());
-                }
-                let reserved = reserved_ports(&inner);
-                drop(inner);
-                launch = prepare(&action, &root, &reserved, None)?;
-                continue;
-            }
-            let spec = self.task_spawn_spec(&mut inner, &root, session_id, &launch)?;
+        let launch = prepare(&action, &root, &reserved, None)?;
+        let (spec, launch) = self.commit_launch(&action, &root, launch, |inner, launch| {
+            let spec = self.task_spawn_spec(inner, &root, session_id, launch)?;
             let Some(session) = inner.sessions.get_mut(&session_id) else {
-                return Ok(());
+                return Ok(None);
             };
             if session.state != SessionState::Starting {
-                return Ok(());
+                return Ok(None);
             }
             session.action = Some(Box::new(launch.run.clone()));
             session.launch_command = Some(action.command.clone());
@@ -902,17 +894,16 @@ impl Daemon {
                 .sessions()
                 .upsert(&snapshot)
                 .map_err(crate::core::db_err)?;
-            break spec;
+            Ok(Some(spec))
+        })?;
+        let Some(spec) = spec else {
+            return Ok(());
         };
         let watch = output_watch(session_id, &action, &launch.run);
-        self.spawn_terminal_watching(session_id, spec, true, watch)
+        let terminal_id = self
+            .spawn_terminal_watching(session_id, spec, true, watch)
             .map_err(|reason| ProtocolError::new(ErrorCode::SpawnError, reason))?;
-        self.start_readiness(
-            session_id,
-            &action.ready,
-            launch.run.port,
-            &launch.run.readiness,
-        );
+        self.start_readiness(session_id, terminal_id, &action, &launch.run);
         Ok(())
     }
 }

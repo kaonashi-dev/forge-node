@@ -296,6 +296,8 @@ async fn read_loop(
                     }
                     *watch = next;
                     Ok(protocol::Response::Ack)
+                } else if let Request::AttachTerminal { terminal_id, size } = body {
+                    dispatch.attach_client(client_id, terminal_id, size)
                 } else {
                     dispatch.handle_request_from(client_kind, body)
                 }
@@ -308,9 +310,8 @@ async fn read_loop(
                 ))
             });
 
-            // Apply/clear the subscription only on a successful attach/detach.
-            // An attach subscribes after its `AttachAck` is queued: a delta ahead
-            // of the snapshot is discarded by a client that has no grid yet.
+            // An attach subscribed with its snapshot; a detach unsubscribes
+            // only once it succeeded.
             let attached = match sub {
                 Some((true, terminal_id)) if response.is_ok() => Some(terminal_id),
                 Some((false, terminal_id)) if response.is_ok() => {
@@ -339,13 +340,13 @@ async fn read_loop(
                 );
                 daemon.registry().unregister(client_id);
             } else if let Some(terminal_id) = attached {
-                daemon.registry().subscribe(client_id, terminal_id);
-                // Output pumped between the snapshot and the subscription was
-                // held back as unsubscribed damage, and a quiet child never
-                // pumps again to release it.
-                let flush = daemon.clone();
-                let _ =
-                    tokio::task::spawn_blocking(move || flush.flush_terminal(terminal_id)).await;
+                // A delta withheld during the attach is owed as a resync, and a
+                // quiet child may never emit another to trigger one.
+                if daemon.registry().finish_attach(client_id, terminal_id) {
+                    let recover = daemon.clone();
+                    let _ = tokio::task::spawn_blocking(move || recover.recover_client(client_id))
+                        .await;
+                }
             }
         });
 

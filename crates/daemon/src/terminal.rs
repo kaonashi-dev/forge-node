@@ -166,7 +166,7 @@ pub fn pty_loop(
                 Scan::TimedOut => Some(ActionReadiness::TimedOut),
             };
             if let Some(readiness) = settled {
-                daemon.set_readiness(active.session_id(), readiness);
+                daemon.set_readiness(active.session_id(), terminal_id, readiness);
                 watch = None;
             }
         }

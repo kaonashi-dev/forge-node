@@ -53,7 +53,7 @@ export type MenuItem =
       /** Overrides `icon` when the mark is not one of the shell's glyphs. */
       glyph?: JSX.Element;
       destructive?: boolean;
-      /** Pointer-only shortcuts; keyboard users reach the same actions elsewhere. */
+      /** Menu entries of their own beside the item, after it in arrow-key order. */
       buttons?: readonly MenuItemButton[];
       run: () => void;
     }
