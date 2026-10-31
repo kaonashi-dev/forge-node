@@ -10,3 +10,6 @@ authors.workspace = true
 domain.workspace = true
 terminal-core.workspace = true
 tempfile.workspace = true
+
+[lints]
+workspace = true

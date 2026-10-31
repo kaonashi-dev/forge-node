@@ -223,7 +223,10 @@ impl PtyBackend for PortablePtyBackend {
         drop(slave);
 
         let child_pid = child.process_id().unwrap_or(0);
-        #[allow(clippy::cast_possible_wrap)] // a pid always fits in i32 on unix
+        #[allow(
+            clippy::cast_possible_wrap,
+            reason = "a pid always fits in i32 on unix"
+        )]
         let child_pgid = child_pid as i32;
         // Resolved once, here, and never again: see `PortablePtyHandle::process_group`.
         #[cfg(unix)]

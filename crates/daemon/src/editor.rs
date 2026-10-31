@@ -195,6 +195,7 @@ impl CommandPort {
         let _ = self.tx.try_send(Outgoing::GetState { request_id: 0 });
     }
 
+    #[must_use]
     pub fn take_retarget(&self) -> Option<String> {
         self.retarget
             .lock()
@@ -209,6 +210,7 @@ impl CommandPort {
         }
     }
 
+    #[must_use]
     pub fn take_disk_refresh(&self) -> bool {
         self.disk_refresh.swap(false, Ordering::AcqRel)
     }
@@ -251,6 +253,7 @@ impl CommandPort {
         self.tx.try_send(command).map_err(|_| Busy)
     }
 
+    #[must_use]
     pub fn finish_reload(&self, request_id: u64) -> Option<Option<String>> {
         let mut pending = self.reload.lock().unwrap_or_else(|e| e.into_inner());
         if pending

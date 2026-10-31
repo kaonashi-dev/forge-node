@@ -515,10 +515,14 @@ pub enum Address {
     Run(RunId),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum AddressError {
+    #[error("address is empty")]
     Empty,
+    #[error("address has an unknown prefix")]
     BadPrefix,
+    #[error("address names no known target")]
     Unknown,
 }
 
@@ -607,10 +611,14 @@ pub enum ParsedAddress {
     Run(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum PrefixError {
+    #[error("id prefix is shorter than the minimum")]
     TooShort,
+    #[error("no id matches the prefix")]
     None,
+    #[error("the id prefix is ambiguous")]
     Ambiguous,
 }
 
@@ -663,9 +671,18 @@ pub fn compare_and_set(current: Option<u64>, if_version: u64) -> CasOutcome {
     }
 }
 
+/// Whether a board write adds a key, the only kind the key cap refuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardWrite {
+    /// A set of a key the board does not hold yet.
+    AddsKey,
+    /// An update of a held key, or any delete.
+    KeepsKeyCount,
+}
+
 #[must_use]
-pub fn board_is_full(existing_keys: usize, key_is_new: bool) -> bool {
-    key_is_new && existing_keys >= MAX_BOARD_KEYS
+pub fn board_is_full(existing_keys: usize, write: BoardWrite) -> bool {
+    write == BoardWrite::AddsKey && existing_keys >= MAX_BOARD_KEYS
 }
 
 #[must_use]
@@ -680,9 +697,15 @@ pub fn valid_board_key(key: &str) -> bool {
         })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum BoardValueError {
-    Oversize { len: usize },
+    #[error("board value is {len} bytes, over the budget")]
+    Oversize {
+        /// Size of the rejected value in bytes.
+        len: usize,
+    },
+    #[error("board value is not JSON")]
     NotJson,
 }
 
@@ -830,7 +853,7 @@ pub fn limits_or_default(limits: Option<OrchestrationLimits>) -> OrchestrationLi
 
 /// Deserialize helper used by tests that round-trip a refusal reason.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "deserialization target for the tests")]
 struct PolicyDetails {
     reason: String,
 }
@@ -1102,8 +1125,8 @@ mod tests {
             board_value(r#"{"mode":"stream"}"#).unwrap(),
             r#"{"mode":"stream"}"#
         );
-        assert!(board_is_full(MAX_BOARD_KEYS, true));
-        assert!(!board_is_full(MAX_BOARD_KEYS, false));
+        assert!(board_is_full(MAX_BOARD_KEYS, BoardWrite::AddsKey));
+        assert!(!board_is_full(MAX_BOARD_KEYS, BoardWrite::KeepsKeyCount));
     }
 
     #[test]

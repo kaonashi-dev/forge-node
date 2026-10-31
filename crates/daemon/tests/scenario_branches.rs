@@ -42,7 +42,7 @@ fn origin_with(branches: &[&str]) -> test_support::temp_repo::TempRepo {
     let repo = test_support::init_repo().expect("git repo (git must be installed)");
     for branch in branches {
         git(repo.path(), &["checkout", "-b", branch]);
-        std::fs::write(repo.path().join("work.txt"), *branch).unwrap();
+        std::fs::write(repo.path().join("work.txt"), *branch).expect("write work file");
         git(repo.path(), &["add", "."]);
         git(repo.path(), &["commit", "-m", "work"]);
     }

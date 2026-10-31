@@ -146,6 +146,7 @@ impl Transaction {
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum EditError {
     #[error("the buffer has unsaved changes")]
     UnsavedChanges,

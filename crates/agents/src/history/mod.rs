@@ -1364,12 +1364,15 @@ fn opencode_base(transcript: &Path) -> Option<PathBuf> {
 }
 
 /// Why a run's transcript cannot be removed.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DeleteError {
     /// The run is recorded in a store holding every other run of its provider.
+    #[error("the run is recorded in a shared store")]
     Shared,
     /// The transcript could not be removed from disk.
-    Io(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// Remove a discovered run's transcript and the artifacts recorded beside it.
@@ -1391,9 +1394,14 @@ pub fn delete_transcript(session: &ExternalAgentSession) -> Result<(), DeleteErr
         "codex" => {}
         OPENCODE_PROVIDER => delete_opencode_siblings(path, &session.session_id),
         CLAUDE_PROVIDER => delete_claude_siblings(path, &session.session_id),
-        _ => return Err(DeleteError::Io("Unknown transcript provider".to_owned())),
+        _ => {
+            return Err(DeleteError::Io(std::io::Error::other(
+                "Unknown transcript provider",
+            )))
+        }
     }
-    std::fs::remove_file(path).map_err(|error| DeleteError::Io(error.to_string()))
+    std::fs::remove_file(path)?;
+    Ok(())
 }
 
 /// `<parent>/<sessionId>/subagents/` and the now-empty directory holding it.
@@ -1791,7 +1799,10 @@ mod tests {
         session.store = TranscriptStore::SharedDatabase;
         session.transcript_path = db.clone();
 
-        assert_eq!(delete_transcript(&session), Err(DeleteError::Shared));
+        assert!(matches!(
+            delete_transcript(&session),
+            Err(DeleteError::Shared)
+        ));
         assert_eq!(std::fs::read(&db).unwrap(), before);
     }
 

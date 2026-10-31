@@ -87,6 +87,7 @@ const BINARY_PROBE: usize = 8 * 1024;
 
 /// What went wrong talking to the workspace filesystem.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum FsError {
     /// The path escaped the workspace root.
     #[error("path escapes workspace: {0}")]
@@ -608,6 +609,9 @@ pub fn write_file(
     let root = canonicalize_root(root)?;
     let path = resolve_inside(&root, relative)?;
     let existed = path.symlink_metadata().is_ok();
+    // Stamped before the read, so a write that lands between the two shows up
+    // either in the revision or in the stamp.
+    let stamp = existed.then(|| FileStamp::of(&path)).flatten();
     if existed {
         let current = read_file(&root, relative)?;
         if current.binary || current.too_large {
@@ -641,6 +645,18 @@ pub fn write_file(
     if let Some(perms) = mode {
         let _ = fs::set_permissions(&tmp, perms);
     }
+    // A writer that landed while the bytes were written must not be lost. The
+    // rename is not a compare-and-swap, so this narrows the window rather than
+    // closing it; a file deleted meanwhile is recreated.
+    if let Some(stamp) = stamp {
+        if FileStamp::of(&path).is_some_and(|now| now != stamp) {
+            let _ = fs::remove_file(&tmp);
+            return Err(match read_file(&root, relative) {
+                Ok(current) => FsError::RevisionMismatch { current },
+                Err(error) => error,
+            });
+        }
+    }
     // A file that did not exist may have appeared while it was being written.
     // An exclusive rename at commit refuses to replace it; a plain `rename`
     // would silently lose the other writer's file.
@@ -654,6 +670,28 @@ pub fn write_file(
         return Err(error.into());
     }
     Ok(())
+}
+
+/// Identity and change marks that any write through a path moves.
+#[derive(Debug, PartialEq, Eq)]
+struct FileStamp {
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl FileStamp {
+    fn of(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(path).ok()?;
+        Some(Self {
+            ino: meta.ino(),
+            len: meta.len(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+        })
+    }
 }
 
 /// A temp name next to `path` that no concurrent save can pick.

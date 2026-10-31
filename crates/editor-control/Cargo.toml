@@ -11,3 +11,6 @@ description = "Control channel between the daemon and a forge-editor process (fe
 serde.workspace = true
 rmp-serde.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

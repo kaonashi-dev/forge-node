@@ -66,6 +66,15 @@ pub enum ClientError {
     UnexpectedResponse { expected: &'static str },
 }
 
+/// Whether a daemon shutdown also ends live sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopSessions {
+    /// Kill every live session before the daemon exits.
+    Kill,
+    /// Refuse while sessions are live.
+    Keep,
+}
+
 /// Outcome of [`Client::send_context`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SendContextResult {
@@ -171,6 +180,15 @@ impl Shared {
 pub struct Client {
     shared: Arc<Shared>,
     reader: Option<JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("daemon", &self.shared.daemon)
+            .field("connected", &self.is_connected())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Client {
@@ -347,9 +365,12 @@ impl Client {
         }
     }
 
-    /// A fresh receiver for the daemon's unsolicited events. The GUI
-    /// drains this to update its [`crate::Store`]. The channel closes when the
-    /// connection drops.
+    /// The client's event stream. The GUI drains this to update its
+    /// [`crate::Store`]. The channel closes when the connection drops.
+    ///
+    /// The underlying channel is MPMC: cloning the returned receiver makes the
+    /// clones compete for events, not each get a copy. Call this once per
+    /// [`Client`] and fan out from that one consumer.
     #[must_use]
     pub fn events(&self) -> flume::Receiver<DaemonEvent> {
         self.shared.events_rx.clone()
@@ -1155,7 +1176,10 @@ impl Client {
 
     /// Like [`Self::create_agent_session`] but sets graph role and optional
     /// parent, and can ask for the provider's own read-only mode.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the role, parent, and read-only flag are independent request fields"
+    )]
     pub fn create_agent_session_with_role(
         &self,
         workspace_id: WorkspaceId,
@@ -1294,7 +1318,10 @@ impl Client {
     }
 
     /// Spawn a child agent or shell under a parent session.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the role, workspace policy, and prompt are independent request fields"
+    )]
     pub fn create_child_session(
         &self,
         parent_session_id: SessionId,
@@ -1317,7 +1344,10 @@ impl Client {
     }
 
     /// Persist and deliver a context envelope.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the target and envelope fields are independent request fields"
+    )]
     pub fn send_context(
         &self,
         source_session_id: SessionId,
@@ -1716,10 +1746,12 @@ impl Client {
         }
     }
 
-    /// Ask the daemon to shut down. Without `kill_sessions` it refuses while
+    /// Ask the daemon to shut down. [`StopSessions::Keep`] refuses while
     /// sessions are live rather than taking them down silently.
-    pub fn stop_daemon(&self, kill_sessions: bool) -> Result<(), ClientError> {
-        self.expect_ack(Request::StopDaemon { kill_sessions })
+    pub fn stop_daemon(&self, sessions: StopSessions) -> Result<(), ClientError> {
+        self.expect_ack(Request::StopDaemon {
+            kill_sessions: matches!(sessions, StopSessions::Kill),
+        })
     }
 
     /// Fetch a block of scrollback. `from_line` is an *absolute* index into the

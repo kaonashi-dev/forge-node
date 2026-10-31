@@ -5,6 +5,11 @@
 //! where the CLI has no command: adding a project, opening a shell, and
 //! observing events the CLI does not print.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a panicking helper is the test's assertion"
+)]
+
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;

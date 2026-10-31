@@ -205,6 +205,7 @@ impl Server {
 
     /// Block until the server is [`Status::Ready`] or [`Status::Exited`], or
     /// `deadline` passes; returns the status at that moment.
+    #[must_use]
     pub fn wait_ready(&self, deadline: Instant) -> Status {
         self.wait_for(deadline, |status| {
             matches!(status, Status::Ready | Status::Exited { .. })
@@ -401,9 +402,8 @@ impl Shared {
         cancel: Option<&AtomicBool>,
         done: impl Fn(&Status) -> bool,
     ) -> Status {
-        let mut state = lock(&self.state);
         loop {
-            let status = state.status();
+            let status = lock(&self.state).status();
             if done(&status) || cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
                 return status;
             }
@@ -415,11 +415,16 @@ impl Shared {
             if cancel.is_some() {
                 wait = wait.min(CANCEL_POLL);
             }
-            state = self
+            let state = lock(&self.state);
+            // A writer may have changed the status between the two locks; the
+            // notification would already be spent, so re-check before sleeping.
+            if state.status() != status {
+                continue;
+            }
+            let _ = self
                 .changed
                 .wait_timeout(state, wait)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
 

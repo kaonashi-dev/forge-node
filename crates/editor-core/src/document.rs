@@ -18,6 +18,7 @@ use crate::transaction::{Edit, EditError, Origin, Transaction};
 pub struct DocumentVersion(pub u64);
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum LoadError {
     #[error("file is larger than {limit} bytes ({bytes} bytes)")]
     TooLarge { bytes: usize, limit: usize },

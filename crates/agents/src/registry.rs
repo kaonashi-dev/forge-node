@@ -22,6 +22,21 @@ pub struct AgentRegistry {
     detections: HashMap<AgentProviderId, DetectionResult>,
 }
 
+impl std::fmt::Debug for AgentRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let providers: Vec<_> = self
+            .adapters
+            .iter()
+            .map(|adapter| adapter.descriptor().id.as_str())
+            .collect();
+        f.debug_struct("AgentRegistry")
+            .field("providers", &providers)
+            .field("overrides", &self.overrides)
+            .field("detections", &self.detections)
+            .finish()
+    }
+}
+
 impl AgentRegistry {
     /// Build a registry seeded with the built-in descriptors, each wrapped
     /// in a generic [`DescriptorAdapter`].

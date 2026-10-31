@@ -470,7 +470,10 @@ const KILL_REAP_GRACE: Duration = Duration::from_secs(5);
 /// inherited the output pipes; killing the bare pid covers a child that moved
 /// itself to another group. The worker then reaps via `wait_with_output`.
 fn kill_process_group(pid: u32) {
-    #[allow(clippy::cast_possible_wrap)]
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "a pid always fits in i32 on unix"
+    )]
     let raw = pid as i32;
     let _ = nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(-raw),

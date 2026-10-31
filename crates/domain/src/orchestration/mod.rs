@@ -6,8 +6,22 @@
 mod policy;
 mod prompt;
 
-pub use policy::*;
-pub use prompt::*;
+pub use policy::{
+    allow_agent_integrate, allow_controller, allow_nested_run, allow_new_task, allow_start,
+    apply_activity, attention, board_inline, board_is_full, board_value, clamp_text,
+    compare_and_set, dependencies_met, dependency_cycle, limits_or_default, matching_wake,
+    parse_address, parse_wait_kinds, pointer_decision, pointer_line, promote_ready,
+    reconcile_restart, resolve_address, resolve_prefix, run_was_interrupted, settle_report,
+    task_status_after_loss, task_status_after_report, valid_board_key, ActivityTrigger, Address,
+    AddressError, AttemptFact, BoardValueError, BoardWrite, CasOutcome, DeliveryTarget,
+    LiveAttempt, ParsedAddress, PointerDecision, PrefixError, QuestionFact, ReportRefuse,
+    RestartReconcile, WaitKind, WaitParseError,
+};
+pub use prompt::{
+    accepted_dependency_summaries, attempt_id_of, compose_context_digest,
+    compose_controller_prompt, compose_worker_prompt, ContextDigestInput, ControllerPromptInput,
+    DependencySummary, ReportLine, TaskLine, WorkerPromptInput,
+};
 
 use crate::ids::{
     AgentProfileId, AgentProviderId, AttemptId, ProjectId, RunId, SessionId, TaskId, Timestamp,

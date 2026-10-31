@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use client::{CellGrid, Client, DaemonEvent, EventOutcome, Store};
+use client::{CellGrid, Client, DaemonEvent, EventOutcome, StopSessions, Store};
 use domain::{
     AgentProfileId, AgentProviderId, MouseMode, ProjectId, PtySize, SessionId, TerminalId,
     Timestamp, WorkspaceId,
@@ -1216,7 +1216,10 @@ fn flush_pending_closes(pending: &mut HashSet<SessionId>, store: &Store, client:
 /// attachment, the split column, the editor attachments, the viewport size and
 /// the echo watermark. Bundling them into a struct would only move the same fields
 /// behind a name and make every borrow in the loop go through it.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one connection's mutable state, borrowed separately"
+)]
 fn run_command(
     command: RuntimeCommand,
     client: &Client,
@@ -2060,8 +2063,13 @@ fn run_command(
         // reconnecting afterwards is correct: it finds nothing, says so, and
         // keeps retrying until the user starts one again.
         RuntimeCommand::StopDaemon { kill_sessions } => {
+            let sessions = if kill_sessions {
+                StopSessions::Kill
+            } else {
+                StopSessions::Keep
+            };
             client
-                .stop_daemon(kill_sessions)
+                .stop_daemon(sessions)
                 .map_err(CommandError::from_client)?;
             Ok(Effect::nothing())
         }

@@ -21,3 +21,6 @@ name = "export-fixtures"
 path = "src/bin/export_fixtures.rs"
 
 [dev-dependencies]
+
+[lints]
+workspace = true

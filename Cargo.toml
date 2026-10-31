@@ -130,3 +130,17 @@ insta = "1"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Enforced by `cargo clippy -- -D warnings` in `scripts/dev check`. These are
+# the machine-checkable rules this workspace already follows; broader pedantic
+# rules are reviewed case by case rather than enabled wholesale.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+dbg_macro = "warn"
+unwrap_used = "warn"
+todo = "warn"

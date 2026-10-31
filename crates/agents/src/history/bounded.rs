@@ -46,7 +46,7 @@ pub(super) fn files(
     let mut remaining = MAX_ENTRIES;
     let mut found = Vec::new();
     walk(dir, depth, accepts, &mut remaining, &mut found);
-    found.sort_by_cached_key(|path| std::cmp::Reverse(super::file_mtime(path)));
+    found.sort_by_cached_key(|path| (std::cmp::Reverse(super::file_mtime(path)), path.clone()));
     if remaining == 0 || found.len() > limit {
         tracing::debug!(dir = %dir.display(), limit, "history candidate scan truncated");
     }
@@ -207,6 +207,11 @@ pub(super) fn delete_session_directory(session: &ExternalAgentSession) -> Result
         .transcript_path
         .parent()
         .filter(|dir| dir.file_name().and_then(|s| s.to_str()) == Some(session.session_id.as_str()))
-        .ok_or_else(|| DeleteError::Io("Transcript is outside its session directory".to_owned()))?;
-    std::fs::remove_dir_all(dir).map_err(|error| DeleteError::Io(error.to_string()))
+        .ok_or_else(|| {
+            DeleteError::Io(std::io::Error::other(
+                "Transcript is outside its session directory",
+            ))
+        })?;
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
 }

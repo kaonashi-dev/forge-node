@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use agents::AgentRegistry;
@@ -126,8 +126,6 @@ pub(crate) struct Inner {
     usage: Vec<domain::ProviderUsage>,
     /// Login-shell fallback notice, once per daemon rather than once per spawn.
     env_fallback_noticed: bool,
-    /// `TERM`/`TERMINFO` for shells. Filesystem probe; cannot change mid-session.
-    term_selection: Option<TermSelection>,
     /// Project worktree-ignore rules, keyed by project and loaded once.
     /// The rescan reads them without a query; `SetWorktreeIgnores` replaces a
     /// project's list in the same critical section as its rows.
@@ -203,6 +201,8 @@ pub struct Daemon {
     attention_assets: Option<agents::AttentionAssets>,
     /// The socket this process is actually listening on, injected into PTYs.
     bound_socket: Mutex<Option<PathBuf>>,
+    /// `TERM`/`TERMINFO` for shells. Resolved once, off the core lock.
+    term_selection: OnceLock<TermSelection>,
 }
 
 struct ResetGuard<'a>(&'a AtomicBool);
@@ -393,7 +393,6 @@ impl Daemon {
             status_checks: HashMap::new(),
             usage: Vec::new(),
             env_fallback_noticed: false,
-            term_selection: None,
             worktree_ignores,
             project_actions,
             task_waiters: Vec::new(),
@@ -434,6 +433,7 @@ impl Daemon {
             env_capture: Mutex::new(()),
             attention_assets,
             bound_socket: Mutex::new(None),
+            term_selection: OnceLock::new(),
         }))
     }
 
@@ -1438,7 +1438,10 @@ impl Daemon {
         for (path, git_root) in managed_worktrees {
             let result = git_root.as_deref().map_or_else(
                 || Err("its repository is no longer available".to_owned()),
-                |root| git_service::remove(root, &path, true).map_err(|error| error.to_string()),
+                |root| {
+                    git_service::remove(root, &path, git_service::Force::Yes)
+                        .map_err(|error| error.to_string())
+                },
             );
             if let Err(error) = result {
                 tracing::warn!(worktree = %path.display(), %error, "factory reset could not remove a managed worktree");
@@ -1828,7 +1831,7 @@ impl Daemon {
         ) {
             if let Some(gr) = &git_root {
                 for (_id, path) in &managed_worktrees {
-                    let _ = git_service::remove(gr, path, true);
+                    let _ = git_service::remove(gr, path, git_service::Force::Yes);
                 }
             }
         }
@@ -2547,9 +2550,10 @@ impl Daemon {
             crate::external_agents::DeleteError::Shared => ProtocolError::invalid_request(
                 "this run is recorded in a database shared with every other opencode session",
             ),
-            crate::external_agents::DeleteError::Io(message) => {
-                ProtocolError::internal(format!("could not remove the transcript: {message}"))
+            crate::external_agents::DeleteError::Io(error) => {
+                ProtocolError::internal(format!("could not remove the transcript: {error}"))
             }
+            _ => ProtocolError::internal("could not remove the transcript"),
         })?;
 
         self.external_agents
@@ -3989,6 +3993,11 @@ impl Daemon {
         // directory already gone leaves only git's dead bookkeeping, and
         // pruning that is not touching the directory.
         if ws.managed_by_app {
+            let force = if force {
+                git_service::Force::Yes
+            } else {
+                git_service::Force::No
+            };
             git_service::remove(&git_root, &ws.path, force).map_err(git_err)?;
         } else if !ws.path.exists() {
             git_service::prune(&git_root).map_err(git_err)?;
@@ -4124,8 +4133,10 @@ impl Daemon {
 
     // --- Sessions ---
 
-    // Each argument is a separate fact the caller resolved; a parameter struct would only rename them.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is a separate fact the caller resolved; a parameter struct would only rename them"
+    )]
     pub(crate) fn create_session(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
@@ -4152,8 +4163,10 @@ impl Daemon {
         )
     }
 
-    // Existing internal callers have no model overrides; IPC resolves them explicitly.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "existing internal callers have no model overrides; IPC resolves them explicitly"
+    )]
     fn create_session_with_options(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
@@ -4197,8 +4210,10 @@ impl Daemon {
             .lock()
             .workspaces
             .get(&workspace_id)
-            .map(|ws| ws.path.clone());
-        let base_commit = baseline_path.as_deref().and_then(git_service::head_commit);
+            .map(|ws| ws.path.clone())
+            .ok_or_else(|| ProtocolError::not_found("workspace"))?;
+        self.ensure_profile_config_dir(profile.as_ref())?;
+        let base_commit = git_service::head_commit(&baseline_path);
 
         let (cwd, spawn_spec, session) = {
             let mut inner = self.lock();
@@ -4613,8 +4628,10 @@ impl Daemon {
         Ok((session.workspace_id, path))
     }
 
-    // Same shape as `create_session`: separate resolved facts, no natural grouping.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "same shape as create_session: separate resolved facts, no natural grouping"
+    )]
     fn create_child_session(
         self: &Arc<Self>,
         parent_session_id: SessionId,
@@ -4681,8 +4698,10 @@ impl Daemon {
 
     /// Persist an envelope and either paste it into a live PTY or spawn a child
     /// that starts with it.
-    // Same shape as `create_session`: separate resolved facts, no natural grouping.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "same shape as create_session: separate resolved facts, no natural grouping"
+    )]
     fn send_context(
         self: &Arc<Self>,
         source_session_id: SessionId,
@@ -5350,6 +5369,7 @@ impl Daemon {
             Some(id) => Some(self.verified_agent_executable(id)?),
             None => None,
         };
+        self.ensure_profile_config_dir(profile.as_ref())?;
 
         let (spec, session) = {
             let mut inner = self.lock();
@@ -5505,8 +5525,10 @@ impl Daemon {
         })
     }
 
-    // Kind, launch, cwd, and the orchestration env are independent inputs.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "kind, launch, cwd, and the orchestration env are independent inputs"
+    )]
     pub(crate) fn build_spawn_spec(
         &self,
         inner: &mut Inner,
@@ -5522,7 +5544,7 @@ impl Daemon {
         let mut spec = match kind {
             SessionKind::Shell | SessionKind::Task => {
                 let mut vars: Vec<(String, String)> = env.vars.clone();
-                let term = self.session_term(inner, &vars);
+                let term = self.session_term(&vars);
                 upsert_var(&mut vars, "TERM", &term.term);
                 if let Some(dir) = &term.terminfo_dir {
                     upsert_var(&mut vars, "TERMINFO", &dir.to_string_lossy());
@@ -5586,22 +5608,6 @@ impl Daemon {
                     })?,
                 };
                 let config_dir = profile.and_then(|p| profile_config_dir(p, &env));
-                if let (Some(profile), Some(dir), Some(descriptor)) = (
-                    profile,
-                    config_dir.as_deref(),
-                    inner.agents.descriptor(&provider_id).cloned(),
-                ) {
-                    agents::ensure_config_dir(&descriptor, dir).map_err(|e| {
-                        ProtocolError::new(
-                            ErrorCode::IoError,
-                            format!(
-                                "could not create `{}` for profile `{}`: {e}",
-                                dir.display(),
-                                profile.name
-                            ),
-                        )
-                    })?;
-                }
                 let req = LaunchAgentRequest {
                     provider_id,
                     cwd: cwd.to_path_buf(),
@@ -5651,7 +5657,7 @@ impl Daemon {
                     )
                 })?;
                 let mut vars: Vec<(String, String)> = env.vars.clone();
-                let term = self.session_term(inner, &vars);
+                let term = self.session_term(&vars);
                 upsert_var(&mut vars, "TERM", &term.term);
                 if let Some(dir) = &term.terminfo_dir {
                     upsert_var(&mut vars, "TERMINFO", &dir.to_string_lossy());
@@ -6115,7 +6121,10 @@ impl Daemon {
                     let inner_ref = &*inner;
                     self.registry
                         .route_terminal_delta(terminal_id, &delta_event, || {
-                            let rt = inner_ref.terminals.get(&terminal_id).unwrap();
+                            let rt = inner_ref
+                                .terminals
+                                .get(&terminal_id)
+                                .expect("terminal exists while its delta is routed");
                             let mut snap = rt.engine.snapshot(DEFAULT_SCROLLBACK_TAIL);
                             snap.seq = seq;
                             DaemonEvent::TerminalResync {
@@ -7213,6 +7222,35 @@ impl Daemon {
         Ok(Some(profile))
     }
 
+    /// Create a profile's config directory before the core lock is taken.
+    /// Call it after the launch is validated, so a refusal leaves no directory.
+    fn ensure_profile_config_dir(
+        &self,
+        profile: Option<&AgentProfile>,
+    ) -> Result<(), ProtocolError> {
+        let Some(profile) = profile.filter(|p| p.config_dir.is_some()) else {
+            return Ok(());
+        };
+        let target = {
+            let mut inner = self.lock();
+            let descriptor = inner.agents.descriptor(&profile.provider_id).cloned();
+            descriptor.zip(profile_config_dir(profile, inner.env.get()))
+        };
+        let Some((descriptor, dir)) = target else {
+            return Ok(());
+        };
+        agents::ensure_config_dir(&descriptor, &dir).map_err(|error| {
+            ProtocolError::new(
+                ErrorCode::IoError,
+                format!(
+                    "could not create `{}` for profile `{}`: {error}",
+                    dir.display(),
+                    profile.name
+                ),
+            )
+        })
+    }
+
     /// Validate here so a broken profile never looks saved.
     fn save_agent_profile(&self, profile: AgentProfile) -> Result<Response, ProtocolError> {
         self.ensure_env();
@@ -7327,32 +7365,12 @@ impl Daemon {
         }
     }
 
-    /// Cached. A fallback raises a notice rather than silently ignoring `[sessions].term`.
-    fn session_term(&self, inner: &mut Inner, vars: &[(String, String)]) -> TermSelection {
-        if let Some(cached) = &inner.term_selection {
-            return cached.clone();
-        }
-        let selection =
-            terminfo::resolve(&self.config.sessions.term, self.config.terminfo_dir(), vars);
-        if let Some(requested) = &selection.fell_back_from {
-            self.notice(
-                NoticeLevel::Warning,
-                format!(
-                    "no terminfo entry for `{requested}`; shell sessions will use \
-                     `{}` instead. Install the entry or point \
-                     `[sessions].terminfo_dir` at the database that has it.",
-                    selection.term
-                ),
-            );
-        } else {
-            tracing::info!(
-                term = %selection.term,
-                terminfo = ?selection.terminfo_dir,
-                "resolved the session TERM"
-            );
-        }
-        inner.term_selection = Some(selection.clone());
-        selection
+    /// Cached. Fallback for a caller that skipped `ensure_env`, which resolves
+    /// this off the core lock.
+    fn session_term(&self, vars: &[(String, String)]) -> TermSelection {
+        self.term_selection
+            .get_or_init(|| self.resolve_term(vars))
+            .clone()
     }
 
     /// Ack when the refresh *starts*; results arrive as `AgentDetectionChanged`.
@@ -7431,24 +7449,63 @@ impl Daemon {
     /// start a second shell, or a first one under the lock.
     pub(crate) fn ensure_env(&self) {
         if self.lock().env.is_resolved() {
+            self.ensure_term_selection();
             return;
         }
         let _capture = self
             .env_capture
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut env = {
-            let inner = self.lock();
-            if inner.env.is_resolved() {
-                return;
-            }
-            inner.env.clone()
-        };
+        let resolved = self.lock().env.is_resolved();
+        if resolved {
+            self.ensure_term_selection();
+            return;
+        }
+        let mut env = self.lock().env.clone();
         env.get();
         let mut inner = self.lock();
         if !inner.env.is_resolved() {
             inner.env = env;
         }
+        drop(inner);
+        self.ensure_term_selection();
+    }
+
+    /// Resolve `TERM`/`TERMINFO` once, off the core lock.
+    fn ensure_term_selection(&self) {
+        if self.term_selection.get().is_some() {
+            return;
+        }
+        let vars = {
+            let mut inner = self.lock();
+            self.resolved_env(&mut inner).vars
+        };
+        self.term_selection.get_or_init(|| self.resolve_term(&vars));
+    }
+
+    /// Probes the terminfo database; a fallback raises a notice rather than
+    /// silently ignoring `[sessions].term`.
+    fn resolve_term(&self, vars: &[(String, String)]) -> TermSelection {
+        let selection =
+            terminfo::resolve(&self.config.sessions.term, self.config.terminfo_dir(), vars);
+        if let Some(requested) = &selection.fell_back_from {
+            self.notice(
+                NoticeLevel::Warning,
+                format!(
+                    "no terminfo entry for `{requested}`; shell sessions will use \
+                     `{}` instead. Install the entry or point \
+                     `[sessions].terminfo_dir` at the database that has it.",
+                    selection.term
+                ),
+            );
+        } else {
+            tracing::info!(
+                term = %selection.term,
+                terminfo = ?selection.terminfo_dir,
+                "resolved the session TERM"
+            );
+        }
+        selection
     }
 
     /// Re-capture the shell environment off the core lock.
@@ -8044,8 +8101,10 @@ pub(crate) struct AgentLaunch {
 }
 
 impl AgentLaunch {
-    // A launch is these independent facts; the constructor is the one place they meet.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a launch is these independent facts; the constructor is the one place they meet"
+    )]
     fn new(
         provider_id: Option<AgentProviderId>,
         profile: Option<AgentProfile>,
@@ -8344,6 +8403,7 @@ fn fs_err(e: fs_service::FsError) -> ProtocolError {
         }
         fs_service::FsError::Git(g) => git_err(g),
         fs_service::FsError::Io(io) => ProtocolError::new(ErrorCode::IoError, io.to_string()),
+        other => ProtocolError::new(ErrorCode::IoError, other.to_string()),
     }
 }
 
@@ -11263,7 +11323,8 @@ mod tests {
         }
 
         // ...and removes it the same way.
-        git_service::remove(&git_root, &external, true).expect("git worktree remove");
+        git_service::remove(&git_root, &external, git_service::Force::Yes)
+            .expect("git worktree remove");
 
         daemon.rescan_worktrees();
         let inner = daemon.lock();

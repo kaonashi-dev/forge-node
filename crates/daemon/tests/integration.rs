@@ -63,7 +63,7 @@ fn start_daemon_with(cfg: daemon::config::Config) -> TestDaemon {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .unwrap();
+            .expect("tokio runtime");
         rt.block_on(async move {
             // Bind inside the runtime so tokio's UnixListener has a reactor.
             let listener = daemon::server::bind(&sock).expect("bind");
@@ -271,7 +271,9 @@ fn create_shell_session(
     })
     .expect("session should reach Running");
     match ev {
-        DaemonEvent::SessionUpdated(s) => (s.id, s.terminal_id.unwrap()),
+        DaemonEvent::SessionUpdated(s) => {
+            (s.id, s.terminal_id.expect("running session has a terminal"))
+        }
         _ => unreachable!(),
     }
 }
@@ -423,7 +425,9 @@ fn end_to_end_shell_session() {
     })
     .expect("session should reach Running");
     let (session_id, terminal_id) = match ev {
-        DaemonEvent::SessionUpdated(s) => (s.id, s.terminal_id.unwrap()),
+        DaemonEvent::SessionUpdated(s) => {
+            (s.id, s.terminal_id.expect("running session has a terminal"))
+        }
         _ => unreachable!(),
     };
 
@@ -770,13 +774,16 @@ struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
 
 impl LogCapture {
     fn contents(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        String::from_utf8_lossy(&self.0.lock().expect("log capture lock")).into_owned()
     }
 }
 
 impl Write for LogCapture {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        self.0
+            .lock()
+            .expect("log capture lock")
+            .extend_from_slice(buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
