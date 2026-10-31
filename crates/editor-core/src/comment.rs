@@ -9,7 +9,13 @@ pub(crate) fn toggle(document: &mut Document) -> Result<Option<Applied>, EditErr
     let prefix = match document.input_style().grammar {
         Grammar::Rust | Grammar::CLike | Grammar::Prisma => "//",
         Grammar::Sql => "--",
-        Grammar::Python | Grammar::Shell | Grammar::Keyed | Grammar::Hcl => "#",
+        Grammar::Python
+        | Grammar::Shell
+        | Grammar::Keyed
+        | Grammar::Hcl
+        | Grammar::Nix
+        | Grammar::Dockerfile
+        | Grammar::Http => "#",
         Grammar::Json | Grammar::Markdown | Grammar::Html | Grammar::Css | Grammar::None => {
             return Ok(None)
         }

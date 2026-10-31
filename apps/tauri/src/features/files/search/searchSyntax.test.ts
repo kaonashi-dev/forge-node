@@ -39,6 +39,24 @@ describe("search syntax", () => {
     },
   );
 
+  it.each([
+    ["Dockerfile", "FROM node:20 # note", "FROM"],
+    ["docker/Dockerfile.ci", 'RUN echo "hello"', "RUN"],
+    ["flake.nix", 'let name = "hello"; in name # note', "let"],
+  ])("colours %s", (path, source, keyword) => {
+    const [tokens] = highlightExcerpt(path, [source]);
+    expect(textOf(tokens)).toBe(source);
+    expect(tokens).toContainEqual({ text: keyword, scope: "keyword" });
+  });
+
+  it("colours an HTTP request line and its headers", () => {
+    const lines = ["POST /users HTTP/1.1", "Content-Type: application/json"];
+    const rows = highlightExcerpt("api/users.http", lines);
+    expect(rows.map(textOf)).toEqual(lines);
+    expect(rows[0]).toContainEqual({ text: "POST", scope: "keyword" });
+    expect(rows[1]).toContainEqual({ text: "Content-Type", scope: "attribute" });
+  });
+
   it.each(["index.html", "page.htm", "app.xhtml", "data.xml", "icon.svg"])(
     "colours markup tags in %s",
     (path) => {

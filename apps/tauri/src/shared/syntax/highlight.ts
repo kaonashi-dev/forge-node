@@ -2,7 +2,9 @@ import { createLowlight } from "lowlight";
 import bash from "highlight.js/lib/languages/bash";
 import cpp from "highlight.js/lib/languages/cpp";
 import css from "highlight.js/lib/languages/css";
+import dockerfile from "highlight.js/lib/languages/dockerfile";
 import go from "highlight.js/lib/languages/go";
+import http from "highlight.js/lib/languages/http";
 import ini from "highlight.js/lib/languages/ini";
 import java from "highlight.js/lib/languages/java";
 import javascript from "highlight.js/lib/languages/javascript";
@@ -10,6 +12,7 @@ import json from "highlight.js/lib/languages/json";
 import kotlin from "highlight.js/lib/languages/kotlin";
 import markdown from "highlight.js/lib/languages/markdown";
 import makefile from "highlight.js/lib/languages/makefile";
+import nix from "highlight.js/lib/languages/nix";
 import python from "highlight.js/lib/languages/python";
 import rust from "highlight.js/lib/languages/rust";
 import sql from "highlight.js/lib/languages/sql";
@@ -22,7 +25,9 @@ const highlighter = createLowlight({
   bash,
   cpp,
   css,
+  dockerfile,
   go,
+  http,
   ini,
   java,
   javascript,
@@ -30,6 +35,7 @@ const highlighter = createLowlight({
   kotlin,
   markdown,
   makefile,
+  nix,
   python,
   rust,
   sql,
@@ -91,6 +97,11 @@ const LANGUAGES: Readonly<Record<string, string>> = {
   tfvars: "ini",
   hcl: "ini",
   tpl: "yaml",
+  nix: "nix",
+  dockerfile: "dockerfile",
+  containerfile: "dockerfile",
+  http: "http",
+  rest: "http",
 };
 
 const SCOPES: Readonly<Record<string, keyof EditorScopes>> = {
@@ -137,7 +148,9 @@ export function highlightExcerpt(path: string, lines: readonly string[]): Syntax
       ? "ini"
       : name === "makefile" || name === "gnumakefile"
         ? "makefile"
-        : LANGUAGES[name.split(".").at(-1) ?? ""];
+        : name === "dockerfile" || name.startsWith("dockerfile.") || name === "containerfile"
+          ? "dockerfile"
+          : LANGUAGES[name.split(".").at(-1) ?? ""];
   if (!language) return plain();
   let size = 0;
   for (const line of lines) {
