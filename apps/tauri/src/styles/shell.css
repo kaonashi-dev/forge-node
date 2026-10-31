@@ -1204,6 +1204,40 @@
   height: 56px;
   padding: 0 var(--space-20);
 }
+/* The searching bar: held back 120ms so a fast local answer never flashes it,
+   and dropped at once when the answer lands. Without motion there is no bar:
+   with no delay to hold it back, it would flash on every keystroke. */
+.command-palette .forge-combobox-query {
+  position: relative;
+}
+.command-palette .forge-combobox-query::after {
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat;
+  background-size: 40% 100%;
+  bottom: -1px;
+  content: "";
+  height: 2px;
+  left: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .command-palette .forge-combobox-query[data-busy]::after {
+    animation: palette-searching 900ms linear infinite;
+    opacity: 1;
+    transition: opacity var(--motion-fast) var(--motion-enter) 120ms;
+  }
+}
+/* -70% and 170% put a 40%-wide sweep wholly outside either edge. */
+@keyframes palette-searching {
+  from {
+    background-position: -70% 0;
+  }
+  to {
+    background-position: 170% 0;
+  }
+}
 .palette-scope {
   align-items: center;
   background: var(--accent-soft);
@@ -1230,7 +1264,27 @@
   --palette-row-h: calc(var(--row-h) + var(--space-12));
 }
 .command-palette .forge-combobox-list {
+  /* A fixed height, not the shared max-height: the card would otherwise resize
+     on every answer and when the file index lands after opening. */
+  height: calc(var(--palette-rows, 9) * var(--palette-row-h, var(--row-h)) + 30px);
   padding: var(--space-6) var(--space-6) var(--space-8);
+}
+/* Held answer rows while the next is on its way; commands answer locally and stay lit. */
+.command-palette .forge-combobox-list[aria-busy="true"] .palette-file-row {
+  opacity: 0.6;
+}
+/* A row node survives keystrokes, so this plays once, when a file first arrives. */
+@media (prefers-reduced-motion: no-preference) {
+  .command-palette .palette-file-row {
+    animation: palette-row-settle var(--motion-fast) var(--motion-enter);
+    transition: opacity var(--motion-fast) var(--motion-enter);
+  }
+}
+@keyframes palette-row-settle {
+  from {
+    opacity: 0.6;
+    transform: translateY(2px);
+  }
 }
 .command-palette .forge-combobox-row {
   font-size: var(--text-md);

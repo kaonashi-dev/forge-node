@@ -1,4 +1,13 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+  type Setter,
+} from "solid-js";
 import { COMMAND_PALETTE } from "../../actions/actions";
 import { enterContext } from "../../actions/dispatch";
 import { forgeStore } from "../../state/forgeStore";
@@ -15,6 +24,7 @@ import {
   SESSIONS,
   MODE_PREFIXES,
   admits,
+  choiceKey,
   fileEntries,
   paletteEntries,
   parseQuery,
@@ -26,7 +36,13 @@ import {
 } from "./entries";
 import { initialFiles, recentPaths } from "../../features/files/index/recentFiles";
 import { navigationFileIndex, navigationFilePaths } from "../../features/files/index/fileIndex";
-import { nameResults, scheduleNameSearch } from "../../features/files/search/paletteSearch";
+import {
+  nameResults,
+  nameSearchBusy,
+  scheduleNameSearch,
+} from "../../features/files/search/paletteSearch";
+import { shownAnswer, type ShownAnswer } from "../../features/files/search/nameSearchState";
+import type { SearchResults } from "../../contracts/workbench";
 import { warmFileTree } from "../../features/files/commands";
 import { filesStore, setFilesStore } from "../../features/files/state";
 import { gitStore } from "../../features/git/state";
@@ -71,13 +87,25 @@ export function CommandPalette(props: CommandPaletteProps) {
     }
   });
 
+  const searchingFiles = () => searching() && admits(scope(), FILES);
+  const filesBusy = () => searchingFiles() && text().trim() !== "" && nameSearchBusy();
+
+  // The previous answer stays listed until the next one lands: dropping it per
+  // keystroke collapsed the list and flashed "Nothing matches.".
+  const shown = createMemo<ShownAnswer<SearchResults> | null>(
+    (previous) =>
+      searchingFiles()
+        ? shownAnswer(previous, activeWorkspace(), text(), nameResults(), nameSearchBusy())
+        : null,
+    null,
+  );
+
   const allFiles = createMemo(() => {
-    if (!(searching() && admits(scope(), FILES))) return [];
-    const hits = nameResults();
-    if (!hits) return [];
+    const answer = shown();
+    if (!answer) return [];
     return fileEntries(
-      activeWorkspace(),
-      hits.matches.map((match) => match.path),
+      answer.workspace,
+      answer.results.matches.map((match) => match.path),
     );
   });
 
@@ -125,16 +153,26 @@ export function CommandPalette(props: CommandPaletteProps) {
     ];
   });
 
-  const options = createMemo<ComboboxOption<PaletteEntry>[]>(() =>
-    entries().map((entry) => ({
-      value: entry,
-      group: entry.group,
-      disabled: !entry.enabled,
+  type Row = { option: ComboboxOption<PaletteEntry>; set: Setter<PaletteEntry> };
+
+  function paletteRow(initial: PaletteEntry): Row {
+    const [entry, set] = createSignal(initial);
+    const option: ComboboxOption<PaletteEntry> = {
+      get value() {
+        return entry();
+      },
+      get group() {
+        return entry().group;
+      },
+      get disabled() {
+        return !entry().enabled;
+      },
+      class: initial.choice.kind === "open_file" ? "palette-file-row" : undefined,
       render: () => (
         <>
-          <PaletteGlyph entry={entry} />
+          <PaletteGlyph entry={entry()} />
           <span class="forge-combobox-label">
-            <For each={highlight(entry.label, text())}>
+            <For each={highlight(entry().label, text())}>
               {(segment) =>
                 segment.hit ? (
                   <mark class="forge-combobox-match">{segment.text}</mark>
@@ -144,17 +182,38 @@ export function CommandPalette(props: CommandPaletteProps) {
               }
             </For>
           </span>
-          <Show when={entry.note}>
+          <Show when={entry().note}>
             {(note) => <span class="forge-combobox-note">{note()}</span>}
           </Show>
-          <Show when={entry.waiting && entry.choice.kind === "focus_session" && entry.choice}>
-            {(choice) => <WaitingNote session={choice().session} />}
+          <Show when={waitingSession(entry())}>
+            {(session) => <WaitingNote session={session()} />}
           </Show>
-          <Show when={entry.hint}>{(hint) => <Kbd class="forge-combobox-hint">{hint()}</Kbd>}</Show>
+          <Show when={entry().hint}>
+            {(hint) => <Kbd class="forge-combobox-hint">{hint()}</Kbd>}
+          </Show>
         </>
       ),
-    })),
-  );
+    };
+    return { option, set };
+  }
+
+  // One option object per row key, so `<For>` keeps a row's DOM node across
+  // keystrokes: a remount per key costs a row rebuild and replays the row's
+  // settle animation.
+  let rows = new Map<string, Row>();
+  const options = createMemo<ComboboxOption<PaletteEntry>[]>(() => {
+    const next = new Map<string, Row>();
+    const listed = entries().map((entry) => {
+      let key = choiceKey(entry.choice);
+      while (next.has(key)) key += "+";
+      const row = rows.get(key) ?? paletteRow(entry);
+      row.set(entry);
+      next.set(key, row);
+      return row.option;
+    });
+    rows = next;
+    return listed;
+  });
 
   onMount(() => {
     // While the palette is up it owns the keyboard: without this the terminal
@@ -182,11 +241,14 @@ export function CommandPalette(props: CommandPaletteProps) {
         label={scopePlaceholder(scope())}
         placeholder={scopePlaceholder(scope())}
         visibleRows={VISIBLE_ROWS}
+        busy={filesBusy()}
         empty={
           <p class="empty-copy forge-combobox-empty">
             {scope() === "symbols"
               ? "Symbols aren't available for this file yet."
-              : "Nothing matches."}
+              : filesBusy()
+                ? "Searching files…"
+                : "Nothing matches."}
           </p>
         }
         leading={
@@ -240,6 +302,10 @@ export function CommandPalette(props: CommandPaletteProps) {
       </footer>
     </Dialog>
   );
+}
+
+function waitingSession(entry: PaletteEntry): string | null {
+  return entry.waiting && entry.choice.kind === "focus_session" ? entry.choice.session : null;
 }
 
 /** How long a session has waited, in words, beside the ember dot its glyph column carries. */
