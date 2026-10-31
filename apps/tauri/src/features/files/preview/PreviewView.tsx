@@ -1,4 +1,6 @@
 import {
+  For,
+  Index,
   Match,
   Show,
   Switch,
@@ -15,6 +17,7 @@ import { previewKindFor } from "./previewRoute";
 import { SourceSwitch } from "./SourceSwitch";
 import { EditorBreadcrumbs } from "../../editor/EditorChromeBars";
 import { svgDataUrl } from "./previewImages";
+import { csvDelimiter, parseCsv } from "./csvTable";
 import {
   beginWorkbenchRequest,
   failWorkbenchRequest,
@@ -26,7 +29,8 @@ import { filesStore } from "../state";
 /**
  * A file the terminal editor cannot draw, drawn.
  *
- * Markdown as a document, an SVG as a picture, a raster image as itself. Text
+ * Markdown as a document, a CSV as a table, an SVG as a picture, a raster
+ * image as itself. Text
  * never reaches here: `previewKindFor` sends it to the editor, which is what
  * every other file opens in.
  *
@@ -36,7 +40,7 @@ import { filesStore } from "../state";
 export function PreviewView(props: { workspace: string; path: string }) {
   const kind = createMemo(() => previewKindFor(props.path));
 
-  /* Markdown and SVG are text, so they come through the same `ReadFile` the
+  /* Markdown, CSV and SVG are text, so they come through the same `ReadFile` the
      editor's conflict view uses; only a raster needs `ReadImage`. */
   createEffect(
     on(
@@ -71,6 +75,12 @@ export function PreviewView(props: { workspace: string; path: string }) {
     return svgDataUrl(body);
   });
 
+  const table = createMemo(() => {
+    if (kind() !== "csv") return null;
+    const body = text();
+    return body === null ? null : parseCsv(body, csvDelimiter(props.path));
+  });
+
   const [raster] = createResource(
     () => (kind() === "image" ? ([props.workspace, props.path] as const) : null),
     ([workspace, path]) => previewImageReader.read(workspace, path),
@@ -102,6 +112,13 @@ export function PreviewView(props: { workspace: string; path: string }) {
               />
             </Show>
           </Match>
+          <Match when={kind() === "csv"}>
+            <Show when={table()} fallback={<p class="panel-note">Reading…</p>}>
+              {(csv) => (
+                <CsvPreview rows={csv().rows} width={csv().width} truncated={csv().truncated} />
+              )}
+            </Show>
+          </Match>
           <Match when={kind() === "svg"}>
             <Show when={svgUrl()} fallback={<p class="panel-note">Reading…</p>}>
               {(url) => <img class="preview-image" src={url()} alt={props.path} />}
@@ -122,6 +139,33 @@ export function PreviewView(props: { workspace: string; path: string }) {
         </Switch>
       </div>
     </div>
+  );
+}
+
+/** The first row is the header; a short row is padded to the widest one. */
+function CsvPreview(props: { rows: string[][]; width: number; truncated: boolean }) {
+  const columns = createMemo(() => Array.from({ length: props.width }, (_, column) => column));
+  const cells = (row: string[]) => (
+    <Index each={columns()}>{(column) => <td>{row[column()] ?? ""}</td>}</Index>
+  );
+  return (
+    <Show when={props.rows.length > 0} fallback={<p class="panel-note">Empty file.</p>}>
+      <table class="forge-md-table preview-table">
+        <thead>
+          <tr>
+            <Index each={columns()}>{(column) => <th>{props.rows[0][column()] ?? ""}</th>}</Index>
+          </tr>
+        </thead>
+        <tbody>
+          <For each={props.rows.slice(1)}>{(row) => <tr>{cells(row)}</tr>}</For>
+        </tbody>
+      </table>
+      <Show when={props.truncated}>
+        <p class="panel-note">
+          Showing the first rows and columns only. Edit opens the whole file.
+        </p>
+      </Show>
+    </Show>
   );
 }
 
