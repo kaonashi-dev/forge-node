@@ -61,23 +61,19 @@
 **Code view** — a workspace file tree and integrated Rust editor, with shell
 and agent sessions available in the tab bar.
 
-<img width="1200" alt="Forge Node Code view showing a file tree, Rust editor, and terminal and agent tabs" src="https://github.com/user-attachments/assets/dcdc511f-9587-438f-ba4e-17954a58f1f3" />
-
-<details>
-<summary>More screenshots: agent launcher and settings</summary>
+<img width="1680" height="1050" alt="Forge Node Code view showing a file tree, Rust editor, and terminal and agent tabs" src="https://github.com/user-attachments/assets/c28d3ae3-8956-4fa0-aba4-d1dff6812118" />
 
 **Agent launcher** — start a terminal, a detected agent CLI, or a saved launch
 profile from the **+** menu. Custom profile names are not additional built-in
 providers.
 
-<img width="1200" alt="Claude Code running in Forge Node with the terminal, agent and launch profile menu open" src="https://github.com/user-attachments/assets/39639740-45db-4429-9bde-e4e38428e0ba" />
+<img width="1680" height="1050" alt="Claude Code running in Forge Node with the terminal, agent and launch profile menu open" src="https://github.com/user-attachments/assets/d6195ce3-1c20-4545-8fca-5a165102cf55" />
 
 **Agent settings** — choose your default agent, inspect detected CLI versions,
 enable providers, and manage launch profiles.
 
-<img width="1200" alt="Forge Node Agents settings showing the default agent selector, five detected providers and a custom OpenCode launch profile" src="https://github.com/user-attachments/assets/993c0dfd-a6d7-4ddd-81da-6e2e848dc5fa" />
+<img width="1680" height="1050" alt="Forge Node Agents settings showing the default agent selector, five detected providers and a custom OpenCode launch profile" src="https://github.com/user-attachments/assets/8dece9f5-81c0-4432-8659-c7de7d3edd4a" />
 
-</details>
 
 ## Install
 
