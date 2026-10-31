@@ -7,6 +7,7 @@ import {
   FILES,
   SESSIONS,
   admits,
+  choiceKey,
   fileEntries,
   paletteEntries,
   parseQuery,
@@ -172,5 +173,16 @@ describe("waiting sessions", () => {
       { kind: "focus_session", session: "a" },
     ]);
     expect(sessions.map((entry) => entry.waiting)).toEqual([true, false]);
+  });
+});
+
+describe("choiceKey", () => {
+  it("tells rows apart by what they do", () => {
+    expect(choiceKey({ kind: "open_file", path: "a" })).not.toBe(
+      choiceKey({ kind: "focus_session", session: "a" }),
+    );
+    expect(choiceKey({ kind: "new_agent", provider: "claude", profile: null })).not.toBe(
+      choiceKey({ kind: "new_agent", provider: "claude", profile: "work" }),
+    );
   });
 });
