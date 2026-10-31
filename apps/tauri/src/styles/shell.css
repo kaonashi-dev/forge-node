@@ -86,7 +86,10 @@
 }
 
 .tab-strip-trailing {
+  align-items: center;
+  display: flex;
   flex-shrink: 0;
+  gap: var(--space-2);
   padding: 0 var(--space-2);
 }
 .tab-strip-spacer {
@@ -1324,7 +1327,7 @@
   flex: 1;
 }
 
-/* Jump to… and Back to work: a quiet field-shaped button, not a field. */
+/* Back to work: a quiet field-shaped button, not a field. */
 .sidebar-jump {
   align-items: center;
   background: var(--bg-sunken);
