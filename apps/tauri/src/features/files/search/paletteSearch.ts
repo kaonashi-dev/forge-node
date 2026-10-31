@@ -5,6 +5,7 @@ import type { SearchResults } from "../../../contracts/workbench";
 import { searchFiles } from "../commands";
 import { filesStore, setFilesStore } from "../state";
 import { loading, setLoading } from "../../../state/loading";
+import { activeWorkspace } from "../../../state/workspace";
 import { nameSearchBusy as busy } from "./nameSearchState";
 
 const NAME_SEARCH_DEBOUNCE_MS = 50;
@@ -46,9 +47,17 @@ export function runNameSearch(workspace: string, needle: string): void {
   setAsked({ workspace, needle });
   setLoading("nameSearch", true);
   void searchFiles(workspace, needle, "name", 200).catch((error: unknown) => {
-    setLoading("nameSearch", false);
-    setFilesStore("nameSearchError", error instanceof Error ? error.message : String(error));
+    failNameSearch(workspace, needle, error instanceof Error ? error.message : String(error));
   });
+}
+
+/** A failure for a query the palette has since replaced is dropped, not shown. */
+export function failNameSearch(workspace: string, needle: string, error: string): void {
+  const current = asked();
+  if (workspace !== activeWorkspace()) return;
+  if (current?.workspace !== workspace || current.needle !== needle) return;
+  setLoading("nameSearch", false);
+  setFilesStore("nameSearchError", error);
 }
 
 export function nameResults(): SearchResults | null {

@@ -23,8 +23,8 @@ describe("nameSearchBusy", () => {
 });
 
 describe("shownAnswer", () => {
-  const first = ["a"];
-  const second = ["b"];
+  const first = { workspace_id: "w1", matches: ["a"] };
+  const second = { workspace_id: "w1", matches: ["b"] };
 
   it("shows the settled reply", () => {
     expect(shownAnswer(null, "w1", "pal", first, false)).toEqual({
@@ -56,6 +56,13 @@ describe("shownAnswer", () => {
   it("drops the held answer when the query is cleared", () => {
     const previous = shownAnswer(null, "w1", "pa", first, false);
     expect(shownAnswer(previous, "w1", "  ", null, true)).toBeNull();
+  });
+
+  it("does not list another checkout's answer under the active one", () => {
+    const stale = { workspace_id: "w1", matches: ["a"] };
+    expect(shownAnswer(null, "w2", "pal", stale, false)).toBeNull();
+    const held = shownAnswer(null, "w2", "pa", { workspace_id: "w2", matches: ["b"] }, false);
+    expect(shownAnswer(held, "w2", "pal", stale, true)).toBe(held);
   });
 
   it("drops the held answer once the search is no longer busy", () => {

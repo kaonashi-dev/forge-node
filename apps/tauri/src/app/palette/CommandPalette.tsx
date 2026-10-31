@@ -133,7 +133,12 @@ export function CommandPalette(props: CommandPaletteProps) {
     );
   });
 
-  const files = () => (text().trim() === "" ? recentFiles() : allFiles());
+  // Until the first answer lands, the recent files are what is held.
+  const files = () => {
+    if (text().trim() === "") return recentFiles();
+    if (shown()) return allFiles();
+    return filesBusy() ? recentFiles() : [];
+  };
 
   const entries = createMemo(() => {
     const base =
@@ -157,6 +162,7 @@ export function CommandPalette(props: CommandPaletteProps) {
 
   function paletteRow(initial: PaletteEntry): Row {
     const [entry, set] = createSignal(initial);
+    const fileRow = initial.choice.kind === "open_file";
     const option: ComboboxOption<PaletteEntry> = {
       get value() {
         return entry();
@@ -164,10 +170,11 @@ export function CommandPalette(props: CommandPaletteProps) {
       get group() {
         return entry().group;
       },
+      // A held file row answers an older query, so Enter must not open it.
       get disabled() {
-        return !entry().enabled;
+        return !entry().enabled || (fileRow && filesBusy());
       },
-      class: initial.choice.kind === "open_file" ? "palette-file-row" : undefined,
+      class: fileRow ? "palette-file-row" : undefined,
       render: () => (
         <>
           <PaletteGlyph entry={entry()} />

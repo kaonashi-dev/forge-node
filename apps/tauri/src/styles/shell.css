@@ -1266,7 +1266,7 @@
 .command-palette .forge-combobox-list {
   /* A fixed height, not the shared max-height: the card would otherwise resize
      on every answer and when the file index lands after opening. */
-  height: calc(var(--palette-rows, 9) * var(--palette-row-h, var(--row-h)) + 30px);
+  height: var(--combobox-list-h);
   padding: var(--space-6) var(--space-6) var(--space-8);
 }
 /* Held answer rows while the next is on its way; commands answer locally and stay lit. */
@@ -1277,7 +1277,6 @@
 @media (prefers-reduced-motion: no-preference) {
   .command-palette .palette-file-row {
     animation: palette-row-settle var(--motion-fast) var(--motion-enter);
-    transition: opacity var(--motion-fast) var(--motion-enter);
   }
 }
 @keyframes palette-row-settle {
