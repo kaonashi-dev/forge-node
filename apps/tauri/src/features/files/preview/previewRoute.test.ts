@@ -9,6 +9,8 @@ describe("which surface a file opens on", () => {
     expect(previewKindFor("a/b/logo.svg")).toBe("svg");
     expect(previewKindFor("assets/shot.PNG")).toBe("image");
     expect(previewKindFor("a.jpeg")).toBe("image");
+    expect(previewKindFor("data/users.csv")).toBe("csv");
+    expect(previewKindFor("export.TSV")).toBe("csv");
   });
 
   /* Text is the common answer and the right default: the editor is what every
@@ -33,9 +35,9 @@ describe("which surface a file opens on", () => {
     expect(previewKindFor("a/.svg")).toBeNull();
   });
 
-  /* A raster has no source the editor will open. Markdown and SVG do. */
-  it("treats markdown and svg as editable source", () => {
-    for (const path of ["README.md", "docs/notes.markdown", "page.mdx", "logo.svg"]) {
+  /* A raster has no source the editor will open. Markdown, CSV and SVG do. */
+  it("treats markdown, csv and svg as editable source", () => {
+    for (const path of ["README.md", "docs/notes.markdown", "page.mdx", "data.csv", "logo.svg"]) {
       expect(hasEditableSource(path), path).toBe(true);
     }
     for (const path of ["shot.png", "src/main.rs", ".md"]) {
@@ -49,6 +51,7 @@ describe("which surface a file opens on", () => {
     expect(openingSurface("README.md")).toBe("preview");
     expect(openingSurface("docs/notes.markdown", 12)).toBe("editor");
     expect(openingSurface("logo.svg", 1)).toBe("editor");
+    expect(openingSurface("data.csv", 3)).toBe("editor");
     expect(openingSurface("shot.png", 4)).toBe("preview");
     expect(openingSurface("src/main.rs", 4)).toBe("editor");
   });

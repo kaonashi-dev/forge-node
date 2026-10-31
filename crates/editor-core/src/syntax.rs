@@ -52,6 +52,10 @@ pub enum Grammar {
     Markdown,
     Html,
     Css,
+    Nix,
+    Dockerfile,
+    /// `.http` / `.rest` request files: requests, headers and `{{variables}}`.
+    Http,
     /// No colouring: an extension this build does not know.
     #[default]
     None,
@@ -75,6 +79,10 @@ impl Grammar {
         if lower == "makefile" || lower == "gnumakefile" {
             return Self::Shell;
         }
+        // `Dockerfile.ci` carries a stage after the dot, not an extension.
+        if lower == "dockerfile" || lower.starts_with("dockerfile.") || lower == "containerfile" {
+            return Self::Dockerfile;
+        }
         let Some(dot) = name.rfind('.').filter(|at| *at > 0) else {
             return Self::None;
         };
@@ -93,6 +101,9 @@ impl Grammar {
             "md" | "markdown" | "mdx" => Self::Markdown,
             "html" | "htm" | "xhtml" | "xml" | "svg" => Self::Html,
             "css" => Self::Css,
+            "nix" => Self::Nix,
+            "dockerfile" | "containerfile" => Self::Dockerfile,
+            "http" | "rest" => Self::Http,
             _ => Self::None,
         }
     }
@@ -274,6 +285,9 @@ impl<'a> Scanner<'a> {
             Grammar::Markdown => self.markdown(),
             Grammar::Html => self.html(),
             Grammar::Css => self.css(),
+            Grammar::Nix => self.nix(),
+            Grammar::Dockerfile => self.dockerfile(),
+            Grammar::Http => self.http(),
             Grammar::None => {}
         }
     }
@@ -619,6 +633,77 @@ fn hcl_keywords() -> HashSet<&'static str> {
 
 fn hcl_control() -> HashSet<&'static str> {
     ["for", "in", "if", "else"].into_iter().collect()
+}
+
+fn nix_keywords() -> HashSet<&'static str> {
+    ["assert", "in", "inherit", "let", "or", "rec", "with"]
+        .into_iter()
+        .collect()
+}
+
+fn nix_builtins() -> HashSet<&'static str> {
+    [
+        "abort",
+        "baseNameOf",
+        "builtins",
+        "derivation",
+        "dirOf",
+        "fetchTarball",
+        "import",
+        "isNull",
+        "map",
+        "removeAttrs",
+        "throw",
+        "toString",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn dockerfile_instructions() -> HashSet<&'static str> {
+    [
+        "ADD",
+        "ARG",
+        "CMD",
+        "COPY",
+        "ENTRYPOINT",
+        "ENV",
+        "EXPOSE",
+        "FROM",
+        "HEALTHCHECK",
+        "LABEL",
+        "MAINTAINER",
+        "ONBUILD",
+        "RUN",
+        "SHELL",
+        "STOPSIGNAL",
+        "USER",
+        "VOLUME",
+        "WORKDIR",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn http_methods() -> HashSet<&'static str> {
+    [
+        "CONNECT", "DELETE", "GET", "GRAPHQL", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE",
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn is_nix_word(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'\'')
+}
+
+/// Where an `.http` file's scan is inside one request.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HttpPart {
+    /// Before the request line: comments, `@name = value`, blank lines.
+    Preamble,
+    Headers,
+    Body,
 }
 
 fn is_word(byte: u8) -> bool {
@@ -1095,6 +1180,510 @@ impl Scanner<'_> {
                 _ => self.bump(),
             }
         }
+    }
+
+    /// Nix: `#` and `/* */` comments, `"…"` and `''…''` strings that may span
+    /// lines, paths, `name =` bindings.
+    fn nix(&mut self) {
+        let keywords = nix_keywords();
+        let builtins = nix_builtins();
+        while !self.done() {
+            if self.checkpoint() {
+                break;
+            }
+            let byte = self.byte(self.at);
+            let mark = self.mark();
+            match byte {
+                b'#' => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'/' if self.at_pair(b'/', b'*') => {
+                    self.bump();
+                    self.take_until(b"*/");
+                    self.emit(mark, Scope::Comment);
+                }
+                b'"' => {
+                    self.take_nix_string(false);
+                    self.emit(mark, Scope::String);
+                }
+                b'\'' if self.byte(self.at + 1) == b'\'' => {
+                    self.take_nix_string(true);
+                    self.emit(mark, Scope::String);
+                }
+                b'.' | b'~' if self.nix_path_starts() => {
+                    self.take_nix_path();
+                    self.emit(mark, Scope::String);
+                }
+                b'<' if self.nix_search_path_len() > 0 => {
+                    for _ in 0..self.nix_search_path_len() {
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::String);
+                }
+                b'0'..=b'9' => {
+                    while !self.done()
+                        && (self.byte(self.at).is_ascii_digit() || self.byte(self.at) == b'.')
+                    {
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::Number);
+                }
+                b if b.is_ascii_alphabetic() || b == b'_' => {
+                    // An attribute path (`a.b.c = 1`) is one binding.
+                    while !self.done()
+                        && !self.at_pair(b'\'', b'\'')
+                        && (is_nix_word(self.byte(self.at))
+                            || (self.byte(self.at) == b'.' && is_nix_word(self.byte(self.at + 1))))
+                    {
+                        self.bump();
+                    }
+                    let word = &self.text[mark.at..self.at];
+                    let scope = if matches!(word, "if" | "then" | "else") {
+                        Scope::ControlKeyword
+                    } else if keywords.contains(word) {
+                        Scope::Keyword
+                    } else if matches!(word, "true" | "false" | "null") {
+                        Scope::Constant
+                    } else if builtins.contains(word) {
+                        Scope::Function
+                    } else if self.peek_nonspace() == b'=' && !self.before_double_equals() {
+                        Scope::Property
+                    } else {
+                        Scope::Plain
+                    };
+                    self.emit(mark, scope);
+                }
+                _ => self.bump(),
+            }
+        }
+    }
+
+    /// A `"…"` or `''…''` string, `${…}` included. No checkpoint: a string
+    /// may span lines, and a later scan must not resume inside it.
+    fn take_nix_string(&mut self, indented: bool) {
+        self.bump();
+        if indented {
+            self.bump();
+        }
+        let mut depth = 0usize;
+        while !self.done() {
+            let byte = self.byte(self.at);
+            if depth > 0 {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+                self.bump();
+                continue;
+            }
+            if self.at_pair(b'$', b'{') {
+                depth = 1;
+                self.bump();
+                self.bump();
+                continue;
+            }
+            if indented {
+                if self.at_pair(b'\'', b'\'') {
+                    // `''$`, `'''` and `''\` escape rather than close.
+                    if matches!(self.byte(self.at + 2), b'$' | b'\'' | b'\\') {
+                        self.bump();
+                        self.bump();
+                        self.bump();
+                        continue;
+                    }
+                    self.bump();
+                    self.bump();
+                    return;
+                }
+            } else if byte == b'\\' {
+                self.bump();
+                self.bump();
+                continue;
+            } else if byte == b'"' {
+                self.bump();
+                return;
+            }
+            self.bump();
+        }
+    }
+
+    /// `./x`, `../x` or `~/x`; a lone `.` is attribute selection.
+    fn nix_path_starts(&self) -> bool {
+        self.at_bytes(b"./") || self.at_bytes(b"../") || self.at_bytes(b"~/")
+    }
+
+    fn take_nix_path(&mut self) {
+        while !self.done()
+            && !self.byte(self.at).is_ascii_whitespace()
+            && !matches!(self.byte(self.at), b';' | b')' | b']' | b'}' | b',')
+        {
+            self.bump();
+        }
+    }
+
+    /// Bytes in a `<nixpkgs/lib>` search path here, 0 when `<` is a comparison.
+    fn nix_search_path_len(&self) -> usize {
+        if !self.byte(self.at + 1).is_ascii_alphabetic() {
+            return 0;
+        }
+        let mut at = self.at + 1;
+        while self.byte(at).is_ascii_alphanumeric()
+            || matches!(self.byte(at), b'_' | b'-' | b'.' | b'/')
+        {
+            at += 1;
+        }
+        if self.byte(at) == b'>' {
+            at + 1 - self.at
+        } else {
+            0
+        }
+    }
+
+    /// Whether the `=` after a word is the first half of `==`.
+    fn before_double_equals(&self) -> bool {
+        let mut at = self.at;
+        while matches!(self.byte(at), b' ' | b'\t') {
+            at += 1;
+        }
+        self.byte(at + 1) == b'='
+    }
+
+    /// Dockerfile: line-leading instructions, `#` comment lines, variables,
+    /// instruction flags, `KEY=value`, and heredoc bodies left plain.
+    ///
+    /// A line continued with `\` is never a checkpoint: its first word is an
+    /// argument, and a scan resumed there would read it as an instruction.
+    fn dockerfile(&mut self) {
+        let instructions = dockerfile_instructions();
+        let mut continued = false;
+        let mut instruction = String::new();
+        let mut flags = false;
+        let mut heredocs: Vec<(String, bool)> = Vec::new();
+        while !self.done() {
+            if !continued && self.checkpoint() {
+                break;
+            }
+            let byte = self.byte(self.at);
+            let mark = self.mark();
+            match byte {
+                b'\n' => {
+                    let line = &self.text[self.line_start..self.at];
+                    // Docker skips comment lines inside a continuation.
+                    if !line.trim_start().starts_with('#') {
+                        continued = line.trim_end().ends_with('\\');
+                    }
+                    if !continued {
+                        instruction.clear();
+                    }
+                    self.bump();
+                    for (terminator, strip_tabs) in std::mem::take(&mut heredocs) {
+                        self.skip_heredoc(&terminator, strip_tabs);
+                    }
+                }
+                b'#' if self.only_space_before() => {
+                    self.take_line();
+                    self.emit(mark, Scope::Comment);
+                }
+                b'"' | b'\'' => {
+                    self.take_quoted_in_line(byte);
+                    self.emit(mark, Scope::String);
+                    flags = false;
+                }
+                b'$' => {
+                    self.take_variable();
+                    self.emit(mark, Scope::Property);
+                    flags = false;
+                }
+                b'-' if flags && self.at_pair(b'-', b'-') => {
+                    while !self.done()
+                        && (is_word(self.byte(self.at)) || self.byte(self.at) == b'-')
+                    {
+                        self.bump();
+                    }
+                    self.emit(mark, Scope::Property);
+                }
+                b'<' if self.at_pair(b'<', b'<') && !instruction.is_empty() => {
+                    self.bump();
+                    self.bump();
+                    if let Some(heredoc) = self.take_heredoc_marker() {
+                        heredocs.push(heredoc);
+                    }
+                    self.emit(mark, Scope::Keyword);
+                    flags = false;
+                }
+                b if b.is_ascii_alphabetic() => {
+                    let line_head = !continued && self.only_space_before();
+                    while !self.done()
+                        && (self.byte(self.at).is_ascii_alphanumeric()
+                            || self.byte(self.at) == b'_')
+                    {
+                        self.bump();
+                    }
+                    let word = self.text[mark.at..self.at].to_ascii_uppercase();
+                    // `ONBUILD RUN …` and `HEALTHCHECK CMD …` name a second instruction.
+                    let nested = matches!(instruction.as_str(), "ONBUILD" | "HEALTHCHECK");
+                    let scope = if (line_head || nested) && instructions.contains(word.as_str()) {
+                        instruction = word;
+                        flags = true;
+                        Scope::Keyword
+                    } else if (instruction == "FROM" && word == "AS")
+                        || (instruction == "HEALTHCHECK" && word == "NONE")
+                    {
+                        Scope::Keyword
+                    } else if matches!(instruction.as_str(), "ENV" | "ARG" | "LABEL")
+                        && self.byte(self.at) == b'='
+                    {
+                        flags = false;
+                        Scope::Property
+                    } else {
+                        flags = false;
+                        Scope::Plain
+                    };
+                    self.emit(mark, scope);
+                }
+                b'0'..=b'9' if matches!(self.byte(self.at.wrapping_sub(1)), b' ' | b'\t') => {
+                    while !self.done()
+                        && (self.byte(self.at).is_ascii_digit() || self.byte(self.at) == b'.')
+                    {
+                        self.bump();
+                    }
+                    if matches!(self.byte(self.at), b' ' | b'\t' | b'\n' | b'/' | 0) {
+                        self.emit(mark, Scope::Number);
+                    }
+                    flags = false;
+                }
+                b' ' | b'\t' | b'\\' | b'\r' => self.bump(),
+                _ => {
+                    flags = false;
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    /// The word after `<<` or `<<-`, unquoted, and whether tabs are stripped.
+    fn take_heredoc_marker(&mut self) -> Option<(String, bool)> {
+        let strip_tabs = self.byte(self.at) == b'-';
+        if strip_tabs {
+            self.bump();
+        }
+        let quote = self.byte(self.at);
+        let quoted = matches!(quote, b'"' | b'\'');
+        if quoted {
+            self.bump();
+        }
+        let start = self.at;
+        while !self.done() && is_word(self.byte(self.at)) {
+            self.bump();
+        }
+        let word = self.text[start..self.at].to_owned();
+        if quoted && self.byte(self.at) == quote {
+            self.bump();
+        }
+        (!word.is_empty()).then_some((word, strip_tabs))
+    }
+
+    /// Consume a heredoc body through its terminator, leaving that line's
+    /// newline to the caller. No checkpoint: the body is not Dockerfile.
+    fn skip_heredoc(&mut self, terminator: &str, strip_tabs: bool) {
+        while !self.done() {
+            let end = self.text[self.at..]
+                .find('\n')
+                .map_or(self.bytes.len(), |offset| self.at + offset);
+            let line = self.text[self.at..end].trim_end_matches('\r');
+            let line = if strip_tabs {
+                line.trim_start_matches('\t')
+            } else {
+                line
+            };
+            let last = line == terminator;
+            self.take_line();
+            if last {
+                return;
+            }
+            self.bump();
+        }
+    }
+
+    /// `$NAME` or `${NAME…}`, never past the line.
+    fn take_variable(&mut self) {
+        self.bump();
+        if self.byte(self.at) == b'{' {
+            while !self.done() && !matches!(self.byte(self.at), b'}' | b'\n') {
+                self.bump();
+            }
+            if self.byte(self.at) == b'}' {
+                self.bump();
+            }
+        } else {
+            while !self.done()
+                && (self.byte(self.at).is_ascii_alphanumeric() || self.byte(self.at) == b'_')
+            {
+                self.bump();
+            }
+        }
+    }
+
+    /// A quoted run that never crosses a newline, even after a backslash, so
+    /// it cannot reach the next line's start and checkpoint there.
+    fn take_quoted_in_line(&mut self, quote: u8) {
+        self.bump();
+        while !self.done() && self.byte(self.at) != b'\n' {
+            let byte = self.byte(self.at);
+            if byte == b'\\' && !matches!(self.byte(self.at + 1), b'\n' | 0) {
+                self.bump();
+                self.bump();
+                continue;
+            }
+            self.bump();
+            if byte == quote {
+                return;
+            }
+        }
+    }
+
+    /// HTTP request files: `###` separators, comments, `@name = value`, the
+    /// request line, headers, then a body coloured only for strings and
+    /// `{{variables}}`.
+    ///
+    /// Only a line before a request line checkpoints: a header or body line's
+    /// meaning depends on the request above it.
+    fn http(&mut self) {
+        let methods = http_methods();
+        let mut part = HttpPart::Preamble;
+        while !self.done() {
+            if part == HttpPart::Preamble && self.checkpoint() {
+                break;
+            }
+            while matches!(self.byte(self.at), b' ' | b'\t') {
+                self.bump();
+            }
+            let mark = self.mark();
+            let blank = matches!(self.byte(self.at), b'\n' | b'\r' | 0);
+            if self.at_bytes(b"###") {
+                self.take_line();
+                self.emit(mark, Scope::Comment);
+                part = HttpPart::Preamble;
+            } else if part != HttpPart::Body
+                && (self.byte(self.at) == b'#' || self.at_pair(b'/', b'/'))
+            {
+                self.take_line();
+                self.emit(mark, Scope::Comment);
+            } else {
+                match part {
+                    HttpPart::Preamble if blank => {}
+                    HttpPart::Preamble if self.byte(self.at) == b'@' => {
+                        self.bump();
+                        while !self.done()
+                            && (is_word(self.byte(self.at)) || self.byte(self.at) == b'-')
+                        {
+                            self.bump();
+                        }
+                        self.emit(mark, Scope::Property);
+                        self.http_text(Scope::String, false);
+                    }
+                    HttpPart::Preamble => {
+                        self.http_request_line(&methods);
+                        part = HttpPart::Headers;
+                    }
+                    HttpPart::Headers if blank => part = HttpPart::Body,
+                    HttpPart::Headers => {
+                        while !self.done()
+                            && (self.byte(self.at).is_ascii_alphanumeric()
+                                || matches!(self.byte(self.at), b'-' | b'_'))
+                        {
+                            self.bump();
+                        }
+                        if self.at > mark.at && self.byte(self.at) == b':' {
+                            self.emit(mark, Scope::Property);
+                        }
+                        self.http_text(Scope::Plain, false);
+                    }
+                    HttpPart::Body => self.http_text(Scope::Plain, true),
+                }
+            }
+            self.take_line();
+            self.bump();
+        }
+    }
+
+    /// `METHOD url HTTP/version`; the method may be left out.
+    fn http_request_line(&mut self, methods: &HashSet<&'static str>) {
+        let mark = self.mark();
+        let mut end = self.at;
+        while self.byte(end).is_ascii_uppercase() {
+            end += 1;
+        }
+        if methods.contains(&self.text[mark.at..end]) && matches!(self.byte(end), b' ' | b'\t') {
+            while self.at < end {
+                self.bump();
+            }
+            self.emit(mark, Scope::Keyword);
+        }
+        while matches!(self.byte(self.at), b' ' | b'\t') {
+            self.bump();
+        }
+        self.http_word(Scope::String);
+        while matches!(self.byte(self.at), b' ' | b'\t') {
+            self.bump();
+        }
+        if self.at_bytes(b"HTTP/") {
+            self.http_word(Scope::Constant);
+        }
+    }
+
+    /// One whitespace-delimited token as `scope`, `{{variables}}` apart.
+    fn http_word(&mut self, scope: Scope) {
+        let mut mark = self.mark();
+        while !self.done() && !self.byte(self.at).is_ascii_whitespace() {
+            if self.at_pair(b'{', b'{') {
+                self.emit(mark, scope);
+                self.take_http_variable();
+                mark = self.mark();
+            } else {
+                self.bump();
+            }
+        }
+        self.emit(mark, scope);
+    }
+
+    /// The rest of the line as `scope`, with `{{variables}}` and, when
+    /// `strings` is set, double-quoted runs coloured apart.
+    fn http_text(&mut self, scope: Scope, strings: bool) {
+        let mut mark = self.mark();
+        while !self.done() && self.byte(self.at) != b'\n' {
+            if self.at_pair(b'{', b'{') {
+                self.emit(mark, scope);
+                self.take_http_variable();
+                mark = self.mark();
+            } else if strings && self.byte(self.at) == b'"' {
+                self.emit(mark, scope);
+                let quoted = self.mark();
+                self.take_quoted_in_line(b'"');
+                self.emit(quoted, Scope::String);
+                mark = self.mark();
+            } else {
+                self.bump();
+            }
+        }
+        self.emit(mark, scope);
+    }
+
+    /// `{{name}}`, stopping at the line's end when it is not closed.
+    fn take_http_variable(&mut self) {
+        let mark = self.mark();
+        self.bump();
+        self.bump();
+        while !self.done() && self.byte(self.at) != b'\n' && !self.at_pair(b'}', b'}') {
+            self.bump();
+        }
+        if self.at_pair(b'}', b'}') {
+            self.bump();
+            self.bump();
+        }
+        self.emit(mark, Scope::Keyword);
     }
 
     /// Markdown: the marks that carry structure, not a full renderer.
@@ -1756,6 +2345,16 @@ mod tests {
         assert_eq!(Grammar::for_path("data.xml"), Grammar::Html);
         assert_eq!(Grammar::for_path("icon.svg"), Grammar::Html);
         assert_eq!(Grammar::for_path("styles/app.CSS"), Grammar::Css);
+        assert_eq!(Grammar::for_path("flake.nix"), Grammar::Nix);
+        assert_eq!(Grammar::for_path("Dockerfile"), Grammar::Dockerfile);
+        assert_eq!(
+            Grammar::for_path("docker/Dockerfile.ci"),
+            Grammar::Dockerfile
+        );
+        assert_eq!(Grammar::for_path("Containerfile"), Grammar::Dockerfile);
+        assert_eq!(Grammar::for_path("api.dockerfile"), Grammar::Dockerfile);
+        assert_eq!(Grammar::for_path("requests/users.http"), Grammar::Http);
+        assert_eq!(Grammar::for_path("smoke.rest"), Grammar::Http);
         // A dotfile's name is not an extension, and neither is a directory's.
         assert_eq!(Grammar::for_path(".gitignore"), Grammar::None);
         assert_eq!(Grammar::for_path("docs.md/main.rs"), Grammar::Rust);
@@ -2123,6 +2722,177 @@ mod tests {
         }
     }
 
+    #[test]
+    fn nix_colours_bindings_strings_paths_and_comments() {
+        let text = "{ pkgs ? import <nixpkgs> {} }:\nlet\n  name = \"hi ${pkgs.hello}\";\n  src = ./src; # local\nin if name == \"x\" then rec { a.b = true; } else null\n";
+        assert_eq!(
+            spans(text, Grammar::Nix, 0),
+            vec![("import", Scope::Function), ("<nixpkgs>", Scope::String)]
+        );
+        assert_eq!(spans(text, Grammar::Nix, 1), vec![("let", Scope::Keyword)]);
+        assert_eq!(
+            spans(text, Grammar::Nix, 2),
+            vec![
+                ("name", Scope::Property),
+                ("\"hi ${pkgs.hello}\"", Scope::String)
+            ]
+        );
+        assert_eq!(
+            spans(text, Grammar::Nix, 3),
+            vec![
+                ("src", Scope::Property),
+                ("./src", Scope::String),
+                ("# local", Scope::Comment)
+            ]
+        );
+        let last = spans(text, Grammar::Nix, 4);
+        assert!(last.contains(&("in", Scope::Keyword)));
+        assert!(last.contains(&("if", Scope::ControlKeyword)));
+        // `==` is a comparison, so the word before it is not a binding.
+        assert!(!last.contains(&("name", Scope::Property)));
+        assert!(last.contains(&("a.b", Scope::Property)));
+        assert!(last.contains(&("true", Scope::Constant)));
+        assert!(last.contains(&("null", Scope::Constant)));
+    }
+
+    #[test]
+    fn a_nix_indented_string_spans_lines_and_honours_its_escapes() {
+        let text = "x = ''\n  echo ''${HOME} '''\n  if true\n'';\ny = 1;\n";
+        assert_eq!(
+            spans(text, Grammar::Nix, 1),
+            vec![("  echo ''${HOME} '''", Scope::String)]
+        );
+        // The body's `if` is text, not a keyword.
+        assert_eq!(
+            spans(text, Grammar::Nix, 2),
+            vec![("  if true", Scope::String)]
+        );
+        assert_eq!(
+            spans(text, Grammar::Nix, 4),
+            vec![("y", Scope::Property), ("1", Scope::Number)]
+        );
+    }
+
+    #[test]
+    fn dockerfile_colours_instructions_flags_and_variables() {
+        let text = "# syntax=docker/dockerfile:1\nFROM rust:1.89 AS build\nCOPY --from=build /app /app\nENV PATH=$HOME/bin:${PATH}\nEXPOSE 8080/tcp\nrun echo \"hi\"\n";
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 0),
+            vec![("# syntax=docker/dockerfile:1", Scope::Comment)]
+        );
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 1),
+            vec![("FROM", Scope::Keyword), ("AS", Scope::Keyword)]
+        );
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 2),
+            vec![("COPY", Scope::Keyword), ("--from", Scope::Property)]
+        );
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 3),
+            vec![
+                ("ENV", Scope::Keyword),
+                ("PATH", Scope::Property),
+                ("$HOME", Scope::Property),
+                ("${PATH}", Scope::Property)
+            ]
+        );
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 4),
+            vec![("EXPOSE", Scope::Keyword), ("8080", Scope::Number)]
+        );
+        // Instructions are case-insensitive.
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 5),
+            vec![("run", Scope::Keyword), ("\"hi\"", Scope::String)]
+        );
+    }
+
+    #[test]
+    fn a_continued_dockerfile_line_is_an_argument_not_an_instruction() {
+        let text =
+            "RUN apt-get update \\\n    # a comment\n    copy files \\\n    && true\nUSER app\n";
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 1),
+            vec![("# a comment", Scope::Comment)]
+        );
+        assert_eq!(spans(text, Grammar::Dockerfile, 2), vec![]);
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 4),
+            vec![("USER", Scope::Keyword)]
+        );
+        let syntax = Syntax::parse(text, Grammar::Dockerfile);
+        assert_eq!(syntax.safe[..5], [true, false, false, false, true]);
+    }
+
+    #[test]
+    fn a_dockerfile_heredoc_body_stays_plain() {
+        let text = "RUN <<EOF\nFROM inside\nEOF\nCMD [\"x\"]\n";
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 0),
+            vec![("RUN", Scope::Keyword), ("<<EOF", Scope::Keyword)]
+        );
+        assert_eq!(spans(text, Grammar::Dockerfile, 1), vec![]);
+        assert_eq!(spans(text, Grammar::Dockerfile, 2), vec![]);
+        assert_eq!(
+            spans(text, Grammar::Dockerfile, 3),
+            vec![("CMD", Scope::Keyword), ("\"x\"", Scope::String)]
+        );
+    }
+
+    #[test]
+    fn http_colours_requests_headers_variables_and_bodies() {
+        let text = "@host = localhost:8080\n### Create\n# note\nPOST http://{{host}}/users HTTP/1.1\nContent-Type: application/json\n\n{\"name\": \"{{user}}\"}\n###\nhttps://example.com\n";
+        assert_eq!(
+            spans(text, Grammar::Http, 0),
+            vec![
+                ("@host", Scope::Property),
+                (" = localhost:8080", Scope::String)
+            ]
+        );
+        assert_eq!(
+            spans(text, Grammar::Http, 1),
+            vec![("### Create", Scope::Comment)]
+        );
+        assert_eq!(
+            spans(text, Grammar::Http, 2),
+            vec![("# note", Scope::Comment)]
+        );
+        assert_eq!(
+            spans(text, Grammar::Http, 3),
+            vec![
+                ("POST", Scope::Keyword),
+                ("http://", Scope::String),
+                ("{{host}}", Scope::Keyword),
+                ("/users", Scope::String),
+                ("HTTP/1.1", Scope::Constant)
+            ]
+        );
+        assert_eq!(
+            spans(text, Grammar::Http, 4),
+            vec![("Content-Type", Scope::Property)]
+        );
+        assert_eq!(
+            spans(text, Grammar::Http, 6),
+            vec![("\"name\"", Scope::String), ("\"{{user}}\"", Scope::String)]
+        );
+        assert_eq!(spans(text, Grammar::Http, 7), vec![("###", Scope::Comment)]);
+        // A request line may leave the method out.
+        assert_eq!(
+            spans(text, Grammar::Http, 8),
+            vec![("https://example.com", Scope::String)]
+        );
+    }
+
+    #[test]
+    fn an_http_body_line_is_not_read_as_a_comment_or_header() {
+        let text = "GET /a\n\n# not a comment\nKey: value\n";
+        assert_eq!(spans(text, Grammar::Http, 2), vec![]);
+        assert_eq!(spans(text, Grammar::Http, 3), vec![]);
+        let syntax = Syntax::parse(text, Grammar::Http);
+        assert_eq!(syntax.safe[..4], [true, false, false, false]);
+    }
+
     /// Whatever the input, scanning terminates and stays in bounds.
     #[test]
     fn hostile_input_does_not_hang_or_panic() {
@@ -2139,6 +2909,9 @@ mod tests {
             Grammar::Markdown,
             Grammar::Html,
             Grammar::Css,
+            Grammar::Nix,
+            Grammar::Dockerfile,
+            Grammar::Http,
         ] {
             for text in [
                 "",
@@ -2158,6 +2931,12 @@ mod tests {
                 "@",
                 "#",
                 "-.",
+                "''",
+                "<<",
+                "RUN <<EOF\n",
+                "RUN a \\",
+                "{{",
+                "GET",
                 "\u{1f600} é 漢字\n",
                 "a\u{0}b\n",
             ] {
@@ -2402,6 +3181,15 @@ mod tests {
             (
                 Grammar::Css,
                 "/* c */\n.a,\n.b {\n  color: red;\n}\n@media (x: 1px) {\n  p { margin: 0 }\n}\n",
+            ),
+            (Grammar::Nix, "let\n  # c\n  s = ''\n    x\n  '';\nin s\n"),
+            (
+                Grammar::Dockerfile,
+                "FROM a\nRUN b \\\n  c\nRUN <<EOF\nx\nEOF\n",
+            ),
+            (
+                Grammar::Http,
+                "GET /a\nAccept: x\n\n{\"a\": 1}\n###\nPOST /b\n",
             ),
         ];
         for (grammar, text) in cases {

@@ -570,6 +570,14 @@
   margin-inline: auto;
   max-width: 880px;
 }
+/* A CSV keeps its natural width and scrolls with the body when it is wider. */
+.preview-body .preview-table {
+  font-variant-numeric: tabular-nums;
+  width: auto;
+}
+.preview-body .preview-table :is(th, td) {
+  white-space: pre;
+}
 /* Contained rather than stretched: a screenshot at its own size next to a
    16-pixel icon is the comparison a preview is for. */
 .preview-image {
