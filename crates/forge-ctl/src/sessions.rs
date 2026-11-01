@@ -984,7 +984,7 @@ fn wait(
                 124,
                 "timeout",
                 "session wait timed out",
-                json!({ "session_id": id }),
+                json!({ "session_id": id, "activity": current.activity }),
                 vec![],
             ));
         }

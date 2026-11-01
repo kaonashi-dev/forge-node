@@ -39,7 +39,8 @@ Inside a Forge session, --project defaults to your project and checkout, and spa
 Hand-offs, as a person asks for them:
 - \"Send this plan to Claude with effort medium to implement, then validate it\": write the plan to a file, then
   forgectl --json session spawn --provider claude --effort medium --name impl --prompt-file plan.md
-  forgectl --json session wait impl --for idle,waiting,exit --timeout 1h
+  forgectl --json session wait impl --for idle,waiting,exit --timeout 15m
+  A timeout is not proof of work: an agent may never report activity (details.activity shows no evidence). Read the transcript and decide.
   On waiting, read the transcript and answer or ask the person; on idle, validate: session read, session changes, git diff from the session's base_commit, and run the tests yourself.
 - \"Create an OpenCode session to implement plan X\": forgectl --json session spawn --provider opencode --name impl --prompt-file plan.md
 - \"Open a new session of this agent with what we discussed\": write a self-contained summary (decisions, open questions, file paths) to a file, then

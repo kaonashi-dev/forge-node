@@ -12,7 +12,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -71,7 +71,7 @@ pub(super) fn collect(
 /// number behind it arrived, and a usage sweep must never be able to fail a
 /// provider that is working fine.
 fn ask_for_billing(executable: &Path, args: &[String], env: &ResolvedEnvironment) -> Option<Value> {
-    let mut command = Command::new(executable);
+    let mut command = crate::detection::command_for(executable);
     command
         .args(args)
         .stdin(Stdio::piped())

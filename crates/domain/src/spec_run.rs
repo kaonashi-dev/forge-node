@@ -219,9 +219,11 @@ Keep the returned `session_id` and use it, never the title. {place}
 
 ## 4. Wait
 
-{ctl} --json session wait <coder id> --for idle,waiting,exit --timeout 1h
+{ctl} --json session wait <coder id> --for idle,waiting,exit --timeout 15m
 
-Run it again on a timeout (exit 124). `matched` says why it returned:
+A timeout (exit 124) is not proof the coder is busy: some agents never report their activity. Read \
+`{ctl} --json session read <coder id> --lines 80`; if the coder has stopped and awaits input, treat it \
+as `idle`, otherwise wait again. `matched` says why a wait returned:
 - `waiting`: read `{ctl} --json session read <coder id> --lines 80`. Answer what the spec or the plan \
 answers with `{ctl} --json session send <coder id> --text '...'`; take anything else to the person \
 with your question selector. Never approve a permission, a command or a destructive action for it.

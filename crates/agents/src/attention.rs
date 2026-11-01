@@ -190,7 +190,7 @@ fn inject_cursor(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
     let Some(home) = env_home(&spec.env) else {
         return false;
     };
-    match ensure_cursor_hooks(&home, &assets.ring_bell) {
+    match ensure_cursor_hooks(&home, &assets.ring_bell, &assets.activity) {
         Ok(changed) => changed,
         Err(error) => {
             tracing::warn!(%error, "could not install Cursor attention hooks");
@@ -237,11 +237,18 @@ fn set_env_if_unset(spec: &mut SpawnSpec, key: &str, value: &str) -> bool {
 }
 
 /// Cursor has no permission-prompt hook; `beforeShellExecution` /
-/// `beforeMCPExecution` are the closest signals (best-effort).
-fn ensure_cursor_hooks(home: &Path, ring_bell: &Path) -> std::io::Result<bool> {
+/// `beforeMCPExecution` are the closest signals (best-effort). Cursor runs a
+/// hook as `/bin/sh -c <command>`, so every path is quoted.
+fn ensure_cursor_hooks(home: &Path, ring_bell: &Path, activity: &Path) -> std::io::Result<bool> {
     let path = home.join(".cursor").join("hooks.json");
-    let command = ring_bell.to_string_lossy().into_owned();
-    let entry = serde_json::json!({ "command": command, "timeout": 5 });
+    let bell =
+        serde_json::json!({ "command": shell_quote(&ring_bell.to_string_lossy()), "timeout": 5 });
+    let report = |state: &str| {
+        serde_json::json!({
+            "command": format!("{} {state} cursor", shell_quote(&activity.to_string_lossy())),
+            "timeout": 5,
+        })
+    };
 
     let invalid =
         |reason: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, reason.to_owned());
@@ -268,8 +275,15 @@ fn ensure_cursor_hooks(home: &Path, ring_bell: &Path) -> std::io::Result<bool> {
 
     let mut changed = false;
     for event in ["beforeShellExecution", "beforeMCPExecution"] {
-        changed |= push_hook_command(hooks, event, &entry, FORGE_HOOK_MARKER);
+        changed |= push_hook_command(hooks, event, &bell, FORGE_HOOK_MARKER);
     }
+    changed |= push_hook_command(
+        hooks,
+        "beforeSubmitPrompt",
+        &report("working"),
+        ACTIVITY_FILENAME,
+    );
+    changed |= push_hook_command(hooks, "stop", &report("idle"), ACTIVITY_FILENAME);
     if !changed {
         return Ok(false);
     }
@@ -322,20 +336,29 @@ fn push_hook_command(
     let Some(arr) = list.as_array_mut() else {
         return false;
     };
-    let already = arr.iter().any(|item| {
+    let ours = |item: &serde_json::Value| {
         item.get("command")
             .and_then(|c| c.as_str())
             .is_some_and(|c| c.contains(marker))
-            || item
-                .get("hooks")
-                .and_then(|h| h.as_array())
-                .is_some_and(|inner| {
-                    inner.iter().any(|h| {
-                        h.get("command")
-                            .and_then(|c| c.as_str())
-                            .is_some_and(|c| c.contains(marker))
-                    })
+    };
+    // An earlier Forge entry is replaced, not kept: an unquoted path broke under `sh -c`.
+    if let Some(item) = arr.iter_mut().find(|item| ours(item)) {
+        if *item == *entry {
+            return false;
+        }
+        *item = entry.clone();
+        return true;
+    }
+    let already = arr.iter().any(|item| {
+        item.get("hooks")
+            .and_then(|h| h.as_array())
+            .is_some_and(|inner| {
+                inner.iter().any(|h| {
+                    h.get("command")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| c.contains(marker))
                 })
+            })
     });
     if already {
         return false;
@@ -596,7 +619,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o700)).unwrap();
         let assets = install_assets_with_ctl(dir.path(), Some(&ctl)).unwrap();
-        let status = std::process::Command::new(&assets.activity)
+        let status = crate::detection::command_for(&assets.activity)
             .args(["idle", "claude"])
             .env("FORGE_SESSION_ID", "s")
             .stdin(std::process::Stdio::null())
@@ -608,7 +631,7 @@ mod tests {
             "hook\n--state\nidle\n--source\nclaude\n"
         );
         std::fs::remove_file(&capture).unwrap();
-        assert!(std::process::Command::new(assets.activity)
+        assert!(crate::detection::command_for(&assets.activity)
             .arg("idle")
             .env_remove("FORGE_SESSION_ID")
             .stdin(std::process::Stdio::null())
@@ -753,13 +776,50 @@ mod tests {
             &std::fs::read_to_string(home.join(".cursor/hooks.json")).unwrap(),
         )
         .unwrap();
-        assert!(hooks["hooks"]["stop"].as_array().unwrap().len() == 1);
-        assert!(hooks["hooks"]["beforeShellExecution"]
-            .as_array()
+        let stop = hooks["hooks"]["stop"].as_array().unwrap();
+        assert_eq!(stop[0]["command"], "/other");
+        assert_eq!(
+            stop[1]["command"],
+            format!(
+                "{} idle cursor",
+                shell_quote(&assets.activity.to_string_lossy())
+            )
+        );
+        assert!(hooks["hooks"]["beforeSubmitPrompt"][0]["command"]
+            .as_str()
             .unwrap()
-            .iter()
-            .any(|e| e["command"].as_str().unwrap().contains("forge-ring-bell")));
+            .ends_with("forge-activity.sh' working cursor"));
+        assert_eq!(
+            hooks["hooks"]["beforeShellExecution"][0]["command"],
+            shell_quote(&assets.ring_bell.to_string_lossy())
+        );
         assert!(!inject_attention(&descriptor, &mut spec, &assets));
+    }
+
+    #[test]
+    fn cursor_hooks_replace_an_unquoted_forge_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".cursor")).unwrap();
+        let assets = install_assets(&dir.path().join("Application Support")).unwrap();
+        let bare = assets.ring_bell.to_string_lossy().into_owned();
+        std::fs::write(
+            home.join(".cursor/hooks.json"),
+            serde_json::json!({"version":1,"hooks":{"beforeShellExecution":[{"command":bare,"timeout":5}]}})
+                .to_string(),
+        )
+        .unwrap();
+        let descriptor = builtins::builtin("cursor").unwrap();
+        let mut spec = empty_spec();
+        spec.env = vec![("HOME".into(), home.to_string_lossy().into_owned())];
+        assert!(inject_attention(&descriptor, &mut spec, &assets));
+        let hooks: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(home.join(".cursor/hooks.json")).unwrap(),
+        )
+        .unwrap();
+        let shell = hooks["hooks"]["beforeShellExecution"].as_array().unwrap();
+        assert_eq!(shell.len(), 1);
+        assert_eq!(shell[0]["command"], shell_quote(&bare));
     }
 
     #[test]
