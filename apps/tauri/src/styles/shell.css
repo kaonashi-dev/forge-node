@@ -870,6 +870,27 @@
   padding: 0 var(--space-8) 0 calc(var(--space-8) + var(--tree-depth, 0) * var(--space-12));
   width: 100%;
 }
+/* A child session hangs off one guide per ancestor, under that ancestor's icon;
+   the rows are flat, so each draws its own segment across half the gap above and below. */
+.tree-row.nested {
+  --guide-start: calc(var(--space-8) + 8px);
+  --guide-step: var(--space-12);
+  position: relative;
+}
+.tree-row.nested::before {
+  background: repeating-linear-gradient(
+    to right,
+    var(--hue-guide, var(--border-subtle)) 0 1px,
+    transparent 1px var(--guide-step)
+  );
+  bottom: calc(var(--space-3) / -2);
+  content: "";
+  left: var(--guide-start);
+  pointer-events: none;
+  position: absolute;
+  top: calc(var(--space-3) / -2);
+  width: calc((var(--tree-depth) - 1) * var(--guide-step) + 1px);
+}
 /* A group is a label over its projects, not a row of its own weight. */
 .tree-row.group {
   color: var(--forge-faint);
@@ -1788,6 +1809,14 @@
 }
 :root[data-trim="true"] .tree-row.group {
   height: var(--space-20);
+}
+:root[data-trim="true"] .tree-row.nested {
+  --guide-start: calc(var(--space-6) + 8px);
+  --guide-step: var(--space-10);
+}
+:root[data-trim="true"] .tree-row.nested::before {
+  bottom: calc(var(--space-2) / -2);
+  top: calc(var(--space-2) / -2);
 }
 :root[data-trim="true"] .tree-row.project {
   gap: var(--space-8);

@@ -1597,6 +1597,7 @@ function SessionRow(props: {
         unread: props.unread && !active(),
         cursor: props.cursor === true,
         "row-new": arrived,
+        nested: props.depth > 0,
       }}
       style={{ "--tree-depth": String(props.depth) }}
       onClick={() => focusSession(props.session.id)}
