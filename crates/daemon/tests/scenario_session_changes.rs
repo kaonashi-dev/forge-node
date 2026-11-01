@@ -34,6 +34,7 @@ fn a_session_reads_back_what_it_changed_and_the_checkout_reviews_it() {
             workspace_id: workspace,
             parent: None,
             role: domain::SessionRole::Generic,
+            title: None,
         })
         .expect("CreateShellSession")
     else {
@@ -126,6 +127,7 @@ fn a_handoff_capture_is_plain_text_within_its_budget() {
             workspace_id: workspace,
             parent: None,
             role: domain::SessionRole::Generic,
+            title: None,
         })
         .expect("CreateShellSession")
     else {

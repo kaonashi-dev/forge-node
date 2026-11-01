@@ -9,6 +9,7 @@
     "initial_prompt": "Review this checkout",
     "read_only": true,
     "model": "opus",
-    "effort": "high"
+    "effort": "high",
+    "title": null
   }
 }

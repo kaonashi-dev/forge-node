@@ -1145,6 +1145,7 @@ impl Client {
             workspace_id,
             parent: None,
             role: SessionRole::Generic,
+            title: None,
         })
     }
 
@@ -1202,6 +1203,7 @@ impl Client {
             read_only,
             model: None,
             effort: None,
+            title: None,
         })
     }
 

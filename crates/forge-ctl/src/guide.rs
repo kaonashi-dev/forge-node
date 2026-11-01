@@ -9,25 +9,64 @@ pub fn guide_text(topic: &str) -> Option<&'static str> {
         "integration" => INTEGRATION,
         "errors" => ERRORS,
         "sessions" => SESSIONS,
+        "spec" => SPEC,
         _ => return None,
     })
 }
 
+const SPEC: &str = "\
+# forgectl guide spec
+
+A spec run has two agents: a planner owns the spec, the plan and the review; a coder writes the code.
+The spec is a Claude artifact link, a path to a Markdown file, the full text, or - for stdin. Forge never fetches a link: the planner reads an artifact with its own artifact tool.
+Launch a planner: forgectl --json spec run <spec> [--preset claude|mix] [--coder <provider>] [--worktree <branch>] [--rounds 3]
+- claude: Claude plans at high effort, Claude codes at medium.
+- mix: Claude plans at high effort, Cursor codes; --coder opencode picks OpenCode. Cursor applies an effort only with --coder-model.
+Be the planner yourself: forgectl spec brief <spec> [same options] prints the brief to follow in this session.
+The planner validates every criterion (context and a way to prove it), asks the person all open points at once with its question selector, plans, launches the coder, waits for idle,waiting,exit, reruns the validations, sends numbered findings, and stops after the review rounds.
+The power of the simple: the smallest concrete change that meets the spec wins.
+Providers, effort levels and models are checked before anything launches; a path that does not exist exits 4.
+";
+
 const SESSIONS: &str = "\
 # forgectl guide sessions
 
-Launch across projects: forgectl --json session spawn --project <name|path|id> --provider <id> --name <title> --prompt-file plan.md
-Use --worktree <branch> [--base <ref>] for isolation, or --workspace <id> for an existing checkout.
-Use --profile <name|uuid>, --model <id>, --effort <level>, and --read-only when supported by the provider.
+Find places: forgectl project list; forgectl workspace list --project <name>; forgectl providers
+Launch an agent: forgectl --json session spawn --project <name|path|id> --provider <id> --name <title> --prompt-file plan.md
+Open a shell: forgectl --json session shell --project <name|path|id> --name <title>
+Inside a Forge session, --project defaults to your project and checkout, and spawn's --provider (with your profile) to your own agent.
+
+Hand-offs, as a person asks for them:
+- \"Send this plan to Claude with effort medium to implement, then validate it\": write the plan to a file, then
+  forgectl --json session spawn --provider claude --effort medium --name impl --prompt-file plan.md
+  forgectl --json session wait impl --for idle,waiting,exit --timeout 1h
+  On waiting, read the transcript and answer or ask the person; on idle, validate: session read, session changes, git diff from the session's base_commit, and run the tests yourself.
+- \"Create an OpenCode session to implement plan X\": forgectl --json session spawn --provider opencode --name impl --prompt-file plan.md
+- \"Open a new session of this agent with what we discussed\": write a self-contained summary (decisions, open questions, file paths) to a file, then
+  forgectl --json session spawn --name continuation --prompt 'Continue this work.' --context-file summary.md
+  The context follows the prompt under a heading naming you. Prompt and context together are capped at 64 KiB; for more, write a file in the checkout and point to it.
+- An existing session takes at most 8 KiB per send; for a longer plan, send a short prompt that names the file to read.
+Check what a provider accepts first (forgectl providers): effort levels, model, resume and read-only differ per provider.
+
+Use --worktree <branch> [--base <ref>] for isolation, or --workspace <id|prefix> for an existing checkout.
+Use --role <role> and --parent <ref|self> for a child in the same project; without --parent a session is an independent root.
+Use --profile <name|uuid>, --model <id>, --effort <level>, --resume <provider id> and --read-only when supported by the provider.
+Keep the returned session_id: a title is only as stable as the name you gave, and an agent may retitle an unnamed session.
+If a launch fails after its worktree was created, details.worktree_created names it and next removes it.
 Resolve a session by UUID, UUID prefix (at least 8 characters), exact case-insensitive title, or project/title. Ambiguity exits 5 and lists candidates.
-Wait by events: forgectl session wait project/title --for idle|waiting|working [--timeout 600]
-Read evidence: forgectl session read project/title
-Send: forgectl session send project/title --text '...' [--queue|--now] [--no-submit]
+List: forgectl session list [--project <name>] [--kind agent|shell|editor|task] [--active]
+Wait by events: forgectl session wait <ref> --for idle,waiting,exit [--timeout 600]; the first condition to hold wins and `matched` names it. Activity states are agent-only; any session can be waited on for exit. Waiting for idle alone hangs until the timeout when the agent stops to ask something.
+Read evidence: forgectl session read <ref> [--lines N] [--max-bytes N]; forgectl session changes <ref>
+Send to an agent: forgectl session send <ref> --text '...' [--queue|--now] [--no-submit]
 Default send requires hook-confirmed idle. Queue has one slot and refuses a second message. Now pastes but never submits in waiting, working, starting or unknown.
 Prompts are capped at 8 KiB and controls are stripped. Non-bracketed pastes flatten LF/TAB to spaces.
+Run in a shell: forgectl session exec <ref> --text 'cargo test'. One line, no control characters, and only while the shell is at its prompt (exit 5 while a job runs). Delivery is not success: read the transcript, or exec 'exit' and wait --for exit for a code.
+Interrupt a job: forgectl session signal <ref> --signal int --foreground. Without --foreground the signal goes to the session's own process group.
+Lifecycle: session kill, session restart (an agent's initial prompt is not re-sent), session close (ended sessions only).
+Project actions: forgectl action list --project <name>; forgectl action run <label|id> --project <name>
 Idle only means the agent stopped its turn: inspect the transcript, diff and tests before declaring completion.
 Only an explicit report settles an orchestration attempt. Session dispatch does not choose tasks or integrate branches.
-forgectl mcp exposes the same session commands over stdio; configure it explicitly in the provider's own MCP settings.
+forgectl mcp exposes the same commands as tools over stdio and runs up to 8 calls at once; configure it explicitly in the provider's own MCP settings.
 ";
 
 const CONTROLLER: &str = "\

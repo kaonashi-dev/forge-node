@@ -953,7 +953,8 @@ impl Daemon {
                 workspace_id,
                 parent,
                 role,
-            } => self.create_session(
+                title,
+            } => self.create_session_with_options(
                 workspace_id,
                 SessionKind::Shell,
                 None,
@@ -963,6 +964,8 @@ impl Daemon {
                 None,
                 None,
                 false,
+                Default::default(),
+                title,
             ),
             Request::CreateAgentSession {
                 workspace_id,
@@ -975,6 +978,7 @@ impl Daemon {
                 read_only,
                 model,
                 effort,
+                title,
             } => self.create_session_with_options(
                 workspace_id,
                 SessionKind::Agent,
@@ -986,7 +990,13 @@ impl Daemon {
                 initial_prompt,
                 read_only,
                 domain::AgentLaunchOptions { model, effort },
+                title,
             ),
+            Request::SendShellCommand {
+                caller_session_id,
+                session_id,
+                command,
+            } => crate::prompts::send_shell(self, caller_session_id, session_id, command),
             Request::SendSessionPrompt {
                 caller_session_id,
                 session_id,
@@ -1122,7 +1132,11 @@ impl Daemon {
                 from_line,
                 count,
             } => self.fetch_scrollback(terminal_id, from_line, count),
-            Request::SendSignal { session_id, signal } => self.send_signal(session_id, signal),
+            Request::SendSignal {
+                session_id,
+                signal,
+                foreground,
+            } => self.send_signal(session_id, signal, foreground),
 
             Request::ListAgentProviders => Ok(Response::Providers(self.provider_infos())),
             Request::GetUsageAnalytics { window_days } => Ok(Response::UsageAnalytics(Box::new(
@@ -4160,12 +4174,13 @@ impl Daemon {
             initial_prompt,
             read_only,
             Default::default(),
+            None,
         )
     }
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "existing internal callers have no model overrides; IPC resolves them explicitly"
+        reason = "existing internal callers have no model overrides or title; IPC resolves them explicitly"
     )]
     fn create_session_with_options(
         self: &Arc<Self>,
@@ -4179,7 +4194,11 @@ impl Daemon {
         initial_prompt: Option<String>,
         read_only: bool,
         options: domain::AgentLaunchOptions,
+        title: Option<String>,
     ) -> Result<Response, ProtocolError> {
+        let title = title
+            .map(|title| title.trim().to_owned())
+            .filter(|title| !title.is_empty());
         // Take before any validation: an early return must not leave the
         // orchestration variables on a pooled worker for the next session.
         let extra_env = crate::orchestration::take_spawn_env();
@@ -4260,7 +4279,10 @@ impl Daemon {
                 editor: None,
                 agent_provider_id: provider_id,
                 agent_profile_id: profile.as_ref().map(|p| p.id),
-                title: SessionTitle::default(),
+                title: SessionTitle {
+                    user: title,
+                    ..SessionTitle::default()
+                },
                 state: SessionState::Starting,
                 created_at: now,
                 launch_command: None,
@@ -5992,6 +6014,7 @@ impl Daemon {
         &self,
         session_id: SessionId,
         signal: Signal,
+        foreground: bool,
     ) -> Result<Response, ProtocolError> {
         let Some(num) = signal.number() else {
             return Err(ProtocolError::new(
@@ -6008,7 +6031,14 @@ impl Daemon {
             session
                 .terminal_id
                 .and_then(|t| inner.terminals.get(&t))
-                .map(|r| r.process_group)
+                // `tcgetpgrp` is one non-blocking ioctl; it may run under the core lock.
+                .map(|r| {
+                    foreground
+                        .then(|| r.pty.foreground_process_group())
+                        .flatten()
+                        .filter(|group| *group > 0)
+                        .unwrap_or(r.process_group)
+                })
         };
         if let Some(pgid) = pgid {
             if let Ok(sig) = nix::sys::signal::Signal::try_from(num) {
@@ -9443,6 +9473,7 @@ mod tests {
                 read_only: true,
                 model: Some("opus".into()),
                 effort: Some("high".into()),
+                title: None,
             })
             .unwrap();
         let spec = backend.last_spawn().unwrap();

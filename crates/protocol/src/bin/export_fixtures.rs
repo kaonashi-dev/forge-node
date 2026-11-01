@@ -691,6 +691,7 @@ fn main() {
             workspace_id: workspace_id(),
             parent: None,
             role: SessionRole::Generic,
+            title: None,
         },
     );
     write(
@@ -718,6 +719,7 @@ fn main() {
             read_only: true,
             model: Some("opus".into()),
             effort: Some("high".into()),
+            title: None,
         },
     );
     write(
@@ -729,6 +731,15 @@ fn main() {
             text: "Inspect the failing test".into(),
             submit: true,
             when: PromptDelivery::Queue,
+        },
+    );
+    write(
+        &out,
+        "request_send_shell_command",
+        &Request::SendShellCommand {
+            caller_session_id: None,
+            session_id: session_id(),
+            command: "cargo test -p client".into(),
         },
     );
     write(&out, "session_editor", &{

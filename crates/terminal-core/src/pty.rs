@@ -84,6 +84,10 @@ pub trait PtyHandle: Send {
     fn child_pid(&self) -> u32;
     /// Process-group id of the child (the group leader after `setsid`).
     fn process_group(&self) -> i32;
+    /// The terminal's current foreground process group (`tcgetpgrp`), or
+    /// `None` when it cannot be read. Equal to [`Self::process_group`] while
+    /// the child itself, not a job it started, owns the terminal.
+    fn foreground_process_group(&self) -> Option<i32>;
     /// Poll whether the child has exited, without blocking.
     ///
     /// # Errors
@@ -287,6 +291,17 @@ impl PtyHandle for PortablePtyHandle {
         // The child called `setsid`, so its pgid equals its pid for its whole
         // life and one read at spawn is both correct and stable.
         self.process_group
+    }
+
+    fn foreground_process_group(&self) -> Option<i32> {
+        #[cfg(unix)]
+        {
+            self.master.process_group_leader()
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     fn try_wait(&mut self) -> Result<Option<ExitStatus>, PtyError> {

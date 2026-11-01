@@ -18,7 +18,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   Hello: {
-    protocol_version: 34,
+    protocol_version: 35,
     client_version: "0.1.0",
     client_kind: "Gui",
   },
@@ -89,7 +89,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   HelloAck: {
-    protocol_version: 34,
+    protocol_version: 35,
     daemon_version: "0.1.0",
     instance_id: "forge-daemon-0001",
     started_at: "2026-08-30T12:00:00Z",
@@ -99,7 +99,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   HelloReject: {
-    daemon_protocol_version: 34,
+    daemon_protocol_version: 35,
     reason: "protocol version mismatch",
   },
 } as const;
@@ -707,13 +707,13 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  protocol_version: 34,
+  protocol_version: 35,
   client_version: "0.1.0",
   client_kind: "Gui",
 } as const;
 
 export const hello_ack = {
-  protocol_version: 34,
+  protocol_version: 35,
   daemon_version: "0.1.0",
   instance_id: "forge-daemon-0001",
   started_at: "2026-08-30T12:00:00Z",
@@ -721,7 +721,7 @@ export const hello_ack = {
 } as const;
 
 export const hello_reject = {
-  daemon_protocol_version: 34,
+  daemon_protocol_version: 35,
   reason: "protocol version mismatch",
 } as const;
 
@@ -788,6 +788,7 @@ export const request_create_agent_session = {
     read_only: true,
     model: "opus",
     effort: "high",
+    title: null,
   },
 } as const;
 
@@ -806,6 +807,7 @@ export const request_create_shell_session = {
     workspace_id: "00000000-0000-7000-8000-000000000003",
     parent: null,
     role: "Generic",
+    title: null,
   },
 } as const;
 
@@ -922,6 +924,14 @@ export const request_send_session_prompt = {
     text: "Inspect the failing test",
     submit: true,
     when: "Queue",
+  },
+} as const;
+
+export const request_send_shell_command = {
+  SendShellCommand: {
+    caller_session_id: null,
+    session_id: "00000000-0000-7000-8000-000000000004",
+    command: "cargo test -p client",
   },
 } as const;
 
@@ -2886,6 +2896,7 @@ export const FIXTURE_NAMES = [
   "request_resize_terminal.json",
   "request_run_action.json",
   "request_send_session_prompt.json",
+  "request_send_shell_command.json",
   "request_set_project_actions.json",
   "request_set_project_shares.json",
   "request_write_file.json",

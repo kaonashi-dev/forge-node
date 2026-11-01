@@ -58,6 +58,8 @@ struct FakePtyState {
     child_pid: u32,
     /// Value reported by `process_group()`.
     process_group: i32,
+    /// Value reported by `foreground_process_group()`; `None` follows `process_group`.
+    foreground: Option<i32>,
     /// Number of times `try_wait()` has been polled.
     poll_count: u32,
     /// If set, `try_wait()` reports an exit once `poll_count` reaches this bound.
@@ -79,6 +81,7 @@ impl Default for FakePtyState {
             last_spawn: None,
             child_pid: DEFAULT_FAKE_PID,
             process_group: DEFAULT_FAKE_PID as i32,
+            foreground: None,
             poll_count: 0,
             exit_after_polls: None,
             exit_status: None,
@@ -145,6 +148,12 @@ impl FakePtyBackend {
     pub fn with_process_group(self, pgid: i32) -> Self {
         lock(&self.state).process_group = pgid;
         self
+    }
+
+    /// Report `pgid` as the terminal's foreground group, as if the child had
+    /// handed the terminal to a job of its own.
+    pub fn set_foreground_process_group(&self, pgid: i32) {
+        lock(&self.state).foreground = Some(pgid);
     }
 
     /// Make [`PtyHandle::try_wait`] report `status` once it has been polled
@@ -273,6 +282,11 @@ impl PtyHandle for FakePtyHandle {
 
     fn process_group(&self) -> i32 {
         lock(&self.state).process_group
+    }
+
+    fn foreground_process_group(&self) -> Option<i32> {
+        let state = lock(&self.state);
+        Some(state.foreground.unwrap_or(state.process_group))
     }
 
     fn try_wait(&mut self) -> Result<Option<ExitStatus>, PtyError> {
