@@ -19,6 +19,8 @@ export type ComboboxOption<T> = {
   disabled?: boolean;
   /** The row's contents. The caller owns what a row looks like. */
   render: () => JSX.Element;
+  /** Extra class on the row element. */
+  class?: string;
 };
 
 export type ComboboxProps<T> = {
@@ -46,6 +48,8 @@ export type ComboboxProps<T> = {
   visibleRows?: number;
   listClass?: string;
   inputClass?: string;
+  /** Results are on their way: `aria-busy` on the list, `data-busy` on the query row. */
+  busy?: boolean;
 };
 
 /** Always open; callers filter results and selection invokes an action without retaining a value. */
@@ -146,7 +150,7 @@ export function Combobox<T>(props: ComboboxProps<T>) {
 
   return (
     <>
-      <div class="forge-combobox-query">
+      <div class="forge-combobox-query" data-busy={props.busy || undefined}>
         <Show when={props.leading}>{(leading) => leading()}</Show>
         {/* `spellcheck` kills the squiggle; macOS substitution is a separate
             switch, and a query is never prose. */}
@@ -174,6 +178,7 @@ export function Combobox<T>(props: ComboboxProps<T>) {
         class={`forge-combobox-list ${props.listClass ?? ""}`}
         id={`${id}-list`}
         role="listbox"
+        aria-busy={props.busy || undefined}
         style={props.visibleRows ? { "--palette-rows": String(props.visibleRows) } : undefined}
       >
         <For each={props.options} fallback={props.empty}>
@@ -183,7 +188,7 @@ export function Combobox<T>(props: ComboboxProps<T>) {
                 {(text) => <div class="forge-combobox-group">{text()}</div>}
               </Show>
               <div
-                class="forge-combobox-row"
+                class={option.class ? `forge-combobox-row ${option.class}` : "forge-combobox-row"}
                 id={`${id}-row-${index()}`}
                 role="option"
                 aria-selected={index() === cursor()}

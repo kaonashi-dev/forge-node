@@ -11,7 +11,7 @@ import {
   sidebarView,
   type SidebarView,
 } from "../../navigation/sidebarStore";
-import { Tabs, IconButton, Kbd, type TabDef } from "../../ui/index";
+import { Tabs, IconButton, type TabDef } from "../../ui/index";
 import { ProjectsView } from "../../features/projects/ProjectsView";
 import { waitingSessions } from "../../features/sessions/waiting";
 import { invokeAction } from "../../actions/dispatch";
@@ -39,8 +39,8 @@ type SidebarProps = {
 };
 
 /**
- * The window's left column, from the traffic lights down: Jump to, the view
- * switcher, the view, and the daemon footer.
+ * The window's left column, from the traffic lights down: the view switcher,
+ * the view, and the daemon footer.
  *
  * `ProjectsView` stays mounted while another view is up, so its scroll,
  * keyboard cursor and open menus survive the trip. That needs a stable `tabs`
@@ -99,15 +99,6 @@ export function Sidebar(props: SidebarProps) {
       {/* Hidden, not unmounted: Settings is a trip, and ProjectsView's scroll
           and cursor must be where they were on the way back. */}
       <div class="sidebar-work" hidden={props.settings}>
-        <button
-          type="button"
-          class="sidebar-jump"
-          onClick={() => invokeAction("open_command_palette")}
-        >
-          <Icon name="search" size={14} class="forge-icon-muted" />
-          <span class="sidebar-jump-label">Jump to…</span>
-          <Kbd action="open_command_palette" bare />
-        </button>
         <Tabs
           class="sidebar-tabs"
           aria-label="Sidebar views"

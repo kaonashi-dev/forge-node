@@ -6,6 +6,7 @@ import { SessionGlyph } from "../../features/sessions/SessionGlyph";
 import { Icon } from "../../theme/icons/index";
 import { ContextMenu, IconButton, type MenuItem } from "../../ui/index";
 import { SessionMenu } from "../../features/sessions/SessionMenu";
+import { invokeAction } from "../../actions/dispatch";
 import { hasQuestion } from "../../features/sessions/waiting";
 import { closeSessionFromUi, sessionMenuItems } from "../../features/sessions/sessionMenuItems";
 import { centerSplit } from "../../navigation/centerSplitStore";
@@ -362,6 +363,14 @@ export function SessionTabs(props: SessionTabsProps) {
         </div>
         <div class="tab-strip-trailing">
           <SessionMenu />
+          <IconButton
+            label="Jump to…"
+            size="sm"
+            shortcut="open_command_palette"
+            onClick={() => invokeAction("open_command_palette")}
+          >
+            <Icon name="search" class="forge-icon-muted" size={14} />
+          </IconButton>
         </div>
         <div class="tab-strip-spacer" data-tauri-drag-region />
         <Show when={overflowing()}>

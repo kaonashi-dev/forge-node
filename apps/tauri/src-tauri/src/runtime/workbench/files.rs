@@ -234,19 +234,46 @@ pub(super) fn search_files(
     limit: Option<u32>,
 ) {
     match parse_search_kind(&kind) {
-        Ok(kind) => {
-            let (ok, failed) = if kind == SearchKind::Name {
-                ("workbench:name_search", "workbench:name_search_failed")
-            } else {
-                ("workbench:search", "workbench:search_failed")
-            };
-            match client.search_files(workspace, query, kind, limit) {
-                Ok(results) => emit(app, ok, &(workspace, results)),
-                Err(error) => fail(app, failed, Some(workspace), &error),
+        Ok(SearchKind::Name) => {
+            let asked = query.clone();
+            match client.search_files(workspace, query, SearchKind::Name, limit) {
+                Ok(results) => emit(app, "workbench:name_search", &(workspace, results)),
+                Err(error) => fail_name_search(app, workspace, asked, &error),
             }
         }
+        Ok(kind) => match client.search_files(workspace, query, kind, limit) {
+            Ok(results) => emit(app, "workbench:search", &(workspace, results)),
+            Err(error) => fail(app, "workbench:search_failed", Some(workspace), &error),
+        },
         Err(error) => fail_text(app, "workbench:search_failed", Some(workspace), &error),
     }
+}
+
+/// The palette asks per keystroke, so a failure names its query: a superseded
+/// one must not end the search that replaced it.
+#[derive(Debug, Serialize)]
+struct NameSearchFailure {
+    workspace: WorkspaceId,
+    query: String,
+    error: String,
+}
+
+fn fail_name_search(
+    app: &AppHandle,
+    workspace: WorkspaceId,
+    query: String,
+    error: &client::ClientError,
+) {
+    tracing::warn!(%error, "workbench name search failed");
+    emit(
+        app,
+        "workbench:name_search_failed",
+        &NameSearchFailure {
+            workspace,
+            query,
+            error: error.to_string(),
+        },
+    );
 }
 
 #[derive(Debug, Serialize)]
@@ -539,6 +566,20 @@ mod tests {
             json!({
                 "workspace": workspace, "generation": 42, "error": "watch failed",
             })
+        );
+    }
+
+    #[test]
+    fn name_search_failure_names_its_query() {
+        let workspace = WorkspaceId::new();
+        assert_eq!(
+            to_value(NameSearchFailure {
+                workspace,
+                query: "pal".into(),
+                error: "timed out".into(),
+            })
+            .unwrap(),
+            json!({ "workspace": workspace, "query": "pal", "error": "timed out" })
         );
     }
 }

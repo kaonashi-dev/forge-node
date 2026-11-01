@@ -172,6 +172,26 @@ export type PaletteChoice =
   | { kind: "run_action"; workspace: string; action: string }
   | { kind: "open_file"; path: string };
 
+/** One key per row, so a row keeps its DOM node across keystrokes. */
+export function choiceKey(choice: PaletteChoice): string {
+  switch (choice.kind) {
+    case "action":
+      return `action:${choice.action}`;
+    case "new_shell":
+      return "new_shell";
+    case "new_agent":
+      return `new_agent:${choice.provider}:${choice.profile ?? ""}`;
+    case "focus_session":
+      return `focus_session:${choice.session}`;
+    case "focus_workspace":
+      return `focus_workspace:${choice.workspace}`;
+    case "run_action":
+      return `run_action:${choice.workspace}:${choice.action}`;
+    case "open_file":
+      return `open_file:${choice.path}`;
+  }
+}
+
 export type PaletteEntry = {
   /** The searchable label. */
   label: string;

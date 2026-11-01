@@ -29,6 +29,7 @@ import {
   previewImageReader,
 } from "../../../features/files/commands";
 import { filesStore, setFilesStore, invalidateFileIndex } from "../../../features/files/state";
+import { failNameSearch } from "../../../features/files/search/paletteSearch";
 
 export function bindFilesEvents(): Promise<UnlistenFn[]> {
   return Promise.all([
@@ -92,8 +93,9 @@ export function bindFilesEvents(): Promise<UnlistenFn[]> {
     answer<SearchResults>("workbench:name_search", "nameSearch", (search) =>
       setFilesStore({ nameSearch: search, nameSearchError: null }),
     ),
-    failure("workbench:name_search_failed", "nameSearch", (error) =>
-      setFilesStore("nameSearchError", error),
+    listen<{ workspace: string; query: string; error: string }>(
+      "workbench:name_search_failed",
+      ({ payload }) => failNameSearch(payload.workspace, payload.query, payload.error),
     ),
   ]);
 }
