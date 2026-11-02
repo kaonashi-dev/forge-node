@@ -492,6 +492,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 name = "client"
 version = "0.1.7"
 dependencies = [
+ "directories",
  "domain",
  "flume",
  "nix 0.31.3",
@@ -759,6 +760,7 @@ dependencies = [
  "persistence",
  "protocol",
  "rmp-serde",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
@@ -1339,7 +1341,6 @@ dependencies = [
  "agents",
  "client",
  "compact_str",
- "directories",
  "domain",
  "flume",
  "nix 0.31.3",

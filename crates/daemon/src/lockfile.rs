@@ -45,6 +45,42 @@ pub fn acquire(
     version: &str,
     started_at: domain::Timestamp,
 ) -> Result<DaemonLock, LockError> {
+    acquire_with(
+        path,
+        instance_id,
+        version,
+        started_at,
+        FlockArg::LockExclusiveNonblock,
+    )
+}
+
+/// Acquire the singleton lock, waiting for a running daemon to release it.
+///
+/// # Errors
+/// [`LockError::Io`] if the file cannot be opened or written. A held lock is
+/// not an error here: the call simply blocks until it is free.
+pub fn acquire_blocking(
+    path: &Path,
+    instance_id: &str,
+    version: &str,
+    started_at: domain::Timestamp,
+) -> Result<DaemonLock, LockError> {
+    acquire_with(
+        path,
+        instance_id,
+        version,
+        started_at,
+        FlockArg::LockExclusive,
+    )
+}
+
+fn acquire_with(
+    path: &Path,
+    instance_id: &str,
+    version: &str,
+    started_at: domain::Timestamp,
+    arg: FlockArg,
+) -> Result<DaemonLock, LockError> {
     if let Some(parent) = path.parent() {
         crate::paths::ensure_private_dir(parent)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -57,7 +93,7 @@ pub fn acquire(
         .truncate(false)
         .open(path)?;
 
-    let mut lock = match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+    let mut lock = match Flock::lock(file, arg) {
         Ok(lock) => lock,
         Err((_file, nix::errno::Errno::EWOULDBLOCK)) => return Err(LockError::AlreadyHeld),
         Err((_file, e)) => return Err(LockError::Io(std::io::Error::from(e))),

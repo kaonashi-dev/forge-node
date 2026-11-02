@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { EditorSurface } from "../contracts/runtime";
+import type { EditorSurface, Storage } from "../contracts/runtime";
 
 export type ConnectionState =
   | { kind: "idle" }
@@ -11,6 +11,8 @@ export type ConnectionState =
       version: string;
       /** Which pane the Code region mounts for an editor (`[editor] surface`). */
       editorSurface: EditorSurface;
+      /** Paths the daemon resolved; `null` when `GetPaths` was unavailable. */
+      storage: Storage | null;
     }
   | { kind: "disconnected"; reason: string };
 

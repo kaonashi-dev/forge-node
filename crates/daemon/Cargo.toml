@@ -45,10 +45,11 @@ nix.workspace = true
 notify.workspace = true
 uuid.workspace = true
 time.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 test-support.workspace = true
-tempfile.workspace = true
+rusqlite.workspace = true
 
 [lints]
 workspace = true

@@ -28,6 +28,13 @@ export function bindRuntimeEvents(): Promise<UnlistenFn[]> {
       clearSessionSelection();
       setNotice(event.payload.reason);
     }),
+    listen<{ ok: boolean; error?: string }>("runtime:home_migrated", (event) => {
+      setNotice(
+        event.payload.ok
+          ? "Forge data moved. Reconnecting…"
+          : `Migration failed: ${event.payload.error ?? "unknown error"}`,
+      );
+    }),
     listen<DisconnectedPayload>("runtime:disconnected", (event) => {
       clearSessionSelection();
       setFilesStore("treeRequest", null);

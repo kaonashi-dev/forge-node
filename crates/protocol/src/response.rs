@@ -18,6 +18,9 @@ use domain::{
     UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceReview, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+use crate::ForgePaths;
 
 /// An agent provider and its current detection result. Bundled in
 /// [`Response::Snapshot`] and [`Response::Providers`].
@@ -266,6 +269,15 @@ pub enum Response {
     UsageAnalytics(Box<UsageAnalytics>),
     /// Answers `GetStats`.
     DaemonStats(DaemonStats),
+    /// Every resolved path, answering `GetPaths`. The worktrees root is the
+    /// effective one after `[worktrees] root`; it never appears in
+    /// [`ForgePaths`] because that struct is the immutable resolution.
+    Paths {
+        /// The resolved layout and its paths.
+        paths: ForgePaths,
+        /// `[worktrees] root` applied over the default.
+        worktrees_root: PathBuf,
+    },
     OrchestrationStatus(OrchestrationLimitsView),
     RunCreated {
         run_id: RunId,
@@ -420,6 +432,27 @@ mod tests {
             open_terminals: 2,
             connected_clients: 1,
         });
+        let bytes = rmp_serde::to_vec_named(&r).unwrap();
+        let back: Response = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn paths_round_trips_through_messagepack() {
+        let r = Response::Paths {
+            paths: ForgePaths {
+                layout: crate::Layout::Home,
+                home: PathBuf::from("/home/dev/.forge-node"),
+                config_file: PathBuf::from("/home/dev/.forge-node/config.toml"),
+                db: PathBuf::from("/home/dev/.forge-node/app.db"),
+                logs: PathBuf::from("/home/dev/.forge-node/logs"),
+                runs: PathBuf::from("/home/dev/.forge-node/runs"),
+                agent_plugins: PathBuf::from("/home/dev/.forge-node/agent-plugins"),
+                default_worktrees_root: PathBuf::from("/home/dev/forge-node/worktrees"),
+                legacy: None,
+            },
+            worktrees_root: PathBuf::from("/home/dev/forge-node/worktrees"),
+        };
         let bytes = rmp_serde::to_vec_named(&r).unwrap();
         let back: Response = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(r, back);

@@ -504,4 +504,12 @@ pub enum RuntimeCommand {
         #[serde(default)]
         kill_sessions: bool,
     },
+
+    /// Stop the daemon, copy a legacy install into the Forge home, then
+    /// reconnect. The bridge runs the child itself so the respawn cannot race
+    /// the migration.
+    MigrateHome {
+        #[serde(default)]
+        move_worktrees: bool,
+    },
 }

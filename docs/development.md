@@ -111,10 +111,12 @@ Release LTO and codegen settings remain defined in the root `Cargo.toml`.
 ```sh
 scripts/dev daemon               # isolated runtime under $FORGE_DEV_DIR (fresh mktemp)
 scripts/dev daemon info          # fresh scratch paths unless FORGE_DEV_DIR is reused
-cargo run -p daemon --bin forge-daemon -- info   # daily per-user paths (no FORGE_* override)
+cargo run -p daemon --bin forge-daemon -- info   # daily per-user paths (no FORGE_HOME)
 forge-daemon run                 # acquire the singleton lock, bind, serve (default)
 forge-daemon dump --json         # not wired — prints a notice and exits 0
 forge-daemon stats               # GetStats against a running daemon; does not start one
+forge-daemon migrate-home --dry-run          # what a legacy upgrade would do
+forge-daemon migrate-home [--move-worktrees] # copy config, DB and runs; reconnect
 ```
 
 The Tauri app connects to the per-user daemon or starts the adjacent
@@ -122,29 +124,46 @@ The Tauri app connects to the per-user daemon or starts the adjacent
 project, and creates or reuses a live shell. To join a foreground
 `scripts/dev daemon`, apply the export line it prints before launching the GUI.
 
-`scripts/dev daemon` **isolates**: a fresh `mktemp` directory gets `FORGE_SOCKET`,
-`FORGE_DATA_DIR`, and `FORGE_CONFIG_DIR` unless `FORGE_DEV_DIR` is already set.
-The daily singleton (the one the GUI talks to) is untouched. The table below is
-what that daily daemon uses.
+`scripts/dev daemon` **isolates**: a fresh `mktemp` directory gets `FORGE_SOCKET`
+and `FORGE_HOME` unless `FORGE_DEV_DIR` is already set, so its worktrees land in
+`$FORGE_DEV_DIR/worktrees` and the daily singleton (the one the GUI talks to) is
+untouched. The table below is what that daily daemon uses.
 
 Each helper invocation creates a new scratch directory unless `FORGE_DEV_DIR`
 is reused. Set it to the first run's printed directory before asking
 `scripts/dev daemon info` about that run.
 
+`FORGE_HOME` moves the hidden config/state root as a whole; it must be absolute
+or start with `~/`. When it is set, each daemon needs its own `FORGE_SOCKET`
+too — the singleton lock follows the socket, not the home — which is exactly
+what `scripts/dev daemon` sets. A GUI launched from Finder does not inherit
+either variable from your shell; launch it from a terminal (or use `launchctl
+setenv`) if you need a non-default `FORGE_HOME`. To move only the worktrees,
+set `[worktrees] root` in `config.toml` instead: that has no such limitation.
+
 The daemon is a singleton **per set of paths** via an advisory `flock` on
 `daemon.lock`. A second `run` against the same lock exits **0** while the first
 holds it, so exit code 0 does not prove a new daemon started — check the log.
 
-Paths (macOS shown; Linux uses `$XDG_RUNTIME_DIR`, `$XDG_DATA_HOME`,
-`$XDG_CONFIG_HOME`):
+Paths (macOS shown; Linux uses `$XDG_RUNTIME_DIR` for the socket, and the same
+hidden `~/.forge-node` plus visible `~/forge-node` as macOS for everything
+else):
 
 | What | Path |
 |------|------|
 | socket / lock | `$TMPDIR/forge/daemon.sock`, `daemon.lock` (full path < 100 bytes, else `/tmp/forge-$UID/`) |
-| database | `~/Library/Application Support/Forge/app.db` |
-| worktrees | `~/Library/Application Support/Forge/worktrees/<project-id>/<slug>` |
-| logs | `~/Library/Application Support/Forge/logs/daemon.<date>.log` (daily, last 5) |
-| config | `~/Library/Application Support/Forge/config.toml` |
+| home | `~/.forge-node` (hidden; `$FORGE_HOME`) |
+| database | `~/.forge-node/app.db` |
+| worktrees | `~/forge-node/worktrees/<repo-slug>-<id6>/<slug>` |
+| runs | `~/.forge-node/runs/<run-id>/<attempt>.md` |
+| agent plugins | `~/.forge-node/agent-plugins/` |
+| logs | `~/.forge-node/logs/daemon.<date>.log` (daily, last 5) |
+| config | `~/.forge-node/config.toml` |
+
+An existing install keeps today's platform layout — `~/Library/Application
+Support/Forge` on macOS — until the user runs `forge-daemon migrate-home` (from
+the CLI or Settings → Storage). `forge-daemon info` says which layout is in
+effect.
 
 `config.toml` is optional; a missing file uses defaults; changes need a
 restart (no hot reload). See [`config.example.toml`](./config.example.toml).

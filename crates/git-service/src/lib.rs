@@ -48,6 +48,6 @@ pub use repository::{
     WorktreeEntry,
 };
 pub use worktree::{
-    create, precheck_remove, prune, remove, slugify, unique_slug, validate_branch_name, Force,
-    RemovePrechecks,
+    create, move_worktree, precheck_remove, prune, remove, sequencer_in_progress, slugify,
+    unique_slug, validate_branch_name, Force, RemovePrechecks,
 };

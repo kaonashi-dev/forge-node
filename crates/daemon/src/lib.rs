@@ -20,6 +20,7 @@ pub mod juva;
 pub mod lockfile;
 pub mod logging;
 mod lsp;
+pub mod migrate_home;
 pub mod orchestration;
 pub mod paths;
 mod prompts;
@@ -36,16 +37,42 @@ pub mod worktrees;
 pub use agents::history as external_agents;
 pub use core::Daemon;
 
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Resolve paths + config and print them — the `info` subcommand.
 pub fn info() -> anyhow::Result<()> {
-    let cfg = config::Config::load(&paths::config_file()?)?;
-    println!("socket:      {}", paths::socket_path()?.display());
-    println!("lockfile:    {}", paths::lock_path()?.display());
-    println!("db:          {}", paths::db_path()?.display());
-    println!("worktrees:   {}", effective_worktrees_root(&cfg)?.display());
-    println!("logs:        {}", paths::logs_dir()?.display());
+    let inputs = client::paths::PathInputs::from_env();
+    let paths = client::paths::resolve(&inputs)?;
+    let cfg = config::Config::load(&paths.config_file)?;
+    let worktrees_root = effective_worktrees_root(&cfg, &inputs, &paths);
+    let show = |path: &Path| shorten(path, inputs.home.as_deref());
+
+    println!(
+        "layout:        {}",
+        match paths.layout {
+            client::Layout::Legacy => "legacy (forge-daemon migrate-home)",
+            _ => "home",
+        }
+    );
+    println!("home:          {}", show(&paths.home));
+    println!("config:        {}", show(&paths.config_file));
+    println!("db:            {}", show(&paths.db));
+    println!("worktrees:     {}", show(&worktrees_root));
+    println!("runs:          {}", show(&paths.runs));
+    println!("agent-plugins: {}", show(&paths.agent_plugins));
+    println!("logs:          {}", show(&paths.logs));
+    println!("socket:        {}", paths::socket_path()?.display());
+    println!("lockfile:      {}", paths::lock_path()?.display());
+    if let Some(legacy) = &paths.legacy {
+        if paths.db.exists() {
+            let old_root = legacy.join("worktrees");
+            let count = persistence::managed_worktree_paths(&paths.db)?
+                .into_iter()
+                .filter(|path| path.starts_with(&old_root))
+                .count();
+            println!("legacy worktrees: {count}");
+        }
+    }
     println!("scrollback:  {}", cfg.effective_scrollback());
     println!("kill grace:  {:?}", cfg.kill_grace());
     println!(
@@ -59,13 +86,43 @@ pub fn info() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The worktrees root the daemon will actually use: `[worktrees] root` when set,
-/// the default under the data directory otherwise.
-fn effective_worktrees_root(cfg: &config::Config) -> anyhow::Result<PathBuf> {
-    if cfg.worktrees.root.is_empty() {
-        Ok(paths::worktrees_root()?)
+/// The worktrees root the daemon will actually use: `[worktrees] root` when
+/// set, the resolved default otherwise.
+fn effective_worktrees_root(
+    cfg: &config::Config,
+    inputs: &client::paths::PathInputs,
+    paths: &client::ForgePaths,
+) -> std::path::PathBuf {
+    client::paths::worktrees_root(
+        &cfg.worktrees.root,
+        inputs.home.as_deref(),
+        &paths.default_worktrees_root,
+    )
+    .unwrap_or_else(|_| paths.default_worktrees_root.clone())
+}
+
+/// Abbreviate a path under the user's home as `~`.
+fn shorten(path: &Path, home: Option<&Path>) -> String {
+    let Some(home) = home else {
+        return path.display().to_string();
+    };
+    let Ok(rest) = path.strip_prefix(home) else {
+        return path.display().to_string();
+    };
+    if rest.as_os_str().is_empty() {
+        "~".to_string()
     } else {
-        Ok(PathBuf::from(&cfg.worktrees.root))
+        format!("~/{}", rest.display())
+    }
+}
+
+/// Keep the state root private, following a symlinked root to its target.
+fn ensure_private_home(home: &Path) -> Result<(), paths::PathError> {
+    match std::fs::symlink_metadata(home) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            paths::ensure_private_dir(&home.canonicalize()?)
+        }
+        _ => paths::ensure_private_dir(home),
     }
 }
 
@@ -97,7 +154,9 @@ pub fn stats() -> anyhow::Result<()> {
 pub fn run() -> anyhow::Result<()> {
     let socket_path = paths::socket_path()?;
     let lock_path = paths::lock_path()?;
-    let cfg = config::Config::load(&paths::config_file()?)?;
+    let inputs = client::paths::PathInputs::from_env();
+    let forge = client::paths::resolve(&inputs)?;
+    let cfg = config::Config::load(&forge.config_file)?;
     let version = env!("CARGO_PKG_VERSION").to_string();
     let instance_id = uuid::Uuid::now_v7().to_string();
     let started_at = domain::Timestamp::now();
@@ -111,24 +170,61 @@ pub fn run() -> anyhow::Result<()> {
         Err(e) => return Err(e.into()),
     };
 
-    let _guard = logging::init(&paths::logs_dir()?, &cfg.daemon.log_level).ok();
+    ensure_private_home(&forge.home)?;
+    let _guard = logging::init(&forge.logs, &cfg.daemon.log_level).ok();
     tracing::info!(%instance_id, version, "forge-daemon starting");
 
-    paths::ensure_private_dir(&paths::data_dir()?)?;
     // Socket isolation does not grant a second daemon ownership of the same metadata.
     let _data_lock = lockfile::acquire(
-        &paths::data_dir()?.join("app.db.lock"),
+        &forge.home.join("app.db.lock"),
         &instance_id,
         &version,
         started_at,
     )?;
-    let db =
-        persistence::Db::open(&paths::db_path()?).map_err(|e| anyhow::anyhow!("open db: {e}"))?;
+    let db = persistence::Db::open(&forge.db).map_err(|e| anyhow::anyhow!("open db: {e}"))?;
 
-    let worktrees_root = effective_worktrees_root(&cfg)?;
+    let mut notices = Vec::new();
+    let worktrees_root = match client::paths::worktrees_root(
+        &cfg.worktrees.root,
+        inputs.home.as_deref(),
+        &forge.default_worktrees_root,
+    ) {
+        Ok(root) => root,
+        Err(error) => {
+            notices.push(format!(
+                "[worktrees] root {:?} is not an absolute path; using {}",
+                error.0,
+                forge.default_worktrees_root.display()
+            ));
+            forge.default_worktrees_root.clone()
+        }
+    };
+    if let Some(home) = inputs.home.as_deref() {
+        for (what, path) in [("data", &forge.home), ("worktrees", &worktrees_root)] {
+            if let Some(folder) = paths::risky_location(path, home) {
+                notices.push(format!(
+                    "the {what} directory {} is inside {folder}, which macOS may block or a \
+                     file-sync service may corrupt; consider moving it",
+                    path.display()
+                ));
+            }
+        }
+    }
 
-    let daemon = core::Daemon::start(db, cfg, worktrees_root, instance_id, version)
-        .map_err(|e| anyhow::anyhow!("start daemon: {e}"))?;
+    let daemon = core::Daemon::start(
+        db,
+        cfg,
+        core::DaemonPaths {
+            forge,
+            worktrees_root,
+        },
+        instance_id,
+        version,
+    )
+    .map_err(|e| anyhow::anyhow!("start daemon: {e}"))?;
+    for message in notices {
+        daemon.notice(protocol::NoticeLevel::Warning, message);
+    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

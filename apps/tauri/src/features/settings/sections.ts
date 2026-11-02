@@ -6,6 +6,7 @@ export const SETTINGS_SECTIONS = [
   "Agents",
   "Keyboard",
   "Shared files",
+  "Storage",
   "Stats & usage",
   "Appearance",
 ] as const;
@@ -17,6 +18,7 @@ export const SECTION_ICONS: Record<Section, ForgeIconName> = {
   Agents: "agent",
   Keyboard: "keyboard",
   "Shared files": "folder-symlink",
+  Storage: "folder",
   "Stats & usage": "stats",
   Appearance: "appearance",
 };

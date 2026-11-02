@@ -6,7 +6,7 @@
 
 mod clamp;
 mod ipc;
-mod paths;
+pub mod paths;
 mod store;
 
 pub use clamp::{read_capped, CappedBytes};
@@ -18,8 +18,8 @@ pub use ipc::{
     StopSessions,
 };
 pub use protocol::{
-    DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ProtocolCodecError, ProtocolError,
-    ProviderInfo, RemoveProjectPolicy, SendContextSpawn, PROTOCOL_VERSION,
+    DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ForgePaths, Layout, ProtocolCodecError,
+    ProtocolError, ProviderInfo, RemoveProjectPolicy, SendContextSpawn, PROTOCOL_VERSION,
 };
 pub use store::{CellGrid, DeltaOutcome, EventOutcome, Store};
 pub use terminal_input::{

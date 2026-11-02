@@ -40,7 +40,6 @@ tauri-build.workspace = true
 
 [dependencies]
 client.workspace = true
-directories.workspace = true
 domain.workspace = true
 flume.workspace = true
 nix.workspace = true

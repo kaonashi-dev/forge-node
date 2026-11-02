@@ -80,14 +80,30 @@ looked is worse than a row that says nothing.
 ## Where managed worktrees live (§14.2)
 
 ```
-<worktrees.root>/<project-id>/<slug>
+<worktrees.root>/<repo-slug>-<id6>/<slug>
 ```
 
-`worktrees.root` defaults to `<data-dir>/worktrees`
-(`~/Library/Application Support/Forge/worktrees` on macOS,
-`$XDG_DATA_HOME/forge/worktrees` on Linux — `directories` lowercases the
-application name there) and can be changed in
-`config.toml`. The daemon creates the parent directory with mode `0700`.
+`repo-slug` is `git_service::slugify` of the project's repository basename,
+capped at 32 bytes, and `id6` is the **last** six hex characters of the project
+id (the random end of a UUIDv7). Two repositories called `api` and `API`, or
+two checkouts with the same basename, therefore get distinct directories, and
+`ls` names the repository the worktree belongs to. The branch slug is the only
+part that changes per worktree.
+
+`worktrees.root` defaults to `~/forge-node/worktrees` and can be changed in
+`config.toml`; an empty value selects that default, `~` and `~/…` expand
+against the user's home, and a relative value is refused with a warning and a
+`DaemonNotice` (the default is used). `$FORGE_HOME` moves it to
+`$FORGE_HOME/worktrees`, so an isolated daemon never writes the visible folder.
+The daemon creates the project directory with mode `0700`, and a `~/forge-node`
+the user already created keeps its own mode.
+
+To finish an upgrade that started before the mixed layout existed, run
+`forge-daemon migrate-home` (or Settings → Storage). By default only new
+worktrees move; `--move-worktrees` relocates eligible ones with `git worktree
+move` and reports the ones it skips. Existing rows are absolute paths, so a
+worktree left in the old location keeps working. See
+[`development.md`](./development.md#running-the-daemon-by-hand).
 
 ### Slug rules (`worktree.rs::slugify`)
 
@@ -98,7 +114,9 @@ application name there) and can be changed in
   component, so it must never be able to escape the project directory.
 - `unique_slug` appends `-2`, `-3`, … on collision with the slugs of the
   project's **`managed_by_app`** workspaces (unmanaged ones live outside
-  `worktrees.root` and cannot collide).
+  `worktrees.root` and cannot collide), and then against the disk: a leftover
+  directory from an earlier session makes the daemon choose the next suffix
+  instead of letting `git worktree add` fail.
 
 `feature/auth refactor` → `feature-auth-refactor`.
 

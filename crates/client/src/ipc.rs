@@ -1034,6 +1034,18 @@ impl Client {
         }
     }
 
+    /// The paths the daemon resolved at startup, plus its effective worktrees
+    /// root. Immutable per daemon instance, so one read per connection is exact.
+    pub fn paths(&self) -> Result<(protocol::ForgePaths, std::path::PathBuf), ClientError> {
+        match self.request(Request::GetPaths)? {
+            Response::Paths {
+                paths,
+                worktrees_root,
+            } => Ok((paths, worktrees_root)),
+            _ => Err(ClientError::UnexpectedResponse { expected: "Paths" }),
+        }
+    }
+
     /// Start a background fetch.
     ///
     /// Returns as soon as the daemon has *started* the fetch, not when it

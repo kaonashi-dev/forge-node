@@ -20,18 +20,18 @@ fi
 cmd="${1:-check}"
 case "$cmd" in
   daemon)
-    # Isolated by default: a dev daemon gets a scratch socket, database and
-    # config under $FORGE_DEV_DIR (fresh mktemp per run unless already set),
-    # so it never contends with the daily daemon's lock or wipes its tabs.
+    # Isolated by default: a dev daemon gets a scratch socket and a scratch
+    # Forge home under $FORGE_DEV_DIR (fresh mktemp per run unless already set),
+    # so it never contends with the daily daemon's lock or wipes its tabs, and
+    # its worktrees land in $FORGE_DEV_DIR/worktrees.
     # Point a dev GUI at it with the export line this prints on stderr.
     : "${FORGE_DEV_DIR:=$(mktemp -d "${TMPDIR:-/tmp}/forge-dev-XXXXXX")}"
     export FORGE_SOCKET="$FORGE_DEV_DIR/daemon.sock"
-    export FORGE_DATA_DIR="$FORGE_DEV_DIR/data"
-    export FORGE_CONFIG_DIR="$FORGE_DEV_DIR/config"
+    export FORGE_HOME="$FORGE_DEV_DIR"
     {
       echo "forge-dev: isolated runtime in $FORGE_DEV_DIR"
       echo "forge-dev: GUI/devtools join it with:"
-      echo "forge-dev:   export FORGE_SOCKET='$FORGE_SOCKET' FORGE_DATA_DIR='$FORGE_DATA_DIR' FORGE_CONFIG_DIR='$FORGE_CONFIG_DIR'"
+      echo "forge-dev:   export FORGE_SOCKET='$FORGE_SOCKET' FORGE_HOME='$FORGE_HOME'"
     } >&2
     RUST_LOG="${RUST_LOG:-forge=debug,daemon=debug,info}" \
       exec cargo run -p daemon --bin forge-daemon -- "${@:2}"

@@ -21,6 +21,7 @@ import { SessionGlyph } from "../sessions/SessionGlyph";
 import { AgentProfiles } from "./AgentProfiles";
 import { AgentVisibilitySwitch } from "./AgentVisibilitySwitch";
 import { SharedFiles } from "../projects/SharedFiles";
+import { StorageSection } from "./StorageSection";
 import { KeyboardSection } from "./KeyboardSection";
 import { StatsSection } from "./StatsSection";
 import {
@@ -45,6 +46,7 @@ import { Dynamic } from "solid-js/web";
 // Lazy route styling avoids loading settings CSS in windows that never open it.
 import "../../styles/settings.css";
 import { requestConfirm } from "../../state/dialogs";
+import { directoryOf } from "./storage";
 import { connectionStore } from "../../state/connection";
 import { terminalStore } from "../terminal/terminalStore";
 import { ThemeSettings } from "./ThemeSettings";
@@ -108,6 +110,7 @@ export function SettingsRoute(props: SettingsRouteProps) {
     Agents: () => <Agents />,
     Keyboard: () => <KeyboardSection />,
     "Shared files": () => <SharedFiles />,
+    Storage: () => <StorageSection />,
     "Stats & usage": () => <StatsSection />,
     Appearance: () => <Appearance />,
   };
@@ -127,6 +130,16 @@ function General() {
   // the snapshot. A failure leaves it undefined and the group says so rather
   // than the page refusing to render.
   const [paths] = createResource(() => configPaths().catch(() => undefined));
+  const storage = () => {
+    const state = connection();
+    return state.kind === "connected" ? state.storage : null;
+  };
+  const configFile = () => storage()?.paths.config_file ?? paths()?.config_file;
+  const configDir = () => {
+    const file = storage()?.paths.config_file;
+    return file ? directoryOf(file) : paths()?.config_dir;
+  };
+  const logs = () => storage()?.paths.logs ?? paths()?.logs_dir;
 
   function confirmFactoryReset(): void {
     const projects = forgeStore.projects.length;
@@ -226,7 +239,7 @@ function General() {
               <span class="forge-option-note">terminal, sessions, worktrees, daemon</span>
             </span>
             <span class="settings-path-value">
-              {paths()?.config_file ?? "no config directory on this platform"}
+              {configFile() ?? "no config directory on this platform"}
             </span>
             <span class="forge-option-note">
               {paths() === undefined
@@ -239,7 +252,7 @@ function General() {
           <li>
             <span class="settings-path-name">logs</span>
             <span class="settings-path-value">
-              {paths()?.logs_dir ?? "no data directory on this platform"}
+              {logs() ?? "no data directory on this platform"}
             </span>
             <span class="forge-option-note">daemon.&lt;date&gt;.log, last 5 days</span>
           </li>
@@ -249,9 +262,9 @@ function General() {
             variant="secondary"
             // The directory, not the file: config.toml need not exist yet, and a
             // file manager cannot reveal what is not there.
-            disabled={!paths()?.config_dir}
+            disabled={!configDir()}
             onClick={() => {
-              const dir = paths()?.config_dir;
+              const dir = configDir();
               if (dir) void openInFileManager(dir).catch(() => undefined);
             }}
           >
@@ -259,9 +272,9 @@ function General() {
           </Button>
           <Button
             variant="secondary"
-            disabled={!paths()?.logs_dir}
+            disabled={!logs()}
             onClick={() => {
-              const dir = paths()?.logs_dir;
+              const dir = logs();
               if (dir) void openInFileManager(dir).catch(() => undefined);
             }}
           >

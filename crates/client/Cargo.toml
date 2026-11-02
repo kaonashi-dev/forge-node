@@ -14,6 +14,7 @@ terminal-input.workspace = true
 flume.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+directories.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

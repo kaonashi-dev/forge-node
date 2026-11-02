@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -29,7 +30,7 @@ use super::commands::RuntimeCommand;
 use super::input;
 use super::snapshot::{
     ConnectedPayload, DaemonInfoDto, DisconnectedPayload, HostStatus, Latest, NoticePayload,
-    ShellSnapshot, StatePayload,
+    ShellSnapshot, StatePayload, StorageDto,
 };
 use super::workbench::{self, WorkbenchCommand, WorkbenchSender};
 use crate::clipboard::{ClipboardSink, ClipboardWriter};
@@ -480,7 +481,17 @@ fn runtime_loop(
             client: &client,
             app: &app,
             latest: &latest,
-            daemon: DaemonInfoDto::from(client.daemon_info()),
+            daemon: {
+                let mut info = DaemonInfoDto::from(client.daemon_info());
+                info.storage = client
+                    .paths()
+                    .ok()
+                    .map(|(paths, worktrees_root)| StorageDto {
+                        paths,
+                        worktrees_root,
+                    });
+                info
+            },
         };
         let snapshot = ShellSnapshot::from_store(&store, Some(at.terminal));
         let payload = ConnectedPayload {
@@ -517,6 +528,11 @@ fn runtime_loop(
                     Err(flume::TryRecvError::Empty) => break,
                     Err(flume::TryRecvError::Disconnected) => return,
                 };
+                if let RuntimeCommand::MigrateHome { move_worktrees } = &command {
+                    migrate_home(&app, &client, &locator, *move_worktrees);
+                    reconnect = true;
+                    break;
+                }
                 if !command_on_connection(&command, connection_generation) {
                     continue;
                 }
@@ -1170,6 +1186,44 @@ fn due_closes(pending: &HashSet<SessionId>, store: &Store) -> Vec<SessionId> {
                 .is_none_or(|session| !session.state.is_active())
         })
         .collect()
+}
+
+/// Stop the daemon, run `migrate-home` on the bridge thread, then let the
+/// reconnect that follows start a daemon which resolves the new layout.
+///
+/// It must run here and not as a workbench command: the bridge loop respawns a
+/// daemon within ~300 ms of it going away, and that new daemon would hold the
+/// very locks the migration needs.
+fn migrate_home(app: &AppHandle, client: &Client, locator: &Locator, move_worktrees: bool) {
+    let _ = client.stop_daemon(StopSessions::Kill);
+    let mut args = vec!["migrate-home", "--json", "--wait", "30"];
+    if move_worktrees {
+        args.push("--move-worktrees");
+    }
+    let payload = match locator.daemon_executable() {
+        Ok(executable) => {
+            let mut command = Command::new(executable);
+            command.args(&args);
+            match crate::daemon::process::run_bounded(command, Duration::from_secs(600)) {
+                Ok(output) if output.status.success() => {
+                    match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                        Ok(report) => serde_json::json!({ "ok": true, "report": report }),
+                        Err(error) => serde_json::json!({
+                            "ok": false,
+                            "error": format!("migrate-home returned invalid JSON: {error}"),
+                        }),
+                    }
+                }
+                Ok(output) => serde_json::json!({
+                    "ok": false,
+                    "error": String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                }),
+                Err(error) => serde_json::json!({ "ok": false, "error": error }),
+            }
+        }
+        Err(error) => serde_json::json!({ "ok": false, "error": error }),
+    };
+    let _ = app.emit("runtime:home_migrated", payload);
 }
 
 fn command_on_connection(command: &RuntimeCommand, generation: u64) -> bool {
@@ -2091,6 +2145,10 @@ fn run_command(
                 ..close_session_effect(client, store, session_id)
             })
         }
+
+        // Handled on the bridge thread itself, before `run_command`: the
+        // daemon must be stopped and cannot be respawned underneath it.
+        RuntimeCommand::MigrateHome { .. } => Ok(Effect::nothing()),
 
         // The daemon going away is the connection going away, so the loop
         // reconnecting afterwards is correct: it finds nothing, says so, and
@@ -4102,6 +4160,7 @@ mod tests {
                 instance_id: "same-daemon".into(),
                 started_at: domain::Timestamp::now(),
                 editor_surface: client::EditorSurface::Cells,
+                storage: None,
             },
             session_count: 0,
             store: ShellSnapshot::from_store(&Store::new(), None),

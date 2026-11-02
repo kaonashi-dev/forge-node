@@ -12,8 +12,11 @@
 //! by `RemoveWorktree` and collected by the GC once the worktree is really
 //! gone; a `Subtree` rule is policy written by the user and never collected.
 
-use domain::{IgnoreScope, WorkspaceId};
+use domain::{IgnoreScope, ProjectId, WorkspaceId};
 use std::path::{Path, PathBuf};
+
+/// Kept short so `<repo>-<id6>/<branch>` stays readable in a prompt.
+const MAX_PROJECT_SLUG_LEN: usize = 32;
 
 /// One ignore rule as the plan needs it: the domain shape plus the one
 /// filesystem fact only the caller can observe, stat'ed before the lock.
@@ -115,6 +118,28 @@ pub fn plan(listed: &[Listed], known: &[Known], rules: &[IgnoreRule]) -> Plan {
         kept_with_sessions,
         stale_rules,
     }
+}
+
+/// `<repo-slug>-<id6>`: the directory one project's managed worktrees live in.
+///
+/// The id suffix keeps two repositories with the same basename distinct, and
+/// its last six hex characters are the random end of a UUIDv7 — the leading
+/// bits are a timestamp two projects added in the same minute share.
+#[must_use]
+pub fn project_dir_name(project_root: &Path, project_id: ProjectId) -> String {
+    let basename = project_root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let slug = git_service::slugify(&basename);
+    let keep = slug.len().min(MAX_PROJECT_SLUG_LEN);
+    let mut stem = slug[..keep].trim_end_matches('-').to_owned();
+    if stem.is_empty() {
+        stem = git_service::slugify("");
+    }
+    let id = project_id.to_string();
+    let id6 = &id[id.len().saturating_sub(6)..];
+    format!("{stem}-{id6}")
 }
 
 #[cfg(test)]
@@ -251,5 +276,28 @@ mod tests {
         let listing = [listed("/repo/one", false)];
         let rows = [known(id, "/repo/one", true, false)];
         assert!(plan(&listing, &rows, &[]).adopt.is_empty());
+    }
+
+    #[test]
+    fn api_and_api_get_distinct_project_directories() {
+        let lower = project_dir_name(Path::new("/a/api"), ProjectId::new());
+        let upper = project_dir_name(Path::new("/b/API"), ProjectId::new());
+        assert_ne!(lower.to_lowercase(), upper.to_lowercase());
+        assert!(lower.starts_with("api-"));
+        let id = ProjectId::new();
+        let name = project_dir_name(Path::new("/a/api"), id);
+        let id = id.to_string();
+        assert!(name.ends_with(&id[id.len() - 6..]));
+    }
+
+    #[test]
+    fn a_long_or_empty_repository_name_still_yields_a_path_component() {
+        let name = project_dir_name(
+            Path::new("/a/this-is-a-very-long-repository-name-that-must-be-shortened"),
+            ProjectId::new(),
+        );
+        assert!(name.len() <= 32 + 1 + 6);
+        assert!(!name.starts_with('-'));
+        assert!(project_dir_name(Path::new("/"), ProjectId::new()).starts_with("worktree-"));
     }
 }

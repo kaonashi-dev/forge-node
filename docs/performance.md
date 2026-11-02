@@ -604,7 +604,9 @@ list. Current frontend ownership and lifecycle follow-ups are tracked in
 
 Reproducible, and worth repeating before and after any change on the delta rung:
 
-- **Daemon timings** come free from the log — `~/Library/Application Support/Forge/logs/daemon.<date>.log`
+- **Daemon timings** come free from the log — `~/.forge-node/logs/daemon.<date>.log`
+  (or `$FORGE_HOME/logs/…`; a legacy install keeps
+  `~/Library/Application Support/Forge/logs/…` until migrated)
   on macOS. The `env.resolve` span is where the 796 ms above came from.
 - **Endpoint latency**: `curl -w "%{time_total} %{time_connect} %{time_appconnect}"`.
 - **Shell startup**, which is the *user's* cost and not the app's, but shows up

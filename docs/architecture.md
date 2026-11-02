@@ -238,9 +238,9 @@ What happens to it is `sessions.persist_history`: by default the daemon drops
 the session rows on startup and the app opens on a clean tree; with the flag on
 they are kept and reconciled to `Orphaned`, restartable through
 `RestartSession`. Project groups, projects and workspaces survive either way.
-`scripts/dev daemon` runs isolated (`FORGE_SOCKET`/`FORGE_DATA_DIR`/
-`FORGE_CONFIG_DIR` under a fresh temp dir), so a dev daemon never contends
-with the daily one; one writer owns one set of paths.
+`scripts/dev daemon` runs isolated (`FORGE_SOCKET` and `FORGE_HOME` under a
+fresh temp dir), so a dev daemon never contends with the daily one and its
+worktrees land in `$FORGE_DEV_DIR/worktrees`; one writer owns one set of paths.
 
 ## Concurrency
 

@@ -47,11 +47,21 @@ fn start_daemon_with(cfg: daemon::config::Config) -> TestDaemon {
     let socket = tmp.path().join("d.sock");
     let db = persistence::Db::open_in_memory().expect("db");
     let worktrees_root = tmp.path().join("worktrees");
+    let forge_home = tmp.path().join("forge-home");
+    let forge = client::paths::resolve(&client::paths::PathInputs {
+        home: Some(tmp.path().to_path_buf()),
+        forge_home: Some(forge_home.into_os_string()),
+        ..client::paths::PathInputs::default()
+    })
+    .expect("resolve test forge paths");
 
     let daemon = Daemon::start(
         db,
         cfg,
-        worktrees_root,
+        daemon::core::DaemonPaths {
+            forge,
+            worktrees_root,
+        },
         "test-instance".to_string(),
         "0.0.0-test".to_string(),
     )

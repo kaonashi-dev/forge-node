@@ -288,9 +288,7 @@ pub fn precheck_remove(repo: &Path, path: &Path) -> Result<RemovePrechecks, GitE
     let out = run_git(Some(path), &ARGS)?.ok(&ARGS)?;
     let dirty = out.stdout.lines().any(|l| !l.trim().is_empty());
 
-    let merge_or_rebase_in_progress = git_path_exists(path, "MERGE_HEAD")
-        || git_path_exists(path, "rebase-merge")
-        || git_path_exists(path, "rebase-apply");
+    let merge_or_rebase_in_progress = sequencer_in_progress(path);
 
     // `repo` is part of the signature for symmetry with the other operations and
     // future use; the checks only need the worktree path.
@@ -300,6 +298,31 @@ pub fn precheck_remove(repo: &Path, path: &Path) -> Result<RemovePrechecks, GitE
         dirty,
         merge_or_rebase_in_progress,
     })
+}
+
+/// Whether a merge or rebase is in progress in the worktree at `dir`.
+///
+/// The same three markers [`precheck_remove`] uses, without a `git status`.
+#[must_use]
+pub fn sequencer_in_progress(dir: &Path) -> bool {
+    git_path_exists(dir, "MERGE_HEAD")
+        || git_path_exists(dir, "rebase-merge")
+        || git_path_exists(dir, "rebase-apply")
+}
+
+/// Move a managed worktree with `git worktree move`.
+///
+/// # Errors
+/// - [`GitError::CommandFailed`] if git refuses the move (submodules, a locked
+///   worktree, a destination that exists).
+/// - [`GitError::NonUtf8Path`] if either path is not valid UTF-8.
+pub fn move_worktree(repo: &Path, from: &Path, to: &Path) -> Result<(), GitError> {
+    let from = path_to_str(from)?;
+    let to = path_to_str(to)?;
+    let args = ["worktree", "move", "--", from, to];
+    run_git(Some(repo), &args)?.ok(&args)?;
+    tracing::debug!(target: "git", "worktree.move");
+    Ok(())
 }
 
 /// Whether the git-managed file/dir named `name` exists for the worktree at
@@ -418,5 +441,76 @@ mod tests {
         let next = unique_slug(&existing, &branch);
         assert!(!next.contains("--"), "got {next:?}");
         assert!(next.len() <= MAX_SLUG_LEN);
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-c")
+            .arg("commit.gpgsign=false")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
+    }
+
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+    }
+
+    fn seed_repo(repo: &Path) {
+        git(repo, &["init", "-b", "main"]);
+        git(repo, &["config", "user.email", "t@example.com"]);
+        git(repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-m", "init"]);
+    }
+
+    #[test]
+    fn move_worktree_relocates_the_checkout_and_gits_bookkeeping() {
+        if !git_available() {
+            eprintln!("skipping worktree move test: git not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        seed_repo(&repo);
+        let old = dir.path().join("wt-old");
+        let new = dir.path().join("wt-new");
+        git(
+            &repo,
+            &["worktree", "add", old.to_str().unwrap(), "-b", "topic"],
+        );
+        assert!(old.is_dir());
+
+        move_worktree(&repo, &old, &new).expect("git worktree move");
+
+        assert!(!old.exists());
+        assert!(new.join("a.txt").is_file());
+        let entries = list_worktrees(&repo).unwrap();
+        let want = new.canonicalize().expect("canonical new path");
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path.canonicalize().ok().as_ref() == Some(&want)));
+        assert!(!entries.iter().any(|entry| entry.path == old));
+    }
+
+    #[test]
+    fn sequencer_in_progress_sees_a_merge_marker() {
+        if !git_available() {
+            eprintln!("skipping sequencer test: git not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        seed_repo(repo);
+        assert!(!sequencer_in_progress(repo));
+        std::fs::write(repo.join(".git/MERGE_HEAD"), "deadbeef\n").unwrap();
+        assert!(sequencer_in_progress(repo));
     }
 }

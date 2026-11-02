@@ -106,6 +106,19 @@ impl Harness {
         self.tmp.path().join("home")
     }
 
+    /// The resolved Forge home the daemon uses, separate from the worktrees
+    /// root so a custom root cannot drag `agent-plugins` beside it.
+    #[must_use]
+    pub fn forge_home(&self) -> PathBuf {
+        self.tmp.path().join("forge-home")
+    }
+
+    /// The worktrees root the daemon creates managed worktrees under.
+    #[must_use]
+    pub fn worktrees_root(&self) -> &Path {
+        &self.worktrees_root
+    }
+
     /// The database file the daemons share, so a restart sees the same rows.
     #[must_use]
     pub fn db_path(&self) -> &Path {
@@ -144,11 +157,17 @@ impl Harness {
         let mut cfg = daemon::config::Config::default();
         cfg.sessions.shell = self.shell.to_string_lossy().into_owned();
         configure(&mut cfg);
+        let worktrees_root = client::paths::worktrees_root(
+            &cfg.worktrees.root,
+            Some(&self.home()),
+            &self.worktrees_root,
+        )
+        .unwrap_or_else(|_| self.worktrees_root.clone());
 
         let daemon = Daemon::start(
             db,
             cfg,
-            self.worktrees_root.clone(),
+            test_paths(self.forge_home(), worktrees_root),
             "test-instance".to_string(),
             "0.0.0-test".to_string(),
         )
@@ -184,6 +203,22 @@ impl Harness {
 impl Default for Harness {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The paths a test daemon runs with: a private forge home plus the harness'
+/// worktrees root, resolved by the same function production uses.
+pub fn test_paths(forge_home: PathBuf, worktrees_root: PathBuf) -> daemon::core::DaemonPaths {
+    let home = forge_home.parent().map(Path::to_path_buf);
+    let forge = client::paths::resolve(&client::paths::PathInputs {
+        home,
+        forge_home: Some(forge_home.into_os_string()),
+        ..client::paths::PathInputs::default()
+    })
+    .expect("resolve test forge paths");
+    daemon::core::DaemonPaths {
+        forge,
+        worktrees_root,
     }
 }
 

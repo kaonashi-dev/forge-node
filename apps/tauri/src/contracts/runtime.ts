@@ -293,6 +293,46 @@ export type DaemonInfo = {
   instance_id: string;
   started_at: string;
   editor_surface: EditorSurface;
+  /** Resolved daemon storage, read once per connection. */
+  storage: Storage | null;
+};
+
+/** Which layout the daemon resolved at startup. */
+export type ForgeLayout = "Home" | "Legacy" | string;
+
+export type ForgePaths = {
+  layout: ForgeLayout;
+  home: string;
+  config_file: string;
+  db: string;
+  logs: string;
+  runs: string;
+  agent_plugins: string;
+  default_worktrees_root: string;
+  legacy: string | null;
+};
+
+export type Storage = {
+  paths: ForgePaths;
+  worktrees_root: string;
+};
+
+export type MigrationWorktree = {
+  path: string;
+  destination: string;
+  outcome: "stay" | "move" | "moved" | "skip";
+  reason?: string;
+  transcripts: number;
+};
+
+export type MigrationReport = {
+  dry_run: boolean;
+  from: string;
+  to: string;
+  config: "copied" | "kept" | "absent";
+  runs_copied: number;
+  worktrees: MigrationWorktree[];
+  rollback: string[];
 };
 
 export type Launchable = {

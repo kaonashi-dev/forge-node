@@ -3111,12 +3111,7 @@ fn copy_result(
             .map(|task| task.run_id)
             .ok_or_else(|| ProtocolError::not_found("attempt"))?
     };
-    let dir = daemon
-        .worktrees_root()
-        .parent()
-        .unwrap_or(daemon.worktrees_root())
-        .join("runs")
-        .join(run_id.to_string());
+    let dir = daemon.forge_paths().runs.join(run_id.to_string());
     std::fs::create_dir_all(&dir)
         .map_err(|error| ProtocolError::new(ErrorCode::IoError, error.to_string()))?;
     let dest = dir.join(format!("{attempt_id}.md"));
@@ -3369,9 +3364,5 @@ struct StoredResponse(Response);
 impl Daemon {
     fn config_orchestration(&self) -> crate::config::OrchestrationConfig {
         self.orchestration_config()
-    }
-
-    pub(crate) fn worktrees_root(&self) -> &std::path::Path {
-        self.worktrees_root_path()
     }
 }
