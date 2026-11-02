@@ -5,8 +5,10 @@
 
 mod guide;
 mod mcp;
+mod places;
 mod schema;
 mod sessions;
+mod spec;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -22,7 +24,15 @@ use protocol::{
 use serde_json::{json, Value};
 
 use guide::guide_text;
+use places::{ActionCmd, ProjectCmd, WorkspaceCmd};
 use schema::schema_value;
+use sessions::SessionCmd;
+use spec::SpecCmd;
+
+/// Default budget of every `--wait`/`wait`/`watch` command; `--timeout` before the subcommand overrides it.
+const DEFAULT_WAIT: Duration = Duration::from_secs(600);
+/// Attention items `waiting` and `stalled` appear when a clock crosses a threshold, and no event announces that.
+const ATTENTION_RECHECK: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
 #[command(
@@ -58,6 +68,15 @@ enum Command {
     Schema,
     /// Installed providers.
     Providers,
+    #[command(subcommand)]
+    Project(ProjectCmd),
+    #[command(subcommand)]
+    Workspace(WorkspaceCmd),
+    #[command(subcommand)]
+    Action(ActionCmd),
+    /// Run a spec: a planner session plans it, launches a coder and reviews its work.
+    #[command(subcommand)]
+    Spec(SpecCmd),
     #[command(subcommand)]
     Run(RunCmd),
     #[command(subcommand)]
@@ -341,70 +360,30 @@ enum StateCmd {
     },
 }
 
-#[derive(Subcommand)]
-enum SessionCmd {
-    Spawn(sessions::SpawnArgs),
-    Rename {
-        session: String,
-        title: String,
-    },
-    #[command(group(clap::ArgGroup::new("prompt").args(["text", "file", "stdin"]).required(true)))]
-    Send {
-        session: String,
-        #[arg(long, conflicts_with_all = ["file", "stdin"])]
-        text: Option<String>,
-        #[arg(long, conflicts_with = "stdin")]
-        file: Option<PathBuf>,
-        #[arg(value_parser = ["-"])]
-        stdin: Option<String>,
-        #[arg(long)]
-        no_submit: bool,
-        #[arg(long, conflicts_with = "now")]
-        queue: bool,
-        #[arg(long)]
-        now: bool,
-    },
-    Wait {
-        session: String,
-        #[arg(long, value_parser = ["idle", "waiting", "working"])]
-        r#for: String,
-        #[arg(long)]
-        timeout: Option<String>,
-    },
-    List,
-    Show {
-        session: String,
-    },
-    Read {
-        session: String,
-        #[arg(long)]
-        max_bytes: Option<u32>,
-    },
-    Kill {
-        session: String,
-    },
-}
-
+#[derive(Clone)]
 struct App {
     json: bool,
     socket: Option<PathBuf>,
     timeout: Duration,
+    wait_timeout: Duration,
     request_id: Option<String>,
     capture: Option<std::cell::RefCell<Value>>,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let json = cli.json || std::env::var("FORGECTL_JSON").ok().as_deref() == Some("1");
+    let explicit = cli
+        .timeout
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+        .unwrap_or_else(|message| usage_exit(json, &message, &["forgectl", "--help"]));
     let app = App {
-        json: cli.json || std::env::var("FORGECTL_JSON").ok().as_deref() == Some("1"),
+        json,
         socket: cli.socket,
-        timeout: cli
-            .timeout
-            .as_deref()
-            .map(parse_duration)
-            .transpose()
-            .unwrap_or_else(|message| usage_exit(&message, &["forgectl", "--help"]))
-            .unwrap_or(Duration::from_secs(30)),
+        timeout: explicit.unwrap_or(Duration::from_secs(30)),
+        wait_timeout: explicit.unwrap_or(DEFAULT_WAIT),
         request_id: cli.request_id,
         capture: None,
     };
@@ -540,6 +519,10 @@ impl App {
             } => self.send(client, to, kind, text, file),
             Command::State(cmd) => self.state_cmd(client, cmd),
             Command::Session(cmd) => self.session_cmd(client, cmd),
+            Command::Project(cmd) => places::project_cmd(self, client, cmd),
+            Command::Workspace(cmd) => places::workspace_cmd(self, client, cmd),
+            Command::Action(cmd) => places::action_cmd(self, client, cmd),
+            Command::Spec(cmd) => spec::dispatch(self, client, cmd),
             Command::Guide { .. } | Command::Schema | Command::Hook { .. } | Command::Mcp => Ok(()),
         }
     }
@@ -650,6 +633,14 @@ impl App {
                 cleanup,
             } => {
                 let run_id = self.resolve_run(client, run.as_deref())?;
+                let integration = if pr {
+                    match self.call(client, Request::GetRun { run_id }, false)? {
+                        Response::RunView(view) => view.run.integration_workspace_id,
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 let pull_request = if pr {
                     let title = title.unwrap_or_else(|| "Forge run".into());
                     let body = body_file
@@ -665,6 +656,7 @@ impl App {
                 } else {
                     None
                 };
+                let events = client.events();
                 let response = self.call(
                     client,
                     Request::CloseRun {
@@ -679,31 +671,50 @@ impl App {
                 )?;
                 let mut value = flatten(&response);
                 if pr {
-                    let opened = wait_pull_request(client, Duration::from_secs(30));
+                    let mut opened = None;
+                    let woke =
+                        self.await_event(&events, Instant::now() + self.wait_timeout, |event| {
+                            match event {
+                                DaemonEvent::PullRequestOpened {
+                                    workspace_id,
+                                    url,
+                                    error,
+                                } if integration.is_none_or(|id| id == *workspace_id) => {
+                                    opened = Some((url.clone(), error.clone()));
+                                    true
+                                }
+                                _ => false,
+                            }
+                        })?;
+                    let show = vec![vec![
+                        "forgectl".into(),
+                        "run".into(),
+                        "show".into(),
+                        run_id.to_string(),
+                    ]];
                     match opened {
-                        Some(DaemonEvent::PullRequestOpened { url: Some(url), .. }) => {
+                        Some((Some(url), _)) => {
                             if let Some(object) = value.as_object_mut() {
                                 object.insert("pull_request".into(), json!({ "url": url }));
                             }
                         }
-                        Some(DaemonEvent::PullRequestOpened {
-                            error: Some(error), ..
-                        }) => {
+                        Some((None, error)) => {
                             return Err(self.fail(
                                 1,
                                 "git_error",
-                                &error,
+                                error.as_deref().unwrap_or("pull request did not open"),
                                 json!({ "residual": value.get("residual").cloned().unwrap_or(json!([])) }),
-                                vec![vec!["forgectl".into(), "run".into(), "show".into()]],
+                                show,
                             ));
                         }
-                        _ => {
+                        None => {
+                            debug_assert_eq!(woke, Woke::Deadline);
                             return Err(self.fail(
-                                1,
-                                "git_error",
-                                "pull request did not open",
-                                json!({}),
-                                vec![vec!["forgectl".into(), "run".into(), "show".into()]],
+                                124,
+                                "timeout",
+                                "the run closed; the pull request outcome is unknown",
+                                json!({ "uncertain": true }),
+                                show,
                             ));
                         }
                     }
@@ -1158,12 +1169,19 @@ impl App {
         timeout: Option<String>,
     ) -> Result<(), u8> {
         let run_id = self.resolve_run(client, None)?;
+        let help = ["forgectl", "ask", "--help"];
+        let deadline = Instant::now() + self.wait_budget(timeout.as_deref(), &help)?;
+        let events = client.events();
         if wait {
             if let Some(session) = env_session() {
-                let _ = client.request(Request::WatchInbox {
-                    session_id: Some(session),
-                    run_id: Some(run_id),
-                });
+                self.call(
+                    client,
+                    Request::WatchInbox {
+                        session_id: Some(session),
+                        run_id: Some(run_id),
+                    },
+                    false,
+                )?;
             }
         }
         let posted = self.call(
@@ -1189,23 +1207,8 @@ impl App {
             .and_then(|ids| ids.first())
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse().ok());
-        let budget = timeout
-            .as_deref()
-            .map(parse_duration)
-            .transpose()
-            .unwrap_or(None)
-            .unwrap_or(self.timeout);
-        let deadline = Instant::now() + budget;
         loop {
-            if Instant::now() >= deadline {
-                return Err(self.fail(
-                    124,
-                    "timeout",
-                    "wait timed out",
-                    json!({}),
-                    vec![vec!["forgectl".into(), "inbox".into()]],
-                ));
-            }
+            let _ = events.try_iter().count();
             let inbox = self.call(
                 client,
                 Request::ReadInbox {
@@ -1235,7 +1238,18 @@ impl App {
                 self.print_ok(answer);
                 return Ok(());
             }
-            let _ = client.events().recv_timeout(Duration::from_millis(200));
+            let woke = self.await_event(&events, deadline, |event| {
+                matches!(event, DaemonEvent::MailboxChanged { run_id: Some(id), .. } if *id == run_id)
+            })?;
+            if woke == Woke::Deadline {
+                return Err(self.fail(
+                    124,
+                    "timeout",
+                    "wait timed out",
+                    json!({}),
+                    next(&["forgectl", "inbox"]),
+                ));
+            }
         }
     }
 
@@ -1253,11 +1267,18 @@ impl App {
             .map(|run| self.resolve_run(client, Some(run)))
             .transpose()?;
         let session = env_session();
+        let deadline = Instant::now()
+            + self.wait_budget(timeout.as_deref(), &["forgectl", "inbox", "--help"])?;
+        let events = client.events();
         if wait {
-            let _ = client.request(Request::WatchInbox {
-                session_id: session,
-                run_id,
-            });
+            self.call(
+                client,
+                Request::WatchInbox {
+                    session_id: session,
+                    run_id,
+                },
+                false,
+            )?;
         }
         let mut ack_ids = ack
             .iter()
@@ -1299,14 +1320,8 @@ impl App {
             self.print_ok(value);
             return Ok(());
         }
-        let budget = timeout
-            .as_deref()
-            .map(parse_duration)
-            .transpose()
-            .unwrap_or(None)
-            .unwrap_or(self.timeout);
-        let deadline = Instant::now() + budget;
         loop {
+            let _ = events.try_iter().count();
             let response = read(std::mem::take(&mut ack_ids))?;
             let value = flatten(&response);
             let empty = value
@@ -1318,16 +1333,20 @@ impl App {
                 self.print_ok(value);
                 return Ok(());
             }
-            if Instant::now() >= deadline {
+            let woke = self.await_event(&events, deadline, |event| {
+                matches!(event, DaemonEvent::MailboxChanged { session_id: s, run_id: r, .. }
+                    if (session.is_none() || *s == session || s.is_none())
+                        && (run_id.is_none() || *r == run_id))
+            })?;
+            if woke == Woke::Deadline {
                 return Err(self.fail(
                     124,
                     "timeout",
                     "wait timed out",
                     json!({}),
-                    vec![vec!["forgectl".into(), "inbox".into()]],
+                    next(&["forgectl", "inbox"]),
                 ));
             }
-            let _ = client.events().recv_timeout(Duration::from_millis(200));
         }
     }
 
@@ -1415,19 +1434,19 @@ impl App {
                 from_version,
                 timeout,
             } => {
-                let budget = timeout
-                    .as_deref()
-                    .map(parse_duration)
-                    .transpose()
-                    .unwrap_or(None)
-                    .unwrap_or(self.timeout);
-                let current = self.call(
-                    client,
+                let deadline = Instant::now()
+                    + self.wait_budget(
+                        timeout.as_deref(),
+                        &["forgectl", "state", "watch", "--help"],
+                    )?;
+                let events = client.events();
+                // An absent key is not an error here: the watch waits for its creation.
+                let current = client.request_timeout(
                     Request::GetRunState {
                         run_id,
                         key: key.clone(),
                     },
-                    false,
+                    self.timeout,
                 );
                 if let Ok(response) = &current {
                     let version = flatten(response)
@@ -1439,37 +1458,21 @@ impl App {
                         return Ok(());
                     }
                 }
-                let deadline = Instant::now() + budget;
-                loop {
-                    if Instant::now() >= deadline {
-                        return Err(self.fail(
-                            124,
-                            "timeout",
-                            "wait timed out",
-                            json!({}),
-                            vec![vec!["forgectl".into(), "state".into(), "get".into(), key]],
-                        ));
-                    }
-                    if let Ok(DaemonEvent::RunStateChanged {
-                        run_id: event_run,
-                        key: event_key,
-                        ..
-                    }) = client.events().recv_timeout(Duration::from_millis(200))
-                    {
-                        if event_run == run_id && event_key == key {
-                            let response = self.call(
-                                client,
-                                Request::GetRunState {
-                                    run_id,
-                                    key: key.clone(),
-                                },
-                                false,
-                            )?;
-                            self.print_ok(flatten(&response));
-                            return Ok(());
-                        }
-                    }
+                let woke = self.await_event(&events, deadline, |event| {
+                    matches!(event, DaemonEvent::RunStateChanged { run_id: r, key: k, .. }
+                        if *r == run_id && *k == key)
+                })?;
+                if woke == Woke::Deadline {
+                    return Err(self.fail(
+                        124,
+                        "timeout",
+                        "wait timed out",
+                        json!({}),
+                        vec![vec!["forgectl".into(), "state".into(), "get".into(), key]],
+                    ));
                 }
+                let response = self.call(client, Request::GetRunState { run_id, key }, false)?;
+                self.print_ok(flatten(&response));
             }
         }
         Ok(())
@@ -1496,15 +1499,19 @@ impl App {
         })?;
         let run_id = self.resolve_run(client, run.as_deref())?;
         let task_ids = self.resolve_tasks(client, run_id, &tasks)?;
-        let budget = timeout
-            .as_deref()
-            .map(parse_duration)
-            .transpose()
-            .unwrap_or(None)
-            .unwrap_or(self.timeout);
-        let deadline = Instant::now() + budget;
+        let deadline = Instant::now()
+            + self.wait_budget(timeout.as_deref(), &["forgectl", "run", "wait", "--help"])?;
+        let events = client.events();
         loop {
-            let view = flatten(&self.call(client, Request::GetRun { run_id }, false)?);
+            let _ = events.try_iter().count();
+            let view = self.call(client, Request::GetRun { run_id }, false)?;
+            let attempt_sessions: Vec<SessionId> = match &view {
+                Response::RunView(view) => {
+                    view.attempts.iter().filter_map(|a| a.session_id).collect()
+                }
+                _ => vec![],
+            };
+            let view = flatten(&view);
             let triggered = wake_items(&view, &kinds, &task_ids);
             if !triggered.is_empty() {
                 self.print_ok(json!({
@@ -1527,7 +1534,16 @@ impl App {
                     ]],
                 ));
             }
-            let _ = client.events().recv_timeout(Duration::from_millis(200));
+            let recheck = deadline.min(Instant::now() + ATTENTION_RECHECK);
+            self.await_event(&events, recheck, |event| match event {
+                DaemonEvent::RunUpdated(run) => run.id == run_id,
+                DaemonEvent::TaskUpdated(task) => task.run_id == run_id,
+                DaemonEvent::RunRemoved { run_id: id } => *id == run_id,
+                DaemonEvent::MailboxChanged { run_id: id, .. } => *id == Some(run_id),
+                DaemonEvent::AttemptUpdated(_) => true,
+                DaemonEvent::SessionUpdated(session) => attempt_sessions.contains(&session.id),
+                _ => false,
+            })?;
         }
     }
 
@@ -1605,21 +1621,47 @@ impl App {
     }
 
     fn call(&self, client: &Client, request: Request, mutation: bool) -> Result<Response, u8> {
-        match client.request_timeout(request, self.timeout) {
-            Ok(response) => Ok(response),
-            Err(ClientError::Protocol(error)) => Err(self.protocol_error(&error)),
-            Err(ClientError::Timeout | ClientError::Disconnected) if mutation => Err(self.fail(
-                3,
-                "unreachable",
-                "the outcome is uncertain; inspect state before retrying",
-                json!({ "uncertain": true }),
-                vec![vec!["forgectl".into(), "status".into()]],
-            )),
-            Err(error) => Err(self.client_error(error, mutation)),
-        }
+        self.call_with(client, request, mutation, Value::Null, vec![])
     }
 
-    fn protocol_error(&self, error: &ProtocolError) -> u8 {
+    /// As [`App::call`], merging `extra` into a failure's details and putting `hint` first in `next`.
+    fn call_with(
+        &self,
+        client: &Client,
+        request: Request,
+        mutation: bool,
+        extra: Value,
+        hint: Vec<Vec<String>>,
+    ) -> Result<Response, u8> {
+        let (code, name, message, details, next) =
+            match client.request_timeout(request, self.timeout) {
+                Ok(response) => return Ok(response),
+                Err(ClientError::Protocol(error)) => self.protocol_failure(&error),
+                Err(ClientError::Timeout | ClientError::Disconnected) if mutation => (
+                    3,
+                    "unreachable",
+                    "the outcome is uncertain; inspect state before retrying".to_owned(),
+                    json!({ "uncertain": true }),
+                    next(&["forgectl", "status"]),
+                ),
+                Err(error) => (3, "unreachable", error.to_string(), json!({}), vec![]),
+            };
+        let mut details = details;
+        if let (Some(details), Value::Object(extra)) = (details.as_object_mut(), extra) {
+            details.extend(extra);
+        }
+        let next = hint.into_iter().chain(next).collect();
+        Err(self.fail(code, name, &message, details, next))
+    }
+
+    #[allow(
+        clippy::type_complexity,
+        reason = "the parts of one failure, printed by the caller"
+    )]
+    fn protocol_failure(
+        &self,
+        error: &ProtocolError,
+    ) -> (u8, &'static str, String, Value, Vec<Vec<String>>) {
         let details = error
             .details
             .as_deref()
@@ -1651,7 +1693,7 @@ impl App {
                 _ => (1, code_name(error.code), vec![]),
             }
         };
-        self.fail(code, name, &error.message, details, next)
+        (code, name, error.message.clone(), details, next)
     }
 
     fn client_error(&self, error: ClientError, mutation: bool) -> u8 {
@@ -1726,43 +1768,16 @@ impl App {
     }
 
     fn resolve_project(&self, client: &Client, raw: Option<&str>) -> Result<domain::ProjectId, u8> {
-        let store = client
-            .load_store()
-            .map_err(|error| self.client_error(error, false))?;
+        let store = places::load(self, client)?;
         if let Some(raw) = raw {
-            if let Ok(id) = raw.parse() {
-                if store.projects.iter().any(|project| project.id == id) {
-                    return Ok(id);
-                }
-            }
-            if let Some(project) = store
-                .projects
-                .iter()
-                .find(|project| project.name == raw || project.root_path.to_string_lossy() == raw)
-            {
-                return Ok(project.id);
-            }
-            return Err(self.fail(
-                4,
-                "not_found",
-                "project not found",
-                json!({}),
-                vec![vec!["forgectl".into(), "run".into(), "list".into()]],
-            ));
+            return places::project(self, &store, raw).map(|project| project.id);
         }
         match store.projects.as_slice() {
             [only] => Ok(only.id),
-            [] => Err(self.fail(
-                2,
-                "usage",
+            [] => Err(usage_code(
+                self,
                 "no project; pass --project",
-                json!({}),
-                vec![vec![
-                    "forgectl".into(),
-                    "run".into(),
-                    "start".into(),
-                    "--help".into(),
-                ]],
+                &["forgectl", "run", "start", "--help"],
             )),
             _ => Err(usage_code(
                 self,
@@ -1847,25 +1862,96 @@ impl App {
     fn resolve_tasks(
         &self,
         client: &Client,
-        _run_id: RunId,
+        run_id: RunId,
         raws: &[String],
     ) -> Result<Vec<TaskId>, u8> {
+        if raws.is_empty() {
+            return Ok(vec![]);
+        }
+        let ids: Vec<TaskId> = match self.call(client, Request::GetRun { run_id }, false)? {
+            Response::RunView(view) => view.tasks.iter().map(|task| task.id).collect(),
+            _ => vec![],
+        };
         raws.iter()
-            .map(|raw| self.find_task(client, raw).map(|(_, id)| id))
+            .map(|raw| {
+                resolve_prefix(ids.iter(), raw).copied().map_err(|error| {
+                    self.fail(
+                        if matches!(error, domain::orchestration::PrefixError::Ambiguous) {
+                            5
+                        } else {
+                            4
+                        },
+                        "not_found",
+                        &format!("task {raw} in run {run_id}: {error}"),
+                        json!({}),
+                        next(&["forgectl", "task", "list", "--run", &run_id.to_string()]),
+                    )
+                })
+            })
             .collect()
     }
 
     fn resolve_session(&self, client: &Client, raw: &str) -> Result<SessionId, u8> {
-        let store = client
-            .load_store()
-            .map_err(|error| self.client_error(error, false))?;
+        let store = places::load(self, client)?;
         sessions::resolve(self, &store, raw).map(|session| session.id)
+    }
+
+    /// A malformed `--timeout` is a usage error, never a silent fallback to the default.
+    fn wait_budget(&self, raw: Option<&str>, help: &[&str]) -> Result<Duration, u8> {
+        raw.map(parse_duration)
+            .transpose()
+            .map(|budget| budget.unwrap_or(self.wait_timeout))
+            .map_err(|message| usage_code(self, &message, help))
+    }
+
+    /// Blocks until `relevant` accepts an event or `until` passes. Only a
+    /// disconnect is an error: the channel then closes and would otherwise spin.
+    fn await_event(
+        &self,
+        events: &flume::Receiver<DaemonEvent>,
+        until: Instant,
+        mut relevant: impl FnMut(&DaemonEvent) -> bool,
+    ) -> Result<Woke, u8> {
+        loop {
+            match events.recv_deadline(until) {
+                Ok(event) if relevant(&event) => return Ok(Woke::Event),
+                Ok(_) => {}
+                Err(flume::RecvTimeoutError::Timeout) => return Ok(Woke::Deadline),
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    return Err(self.fail(
+                        3,
+                        "unreachable",
+                        "daemon disconnected",
+                        json!({}),
+                        next(&["forgectl", "status"]),
+                    ))
+                }
+            }
+        }
     }
 }
 
-fn usage_exit(message: &str, argv: &[&str]) -> ! {
-    eprintln!("error: {message}");
-    eprintln!("hint: {}", argv.join(" "));
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Woke {
+    Event,
+    Deadline,
+}
+
+fn next(argv: &[&str]) -> Vec<Vec<String>> {
+    vec![argv.iter().map(|part| (*part).to_owned()).collect()]
+}
+
+/// Before an [`App`] exists; keeps the one-object stdout contract under `--json`.
+fn usage_exit(json: bool, message: &str, argv: &[&str]) -> ! {
+    if json {
+        println!(
+            "{}",
+            json!({ "ok": false, "error": { "code": "usage", "message": message, "details": {}, "next": next(argv) } })
+        );
+    } else {
+        eprintln!("error: {message}");
+        eprintln!("hint: {}", argv.join(" "));
+    }
     std::process::exit(2);
 }
 
@@ -2049,18 +2135,6 @@ fn code_name(code: ErrorCode) -> &'static str {
 fn denied(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::PermissionDenied
         || matches!(error.raw_os_error(), Some(1 | 13))
-}
-
-fn wait_pull_request(client: &Client, budget: Duration) -> Option<DaemonEvent> {
-    let deadline = Instant::now() + budget;
-    while Instant::now() < deadline {
-        match client.events().recv_timeout(Duration::from_millis(200)) {
-            Ok(event @ DaemonEvent::PullRequestOpened { .. }) => return Some(event),
-            Ok(_) => {}
-            Err(_) => {}
-        }
-    }
-    None
 }
 
 fn read_text(text: Option<String>, file: Option<PathBuf>) -> Result<String, String> {

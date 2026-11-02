@@ -76,6 +76,7 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
             read_only: false,
             model: None,
             effort: None,
+            title: None,
         })
         .expect_err("launching a provider that is not installed must fail");
     match &refused {
@@ -264,6 +265,7 @@ fn launching_a_provider_whose_only_candidate_was_rejected_is_refused() {
         read_only: false,
         model: None,
         effort: None,
+        title: None,
     });
 
     // When the launch is (wrongly) accepted, show *which* binary answered, so

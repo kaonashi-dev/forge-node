@@ -292,6 +292,8 @@ describe("railRows", () => {
     session: { id } as never,
     label: id,
     depth,
+    last: true,
+    through: [],
     wantsYou: false,
     unread: false,
   });
@@ -390,6 +392,8 @@ function railRowsFixture() {
     session: { id } as never,
     label: id,
     depth: 0,
+    last: true,
+    through: [],
     wantsYou: false,
     unread: false,
   });

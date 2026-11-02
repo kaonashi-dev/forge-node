@@ -570,6 +570,7 @@ pub fn create_shell_session(
             workspace_id,
             parent: None,
             role: SessionRole::Generic,
+            title: None,
         })
         .expect("CreateShellSession");
     let Response::SessionCreated {
@@ -635,6 +636,7 @@ pub fn create_agent_session(
             read_only: false,
             model: None,
             effort: None,
+            title: None,
         })
         .unwrap_or_else(|e| panic!("CreateAgentSession({provider_id}) failed: {e}"));
     assert!(

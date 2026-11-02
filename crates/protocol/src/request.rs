@@ -591,6 +591,10 @@ pub enum Request {
         parent: Option<SessionId>,
         /// The session's role tag.
         role: SessionRole,
+        /// User title set with the row, so a caller never creates an unnamed
+        /// session and then fails to rename it. Blank is no title.
+        #[serde(default)]
+        title: Option<String>,
     },
     /// Create an agent CLI session → `Response::SessionCreated`; the
     /// `SessionCreated` event follows.
@@ -621,6 +625,9 @@ pub enum Request {
         model: Option<String>,
         #[serde(default)]
         effort: Option<String>,
+        /// As [`Request::CreateShellSession`]'s `title`.
+        #[serde(default)]
+        title: Option<String>,
     },
     /// Paste bounded text into an agent; automatic submission requires hook-confirmed idle.
     SendSessionPrompt {
@@ -632,6 +639,19 @@ pub enum Request {
         submit: bool,
         #[serde(default)]
         when: PromptDelivery,
+    },
+    /// Type one command line into a live shell session and submit it →
+    /// [`crate::response::Response::PromptDelivery`].
+    ///
+    /// Refused with `PreconditionFailed` unless the shell owns the terminal's
+    /// foreground process group: a running job (an editor, a pager, an agent
+    /// started by hand) would read the line and its Enter as keys.
+    SendShellCommand {
+        #[serde(default)]
+        caller_session_id: Option<SessionId>,
+        session_id: SessionId,
+        /// One line; control characters, CR and LF are refused, not stripped.
+        command: String,
     },
     /// Open a file in a daemon-supervised `forge-editor` process
     /// → `SessionCreated`; buffer state arrives as `SessionUpdated`.
@@ -863,6 +883,11 @@ pub enum Request {
         session_id: SessionId,
         /// The signal to deliver.
         signal: Signal,
+        /// Signal the terminal's foreground process group, as a typed Ctrl-C
+        /// would, instead of the session's own: a job a shell started is in
+        /// a group of its own and never sees the latter.
+        #[serde(default)]
+        foreground: bool,
     },
 
     // ----- Agents -----
@@ -1310,11 +1335,13 @@ mod tests {
             read_only: false,
             model: None,
             effort: None,
+            title: None,
         };
         let mut old = serde_json::to_value(request).unwrap();
         let fields = old["CreateAgentSession"].as_object_mut().unwrap();
         fields.remove("model");
         fields.remove("effort");
+        fields.remove("title");
         let bytes = rmp_serde::to_vec_named(&old).unwrap();
         let back = decode_json_shaped(&bytes);
         assert!(matches!(
@@ -1322,6 +1349,7 @@ mod tests {
             Request::CreateAgentSession {
                 model: None,
                 effort: None,
+                title: None,
                 ..
             }
         ));

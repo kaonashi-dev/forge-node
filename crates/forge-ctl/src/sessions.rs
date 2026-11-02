@@ -1,42 +1,303 @@
 use super::*;
 use client::Store;
-use domain::{ActivityState, ProjectId, Session, SessionRole, Workspace, WorkspaceKind};
-use protocol::PromptDelivery;
+use domain::{ActivityState, Project, Session, SessionKind, SessionRole, SessionState, Workspace};
+use places::{load, workspace_json};
+use protocol::{PromptDelivery, Signal};
+
+const MAX_INPUT_BYTES: usize = 8_192;
+/// A launch prompt travels as one argument, not a paste, so it may be larger than a sent prompt.
+const MAX_LAUNCH_PROMPT_BYTES: usize = 64 * 1024;
+
+#[derive(Subcommand)]
+pub(crate) enum SessionCmd {
+    /// Launch an agent.
+    Spawn(Box<SpawnArgs>),
+    /// Open an interactive shell.
+    Shell(ShellArgs),
+    Rename {
+        session: String,
+        title: String,
+    },
+    /// Paste a bounded prompt into an agent.
+    #[command(group(clap::ArgGroup::new("prompt").args(["text", "file", "stdin"]).required(true)))]
+    Send {
+        session: String,
+        #[arg(long, conflicts_with_all = ["file", "stdin"])]
+        text: Option<String>,
+        #[arg(long, conflicts_with = "stdin")]
+        file: Option<PathBuf>,
+        #[arg(value_parser = ["-"])]
+        stdin: Option<String>,
+        #[arg(long)]
+        no_submit: bool,
+        #[arg(long, conflicts_with = "now")]
+        queue: bool,
+        #[arg(long)]
+        now: bool,
+    },
+    /// Run one command line in a shell that is at its prompt.
+    #[command(group(clap::ArgGroup::new("command").args(["text", "stdin"]).required(true)))]
+    Exec {
+        session: String,
+        #[arg(long, conflicts_with = "stdin")]
+        text: Option<String>,
+        #[arg(value_parser = ["-"])]
+        stdin: Option<String>,
+    },
+    Wait {
+        session: String,
+        /// One or more of idle, waiting, working, exit; the first to hold wins.
+        #[arg(long, required = true, value_delimiter = ',', value_parser = ["idle", "waiting", "working", "exit"])]
+        r#for: Vec<String>,
+        #[arg(long)]
+        timeout: Option<String>,
+    },
+    /// Print one JSON line per state or activity change until the named sessions end.
+    Watch {
+        /// Sessions to follow; none follows every session (narrowed by --project).
+        sessions: Vec<String>,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        timeout: Option<String>,
+    },
+    List {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, value_enum)]
+        kind: Option<KindArg>,
+        /// Only sessions whose process is starting or running.
+        #[arg(long)]
+        active: bool,
+    },
+    Show {
+        session: String,
+    },
+    Read {
+        session: String,
+        #[arg(long)]
+        max_bytes: Option<u32>,
+        /// Lines back from the bottom of the terminal.
+        #[arg(long)]
+        lines: Option<u32>,
+    },
+    /// Files the session changed since its base commit.
+    Changes {
+        session: String,
+    },
+    Kill {
+        session: String,
+    },
+    /// Relaunch an ended session in its terminal; an agent's initial prompt is not re-sent.
+    Restart {
+        session: String,
+    },
+    /// Remove an ended session from the tree.
+    Close {
+        session: String,
+    },
+    /// Deliver a signal to the session's process group.
+    Signal {
+        session: String,
+        #[arg(long, value_enum)]
+        signal: SignalArg,
+        /// Signal the terminal's foreground job, as a typed Ctrl-C would.
+        #[arg(long)]
+        foreground: bool,
+    },
+}
 
 #[derive(clap::Args)]
-pub(crate) struct SpawnArgs {
+pub(crate) struct Placement {
+    /// Project name (case-insensitive), root path or UUID. Inside a Forge
+    /// session it defaults to that session's project and checkout.
     #[arg(long)]
-    project: String,
+    project: Option<String>,
+    /// Existing checkout: UUID or unique prefix. Defaults to the main checkout.
     #[arg(long, conflicts_with = "worktree")]
-    workspace: Option<WorkspaceId>,
+    workspace: Option<String>,
+    /// Create a managed worktree on this branch first.
     #[arg(long)]
     worktree: Option<String>,
     #[arg(long, requires = "worktree")]
     base: Option<String>,
-    #[arg(long)]
-    provider: String,
-    #[arg(long)]
-    profile: Option<String>,
+    /// Session title. The returned id stays the stable reference.
     #[arg(long)]
     name: Option<String>,
+    #[arg(long, value_enum, default_value_t = RoleArg::Generic)]
+    role: RoleArg,
+    /// Graph parent in the same project: a session reference, or `self`.
+    #[arg(long)]
+    parent: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct SpawnArgs {
+    #[command(flatten)]
+    placement: Placement,
+    /// Inside a Forge agent session it defaults to that session's provider and profile.
+    #[arg(long)]
+    provider: Option<String>,
+    #[arg(long)]
+    profile: Option<String>,
     #[arg(long, conflicts_with = "prompt_file")]
     prompt: Option<String>,
     #[arg(long)]
     prompt_file: Option<PathBuf>,
+    /// Handed-over context, appended to the prompt under a heading naming the caller.
+    #[arg(long, conflicts_with = "context_file")]
+    context: Option<String>,
+    #[arg(long)]
+    context_file: Option<PathBuf>,
     #[arg(long)]
     read_only: bool,
     #[arg(long)]
     model: Option<String>,
     #[arg(long)]
     effort: Option<String>,
+    /// Provider-owned conversation id, not a Forge session id.
+    #[arg(long)]
+    resume: Option<String>,
+}
+
+/// An agent launched on a caller's behalf, such as a spec run's planner.
+pub(crate) struct Launch {
+    pub project: Option<String>,
+    pub workspace: Option<String>,
+    pub name: String,
+    pub role: RoleArg,
+    pub provider: String,
+    pub effort: Option<String>,
+    pub model: Option<String>,
+    pub prompt: String,
+}
+
+impl From<Launch> for SpawnArgs {
+    fn from(launch: Launch) -> Self {
+        Self {
+            placement: Placement {
+                project: launch.project,
+                workspace: launch.workspace,
+                worktree: None,
+                base: None,
+                name: Some(launch.name),
+                role: launch.role,
+                parent: None,
+            },
+            provider: Some(launch.provider),
+            profile: None,
+            prompt: Some(launch.prompt),
+            prompt_file: None,
+            context: None,
+            context_file: None,
+            read_only: false,
+            model: launch.model,
+            effort: launch.effort,
+            resume: None,
+        }
+    }
+}
+
+#[derive(clap::Args)]
+pub(crate) struct ShellArgs {
+    #[command(flatten)]
+    placement: Placement,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum RoleArg {
+    Generic,
+    Orchestrator,
+    Planner,
+    Researcher,
+    Executor,
+    Reviewer,
+    Tester,
+}
+
+impl From<RoleArg> for SessionRole {
+    fn from(role: RoleArg) -> Self {
+        match role {
+            RoleArg::Generic => SessionRole::Generic,
+            RoleArg::Orchestrator => SessionRole::Orchestrator,
+            RoleArg::Planner => SessionRole::Planner,
+            RoleArg::Researcher => SessionRole::Researcher,
+            RoleArg::Executor => SessionRole::Executor,
+            RoleArg::Reviewer => SessionRole::Reviewer,
+            RoleArg::Tester => SessionRole::Tester,
+        }
+    }
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum KindArg {
+    Agent,
+    Shell,
+    Editor,
+    Task,
+}
+
+impl From<KindArg> for SessionKind {
+    fn from(kind: KindArg) -> Self {
+        match kind {
+            KindArg::Agent => SessionKind::Agent,
+            KindArg::Shell => SessionKind::Shell,
+            KindArg::Editor => SessionKind::Editor,
+            KindArg::Task => SessionKind::Task,
+        }
+    }
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum SignalArg {
+    Int,
+    Term,
+    Hup,
+    Kill,
+}
+
+impl From<SignalArg> for Signal {
+    fn from(signal: SignalArg) -> Self {
+        match signal {
+            SignalArg::Int => Signal::SigInt,
+            SignalArg::Term => Signal::SigTerm,
+            SignalArg::Hup => Signal::SigHup,
+            SignalArg::Kill => Signal::SigKill,
+        }
+    }
 }
 
 pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<(), u8> {
     match cmd {
-        SessionCmd::Spawn(args) => spawn(app, client, args),
-        SessionCmd::List => {
+        SessionCmd::Spawn(args) => {
+            let spawned = spawn(app, client, *args)?;
+            app.print_ok(spawned);
+            Ok(())
+        }
+        SessionCmd::Shell(args) => shell(app, client, args),
+        SessionCmd::List {
+            project,
+            kind,
+            active,
+        } => {
             let store = load(app, client)?;
-            app.print_ok(json!({ "sessions": store.sessions.iter().map(|s| candidate(&store, s)).collect::<Vec<_>>() }));
+            let project = project
+                .as_deref()
+                .map(|raw| places::project(app, &store, raw).map(|p| p.id))
+                .transpose()?;
+            let kind = kind.map(SessionKind::from);
+            let sessions: Vec<Value> = store
+                .sessions
+                .iter()
+                .filter(|s| {
+                    kind.is_none_or(|kind| s.kind == kind)
+                        && (!active || s.state.is_active())
+                        && project
+                            .is_none_or(|id| project_for(&store, s).is_some_and(|p| p.id == id))
+                })
+                .map(|s| candidate(&store, s))
+                .collect();
+            app.print_ok(json!({ "sessions": sessions }));
             Ok(())
         }
         SessionCmd::Show { session } => {
@@ -45,13 +306,17 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<()
             app.print_ok(serde_json::to_value(session).unwrap_or(Value::Null));
             Ok(())
         }
-        SessionCmd::Read { session, max_bytes } => {
+        SessionCmd::Read {
+            session,
+            max_bytes,
+            lines,
+        } => {
             let id = app.resolve_session(client, &session)?;
             let response = app.call(
                 client,
                 Request::GetSessionTranscript {
                     session_id: id,
-                    max_lines: None,
+                    max_lines: lines,
                     max_bytes,
                 },
                 false,
@@ -59,11 +324,40 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<()
             app.print_ok(flatten(&response));
             Ok(())
         }
-        SessionCmd::Kill { session } => {
+        SessionCmd::Changes { session } => {
             let id = app.resolve_session(client, &session)?;
-            let response = app.call(client, Request::KillSession { session_id: id }, true)?;
+            let response =
+                app.call(client, Request::GetSessionChanges { session_id: id }, false)?;
             app.print_ok(flatten(&response));
             Ok(())
+        }
+        SessionCmd::Kill { session } => {
+            let id = app.resolve_session(client, &session)?;
+            acked(app, client, Request::KillSession { session_id: id })
+        }
+        SessionCmd::Restart { session } => {
+            let id = app.resolve_session(client, &session)?;
+            acked(app, client, Request::RestartSession { session_id: id })
+        }
+        SessionCmd::Close { session } => {
+            let id = app.resolve_session(client, &session)?;
+            acked(app, client, Request::CloseSession { session_id: id })
+        }
+        SessionCmd::Signal {
+            session,
+            signal,
+            foreground,
+        } => {
+            let id = app.resolve_session(client, &session)?;
+            acked(
+                app,
+                client,
+                Request::SendSignal {
+                    session_id: id,
+                    signal: signal.into(),
+                    foreground,
+                },
+            )
         }
         SessionCmd::Rename { session, title } => {
             let title = title.trim();
@@ -75,16 +369,14 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<()
                 ));
             }
             let id = app.resolve_session(client, &session)?;
-            let response = app.call(
+            acked(
+                app,
                 client,
                 Request::RenameSession {
                     session_id: id,
                     title: Some(title.into()),
                 },
-                true,
-            )?;
-            app.print_ok(flatten(&response));
-            Ok(())
+            )
         }
         SessionCmd::Send {
             session,
@@ -95,7 +387,7 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<()
             queue,
             now,
         } => {
-            let text = input(app, text, file, 8_192)?;
+            let text = input(app, text, file, MAX_INPUT_BYTES)?;
             let id = app.resolve_session(client, &session)?;
             let response = app.call(
                 client,
@@ -117,25 +409,173 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<()
             app.print_ok(flatten(&response));
             Ok(())
         }
+        SessionCmd::Exec {
+            session,
+            text,
+            stdin: _,
+        } => {
+            let command = input(app, text, None, MAX_INPUT_BYTES)?;
+            let command = command
+                .strip_suffix('\n')
+                .map(|line| line.strip_suffix('\r').unwrap_or(line))
+                .unwrap_or(&command)
+                .to_owned();
+            let id = app.resolve_session(client, &session)?;
+            let response = app.call(
+                client,
+                Request::SendShellCommand {
+                    caller_session_id: env_session(),
+                    session_id: id,
+                    command,
+                },
+                true,
+            )?;
+            app.print_ok(flatten(&response));
+            Ok(())
+        }
         SessionCmd::Wait {
             session,
             r#for,
             timeout,
         } => wait(app, client, &session, &r#for, timeout.as_deref()),
+        SessionCmd::Watch {
+            sessions,
+            project,
+            timeout,
+        } => watch(
+            app,
+            client,
+            &sessions,
+            project.as_deref(),
+            timeout.as_deref(),
+        ),
     }
 }
 
-fn load(app: &App, client: &Client) -> Result<Store, u8> {
-    client.load_store().map_err(|e| app.client_error(e, false))
+fn watch(
+    app: &App,
+    client: &Client,
+    refs: &[String],
+    project: Option<&str>,
+    timeout: Option<&str>,
+) -> Result<(), u8> {
+    let deadline =
+        Instant::now() + app.wait_budget(timeout, &["forgectl", "session", "watch", "--help"])?;
+    let events = client.events();
+    let store = load(app, client)?;
+    let project = project
+        .map(|raw| places::project(app, &store, raw).map(|p| p.id))
+        .transpose()?;
+    let named: Vec<SessionId> = refs
+        .iter()
+        .map(|raw| resolve(app, &store, raw).map(|s| s.id))
+        .collect::<Result<_, _>>()?;
+    let followed = |session: &Session| {
+        if named.is_empty() {
+            project.is_none_or(|id| project_for(&store, session).is_some_and(|p| p.id == id))
+        } else {
+            named.contains(&session.id)
+        }
+    };
+    let line = |event: &str, session: &Session| {
+        let mut value = candidate(&store, session);
+        if let Some(object) = value.as_object_mut() {
+            object.insert("event".into(), json!(event));
+        }
+        println!("{value}");
+    };
+    let mut seen: std::collections::HashMap<SessionId, (String, ActivityState)> =
+        Default::default();
+    for session in store.sessions.iter().filter(|s| followed(s)) {
+        seen.insert(
+            session.id,
+            (format!("{:?}", session.state), session.activity.state),
+        );
+        line("snapshot", session);
+    }
+    let mut open: Vec<SessionId> = named
+        .iter()
+        .copied()
+        .filter(|id| {
+            store
+                .sessions
+                .iter()
+                .any(|s| s.id == *id && !s.state.is_terminal())
+        })
+        .collect();
+    loop {
+        if !named.is_empty() && open.is_empty() {
+            return Ok(());
+        }
+        let mut done = None;
+        let woke = app.await_event(&events, deadline, |event| match event {
+            DaemonEvent::SessionCreated(s) | DaemonEvent::SessionUpdated(s) if followed(s) => {
+                let now = (format!("{:?}", s.state), s.activity.state);
+                if seen.get(&s.id) != Some(&now) {
+                    seen.insert(s.id, now);
+                    line("updated", s);
+                }
+                if s.state.is_terminal() {
+                    done = Some(s.id);
+                }
+                true
+            }
+            DaemonEvent::SessionRemoved { session_id } if seen.remove(session_id).is_some() => {
+                println!("{}", json!({ "event": "removed", "id": session_id }));
+                done = Some(*session_id);
+                true
+            }
+            _ => false,
+        })?;
+        if let Some(id) = done {
+            open.retain(|open| *open != id);
+        }
+        if woke == Woke::Deadline {
+            return Err(app.fail(
+                124,
+                "timeout",
+                "watch ended at its deadline",
+                json!({}),
+                vec![],
+            ));
+        }
+    }
 }
 
+fn acked(app: &App, client: &Client, request: Request) -> Result<(), u8> {
+    let response = app.call(client, request, true)?;
+    app.print_ok(flatten(&response));
+    Ok(())
+}
+
+/// `self` and `parent` are relative to `FORGE_SESSION_ID` and win over a title of the same name.
 pub(crate) fn resolve<'a>(app: &App, store: &'a Store, raw: &str) -> Result<&'a Session, u8> {
+    if matches!(raw, "self" | "parent") {
+        let help = ["forgectl", "session", "--help"];
+        let me = caller(app, store, &help)?
+            .ok_or_else(|| usage_code(app, &format!("`{raw}` needs FORGE_SESSION_ID"), &help))?;
+        if raw == "self" {
+            return Ok(me);
+        }
+        return me
+            .parent_session_id
+            .and_then(|id| store.sessions.iter().find(|s| s.id == id))
+            .ok_or_else(|| {
+                app.fail(
+                    4,
+                    "not_found",
+                    "this session has no parent",
+                    json!({}),
+                    vec![],
+                )
+            });
+    }
     resolve_ref(store, raw).map_err(|candidates| {
         let ambiguous = !candidates.is_empty();
         app.fail(if ambiguous { 5 } else { 4 }, if ambiguous { "ambiguous" } else { "not_found" },
             if ambiguous { "session reference is ambiguous" } else { "session not found" },
             json!({ "candidates": candidates.iter().map(|s| candidate(store, s)).collect::<Vec<_>>() }),
-            vec![vec!["forgectl".into(), "session".into(), "list".into()]])
+            next(&["forgectl", "session", "list"]))
     })
 }
 
@@ -188,7 +628,7 @@ fn sole(matches: Vec<&Session>) -> Result<&Session, Vec<&Session>> {
     }
 }
 
-fn project_for<'a>(store: &'a Store, session: &Session) -> Option<&'a domain::Project> {
+fn project_for<'a>(store: &'a Store, session: &Session) -> Option<&'a Project> {
     let workspace = store
         .workspaces
         .iter()
@@ -196,11 +636,19 @@ fn project_for<'a>(store: &'a Store, session: &Session) -> Option<&'a domain::Pr
     store.projects.iter().find(|p| p.id == workspace.project_id)
 }
 
+/// `kind` and `state` stay display strings for existing scripts; the other fields are structured.
 fn candidate(store: &Store, session: &Session) -> Value {
+    let (exit_code, signal) = match session.state {
+        SessionState::Exited { code, signal } => (code, signal),
+        _ => (None, None),
+    };
     json!({ "id": session.id, "prefix": &session.id.to_string()[..8],
         "project": project_for(store, session).map(|p| &p.name), "workspace": session.workspace_id,
         "title": session.title.resolve("session"), "provider": session.agent_provider_id,
         "kind": format!("{:?}", session.kind), "state": format!("{:?}", session.state),
+        "active": session.state.is_active(), "ended": session.state.is_terminal(),
+        "exit_code": exit_code, "signal": signal,
+        "role": session.role, "parent": session.parent_session_id,
         "activity": session.activity.state })
 }
 
@@ -223,47 +671,207 @@ fn input(app: &App, text: Option<String>, file: Option<PathBuf>, cap: usize) -> 
     result.map_err(|message| usage_code(app, &message, &["forgectl", "session", "--help"]))
 }
 
-fn spawn(app: &App, client: &Client, args: SpawnArgs) -> Result<(), u8> {
-    let title = args.name.as_deref().map(str::trim);
+struct Target<'a> {
+    project: &'a Project,
+    /// The caller's checkout, used when neither `--project` nor `--workspace` names one.
+    default_workspace: Option<WorkspaceId>,
+    caller: Option<&'a Session>,
+    title: Option<String>,
+    role: SessionRole,
+    parent: Option<SessionId>,
+}
+
+/// The session `FORGE_SESSION_ID` names; one this daemon does not know is an error, not "no caller".
+fn caller<'a>(app: &App, store: &'a Store, help: &[&str]) -> Result<Option<&'a Session>, u8> {
+    let Some(id) = env_session() else {
+        return Ok(None);
+    };
+    store
+        .sessions
+        .iter()
+        .find(|s| s.id == id)
+        .map(Some)
+        .ok_or_else(|| {
+            usage_code(
+                app,
+                "FORGE_SESSION_ID names no session of this daemon",
+                help,
+            )
+        })
+}
+
+/// Every check that needs no daemon round trip, so a refusal never leaves a worktree behind.
+fn target<'a>(
+    app: &App,
+    store: &'a Store,
+    placement: &Placement,
+    help: &[&str],
+) -> Result<Target<'a>, u8> {
+    let title = placement.name.as_deref().map(str::trim);
     if title == Some("") {
+        return Err(usage_code(app, "name cannot be empty", help));
+    }
+    let caller = caller(app, store, help)?;
+    let (project, default_workspace) = match (&placement.project, caller) {
+        (Some(raw), _) => (places::project(app, store, raw)?, None),
+        (None, Some(caller)) => {
+            let project = project_for(store, caller).ok_or_else(|| {
+                usage_code(
+                    app,
+                    "the calling session has no project; pass --project",
+                    help,
+                )
+            })?;
+            (project, Some(caller.workspace_id))
+        }
+        (None, None) => {
+            return Err(usage_code(
+                app,
+                "pass --project, or run inside a Forge session",
+                help,
+            ))
+        }
+    };
+    if let Some(raw) = &placement.workspace {
+        places::workspace(app, store, Some(project.id), Some(raw))?;
+    }
+    let parent = match placement.parent.as_deref() {
+        None => None,
+        Some("self") => Some(
+            env_session()
+                .ok_or_else(|| usage_code(app, "--parent self needs FORGE_SESSION_ID", help))?,
+        ),
+        Some(raw) => Some(resolve(app, store, raw)?.id),
+    };
+    Ok(Target {
+        project,
+        default_workspace,
+        caller,
+        title: title.map(str::to_owned),
+        role: placement.role.into(),
+        parent,
+    })
+}
+
+fn checkout(
+    app: &App,
+    client: &Client,
+    store: &Store,
+    target: &Target<'_>,
+    placement: &Placement,
+) -> Result<(Workspace, bool), u8> {
+    match &placement.worktree {
+        Some(branch) => Ok((
+            create_worktree(
+                app,
+                client,
+                target.project.id,
+                branch,
+                placement.base.clone(),
+            )?,
+            true,
+        )),
+        None => {
+            let default = target.default_workspace.map(|id| id.to_string());
+            let raw = placement.workspace.as_deref().or(default.as_deref());
+            Ok((
+                places::workspace(app, store, Some(target.project.id), raw)?.clone(),
+                false,
+            ))
+        }
+    }
+}
+
+/// A launch that fails after creating a worktree names it, so the caller can remove it.
+fn created_details(workspace: &Workspace, created: bool) -> (Value, Vec<Vec<String>>) {
+    if !created {
+        return (Value::Null, vec![]);
+    }
+    (
+        json!({ "worktree_created": workspace }),
+        next(&["forgectl", "workspace", "remove", &workspace.id.to_string()]),
+    )
+}
+
+fn created(
+    app: &App,
+    client: &Client,
+    request: Request,
+    workspace: &Workspace,
+    worktree: bool,
+) -> Result<(SessionId, domain::TerminalId), u8> {
+    let (extra, hint) = created_details(workspace, worktree);
+    match app.call_with(client, request, true, extra.clone(), hint.clone())? {
+        Response::SessionCreated {
+            session_id,
+            terminal_id,
+        } => Ok((session_id, terminal_id)),
+        _ => Err(app.fail(1, "internal", "unexpected spawn response", extra, hint)),
+    }
+}
+
+pub(crate) fn spawn(app: &App, client: &Client, args: SpawnArgs) -> Result<Value, u8> {
+    let help = ["forgectl", "session", "spawn", "--help"];
+    let stdin = Some(Path::new("-"));
+    if args.prompt_file.as_deref() == stdin && args.context_file.as_deref() == stdin {
         return Err(usage_code(
             app,
-            "name cannot be empty",
-            &["forgectl", "session", "spawn", "--help"],
+            "only one of --prompt-file and --context-file can read stdin",
+            &help,
         ));
     }
     let prompt = if args.prompt.is_some() || args.prompt_file.is_some() {
-        Some(input(app, args.prompt, args.prompt_file, 8_192)?)
+        Some(input(
+            app,
+            args.prompt,
+            args.prompt_file,
+            MAX_LAUNCH_PROMPT_BYTES,
+        )?)
+    } else {
+        None
+    };
+    let context = if args.context.is_some() || args.context_file.is_some() {
+        Some(input(
+            app,
+            args.context,
+            args.context_file,
+            MAX_LAUNCH_PROMPT_BYTES,
+        )?)
     } else {
         None
     };
     let store = load(app, client)?;
-    let project_path = std::fs::canonicalize(&args.project).ok();
-    let projects: Vec<_> = store
-        .projects
-        .iter()
-        .filter(|p| {
-            p.id.to_string() == args.project
-                || p.name.eq_ignore_ascii_case(&args.project)
-                || p.root_path == Path::new(&args.project)
-                || project_path.as_ref() == Some(&p.root_path)
-        })
-        .collect();
-    let project = match projects.as_slice() {
-        [p] => *p,
-        [] => return Err(app.fail(4, "not_found", "project not found", json!({}), vec![])),
+    let target = target(app, &store, &args.placement, &help)?;
+    let prompt = launch_prompt(prompt, context, target.caller);
+    if prompt
+        .as_ref()
+        .is_some_and(|p| p.len() > MAX_LAUNCH_PROMPT_BYTES)
+    {
+        return Err(usage_code(
+            app,
+            &format!("prompt and context exceed {MAX_LAUNCH_PROMPT_BYTES} bytes together"),
+            &help,
+        ));
+    }
+    let (provider, inherited) = match (&args.provider, target.caller) {
+        (Some(raw), _) => (AgentProviderId::new(raw), false),
+        (
+            None,
+            Some(Session {
+                agent_provider_id: Some(provider),
+                ..
+            }),
+        ) => (provider.clone(), true),
         _ => {
-            return Err(app.fail(
-                5,
-                "ambiguous",
-                "project is ambiguous; use its id or path",
-                json!({ "projects": projects }),
-                vec![],
+            return Err(usage_code(
+                app,
+                "pass --provider, or run inside a Forge agent session",
+                &help,
             ))
         }
     };
-    let provider = AgentProviderId::new(&args.provider);
     let profile = match args.profile.as_deref() {
+        None if inherited => target.caller.and_then(|caller| caller.agent_profile_id),
         None => None,
         Some(raw) => {
             let profile = store
@@ -290,101 +898,111 @@ fn spawn(app: &App, client: &Client, args: SpawnArgs) -> Result<(), u8> {
         .iter()
         .find(|p| p.descriptor.id == provider)
         .map(|p| &p.descriptor)
-        .ok_or_else(|| app.fail(4, "not_found", "provider not found", json!({}), vec![]))?;
-    if args.read_only && !descriptor.capabilities.supports_review {
-        return Err(app.fail(
-            1,
-            "invalid_request",
-            "provider has no read-only launch mode",
-            json!({}),
-            vec![],
-        ));
-    }
-    if args.model.is_some() && descriptor.model.is_none()
+        .ok_or_else(|| {
+            app.fail(
+                4,
+                "not_found",
+                "provider not found",
+                json!({}),
+                next(&["forgectl", "providers"]),
+            )
+        })?;
+    let unsupported = if args.read_only && !descriptor.capabilities.supports_review {
+        Some("provider has no read-only launch mode")
+    } else if args.resume.is_some() && !descriptor.capabilities.supports_resume {
+        Some("provider cannot resume a conversation")
+    } else if args.model.is_some() && descriptor.model.is_none()
         || args.effort.is_some() && descriptor.effort.is_none()
     {
-        return Err(app.fail(
-            1,
-            "invalid_request",
-            "provider does not support model/effort selection",
-            json!({}),
-            vec![],
-        ));
-    }
-    let workspace = if let Some(branch) = &args.worktree {
-        create_worktree(app, client, project.id, branch, args.base)?
+        Some("provider does not support model/effort selection")
     } else {
-        store
-            .workspaces
-            .iter()
-            .find(|w| {
-                w.project_id == project.id
-                    && args
-                        .workspace
-                        .map_or(w.kind == WorkspaceKind::Main, |id| w.id == id)
-            })
-            .cloned()
-            .ok_or_else(|| {
-                app.fail(
-                    4,
-                    "not_found",
-                    "workspace not found in project",
-                    json!({}),
-                    vec![],
-                )
-            })?
+        None
     };
-    let response = app.call(
+    if let Some(message) = unsupported {
+        return Err(app.fail(1, "invalid_request", message, json!({}), vec![]));
+    }
+    let (workspace, worktree) = checkout(app, client, &store, &target, &args.placement)?;
+    let (session_id, terminal_id) = created(
+        app,
         client,
         Request::CreateAgentSession {
             workspace_id: workspace.id,
             provider_id: provider.clone(),
             profile_id: profile,
-            parent: None,
-            role: SessionRole::Generic,
-            resume: None,
+            parent: target.parent,
+            role: target.role.clone(),
+            resume: args.resume,
             initial_prompt: prompt,
             read_only: args.read_only,
             model: args.model,
             effort: args.effort,
+            title: target.title.clone(),
         },
-        true,
+        &workspace,
+        worktree,
     )?;
-    let Response::SessionCreated {
-        session_id,
-        terminal_id,
-    } = response
-    else {
-        return Err(app.fail(
-            3,
-            "unreachable",
-            "unexpected spawn response",
-            json!({}),
-            vec![],
-        ));
+    Ok(
+        json!({ "session_id": session_id, "terminal_id": terminal_id, "project": target.project,
+        "workspace": workspace_json(&store, &workspace), "title": target.title, "provider": provider,
+        "profile": profile, "role": target.role, "parent": target.parent, "spawned_by": env_session() }),
+    )
+}
+
+/// The context follows the task under a heading naming who handed it over.
+fn launch_prompt(
+    prompt: Option<String>,
+    context: Option<String>,
+    caller: Option<&Session>,
+) -> Option<String> {
+    let Some(context) = context else {
+        return prompt;
     };
-    if let Some(title) = title {
-        if let Err(code) = app.call(
-            client,
-            Request::RenameSession {
-                session_id,
-                title: Some(title.into()),
-            },
-            true,
-        ) {
-            eprintln!("session {session_id} was created but could not be renamed");
-            return Err(code);
-        }
-    }
-    app.print_ok(json!({ "session_id": session_id, "terminal_id": terminal_id, "project": project,
-        "workspace": workspace, "title": title, "provider": provider, "spawned_by": env_session() }));
+    let from = caller.map_or_else(
+        || "the caller".to_owned(),
+        |caller| {
+            format!(
+                "Forge session \"{}\" ({})",
+                caller.title.resolve("session"),
+                caller.id
+            )
+        },
+    );
+    let handover = format!("Context handed over from {from}:\n\n{context}");
+    Some(match prompt {
+        Some(prompt) => format!("{prompt}\n\n{handover}"),
+        None => handover,
+    })
+}
+
+fn shell(app: &App, client: &Client, args: ShellArgs) -> Result<(), u8> {
+    let help = ["forgectl", "session", "shell", "--help"];
+    let store = load(app, client)?;
+    let target = target(app, &store, &args.placement, &help)?;
+    let (workspace, worktree) = checkout(app, client, &store, &target, &args.placement)?;
+    let (session_id, terminal_id) = created(
+        app,
+        client,
+        Request::CreateShellSession {
+            workspace_id: workspace.id,
+            parent: target.parent,
+            role: target.role.clone(),
+            title: target.title.clone(),
+        },
+        &workspace,
+        worktree,
+    )?;
+    app.print_ok(
+        json!({ "session_id": session_id, "terminal_id": terminal_id, "project": target.project,
+        "workspace": workspace_json(&store, &workspace), "title": target.title, "kind": "shell",
+        "role": target.role, "parent": target.parent, "spawned_by": env_session() }),
+    );
     Ok(())
 }
 
 fn create_worktree(
     app: &App,
     client: &Client,
-    project: ProjectId,
+    project: domain::ProjectId,
     branch: &str,
     base: Option<String>,
 ) -> Result<Workspace, u8> {
@@ -400,72 +1018,82 @@ fn create_worktree(
         true,
     )?;
     let deadline = Instant::now() + app.timeout;
-    loop {
-        let event = events
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|e| {
-                app.fail(
-                    3,
-                    "unreachable",
-                    &e.to_string(),
-                    json!({ "uncertain": true }),
-                    vec![],
-                )
-            })?;
-        if let DaemonEvent::WorkspaceCreated(workspace) = event {
-            if workspace.project_id == project && workspace.branch.as_deref() == Some(branch) {
-                return Ok(workspace);
-            }
+    let mut found = None;
+    app.await_event(&events, deadline, |event| match event {
+        DaemonEvent::WorkspaceCreated(workspace)
+            if workspace.project_id == project && workspace.branch.as_deref() == Some(branch) =>
+        {
+            found = Some(workspace.clone());
+            true
         }
-    }
+        _ => false,
+    })?;
+    found.ok_or_else(|| {
+        app.fail(
+            3,
+            "unreachable",
+            "worktree creation was acknowledged but not observed",
+            json!({ "uncertain": true }),
+            next(&["forgectl", "workspace", "list"]),
+        )
+    })
 }
 
 fn wait(
     app: &App,
     client: &Client,
     raw: &str,
-    state: &str,
+    states: &[String],
     timeout: Option<&str>,
 ) -> Result<(), u8> {
-    let wanted = match state {
-        "idle" => ActivityState::Idle,
-        "waiting" => ActivityState::Waiting,
-        "working" => ActivityState::Working,
-        _ => {
-            return Err(usage_code(
-                app,
-                "unknown activity",
-                &["forgectl", "session", "wait", "--help"],
-            ))
+    let help = ["forgectl", "session", "wait", "--help"];
+    let mut wanted = Vec::new();
+    let mut exit = false;
+    for state in states {
+        match state.as_str() {
+            "idle" => wanted.push(ActivityState::Idle),
+            "waiting" => wanted.push(ActivityState::Waiting),
+            "working" => wanted.push(ActivityState::Working),
+            "exit" => exit = true,
+            _ => return Err(usage_code(app, "unknown activity", &help)),
         }
-    };
-    let budget = timeout
-        .map(parse_duration)
-        .transpose()
-        .map_err(|e| usage_code(app, &e, &["forgectl", "session", "wait", "--help"]))?
-        .unwrap_or(Duration::from_secs(600));
-    let deadline = Instant::now() + budget;
+    }
+    let deadline = Instant::now() + app.wait_budget(timeout, &help)?;
     let events = client.events();
     let store = load(app, client)?;
     let session = resolve(app, &store, raw)?;
+    if !exit && session.kind != SessionKind::Agent {
+        return Err(app.fail(
+            5,
+            "precondition_failed",
+            "only agent sessions report activity; wait for exit instead",
+            json!({ "session_id": session.id, "kind": session.kind }),
+            vec![vec![
+                "forgectl".into(),
+                "session".into(),
+                "wait".into(),
+                session.id.to_string(),
+                "--for".into(),
+                "exit".into(),
+            ]],
+        ));
+    }
     let id = session.id;
     let mut current = session.clone();
-    // Discard pre-snapshot events; retain updates newer than the authoritative activity clock.
+    let mut removed = false;
     for event in events.try_iter() {
-        match event {
-            DaemonEvent::SessionUpdated(s)
-                if s.id == id && s.activity.since >= current.activity.since =>
-            {
-                current = s
-            }
-            DaemonEvent::SessionRemoved { session_id } if session_id == id => {
-                return Err(app.fail(4, "not_found", "session removed", json!({}), vec![]))
-            }
-            _ => {}
-        }
+        observe(id, &event, &mut current, &mut removed);
     }
     loop {
+        if removed {
+            return Err(app.fail(4, "not_found", "session removed", json!({}), vec![]));
+        }
         if current.state.is_terminal() {
+            if exit {
+                app.print_ok(json!({ "session_id": id, "matched": "exit",
+                    "state": current.state, "activity": current.activity }));
+                return Ok(());
+            }
             return Err(app.fail(
                 5,
                 "precondition_failed",
@@ -474,42 +1102,47 @@ fn wait(
                 vec![],
             ));
         }
-        if current.activity.state == wanted {
-            app.print_ok(json!({ "session_id": id, "activity": current.activity }));
+        if session.kind == SessionKind::Agent && wanted.contains(&current.activity.state) {
+            app.print_ok(json!({ "session_id": id, "matched": current.activity.state,
+                "state": current.state, "activity": current.activity }));
             return Ok(());
         }
-        let event = events
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|e| {
-                if matches!(e, flume::RecvTimeoutError::Timeout) {
-                    app.fail(
-                        124,
-                        "timeout",
-                        "session wait timed out",
-                        json!({ "session_id": id }),
-                        vec![],
-                    )
-                } else {
-                    app.fail(3, "unreachable", "daemon disconnected", json!({}), vec![])
-                }
-            })?;
-        match event {
-            DaemonEvent::SessionUpdated(s)
-                if s.id == id && s.activity.since >= current.activity.since =>
-            {
-                current = s
-            }
-            DaemonEvent::SessionRemoved { session_id: s } if s == id => {
-                return Err(app.fail(4, "not_found", "session removed", json!({}), vec![]))
-            }
-            _ => {}
+        let woke = app.await_event(&events, deadline, |event| {
+            observe(id, event, &mut current, &mut removed)
+        })?;
+        if woke == Woke::Deadline {
+            return Err(app.fail(
+                124,
+                "timeout",
+                "session wait timed out",
+                json!({ "session_id": id, "activity": current.activity }),
+                vec![],
+            ));
         }
+    }
+}
+
+/// Events queued before the snapshot only count when they are newer than its activity clock.
+fn observe(id: SessionId, event: &DaemonEvent, current: &mut Session, removed: &mut bool) -> bool {
+    match event {
+        DaemonEvent::SessionUpdated(s)
+            if s.id == id && s.activity.since >= current.activity.since =>
+        {
+            *current = s.clone();
+            true
+        }
+        DaemonEvent::SessionRemoved { session_id } if *session_id == id => {
+            *removed = true;
+            true
+        }
+        _ => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::{ProjectId, WorkspaceKind};
 
     fn fixture() -> Store {
         let mut store = Store::new();
@@ -589,21 +1222,54 @@ mod tests {
     }
 
     #[test]
-    fn listing_retains_string_kind_and_state_with_exit_details() {
+    fn handed_over_context_follows_the_task_and_names_the_caller() {
+        let store = fixture();
+        let caller = &store.sessions[0];
+        assert_eq!(
+            launch_prompt(Some("Do X".into()), None, Some(caller)).as_deref(),
+            Some("Do X")
+        );
+        let both =
+            launch_prompt(Some("Do X".into()), Some("We chose Y".into()), Some(caller)).unwrap();
+        assert!(both.starts_with("Do X\n\nContext handed over from Forge session \"Implement\""));
+        assert!(both.ends_with(":\n\nWe chose Y"));
+        let alone = launch_prompt(None, Some("We chose Y".into()), None).unwrap();
+        assert_eq!(alone, "Context handed over from the caller:\n\nWe chose Y");
+    }
+
+    #[test]
+    fn listing_retains_string_kind_and_state_and_adds_structured_exit() {
         let mut store = fixture();
         let running = candidate(&store, &store.sessions[0]);
         assert_eq!(running["kind"], "Agent");
         assert_eq!(running["state"], "Running");
+        assert_eq!(running["active"], true);
         store.sessions[0].state = domain::SessionState::Exited {
-            code: Some(0),
+            code: Some(3),
             signal: None,
         };
         let exited = candidate(&store, &store.sessions[0]);
-        assert_eq!(exited["state"], "Exited { code: Some(0), signal: None }");
+        assert_eq!(exited["state"], "Exited { code: Some(3), signal: None }");
+        assert_eq!(exited["exit_code"], 3);
+        assert_eq!(exited["ended"], true);
+        assert_eq!(exited["active"], false);
     }
 
     #[test]
-    fn spawn_and_send_flags_enforce_exclusive_inputs() {
+    fn projects_match_names_case_insensitively_and_paths_exactly() {
+        let store = fixture();
+        let api = store.projects[0].id;
+        assert_eq!(places::matching_projects(&store, "API")[0].id, api);
+        assert_eq!(places::matching_projects(&store, "/dev/api")[0].id, api);
+        assert_eq!(
+            places::matching_projects(&store, &api.to_string())[0].id,
+            api
+        );
+        assert!(places::matching_projects(&store, "/dev").is_empty());
+    }
+
+    #[test]
+    fn spawn_shell_exec_and_send_flags_enforce_exclusive_inputs() {
         assert!(Cli::try_parse_from([
             "forgectl",
             "session",
@@ -613,11 +1279,57 @@ mod tests {
             "--provider",
             "claude",
             "--workspace",
-            "bad-id",
+            "1234abcd",
             "--worktree",
             "feature"
         ])
         .is_err());
+        assert!(Cli::try_parse_from([
+            "forgectl",
+            "session",
+            "shell",
+            "--project",
+            "api",
+            "--base",
+            "main"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "forgectl",
+            "session",
+            "shell",
+            "--project",
+            "api",
+            "--role",
+            "tester",
+            "--parent",
+            "self"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from(["forgectl", "session", "spawn", "--context", "c"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "forgectl",
+            "session",
+            "spawn",
+            "--context",
+            "c",
+            "--context-file",
+            "f"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "forgectl",
+            "session",
+            "wait",
+            "w",
+            "--for",
+            "idle,waiting,exit"
+        ])
+        .is_ok());
+        assert!(
+            Cli::try_parse_from(["forgectl", "session", "wait", "w", "--for", "idle,done"])
+                .is_err()
+        );
         assert!(Cli::try_parse_from([
             "forgectl", "session", "send", "worker", "--text", "hello", "--file", "file"
         ])
@@ -628,5 +1340,14 @@ mod tests {
         .is_err());
         assert!(Cli::try_parse_from(["forgectl", "session", "send", "worker", "-"]).is_ok());
         assert!(Cli::try_parse_from(["forgectl", "session", "send", "worker"]).is_err());
+        assert!(Cli::try_parse_from(["forgectl", "session", "exec", "sh"]).is_err());
+        assert!(
+            Cli::try_parse_from(["forgectl", "session", "exec", "sh", "--text", "ls", "-"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["forgectl", "session", "signal", "sh"]).is_err());
+        assert!(
+            Cli::try_parse_from(["forgectl", "session", "signal", "sh", "--signal", "int"]).is_ok()
+        );
     }
 }

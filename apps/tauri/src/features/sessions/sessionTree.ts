@@ -14,6 +14,10 @@ export type TreeRow = {
   session: Session;
   /** `0` is a root. */
   depth: number;
+  /** No later sibling: the row's elbow closes the branch. */
+  last: boolean;
+  /** Ancestor levels (`1..depth-1`) whose guide still runs past this row. */
+  through: number[];
 };
 
 export function orderSessionsTree(sessions: Session[], order: string[] = []): TreeRow[] {
@@ -34,7 +38,7 @@ export function orderSessionsTree(sessions: Session[], order: string[] = []): Tr
     siblings.sort(byTab);
   }
 
-  const out: TreeRow[] = [];
+  const out: { session: Session; depth: number }[] = [];
   const walk = (session: Session, depth: number): void => {
     out.push({ session, depth });
     const children = byParent.get(session.id);
@@ -52,7 +56,23 @@ export function orderSessionsTree(sessions: Session[], order: string[] = []): Tr
   const stragglers = sessions.filter((session) => !placed.has(session.id)).sort(byTab);
   for (const session of stragglers) out.push({ session, depth: 0 });
 
-  return out;
+  const depths = out.map((row) => row.depth);
+  return out.map((row, index) => ({
+    ...row,
+    last: !continuesAt(depths, index, row.depth),
+    through: Array.from({ length: Math.max(row.depth - 1, 0) }, (_, i) => i + 1).filter((level) =>
+      continuesAt(depths, index, level),
+    ),
+  }));
+}
+
+/** Whether a later row sits at `level` before the subtree holding row `index` ends. */
+function continuesAt(depths: number[], index: number, level: number): boolean {
+  for (let next = index + 1; next < depths.length; next += 1) {
+    if (depths[next] < level) return false;
+    if (depths[next] === level) return true;
+  }
+  return false;
 }
 
 /** Rail or tab title with its role prefix, when the role is not the generic one. */

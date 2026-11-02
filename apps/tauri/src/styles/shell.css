@@ -870,6 +870,43 @@
   padding: 0 var(--space-8) 0 calc(var(--space-8) + var(--tree-depth, 0) * var(--space-12));
   width: 100%;
 }
+/* A child session hangs off an elbow from its parent's icon into its own; a later
+   sibling keeps the line running. Rows are flat, so each draws its own segments. */
+.tree-row.nested {
+  --guide: var(--hue-guide, var(--border-subtle));
+  --guide-gap: var(--space-3);
+  --guide-start: calc(var(--space-8) + 8px);
+  --guide-step: 20px;
+  --guide-x: calc(var(--guide-start) + (var(--tree-depth) - 1) * var(--guide-step));
+  padding-left: calc(var(--space-8) + var(--tree-depth) * var(--guide-step));
+  position: relative;
+}
+.tree-row.nested::before,
+.tree-row.nested:not(.last)::after,
+.tree-rail {
+  border-left: 1px solid var(--guide);
+  content: "";
+  pointer-events: none;
+  position: absolute;
+}
+.tree-row.nested::before {
+  border-bottom: 1px solid var(--guide);
+  border-bottom-left-radius: 6px;
+  height: calc(50% + var(--guide-gap) / 2);
+  left: var(--guide-x);
+  top: calc(var(--guide-gap) / -2);
+  width: calc(var(--guide-step) - 11px);
+}
+.tree-row.nested:not(.last)::after {
+  bottom: calc(var(--guide-gap) / -2);
+  left: var(--guide-x);
+  top: 50%;
+}
+.tree-rail {
+  bottom: calc(var(--guide-gap) / -2);
+  left: calc(var(--guide-start) + (var(--rail) - 1) * var(--guide-step));
+  top: calc(var(--guide-gap) / -2);
+}
 /* A group is a label over its projects, not a row of its own weight. */
 .tree-row.group {
   color: var(--forge-faint);
@@ -967,7 +1004,18 @@
 .tree-path {
   font-size: var(--text-xs);
 }
-/* Children hang off a guide under the row that holds them, in its project's hue. */
+/* Children hang off a guide under the row that holds them, in its project's hue,
+   fading out towards the last child rather than stopping on a hard edge. */
+.tree-guide,
+.ws-card > .ws-sessions {
+  border-image: linear-gradient(
+      to bottom,
+      var(--hue-guide, var(--border-subtle)) 0%,
+      var(--hue-guide, var(--border-subtle)) 90%,
+      transparent 100%
+    )
+    1;
+}
 .tree-guide {
   border-left: 1px solid var(--hue-guide, var(--border-subtle));
   display: flex;
@@ -1788,6 +1836,12 @@
 }
 :root[data-trim="true"] .tree-row.group {
   height: var(--space-20);
+}
+:root[data-trim="true"] .tree-row.nested {
+  --guide-gap: var(--space-2);
+  --guide-start: calc(var(--space-6) + 8px);
+  --guide-step: 18px;
+  padding-left: calc(var(--space-6) + var(--tree-depth) * var(--guide-step));
 }
 :root[data-trim="true"] .tree-row.project {
   gap: var(--space-8);

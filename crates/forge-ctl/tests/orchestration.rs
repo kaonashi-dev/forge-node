@@ -669,6 +669,15 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
         .spawn()
         .unwrap();
     let mut stdin = server.stdin.take().unwrap();
+    let mut stdout = std::io::BufReader::new(server.stdout.take().unwrap());
+    let mut read_response = || {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut stdout, &mut line).unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    // One request at a time: tool calls run concurrently, so a pipelined
+    // rename and read would no longer be ordered.
+    let mut responses = Vec::new();
     for request in [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
@@ -681,7 +690,19 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
         json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"spawn_session","arguments":{"project":other.to_string_lossy(),"provider":"claude","name":"mcp root","prompt":"mcp task","model":"opus","effort":"high"}}}),
     ] {
         writeln!(stdin, "{request}").unwrap();
+        if request.get("id").is_some() {
+            responses.push(read_response());
+        }
     }
+    // A long wait no longer holds the server: the listing behind it answers first.
+    writeln!(stdin, "{}", json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"wait_session","arguments":{"session":id,"for":"idle","timeout":3}}})).unwrap();
+    writeln!(stdin, "{}", json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"list_projects","arguments":{}}})).unwrap();
+    let listed = read_response();
+    assert_eq!(listed["id"], 10, "{listed}");
+    assert_eq!(listed["result"]["isError"], false, "{listed}");
+    let waited = read_response();
+    assert_eq!(waited["id"], 9, "{waited}");
+    assert_eq!(waited["result"]["isError"], true, "{waited}");
     drop(stdin);
     let output = server.wait_with_output().unwrap();
     assert!(
@@ -689,12 +710,11 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let responses: Vec<Value> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
     assert_eq!(responses.len(), 8);
-    assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        responses[1]["result"]["tools"].as_array().unwrap().len(),
+        21
+    );
     assert_eq!(responses[2]["result"]["structuredContent"]["ok"], true);
     for response in &responses[2..] {
         assert_eq!(response["result"]["isError"], false, "{response}");
@@ -791,6 +811,7 @@ fn real_claude_reports_question_permission_and_idle_with_tty_diagnostics() {
         workspace_id: workspace, provider_id: domain::AgentProviderId::new("claude"), profile_id: Some(profile_id), parent: None,
         role: domain::SessionRole::Generic, resume: None, read_only: false, model: None, effort: None,
         initial_prompt: Some("This is an isolated activity smoke test. First call AskUserQuestion with the question 'Activity smoke: choose Continue', with options Continue and Stop. After Continue, use Bash to run exactly: printf 'activity-smoke-ok\\n' > probe.txt . Then respond SMOKE_DONE and stop. Do not inspect files, use other tools, or do any other work.".into()),
+        title: None,
     }).unwrap() {
         Response::SessionCreated { session_id, terminal_id } => (session_id, terminal_id),
         other => panic!("launch: {other:?}"),
@@ -1589,6 +1610,7 @@ fn scenario_pointer_broadcast_and_cli_events() {
             workspace_id: main,
             parent: None,
             role: SessionRole::Generic,
+            title: None,
         })
         .expect("shell")
     {
@@ -2672,6 +2694,7 @@ fn pr_draft_hands_the_text_to_every_client() {
             workspace_id,
             parent: None,
             role: domain::SessionRole::Generic,
+            title: None,
         })
         .expect("CreateShellSession")
     else {
@@ -2718,4 +2741,613 @@ fn pr_draft_hands_the_text_to_every_client() {
     assert_eq!(draft.body, "## Why\n\nBecause.");
     assert_eq!(draft.branch, "ship-it");
     assert_eq!(draft.commit_message, "Ship it\n\nAll of it.");
+}
+
+#[test]
+fn shells_run_one_line_at_their_prompt_and_report_their_exit() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    add_project(&client, &repo);
+    let ctl = Ctl::new(&running.socket);
+    let project = repo.to_string_lossy().into_owned();
+    let shell = ok(&ctl.run(
+        &[
+            "session",
+            "shell",
+            "--project",
+            &project,
+            "--name",
+            "build",
+            "--role",
+            "tester",
+        ],
+        &[],
+    ));
+    assert_eq!(shell["kind"], "shell");
+    let id = field(&shell, "session_id");
+    assert_eq!(
+        ok(&ctl.run(&["session", "show", "repo/build"], &[]))["id"],
+        id
+    );
+    let listed = ok(&ctl.run(
+        &[
+            "session",
+            "list",
+            "--project",
+            "REPO",
+            "--kind",
+            "shell",
+            "--active",
+        ],
+        &[],
+    ));
+    assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+    assert!(
+        ok(&ctl.run(&["session", "list", "--kind", "agent"], &[]))["sessions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let refused = err(
+        &ctl.run(
+            &["session", "wait", &id, "--for", "idle", "--timeout", "1s"],
+            &[],
+        ),
+        5,
+    );
+    assert_eq!(refused["error"]["next"][0][5], "exit");
+    err(
+        &ctl.run(&["session", "exec", &id, "--text", "echo a\necho b"], &[]),
+        1,
+    );
+    err(
+        &ctl.run(
+            &[
+                "session",
+                "wait",
+                &id,
+                "--for",
+                "exit",
+                "--timeout",
+                "nonsense",
+            ],
+            &[],
+        ),
+        2,
+    );
+
+    // The shell may still be starting; a refusal only means it is not at its prompt yet.
+    poll("shell prompt", || {
+        let ran = ctl.run(
+            &["session", "exec", &id, "--text", "echo exec-$((40 + 2))"],
+            &[],
+        );
+        (ran.code == 0).then_some(())
+    });
+    wait_text(&ctl, &id, "exec-42");
+
+    ok(&ctl.run(
+        &[
+            "session",
+            "exec",
+            &id,
+            "--text",
+            "/bin/sh -c 'echo job-$((5 * 5)); /bin/sleep 30'",
+        ],
+        &[],
+    ));
+    // The echo of the typed line holds the expression, never its value.
+    wait_text(&ctl, &id, "job-25");
+    let busy = err(
+        &ctl.run(&["session", "exec", &id, "--text", "echo never-typed"], &[]),
+        5,
+    );
+    assert!(
+        busy["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("foreground job")),
+        "{busy}"
+    );
+    ok(&ctl.run(
+        &["session", "signal", &id, "--signal", "int", "--foreground"],
+        &[],
+    ));
+    poll("prompt after interrupt", || {
+        let ran = ctl.run(
+            &["session", "exec", &id, "--text", "echo after-$((1 + 1))"],
+            &[],
+        );
+        (ran.code == 0).then_some(())
+    });
+    let text = wait_text(&ctl, &id, "after-2");
+    assert!(!text.contains("never-typed"), "{text}");
+
+    ok(&ctl.run(&["session", "exec", &id, "--text", "exit 3"], &[]));
+    let ended = ok(&ctl.run(
+        &["session", "wait", &id, "--for", "exit", "--timeout", "30s"],
+        &[],
+    ));
+    assert_eq!(ended["state"]["Exited"]["code"], 3, "{ended}");
+    let listed = ok(&ctl.run(&["session", "list", "--kind", "shell"], &[]));
+    assert_eq!(listed["sessions"][0]["exit_code"], 3);
+    assert_eq!(listed["sessions"][0]["active"], false);
+    err(
+        &ctl.run(&["session", "exec", &id, "--text", "true"], &[]),
+        5,
+    );
+
+    ok(&ctl.run(&["session", "restart", &id], &[]));
+    poll("restarted shell", || {
+        let ran = ctl.run(&["session", "exec", &id, "--text", "echo restarted"], &[]);
+        (ran.code == 0).then_some(())
+    });
+    ok(&ctl.run(&["session", "kill", &id], &[]));
+    ok(&ctl.run(
+        &["session", "wait", &id, "--for", "exit", "--timeout", "30s"],
+        &[],
+    ));
+    ok(&ctl.run(&["session", "close", &id], &[]));
+    err(&ctl.run(&["session", "show", &id], &[]), 4);
+}
+
+#[test]
+fn spawn_names_the_worktree_it_created_when_the_launch_is_refused() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    add_project(&client, &repo);
+    let ctl = Ctl::new(&running.socket);
+    let refused = err(
+        &ctl.run(
+            &[
+                "session",
+                "spawn",
+                "--project",
+                &repo.to_string_lossy(),
+                "--provider",
+                "claude",
+                "--worktree",
+                "orphan-check",
+                "--parent",
+                "00000000-0000-7000-8000-000000000000",
+            ],
+            &[],
+        ),
+        4,
+    );
+    // The parent is resolved before anything is created, so no worktree exists yet.
+    assert!(refused["error"]["details"]["worktree_created"].is_null());
+    let workspaces = ok(&ctl.run(&["workspace", "list", "--project", "repo"], &[]));
+    assert_eq!(workspaces["workspaces"].as_array().unwrap().len(), 1);
+
+    let other = harness.tmp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    client
+        .request(Request::AddProject {
+            path: other.clone(),
+        })
+        .unwrap();
+    let foreign = ok(&ctl.run(
+        &[
+            "session",
+            "shell",
+            "--project",
+            "other",
+            "--name",
+            "foreign-parent",
+        ],
+        &[],
+    ));
+    // The daemon refuses a cross-project parent only after the worktree exists.
+    let refused = err(
+        &ctl.run(
+            &[
+                "session",
+                "spawn",
+                "--project",
+                "repo",
+                "--provider",
+                "claude",
+                "--worktree",
+                "orphan-check",
+                "--parent",
+                &field(&foreign, "session_id"),
+            ],
+            &[],
+        ),
+        1,
+    );
+    assert_eq!(refused["error"]["code"], "invalid_request", "{refused}");
+    let created = &refused["error"]["details"]["worktree_created"];
+    assert_eq!(created["branch"], "orphan-check", "{refused}");
+    let workspace = created["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        refused["error"]["next"][0],
+        json!(["forgectl", "workspace", "remove", workspace])
+    );
+    ok(&ctl.run(&["workspace", "remove", &workspace, "--force"], &[]));
+}
+
+fn launch_args(harness: &Harness, session: &str) -> String {
+    let path = harness.capture.join(format!("session-{session}"));
+    poll("agent launch capture", || {
+        fs::read_to_string(&path)
+            .ok()
+            // ARGS is written last and a multi-line prompt spans several lines.
+            .and_then(|text| text.split_once("ARGS=").map(|(_, args)| args.to_owned()))
+    })
+}
+
+/// The three hand-offs a planning session asks for in plain words.
+#[test]
+fn a_planning_session_hands_its_plan_to_other_agents() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    add_project(&client, &repo);
+    let ctl = Ctl::new(&running.socket);
+    let planner = ok(&ctl.run(
+        &[
+            "session",
+            "spawn",
+            "--project",
+            "repo",
+            "--provider",
+            "claude",
+            "--name",
+            "planner",
+        ],
+        &[],
+    ));
+    let planner_id = field(&planner, "session_id");
+    let me = [("FORGE_SESSION_ID", planner_id.as_str())];
+    let plan = harness.tmp.path().join("plan.md");
+    fs::write(&plan, "Implement plan X: add the cache.").unwrap();
+
+    // "Send this plan to Claude with effort medium to implement it, then validate it."
+    let worker = ok(&ctl.run(
+        &[
+            "session",
+            "spawn",
+            "--provider",
+            "claude",
+            "--effort",
+            "medium",
+            "--name",
+            "implementer",
+            "--prompt-file",
+            &plan.to_string_lossy(),
+        ],
+        &me,
+    ));
+    assert_eq!(worker["project"]["name"], "repo");
+    assert_eq!(worker["workspace"]["id"], planner["workspace"]["id"]);
+    assert_eq!(worker["spawned_by"], planner_id);
+    let worker_id = field(&worker, "session_id");
+    let args = launch_args(&harness, &worker_id);
+    assert!(args.contains("--effort medium"), "{args}");
+    assert!(args.contains("Implement plan X"), "{args}");
+    let waiter_socket = running.socket.clone();
+    let waiter_id = worker_id.clone();
+    let waiter = std::thread::spawn(move || {
+        Ctl::new(&waiter_socket).run(
+            &[
+                "session",
+                "wait",
+                &waiter_id,
+                "--for",
+                "idle,waiting,exit",
+                "--timeout",
+                "20s",
+            ],
+            &[],
+        )
+    });
+    // A question is a turn boundary too: the planner must not sit out the timeout.
+    hook_state(&ctl, &worker_id, "waiting");
+    assert_eq!(ok(&waiter.join().unwrap())["matched"], "waiting");
+    hook_state(&ctl, &worker_id, "idle");
+    let done = ok(&ctl.run(
+        &["session", "wait", &worker_id, "--for", "idle,waiting,exit"],
+        &[],
+    ));
+    assert_eq!(done["matched"], "idle");
+    ok(&ctl.run(&["session", "changes", &worker_id], &[]));
+
+    // "Create an OpenCode session and have it implement plan X."
+    let opencode = ok(&ctl.run(
+        &[
+            "session",
+            "spawn",
+            "--provider",
+            "opencode",
+            "--name",
+            "oc",
+            "--prompt-file",
+            &plan.to_string_lossy(),
+        ],
+        &me,
+    ));
+    assert_eq!(opencode["provider"], "opencode");
+    let args = launch_args(&harness, &field(&opencode, "session_id"));
+    assert!(args.contains("--prompt Implement plan X"), "{args}");
+
+    // "Create a new session of this agent and send it what we have discussed."
+    let context = harness.tmp.path().join("context.md");
+    let discussed = format!("We agreed on SQLite. {}", "Detail. ".repeat(1500));
+    assert!(discussed.len() > 8 * 1024);
+    fs::write(&context, &discussed).unwrap();
+    let same = ok(&ctl.run(
+        &[
+            "session",
+            "spawn",
+            "--name",
+            "continuation",
+            "--prompt",
+            "Continue from here.",
+            "--context-file",
+            &context.to_string_lossy(),
+        ],
+        &me,
+    ));
+    assert_eq!(same["provider"], "claude");
+    assert_eq!(same["project"]["name"], "repo");
+    let args = launch_args(&harness, &field(&same, "session_id"));
+    assert!(
+        args.contains("Continue from here.\n\nContext handed over from Forge session \"planner\""),
+        "{args}"
+    );
+    assert!(args.contains("We agreed on SQLite."), "{args}");
+
+    fs::write(&context, "x".repeat(64 * 1024 + 1)).unwrap();
+    err(
+        &ctl.run(
+            &[
+                "session",
+                "spawn",
+                "--context-file",
+                &context.to_string_lossy(),
+            ],
+            &me,
+        ),
+        2,
+    );
+    err(
+        &ctl.run(&["session", "spawn", "--provider", "claude"], &[]),
+        2,
+    );
+}
+
+/// A spec arrives as a file, as text or as a Claude artifact link; the planner gets the brief.
+#[test]
+fn spec_runs_launch_a_planner_that_owns_the_coder_launch() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    add_project(&client, &repo);
+    let ctl = Ctl::new(&running.socket);
+    let spec = harness.tmp.path().join("cache spec.md");
+    fs::write(&spec, "# Cache\nAdd a cache to the loader.").unwrap();
+
+    let run = ok(&ctl.run(
+        &[
+            "spec",
+            "run",
+            &spec.to_string_lossy(),
+            "--project",
+            "repo",
+            "--name",
+            "cache",
+        ],
+        &[],
+    ));
+    assert_eq!(run["spec"]["kind"], "file");
+    assert_eq!(run["coder"]["provider"], "claude");
+    assert_eq!(run["coder"]["effort"], "medium");
+    let planner = field(&run["planner"], "session_id");
+    let shown = ok(&ctl.run(&["session", "show", &planner], &[]));
+    assert_eq!(shown["title"]["user"], "cache planner");
+    let args = launch_args(&harness, &planner);
+    assert!(args.contains("--effort high"), "{args}");
+    assert!(
+        args.contains("session spawn --provider claude --role executor --effort medium --parent self --name 'cache coder'"),
+        "{args}"
+    );
+    let canonical = fs::canonicalize(&spec).unwrap();
+    assert!(
+        args.contains(&format!("The spec is the file {}", canonical.display())),
+        "{args}"
+    );
+
+    let mixed = ok(&ctl.run(
+        &[
+            "spec",
+            "run",
+            "Add a cache to the loader.\nKeep the public API.",
+            "--project",
+            "repo",
+            "--preset",
+            "mix",
+            "--coder",
+            "opencode",
+            "--worktree",
+            "spec/cache",
+        ],
+        &[],
+    ));
+    assert_eq!(mixed["spec"]["kind"], "inline");
+    let args = launch_args(&harness, &field(&mixed["planner"], "session_id"));
+    assert!(
+        args.contains("--provider opencode --role executor --parent self"),
+        "{args}"
+    );
+    assert!(args.contains("--worktree spec/cache"), "{args}");
+    assert!(
+        args.contains("<<<SPEC\nAdd a cache to the loader.\nKeep the public API.\nSPEC>>>"),
+        "{args}"
+    );
+
+    // Cursor's effort rides on a model, so mix with an effort alone is refused before any launch.
+    let before = ok(&ctl.run(&["session", "list"], &[]))["sessions"]
+        .as_array()
+        .unwrap()
+        .len();
+    let refused = err(
+        &ctl.run(
+            &[
+                "spec",
+                "run",
+                &spec.to_string_lossy(),
+                "--project",
+                "repo",
+                "--preset",
+                "mix",
+                "--coder-effort",
+                "high",
+            ],
+            &[],
+        ),
+        1,
+    );
+    assert_eq!(refused["error"]["details"]["role"], "coder");
+    err(
+        &ctl.run(
+            &["spec", "run", "missing/spec.md", "--project", "repo"],
+            &[],
+        ),
+        4,
+    );
+    let after = ok(&ctl.run(&["session", "list"], &[]))["sessions"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(before, after);
+
+    let brief = ok(&ctl.run(
+        &[
+            "spec",
+            "brief",
+            "https://claude.ai/public/artifacts/abc",
+            "--preset",
+            "mix",
+            "--coder",
+            "opencode",
+        ],
+        &[("FORGE_SESSION_ID", planner.as_str())],
+    ));
+    assert_eq!(brief["spec"]["kind"], "claude_artifact");
+    let text = brief["brief"].as_str().unwrap();
+    assert!(text.contains("read_artifact"), "{text}");
+    assert!(text.contains("AskUserQuestion"), "{text}");
+    assert!(
+        text.contains("--provider opencode --role executor --parent self"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_child_reports_to_its_parent_and_watch_follows_it_until_it_ends() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    add_project(&client, &repo);
+    let ctl = Ctl::new(&running.socket);
+    let planner = field(
+        &ok(&ctl.run(
+            &[
+                "session",
+                "spawn",
+                "--project",
+                "repo",
+                "--provider",
+                "claude",
+                "--name",
+                "planner",
+            ],
+            &[],
+        )),
+        "session_id",
+    );
+    let coder = field(
+        &ok(&ctl.run(
+            &[
+                "session",
+                "spawn",
+                "--provider",
+                "claude",
+                "--name",
+                "coder",
+                "--parent",
+                "self",
+            ],
+            &[("FORGE_SESSION_ID", planner.as_str())],
+        )),
+        "session_id",
+    );
+    assert_eq!(
+        ok(&ctl.run(
+            &["session", "show", "self"],
+            &[("FORGE_SESSION_ID", coder.as_str())]
+        ))["id"],
+        coder
+    );
+    err(
+        &ctl.run(
+            &["session", "show", "parent"],
+            &[("FORGE_SESSION_ID", planner.as_str())],
+        ),
+        4,
+    );
+
+    let watch = Command::new(&ctl.bin)
+        .args(["--json", "--socket"])
+        .arg(&running.socket)
+        .args(["session", "watch", &coder, "--timeout", "30s"])
+        .env_remove("FORGE_SESSION_ID")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // The planner is busy, so the report waits in its one slot until it is idle.
+    hook_state(&ctl, &planner, "working");
+    let queued = ok(&ctl.run(
+        &[
+            "session",
+            "send",
+            "parent",
+            "--queue",
+            "--text",
+            "coder-report-done",
+        ],
+        &[("FORGE_SESSION_ID", coder.as_str())],
+    ));
+    assert_eq!(queued["queued"], true);
+    hook_state(&ctl, &planner, "idle");
+    wait_text(&ctl, &planner, "coder-report-done");
+
+    hook_state(&ctl, &coder, "working");
+    hook_state(&ctl, &coder, "idle");
+    ok(&ctl.run(&["session", "kill", &coder], &[]));
+    let output = watch.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lines: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines[0]["event"], "snapshot");
+    assert!(lines
+        .iter()
+        .any(|l| l["event"] == "updated" && l["activity"] == "idle"));
+    assert_eq!(lines.last().unwrap()["ended"], true);
 }

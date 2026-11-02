@@ -438,6 +438,8 @@ fn request_name(request: &Request) -> &'static str {
         Request::SubmitPullRequestDraft { .. } => "SubmitPullRequestDraft",
         Request::CreateShellSession { .. } => "CreateShellSession",
         Request::CreateAgentSession { .. } => "CreateAgentSession",
+        Request::SendSessionPrompt { .. } => "SendSessionPrompt",
+        Request::SendShellCommand { .. } => "SendShellCommand",
         Request::CreateChildSession { .. } => "CreateChildSession",
         Request::KillSession { .. } => "KillSession",
         Request::CloseSession { .. } => "CloseSession",

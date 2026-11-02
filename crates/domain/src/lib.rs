@@ -22,6 +22,7 @@ pub mod pull_request;
 pub mod rebase;
 pub mod session;
 pub mod share;
+pub mod spec_run;
 pub mod terminal;
 pub mod usage;
 pub mod workspace;

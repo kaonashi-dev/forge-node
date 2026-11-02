@@ -57,7 +57,11 @@ and nobody is blocked in `inbox --wait`, which returns on unread mail only. Wait
 the pointer. A separate carriage return follows the line.
 
 `run wait` is level-triggered: if the condition already holds it returns the
-triggering items immediately.
+triggering items immediately. It, `ask --wait`, `inbox --wait` and `state watch`
+block on daemon events rather than polling; `run wait` also re-reads every 5 s
+because `waiting` and `stalled` attention appear when a clock crosses a
+threshold, which no event announces. Every wait defaults to 600 s, or to the
+global `--timeout` when one is given; a malformed `--timeout` exits 2.
 
 ## CLI contract
 
@@ -94,22 +98,66 @@ roots, including in another project; `FORGE_SESSION_ID` is reported as
 `spawned_by`, never used as a cross-project parent.
 
 ```sh
-forgectl --json session list
+forgectl --json project list
+forgectl --json session list --project api --kind agent --active
 forgectl --json session spawn --project api --provider claude --profile Work \
   --name auth-impl --worktree auth-impl --base main \
   --model opus --effort high --prompt-file plan/auth.md
 forgectl session rename api/auth-impl auth-review
 forgectl session wait api/auth-review --for idle --timeout 600
-forgectl session read api/auth-review
+forgectl session read api/auth-review --lines 200
+forgectl session changes api/auth-review
 forgectl session send api/auth-review --queue --text 'Review the failing test.'
+forgectl --json session shell --project api --name checks
+forgectl session exec api/checks --text 'cargo test -p client'
 ```
 
-`--project` accepts an exact name (case-insensitive), root path or UUID.
+`--project` accepts an exact name (case-insensitive), root path or UUID, the
+same way in every command that takes one (`run start` and `run list` included).
 Paths resolve canonically, so symlinks and platform aliases name the same project.
-`--workspace <uuid>` uses an existing checkout and conflicts with `--worktree`.
+`--workspace <uuid|prefix>` uses an existing checkout and conflicts with `--worktree`.
 Creating a worktree waits for `WorkspaceCreated` with the ordinary request
 timeout; it does not reload a snapshot in a loop. `--base` requires `--worktree`.
-`--prompt` and `--prompt-file <path|->` are exclusive, bounded to 8 KiB.
+Every check that needs no daemon round trip (name, project, workspace, parent,
+provider capabilities) runs before the worktree is created. A launch the
+daemon still refuses after that reports the checkout in
+`details.worktree_created`, and `next` starts with
+`forgectl workspace remove <id>`; nothing removes it automatically.
+
+Called from inside a Forge session (`FORGE_SESSION_ID` set), `--project` may
+be omitted: the session lands in the caller's project **and checkout**, unless
+`--workspace` or `--worktree` says otherwise. `session spawn` may also omit
+`--provider`: it then uses the caller's provider and, unless `--profile` is
+given, its profile (the same account). A `FORGE_SESSION_ID` this daemon does
+not know is a usage error rather than "no caller".
+
+`--prompt`/`--prompt-file` and `--context`/`--context-file` together are
+capped at 64 KiB for a launch: the prompt travels as one process argument, not
+as a paste, so the 8 KiB `send` budget does not apply. Context follows the
+prompt under `Context handed over from Forge session "<title>" (<id>):`; the
+caller writes that summary, since a TUI transcript is not a usable record of a
+conversation.
+
+`--name` travels in the creating request (`title` on `CreateAgentSession` and
+`CreateShellSession`), so a session is never created and then left unnamed by
+a failed rename. `--role` tags the session, and `--parent <ref|self>` places it
+under a session of the **same** project (the daemon refuses another project's
+parent); without `--parent` it stays an independent root. `--resume` passes a
+provider-owned conversation id and is refused for a provider that cannot resume.
+
+`session list` filters by `--project`, `--kind agent|shell|editor|task` and
+`--active`; each entry adds `active`, `ended`, `exit_code`, `signal`, `role`
+and `parent` beside the display strings. `session read --lines N` bounds the
+transcript by lines as well as by `--max-bytes`. `session changes` is
+`GetSessionChanges`: what the session changed since its base commit.
+`session restart`, `session close` and `session signal --signal
+int|term|hup|kill [--foreground]` expose the daemon's lifecycle requests;
+`--foreground` signals the terminal's foreground process group, as a typed
+Ctrl-C would, because a job a shell started is not in the session's own group.
+`workspace list`/`workspace remove [--force]` list and remove checkouts, and
+`action list`/`action run <label|id>` run an *approved* project action
+(`RunAction`) — a repository file is never executed from here.
+`--prompt` and `--prompt-file <path|->` are exclusive, as are `--context` and `--context-file`; see the 64 KiB launch budget below.
 `--profile` accepts a case-insensitive name or UUID for the selected provider.
 `--read-only`, `--model`, and `--effort` require descriptor support
 ([agents.md](./agents.md)). A restart retains model, effort and read-only mode
@@ -126,10 +174,27 @@ command. Use returned UUIDs for unattended scripts.
 `session list` keeps `kind` and `state` as display strings (including exit
 details); `session show` returns the structured domain session.
 
-`session wait --for idle|waiting|working` checks the initial snapshot and then
-blocks on `SessionUpdated`, not polling. The default deadline is 600 seconds;
-`--timeout` accepts seconds or a duration such as `10s`. Timeout exits 124,
-removal exits 4, and an ended session exits 5. **Idle is a turn boundary, not
+`self` and `parent` are session references relative to `FORGE_SESSION_ID`
+and win over a title with the same text. A child reports back with
+`session send parent --queue --file report.md`: the report waits in the
+parent's one queued slot and is submitted when the parent is hook-confirmed
+idle, so a planner can learn that its coder finished without polling.
+`session watch [<ref>...] [--project <name>]` follows sessions by events and
+prints one JSON line per state or activity change (`snapshot`, `updated`,
+`removed`), ending when every named session has ended or at its deadline
+(exit 124); unlike other commands it streams lines rather than one object.
+
+`session wait --for idle|waiting|working|exit` takes a comma-separated list
+and returns when the first condition holds, with `matched` naming it. A
+controller waiting for a worker to finish waits for `idle,waiting,exit`:
+`idle` alone sits out the whole timeout when the worker stops to ask a
+question. The command checks the initial snapshot and then
+blocks on `SessionUpdated`, not polling. Only agents report activity, so these
+states are refused with exit 5 for any other kind; `--for exit` waits for any
+session to end and returns its state (exit code or signal). The default
+deadline is 600 seconds; `--timeout` accepts seconds or a duration such as
+`10s`. Timeout exits 124, removal exits 4, and an agent that ends before the
+activity it was waited for exits 5. **Idle is a turn boundary, not
 proof of success**: inspect the transcript, diff and verification before acting.
 Silence alone never changes the daemon's activity state.
 
@@ -161,14 +226,62 @@ mutations, session dispatch is not deduplicated by `--request-id`.
 `forgectl guide sessions` serves this contract to an agent. A parent-folder
 planner and a Raycast example live in [multi-repo.md](./multi-repo.md).
 
+### Shell commands
+
+`session exec <ref> --text <line>` (or `-` for stdin, one trailing newline
+dropped) sends `SendShellCommand`: one line of at most 8 KiB, typed with paste
+framing and followed by Enter. A line containing any control character — LF,
+CR, TAB included — is refused, not stripped, because stripping would join two
+commands or change a completion. The daemon delivers it only while the shell's
+own process group owns the terminal's foreground (`tcgetpgrp` on the master);
+while a job runs (an editor, a pager, an agent started by hand) the request
+exits 5, since that job would read the line and its Enter as keys. The check
+runs again under the PTY writer lock right before writing, the same ordering
+`send` uses, and the accepted line is audited as a context envelope. There is
+no completion signal for a command: read the transcript, or end the shell with
+`exit <code>` and `session wait --for exit`. Text a person already typed at
+that prompt is not cleared and would prefix the line.
+
+### Spec runs
+
+`forgectl spec run <spec>` launches a planner session whose prompt is the brief
+`domain::spec_run::compose_planner_prompt` writes; `forgectl spec brief <spec>`
+prints the same brief for the calling session to follow as the planner. The
+spec is a Claude artifact link (`claude.ai`, `claude.site`), another link, a
+Markdown file or the text itself (`-` reads stdin). Forge classifies it and
+never fetches it: an artifact needs the planner's own login and artifact tool.
+A value that looks like a path but is not a file exits 4 rather than becoming
+a one-line spec.
+
+The planner validates every criterion (context, and a check that proves it),
+asks the person every open point at once with its question selector, writes a
+plan with no open question, launches the coder with `session spawn --parent
+self --role executor`, waits for `idle,waiting,exit`, reruns the validations
+itself, sends numbered findings, and hands what remains to the person after
+`--rounds` (default 3). It never commits, pushes or merges.
+
+`--preset claude` codes with Claude at `medium`; `--preset mix` codes with
+Cursor, or with `--coder opencode`. A preset is a provider and an effort;
+`--coder` replaces both. The planner is Claude at `high` unless `--planner`
+and `--planner-effort` say otherwise. Provider, effort and model are checked
+against the detected descriptors before anything launches; Cursor applies an
+effort only with `--coder-model`, since its effort is a model suffix.
+
 ### MCP stdio
 
-`forgectl mcp` exposes `list_sessions`, `spawn_session`, `send_prompt`,
-`wait_session`, `read_session`, and `rename_session`. It invokes the same CLI
+`forgectl mcp` exposes `list_projects`, `list_providers`, `list_workspaces`,
+`list_sessions`, `show_session`, `read_session`, `session_changes`,
+`spawn_session`, `spawn_shell`, `exec_shell`, `send_prompt`, `wait_session`,
+`rename_session`, `signal_session`, `kill_session`, `restart_session`,
+`close_session`, `list_actions`, `run_action`, `run_spec` and `spec_brief`.
+A positional `-` is refused, since stdin is the request stream. It invokes the same CLI
 handlers in-process, not a child `forgectl`. Input lines are capped at 64 KiB;
-tool schemas reject extra arguments and key-injection options. Requests are
-processed sequentially: a long `wait_session` occupies the server until its
-deadline (maximum 600 s); use a short timeout compatible with the host.
+tool schemas reject extra arguments and key-injection options, and every
+positional value is passed after `--`. Up to 8 `tools/call` requests run at
+once, each on its own daemon connection (a shared one would let concurrent
+waits consume each other's events); a ninth waits for a free slot, so a long
+`wait_session` (maximum 600 s) no longer stalls the calls behind it. Responses
+can therefore arrive out of request order; match them by `id`.
 
 Configure it explicitly; launching an agent does not silently grant dispatch
 tools, especially to a pull-request reviewer. Use the absolute installed
@@ -200,5 +313,6 @@ OpenCode V2's server configuration (not `cli.json`) accepts:
 
 An OpenCode shared service may not inherit a Forge PTY's environment; specify
 the daemon socket explicitly in its command. This server has no filesystem
-write tool, but dispatching a writing agent is itself a mutation: review the
+write tool, but dispatching a writing agent is itself a mutation, and
+`exec_shell` runs a command line in any shell session at its prompt: review the
 provider's MCP permissions before exposing it to a read-only planner.

@@ -6,6 +6,7 @@
 //! [`std::sync::mpsc`] channel with [`recv_timeout`](std::sync::mpsc::Receiver::recv_timeout)
 //! bounds the wait so a hung probe can never block the caller.
 
+use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -166,7 +167,7 @@ fn run_args(
     timeout_ms: u64,
     env: &ResolvedEnvironment,
 ) -> ProbeOutcome {
-    let mut cmd = Command::new(program);
+    let mut cmd = command_for(program);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -232,6 +233,50 @@ fn run_args(
             ))
         }
     }
+}
+
+/// Build a command that runs `program`.
+///
+/// A script is handed to the interpreter named on its first line. macOS stalls
+/// in dyld when the kernel opens a new script through that shebang; exec of the
+/// interpreter's own path does not. A binary has no shebang and is exec'd as is.
+pub(crate) fn command_for(program: &Path) -> Command {
+    match shebang(program) {
+        Some(shebang) => {
+            let mut cmd = Command::new(shebang.interpreter);
+            cmd.args(shebang.args);
+            cmd.arg(program);
+            cmd
+        }
+        None => Command::new(program),
+    }
+}
+
+struct Shebang {
+    interpreter: PathBuf,
+    args: Vec<String>,
+}
+
+/// Interpreter and arguments from a leading `#!` line, if the file has one.
+///
+/// The line is capped before it is decoded: the candidate is whatever sits on
+/// `PATH`, and only the interpreter is used.
+fn shebang(program: &Path) -> Option<Shebang> {
+    const MAX_SHEBANG: usize = 256;
+    let mut file = File::open(program).ok()?;
+    let mut buf = [0u8; MAX_SHEBANG];
+    let n = file.read(&mut buf).ok()?;
+    let buf = &buf[..n];
+    let rest = buf.strip_prefix(b"#!")?;
+    let line = rest.split(|&byte| byte == b'\n').next().unwrap_or(rest);
+    let line = String::from_utf8(line.to_vec()).ok()?;
+    let line = line.trim().trim_end_matches('\r');
+    let mut parts = line.split_whitespace();
+    let interpreter = PathBuf::from(parts.next()?);
+    Some(Shebang {
+        interpreter,
+        args: parts.map(str::to_owned).collect(),
+    })
 }
 
 /// Kill a probe's whole group, then the direct child as a fallback.

@@ -261,6 +261,7 @@ fn create_shell_session(
             workspace_id,
             parent: None,
             role: domain::SessionRole::Generic,
+            title: None,
         })
         .expect("CreateShellSession");
     assert!(matches!(resp, Response::SessionCreated { .. }), "{resp:?}");
@@ -414,6 +415,7 @@ fn end_to_end_shell_session() {
             workspace_id: main_ws.id,
             parent: None,
             role: domain::SessionRole::Generic,
+            title: None,
         })
         .expect("CreateShellSession");
     assert!(matches!(resp, Response::SessionCreated { .. }), "{resp:?}");
@@ -1212,6 +1214,7 @@ fn twenty_concurrent_sessions() {
                 workspace_id,
                 parent: None,
                 role: domain::SessionRole::Generic,
+                title: None,
             })
             .expect("CreateShellSession");
         assert!(matches!(resp, Response::SessionCreated { .. }), "{resp:?}");

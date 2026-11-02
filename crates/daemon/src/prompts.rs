@@ -259,6 +259,126 @@ fn deliver(
     Ok(result(pending.context, true, submitted))
 }
 
+fn clean_command(command: String) -> Result<String, ProtocolError> {
+    if command.len() > MAX_PROMPT_BYTES {
+        return Err(ProtocolError::invalid_request("command exceeds 8 KiB"));
+    }
+    // Refused rather than stripped: a dropped LF would join two commands and a
+    // dropped TAB would change which file a completion picks.
+    if command.chars().any(char::is_control) {
+        return Err(ProtocolError::invalid_request(
+            "command must be one line without control characters",
+        ));
+    }
+    if command.trim().is_empty() {
+        return Err(ProtocolError::invalid_request("command is empty"));
+    }
+    Ok(command)
+}
+
+fn shell_terminal(inner: &Inner, session_id: SessionId) -> Result<TerminalId, ProtocolError> {
+    let session = inner
+        .sessions
+        .get(&session_id)
+        .ok_or_else(|| ProtocolError::not_found("session"))?;
+    if session.kind != SessionKind::Shell || !session.state.is_active() {
+        return Err(ProtocolError::precondition_failed(
+            "target must be a live shell",
+        ));
+    }
+    session
+        .terminal_id
+        .ok_or_else(|| ProtocolError::precondition_failed("shell has no terminal"))
+}
+
+/// `tcgetpgrp` on the master is one non-blocking ioctl, so it may run under the core lock.
+fn check_shell_prompt(inner: &Inner, terminal: TerminalId) -> Result<(), ProtocolError> {
+    let runtime = inner
+        .terminals
+        .get(&terminal)
+        .ok_or_else(|| ProtocolError::not_found("terminal"))?;
+    if runtime.pty.foreground_process_group() == Some(runtime.pty.process_group()) {
+        Ok(())
+    } else {
+        Err(ProtocolError::precondition_failed(
+            "shell is running a foreground job",
+        ))
+    }
+}
+
+pub(crate) fn send_shell(
+    daemon: &Daemon,
+    caller: Option<SessionId>,
+    session_id: SessionId,
+    command: String,
+) -> Result<Response, ProtocolError> {
+    let command = clean_command(command)?;
+    let context = ContextId::new();
+    let (terminal, writer, gate) = {
+        let mut inner = daemon.lock();
+        if caller.is_some_and(|id| !inner.sessions.contains_key(&id)) {
+            return Err(ProtocolError::not_found("caller session"));
+        }
+        let terminal = shell_terminal(&inner, session_id)?;
+        check_shell_prompt(&inner, terminal)?;
+        let writer = inner
+            .terminals
+            .get(&terminal)
+            .map(|rt| Arc::clone(&rt.writer))
+            .ok_or_else(|| ProtocolError::not_found("terminal"))?;
+        let gate = Arc::clone(inner.prompt_gates.entry(session_id).or_default());
+        (terminal, writer, gate)
+    };
+    let _gate = gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let envelope = ContextEnvelope {
+        id: context,
+        source_session_id: caller,
+        target_session_id: Some(session_id),
+        summary: Some("Shell command (accepted, not proof of execution)".into()),
+        instructions: Some(command.clone()),
+        artifacts: vec![],
+        git_context: None,
+        created_at: Timestamp::now(),
+        run_id: None,
+        task_id: None,
+        kind: None,
+        in_reply_to: None,
+        acked_at: None,
+    };
+    daemon
+        .context_writer
+        .insert(&envelope)
+        .map_err(|e| ProtocolError::new(ErrorCode::Internal, e.to_string()))?;
+    // The line and its CR are indivisible with respect to other input.
+    let mut writer = writer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let modes = {
+        let inner = daemon.lock();
+        if shell_terminal(&inner, session_id)? != terminal {
+            return Err(ProtocolError::precondition_failed(
+                "target terminal changed",
+            ));
+        }
+        check_shell_prompt(&inner, terminal)?;
+        inner
+            .terminals
+            .get(&terminal)
+            .ok_or_else(|| ProtocolError::not_found("terminal"))?
+            .engine
+            .modes()
+    };
+    let mut bytes = terminal_input::paste(&command, &modes);
+    bytes.push(b'\r');
+    writer
+        .write_all(&bytes)
+        .and_then(|_| writer.flush())
+        .map_err(|e| ProtocolError::new(ErrorCode::IoError, e.to_string()))?;
+    Ok(result(context, true, true))
+}
+
 fn result(context_id: ContextId, delivered: bool, submitted: bool) -> Response {
     Response::PromptDelivery {
         context_id,
@@ -292,6 +412,15 @@ pub(crate) fn deliver_pending(daemon: &Daemon, session_id: SessionId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_commands_refuse_controls_instead_of_joining_lines() {
+        assert_eq!(clean_command("ls -la".into()).unwrap(), "ls -la");
+        assert!(clean_command("ls\nrm -rf x".into()).is_err());
+        assert!(clean_command("ls\tx".into()).is_err());
+        assert!(clean_command("  ".into()).is_err());
+        assert!(clean_command("x".repeat(MAX_PROMPT_BYTES + 1)).is_err());
+    }
 
     #[test]
     fn controls_are_removed_and_size_is_refused_not_truncated() {
