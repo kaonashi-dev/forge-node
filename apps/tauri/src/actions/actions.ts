@@ -112,6 +112,7 @@ export type ActionId =
   | "session_handoff"
   | "session_spawn_child"
   | "session_send_context"
+  | "run_spec"
   | "toggle_session_changes"
   | "review_checkout"
   | "preview_pull_request"
@@ -375,6 +376,12 @@ export const ACTIONS: Action[] = [
     id: "session_send_context",
     label: "Send Context…",
     detail: "Pass an envelope to another session or spawn with it",
+    palette: true,
+  },
+  {
+    id: "run_spec",
+    label: "Run Spec…",
+    detail: "A planner validates and plans a spec, then a coder implements it",
     palette: true,
   },
   {

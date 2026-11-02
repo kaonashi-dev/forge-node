@@ -98,6 +98,7 @@ import { RemoveProjectDialog } from "../../features/projects/RemoveProjectDialog
 import { RemoveWorktreeDialog } from "../../features/projects/RemoveWorktreeDialog";
 import { TextInputDialog } from "./dialogs/TextInputDialog";
 import { HandoffDialog } from "../../features/sessions/HandoffDialog";
+import { RunSpecDialog } from "../../features/sessions/RunSpecDialog";
 import { HandoffProgressDialog } from "../../features/sessions/HandoffProgressDialog";
 import { SendContextDialog } from "../../features/sessions/SendContextDialog";
 import { SpawnChildDialog } from "../../features/sessions/SpawnChildDialog";
@@ -123,6 +124,7 @@ import {
   openPullRequestPreview,
   startHandoff,
   startSendContext,
+  startRunSpec,
   startSpawnChild,
   toggleSessionChanges,
 } from "../../features/sessions/sessionActions";
@@ -576,6 +578,7 @@ export function AppShell() {
       registerAction("session_handoff", startHandoff),
       registerAction("session_spawn_child", startSpawnChild),
       registerAction("session_send_context", startSendContext),
+      registerAction("run_spec", startRunSpec),
       registerAction("toggle_session_changes", toggleSessionChanges),
       registerAction("review_checkout", openCheckoutReview),
       registerAction("preview_pull_request", openPullRequestPreview),
@@ -862,6 +865,14 @@ export function AppShell() {
           <SpawnChildDialog
             request={request()}
             onDismiss={() => setSessionDialogsStore("spawnChild", null)}
+          />
+        )}
+      </Show>
+      <Show when={sessionDialogsStore.runSpec}>
+        {(request) => (
+          <RunSpecDialog
+            request={request()}
+            onDismiss={() => setSessionDialogsStore("runSpec", null)}
           />
         )}
       </Show>

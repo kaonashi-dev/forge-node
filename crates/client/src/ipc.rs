@@ -1207,6 +1207,30 @@ impl Client {
         })
     }
 
+    /// Start the planner of a spec run: a titled agent with an effort and its brief.
+    pub fn create_planner_session(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: AgentProviderId,
+        effort: Option<String>,
+        title: String,
+        brief: String,
+    ) -> Result<(SessionId, TerminalId), ClientError> {
+        self.expect_session_created(Request::CreateAgentSession {
+            workspace_id,
+            provider_id,
+            profile_id: None,
+            parent: None,
+            role: SessionRole::Planner,
+            resume: None,
+            initial_prompt: Some(brief),
+            read_only: false,
+            model: None,
+            effort,
+            title: Some(title),
+        })
+    }
+
     /// Open a file in a daemon-supervised `forge-editor` process,
     /// returning the ids the daemon minted.
     ///

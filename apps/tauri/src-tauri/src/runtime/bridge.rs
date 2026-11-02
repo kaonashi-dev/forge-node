@@ -1542,6 +1542,39 @@ fn run_command(
             at.scroll_offset = 0;
             Ok(Effect::shell())
         }
+        RuntimeCommand::RunSpec { workspace, request } => {
+            let workspace = workspace
+                .and_then(|id| store.workspaces.iter().find(|item| item.id == id))
+                .ok_or_else(|| CommandError::refused("no checkout is open to run the spec in"))?;
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let launch = super::spec::planner_launch(
+                store,
+                workspace,
+                request,
+                home.as_deref(),
+                super::spec::forgectl(),
+            )
+            .map_err(CommandError::refused)?;
+            let (session, terminal) = client
+                .create_planner_session(
+                    workspace.id,
+                    launch.provider,
+                    launch.effort,
+                    launch.title,
+                    launch.brief,
+                )
+                .map_err(CommandError::from_client)?;
+            let _ = client.detach_terminal(at.terminal);
+            store.detach_terminal(&at.terminal);
+            let snapshot = client
+                .attach_terminal(terminal, *size)
+                .map_err(CommandError::from_client)?;
+            store.attach_terminal(terminal, &snapshot);
+            at.session = session;
+            at.terminal = terminal;
+            at.scroll_offset = 0;
+            Ok(Effect::shell())
+        }
         RuntimeCommand::SendContext {
             source,
             target,

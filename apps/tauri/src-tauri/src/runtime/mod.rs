@@ -3,6 +3,7 @@ pub mod cells;
 mod commands;
 pub(crate) mod input;
 mod snapshot;
+mod spec;
 mod workbench;
 
 pub use bridge::Runtime;

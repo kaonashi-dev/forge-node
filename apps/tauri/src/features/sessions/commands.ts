@@ -85,6 +85,20 @@ export async function newAgent(
   });
 }
 
+/** What the palette's "Run Spec…" sends; the host composes the brief `forgectl spec run` would. */
+export type SpecRunRequest = {
+  workspace: string;
+  spec: string;
+  preset: "claude" | "mix";
+  coder: string | null;
+  worktree: string | null;
+  rounds: number;
+};
+
+export async function runSpec(request: SpecRunRequest): Promise<void> {
+  await sendRuntimeCommand({ type: "run_spec", ...request });
+}
+
 export async function launchBackgroundAgent(request: {
   request_id: string;
   workspace: string;
