@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { emptySnapshot } from "../../state/forgeStore";
 import { sessionFixture } from "../../contracts/sessions.fixture";
 import type { Session, ShellSnapshot, Workspace } from "../../contracts/runtime";
+import type { ActionId } from "../../actions/actions";
 import {
   BRANCHES,
   FILES,
@@ -11,7 +12,9 @@ import {
   fileEntries,
   paletteEntries,
   parseQuery,
+  parseRecent,
   rank,
+  remember,
   scopeChip,
   type PaletteEntry,
 } from "./entries";
@@ -184,5 +187,36 @@ describe("choiceKey", () => {
     expect(choiceKey({ kind: "new_agent", provider: "claude", profile: null })).not.toBe(
       choiceKey({ kind: "new_agent", provider: "claude", profile: "work" }),
     );
+  });
+});
+
+describe("recently used", () => {
+  const command = (label: string, action: string): PaletteEntry => ({
+    label,
+    group: "Commands",
+    hint: null,
+    note: null,
+    enabled: true,
+    choice: { kind: "action", action: action as ActionId },
+  });
+  const a = command("Toggle sidebar", "toggle_sidebar");
+  const b = command("Run spec", "run_spec");
+  const c = command("Open settings", "open_settings");
+
+  it("puts the last command chosen first, and keeps that across queries that tie", () => {
+    let recent = remember([], c)!;
+    recent = remember(recent, b)!;
+    expect(rank([a, b, c], "", recent)).toEqual([b, c, a]);
+    expect(remember(recent, b)).toBeNull();
+    expect(rank([a, b, c], "spec", recent)).toEqual([b]);
+  });
+
+  it("does not remember where you went, only what you ran", () => {
+    expect(remember([], { ...a, group: SESSIONS })).toBeNull();
+  });
+
+  it("reads a damaged value as nothing used yet", () => {
+    expect(parseRecent("{")).toEqual([]);
+    expect(parseRecent('["x", 1]')).toEqual(["x"]);
   });
 });

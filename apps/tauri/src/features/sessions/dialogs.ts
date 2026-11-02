@@ -33,11 +33,18 @@ export type SendContextRequest = {
   title: string;
 };
 
+export type RunSpecRequest = {
+  workspace: string;
+  /** Prefilled from the Markdown file on screen, when there is one. */
+  spec: string;
+};
+
 export const [sessionDialogsStore, setSessionDialogsStore] = createStore({
   /** Opens before the daemon capture arrives, providing immediate feedback. */
   handoff: null as HandoffRequest | null,
   spawnChild: null as SpawnChildRequest | null,
   sendContext: null as SendContextRequest | null,
+  runSpec: null as RunSpecRequest | null,
 });
 
 /** Open the handoff dialog for a session; the capture follows. */
@@ -64,4 +71,8 @@ export function requestSpawnChild(request: SpawnChildRequest): void {
 /** Open the send-context dialog for the active session. */
 export function requestSendContext(request: SendContextRequest): void {
   setSessionDialogsStore("sendContext", request);
+}
+
+export function requestRunSpec(request: RunSpecRequest): void {
+  setSessionDialogsStore("runSpec", request);
 }

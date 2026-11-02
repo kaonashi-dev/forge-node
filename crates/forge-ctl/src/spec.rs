@@ -1,12 +1,10 @@
 use super::*;
 use client::Store;
-use domain::spec_run::{classify, compose_planner_prompt, Coder, SpecError, SpecRun, SpecSource};
-use domain::EffortSpelling;
+use domain::spec_run::{
+    agent_refusal, classify, compose_planner_prompt, planner_effort, Coder, SpecError, SpecRun,
+    SpecSource, MAX_INLINE_SPEC_BYTES,
+};
 use sessions::{Launch, RoleArg};
-
-/// Leaves room for the brief inside the 64 KiB launch prompt.
-const MAX_INLINE_SPEC_BYTES: usize = 56 * 1024;
-const PLANNER_EFFORT: &str = "high";
 
 #[derive(Subcommand)]
 pub(crate) enum SpecCmd {
@@ -27,9 +25,10 @@ pub(crate) enum Preset {
 impl Preset {
     fn coder(self) -> (&'static str, Option<&'static str>) {
         match self {
-            Preset::Claude => ("claude", Some("medium")),
-            Preset::Mix => ("cursor", None),
+            Preset::Claude => domain::spec_run::Preset::Claude,
+            Preset::Mix => domain::spec_run::Preset::Mix,
         }
+        .coder()
     }
 }
 
@@ -100,11 +99,7 @@ fn run(app: &App, client: &Client, args: RunArgs) -> Result<(), u8> {
     let spec = prepare(app, &store, &args.spec, true)?;
     let effort = match args.planner_effort {
         Some(effort) => Some(effort),
-        None => provider(app, &store, &args.planner, "planner")?
-            .effort
-            .as_ref()
-            .filter(|spec| spec.allowed.iter().any(|level| level == PLANNER_EFFORT))
-            .map(|_| PLANNER_EFFORT.to_owned()),
+        None => planner_effort(provider(app, &store, &args.planner, "planner")?),
     };
     check_agent(
         app,
@@ -227,7 +222,6 @@ fn provider<'a>(
     Ok(&info.descriptor)
 }
 
-/// Refused here, before a planner is launched, rather than by the daemon halfway through a run.
 fn check_agent(
     app: &App,
     store: &Store,
@@ -236,29 +230,7 @@ fn check_agent(
     model: Option<&str>,
     role: &str,
 ) -> Result<(), u8> {
-    let descriptor = provider(app, store, id, role)?;
-    let refusal = if !descriptor.capabilities.supports_initial_prompt {
-        Some("cannot take a prompt at launch".to_owned())
-    } else if model.is_some() && descriptor.model.is_none() {
-        Some("does not support model selection".to_owned())
-    } else if let Some(effort) = effort {
-        match &descriptor.effort {
-            None => Some("does not support effort selection".to_owned()),
-            Some(spec) if !spec.allowed.iter().any(|level| level == effort) => Some(format!(
-                "has no effort {effort}; it offers {}",
-                spec.allowed.join(", ")
-            )),
-            Some(spec)
-                if matches!(spec.spelling, EffortSpelling::ModelSuffix) && model.is_none() =>
-            {
-                Some("needs a model to apply an effort; pass the matching --*-model".to_owned())
-            }
-            Some(_) => None,
-        }
-    } else {
-        None
-    };
-    match refusal {
+    match agent_refusal(provider(app, store, id, role)?, effort, model) {
         Some(reason) => Err(app.fail(
             1,
             "invalid_request",

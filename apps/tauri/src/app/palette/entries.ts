@@ -387,7 +387,11 @@ function sessionNote(session: Session, workspace: Workspace | undefined): string
  * "Sessions". It also keeps a repository's worth of paths from burying the
  * three sessions and two checkouts that `⌘⇧O` is usually reaching for.
  */
-export function rank(entries: PaletteEntry[], query: string): PaletteEntry[] {
+export function rank(
+  entries: PaletteEntry[],
+  query: string,
+  recent: readonly string[] = [],
+): PaletteEntry[] {
   const groups = [
     ...GROUP_ORDER,
     // A group added later still gets listed, at the end, rather than dropped.
@@ -398,7 +402,11 @@ export function rank(entries: PaletteEntry[], query: string): PaletteEntry[] {
   for (const group of groups) {
     if (seen.has(group)) continue;
     seen.add(group);
-    const inGroup = entries.filter((entry) => entry.group === group);
+    const inGroup = byRecency(
+      entries.filter((entry) => entry.group === group),
+      group,
+      recent,
+    );
     if (group === FILES) {
       // Paths are ranked by their own rules — basename over directory — which
       // is what stops eight files called `SKILL.md` from being ordered by the
@@ -413,6 +421,46 @@ export function rank(entries: PaletteEntry[], query: string): PaletteEntry[] {
     ranked.push(...filter(inGroup, query));
   }
   return ranked;
+}
+
+/** Where the commands and launches chosen from the palette are remembered, newest first. */
+export const PALETTE_RECENT_KEY = "ui.palette.recent";
+const RECENT_LIMIT = 40;
+
+export function parseRecent(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string").slice(0, RECENT_LIMIT)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** `recent` with the chosen entry moved to the front, or `null` when it is not remembered. */
+export function remember(recent: readonly string[], entry: PaletteEntry): string[] | null {
+  if (entry.group !== CREATE && entry.group !== COMMANDS) return null;
+  const key = choiceKey(entry.choice);
+  if (recent[0] === key) return null;
+  return [key, ...recent.filter((item) => item !== key)].slice(0, RECENT_LIMIT);
+}
+
+/**
+ * Commands and launches lead with the last one used. The sort is stable and
+ * `filter` breaks score ties on input order, so a typed query keeps its
+ * ranking and only ties fall to recency. Sessions and files keep their own.
+ */
+function byRecency(
+  entries: PaletteEntry[],
+  group: PaletteGroup,
+  recent: readonly string[],
+): PaletteEntry[] {
+  if (recent.length === 0 || (group !== CREATE && group !== COMMANDS)) return entries;
+  const order = new Map(recent.map((key, index) => [key, index]));
+  const position = (entry: PaletteEntry) => order.get(choiceKey(entry.choice)) ?? recent.length;
+  return [...entries].sort((a, b) => position(a) - position(b));
 }
 
 /** Whether an agent session is what the label should read as. */

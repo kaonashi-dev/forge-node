@@ -204,6 +204,13 @@ pub enum RuntimeCommand {
         #[serde(default)]
         branch_hint: Option<String>,
     },
+    /// Launch the planner of a spec run in this checkout, as `forgectl spec run` does.
+    RunSpec {
+        #[serde(default)]
+        workspace: Option<WorkspaceId>,
+        #[serde(flatten)]
+        request: super::spec::SpecRequest,
+    },
     /// Persists before delivery or child launch.
     SendContext {
         source: SessionId,

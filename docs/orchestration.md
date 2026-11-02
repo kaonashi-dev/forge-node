@@ -253,6 +253,12 @@ never fetches it: an artifact needs the planner's own login and artifact tool.
 A value that looks like a path but is not a file exits 4 rather than becoming
 a one-line spec.
 
+The palette's **Run Spec…** is the same launch from the GUI: the host composes
+the brief with the same function and starts the planner in the checkout on
+screen. A relative path resolves against that checkout, the Markdown file on
+screen is prefilled, and a refusal (missing file, unknown coder) is a notice
+before anything starts.
+
 The planner validates every criterion (context, and a check that proves it),
 asks the person every open point at once with its question selector, writes a
 plan with no open question, launches the coder with `session spawn --parent

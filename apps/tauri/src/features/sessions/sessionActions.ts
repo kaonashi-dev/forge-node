@@ -6,7 +6,7 @@
 
 import { forgeStore } from "../../state/forgeStore";
 import { beginSessionLaunch, connectionStore } from "../../state/connection";
-import { requestHandoff, requestSendContext, requestSpawnChild } from "./dialogs";
+import { requestHandoff, requestRunSpec, requestSendContext, requestSpawnChild } from "./dialogs";
 import { setSplitOpen, splitOpen } from "../git/sessionChangesStore";
 import {
   centerMode,
@@ -25,6 +25,7 @@ import { canSplitCenter, visibleSplit } from "../../navigation/centerSplit";
 import {
   newAgent,
   newShell,
+  runSpec,
   restartSession,
   selectSession,
   splitShell,
@@ -153,6 +154,26 @@ export function launchAgent(...args: Parameters<typeof newAgent>): Promise<void>
     cancel();
     throw error;
   });
+}
+
+export function launchSpec(...args: Parameters<typeof runSpec>): Promise<void> {
+  const cancel = beginSessionLaunch();
+  showSession();
+  return runSpec(...args).catch((error: unknown) => {
+    cancel();
+    throw error;
+  });
+}
+
+const SPEC_FILE = /\.(md|markdown|mdx|txt)$/i;
+
+/** Open "Run Spec…" on this checkout, with the Markdown file on screen as the spec. */
+export function startRunSpec(): void {
+  const workspace = currentWorkspace();
+  if (!workspace) return;
+  const view = currentViews().active;
+  const path = "path" in view && SPEC_FILE.test(view.path) ? view.path : "";
+  requestRunSpec({ workspace, spec: path });
 }
 
 /** Whether the split is showing for the session on screen. */

@@ -12,7 +12,13 @@ import {
 import { APP } from "../../actions/actions";
 import { enterContext, installKeymap, invokeAction, registerAction } from "../../actions/dispatch";
 import { CommandPalette } from "../palette/CommandPalette";
-import type { PaletteEntry, PaletteScope } from "../palette/entries";
+import {
+  PALETTE_RECENT_KEY,
+  parseRecent,
+  remember,
+  type PaletteEntry,
+  type PaletteScope,
+} from "../palette/entries";
 import { addProjectFromPicker } from "../../features/projects/commands";
 import { closeSession } from "../../features/sessions/commands";
 import { scrollTerminal } from "../../features/terminal/commands";
@@ -69,6 +75,7 @@ import {
   readScale,
   readWidth,
   resetScale,
+  writeChoice,
   writeWidth,
 } from "../../state/preferences";
 import { CenterStack } from "./CenterStack";
@@ -91,6 +98,7 @@ import { RemoveProjectDialog } from "../../features/projects/RemoveProjectDialog
 import { RemoveWorktreeDialog } from "../../features/projects/RemoveWorktreeDialog";
 import { TextInputDialog } from "./dialogs/TextInputDialog";
 import { HandoffDialog } from "../../features/sessions/HandoffDialog";
+import { RunSpecDialog } from "../../features/sessions/RunSpecDialog";
 import { HandoffProgressDialog } from "../../features/sessions/HandoffProgressDialog";
 import { SendContextDialog } from "../../features/sessions/SendContextDialog";
 import { SpawnChildDialog } from "../../features/sessions/SpawnChildDialog";
@@ -116,6 +124,7 @@ import {
   openPullRequestPreview,
   startHandoff,
   startSendContext,
+  startRunSpec,
   startSpawnChild,
   toggleSessionChanges,
 } from "../../features/sessions/sessionActions";
@@ -452,6 +461,8 @@ export function AppShell() {
 
   function runChoice(entry: PaletteEntry): void {
     setPalette(null);
+    const recent = remember(parseRecent(forgeStore.app_state[PALETTE_RECENT_KEY]), entry);
+    if (recent) writeChoice(PALETTE_RECENT_KEY, JSON.stringify(recent));
     switch (entry.choice.kind) {
       case "new_shell":
         void launchShell(currentWorkspace()).catch(() => undefined);
@@ -567,6 +578,7 @@ export function AppShell() {
       registerAction("session_handoff", startHandoff),
       registerAction("session_spawn_child", startSpawnChild),
       registerAction("session_send_context", startSendContext),
+      registerAction("run_spec", startRunSpec),
       registerAction("toggle_session_changes", toggleSessionChanges),
       registerAction("review_checkout", openCheckoutReview),
       registerAction("preview_pull_request", openPullRequestPreview),
@@ -853,6 +865,14 @@ export function AppShell() {
           <SpawnChildDialog
             request={request()}
             onDismiss={() => setSessionDialogsStore("spawnChild", null)}
+          />
+        )}
+      </Show>
+      <Show when={sessionDialogsStore.runSpec}>
+        {(request) => (
+          <RunSpecDialog
+            request={request()}
+            onDismiss={() => setSessionDialogsStore("runSpec", null)}
           />
         )}
       </Show>

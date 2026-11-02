@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::{AgentDescriptor, EffortSpelling};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpecSource {
     ClaudeArtifact(String),
@@ -81,6 +83,68 @@ fn looks_like_path(raw: &str) -> bool {
         .map(str::to_ascii_lowercase);
     ["/", "./", "../", "~/"].iter().any(|p| raw.starts_with(p))
         || extension.is_some_and(|e| SPEC_EXTENSIONS.contains(&e.as_str()))
+}
+
+/// Leaves room for the brief inside the 64 KiB launch prompt.
+pub const MAX_INLINE_SPEC_BYTES: usize = 56 * 1024;
+/// The planner's effort when its provider offers it.
+pub const PLANNER_EFFORT: &str = "high";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Preset {
+    /// A Claude coder at medium effort.
+    #[default]
+    Claude,
+    /// A Cursor coder, unless a coder provider is named.
+    Mix,
+}
+
+impl Preset {
+    #[must_use]
+    pub fn coder(self) -> (&'static str, Option<&'static str>) {
+        match self {
+            Preset::Claude => ("claude", Some("medium")),
+            Preset::Mix => ("cursor", None),
+        }
+    }
+}
+
+#[must_use]
+pub fn planner_effort(descriptor: &AgentDescriptor) -> Option<String> {
+    descriptor
+        .effort
+        .as_ref()
+        .filter(|spec| spec.allowed.iter().any(|level| level == PLANNER_EFFORT))
+        .map(|_| PLANNER_EFFORT.to_owned())
+}
+
+/// Why this provider cannot take this role's launch, checked before a planner starts rather than
+/// by the daemon halfway through a run.
+#[must_use]
+pub fn agent_refusal(
+    descriptor: &AgentDescriptor,
+    effort: Option<&str>,
+    model: Option<&str>,
+) -> Option<String> {
+    if !descriptor.capabilities.supports_initial_prompt {
+        return Some("cannot take a prompt at launch".to_owned());
+    }
+    if model.is_some() && descriptor.model.is_none() {
+        return Some("does not support model selection".to_owned());
+    }
+    let effort = effort?;
+    match &descriptor.effort {
+        None => Some("does not support effort selection".to_owned()),
+        Some(spec) if !spec.allowed.iter().any(|level| level == effort) => Some(format!(
+            "has no effort {effort}; it offers {}",
+            spec.allowed.join(", ")
+        )),
+        Some(spec) if matches!(spec.spelling, EffortSpelling::ModelSuffix) && model.is_none() => {
+            Some("needs a model to apply an effort".to_owned())
+        }
+        Some(_) => None,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

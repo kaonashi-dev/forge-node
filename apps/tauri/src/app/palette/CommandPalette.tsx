@@ -23,11 +23,13 @@ import {
   FILES,
   SESSIONS,
   MODE_PREFIXES,
+  PALETTE_RECENT_KEY,
   admits,
   choiceKey,
   fileEntries,
   paletteEntries,
   parseQuery,
+  parseRecent,
   rank,
   scopeChip,
   scopePlaceholder,
@@ -147,7 +149,7 @@ export function CommandPalette(props: CommandPaletteProps) {
         : paletteEntries(forgeStore, connectionStore.activeSession, activeWorkspace()).filter(
             (entry) => admits(scope(), entry.group),
           );
-    const ranked = rank(base, text());
+    const ranked = rank(base, text(), parseRecent(forgeStore.app_state[PALETTE_RECENT_KEY]));
     const listed = files();
     if (listed.length === 0) return ranked;
     const head = new Set<string>([CREATE, SESSIONS, BRANCHES]);
