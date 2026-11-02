@@ -103,4 +103,3 @@ When touching existing code, remove nearby redundant or stale comments instead o
 ## Gate
 
 - The canonical gate is `scripts/dev check`. `./init.sh` checks the toolchain pin and then runs that gate; `./init.sh --fast` skips only the cargo block.
-- Invariant skills `invariant-c4`, `invariant-c5` and `invariant-c7` restate the crate, runtime and cost rules in this file as reviewable checklists. When an invariant changes here, change the matching skill.

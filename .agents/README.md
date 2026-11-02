@@ -8,11 +8,9 @@ matching page under [`docs/`](../docs/).
 | [commits.md](./commits.md) | drafting a git commit or pull request title/body |
 | [skills/forge-clean-code/SKILL.md](./skills/forge-clean-code/SKILL.md) | architecture / docs / quality review that implements fixes (`/forge-clean-code`) |
 
-Skills live in `skills/<name>/SKILL.md`. `.claude/skills` and `.cursor/skills`
-are relative symlinks to this shared directory, not separate copies. The
-`invariant-c4`, `invariant-c5` and `invariant-c7` skills provide review checklists
-for crate boundaries, runtime invariants and resource costs.
+Skills live in `skills/<name>/SKILL.md` and this directory is the only copy.
+Grok and Cursor discover `.agents/skills` natively, so the repository keeps no
+per-client mirror or symlink. Claude Code reads only `.claude/skills`; a
+developer who wants these skills there creates that symlink locally.
 
-`C4`, `C5` and `C7` are checkpoint numbers kept only as skill names; the rules
-are the ones in [`AGENTS.md`](../AGENTS.md), which is where invariants and crate
-boundaries live, not here.
+Invariants and crate boundaries live in [`AGENTS.md`](../AGENTS.md), not here.

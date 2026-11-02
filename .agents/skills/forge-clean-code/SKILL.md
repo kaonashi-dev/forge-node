@@ -22,7 +22,6 @@ and verify them. Do not stop at a plan or a findings list.
 | Cost rungs | `docs/performance.md` — **required** before delta, render, core lock, or process work |
 | ADR numbers in code | `docs/decisions.md` |
 | Commands / "where to change X" | `docs/development.md`, `scripts/dev` |
-| Reviewer checkboxes if an invariant changes | `.agents/skills/invariant-c4/SKILL.md`, `.agents/skills/invariant-c5/SKILL.md`, `.agents/skills/invariant-c7/SKILL.md` |
 | GUI | Tauri 2 + **Solid** (not React). Bun latest (>=1.4.3), TypeScript 7. Tokens: `apps/tauri/src/theme/tokens.ts` |
 
 `Cargo.toml`, crate `//!` docs, `scripts/dev`, and current source beat `plan/`.
@@ -105,7 +104,6 @@ Targeted tests per batch. Then:
 
 - `scripts/dev check` (fmt, clippy `-D warnings`, `cargo test --workspace`)
 - If `apps/tauri` changed: `bun run --cwd apps/tauri check`
-- If an invariant in `AGENTS.md` changed: the matching `invariant-c4`, `invariant-c5` or `invariant-c7` skill
 
 Do not claim a test ran if you only read the code. Tests passing do **not** prove cost rungs.
 
