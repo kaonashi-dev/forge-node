@@ -12,7 +12,13 @@ import {
 import { APP } from "../../actions/actions";
 import { enterContext, installKeymap, invokeAction, registerAction } from "../../actions/dispatch";
 import { CommandPalette } from "../palette/CommandPalette";
-import type { PaletteEntry, PaletteScope } from "../palette/entries";
+import {
+  PALETTE_RECENT_KEY,
+  parseRecent,
+  remember,
+  type PaletteEntry,
+  type PaletteScope,
+} from "../palette/entries";
 import { addProjectFromPicker } from "../../features/projects/commands";
 import { closeSession } from "../../features/sessions/commands";
 import { scrollTerminal } from "../../features/terminal/commands";
@@ -69,6 +75,7 @@ import {
   readScale,
   readWidth,
   resetScale,
+  writeChoice,
   writeWidth,
 } from "../../state/preferences";
 import { CenterStack } from "./CenterStack";
@@ -452,6 +459,8 @@ export function AppShell() {
 
   function runChoice(entry: PaletteEntry): void {
     setPalette(null);
+    const recent = remember(parseRecent(forgeStore.app_state[PALETTE_RECENT_KEY]), entry);
+    if (recent) writeChoice(PALETTE_RECENT_KEY, JSON.stringify(recent));
     switch (entry.choice.kind) {
       case "new_shell":
         void launchShell(currentWorkspace()).catch(() => undefined);
