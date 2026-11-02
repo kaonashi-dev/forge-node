@@ -1523,6 +1523,8 @@ function CheckoutChildren(props: {
             inTree
             cursor={props.selected === `session:${node.session.id}`}
             depth={node.depth}
+            last={node.last}
+            through={node.through}
             level={props.level}
             onMenu={(event) => props.onSessionMenu(event, node.session)}
           />
@@ -1565,6 +1567,8 @@ function SessionRow(props: {
   unread: boolean;
   /** Indent, in rungs of the card's own left edge. */
   depth: number;
+  last?: boolean;
+  through?: number[];
   /** Tree level for a reader, which the indent no longer implies. */
   level?: number;
   /** Whether this row sits inside the rail's tree, or was lifted out of it. */
@@ -1598,11 +1602,15 @@ function SessionRow(props: {
         cursor: props.cursor === true,
         "row-new": arrived,
         nested: props.depth > 0,
+        last: props.last === true,
       }}
       style={{ "--tree-depth": String(props.depth) }}
       onClick={() => focusSession(props.session.id)}
       onContextMenu={props.onMenu}
     >
+      <For each={props.through ?? []}>
+        {(level) => <span class="tree-rail" style={{ "--rail": String(level) }} />}
+      </For>
       {/* What it runs, not just that it exists: a terminal and a Codex
           agent in the same checkout are unreadable as two identical labels. */}
       <SessionGlyph

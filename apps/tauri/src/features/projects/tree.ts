@@ -24,6 +24,8 @@ export type SessionNode = {
    * read as unrelated agents rather than one piece of work.
    */
   depth: number;
+  last: boolean;
+  through: number[];
   wantsYou: boolean;
   unread: boolean;
 };
@@ -96,11 +98,13 @@ export function buildTree(
             (session) => session.workspace_id === workspace.id && session.kind !== "Editor",
           ),
           tabOrder[workspace.id] ?? [],
-        ).map(({ session, depth }) => ({
+        ).map(({ session, depth, last, through }) => ({
           id: session.id,
           session,
           label: sessionDisplayTitle(session),
           depth,
+          last,
+          through,
           wantsYou: store.session_attention[session.id]?.wants_you ?? false,
           unread: store.session_attention[session.id]?.unread ?? false,
         }));

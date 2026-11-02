@@ -28,6 +28,23 @@ describe("orderSessionsTree", () => {
     ]);
   });
 
+  it("closes each branch at its last child and runs ancestor guides past nested rows", () => {
+    const rows = orderSessionsTree([
+      session("root"),
+      session("c1", { parent_session_id: "root" }),
+      session("g1", { parent_session_id: "c1" }),
+      session("c2", { parent_session_id: "root" }),
+      session("g2", { parent_session_id: "c2" }),
+    ]);
+    expect(rows.map((row) => [row.session.id, row.last, row.through])).toEqual([
+      ["root", true, []],
+      ["c1", false, []],
+      ["g1", true, [1]],
+      ["c2", true, []],
+      ["g2", true, []],
+    ]);
+  });
+
   it("sorts siblings by creation, not by arrival order", () => {
     const rows = orderSessionsTree([
       session("root"),
