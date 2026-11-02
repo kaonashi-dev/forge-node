@@ -55,6 +55,10 @@ Use --profile <name|uuid>, --model <id>, --effort <level>, --resume <provider id
 Keep the returned session_id: a title is only as stable as the name you gave, and an agent may retitle an unnamed session.
 If a launch fails after its worktree was created, details.worktree_created names it and next removes it.
 Resolve a session by UUID, UUID prefix (at least 8 characters), exact case-insensitive title, or project/title. Ambiguity exits 5 and lists candidates.
+`self` and `parent` name your own session and the one that launched you.
+Report back to the session that launched you: forgectl session send parent --queue --file report.md. It is submitted as soon as the parent is idle.
+Follow sessions: forgectl session watch [<ref>...] [--project <name>] prints one JSON line per state or activity change and ends when the named sessions end.
+Send with --queue rather than --now: --now types without Enter unless the agent is hook-confirmed idle, and the prompt then sits in its input.
 List: forgectl session list [--project <name>] [--kind agent|shell|editor|task] [--active]
 Wait by events: forgectl session wait <ref> --for idle,waiting,exit [--timeout 600]; the first condition to hold wins and `matched` names it. Activity states are agent-only; any session can be waited on for exit. Waiting for idle alone hangs until the timeout when the agent stops to ask something.
 Read evidence: forgectl session read <ref> [--lines N] [--max-bytes N]; forgectl session changes <ref>

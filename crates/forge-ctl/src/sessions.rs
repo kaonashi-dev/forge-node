@@ -52,6 +52,15 @@ pub(crate) enum SessionCmd {
         #[arg(long)]
         timeout: Option<String>,
     },
+    /// Print one JSON line per state or activity change until the named sessions end.
+    Watch {
+        /// Sessions to follow; none follows every session (narrowed by --project).
+        sessions: Vec<String>,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        timeout: Option<String>,
+    },
     List {
         #[arg(long)]
         project: Option<String>,
@@ -429,6 +438,107 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<()
             r#for,
             timeout,
         } => wait(app, client, &session, &r#for, timeout.as_deref()),
+        SessionCmd::Watch {
+            sessions,
+            project,
+            timeout,
+        } => watch(
+            app,
+            client,
+            &sessions,
+            project.as_deref(),
+            timeout.as_deref(),
+        ),
+    }
+}
+
+fn watch(
+    app: &App,
+    client: &Client,
+    refs: &[String],
+    project: Option<&str>,
+    timeout: Option<&str>,
+) -> Result<(), u8> {
+    let deadline =
+        Instant::now() + app.wait_budget(timeout, &["forgectl", "session", "watch", "--help"])?;
+    let events = client.events();
+    let store = load(app, client)?;
+    let project = project
+        .map(|raw| places::project(app, &store, raw).map(|p| p.id))
+        .transpose()?;
+    let named: Vec<SessionId> = refs
+        .iter()
+        .map(|raw| resolve(app, &store, raw).map(|s| s.id))
+        .collect::<Result<_, _>>()?;
+    let followed = |session: &Session| {
+        if named.is_empty() {
+            project.is_none_or(|id| project_for(&store, session).is_some_and(|p| p.id == id))
+        } else {
+            named.contains(&session.id)
+        }
+    };
+    let line = |event: &str, session: &Session| {
+        let mut value = candidate(&store, session);
+        if let Some(object) = value.as_object_mut() {
+            object.insert("event".into(), json!(event));
+        }
+        println!("{value}");
+    };
+    let mut seen: std::collections::HashMap<SessionId, (String, ActivityState)> =
+        Default::default();
+    for session in store.sessions.iter().filter(|s| followed(s)) {
+        seen.insert(
+            session.id,
+            (format!("{:?}", session.state), session.activity.state),
+        );
+        line("snapshot", session);
+    }
+    let mut open: Vec<SessionId> = named
+        .iter()
+        .copied()
+        .filter(|id| {
+            store
+                .sessions
+                .iter()
+                .any(|s| s.id == *id && !s.state.is_terminal())
+        })
+        .collect();
+    loop {
+        if !named.is_empty() && open.is_empty() {
+            return Ok(());
+        }
+        let mut done = None;
+        let woke = app.await_event(&events, deadline, |event| match event {
+            DaemonEvent::SessionCreated(s) | DaemonEvent::SessionUpdated(s) if followed(s) => {
+                let now = (format!("{:?}", s.state), s.activity.state);
+                if seen.get(&s.id) != Some(&now) {
+                    seen.insert(s.id, now);
+                    line("updated", s);
+                }
+                if s.state.is_terminal() {
+                    done = Some(s.id);
+                }
+                true
+            }
+            DaemonEvent::SessionRemoved { session_id } if seen.remove(session_id).is_some() => {
+                println!("{}", json!({ "event": "removed", "id": session_id }));
+                done = Some(*session_id);
+                true
+            }
+            _ => false,
+        })?;
+        if let Some(id) = done {
+            open.retain(|open| *open != id);
+        }
+        if woke == Woke::Deadline {
+            return Err(app.fail(
+                124,
+                "timeout",
+                "watch ended at its deadline",
+                json!({}),
+                vec![],
+            ));
+        }
     }
 }
 
@@ -438,7 +548,28 @@ fn acked(app: &App, client: &Client, request: Request) -> Result<(), u8> {
     Ok(())
 }
 
+/// `self` and `parent` are relative to `FORGE_SESSION_ID` and win over a title of the same name.
 pub(crate) fn resolve<'a>(app: &App, store: &'a Store, raw: &str) -> Result<&'a Session, u8> {
+    if matches!(raw, "self" | "parent") {
+        let help = ["forgectl", "session", "--help"];
+        let me = caller(app, store, &help)?
+            .ok_or_else(|| usage_code(app, &format!("`{raw}` needs FORGE_SESSION_ID"), &help))?;
+        if raw == "self" {
+            return Ok(me);
+        }
+        return me
+            .parent_session_id
+            .and_then(|id| store.sessions.iter().find(|s| s.id == id))
+            .ok_or_else(|| {
+                app.fail(
+                    4,
+                    "not_found",
+                    "this session has no parent",
+                    json!({}),
+                    vec![],
+                )
+            });
+    }
     resolve_ref(store, raw).map_err(|candidates| {
         let ambiguous = !candidates.is_empty();
         app.fail(if ambiguous { 5 } else { 4 }, if ambiguous { "ambiguous" } else { "not_found" },

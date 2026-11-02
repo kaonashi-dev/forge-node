@@ -3249,3 +3249,105 @@ fn spec_runs_launch_a_planner_that_owns_the_coder_launch() {
         "{text}"
     );
 }
+
+#[test]
+fn a_child_reports_to_its_parent_and_watch_follows_it_until_it_ends() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    add_project(&client, &repo);
+    let ctl = Ctl::new(&running.socket);
+    let planner = field(
+        &ok(&ctl.run(
+            &[
+                "session",
+                "spawn",
+                "--project",
+                "repo",
+                "--provider",
+                "claude",
+                "--name",
+                "planner",
+            ],
+            &[],
+        )),
+        "session_id",
+    );
+    let coder = field(
+        &ok(&ctl.run(
+            &[
+                "session",
+                "spawn",
+                "--provider",
+                "claude",
+                "--name",
+                "coder",
+                "--parent",
+                "self",
+            ],
+            &[("FORGE_SESSION_ID", planner.as_str())],
+        )),
+        "session_id",
+    );
+    assert_eq!(
+        ok(&ctl.run(
+            &["session", "show", "self"],
+            &[("FORGE_SESSION_ID", coder.as_str())]
+        ))["id"],
+        coder
+    );
+    err(
+        &ctl.run(
+            &["session", "show", "parent"],
+            &[("FORGE_SESSION_ID", planner.as_str())],
+        ),
+        4,
+    );
+
+    let watch = Command::new(&ctl.bin)
+        .args(["--json", "--socket"])
+        .arg(&running.socket)
+        .args(["session", "watch", &coder, "--timeout", "30s"])
+        .env_remove("FORGE_SESSION_ID")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // The planner is busy, so the report waits in its one slot until it is idle.
+    hook_state(&ctl, &planner, "working");
+    let queued = ok(&ctl.run(
+        &[
+            "session",
+            "send",
+            "parent",
+            "--queue",
+            "--text",
+            "coder-report-done",
+        ],
+        &[("FORGE_SESSION_ID", coder.as_str())],
+    ));
+    assert_eq!(queued["queued"], true);
+    hook_state(&ctl, &planner, "idle");
+    wait_text(&ctl, &planner, "coder-report-done");
+
+    hook_state(&ctl, &coder, "working");
+    hook_state(&ctl, &coder, "idle");
+    ok(&ctl.run(&["session", "kill", &coder], &[]));
+    let output = watch.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lines: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines[0]["event"], "snapshot");
+    assert!(lines
+        .iter()
+        .any(|l| l["event"] == "updated" && l["activity"] == "idle"));
+    assert_eq!(lines.last().unwrap()["ended"], true);
+}

@@ -206,7 +206,9 @@ Give the coder these rules in the plan:
 passes it; the test uses the code the way its user does; if no honest test is possible, say so and \
 describe the manual check;
 - when the plan and the code disagree, stop and report: expected, found, why it matters, how to proceed;
-- when done, report per criterion what changed and how it was proven (command and result);
+- when done, or when a decision is needed, report to the planner with \
+`{ctl} --json session send parent --queue --file <report file>`: per criterion what changed and how it \
+was proven (command and result);
 - do not commit.
 
 Keep the plan under 60 KiB and save it outside the checkout, for example in your temporary directory.
@@ -217,6 +219,11 @@ Keep the plan under 60 KiB and save it outside the checkout, for example in your
 
 Keep the returned `session_id` and use it, never the title. {place}
 
+Send to the coder only with `--queue`: it is submitted as soon as the coder is idle, while `--now` types \
+without pressing Enter and leaves the prompt sitting in its input. The coder's report reaches you the \
+same way, as a prompt once you are idle; you can also follow it with \
+`{ctl} --json session watch <coder id>`.
+
 ## 4. Wait
 
 {ctl} --json session wait <coder id> --for idle,waiting,exit --timeout 15m
@@ -225,7 +232,7 @@ A timeout (exit 124) is not proof the coder is busy: some agents never report th
 `{ctl} --json session read <coder id> --lines 80`; if the coder has stopped and awaits input, treat it \
 as `idle`, otherwise wait again. `matched` says why a wait returned:
 - `waiting`: read `{ctl} --json session read <coder id> --lines 80`. Answer what the spec or the plan \
-answers with `{ctl} --json session send <coder id> --text '...'`; take anything else to the person \
+answers with `{ctl} --json session send <coder id> --queue --text '...'`; take anything else to the person \
 with your question selector. Never approve a permission, a command or a destructive action for it.
 - `exit`: the coder ended. Tell the person; relaunch only if they ask.
 - `idle`: review.
@@ -243,7 +250,7 @@ accept or repeat it.
 
 If anything must change, send numbered findings (file, problem, expected fix):
 
-{ctl} --json session send <coder id> --file <review file>
+{ctl} --json session send <coder id> --queue --file <review file>
 
 At most 8 KiB; for more, send a short prompt naming a file. Then wait again (step 4). If two rounds \
 fail on the same criterion, state the premise they share in one sentence and take it to the person. \
@@ -333,6 +340,7 @@ mod tests {
         ));
         assert!(brief.contains("<<<SPEC\nBuild it\nSPEC>>>"));
         assert!(brief.contains("--for idle,waiting,exit"));
+        assert!(brief.contains("session send parent --queue --file <report file>"));
         assert!(brief.contains("After 2 review round(s)"));
         assert!(brief.contains("AskUserQuestion"));
         assert!(brief.contains("Launch nothing until every item has context and a validation."));

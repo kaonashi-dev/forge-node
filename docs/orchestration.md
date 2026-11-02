@@ -174,6 +174,16 @@ command. Use returned UUIDs for unattended scripts.
 `session list` keeps `kind` and `state` as display strings (including exit
 details); `session show` returns the structured domain session.
 
+`self` and `parent` are session references relative to `FORGE_SESSION_ID`
+and win over a title with the same text. A child reports back with
+`session send parent --queue --file report.md`: the report waits in the
+parent's one queued slot and is submitted when the parent is hook-confirmed
+idle, so a planner can learn that its coder finished without polling.
+`session watch [<ref>...] [--project <name>]` follows sessions by events and
+prints one JSON line per state or activity change (`snapshot`, `updated`,
+`removed`), ending when every named session has ended or at its deadline
+(exit 124); unlike other commands it streams lines rather than one object.
+
 `session wait --for idle|waiting|working|exit` takes a comma-separated list
 and returns when the first condition holds, with `matched` naming it. A
 controller waiting for a worker to finish waits for `idle,waiting,exit`:

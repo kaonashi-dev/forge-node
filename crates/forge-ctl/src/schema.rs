@@ -30,7 +30,8 @@ pub fn schema_value() -> Value {
             "context", "report", "report show", "ask", "inbox", "send",
             "state list", "state get", "state set", "state del", "state watch",
             "project list", "workspace list", "workspace remove", "action list", "action run",
-            "session list", "session show", "session read", "session changes", "session spawn",
+            "session list", "session show", "session read", "session changes", "session watch",
+            "session spawn",
             "session shell", "session rename", "session send", "session exec", "session wait",
             "session signal", "session kill", "session restart", "session close",
             "spec run", "spec brief", "mcp",
@@ -49,6 +50,8 @@ pub fn schema_value() -> Value {
             "inside a Forge session --project defaults to the caller's checkout and spawn --provider to the caller's agent",
             "a launch prompt plus --context is capped at 64 KiB; session send stays at 8 KiB",
             "spec takes a Claude artifact link, a Markdown path or the text; a missing path exits 4",
+            "self and parent are session references relative to FORGE_SESSION_ID",
+            "session watch prints one JSON line per change, not one object",
             "session exec types one line only while the shell owns its terminal's foreground",
             "a malformed --timeout is a usage error; waits default to 600s unless a global --timeout is given",
             "a launch refused after creating a worktree names it in details.worktree_created"
