@@ -28,7 +28,3 @@ export function directoryOf(path: string): string {
   const index = trimmed.lastIndexOf("/");
   return index > 0 ? trimmed.slice(0, index) : "/";
 }
-
-export function joinPath(directory: string, name: string): string {
-  return `${directory.replace(/\/+$/, "")}/${name}`;
-}

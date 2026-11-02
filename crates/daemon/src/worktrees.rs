@@ -142,6 +142,25 @@ pub fn project_dir_name(project_root: &Path, project_id: ProjectId) -> String {
     format!("{stem}-{id6}")
 }
 
+/// Remove the `<repo>-<id6>` directory that held `worktree` once nothing is
+/// left in it. Only a direct child of `root` qualifies, so a worktree outside
+/// the managed layout never takes its parent with it.
+pub fn remove_emptied_project_dir(worktree: &Path, root: &Path) {
+    let Some(parent) = worktree.parent() else {
+        return;
+    };
+    if parent.parent() != Some(root) {
+        return;
+    }
+    if let Err(error) = std::fs::remove_dir(parent) {
+        tracing::debug!(
+            path = %parent.display(),
+            %error,
+            "could not remove the emptied project directory"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

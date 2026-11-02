@@ -34,6 +34,7 @@ use terminal_core::{AlacrittyEngine, DeltaBuilder, PtyBackend, TerminalEngine};
 
 use crate::config::Config;
 use crate::environment::ShellEnvironmentService;
+use crate::paths::canonical_or_self;
 use crate::shares::{self, apply as share_apply, ShareContext};
 use crate::terminal::{pty_loop, TerminalRuntime};
 use crate::terminfo::{self, TermSelection};
@@ -149,7 +150,7 @@ pub(crate) struct Inner {
 
 /// Resolved Forge paths, plus the one value `config.toml` can override.
 ///
-/// Immutable for the life of the daemon: `GetPaths` answers from it, and
+/// Immutable for the life of the daemon (`GetPaths` re-checks only `legacy`), and
 /// `agent-plugins`/`runs` never derive from the worktrees root.
 #[derive(Clone, Debug)]
 pub struct DaemonPaths {
@@ -807,7 +808,7 @@ impl Daemon {
             Request::RefreshPullRequests => self.refresh_pull_requests(),
             Request::GetStats => Ok(Response::DaemonStats(self.collect_stats())),
             Request::GetPaths => Ok(Response::Paths {
-                paths: self.paths.forge.clone(),
+                paths: self.current_forge_paths(),
                 worktrees_root: self.paths.worktrees_root.clone(),
             }),
 
@@ -1273,6 +1274,22 @@ impl Daemon {
 
     pub(crate) fn worktrees_root_path(&self) -> &std::path::Path {
         &self.paths.worktrees_root
+    }
+
+    /// The startup paths, except that a home layout drops `legacy` once
+    /// `migrate-home --remove-legacy` has deleted the old `app.db`: that runs
+    /// beside a live daemon, and a stale value keeps offering the removal.
+    fn current_forge_paths(&self) -> client::ForgePaths {
+        let mut paths = self.paths.forge.clone();
+        if paths.layout == client::Layout::Home
+            && paths
+                .legacy
+                .as_ref()
+                .is_some_and(|legacy| !legacy.join("app.db").is_file())
+        {
+            paths.legacy = None;
+        }
+        paths
     }
 
     pub(crate) fn forge_paths(&self) -> &client::ForgePaths {
@@ -4041,17 +4058,7 @@ impl Daemon {
                 git_service::Force::No
             };
             git_service::remove(&git_root, &ws.path, force).map_err(git_err)?;
-            if let Some(parent) = ws.path.parent() {
-                if parent.parent() == Some(self.worktrees_root_path()) {
-                    if let Err(error) = std::fs::remove_dir(parent) {
-                        tracing::debug!(
-                            path = %parent.display(),
-                            %error,
-                            "could not remove the emptied project directory"
-                        );
-                    }
-                }
-            }
+            worktrees::remove_emptied_project_dir(&ws.path, self.worktrees_root_path());
         } else if !ws.path.exists() {
             git_service::prune(&git_root).map_err(git_err)?;
         }
@@ -7886,11 +7893,6 @@ fn unix_to_timestamp(secs: i64) -> Option<Timestamp> {
     time::OffsetDateTime::from_unix_timestamp(secs)
         .ok()
         .map(Timestamp::from_offset)
-}
-
-/// Fall back to the path unchanged if it no longer exists.
-fn canonical_or_self(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Seed a display name from the directory basename when it is shorter than the branch.

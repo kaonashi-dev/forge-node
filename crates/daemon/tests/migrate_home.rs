@@ -300,7 +300,7 @@ fn json(output: &Output) -> serde_json::Value {
 fn dry_run_writes_nothing_and_reports_outcomes_and_transcripts() {
     let fixture = Fixture::new();
     let before = tree(&fixture.legacy);
-    let output = fixture.run(&["migrate-home", "--dry-run", "--json"]);
+    let output = fixture.run(&["migrate-home", "--dry-run", "--move-worktrees", "--json"]);
     let report = json(&output);
 
     assert_eq!(report["dry_run"], true);
@@ -334,6 +334,45 @@ fn dry_run_writes_nothing_and_reports_outcomes_and_transcripts() {
         find(&fixture.rebasing)["reason"],
         "merge or rebase in progress"
     );
+}
+
+#[test]
+fn dry_run_without_move_worktrees_previews_what_that_run_would_do() {
+    let fixture = Fixture::new();
+    let report = json(&fixture.run(&["migrate-home", "--dry-run", "--json"]));
+    let entries = report["worktrees"].as_array().expect("worktrees array");
+    assert_eq!(entries.len(), 4);
+    assert!(
+        entries.iter().all(|entry| entry["outcome"] == "stay"),
+        "without --move-worktrees every worktree stays: {entries:?}"
+    );
+    assert!(report["rollback"].as_array().expect("rollback").is_empty());
+}
+
+#[test]
+fn dry_run_after_the_first_migration_reads_the_home_database() {
+    let fixture = Fixture::new();
+    json(&fixture.run(&["migrate-home", "--json"]));
+
+    // Only the home database forgets this worktree; a preview built from the
+    // frozen legacy copy would still offer to move it.
+    let db = Db::open(&fixture.forge_home().join("app.db")).expect("new db");
+    db.conn()
+        .execute(
+            "DELETE FROM workspaces WHERE id = ?1",
+            [fixture.movable.id.to_string()],
+        )
+        .expect("forget the movable worktree");
+    drop(db);
+
+    let report = json(&fixture.run(&["migrate-home", "--dry-run", "--move-worktrees", "--json"]));
+    assert_eq!(report["config"], "kept");
+    assert_eq!(report["runs_copied"], 0);
+    let entries = report["worktrees"].as_array().expect("worktrees array");
+    assert_eq!(entries.len(), 3, "{entries:?}");
+    assert!(entries
+        .iter()
+        .all(|entry| entry["path"] != fixture.movable.path.to_string_lossy().as_ref()));
 }
 
 #[test]
@@ -532,4 +571,30 @@ fn move_worktrees_relocates_the_movable_one_and_skips_the_rest() {
         "a rerun moves nothing: {rerun_entries:?}"
     );
     assert!(destination.is_dir(), "a rerun is a no-op");
+}
+
+#[test]
+fn worktrees_left_behind_by_the_first_migration_move_on_a_later_run() {
+    let fixture = Fixture::new();
+    json(&fixture.run(&["migrate-home", "--json"]));
+    assert!(fixture.movable.path.is_dir());
+
+    let report = json(&fixture.run(&["migrate-home", "--move-worktrees", "--json"]));
+    let destination = fixture.expected_destination(&fixture.movable);
+    let moved = report["worktrees"]
+        .as_array()
+        .expect("worktrees array")
+        .iter()
+        .find(|entry| entry["path"] == fixture.movable.path.to_string_lossy().as_ref())
+        .expect("movable entry")
+        .clone();
+    assert_eq!(moved["outcome"], "moved");
+    assert!(destination.join("README.md").is_file());
+    let row = Db::open(&fixture.forge_home().join("app.db"))
+        .expect("new db")
+        .workspaces()
+        .get(fixture.movable.id)
+        .expect("workspace")
+        .expect("row");
+    assert_eq!(row.path, destination);
 }

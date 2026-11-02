@@ -16,7 +16,6 @@ use crate::lockfile::{self, DaemonLock};
 use crate::paths;
 use client::paths::{LegacyDirs, PathInputs};
 
-/// Command-line options for `migrate-home`.
 #[derive(Clone, Debug, Default)]
 pub struct Options {
     pub dry_run: bool,
@@ -37,7 +36,6 @@ pub enum Outcome {
     Skip,
 }
 
-/// One worktree's report entry.
 #[derive(Clone, Debug, Serialize)]
 pub struct WorktreeReport {
     pub path: PathBuf,
@@ -48,7 +46,6 @@ pub struct WorktreeReport {
     pub transcripts: usize,
 }
 
-/// The whole migration report.
 #[derive(Clone, Debug, Serialize)]
 pub struct Report {
     pub dry_run: bool,
@@ -108,8 +105,6 @@ pub fn decide(facts: &Facts, move_worktrees: bool) -> (Outcome, Option<&'static 
     (Outcome::Move, None)
 }
 
-/// Run the command.
-///
 /// # Errors
 /// Any refusal (no legacy install, environment overrides, a held lock), or an
 /// I/O failure that would leave the migration inconsistent.
@@ -155,17 +150,25 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
     } else {
         acquire_locks(&legacy, &target.home, options.wait_secs)?
     };
+    // A preview reads a copy of whichever database the real run would use: the
+    // legacy one only until the home database exists.
+    let source_db = if first_migration {
+        legacy.data.join("app.db")
+    } else {
+        target.db.clone()
+    };
+    let migrating_db = target.home.join("app.db.migrating");
     let _dry_run_dir;
     let live_db;
     if options.dry_run {
         let copy = tempfile::TempDir::new()?;
         live_db = copy.path().join("app.db");
-        persistence::vacuum_into(&legacy.data.join("app.db"), &live_db)?;
+        persistence::vacuum_into(&source_db, &live_db)?;
         _dry_run_dir = Some(copy);
     } else if first_migration {
-        live_db = target.home.join("app.db.migrating");
+        live_db = migrating_db.clone();
         let _ = std::fs::remove_file(&live_db);
-        persistence::vacuum_into(&legacy.data.join("app.db"), &live_db)?;
+        persistence::vacuum_into(&source_db, &live_db)?;
         _dry_run_dir = None;
     } else {
         live_db = target.db.clone();
@@ -202,30 +205,44 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
         0
     };
 
+    // The home database goes live before any worktree moves: a failure from
+    // here on leaves a home layout whose rows match the disk and a rerun
+    // finishes the moves, instead of a respawned daemon reopening legacy rows
+    // that point at emptied checkouts.
+    let db = if !options.dry_run && first_migration {
+        db.conn()
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        drop(db);
+        std::fs::rename(&migrating_db, &target.db)?;
+        let _ = std::fs::remove_file(target.home.join("app.db.migrating-wal"));
+        let _ = std::fs::remove_file(target.home.join("app.db.migrating-shm"));
+        persistence::Db::open(&target.db)?
+    } else {
+        db
+    };
+
     let candidates = candidates(&db, &legacy, &target_root)?;
     let old_root = legacy.data.join("worktrees");
     let mut worktrees = Vec::with_capacity(candidates.len());
     let mut rollback = Vec::new();
 
     for candidate in &candidates {
-        let (decision, reason) =
-            decide(&candidate.facts, options.move_worktrees || options.dry_run);
+        let (decision, reason) = decide(&candidate.facts, options.move_worktrees);
         let mut reason = reason.map(str::to_owned);
         let mut outcome = decision;
         if !options.dry_run {
-            match decision {
-                Outcome::Move => match move_candidate(&db, candidate, &old_root) {
-                    Ok(()) => outcome = Outcome::AlreadyMoved,
-                    Err(error) => {
-                        outcome = Outcome::Skip;
-                        reason = Some(error.to_string());
-                    }
-                },
-                Outcome::AlreadyMoved => {
-                    db.replace_path_prefix(&candidate.path, &candidate.destination)?;
-                    remove_emptied_project_dir(&candidate.path, &old_root);
+            let applied = match decision {
+                Outcome::Move => move_candidate(&db, candidate, &old_root),
+                Outcome::AlreadyMoved => record_moved(&db, candidate, &old_root),
+                Outcome::Stay | Outcome::Skip => Ok(()),
+            };
+            match applied {
+                Ok(()) if decision == Outcome::Move => outcome = Outcome::AlreadyMoved,
+                Ok(()) => {}
+                Err(error) => {
+                    outcome = Outcome::Skip;
+                    reason = Some(error.to_string());
                 }
-                Outcome::Stay | Outcome::Skip => {}
             }
         }
         if matches!(outcome, Outcome::Move | Outcome::AlreadyMoved) {
@@ -245,18 +262,6 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
         });
     }
 
-    if !options.dry_run && first_migration {
-        db.conn()
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-        drop(db);
-        std::fs::rename(
-            target.home.join("app.db.migrating"),
-            target.home.join("app.db"),
-        )?;
-        let _ = std::fs::remove_file(target.home.join("app.db.migrating-wal"));
-        let _ = std::fs::remove_file(target.home.join("app.db.migrating-shm"));
-    }
-
     let report = Report {
         dry_run: options.dry_run,
         from: legacy.data,
@@ -267,11 +272,13 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
         rollback,
     };
 
+    // The breadcrumb is for a human browsing the old folder; the migration has
+    // already succeeded, so failing to leave it must not report a failure.
     if !options.dry_run {
-        std::fs::write(
-            report.from.join("MIGRATED-TO"),
-            format!("{}\n", target.home.display()),
-        )?;
+        let breadcrumb = report.from.join("MIGRATED-TO");
+        if let Err(error) = std::fs::write(&breadcrumb, format!("{}\n", target.home.display())) {
+            eprintln!("warning: could not write {}: {error}", breadcrumb.display());
+        }
     }
 
     if options.json {
@@ -291,17 +298,17 @@ fn move_candidate(
         paths::ensure_private_dir(parent)?;
     }
     git_service::move_worktree(&candidate.git_root, &candidate.path, &candidate.destination)?;
-    db.replace_path_prefix(&candidate.path, &candidate.destination)?;
-    remove_emptied_project_dir(&candidate.path, old_root);
-    Ok(())
+    record_moved(db, candidate, old_root)
 }
 
-fn remove_emptied_project_dir(path: &Path, old_root: &Path) {
-    if let Some(parent) = path.parent() {
-        if parent.parent() == Some(old_root) {
-            let _ = std::fs::remove_dir(parent);
-        }
-    }
+fn record_moved(
+    db: &persistence::Db,
+    candidate: &Candidate,
+    old_root: &Path,
+) -> anyhow::Result<()> {
+    db.replace_path_prefix(&candidate.path, &candidate.destination)?;
+    crate::worktrees::remove_emptied_project_dir(&candidate.path, old_root);
+    Ok(())
 }
 
 fn candidates(
@@ -323,6 +330,7 @@ fn candidates(
         }
     }
     let old_root = legacy.data.join("worktrees");
+    let mut listings: HashMap<PathBuf, Vec<git_service::WorktreeEntry>> = HashMap::new();
     let mut out = Vec::new();
     for workspace in workspaces.iter().filter(|workspace| {
         workspace.managed_by_app
@@ -341,15 +349,13 @@ fn candidates(
                 project.id,
             ))
             .join(workspace.path.file_name().unwrap_or_default());
-        let locked = project
-            .git_root
-            .as_deref()
-            .and_then(|root| git_service::list_worktrees(root).ok())
-            .is_some_and(|entries| {
-                entries
-                    .iter()
-                    .any(|entry| entry.locked && same_path(&entry.path, &workspace.path))
-            });
+        let locked = project.git_root.as_deref().is_some_and(|root| {
+            listings
+                .entry(root.to_path_buf())
+                .or_insert_with(|| git_service::list_worktrees(root).unwrap_or_default())
+                .iter()
+                .any(|entry| entry.locked && same_path(&entry.path, &workspace.path))
+        });
         out.push(Candidate {
             path: workspace.path.clone(),
             destination: destination.clone(),
@@ -371,11 +377,7 @@ fn candidates(
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
-    a == b || canonical_or_self(a) == canonical_or_self(b)
-}
-
-fn canonical_or_self(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    a == b || paths::canonical_or_self(a) == paths::canonical_or_self(b)
 }
 
 fn copy_config(source: &Path, target: &Path) -> anyhow::Result<()> {
@@ -565,7 +567,15 @@ fn print_human(report: &Report) {
             println!("  {line}");
         }
     }
-    if !report.dry_run && report.worktrees.iter().all(|w| w.outcome == Outcome::Stay) {
-        println!("already migrated; nothing to move");
+    let staying = report
+        .worktrees
+        .iter()
+        .filter(|worktree| worktree.outcome == Outcome::Stay)
+        .count();
+    if staying > 0 {
+        let verb = if report.dry_run { "would stay" } else { "stay" };
+        println!(
+            "{staying} worktree(s) {verb} in the old folder; rerun with --move-worktrees to move them"
+        );
     }
 }

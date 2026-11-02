@@ -163,6 +163,12 @@ pub fn risky_location(path: &std::path::Path, home: &std::path::Path) -> Option<
     .find(|prefix| path.starts_with(home.join(prefix)))
 }
 
+/// `path` canonicalized, or unchanged when it no longer exists.
+#[must_use]
+pub fn canonical_or_self(path: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// Create `dir` with `0700` permissions, or verify an existing one is private
 /// (ADR-004).
 ///

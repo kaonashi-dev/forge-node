@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { directoryOf, joinPath, legacyWorktreeCount } from "./storage";
+import { directoryOf, legacyWorktreeCount } from "./storage";
 
 const ws = (path: string, managed = true) => ({ path, managed_by_app: managed });
 
@@ -32,9 +32,5 @@ describe("path helpers", () => {
   it("finds the directory of an absolute path", () => {
     expect(directoryOf("/home/dev/.forge-node/config.toml")).toBe("/home/dev/.forge-node");
     expect(directoryOf("/")).toBe("/");
-  });
-
-  it("joins without doubling the separator", () => {
-    expect(joinPath("/home/dev/.forge-node/", "logs")).toBe("/home/dev/.forge-node/logs");
   });
 });

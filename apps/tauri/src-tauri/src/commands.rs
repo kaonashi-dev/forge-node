@@ -190,12 +190,13 @@ pub fn config_paths() -> ConfigPaths {
     }
 }
 
-/// What the legacy migration would do, without writing anything.
+/// What the migration would do with `--move-worktrees`, without writing
+/// anything: the preview names what moves and why the rest is skipped.
 #[tauri::command]
 pub async fn migrate_home_preview() -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
         run_migration(
-            &["migrate-home", "--dry-run", "--json"],
+            &["migrate-home", "--dry-run", "--move-worktrees", "--json"],
             std::time::Duration::from_secs(60),
         )
     })

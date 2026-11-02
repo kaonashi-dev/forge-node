@@ -29,7 +29,7 @@ export async function configPaths(): Promise<ConfigPaths> {
   return invoke<ConfigPaths>("config_paths");
 }
 
-/** What the legacy migration would do. Writes nothing. */
+/** What `migrate-home --move-worktrees` would do. Writes nothing. */
 export async function migrateHomePreview(): Promise<MigrationReport> {
   return invoke<MigrationReport>("migrate_home_preview");
 }
