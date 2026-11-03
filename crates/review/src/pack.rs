@@ -13,7 +13,7 @@ use crate::rules::Rule;
 const REDACTED: &str = "«redacted»";
 
 /// Lockfiles, snapshots and secret-bearing files, matched on the file name.
-const EXCLUDED_NAMES: [&str; 12] = [
+const EXCLUDED_NAMES: [&str; 10] = [
     "*.lock",
     "package-lock.json",
     "bun.lock*",
@@ -24,8 +24,15 @@ const EXCLUDED_NAMES: [&str; 12] = [
     ".env*",
     "*.pem",
     "*.key",
-    "id_*",
-    "secrets.*",
+];
+
+/// Key and secret names that ordinary source also takes (`id_map.rs`,
+/// `secrets.ts`), so a source extension keeps the file in the review.
+const SECRET_NAMES: [&str; 2] = ["id_*", "secrets.*"];
+
+const SOURCE_EXTENSIONS: [&str; 22] = [
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "swift", "rb", "c",
+    "h", "cc", "cpp", "hpp", "cs", "php", "scala", "ex",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,9 +190,13 @@ fn neutralise(text: &str, tag: &str) -> String {
 fn excluded(path: &str, ignores: &[glob::Pattern]) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     let mut dirs = path.split('/').rev().skip(1);
-    EXCLUDED_NAMES
-        .iter()
-        .any(|glob| glob::Pattern::new(glob).is_ok_and(|p| p.matches(name)))
+    let matches = |glob: &&str| glob::Pattern::new(glob).is_ok_and(|p| p.matches(name));
+    let source = Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| SOURCE_EXTENSIONS.contains(&ext));
+    EXCLUDED_NAMES.iter().any(matches)
+        || (!source && SECRET_NAMES.iter().any(matches))
         || dirs.any(|dir| dir == "generated")
         || path.starts_with("dist/")
         || ignores.iter().any(|pattern| pattern.matches(path))

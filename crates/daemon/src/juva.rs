@@ -85,7 +85,6 @@ pub fn draft_remote(
 fn completion_request(model: &str, kind: JuvaKind, context: &ChangeContext) -> Option<String> {
     let system = match kind {
         JuvaKind::CommitMessage => COMMIT_SYSTEM_PROMPT,
-        JuvaKind::ChangeReview => REVIEW_SYSTEM_PROMPT,
         _ => return None,
     };
     let payload = serde_json::json!({
@@ -162,24 +161,11 @@ Rules:
 - One logical change per message; if the diff mixes concerns, name the dominant one
 ";
 
-/// System prompt for a change review — the Review tab's standard.
-pub const REVIEW_SYSTEM_PROMPT: &str = "\
-You write change reviews for Forge Node.
-
-Rules:
-- Open with one sentence naming what this branch now does that it did not before
-- Then 3-6 bullets, each one a behaviour or a decision, never a file
-- Name a risk or an unfinished edge when the diff shows one
-- Never restate the file list; the reader has it beside your text
-- No filler, no marketing tone, no emoji
-";
-
 /// Draft text for `kind` from `context`, applying the matching system standard.
 #[must_use]
 pub fn draft(kind: JuvaKind, context: &ChangeContext) -> JuvaDraft {
     match kind {
         JuvaKind::CommitMessage => draft_commit(context),
-        JuvaKind::ChangeReview => draft_review(context),
         JuvaKind::Unknown | _ => JuvaDraft {
             kind,
             title: "Update".into(),
@@ -213,50 +199,6 @@ fn draft_commit(context: &ChangeContext) -> JuvaDraft {
         kind: JuvaKind::CommitMessage,
         title,
         body,
-        context: context.clone(),
-    }
-}
-
-/// The deterministic review: what changed, grouped, with the commits.
-///
-/// Not prose and not pretending to be. It answers "what is in this branch"
-/// from the file list alone, which is all this side can know without asking a
-/// model, and it is what the Review tab shows whenever `[juva]` is off or the
-/// call failed.
-fn draft_review(context: &ChangeContext) -> JuvaDraft {
-    let _ = REVIEW_SYSTEM_PROMPT;
-    let branch = context.branch.as_deref().unwrap_or("this checkout");
-    let title = if context.files.is_empty() {
-        format!("No changes on {branch}")
-    } else {
-        format!("{} file(s) changed on {branch}", context.files.len())
-    };
-
-    let mut areas: Vec<(&str, usize)> = Vec::new();
-    for file in &context.files {
-        let area = file.path.split('/').next().unwrap_or(file.path.as_str());
-        match areas.iter_mut().find(|(name, _)| *name == area) {
-            Some((_, count)) => *count += 1,
-            None => areas.push((area, 1)),
-        }
-    }
-    areas.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-
-    let mut lines: Vec<String> = Vec::new();
-    for (area, count) in areas.iter().take(8) {
-        lines.push(format!("- `{area}` — {count} file(s)"));
-    }
-    if areas.len() > 8 {
-        lines.push(format!("- …and {} more area(s)", areas.len() - 8));
-    }
-    if context.truncated {
-        lines.push("- (the diff was truncated, so this is not exhaustive)".into());
-    }
-
-    JuvaDraft {
-        kind: JuvaKind::ChangeReview,
-        title,
-        body: lines.join("\n"),
         context: context.clone(),
     }
 }
@@ -378,23 +320,6 @@ mod tests {
         assert!(d.title.starts_with("chore(client):") || d.title.starts_with("fix(client):"));
     }
 
-    #[test]
-    fn review_draft_groups_by_area_without_a_model() {
-        let d = draft(
-            JuvaKind::ChangeReview,
-            &ctx(&[
-                ("crates/daemon/src/a.rs", "M"),
-                ("crates/daemon/src/b.rs", "M"),
-                ("apps/tauri/src/c.ts", "M"),
-            ]),
-        );
-        assert!(d.title.contains("3 file(s) changed"));
-        // Ordered by weight: the area with two files leads.
-        let daemon = d.body.find("`crates`").expect("crates area");
-        let tauri = d.body.find("`apps`").expect("apps area");
-        assert!(daemon < tauri);
-    }
-
     /// A fake that answers whatever the test hands it, so no request is made.
     struct FakeJuva(Option<String>);
 
@@ -426,7 +351,7 @@ mod tests {
         let d = draft_remote(
             &FakeJuva(Some(body)),
             &configured(),
-            JuvaKind::ChangeReview,
+            JuvaKind::CommitMessage,
             &ctx(&[("a.rs", "M")]),
         );
         assert_eq!(d.title, "Adds a review tab");
@@ -434,18 +359,18 @@ mod tests {
     }
 
     /// Every failure lands in the same place: the local draft. The caller
-    /// asked for text, and a Review tab showing an error where the summary
-    /// goes is worse than one showing the file list.
+    /// asked for text, and a dialog showing an error where the message goes
+    /// is worse than one showing the file list.
     #[test]
     fn every_endpoint_failure_falls_back_to_the_local_draft() {
         let context = ctx(&[("a.rs", "M")]);
-        let local = draft(JuvaKind::ChangeReview, &context);
+        let local = draft(JuvaKind::CommitMessage, &context);
 
         for body in [None, Some("not json".to_owned()), Some("{}".to_owned())] {
             let d = draft_remote(
                 &FakeJuva(body),
                 &configured(),
-                JuvaKind::ChangeReview,
+                JuvaKind::CommitMessage,
                 &context,
             );
             assert_eq!(d, local);
@@ -459,10 +384,10 @@ mod tests {
             // A client that would panic if it were called.
             &FakeJuva(Some("{}".into())),
             &JuvaConfig::default(),
-            JuvaKind::ChangeReview,
+            JuvaKind::CommitMessage,
             &context,
         );
-        assert_eq!(d, draft(JuvaKind::ChangeReview, &context));
+        assert_eq!(d, draft(JuvaKind::CommitMessage, &context));
         assert_eq!(JuvaConfig::default().api_key(), None);
     }
 }

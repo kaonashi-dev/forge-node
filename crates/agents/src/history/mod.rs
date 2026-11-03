@@ -1262,15 +1262,41 @@ pub fn read_transcript(
     }
 }
 
+/// The transcript of a run launched in `cwd` with a caller-minted session id,
+/// at the one path the provider writes it to, without a discovery scan.
+/// `None` until the file exists, for an id that is not a plain file stem, and
+/// for every provider but Claude.
+#[must_use]
+pub fn minted_transcript(provider: &str, cwd: &Path, session_id: &str) -> Option<PathBuf> {
+    if provider != CLAUDE_PROVIDER
+        || session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return None;
+    }
+    let store = default_dir(&home_dir()?, "CLAUDE_CONFIG_DIR", ".claude");
+    claude_transcript_in(&store, cwd, session_id)
+}
+
+fn claude_transcript_in(store: &Path, cwd: &Path, session_id: &str) -> Option<PathBuf> {
+    let file = format!("{session_id}.jsonl");
+    std::iter::once(cwd.to_path_buf())
+        .chain(std::fs::canonicalize(cwd).ok())
+        .map(|cwd| store.join("projects").join(claude_slug(&cwd)).join(&file))
+        .find(|path| path.is_file())
+}
+
 /// The final answer of a Claude run: its last assistant text, or the plan of
 /// a closing `ExitPlanMode` call, which is where plan mode puts its answer.
 /// `None` for every other provider and for a run with no assistant record.
 #[must_use]
-pub fn last_assistant_message(session: &ExternalAgentSession) -> Option<String> {
-    if session.provider != CLAUDE_PROVIDER {
+pub fn last_assistant_message(provider: &str, transcript: &Path) -> Option<String> {
+    if provider != CLAUDE_PROVIDER {
         return None;
     }
-    let file = std::fs::File::open(&session.transcript_path).ok()?;
+    let file = std::fs::File::open(transcript).ok()?;
     let mut last = None;
     crate::jsonl::for_each(BufReader::new(file), bounded::MAX_RECORD_BYTES, |line| {
         let Ok(line) = std::str::from_utf8(line) else {
@@ -2461,26 +2487,6 @@ mod tests {
         assert!(recent_files(&dir.path().join("missing"), "jsonl").is_empty());
     }
 
-    fn claude_session(path: &Path) -> ExternalAgentSession {
-        ExternalAgentSession {
-            session_id: "s".into(),
-            project_id: ProjectId::new(),
-            workspace_id: None,
-            provider: CLAUDE_PROVIDER.into(),
-            profile_id: None,
-            title: "t".into(),
-            branch: None,
-            preview: None,
-            model: None,
-            message_count: 0,
-            subagent_count: 0,
-            transcript_path: path.to_path_buf(),
-            store: TranscriptStore::File,
-            started_at: Timestamp::now(),
-            last_activity: Timestamp::now(),
-        }
-    }
-
     fn assistant(content: serde_json::Value) -> String {
         serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": content}})
             .to_string()
@@ -2490,7 +2496,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.jsonl");
         std::fs::write(&path, lines.join("\n")).unwrap();
-        last_assistant_message(&claude_session(&path))
+        last_assistant_message(CLAUDE_PROVIDER, &path)
     }
 
     #[test]
@@ -2542,12 +2548,35 @@ mod tests {
         assert_eq!(last_of(&[user]), None);
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
-            last_assistant_message(&claude_session(&dir.path().join("missing.jsonl"))),
+            last_assistant_message(CLAUDE_PROVIDER, &dir.path().join("missing.jsonl")),
             None
         );
-        let mut other = claude_session(&dir.path().join("x.jsonl"));
-        other.provider = "codex".into();
-        assert_eq!(last_assistant_message(&other), None);
+        let other = dir.path().join("x.jsonl");
+        std::fs::write(
+            &other,
+            assistant(serde_json::json!([{"type": "text", "text": "hi"}])),
+        )
+        .unwrap();
+        assert_eq!(last_assistant_message("codex", &other), None);
+    }
+
+    #[test]
+    fn a_minted_transcript_is_found_at_its_slug_without_a_scan() {
+        let store = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let id = "0190a8f2-0000-7000-8000-000000000001";
+        assert_eq!(claude_transcript_in(store.path(), cwd.path(), id), None);
+
+        let canonical = std::fs::canonicalize(cwd.path()).unwrap();
+        let dir = store.path().join("projects").join(claude_slug(&canonical));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.jsonl")), "").unwrap();
+        assert_eq!(
+            claude_transcript_in(store.path(), cwd.path(), id),
+            Some(dir.join(format!("{id}.jsonl")))
+        );
+        assert_eq!(minted_transcript("codex", cwd.path(), id), None);
+        assert_eq!(minted_transcript(CLAUDE_PROVIDER, cwd.path(), "../x"), None);
     }
 
     #[test]

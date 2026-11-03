@@ -84,27 +84,6 @@ fn a_session_reads_back_what_it_changed_and_the_checkout_reviews_it() {
         .expect("dirty.txt");
     assert_eq!(untracked.additions, 2);
     assert_eq!(after.sharing_sessions, 0, "only one session here");
-
-    // The review is the same story with the patches, plus who wrote it.
-    let Response::WorkspaceReview(review) = client
-        .request(Request::GetWorkspaceReview {
-            workspace_id: workspace,
-            context_lines: None,
-        })
-        .expect("GetWorkspaceReview")
-    else {
-        panic!("expected WorkspaceReview");
-    };
-    assert_eq!(review.origin, domain::BaseOrigin::Recorded);
-    assert_eq!(review.sessions.len(), 1);
-    assert_eq!(review.sessions[0].session_id, session_id);
-    assert_eq!(review.sessions[0].commit_count, 1);
-    assert_eq!(review.diff.files.len(), 2);
-    assert!(review
-        .diff
-        .files
-        .iter()
-        .any(|file| file.path == "committed.txt" && file.patch.contains("+one")));
 }
 
 /// The capture is a fold over decoded cells, so nothing that reaches a handoff

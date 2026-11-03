@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{SessionId, Timestamp, WorkspaceId};
+use crate::ids::{SessionId, WorkspaceId};
 
 /// What happened to one path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,45 +177,6 @@ pub struct SessionChanges {
     /// How many other live sessions share this checkout. Non-zero means the
     /// numbers can include work this session did not do.
     pub sharing_sessions: u32,
-}
-
-/// One session's row in a review header.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReviewSession {
-    pub session_id: SessionId,
-    /// Resolved display title, as the tab strip shows it.
-    pub title: String,
-    /// Provider slug, or `None` for a plain shell.
-    pub provider: Option<String>,
-    /// Whether the session is still running.
-    pub active: bool,
-    /// This session's own baseline, abbreviated. `None` when it has none.
-    pub base: Option<String>,
-    /// Commits between this session's baseline and `HEAD`.
-    pub commit_count: u32,
-    pub created_at: Timestamp,
-    pub ended_at: Option<Timestamp>,
-}
-
-/// One checkout's changes since its sessions began, plus who those were.
-///
-/// One diff, not one per session: two agents writing the same checkout cannot
-/// be told apart by looking at the result, so the sessions are a header over a
-/// single answer rather than sections that would each claim a share of it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceReview {
-    /// Which checkout this describes.
-    pub workspace_id: WorkspaceId,
-    /// The common ancestor of every session baseline, abbreviated.
-    pub base: Option<String>,
-    /// Where that base came from.
-    pub origin: BaseOrigin,
-    /// The sessions of this checkout, newest first.
-    pub sessions: Vec<ReviewSession>,
-    /// Commits between the base and `HEAD`, newest first, capped.
-    pub commits: Vec<CommitLine>,
-    /// The diff itself, from the base.
-    pub diff: WorkspaceDiff,
 }
 
 /// One checkout's branch against the branch a pull request would target,

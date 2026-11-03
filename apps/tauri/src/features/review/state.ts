@@ -1,5 +1,6 @@
 import { createStore } from "solid-js/store";
 import type { ReviewReport, ReviewRun, ReviewSettings } from "../../contracts/workbench";
+import { supersedes } from "./runOrder";
 
 /** The newest run and the newest loaded report, per workspace. */
 export const [reviewStore, setReviewStore] = createStore({
@@ -11,10 +12,8 @@ export const [reviewStore, setReviewStore] = createStore({
   picker: null as string | null,
 });
 
-/** Keeps the newest run; ids are UUIDv7, so a later id is a later run. */
 export function applyRun(run: ReviewRun): boolean {
-  const current = reviewStore.latest[run.workspace_id];
-  if (current && current.id > run.id) return false;
+  if (!supersedes(reviewStore.latest[run.workspace_id], run)) return false;
   setReviewStore("latest", run.workspace_id, run);
   return true;
 }

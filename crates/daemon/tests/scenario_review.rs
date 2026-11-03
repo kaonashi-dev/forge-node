@@ -326,6 +326,93 @@ fn a_review_completes_with_anchored_findings_and_leaves_the_tree_alone() {
     assert_eq!(listed, [done]);
     assert_eq!(porcelain(repo.path()), before);
     assert!(common::poll_until(common::DEADLINE, || pack_dirs(&harness) == 0));
+    let reviewer = model.session_id.expect("reviewer");
+    assert!(
+        common::poll_until(common::DEADLINE, || {
+            common::session(&client, reviewer).is_some_and(|s| !s.state.is_active())
+        }),
+        "a finished review stops its reviewer"
+    );
+}
+
+#[test]
+fn an_idle_reviewer_without_a_review_fails_without_waiting_out_the_budget() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "I looked and it is fine.", Reviewer::Answers);
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let review_id = start(&client, workspace, None).expect("StartReview");
+    let model = wait_run(&events, review_id, |run| run.session_id.is_some());
+    assert!(common::poll_until(common::DEADLINE, || harness
+        .root()
+        .join("written")
+        .exists()));
+    report_idle(&client, model.session_id.expect("reviewer"));
+    let failed = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(failed.status, ReviewStatus::Failed);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("stopped without a valid review")),
+        "{:?}",
+        failed.error
+    );
+}
+
+fn start_against(
+    client: &client::Client,
+    workspace_id: WorkspaceId,
+    base: &str,
+) -> Result<ReviewId, ErrorCode> {
+    match client.request(Request::StartReview {
+        target: ReviewTarget::Workspace {
+            workspace_id,
+            base: Some(base.to_owned()),
+        },
+        tier: None,
+        provider: None,
+        preset: None,
+        instructions: None,
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
+        Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
+        Err(client::ClientError::Protocol(error)) => Err(error.code),
+        Err(other) => panic!("transport: {other}"),
+    }
+}
+
+#[test]
+fn a_base_is_checked_up_front_and_another_base_replaces_the_run() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "", Reviewer::Silent);
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    for base in ["mian", "--output=x"] {
+        assert_eq!(
+            start_against(&client, workspace, base),
+            Err(ErrorCode::InvalidRequest),
+            "{base}"
+        );
+    }
+
+    let first = start(&client, workspace, None).expect("default base");
+    let other = start_against(&client, workspace, "HEAD").expect("HEAD");
+    assert_ne!(other, first, "another base is another review");
+    let old = wait_run(&events, first, |run| run.status.is_finished());
+    assert_eq!(old.status, ReviewStatus::Cancelled);
+    assert_eq!(start_against(&client, workspace, "HEAD"), Ok(other));
+    client
+        .request(Request::CancelReview { review_id: other })
+        .expect("cancel");
 }
 
 #[test]

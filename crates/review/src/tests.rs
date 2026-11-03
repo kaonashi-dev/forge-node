@@ -98,6 +98,20 @@ fn evidence_within_three_lines_re_anchors() {
 }
 
 #[test]
+fn end_line_moves_with_the_anchor_and_never_overflows() {
+    let end_of = |end_line| {
+        let mut finding = raw(Some(25), "let total = price * qty;");
+        finding.end_line = Some(end_line);
+        validate(output(vec![finding]), &changed(), &[], &resolved())
+            .unwrap()
+            .findings[0]
+            .end_line
+    };
+    assert_eq!(end_of(26), Some(24));
+    assert_eq!(end_of(u32::MAX), None, "past the end of the file");
+}
+
+#[test]
 fn evidence_missing_from_the_file_drops_the_finding() {
     let v = validate(
         output(vec![raw(Some(2), "nowhere in the file")]),
@@ -326,6 +340,10 @@ fn the_pack_excludes_lockfiles_secrets_binaries_and_ignored_paths() {
     image.binary = true;
     let files = vec![
         diff_file("src/main.rs", "@@ -1 +1 @@\n+fn main() {}\n"),
+        diff_file("src/id_map.rs", "@@ -1 +1 @@\n+x\n"),
+        diff_file("src/secrets.rs", "@@ -1 +1 @@\n+x\n"),
+        diff_file("keys/id_ed25519", "@@ -1 +1 @@\n+x\n"),
+        diff_file("deploy/secrets.yaml", "@@ -1 +1 @@\n+x\n"),
         diff_file("Cargo.lock", "@@ -1 +1 @@\n+x\n"),
         diff_file("web/bun.lockb", "@@ -1 +1 @@\n+x\n"),
         diff_file("config/.env.local", "@@ -1 +1 @@\n+KEY=1\n"),
@@ -337,8 +355,11 @@ fn the_pack_excludes_lockfiles_secrets_binaries_and_ignored_paths() {
     let mut r = resolved();
     r.ignore = vec!["vendor/**".into()];
     let (pack, coverage) = build_pack(&meta(), &[], &files, &r, &[], &[]);
-    assert_eq!(coverage.included, vec!["src/main.rs"]);
-    assert_eq!(coverage.excluded.len(), 7);
+    assert_eq!(
+        coverage.included,
+        vec!["src/main.rs", "src/id_map.rs", "src/secrets.rs"]
+    );
+    assert_eq!(coverage.excluded.len(), 9);
     assert!(pack.contains("<diff path=\"src/main.rs\">"));
     assert!(!pack.contains("KEY=1"));
     assert!(pack.contains("data"));

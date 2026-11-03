@@ -112,8 +112,7 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
                 app.print_ok(flatten(&response));
                 return Ok(());
             }
-            let (run, findings) =
-                run_to_end(app, client, start, Instant::now() + app.wait_timeout)?;
+            let (run, findings) = run_to_end(app, client, start, Wait::Leave)?;
             print_finished(app, &run, &findings)
         }
         ReviewCmd::Show { review } => {
@@ -225,14 +224,23 @@ fn workspace_at<'a>(store: &'a Store, path: &Path) -> Option<&'a Workspace> {
     })
 }
 
+/// What a run still in flight at the deadline is left as.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wait {
+    Leave,
+    /// The bench removes the case's project next, so the run must not outlive it.
+    Cancel,
+}
+
 /// Start a review and block until it ends; events are subscribed before the
 /// request so the final update cannot slip between the two.
 fn run_to_end(
     app: &App,
     client: &Client,
     start: Request,
-    until: Instant,
+    on_deadline: Wait,
 ) -> Result<(ReviewRun, Vec<domain::Finding>), u8> {
+    let until = Instant::now() + app.review_wait;
     let events = client.events();
     let response = app.call(client, start, true)?;
     let Response::ReviewStarted { review_id } = response else {
@@ -248,6 +256,9 @@ fn run_to_end(
         matches!(event, DaemonEvent::ReviewUpdated { run } if run.id == review_id && run.status.is_finished())
     })?;
     if woke == Woke::Deadline {
+        if on_deadline == Wait::Cancel {
+            let _ = app.call(client, Request::CancelReview { review_id }, true);
+        }
         return Err(app.fail(
             124,
             "timeout",
@@ -455,7 +466,7 @@ fn bench_case(
             preset: None,
             instructions: None,
         },
-        Instant::now() + app.wait_timeout,
+        Wait::Cancel,
     )
     .map_err(|code| format!("review did not finish (exit {code})"));
     let _ = app.call(

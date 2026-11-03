@@ -507,6 +507,7 @@ mod tests {
             socket: None,
             timeout: Duration::from_secs(1),
             wait_timeout: Duration::from_secs(1),
+            review_wait: Duration::from_secs(1),
             request_id: None,
             capture: None,
         };
