@@ -363,6 +363,42 @@ export const event_remote_refs_updated = {
   },
 } as const;
 
+export const event_review_updated = {
+  ReviewUpdated: {
+    run: {
+      id: "00000000-0000-7000-8000-000000000071",
+      workspace_id: "00000000-0000-7000-8000-000000000003",
+      target: {
+        kind: "workspace",
+        workspace_id: "00000000-0000-7000-8000-000000000003",
+        base: "main",
+      },
+      head_oid: "9b1e4d0c",
+      base_oid: "3f2a9c1e",
+      tier: "base",
+      preset: "negocio",
+      provider: "claude",
+      status: "Completed",
+      stage: "Validate",
+      summary: "Greets the world.",
+      score: 3.5,
+      verdict: "Review",
+      error: null,
+      session_id: "00000000-0000-7000-8000-000000000004",
+      coverage: {
+        included: ["src/main.rs"],
+        excluded: ["Cargo.lock"],
+        truncated: [],
+        redactions: 0,
+        notes: [],
+        rules: ["pagos-idempotencia"],
+      },
+      created_at: "2026-08-30T12:00:00Z",
+      finished_at: "2026-08-30T12:00:00Z",
+    },
+  },
+} as const;
+
 export const event_session_created = {
   SessionCreated: {
     id: "00000000-0000-7000-8000-000000000004",
@@ -849,6 +885,12 @@ export const request_get_branch_compare = {
   },
 } as const;
 
+export const request_get_review_config = {
+  GetReviewConfig: {
+    workspace_id: "00000000-0000-7000-8000-000000000003",
+  },
+} as const;
+
 export const request_get_snapshot = "GetSnapshot" as const;
 
 export const request_get_workspace_diff = {
@@ -983,6 +1025,20 @@ export const request_set_project_shares = {
         created_at: "2026-08-30T12:00:00Z",
       },
     ],
+  },
+} as const;
+
+export const request_start_review = {
+  StartReview: {
+    target: {
+      kind: "workspace",
+      workspace_id: "00000000-0000-7000-8000-000000000003",
+      base: null,
+    },
+    tier: "plus",
+    provider: null,
+    preset: "negocio",
+    instructions: "Check the refunds path.",
   },
 } as const;
 
@@ -1280,6 +1336,130 @@ export const response_prompt_delivery = {
     submitted: false,
     context_id: "00000000-0000-7000-8000-000000000005",
   },
+} as const;
+
+export const response_review = {
+  Review: {
+    run: {
+      id: "00000000-0000-7000-8000-000000000071",
+      workspace_id: "00000000-0000-7000-8000-000000000003",
+      target: {
+        kind: "workspace",
+        workspace_id: "00000000-0000-7000-8000-000000000003",
+        base: "main",
+      },
+      head_oid: "9b1e4d0c",
+      base_oid: "3f2a9c1e",
+      tier: "base",
+      preset: "negocio",
+      provider: "claude",
+      status: "Completed",
+      stage: "Validate",
+      summary: "Greets the world.",
+      score: 3.5,
+      verdict: "Review",
+      error: null,
+      session_id: "00000000-0000-7000-8000-000000000004",
+      coverage: {
+        included: ["src/main.rs"],
+        excluded: ["Cargo.lock"],
+        truncated: [],
+        redactions: 0,
+        notes: [],
+        rules: ["pagos-idempotencia"],
+      },
+      created_at: "2026-08-30T12:00:00Z",
+      finished_at: "2026-08-30T12:00:00Z",
+    },
+    findings: [
+      {
+        id: 1,
+        fingerprint: "0123456789abcdef",
+        path: "src/main.rs",
+        line: 3,
+        end_line: null,
+        severity: "P1",
+        category: "logic",
+        rule_id: null,
+        confidence: 0.75,
+        title: "Prints twice",
+        body: "The greeting is printed on two lines.",
+        evidence: 'println!("world");',
+        suggestion: null,
+      },
+    ],
+  },
+} as const;
+
+export const response_review_config = {
+  ReviewConfig: {
+    default_preset: "estandar",
+    presets: [
+      {
+        id: "estandar",
+        name: "Estándar",
+        tier: null,
+      },
+      {
+        id: "negocio",
+        name: "Reglas de negocio",
+        tier: "plus",
+      },
+    ],
+    rules: [
+      {
+        id: "pagos-idempotencia",
+        title: "Every charge is idempotent",
+        severity: "P1",
+        category: "logic",
+        scope: ["src/billing/**"],
+        enabled: true,
+      },
+    ],
+    errors: ["broken.md: `scope` is empty"],
+  },
+} as const;
+
+export const response_review_started = {
+  ReviewStarted: {
+    review_id: "00000000-0000-7000-8000-000000000071",
+  },
+} as const;
+
+export const response_reviews = {
+  Reviews: [
+    {
+      id: "00000000-0000-7000-8000-000000000071",
+      workspace_id: "00000000-0000-7000-8000-000000000003",
+      target: {
+        kind: "workspace",
+        workspace_id: "00000000-0000-7000-8000-000000000003",
+        base: "main",
+      },
+      head_oid: "9b1e4d0c",
+      base_oid: "3f2a9c1e",
+      tier: "base",
+      preset: "negocio",
+      provider: "claude",
+      status: "Completed",
+      stage: "Validate",
+      summary: "Greets the world.",
+      score: 3.5,
+      verdict: "Review",
+      error: null,
+      session_id: "00000000-0000-7000-8000-000000000004",
+      coverage: {
+        included: ["src/main.rs"],
+        excluded: ["Cargo.lock"],
+        truncated: [],
+        redactions: 0,
+        notes: [],
+        rules: ["pagos-idempotencia"],
+      },
+      created_at: "2026-08-30T12:00:00Z",
+      finished_at: "2026-08-30T12:00:00Z",
+    },
+  ],
 } as const;
 
 export const response_scrollback_rows = {
@@ -1597,6 +1777,7 @@ export const response_snapshot_populated = {
             args: ["--permission-mode", "plan"],
             label: "plan mode",
           },
+          structured_review: null,
           capabilities: {
             interactive_tui: true,
             supports_initial_prompt: true,
@@ -2855,6 +3036,7 @@ export const FIXTURE_NAMES = [
   "event_pull_request_opened.json",
   "event_pull_requests_updated.json",
   "event_remote_refs_updated.json",
+  "event_review_updated.json",
   "event_session_created.json",
   "event_session_removed.json",
   "event_session_updated.json",
@@ -2885,6 +3067,7 @@ export const FIXTURE_NAMES = [
   "request_factory_reset.json",
   "request_fetch_scrollback.json",
   "request_get_branch_compare.json",
+  "request_get_review_config.json",
   "request_get_snapshot.json",
   "request_get_workspace_diff.json",
   "request_list_directory.json",
@@ -2899,6 +3082,7 @@ export const FIXTURE_NAMES = [
   "request_send_shell_command.json",
   "request_set_project_actions.json",
   "request_set_project_shares.json",
+  "request_start_review.json",
   "request_write_file.json",
   "request_write_terminal_input.json",
   "response_ack.json",
@@ -2911,6 +3095,10 @@ export const FIXTURE_NAMES = [
   "response_file_contents.json",
   "response_file_tree.json",
   "response_prompt_delivery.json",
+  "response_review.json",
+  "response_review_config.json",
+  "response_review_started.json",
+  "response_reviews.json",
   "response_scrollback_rows.json",
   "response_session_created.json",
   "response_share_candidates.json",

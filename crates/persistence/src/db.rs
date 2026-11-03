@@ -8,6 +8,7 @@ use domain::Timestamp;
 use rusqlite::{params, Connection};
 
 use crate::migrations::migrations;
+use crate::repositories::reviews;
 use crate::repositories::{
     ActionRepo, AgentProfileRepo, AppStateRepo, ContextRepo, IgnoreRepo, OrchestrationRepo,
     ProjectGroupRepo, ProjectRepo, ProviderOverrideRepo, SessionRepo, ShareRepo, WorkspaceRepo,
@@ -120,6 +121,72 @@ impl ContextWriter {
     }
 }
 
+/// Forge Review rows on their own connection, so the review worker and
+/// `GetReview` never write or read through the core lock's `Db`.
+#[derive(Clone)]
+pub struct ReviewStore(Arc<Mutex<Connection>>);
+
+impl std::fmt::Debug for ReviewStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReviewStore").finish_non_exhaustive()
+    }
+}
+
+impl ReviewStore {
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub fn insert_run(&self, run: &domain::ReviewRun) -> Result<(), DbError> {
+        reviews::insert_run(&self.conn(), run)
+    }
+
+    pub fn update_run(&self, run: &domain::ReviewRun) -> Result<(), DbError> {
+        reviews::update_run(&self.conn(), run)
+    }
+
+    pub fn insert_findings(
+        &self,
+        review: domain::ReviewId,
+        findings: &[domain::Finding],
+    ) -> Result<(), DbError> {
+        reviews::insert_findings(&self.conn(), review, findings)
+    }
+
+    pub fn get(
+        &self,
+        review: domain::ReviewId,
+    ) -> Result<Option<(domain::ReviewRun, Vec<domain::Finding>)>, DbError> {
+        reviews::get(&self.conn(), review)
+    }
+
+    /// Newest first.
+    pub fn list(
+        &self,
+        workspace: domain::WorkspaceId,
+        limit: u32,
+    ) -> Result<Vec<domain::ReviewRun>, DbError> {
+        reviews::list(&self.conn(), workspace, limit)
+    }
+
+    /// `Queued` and `Running` become `Interrupted`: no reviewer survives the daemon.
+    pub fn interrupt_unfinished(&self) -> Result<usize, DbError> {
+        reviews::interrupt_unfinished(&self.conn())
+    }
+
+    /// Keep the newest `keep` runs of a workspace, none created before `cutoff`.
+    pub fn prune(
+        &self,
+        workspace: domain::WorkspaceId,
+        keep: u32,
+        cutoff: Timestamp,
+    ) -> Result<usize, DbError> {
+        reviews::prune(&self.conn(), workspace, keep, cutoff)
+    }
+}
+
 impl Db {
     /// Open (creating if needed) the database at `path` and migrate it.
     ///
@@ -189,6 +256,15 @@ impl Db {
             "PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;",
         )?;
         Ok(ContextWriter(Arc::new(Mutex::new(conn))))
+    }
+
+    /// Open the review store's own connection.
+    pub fn review_store(&self) -> Result<ReviewStore, DbError> {
+        let conn = Connection::open(&self.location)?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;",
+        )?;
+        Ok(ReviewStore(Arc::new(Mutex::new(conn))))
     }
 
     /// The raw connection, for callers that need bespoke queries.
@@ -282,7 +358,9 @@ impl Db {
     pub fn reset(&mut self) -> Result<(), DbError> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
-            "DELETE FROM orchestration_receipts;
+            "DELETE FROM review_findings;
+             DELETE FROM review_runs;
+             DELETE FROM orchestration_receipts;
              DELETE FROM run_state;
              DELETE FROM attempts;
              DELETE FROM task_deps;

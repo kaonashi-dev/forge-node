@@ -8,7 +8,7 @@ pub mod db;
 pub mod migrations;
 pub mod repositories;
 
-pub use db::{managed_worktree_paths, vacuum_into, Db, DbError};
+pub use db::{managed_worktree_paths, vacuum_into, Db, DbError, ReviewStore};
 pub use repositories::{
     AgentProfileRepo, AppStateRepo, ContextRepo, OrchestrationRepo, ProjectGroupRepo, ProjectRepo,
     ProviderOverrideRepo, SessionRepo, WorkspaceRepo,

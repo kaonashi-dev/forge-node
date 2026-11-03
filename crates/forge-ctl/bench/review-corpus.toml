@@ -1,0 +1,77 @@
+# Forge Review recall bench: real defects fixed in Forge Node's own history.
+#
+# `forgectl review bench crates/forge-ctl/bench/review-corpus.toml` checks out
+# each `commit` in a detached worktree, reverse-applies that commit's change to
+# `path` as an uncommitted edit, reviews it against `HEAD`, and counts a hit
+# when a finding lands on `path` within 3 lines of `line` (the first line of
+# the reintroduced bug).
+
+[[case]]
+id = "idle-resets-typed-flag"
+commit = "c7eb703fc991873dae109b1cbf8862d721ad8d89"
+path = "crates/daemon/src/orchestration/mod.rs"
+line = 636
+note = "Becoming idle did not reset typed_this_idle, so a prompt typed before the turn ended blocked the next dispatch."
+
+[[case]]
+id = "waiting-counts-as-idle-for-dispatch"
+commit = "c7eb703fc991873dae109b1cbf8862d721ad8d89"
+path = "crates/domain/src/orchestration/policy.rs"
+line = 45
+note = "The dispatch policy treated an agent waiting on a person as busy and never delivered to it."
+
+[[case]]
+id = "unsaved-changes-refusal"
+commit = "c7eb703fc991873dae109b1cbf8862d721ad8d89"
+path = "crates/editor-core/src/command.rs"
+line = 196
+note = "An edit refused for unsaved changes was not mapped to a refusal."
+
+[[case]]
+id = "pid-cast-wraps"
+commit = "6b64619f83cee0bb5f20ef791d21adac96f78c17"
+path = "crates/daemon/src/diagnostics.rs"
+line = 110
+note = "`pid as i32` wraps a large pid into a negative one, which signals a process group."
+
+[[case]]
+id = "status-renames"
+commit = "6b64619f83cee0bb5f20ef791d21adac96f78c17"
+path = "crates/git-service/src/repository.rs"
+line = 144
+note = "`git status -z` without --no-renames emits a second path per rename, which the parser misreads."
+
+[[case]]
+id = "retarget-only-active-workspace"
+commit = "6b64619f83cee0bb5f20ef791d21adac96f78c17"
+path = "apps/tauri/src/navigation/viewsStore.ts"
+line = 257
+note = "A moved file only retargeted the pending line reveal when its workspace was the active one."
+
+[[case]]
+id = "poisoned-event-proxy"
+commit = "ac21a95a50dc0c6af7118fd6c4460c0eabe93c99"
+path = "crates/terminal-core/src/alacritty_engine.rs"
+line = 59
+note = "`expect` on a poisoned lock panics the PTY thread instead of recovering."
+
+[[case]]
+id = "content-search-case"
+commit = "0527d850d95945301e1905e3be2469344ba13064"
+path = "apps/tauri/src/features/files/search/fileContentSearch.ts"
+line = 46
+note = "Content search matched case-sensitively while the query was folded."
+
+[[case]]
+id = "starting-forever"
+commit = "8eed1e5a40650348de4db5c06a8a45679fb1747a"
+path = "apps/tauri/src/features/sessions/work.ts"
+line = 36
+note = "A session whose first turn never reported stayed `starting` forever."
+
+[[case]]
+id = "readiness-wrong-terminal"
+commit = "3fc5e84268611f120d9c52bcdf61dc9262090560"
+path = "crates/daemon/src/terminal.rs"
+line = 169
+note = "Readiness from a finished run's terminal could be applied to the session's new terminal."

@@ -1,0 +1,41 @@
+{
+  "ReviewUpdated": {
+    "run": {
+      "id": "00000000-0000-7000-8000-000000000071",
+      "workspace_id": "00000000-0000-7000-8000-000000000003",
+      "target": {
+        "kind": "workspace",
+        "workspace_id": "00000000-0000-7000-8000-000000000003",
+        "base": "main"
+      },
+      "head_oid": "9b1e4d0c",
+      "base_oid": "3f2a9c1e",
+      "tier": "base",
+      "preset": "negocio",
+      "provider": "claude",
+      "status": "Completed",
+      "stage": "Validate",
+      "summary": "Greets the world.",
+      "score": 3.5,
+      "verdict": "Review",
+      "error": null,
+      "session_id": "00000000-0000-7000-8000-000000000004",
+      "coverage": {
+        "included": [
+          "src/main.rs"
+        ],
+        "excluded": [
+          "Cargo.lock"
+        ],
+        "truncated": [],
+        "redactions": 0,
+        "notes": [],
+        "rules": [
+          "pagos-idempotencia"
+        ]
+      },
+      "created_at": "2026-08-30T12:00:00Z",
+      "finished_at": "2026-08-30T12:00:00Z"
+    }
+  }
+}

@@ -109,6 +109,10 @@ pub(crate) struct Inner {
     pr_opening: HashSet<WorkspaceId>,
     /// Workspaces with a Juva draft in flight, coalesced like `pr_opening`.
     drafting: HashSet<WorkspaceId>,
+    /// Queued or running reviews by workspace; the worker's guard releases its entry.
+    pub(crate) reviews_running: HashMap<WorkspaceId, crate::review::RunningReview>,
+    /// Reviews asked to stop, including ones a newer head superseded.
+    pub(crate) review_cancel: HashSet<domain::ReviewId>,
     /// Coalesces `RefreshPullRequests` globally — one refresh covers every host.
     pr_refreshing: bool,
     /// A `RefreshAgentDetection` worker is running.
@@ -161,9 +165,10 @@ pub struct DaemonPaths {
 /// Shared as `Arc<Daemon>` across the accept loop and PTY threads.
 pub struct Daemon {
     pub(crate) context_writer: persistence::db::ContextWriter,
+    pub(crate) review_store: persistence::ReviewStore,
     inner: Mutex<Inner>,
     pub(crate) registry: crate::registry::ClientRegistry,
-    config: Config,
+    pub(crate) config: Config,
     pty_backend: Box<dyn PtyBackend>,
     paths: DaemonPaths,
     /// Queued while no client is connected; replayed on the first snapshot.
@@ -301,6 +306,14 @@ impl Daemon {
         // A PTY never survives the daemon. Default: drop session rows. Opt-in: mark them Orphaned.
         crate::orchestration::reconcile_startup(&db, &config.orchestration.limits())
             .map_err(|error| error.to_string())?;
+        // No reviewer survives the daemon, whatever `persist_history` says.
+        let review_store = db.review_store().map_err(|e| e.to_string())?;
+        let interrupted = review_store
+            .interrupt_unfinished()
+            .map_err(|e| e.to_string())?;
+        if interrupted > 0 {
+            tracing::info!(interrupted, "interrupted reviews left in flight");
+        }
         if config.sessions.persist_history {
             let orphaned = db.reconcile_orphaned().map_err(|e| e.to_string())?;
             if orphaned > 0 {
@@ -397,6 +410,8 @@ impl Daemon {
             fetching: HashSet::new(),
             pr_opening: HashSet::new(),
             drafting: HashSet::new(),
+            reviews_running: HashMap::new(),
+            review_cancel: HashSet::new(),
             pr_refreshing: false,
             detecting: false,
             detect_again: false,
@@ -419,6 +434,7 @@ impl Daemon {
 
         Ok(Arc::new(Daemon {
             context_writer,
+            review_store,
             inner: Mutex::new(inner),
             registry: crate::registry::ClientRegistry::new(),
             config,
@@ -871,6 +887,20 @@ impl Daemon {
                 workspace_id,
                 context_lines,
             } => self.get_workspace_review(workspace_id, context_lines),
+            Request::StartReview {
+                target,
+                tier,
+                provider,
+                preset,
+                instructions,
+            } => self.start_review(target, tier, provider, preset, instructions),
+            Request::GetReviewConfig { workspace_id } => self.get_review_config(workspace_id),
+            Request::CancelReview { review_id } => self.cancel_review(review_id),
+            Request::GetReview { review_id } => self.get_review(review_id),
+            Request::ListReviews {
+                workspace_id,
+                limit,
+            } => self.list_reviews(workspace_id, limit),
             Request::GetBranchCompare {
                 workspace_id,
                 base,
@@ -981,6 +1011,7 @@ impl Daemon {
                 false,
                 Default::default(),
                 title,
+                None,
             ),
             Request::CreateAgentSession {
                 workspace_id,
@@ -1006,6 +1037,7 @@ impl Daemon {
                 read_only,
                 domain::AgentLaunchOptions { model, effort },
                 title,
+                None,
             ),
             Request::SendShellCommand {
                 caller_session_id,
@@ -1474,6 +1506,8 @@ impl Daemon {
             inner.fetching.clear();
             inner.pr_opening.clear();
             inner.drafting.clear();
+            inner.reviews_running.clear();
+            inner.review_cancel.clear();
             inner.provisioning.clear();
             inner.pr_refreshing = false;
             inner.status_checks.clear();
@@ -3189,6 +3223,30 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
+    /// A discovered transcript by its provider-owned id, from a fresh scan.
+    /// Scans off the core lock, which is held only to clone the roots.
+    pub(crate) fn find_external_session(
+        &self,
+        session_id: &str,
+        provider: &str,
+    ) -> Option<domain::ExternalAgentSession> {
+        let (projects, workspaces, profiles) = {
+            let inner = self.lock();
+            (
+                inner.projects.values().cloned().collect::<Vec<_>>(),
+                inner.workspaces.values().cloned().collect::<Vec<_>>(),
+                inner.profiles.clone(),
+            )
+        };
+        let mut cache = self
+            .external_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.invalidate();
+        cache.discover(&projects, &workspaces, &profiles);
+        cache.find(session_id, provider, None)
+    }
+
     pub(crate) fn workspace_path(
         &self,
         workspace_id: WorkspaceId,
@@ -4221,6 +4279,7 @@ impl Daemon {
             read_only,
             Default::default(),
             None,
+            None,
         )
     }
 
@@ -4228,7 +4287,7 @@ impl Daemon {
         clippy::too_many_arguments,
         reason = "existing internal callers have no model overrides or title; IPC resolves them explicitly"
     )]
-    fn create_session_with_options(
+    pub(crate) fn create_session_with_options(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
         kind: SessionKind,
@@ -4241,6 +4300,7 @@ impl Daemon {
         read_only: bool,
         options: domain::AgentLaunchOptions,
         title: Option<String>,
+        structured_review: Option<domain::StructuredReview>,
     ) -> Result<Response, ProtocolError> {
         let title = title
             .map(|title| title.trim().to_owned())
@@ -4305,7 +4365,11 @@ impl Daemon {
                     initial_prompt.clone(),
                     read_only,
                 )
-                .map(|launch| launch.with_options(options.clone())),
+                .map(|launch| {
+                    launch
+                        .with_options(options.clone())
+                        .with_structured_review(structured_review.clone())
+                }),
                 None,
                 None,
                 &cwd,
@@ -5645,6 +5709,7 @@ impl Daemon {
                     initial_prompt,
                     read_only,
                     options,
+                    structured_review,
                 } = agent.ok_or_else(|| {
                     ProtocolError::new(ErrorCode::InvalidRequest, "agent session needs a provider")
                 })?;
@@ -5685,6 +5750,7 @@ impl Daemon {
                     initial_prompt,
                     read_only,
                     options,
+                    structured_review,
                 };
                 let mut spec = inner
                     .agents
@@ -8164,6 +8230,9 @@ pub(crate) struct AgentLaunch {
     initial_prompt: Option<String>,
     read_only: bool,
     options: domain::AgentLaunchOptions,
+    /// Fresh launch only: a provider refuses a reused session id, and a
+    /// restarted reviewer is no longer the run's reviewer.
+    structured_review: Option<domain::StructuredReview>,
 }
 
 impl AgentLaunch {
@@ -8187,11 +8256,17 @@ impl AgentLaunch {
             initial_prompt,
             read_only,
             options: Default::default(),
+            structured_review: None,
         })
     }
 
     fn with_options(mut self, options: domain::AgentLaunchOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    fn with_structured_review(mut self, review: Option<domain::StructuredReview>) -> Self {
+        self.structured_review = review;
         self
     }
 }
@@ -8343,7 +8418,7 @@ fn resolve_base(
     }
 }
 
-fn commit_line(entry: git_service::CommitEntry) -> domain::CommitLine {
+pub(crate) fn commit_line(entry: git_service::CommitEntry) -> domain::CommitLine {
     domain::CommitLine {
         short_id: entry.short_id,
         subject: entry.subject,
@@ -8399,7 +8474,7 @@ fn row_text(row: &domain::Row) -> String {
     out
 }
 
-fn diff_file(file: git_service::FileDiff) -> domain::DiffFile {
+pub(crate) fn diff_file(file: git_service::FileDiff) -> domain::DiffFile {
     domain::DiffFile {
         path: file.path,
         status: file_change(file.status),

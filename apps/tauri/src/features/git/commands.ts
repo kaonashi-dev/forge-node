@@ -16,18 +16,6 @@ export async function loadSessionChanges(session: string): Promise<void> {
   await sendWorkbenchCommand({ type: "load_session_changes", session });
 }
 
-/** The review tab's read: the whole checkout since its sessions began. */
-export async function loadWorkspaceReview(
-  workspace: string,
-  contextLines: number | null = null,
-): Promise<void> {
-  await sendWorkbenchCommand({
-    type: "load_workspace_review",
-    workspace,
-    context_lines: contextLines,
-  });
-}
-
 /** The PR preview's read; a `null` base lets the daemon pick the default branch. */
 export async function loadBranchCompare(
   workspace: string,

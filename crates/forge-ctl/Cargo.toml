@@ -19,6 +19,8 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 flume.workspace = true
+git-service.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 daemon = { path = "../daemon" }
@@ -31,6 +33,8 @@ test-support.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 insta.workspace = true
+serde.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true

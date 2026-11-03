@@ -202,6 +202,19 @@ pub fn build_launch_with_config_dir(
             .ok_or_else(|| AgentError::ReviewUnsupported(descriptor.id.clone()))?;
         args.extend(style.args.iter().cloned());
     }
+    if let Some(review) = &req.structured_review {
+        let style = descriptor
+            .structured_review
+            .as_ref()
+            .filter(|_| req.read_only)
+            .ok_or_else(|| AgentError::ReviewUnsupported(descriptor.id.clone()))?;
+        args.extend([
+            style.session_id_flag.clone(),
+            review.session_id.clone(),
+            style.add_dir_flag.clone(),
+            review.add_dir.to_string_lossy().into_owned(),
+        ]);
+    }
     // The prompt goes last, after every flag: the three providers that take it
     // positionally would read a following argument as part of the prompt, and
     // the one that names it (`opencode --prompt`) does not care.
@@ -370,7 +383,62 @@ mod tests {
             initial_prompt: None,
             read_only: false,
             options: Default::default(),
+            structured_review: None,
         }
+    }
+
+    fn structured(dir: &Path) -> Option<domain::StructuredReview> {
+        Some(domain::StructuredReview {
+            session_id: "0190a8f2-0000-7000-8000-000000000001".to_owned(),
+            add_dir: dir.join("pack"),
+        })
+    }
+
+    #[test]
+    fn a_structured_review_names_its_session_and_pack_before_the_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        write_script(dir.path(), "claude", &echo_script("Claude Code 1.0"));
+        let env = env_with_path(vec![dir.path().to_path_buf()]);
+
+        let mut req = launch_req(dir.path().to_path_buf());
+        req.read_only = true;
+        req.initial_prompt = Some("review".to_owned());
+        req.structured_review = structured(dir.path());
+
+        let spec = build_launch(&builtins::builtin("claude").unwrap(), &req, &env).unwrap();
+        let pack = dir.path().join("pack").to_string_lossy().into_owned();
+        assert_eq!(
+            spec.args,
+            [
+                "--permission-mode",
+                "plan",
+                "--session-id",
+                "0190a8f2-0000-7000-8000-000000000001",
+                "--add-dir",
+                pack.as_str(),
+                "review"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_structured_review_is_refused_without_the_capability_or_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        write_script(dir.path(), "codex", &echo_script("codex 1.0"));
+        write_script(dir.path(), "claude", &echo_script("Claude Code 1.0"));
+        let env = env_with_path(vec![dir.path().to_path_buf()]);
+
+        let mut req = launch_req(dir.path().to_path_buf());
+        req.provider_id = AgentProviderId::new("codex");
+        req.read_only = true;
+        req.structured_review = structured(dir.path());
+        let err = build_launch(&builtins::builtin("codex").unwrap(), &req, &env).unwrap_err();
+        assert!(matches!(err, AgentError::ReviewUnsupported(_)));
+
+        let mut req = launch_req(dir.path().to_path_buf());
+        req.structured_review = structured(dir.path());
+        let err = build_launch(&builtins::builtin("claude").unwrap(), &req, &env).unwrap_err();
+        assert!(matches!(err, AgentError::ReviewUnsupported(_)));
     }
 
     #[test]

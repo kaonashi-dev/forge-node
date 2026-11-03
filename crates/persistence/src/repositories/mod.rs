@@ -15,6 +15,7 @@ pub mod orchestration;
 pub mod project_groups;
 pub mod projects;
 pub mod provider_overrides;
+pub mod reviews;
 pub mod sessions;
 pub mod shares;
 pub mod workspaces;

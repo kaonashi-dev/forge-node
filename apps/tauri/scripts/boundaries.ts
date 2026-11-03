@@ -18,11 +18,12 @@ export type Edge = {
 const PEER_EDGES: Record<string, string[]> = {
   editor: ["files"],
   files: ["editor", "git", "settings", "terminal"],
-  git: ["editor", "files", "pull-requests", "sessions", "settings"],
+  git: ["editor", "files", "pull-requests", "review", "sessions", "settings"],
   projects: ["git", "project-actions", "pull-requests", "sessions", "settings"],
   "project-actions": ["sessions"],
   "pull-requests": ["editor", "files", "git", "sessions", "settings"],
-  sessions: ["editor", "git", "settings", "terminal"],
+  review: ["editor", "files"],
+  sessions: ["editor", "git", "review", "settings", "terminal"],
   settings: ["projects", "sessions", "terminal"],
   terminal: ["files"],
 };

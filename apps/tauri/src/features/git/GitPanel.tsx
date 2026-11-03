@@ -21,6 +21,7 @@ import {
 } from "./rebaseActions";
 import { WorkingTreeRail } from "./WorkingTreeRail";
 import { fetchRemote } from "./commands";
+import { startReview } from "../review/commands";
 import { gitStore } from "./state";
 import { Icon } from "../../theme/icons/index";
 import type { Workspace } from "../../contracts/runtime";
@@ -138,6 +139,14 @@ export function GitPanel() {
                 }}
               >
                 Fetch
+              </Button>
+              <Button
+                variant="ghost"
+                size="xs"
+                iconLeading={<Icon name="list-checks" size={13} class="forge-icon-muted" />}
+                onClick={() => void startReview(checkout().id).catch(() => undefined)}
+              >
+                Review changes
               </Button>
             </div>
             <p class="git-head-place forge-truncate">{checkoutPlace(checkout())}</p>

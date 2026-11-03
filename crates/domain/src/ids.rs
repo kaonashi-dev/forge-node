@@ -106,6 +106,7 @@ uuid_id!(
     /// One assignment of a task to a session.
     AttemptId
 );
+uuid_id!(ReviewId);
 
 /// Stable provider slug, such as `"claude"`, rather than a generated UUID.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

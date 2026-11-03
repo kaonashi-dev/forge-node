@@ -512,6 +512,54 @@ CREATE INDEX idx_project_actions_project ON project_actions (project_id);
 CREATE UNIQUE INDEX idx_project_actions_label ON project_actions (project_id, label COLLATE NOCASE);
 ";
 
+/// Forge Review runs and their findings: metadata only, never the diff, the
+/// pack or the reviewer's transcript. `target` and `coverage` are JSON.
+pub const REVIEWS: &str = "\
+CREATE TABLE review_runs (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    target       TEXT NOT NULL,
+    head_oid     TEXT NOT NULL,
+    base_oid     TEXT,
+    tier         TEXT NOT NULL,
+    provider     TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    stage        TEXT,
+    summary      TEXT NOT NULL,
+    score        REAL,
+    verdict      TEXT,
+    error        TEXT,
+    session_id   TEXT,
+    coverage     TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    finished_at  TEXT
+);
+
+CREATE INDEX idx_review_runs_workspace ON review_runs (workspace_id, created_at);
+
+CREATE TABLE review_findings (
+    review_id   TEXT NOT NULL REFERENCES review_runs(id) ON DELETE CASCADE,
+    id          INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    line        INTEGER,
+    end_line    INTEGER,
+    severity    TEXT NOT NULL,
+    category    TEXT NOT NULL,
+    rule_id     TEXT,
+    confidence  REAL NOT NULL,
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    evidence    TEXT NOT NULL,
+    suggestion  TEXT,
+    PRIMARY KEY (review_id, id)
+);
+";
+
+/// The preset a review run resolved; runs from before presets ran the standard one.
+pub const REVIEW_PRESET: &str =
+    "ALTER TABLE review_runs ADD COLUMN preset TEXT NOT NULL DEFAULT 'estandar';";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -531,5 +579,7 @@ pub fn migrations() -> Migrations<'static> {
         M::up(RUN_ENVELOPE_HISTORY),
         M::up(FOREIGN_KEY_INDEXES),
         M::up(PROJECT_ACTIONS),
+        M::up(REVIEWS),
+        M::up(REVIEW_PRESET),
     ])
 }

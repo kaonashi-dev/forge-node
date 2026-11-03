@@ -115,6 +115,7 @@ export type ActionId =
   | "run_spec"
   | "toggle_session_changes"
   | "review_checkout"
+  | "review_with_preset"
   | "preview_pull_request"
   | "close_other_views"
   | "close_views_to_right"
@@ -392,8 +393,14 @@ export const ACTIONS: Action[] = [
   },
   {
     id: "review_checkout",
-    label: "Review This Checkout",
-    detail: "Everything its sessions changed, with a summary",
+    label: "Review: Current Workspace",
+    detail: "A structured review of this workspace's changes, uncommitted ones included",
+    palette: true,
+  },
+  {
+    id: "review_with_preset",
+    label: "Review: With Preset…",
+    detail: "Pick a preset, a tier and extra instructions for this review",
     palette: true,
   },
   {

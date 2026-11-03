@@ -6,6 +6,7 @@
 mod guide;
 mod mcp;
 mod places;
+mod review;
 mod schema;
 mod sessions;
 mod spec;
@@ -25,6 +26,7 @@ use serde_json::{json, Value};
 
 use guide::guide_text;
 use places::{ActionCmd, ProjectCmd, WorkspaceCmd};
+use review::ReviewCmd;
 use schema::schema_value;
 use sessions::SessionCmd;
 use spec::SpecCmd;
@@ -133,6 +135,9 @@ enum Command {
     },
     #[command(subcommand)]
     Pr(PrCmd),
+    /// Forge Review: a structured, read-only review of a workspace's changes.
+    #[command(subcommand)]
+    Review(ReviewCmd),
     #[command(subcommand)]
     State(StateCmd),
     #[command(subcommand)]
@@ -523,6 +528,7 @@ impl App {
             Command::Workspace(cmd) => places::workspace_cmd(self, client, cmd),
             Command::Action(cmd) => places::action_cmd(self, client, cmd),
             Command::Spec(cmd) => spec::dispatch(self, client, cmd),
+            Command::Review(cmd) => review::dispatch(self, client, cmd),
             Command::Guide { .. } | Command::Schema | Command::Hook { .. } | Command::Mcp => Ok(()),
         }
     }

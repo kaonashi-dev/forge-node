@@ -73,10 +73,18 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
         WorkbenchCommand::LoadSessionChanges { session } => {
             git::load_session_changes(app, client, session)
         }
-        WorkbenchCommand::LoadWorkspaceReview {
+        WorkbenchCommand::StartReview {
             workspace,
-            context_lines,
-        } => git::load_workspace_review(app, client, workspace, context_lines),
+            tier,
+            preset,
+            instructions,
+        } => git::start_review(app, client, workspace, tier, preset, instructions),
+        WorkbenchCommand::LoadReviewConfig { workspace } => {
+            git::load_review_config(app, client, workspace)
+        }
+        WorkbenchCommand::CancelReview { review } => git::cancel_review(app, client, review),
+        WorkbenchCommand::LoadReview { review } => git::load_review(app, client, review),
+        WorkbenchCommand::ListReviews { workspace } => git::list_reviews(app, client, workspace),
         WorkbenchCommand::LoadBranchCompare {
             workspace,
             base,

@@ -94,8 +94,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 15,
-        "fifteen migrations applied => user_version == 15"
+        version, 17,
+        "seventeen migrations applied => user_version == 17"
     );
 
     for table in [
@@ -116,6 +116,8 @@ fn migrations_apply_and_user_version_advances() {
         "attempts",
         "run_state",
         "orchestration_receipts",
+        "review_runs",
+        "review_findings",
     ] {
         let count: i64 = db
             .conn()
@@ -156,7 +158,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 15);
+    assert_eq!(version, 17);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1035,7 +1037,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 15, "project actions are migration 15");
+    assert_eq!(version, 17, "the review preset is migration 17");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1186,7 +1188,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 15, "reset retains the migrated schema");
+    assert_eq!(version, 17, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -1581,4 +1583,165 @@ fn a_task_session_round_trips_without_its_runtime_action() {
     assert_eq!(loaded.kind, SessionKind::Task);
     assert_eq!(loaded.launch_command.as_deref(), Some("bun run dev"));
     assert_eq!(loaded.action, None);
+}
+
+// ---- reviews ---------------------------------------------------------------
+
+fn mk_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::ReviewRun {
+    domain::ReviewRun {
+        id: domain::ReviewId::new(),
+        workspace_id,
+        target: domain::ReviewTarget::Workspace {
+            workspace_id,
+            base: Some("main".into()),
+        },
+        head_oid: "abc".into(),
+        base_oid: Some("def".into()),
+        tier: domain::Tier::Base,
+        preset: "seguridad".into(),
+        provider: "claude".into(),
+        status,
+        stage: Some(domain::ReviewStage::Diff),
+        summary: String::new(),
+        score: None,
+        verdict: None,
+        error: None,
+        session_id: None,
+        coverage: domain::Coverage {
+            included: vec!["a.rs".into()],
+            redactions: 1,
+            rules: vec!["money".into()],
+            ..domain::Coverage::default()
+        },
+        created_at: Timestamp::now(),
+        finished_at: None,
+    }
+}
+
+fn mk_finding(id: u32) -> domain::Finding {
+    domain::Finding {
+        id,
+        fingerprint: format!("{id:016x}"),
+        path: "a.rs".into(),
+        line: Some(3),
+        end_line: None,
+        severity: domain::Severity::P1,
+        category: "logic".into(),
+        rule_id: None,
+        confidence: 0.5,
+        title: "t".into(),
+        body: "b".into(),
+        evidence: "e".into(),
+        suggestion: Some("s".into()),
+    }
+}
+
+#[test]
+fn a_review_run_and_its_findings_round_trip() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let mut run = mk_run(ws, domain::ReviewStatus::Queued);
+    store.insert_run(&run).unwrap();
+
+    run.status = domain::ReviewStatus::Completed;
+    run.stage = Some(domain::ReviewStage::Validate);
+    run.score = Some(3.5);
+    run.verdict = Some(domain::Verdict::Review);
+    run.summary = "sum".into();
+    run.session_id = Some(SessionId::new());
+    run.finished_at = Some(Timestamp::now());
+    store.update_run(&run).unwrap();
+    store
+        .insert_findings(run.id, &[mk_finding(1), mk_finding(2)])
+        .unwrap();
+
+    let (back, findings) = store.get(run.id).unwrap().unwrap();
+    assert_eq!(back, run);
+    assert_eq!(findings, vec![mk_finding(1), mk_finding(2)]);
+    assert!(store.get(domain::ReviewId::new()).unwrap().is_none());
+}
+
+#[test]
+fn reviews_are_listed_newest_first_per_workspace() {
+    let (db, project, ws) = db_with_workspace();
+    let other = mk_workspace(project, "/tmp/forge-other");
+    db.workspaces().upsert(&other).unwrap();
+    let store = db.review_store().unwrap();
+    let first = mk_run(ws, domain::ReviewStatus::Completed);
+    let second = mk_run(ws, domain::ReviewStatus::Failed);
+    store.insert_run(&first).unwrap();
+    store.insert_run(&second).unwrap();
+    store
+        .insert_run(&mk_run(other.id, domain::ReviewStatus::Queued))
+        .unwrap();
+
+    let listed: Vec<_> = store
+        .list(ws, 10)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(listed, vec![second.id, first.id]);
+    assert_eq!(store.list(ws, 1).unwrap().len(), 1);
+}
+
+#[test]
+fn unfinished_reviews_become_interrupted() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let queued = mk_run(ws, domain::ReviewStatus::Queued);
+    let running = mk_run(ws, domain::ReviewStatus::Running);
+    let done = mk_run(ws, domain::ReviewStatus::Completed);
+    for run in [&queued, &running, &done] {
+        store.insert_run(run).unwrap();
+    }
+    assert_eq!(store.interrupt_unfinished().unwrap(), 2);
+    let status = |id| store.get(id).unwrap().unwrap().0;
+    let interrupted = status(running.id);
+    assert_eq!(interrupted.status, domain::ReviewStatus::Interrupted);
+    assert!(interrupted.finished_at.is_some());
+    assert_eq!(status(queued.id).status, domain::ReviewStatus::Interrupted);
+    assert_eq!(status(done.id).status, domain::ReviewStatus::Completed);
+}
+
+#[test]
+fn pruning_keeps_the_newest_runs_and_drops_old_ones_with_their_findings() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let mut runs = Vec::new();
+    for _ in 0..4 {
+        let run = mk_run(ws, domain::ReviewStatus::Completed);
+        store.insert_run(&run).unwrap();
+        store.insert_findings(run.id, &[mk_finding(1)]).unwrap();
+        runs.push(run);
+    }
+    let ancient = Timestamp::from_unix_secs(0).unwrap();
+    assert_eq!(store.prune(ws, 2, ancient).unwrap(), 2);
+    let kept: Vec<_> = store
+        .list(ws, 10)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(kept, vec![runs[3].id, runs[2].id]);
+    let orphans: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM review_findings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(orphans, 2);
+
+    let future = Timestamp::from_unix_secs(4_000_000_000).unwrap();
+    assert_eq!(store.prune(ws, 20, future).unwrap(), 2);
+    assert!(store.list(ws, 10).unwrap().is_empty());
+}
+
+#[test]
+fn reset_clears_reviews() {
+    let (mut db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let run = mk_run(ws, domain::ReviewStatus::Completed);
+    store.insert_run(&run).unwrap();
+    store.insert_findings(run.id, &[mk_finding(1)]).unwrap();
+    db.reset().unwrap();
+    assert!(store.get(run.id).unwrap().is_none());
 }

@@ -175,6 +175,12 @@ api_key_env = ""                # NAME of the env var holding the key. The key
                                 # itself is never stored here or in the database.
 timeout_secs = 0                # 0 = the built-in 30 s budget
 
+[review]
+# Forge Review's reviewer: a read-only agent session. Only a provider that
+# declares structured review is accepted (today, claude).
+provider = "claude"             # forgectl review start --provider overrides it
+timeout_secs = 900              # a run with no answer by then fails
+
 [daemon]
 log_level = "info"             # trace | debug | info | warn | error (RUST_LOG overrides)
 

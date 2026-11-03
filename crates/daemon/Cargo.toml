@@ -18,6 +18,7 @@ editor-control.workspace = true
 terminal-core.workspace = true
 terminal-input.workspace = true
 agents.workspace = true
+review.workspace = true
 git-service.workspace = true
 fs-service.workspace = true
 languages.workspace = true

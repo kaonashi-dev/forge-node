@@ -646,6 +646,86 @@ impl Client {
         }
     }
 
+    /// Start a Forge Review; the id may name a run already in flight.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn start_review(
+        &self,
+        target: domain::ReviewTarget,
+        tier: Option<domain::Tier>,
+        provider: Option<String>,
+        preset: Option<String>,
+        instructions: Option<String>,
+    ) -> Result<domain::ReviewId, ClientError> {
+        match self.request(Request::StartReview {
+            target,
+            tier,
+            provider,
+            preset,
+            instructions,
+        })? {
+            Response::ReviewStarted { review_id } => Ok(review_id),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "ReviewStarted",
+            }),
+        }
+    }
+
+    /// The workspace's `.forge/review/` rules and presets.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn get_review_config(
+        &self,
+        workspace_id: domain::WorkspaceId,
+    ) -> Result<domain::ReviewSettings, ClientError> {
+        match self.request(Request::GetReviewConfig { workspace_id })? {
+            Response::ReviewConfig(settings) => Ok(settings),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "ReviewConfig",
+            }),
+        }
+    }
+
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn cancel_review(&self, review_id: domain::ReviewId) -> Result<(), ClientError> {
+        self.expect_ack(Request::CancelReview { review_id })
+    }
+
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn get_review(
+        &self,
+        review_id: domain::ReviewId,
+    ) -> Result<(domain::ReviewRun, Vec<domain::Finding>), ClientError> {
+        match self.request(Request::GetReview { review_id })? {
+            Response::Review { run, findings } => Ok((run, findings)),
+            _ => Err(ClientError::UnexpectedResponse { expected: "Review" }),
+        }
+    }
+
+    /// Newest first.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn list_reviews(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        limit: u32,
+    ) -> Result<Vec<domain::ReviewRun>, ClientError> {
+        match self.request(Request::ListReviews {
+            workspace_id,
+            limit,
+        })? {
+            Response::Reviews(runs) => Ok(runs),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "Reviews",
+            }),
+        }
+    }
+
     /// The checkout's branch against the branch a pull request would target.
     ///
     /// # Errors

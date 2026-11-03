@@ -316,6 +316,7 @@ impl Ctl {
             .args(args)
             .env("FORGE_SOCKET", &self.socket)
             .env_remove("FORGE_SESSION_ID")
+            .env_remove("FORGE_WORKSPACE")
             .env_remove("FORGE_RUN_ID")
             .env_remove("FORGE_TASK_ID")
             .env_remove("FORGE_ATTEMPT_ID")
@@ -3359,4 +3360,324 @@ fn a_child_reports_to_its_parent_and_watch_follows_it_until_it_ends() {
         .iter()
         .any(|l| l["event"] == "updated" && l["activity"] == "idle"));
     assert_eq!(lines.last().unwrap()["ended"], true);
+}
+
+/// The test daemon finds a reviewer's transcript through its own
+/// `CLAUDE_CONFIG_DIR`, a process-wide variable, so the review tests share one
+/// store; Forge's per-run session ids keep the files apart.
+fn review_store() -> &'static Path {
+    static STORE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| {
+        let dir = tempfile::tempdir_in("/tmp").expect("store").keep();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &dir);
+        dir
+    })
+}
+
+/// Replace the harness' fake `claude` with a reviewer that writes `answer` as
+/// its last assistant message, then exits (`block = false`) or waits.
+fn install_reviewer(harness: &Harness, answer: &str, block: bool) {
+    let store = review_store();
+    let record = json!({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]},
+    });
+    let answer_file = harness.tmp.path().join("answer.jsonl");
+    fs::write(&answer_file, format!("{record}\n")).unwrap();
+    write_executable(
+        &harness.tmp.path().join("bin"),
+        "claude",
+        &format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = --version ]; then echo 'claude 0.0.0-test'; exit 0; fi\n\
+             id=''\nprev=''\n\
+             for a in \"$@\"; do [ \"$prev\" = --session-id ] && id=$a; prev=$a; done\n\
+             slug=$(printf '%s' \"$FORGE_WORKSPACE\" | /usr/bin/tr '/.' '--')\n\
+             dir={store}/projects/$slug\n\
+             /bin/mkdir -p \"$dir\"\n\
+             /bin/cat {answer} > \"$dir/$id.jsonl\"\n\
+             {tail}\n",
+            store = sh_quote(&store.to_string_lossy()),
+            answer = sh_quote(&answer_file.to_string_lossy()),
+            tail = if block { "exec /bin/cat" } else { "exit 0" },
+        ),
+    );
+}
+
+fn review_answer(path: &str, line: u32, evidence: &str) -> String {
+    json!({
+        "schema": "forge.review/v1",
+        "summary": "Reviewed.",
+        "findings": [{
+            "path": path, "line": line, "end_line": null, "side": "new",
+            "severity": "P1", "category": "logic", "rule_id": null,
+            "confidence": 0.9, "title": "Wrong operator", "body": "It adds.",
+            "evidence": evidence, "suggestion": null,
+        }],
+    })
+    .to_string()
+}
+
+#[test]
+fn review_start_waits_then_show_and_status_read_it_back() {
+    let harness = Harness::new();
+    review_store();
+    install_reviewer(&harness, &review_answer("file.txt", 1, "broken"), false);
+    let repo = init_repo(harness.tmp.path());
+    fs::write(repo.join("file.txt"), "broken\n").unwrap();
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    let workspace_id = add_project(&client, &repo);
+    let ctl = Ctl::new(&running.socket);
+    let workspace = workspace_id.to_string();
+
+    let anonymous = err(&ctl.run(&["review", "start"], &[]), 2);
+    assert_eq!(anonymous["error"]["code"], "usage");
+
+    let done = ok(&ctl.run(
+        &["review", "start", "--workspace", &workspace, "--wait"],
+        &[],
+    ));
+    assert_eq!(done["run"]["status"], "Completed", "{done}");
+    assert_eq!(done["run"]["verdict"], "Review");
+    assert_eq!(done["findings"][0]["line"], 1);
+    let id = done["run"]["id"].as_str().unwrap().to_owned();
+
+    let shown = ok(&ctl.run(&["review", "show", &id], &[]));
+    assert_eq!(shown["run"]["id"], id.as_str());
+    assert_eq!(shown["findings"].as_array().unwrap().len(), 1);
+
+    let repo_path = repo.to_string_lossy().into_owned();
+    let status = ok(&ctl.run(
+        &["review", "status"],
+        &[("FORGE_WORKSPACE", repo_path.as_str())],
+    ));
+    assert_eq!(status["reviews"][0]["id"], id.as_str());
+}
+
+#[test]
+fn review_cancel_stops_a_running_review() {
+    let harness = Harness::new();
+    review_store();
+    install_reviewer(&harness, "", true);
+    let repo = init_repo(harness.tmp.path());
+    fs::write(repo.join("file.txt"), "changed\n").unwrap();
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    let workspace = add_project(&client, &repo).to_string();
+    let ctl = Ctl::new(&running.socket);
+
+    let started = ok(&ctl.run(&["review", "start", "--workspace", &workspace], &[]));
+    let id = started["review_id"].as_str().unwrap().to_owned();
+    ok(&ctl.run(&["review", "cancel", &id], &[]));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let shown = ok(&ctl.run(&["review", "show", &id], &[]));
+        if shown["run"]["status"] == "Cancelled" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never cancelled: {shown}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let missing = err(
+        &ctl.run(
+            &["review", "cancel", &domain::ReviewId::new().to_string()],
+            &[],
+        ),
+        4,
+    );
+    assert_eq!(missing["error"]["code"], "not_found");
+}
+
+#[test]
+fn review_bench_reports_a_hit_for_a_reintroduced_bug() {
+    let harness = Harness::new();
+    review_store();
+    install_reviewer(&harness, &review_answer("calc.rs", 2, "a - b"), false);
+    let repo = init_repo(harness.tmp.path());
+    fs::write(
+        repo.join("calc.rs"),
+        "fn sub(a: i32, b: i32) -> i32 {\n    a - b\n}\n",
+    )
+    .unwrap();
+    git(&repo, &["add", "calc.rs"]);
+    git(&repo, &["commit", "-qm", "add sub"]);
+    fs::write(
+        repo.join("calc.rs"),
+        "fn sub(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+    )
+    .unwrap();
+    git(&repo, &["commit", "-qam", "Fix sub"]);
+    let fix = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let fix = String::from_utf8_lossy(&fix.stdout).trim().to_owned();
+    let corpus = harness.tmp.path().join("corpus.toml");
+    fs::write(
+        &corpus,
+        format!(
+            "repo = {repo:?}\n\n[[case]]\nid = \"sub\"\ncommit = \"{fix}\"\npath = \"calc.rs\"\nline = 2\nnote = \"subtraction\"\n",
+            repo = repo.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let running = harness.boot();
+    let ctl = Ctl::new(&running.socket);
+    let out = harness.tmp.path().join("bench-out");
+
+    let result = ok(&ctl.run(
+        &[
+            "review",
+            "bench",
+            &corpus.to_string_lossy(),
+            "--out",
+            &out.to_string_lossy(),
+        ],
+        &[],
+    ));
+    assert_eq!(result["hits"], 1, "{result}");
+    assert_eq!(result["total"], 1);
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(out.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["cases"][0]["hit"], true, "{report}");
+    assert!(fs::read_to_string(out.join("report.md"))
+        .unwrap()
+        .contains("1/1"));
+    let worktrees = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["worktree", "list"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&worktrees.stdout).lines().count(),
+        1
+    );
+}
+
+/// Every committed bench case still prepares: its commit exists and its fix
+/// reverse-applies. Run by hand before a real bench run.
+#[test]
+#[ignore = "walks this repository's history"]
+fn review_corpus_cases_prepare() {
+    #[derive(serde::Deserialize)]
+    struct Corpus {
+        case: Vec<Case>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Case {
+        id: String,
+        commit: String,
+        path: String,
+        line: u32,
+    }
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/review-corpus.toml");
+    let parsed: Corpus = toml::from_str(&fs::read_to_string(&corpus).unwrap()).unwrap();
+    assert_eq!(parsed.case.len(), 10);
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let scratch = tempfile::tempdir().unwrap();
+    for case in &parsed.case {
+        let worktree = scratch.path().join(&case.id);
+        let wt = worktree.to_string_lossy().into_owned();
+        git(&repo, &["worktree", "add", "--detach", &wt, &case.commit]);
+        let fix = Command::new("git")
+            .arg("-C")
+            .arg(&worktree)
+            .args([
+                "diff",
+                &format!("{}^", case.commit),
+                &case.commit,
+                "--",
+                &case.path,
+            ])
+            .output()
+            .unwrap();
+        assert!(!fix.stdout.is_empty(), "{}: empty fix", case.id);
+        let patch = scratch.path().join(format!("{}.patch", case.id));
+        fs::write(&patch, &fix.stdout).unwrap();
+        git(&worktree, &["apply", "-R", &patch.to_string_lossy()]);
+        let text = fs::read_to_string(worktree.join(&case.path)).unwrap();
+        assert!(
+            text.lines().count() >= case.line as usize,
+            "{}: line {} past the end",
+            case.id,
+            case.line
+        );
+        git(&repo, &["worktree", "remove", "--force", &wt]);
+    }
+}
+
+#[test]
+fn review_rules_check_reports_broken_rules_by_file() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let rules = repo.join(".forge/review/rules");
+    fs::create_dir_all(&rules).unwrap();
+    fs::write(
+        rules.join("money.md"),
+        "---\nid: money\ntitle: Charges are idempotent\nseverity: P1\ncategory: logic\nscope: [\"src/**\"]\n---\nUse a key.\n",
+    )
+    .unwrap();
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    let workspace = add_project(&client, &repo).to_string();
+    let ctl = Ctl::new(&running.socket);
+
+    let valid = ok(&ctl.run(
+        &["review", "rules", "check", "--workspace", &workspace],
+        &[],
+    ));
+    assert_eq!(valid["rules"][0]["id"], "money", "{valid}");
+    assert_eq!(valid["errors"].as_array().unwrap().len(), 0);
+    assert!(valid["presets"].as_array().unwrap().len() >= 4);
+
+    fs::write(rules.join("broken.md"), "no frontmatter\n").unwrap();
+    let broken = err(
+        &ctl.run(
+            &["review", "rules", "check", "--workspace", &workspace],
+            &[],
+        ),
+        1,
+    );
+    assert_eq!(broken["error"]["code"], "review_rules_invalid", "{broken}");
+    assert!(
+        broken["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("broken.md"),
+        "{broken}"
+    );
+}
+
+#[test]
+fn review_start_takes_a_preset() {
+    let harness = Harness::new();
+    review_store();
+    install_reviewer(&harness, &review_answer("file.txt", 1, "broken"), false);
+    let repo = init_repo(harness.tmp.path());
+    fs::write(repo.join("file.txt"), "broken\n").unwrap();
+    let running = harness.boot();
+    let client = connect(&running.socket);
+    let workspace = add_project(&client, &repo).to_string();
+    let ctl = Ctl::new(&running.socket);
+
+    let done = ok(&ctl.run(
+        &[
+            "review",
+            "start",
+            "--workspace",
+            &workspace,
+            "--preset",
+            "seguridad",
+            "--instructions",
+            "Mira la entrada.",
+            "--wait",
+        ],
+        &[],
+    ));
+    assert_eq!(done["run"]["status"], "Completed", "{done}");
+    assert_eq!(done["run"]["preset"], "seguridad");
 }

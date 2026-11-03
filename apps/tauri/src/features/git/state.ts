@@ -5,17 +5,11 @@ import type {
   RebaseState,
   BranchCompare,
   WorkspaceDiff,
-  WorkspaceReview,
 } from "../../contracts/workbench";
 
 export const [gitStore, setGitStore] = createStore({
   diff: null as WorkspaceDiff | null,
   diffError: null as string | null,
-  /** The review tab's answer, and when it was generated. Regenerating
-   *  replaces it in place rather than opening a second tab. */
-  review: null as WorkspaceReview | null,
-  reviewError: null as string | null,
-  reviewAt: null as number | null,
   compare: null as BranchCompare | null,
   compareError: null as string | null,
   rebase: null as RebaseState | null,
@@ -32,9 +26,6 @@ export function resetGitAnswers(): void {
   setGitStore({
     diff: null,
     diffError: null,
-    review: null,
-    reviewError: null,
-    reviewAt: null,
     compare: null,
     compareError: null,
     rebase: null,

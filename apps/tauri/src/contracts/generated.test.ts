@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ActionSuggestion, ProjectAction, RepoActionsFile, Session } from "./runtime";
+import type { ReviewRun, ReviewSettings } from "./workbench";
 import {
   FIXTURE_NAMES,
   request_create_editor_session,
@@ -7,6 +8,9 @@ import {
   request_send_session_prompt,
   response_prompt_delivery,
   response_action_suggestions,
+  response_review,
+  response_review_config,
+  request_start_review,
   response_snapshot_populated,
   session_editor,
   task_session,
@@ -92,5 +96,34 @@ describe("generated fixtures", () => {
     const request = request_create_editor_session.CreateEditorSession;
     expect(request.path).toBe("src/main.rs");
     expect(request.read_only).toBe(true);
+  });
+
+  it("fixtures_cover_review_presets", () => {
+    // Assigning is the check, as for `Session` above; spreads drop `as const`'s readonly.
+    const answer = response_review_config.ReviewConfig;
+    const settings: ReviewSettings = {
+      ...answer,
+      presets: [...answer.presets],
+      rules: answer.rules.map((rule) => ({ ...rule, scope: [...rule.scope] })),
+      errors: [...answer.errors],
+    };
+    expect(settings.presets.map((preset) => preset.id)).toContain(settings.default_preset);
+    expect(settings.rules[0]?.severity).toBe("P1");
+    const fixture = response_review.Review.run;
+    const run: ReviewRun = {
+      ...fixture,
+      coverage: {
+        ...fixture.coverage,
+        included: [...fixture.coverage.included],
+        excluded: [...fixture.coverage.excluded],
+        truncated: [...fixture.coverage.truncated],
+        notes: [...fixture.coverage.notes],
+        rules: [...fixture.coverage.rules],
+      },
+    };
+    expect(run.preset).toBe("negocio");
+    expect(run.coverage.rules).toEqual(["pagos-idempotencia"]);
+    expect(request_start_review.StartReview.preset).toBe("negocio");
+    expect(request_start_review.StartReview.instructions).toBe("Check the refunds path.");
   });
 });

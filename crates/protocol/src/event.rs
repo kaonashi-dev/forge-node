@@ -206,6 +206,11 @@ pub enum DaemonEvent {
         session_id: SessionId,
         draft: PullRequestDraft,
     },
+    /// A review changed status or stage. Compact: the findings are read with
+    /// `GetReview` once the run is `Completed`.
+    ReviewUpdated {
+        run: domain::ReviewRun,
+    },
     /// A `DraftWithJuva` finished.
     ///
     /// The draft always arrives: when the `[juva]` endpoint is off, unreachable

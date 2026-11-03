@@ -644,8 +644,13 @@ fn report_activity(
     let became_idle = next.state == ActivityState::Idle && current.state != ActivityState::Idle;
     let became_working =
         next.state == ActivityState::Working && current.state != ActivityState::Working;
+    let changed = next.state != current.state;
     if let Some(session) = inner.sessions.get_mut(&session_id) {
         session.activity = next;
+    }
+    if changed {
+        // A review worker waits on the reviewer going idle.
+        crate::actions::run::wake_waiters(&mut inner);
     }
     if became_working || became_idle {
         inner

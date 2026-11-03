@@ -14,7 +14,7 @@ import {
   readSplitRatio,
 } from "../../navigation/centerSplitStore";
 import { visibleSplit } from "../../navigation/centerSplit";
-import { joinPanes } from "../../features/sessions/sessionActions";
+import { focusSession, joinPanes } from "../../features/sessions/sessionActions";
 import { parkSplit } from "../../features/sessions/commands";
 import { SplitHandle } from "./SplitHandle";
 import { close, closeCode, closeOtherViews, closeViewsToRight } from "../../features/editor/tabs";
@@ -95,7 +95,7 @@ const ProjectSearchView = lazy(() =>
   })),
 );
 const ReviewView = lazy(() =>
-  import("../../features/git/ReviewView").then((module) => ({ default: module.ReviewView })),
+  import("../../features/review/ReviewView").then((module) => ({ default: module.ReviewView })),
 );
 const CompareView = lazy(() =>
   import("../../features/git/CompareView").then((module) => ({ default: module.CompareView })),
@@ -424,7 +424,10 @@ export function CenterStack(props: { settings: boolean; settingsSection: Section
       </Show>
       <Show when={onCode() && active().kind === "review"}>
         <div class="center-view">
-          <ReviewView workspace={(active() as { workspace: string }).workspace} />
+          <ReviewView
+            workspace={(active() as { workspace: string }).workspace}
+            onFocusSession={focusSession}
+          />
         </div>
       </Show>
       {/* Two surfaces for one editor session, chosen by the daemon and never

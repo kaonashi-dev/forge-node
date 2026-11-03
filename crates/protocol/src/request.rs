@@ -9,9 +9,9 @@ use domain::orchestration::{
 use domain::{
     ActivityState, AgentProfile, AgentProfileId, AgentProviderId, AttemptId, ChildWorkspacePolicy,
     CommitPlan, ContextEnvelope, ContextKind, EditorFindCommand, EditorInputEvent, JuvaKind,
-    ProjectAction, ProjectActionId, ProjectGroupId, ProjectId, PtySize, PullRequestDraft, RunId,
-    SessionId, SessionKind, SessionRole, ShareCleanup, ShareRule, ShareRuleId, TaskId, TerminalId,
-    WorkspaceId, WorktreeIgnore,
+    ProjectAction, ProjectActionId, ProjectGroupId, ProjectId, PtySize, PullRequestDraft, ReviewId,
+    ReviewTarget, RunId, SessionId, SessionKind, SessionRole, ShareCleanup, ShareRule, ShareRuleId,
+    TaskId, TerminalId, Tier, WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -585,6 +585,49 @@ pub enum Request {
     SubmitPullRequestDraft {
         session_id: SessionId,
         draft: PullRequestDraft,
+    },
+
+    // ----- Forge Review -----
+    /// Start a structured review → `Response::ReviewStarted`; progress and the
+    /// outcome arrive as [`crate::event::DaemonEvent::ReviewUpdated`].
+    ///
+    /// A run already in flight for the same workspace and head answers with
+    /// its id; one for an older head is cancelled. `NotFound` for an unknown
+    /// workspace, `InvalidRequest` for a provider without structured review,
+    /// `Conflict` while two reviews are already running.
+    StartReview {
+        target: ReviewTarget,
+        /// `None` takes the repository's `default_tier`.
+        #[serde(default)]
+        tier: Option<Tier>,
+        /// `None` takes `[review] provider`.
+        #[serde(default)]
+        provider: Option<String>,
+        /// A preset id; `None` takes the repository's `default_preset`.
+        /// An unknown id is `InvalidRequest`.
+        #[serde(default)]
+        preset: Option<String>,
+        /// Added after the preset's own; over 4096 bytes is `InvalidRequest`.
+        #[serde(default)]
+        instructions: Option<String>,
+    },
+    /// The workspace's `.forge/review/` rules and presets → `Response::ReviewConfig`.
+    /// Local read of the working tree; `NotFound` for an unknown workspace.
+    GetReviewConfig {
+        workspace_id: WorkspaceId,
+    },
+    /// Stop a queued or running review and its reviewer session → `Ack`.
+    CancelReview {
+        review_id: ReviewId,
+    },
+    /// One run and its findings → `Response::Review`. Local read.
+    GetReview {
+        review_id: ReviewId,
+    },
+    /// A workspace's runs, newest first, without findings → `Response::Reviews`.
+    ListReviews {
+        workspace_id: WorkspaceId,
+        limit: u32,
     },
 
     // ----- Sessions -----

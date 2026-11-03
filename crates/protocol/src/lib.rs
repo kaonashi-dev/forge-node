@@ -318,6 +318,7 @@ mod tests {
                     args: vec!["--permission-mode".to_string(), "plan".to_string()],
                     label: "plan mode".to_string(),
                 }),
+                structured_review: None,
                 capabilities: AgentCapabilities {
                     interactive_tui: true,
                     supports_initial_prompt: true,
