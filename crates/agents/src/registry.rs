@@ -213,6 +213,7 @@ mod tests {
             initial_prompt: None,
             read_only: false,
             options: Default::default(),
+            structured_review: None,
         };
         let spec = reg.build_launch(&req, &env).unwrap();
         assert_eq!(spec.program, over);
@@ -238,6 +239,7 @@ mod tests {
             initial_prompt: None,
             read_only: false,
             options: Default::default(),
+            structured_review: None,
         };
         assert!(matches!(
             reg.build_launch(&req, &env),

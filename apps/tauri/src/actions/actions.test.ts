@@ -244,3 +244,20 @@ describe("content zoom chords", () => {
     ]);
   });
 });
+
+describe("review_checkout", () => {
+  /* Mod-shift-r is the pull-request panel's, so the review keeps no chord. */
+  it("is the current workspace's review, without a chord of its own", () => {
+    expect(actionLabel("review_checkout")).toBe("Review: Current Workspace");
+    expect(chordFor("review_checkout")).toBeNull();
+  });
+});
+
+describe("review_with_preset", () => {
+  it("opens the preset picker from the palette, without a chord", () => {
+    expect(actionLabel("review_with_preset")).toBe("Review: With Preset…");
+    expect(chordFor("review_with_preset")).toBeNull();
+    const action = ACTIONS.find((item) => item.id === "review_with_preset");
+    expect(action?.palette).toBe(true);
+  });
+});

@@ -8,6 +8,7 @@ import { bindEditorEvents } from "./events/editor";
 import { bindFilesEvents } from "./events/files";
 import { bindGitEvents } from "./events/git";
 import { bindProjectsEvents } from "./events/projects";
+import { bindReviewEvents } from "./events/review";
 import { bindSettingsEvents } from "./events/settings";
 import { bindSessionEvents } from "./events/sessions";
 import { bindAll } from "./bind";
@@ -29,6 +30,7 @@ export async function startAppRuntime(options: StartAppRuntimeOptions = {}): Pro
       bindEditorEvents,
       bindFilesEvents,
       bindGitEvents,
+      bindReviewEvents,
       bindProjectsEvents,
       bindActionsEvents,
       bindSettingsEvents,

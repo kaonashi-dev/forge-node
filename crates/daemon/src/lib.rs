@@ -26,6 +26,7 @@ pub mod paths;
 mod prompts;
 pub mod pull_requests;
 pub mod registry;
+mod review;
 pub mod server;
 pub mod session_cli;
 pub mod shares;

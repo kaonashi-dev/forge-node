@@ -198,8 +198,7 @@
 }
 .session-changes-commits,
 .session-changes-files,
-.review-sessions,
-.review-summary {
+.review-section {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -231,18 +230,32 @@
 
 /* ---------------------------------------------------------------- review --- */
 
-.review-session-row {
+.review-header {
+  flex-wrap: wrap;
+}
+.review-finding {
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+}
+.review-finding-head {
   gap: var(--space-2);
 }
-.review-summary-title {
+.review-finding-title {
   font-weight: var(--weight-medium);
-  margin: 0;
 }
-.review-summary-body {
-  color: var(--fg-muted);
+.review-finding-body,
+.review-finding-suggestion {
   font-family: inherit;
   margin: 0;
   white-space: pre-wrap;
+}
+.review-finding-suggestion {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 .handoff-source {
   align-items: center;

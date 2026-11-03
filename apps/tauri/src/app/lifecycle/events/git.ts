@@ -18,7 +18,6 @@ import type {
   SessionTranscript,
   UsageAnalytics,
   WorkspaceDiff,
-  WorkspaceReview,
 } from "../../../contracts/workbench";
 import type { ExternalTranscript } from "../../../contracts/runtime";
 import { setGitStore } from "../../../features/git/state";
@@ -53,13 +52,6 @@ export function bindGitEvents(): Promise<UnlistenFn[]> {
       }),
     ),
     failure("workbench:diff_failed", "diff", (error) => setGitStore("diffError", error)),
-    answer<WorkspaceReview>("workbench:review", "review", (review) =>
-      batch(() => {
-        setGitStore("review", byPath(review));
-        setGitStore({ reviewError: null, reviewAt: Date.now() });
-      }),
-    ),
-    failure("workbench:review_failed", "review", (error) => setGitStore("reviewError", error)),
     answer<BranchCompare>("workbench:compare", "compare", (compare) =>
       batch(() => {
         setGitStore("compare", byPath(compare));

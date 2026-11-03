@@ -6,6 +6,7 @@ members = [
     "crates/terminal-input",
     "crates/terminal-core",
     "crates/agents",
+    "crates/review",
     "crates/git-service",
     "crates/fs-service",
     "crates/languages",
@@ -38,6 +39,7 @@ protocol = { path = "crates/protocol" }
 terminal-input = { path = "crates/terminal-input" }
 terminal-core = { path = "crates/terminal-core" }
 agents = { path = "crates/agents" }
+review = { path = "crates/review" }
 git-service = { path = "crates/git-service" }
 fs-service = { path = "crates/fs-service" }
 languages = { path = "crates/languages" }
@@ -113,6 +115,8 @@ unicode-segmentation = "1"
 # adds a direct edge and no new node. Default features: `\w` and `\b` are what
 # a find bar's patterns are made of, and both need the Unicode tables.
 regex = "1"
+# Review ignore globs. Already in the graph, so no new crate.
+glob = "0.3"
 
 # System
 nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user", "poll", "socket"] }

@@ -759,6 +759,7 @@ dependencies = [
  "notify",
  "persistence",
  "protocol",
+ "review",
  "rmp-serde",
  "rusqlite",
  "serde",
@@ -1324,6 +1325,7 @@ dependencies = [
  "daemon",
  "domain",
  "flume",
+ "git-service",
  "insta",
  "persistence",
  "protocol",
@@ -1332,6 +1334,7 @@ dependencies = [
  "tempfile",
  "test-support",
  "tokio",
+ "toml 0.8.2",
 ]
 
 [[package]]
@@ -3509,6 +3512,19 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+]
+
+[[package]]
+name = "review"
+version = "0.1.7"
+dependencies = [
+ "domain",
+ "glob",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml 0.8.2",
 ]
 
 [[package]]

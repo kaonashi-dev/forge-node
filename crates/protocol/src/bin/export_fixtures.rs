@@ -338,6 +338,7 @@ fn sample_provider() -> ProviderInfo {
                 args: vec!["--permission-mode".to_string(), "plan".to_string()],
                 label: "plan mode".to_string(),
             }),
+            structured_review: None,
             capabilities: AgentCapabilities {
                 interactive_tui: true,
                 supports_initial_prompt: true,
@@ -550,6 +551,39 @@ fn sample_pull_request_state() -> PullRequestState {
         failures: vec![],
         error: None,
         refreshed_at: Some(ts()),
+    }
+}
+
+fn sample_review_run() -> domain::ReviewRun {
+    domain::ReviewRun {
+        id: id("71"),
+        workspace_id: workspace_id(),
+        target: domain::ReviewTarget::Workspace {
+            workspace_id: workspace_id(),
+            base: Some("main".to_string()),
+        },
+        head_oid: "9b1e4d0c".to_string(),
+        base_oid: Some("3f2a9c1e".to_string()),
+        tier: domain::Tier::Base,
+        preset: "negocio".to_string(),
+        provider: "claude".to_string(),
+        status: domain::ReviewStatus::Completed,
+        stage: Some(domain::ReviewStage::Validate),
+        summary: "Greets the world.".to_string(),
+        score: Some(3.5),
+        verdict: Some(domain::Verdict::Review),
+        error: None,
+        session_id: Some(session_id()),
+        coverage: domain::Coverage {
+            included: vec!["src/main.rs".to_string()],
+            excluded: vec!["Cargo.lock".to_string()],
+            truncated: Vec::new(),
+            redactions: 0,
+            notes: Vec::new(),
+            rules: vec!["pagos-idempotencia".to_string()],
+        },
+        created_at: ts(),
+        finished_at: Some(ts()),
     }
 }
 
@@ -903,6 +937,89 @@ fn main() {
     );
     write(
         &out,
+        "response_review_started",
+        &Response::ReviewStarted {
+            review_id: id("71"),
+        },
+    );
+    write(
+        &out,
+        "response_review",
+        &Response::Review {
+            run: sample_review_run(),
+            findings: vec![domain::Finding {
+                id: 1,
+                fingerprint: "0123456789abcdef".to_string(),
+                path: "src/main.rs".to_string(),
+                line: Some(3),
+                end_line: None,
+                severity: domain::Severity::P1,
+                category: "logic".to_string(),
+                rule_id: None,
+                confidence: 0.75,
+                title: "Prints twice".to_string(),
+                body: "The greeting is printed on two lines.".to_string(),
+                evidence: "println!(\"world\");".to_string(),
+                suggestion: None,
+            }],
+        },
+    );
+    write(
+        &out,
+        "response_reviews",
+        &Response::Reviews(vec![sample_review_run()]),
+    );
+    write(
+        &out,
+        "request_start_review",
+        &Request::StartReview {
+            target: domain::ReviewTarget::Workspace {
+                workspace_id: workspace_id(),
+                base: None,
+            },
+            tier: Some(domain::Tier::Plus),
+            provider: None,
+            preset: Some("negocio".to_string()),
+            instructions: Some("Check the refunds path.".to_string()),
+        },
+    );
+    write(
+        &out,
+        "request_get_review_config",
+        &Request::GetReviewConfig {
+            workspace_id: workspace_id(),
+        },
+    );
+    write(
+        &out,
+        "response_review_config",
+        &Response::ReviewConfig(domain::ReviewSettings {
+            default_preset: "estandar".to_string(),
+            presets: vec![
+                domain::ReviewPreset {
+                    id: "estandar".to_string(),
+                    name: "Estándar".to_string(),
+                    tier: None,
+                },
+                domain::ReviewPreset {
+                    id: "negocio".to_string(),
+                    name: "Reglas de negocio".to_string(),
+                    tier: Some(domain::Tier::Plus),
+                },
+            ],
+            rules: vec![domain::ReviewRule {
+                id: "pagos-idempotencia".to_string(),
+                title: "Every charge is idempotent".to_string(),
+                severity: domain::Severity::P1,
+                category: "logic".to_string(),
+                scope: vec!["src/billing/**".to_string()],
+                enabled: true,
+            }],
+            errors: vec!["broken.md: `scope` is empty".to_string()],
+        }),
+    );
+    write(
+        &out,
         "response_branch_compare",
         &Response::BranchCompare(Box::new(domain::BranchCompare {
             workspace_id: workspace_id(),
@@ -1060,6 +1177,13 @@ fn main() {
     // either model a variant or degrade it deliberately; the fixtures are what
     // proves which of the two happened.
     write(&out, "event_factory_reset", &DaemonEvent::FactoryReset);
+    write(
+        &out,
+        "event_review_updated",
+        &DaemonEvent::ReviewUpdated {
+            run: sample_review_run(),
+        },
+    );
     write(
         &out,
         "event_project_group_created",

@@ -78,17 +78,6 @@ export type SessionChanges = {
   sharing_sessions: number;
 };
 
-export type ReviewSession = {
-  session_id: string;
-  title: string;
-  provider: string | null;
-  active: boolean;
-  base: string | null;
-  commit_count: number;
-  created_at: string;
-  ended_at: string | null;
-};
-
 /** A branch against its pull request's base: committed work only, from the merge base. */
 export type BranchCompare = {
   workspace_id: string;
@@ -101,13 +90,98 @@ export type BranchCompare = {
   diff: WorkspaceDiff;
 };
 
-export type WorkspaceReview = {
+// Forge Review — `domain::review`. Persisted metadata, read with
+// `GetReview` / `ListReviews`; `ReviewUpdated` carries the run alone.
+
+export type ReviewTarget = { kind: "workspace"; workspace_id: string; base: string | null };
+
+export type ReviewStatus =
+  | "Queued"
+  | "Running"
+  | "Completed"
+  | "Failed"
+  | "Cancelled"
+  | "Interrupted";
+
+export type ReviewStage = "Diff" | "Pack" | "Model" | "Validate";
+
+export type Severity = "P0" | "P1" | "P2";
+
+export type Verdict = "Block" | "Review" | "Ok";
+
+export type Tier = "base" | "plus" | "apex";
+
+export type Coverage = {
+  included: string[];
+  excluded: string[];
+  /** Left out of the pack by the tier's caps. */
+  truncated: string[];
+  redactions: number;
+  notes: string[];
+  /** The ids of the rules that entered the pack. */
+  rules: string[];
+};
+
+export type ReviewRun = {
+  id: string;
   workspace_id: string;
-  base: string | null;
-  origin: BaseOrigin;
-  sessions: ReviewSession[];
-  commits: CommitLine[];
-  diff: WorkspaceDiff;
+  target: ReviewTarget;
+  head_oid: string;
+  base_oid: string | null;
+  tier: Tier;
+  /** The resolved preset id. */
+  preset: string;
+  provider: string;
+  status: ReviewStatus;
+  stage: ReviewStage | null;
+  summary: string;
+  /** `0..=5` in steps of 0.5. */
+  score: number | null;
+  verdict: Verdict | null;
+  error: string | null;
+  session_id: string | null;
+  coverage: Coverage;
+  created_at: string;
+  finished_at: string | null;
+};
+
+export type Finding = {
+  id: number;
+  fingerprint: string;
+  path: string;
+  /** 1-based on the new side; `null` is about the file as a whole. */
+  line: number | null;
+  end_line: number | null;
+  severity: Severity;
+  category: string;
+  rule_id: string | null;
+  confidence: number;
+  title: string;
+  body: string;
+  evidence: string;
+  suggestion: string | null;
+};
+
+export type ReviewReport = { run: ReviewRun; findings: Finding[] };
+
+export type ReviewPreset = { id: string; name: string; tier: Tier | null };
+
+export type ReviewRule = {
+  id: string;
+  title: string;
+  severity: Severity;
+  category: string;
+  scope: string[];
+  enabled: boolean;
+};
+
+/** `.forge/review/` of one workspace, answering `GetReviewConfig`. */
+export type ReviewSettings = {
+  /** Always one of `presets`. */
+  default_preset: string;
+  presets: ReviewPreset[];
+  rules: ReviewRule[];
+  errors: string[];
 };
 
 export type SessionTranscript = {

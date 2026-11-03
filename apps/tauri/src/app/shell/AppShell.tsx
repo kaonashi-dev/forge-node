@@ -99,6 +99,8 @@ import { RemoveWorktreeDialog } from "../../features/projects/RemoveWorktreeDial
 import { TextInputDialog } from "./dialogs/TextInputDialog";
 import { HandoffDialog } from "../../features/sessions/HandoffDialog";
 import { RunSpecDialog } from "../../features/sessions/RunSpecDialog";
+import { ReviewPresetDialog } from "../../features/review/ReviewPresetDialog";
+import { reviewStore, setReviewStore } from "../../features/review/state";
 import { HandoffProgressDialog } from "../../features/sessions/HandoffProgressDialog";
 import { SendContextDialog } from "../../features/sessions/SendContextDialog";
 import { SpawnChildDialog } from "../../features/sessions/SpawnChildDialog";
@@ -120,7 +122,8 @@ import {
   launchShell,
   splitPane,
   restoreWorkspace,
-  openCheckoutReview,
+  reviewCurrentWorkspace,
+  reviewWithPreset,
   openPullRequestPreview,
   startHandoff,
   startSendContext,
@@ -580,7 +583,8 @@ export function AppShell() {
       registerAction("session_send_context", startSendContext),
       registerAction("run_spec", startRunSpec),
       registerAction("toggle_session_changes", toggleSessionChanges),
-      registerAction("review_checkout", openCheckoutReview),
+      registerAction("review_checkout", reviewCurrentWorkspace),
+      registerAction("review_with_preset", reviewWithPreset),
       registerAction("preview_pull_request", openPullRequestPreview),
       // U10, on the Code strip. All three are no-ops with nothing open, which
       // is why they check rather than assume: a chord that throws is worse
@@ -873,6 +877,14 @@ export function AppShell() {
           <RunSpecDialog
             request={request()}
             onDismiss={() => setSessionDialogsStore("runSpec", null)}
+          />
+        )}
+      </Show>
+      <Show when={reviewStore.picker}>
+        {(workspace) => (
+          <ReviewPresetDialog
+            workspace={workspace()}
+            onDismiss={() => setReviewStore("picker", null)}
           />
         )}
       </Show>

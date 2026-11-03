@@ -1,0 +1,32 @@
+{
+  "ReviewConfig": {
+    "default_preset": "estandar",
+    "presets": [
+      {
+        "id": "estandar",
+        "name": "Estándar",
+        "tier": null
+      },
+      {
+        "id": "negocio",
+        "name": "Reglas de negocio",
+        "tier": "plus"
+      }
+    ],
+    "rules": [
+      {
+        "id": "pagos-idempotencia",
+        "title": "Every charge is idempotent",
+        "severity": "P1",
+        "category": "logic",
+        "scope": [
+          "src/billing/**"
+        ],
+        "enabled": true
+      }
+    ],
+    "errors": [
+      "broken.md: `scope` is empty"
+    ]
+  }
+}

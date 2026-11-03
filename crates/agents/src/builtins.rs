@@ -2,7 +2,8 @@
 
 use domain::{
     AcpSpec, AgentCapabilities, AgentDescriptor, AgentProviderId, ConfigDirSpec, EffortSpec,
-    EffortSpelling, FlagSpec, PromptStyle, ResumeStyle, ReviewStyle, UsageSource, VersionProbe,
+    EffortSpelling, FlagSpec, PromptStyle, ResumeStyle, ReviewStyle, StructuredReviewStyle,
+    UsageSource, VersionProbe,
 };
 
 /// `claude --resume <session-id>`: the id its transcripts record, resumed from
@@ -256,6 +257,12 @@ fn descriptor(
         prompt,
         acp,
         review,
+        // `--session-id` takes a UUID the caller minted, so Forge knows which
+        // transcript holds the answer; `--add-dir` lets plan mode read the pack.
+        structured_review: (id == "claude").then(|| StructuredReviewStyle {
+            session_id_flag: "--session-id".into(),
+            add_dir_flag: "--add-dir".into(),
+        }),
         model: match id {
             "claude" | "cursor" => Some(FlagSpec {
                 flag: "--model".into(),

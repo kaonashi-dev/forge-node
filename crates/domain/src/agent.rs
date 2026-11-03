@@ -96,6 +96,18 @@ pub struct LaunchAgentRequest {
     pub read_only: bool,
     #[serde(default)]
     pub options: AgentLaunchOptions,
+    /// Requires `read_only` and a provider that declares [`StructuredReviewStyle`].
+    #[serde(default)]
+    pub structured_review: Option<StructuredReview>,
+}
+
+/// A Forge Review launch: the transcript id Forge reads the answer from, and
+/// the directory holding the pack outside the checkout.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredReview {
+    /// A UUID Forge minted, which the provider must accept as its own session id.
+    pub session_id: String,
+    pub add_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +278,13 @@ pub struct ReviewStyle {
     pub label: String,
 }
 
+/// The flags a structured review needs; `None` on a descriptor refuses one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredReviewStyle {
+    pub session_id_flag: String,
+    pub add_dir_flag: String,
+}
+
 impl PromptStyle {
     /// The arguments that carry `prompt`, in the order they must appear.
     #[must_use]
@@ -332,6 +351,8 @@ pub struct AgentDescriptor {
     /// has none, so nothing may launch it for a review.
     #[serde(default)]
     pub review: Option<ReviewStyle>,
+    #[serde(default)]
+    pub structured_review: Option<StructuredReviewStyle>,
     pub capabilities: AgentCapabilities,
     /// `None` forbids profile-specific config directories.
     pub config_dir: Option<ConfigDirSpec>,
@@ -381,7 +402,7 @@ pub struct AgentProfile {
 /// contract with the child process, and a provider whose config
 /// directory was spelled with one of these would break the emulator rather
 /// than switch accounts.
-pub const RESERVED_PROFILE_VARS: [&str; 10] = [
+pub const RESERVED_PROFILE_VARS: [&str; 11] = [
     "TERM",
     "TERMINFO",
     "COLORTERM",
@@ -391,6 +412,7 @@ pub const RESERVED_PROFILE_VARS: [&str; 10] = [
     "FORGE_RUN_ID",
     "FORGE_TASK_ID",
     "FORGE_ATTEMPT_ID",
+    "FORGE_REVIEW_ID",
     "FORGECTL_JSON",
 ];
 

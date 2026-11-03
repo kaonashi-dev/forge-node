@@ -3,7 +3,8 @@ import { sessionIsActive, type Session } from "../../contracts/runtime";
 import { requestConfirm, requestTextInput } from "../../state/dialogs";
 import { requestSendContext, requestSpawnChild } from "./dialogs";
 import type { MenuItem } from "../../ui/index";
-import { openCheckoutReview, startHandoff, toggleSessionChanges } from "./sessionActions";
+import { startReview } from "../review/commands";
+import { startHandoff, toggleSessionChanges } from "./sessionActions";
 
 /** Confirm before the close command can stop a live process. */
 export function closeSessionFromUi(session: Session, displayedTitle: string): void {
@@ -75,9 +76,10 @@ export function sessionMenuItems(session: Session, displayedTitle: string): Menu
     },
     {
       kind: "item",
-      label: "Review This Checkout",
+      label: "Review",
       icon: "list-checks",
-      run: openCheckoutReview,
+      disabled: session.kind !== "Agent",
+      run: () => void startReview(session.workspace_id).catch(() => undefined),
     },
     { kind: "rule" },
     running

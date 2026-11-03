@@ -20,6 +20,7 @@ pub mod pr_task;
 pub mod project;
 pub mod pull_request;
 pub mod rebase;
+pub mod review;
 pub mod session;
 pub mod share;
 pub mod spec_run;
@@ -39,8 +40,9 @@ pub use agent::{
     AcpSpec, AgentCapabilities, AgentDescriptor, AgentLaunchOptions, AgentProfile,
     ChildWorkspacePolicy, ConfigDirSpec, DetectionResult, DetectionStatus, EffortSpec,
     EffortSpelling, EnvSource, FlagSpec, LaunchAgentRequest, PromptStyle, ProviderUsage, PtySize,
-    ResolvedEnvironment, ResumeStyle, ReviewStyle, SpawnSpec, UsageProbe, UsageSource, UsageWindow,
-    VersionProbe, RESERVED_PROFILE_VARS,
+    ResolvedEnvironment, ResumeStyle, ReviewStyle, SpawnSpec, StructuredReview,
+    StructuredReviewStyle, UsageProbe, UsageSource, UsageWindow, VersionProbe,
+    RESERVED_PROFILE_VARS,
 };
 pub use branch::{BranchRef, RefScope, Remote};
 pub use change::{ChangeContext, ChangeFile, JuvaDraft, JuvaKind};
@@ -63,8 +65,8 @@ pub use file::{
 };
 pub use ids::{
     AgentProfileId, AgentProviderId, AttemptId, ClientId, ContextId, ProjectActionId,
-    ProjectGroupId, ProjectId, RunId, SessionId, ShareRuleId, TaskId, TerminalId, Timestamp,
-    WorkspaceId,
+    ProjectGroupId, ProjectId, ReviewId, RunId, SessionId, ShareRuleId, TaskId, TerminalId,
+    Timestamp, WorkspaceId,
 };
 pub use pr_review::{
     builtin_recipes, compose_review_prompt, recipe_or_default, ReviewRecipe, CUSTOM_RECIPE,
@@ -80,6 +82,10 @@ pub use pull_request::{
     PullRequestViewer, ReviewDecision,
 };
 pub use rebase::{ConflictFile, RebaseState, SequencerOp};
+pub use review::{
+    Coverage, Finding, ReviewPreset, ReviewRule, ReviewRun, ReviewSettings, ReviewStage,
+    ReviewStatus, ReviewTarget, Severity, Tier, Verdict,
+};
 pub use session::{
     ActivityEvidence, ActivityState, AgentActivity, EditorFind, EditorFindCommand, EditorState,
     Session, SessionKind, SessionRole, SessionState, SessionTitle, SessionTranscript,

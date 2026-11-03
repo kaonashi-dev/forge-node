@@ -5,7 +5,6 @@ import { sessionTitle } from "../../contracts/runtime";
 import {
   activeCheckout,
   activeSession,
-  openCheckoutReview,
   sessionChangesOpen,
   startHandoff,
   toggleSessionChanges,
@@ -14,6 +13,7 @@ import { handoffJob, setHandoffProgressOpen } from "./handoffJobStore";
 import { sessionMenuItems } from "./sessionMenuItems";
 import { splitEntry } from "../git/sessionChangesStore";
 import { gitStore } from "../git/state";
+import { startReview } from "../review/commands";
 
 /**
  * How many files the session header can honestly count: the session's own
@@ -84,10 +84,10 @@ export function SessionActionBar() {
             </IconButton>
           </Show>
           <IconButton
-            label="Review this checkout"
+            label="Review this session's workspace"
             size="md"
-            onClick={openCheckoutReview}
-            disabled={!ready()}
+            onClick={() => void startReview(session().workspace_id).catch(() => undefined)}
+            disabled={!ready() || session().kind !== "Agent"}
           >
             <Icon name="list-checks" class="forge-icon-muted" size={14} />
           </IconButton>

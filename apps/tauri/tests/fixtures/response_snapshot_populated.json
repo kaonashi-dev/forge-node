@@ -99,6 +99,7 @@
             ],
             "label": "plan mode"
           },
+          "structured_review": null,
           "capabilities": {
             "interactive_tui": true,
             "supports_initial_prompt": true,

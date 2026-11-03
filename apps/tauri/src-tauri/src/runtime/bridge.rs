@@ -995,6 +995,10 @@ fn emit_side_event(app: &AppHandle, event: &DaemonEvent) {
                 },
             );
         }
+        // A run's progress, for the review tab; its findings are read on completion.
+        DaemonEvent::ReviewUpdated { run } => {
+            let _ = app.emit("runtime:review_updated", run);
+        }
         DaemonEvent::PullRequestDraftReady {
             workspace_id,
             session_id,
@@ -2899,6 +2903,7 @@ fn changes_shell(event: &DaemonEvent, store: &Store) -> bool {
         // A draft is a read with its own event, for the same reason.
         DaemonEvent::JuvaDraftReady { .. } => false,
         DaemonEvent::PullRequestDraftReady { .. } => false,
+        DaemonEvent::ReviewUpdated { .. } => false,
         // A request to show a tab, answered by the WebView through `OpenEditor`.
         DaemonEvent::EditorFocusRequested { .. } => false,
         // Terminal output is not shell state. Attached frames became `damage`

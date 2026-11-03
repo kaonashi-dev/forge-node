@@ -26,16 +26,62 @@ pub(super) fn load_session_changes(app: &AppHandle, client: &Client, session: Se
     }
 }
 
-pub(super) fn load_workspace_review(
+/// Reviews kept in the tab's history; the daemon prunes past twenty anyway.
+const LISTED_REVIEWS: u32 = 20;
+
+pub(super) fn start_review(
     app: &AppHandle,
     client: &Client,
     workspace: WorkspaceId,
-    context_lines: Option<u32>,
+    tier: Option<domain::Tier>,
+    preset: Option<String>,
+    instructions: Option<String>,
 ) {
-    match client.workspace_review(workspace, context_lines) {
-        Ok(review) => emit(app, "workbench:review", &(workspace, review)),
+    let target = domain::ReviewTarget::Workspace {
+        workspace_id: workspace,
+        base: None,
+    };
+    match client.start_review(target, tier, None, preset, instructions) {
+        Ok(review) => emit(app, "workbench:review_started", &(workspace, review)),
         Err(error) => fail(app, "workbench:review_failed", Some(workspace), &error),
     }
+}
+
+pub(super) fn load_review_config(app: &AppHandle, client: &Client, workspace: WorkspaceId) {
+    match client.get_review_config(workspace) {
+        Ok(settings) => emit(app, "workbench:review_config", &(workspace, settings)),
+        Err(error) => fail(app, "workbench:review_failed", Some(workspace), &error),
+    }
+}
+
+pub(super) fn cancel_review(app: &AppHandle, client: &Client, review: domain::ReviewId) {
+    if let Err(error) = client.cancel_review(review) {
+        fail(app, "workbench:review_failed", None, &error);
+    }
+}
+
+pub(super) fn load_review(app: &AppHandle, client: &Client, review: domain::ReviewId) {
+    match client.get_review(review) {
+        Ok((run, findings)) => emit(
+            app,
+            "workbench:review",
+            &(run.workspace_id, ReviewReport { run, findings }),
+        ),
+        Err(error) => fail(app, "workbench:review_failed", None, &error),
+    }
+}
+
+pub(super) fn list_reviews(app: &AppHandle, client: &Client, workspace: WorkspaceId) {
+    match client.list_reviews(workspace, LISTED_REVIEWS) {
+        Ok(runs) => emit(app, "workbench:reviews", &(workspace, runs)),
+        Err(error) => fail(app, "workbench:review_failed", Some(workspace), &error),
+    }
+}
+
+#[derive(Serialize)]
+struct ReviewReport {
+    run: domain::ReviewRun,
+    findings: Vec<domain::Finding>,
 }
 
 pub(super) fn load_branch_compare(

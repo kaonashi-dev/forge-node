@@ -1262,6 +1262,47 @@ pub fn read_transcript(
     }
 }
 
+/// The final answer of a Claude run: its last assistant text, or the plan of
+/// a closing `ExitPlanMode` call, which is where plan mode puts its answer.
+/// `None` for every other provider and for a run with no assistant record.
+#[must_use]
+pub fn last_assistant_message(session: &ExternalAgentSession) -> Option<String> {
+    if session.provider != CLAUDE_PROVIDER {
+        return None;
+    }
+    let file = std::fs::File::open(&session.transcript_path).ok()?;
+    let mut last = None;
+    crate::jsonl::for_each(BufReader::new(file), bounded::MAX_RECORD_BYTES, |line| {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return;
+        };
+        if !line.contains(r#""type":"assistant""#) {
+            return;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            return;
+        };
+        if let Some(text) = exit_plan(&value).or_else(|| assistant_text(&value)) {
+            last = Some(text);
+        }
+    });
+    last
+}
+
+fn exit_plan(value: &Value) -> Option<String> {
+    let block = value.get("message")?.get("content")?.as_array()?.last()?;
+    if block.get("type").and_then(Value::as_str) != Some("tool_use")
+        || block.get("name").and_then(Value::as_str) != Some("ExitPlanMode")
+    {
+        return None;
+    }
+    block
+        .get("input")?
+        .get("plan")
+        .and_then(Value::as_str)
+        .and_then(non_empty)
+}
+
 /// The last `limit` turns of a Claude `.jsonl`, oldest first.
 fn claude_turns(path: &Path, limit: usize) -> bounded::Conversation {
     let Ok(file) = std::fs::File::open(path) else {
@@ -2418,5 +2459,104 @@ mod tests {
         assert_eq!(files.len(), SCAN_LIMIT);
         assert!(files.iter().all(|path| has_extension(path, "jsonl")));
         assert!(recent_files(&dir.path().join("missing"), "jsonl").is_empty());
+    }
+
+    fn claude_session(path: &Path) -> ExternalAgentSession {
+        ExternalAgentSession {
+            session_id: "s".into(),
+            project_id: ProjectId::new(),
+            workspace_id: None,
+            provider: CLAUDE_PROVIDER.into(),
+            profile_id: None,
+            title: "t".into(),
+            branch: None,
+            preview: None,
+            model: None,
+            message_count: 0,
+            subagent_count: 0,
+            transcript_path: path.to_path_buf(),
+            store: TranscriptStore::File,
+            started_at: Timestamp::now(),
+            last_activity: Timestamp::now(),
+        }
+    }
+
+    fn assistant(content: serde_json::Value) -> String {
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": content}})
+            .to_string()
+    }
+
+    fn last_of(lines: &[String]) -> Option<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        last_assistant_message(&claude_session(&path))
+    }
+
+    #[test]
+    fn the_last_assistant_message_is_its_last_text_block() {
+        let user =
+            serde_json::json!({"type": "user", "message": {"content": "review"}}).to_string();
+        let lines = [
+            user,
+            assistant(serde_json::json!([{"type": "text", "text": "first"}])),
+            assistant(serde_json::json!([
+                {"type": "thinking", "thinking": "hm"},
+                {"type": "text", "text": "{\"schema\":\"forge.review/v1\"}"}
+            ])),
+        ];
+        assert_eq!(
+            last_of(&lines).as_deref(),
+            Some("{\"schema\":\"forge.review/v1\"}")
+        );
+    }
+
+    #[test]
+    fn a_fenced_reply_with_prose_comes_back_whole() {
+        let text = "Here it is:\n```json\n{\"schema\":\"forge.review/v1\"}\n```\nDone.";
+        let lines = [assistant(
+            serde_json::json!([{"type": "text", "text": text}]),
+        )];
+        assert_eq!(last_of(&lines).as_deref(), Some(text));
+    }
+
+    #[test]
+    fn a_reply_ending_in_exit_plan_mode_is_its_plan() {
+        let lines = [
+            assistant(serde_json::json!([{"type": "text", "text": "earlier"}])),
+            assistant(serde_json::json!([
+                {"type": "text", "text": "Here is my plan"},
+                {"type": "tool_use", "name": "ExitPlanMode", "input": {"plan": "{\"schema\":\"forge.review/v1\"}"}}
+            ])),
+        ];
+        assert_eq!(
+            last_of(&lines).as_deref(),
+            Some("{\"schema\":\"forge.review/v1\"}")
+        );
+    }
+
+    #[test]
+    fn no_assistant_record_is_none() {
+        let user =
+            serde_json::json!({"type": "user", "message": {"content": "review"}}).to_string();
+        assert_eq!(last_of(&[user]), None);
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            last_assistant_message(&claude_session(&dir.path().join("missing.jsonl"))),
+            None
+        );
+        let mut other = claude_session(&dir.path().join("x.jsonl"));
+        other.provider = "codex".into();
+        assert_eq!(last_assistant_message(&other), None);
+    }
+
+    #[test]
+    fn an_oversized_record_is_skipped() {
+        let huge = "x".repeat(usize::try_from(bounded::MAX_RECORD_BYTES).unwrap() + 10);
+        let lines = [
+            assistant(serde_json::json!([{"type": "text", "text": "kept"}])),
+            assistant(serde_json::json!([{"type": "text", "text": huge}])),
+        ];
+        assert_eq!(last_of(&lines).as_deref(), Some("kept"));
     }
 }

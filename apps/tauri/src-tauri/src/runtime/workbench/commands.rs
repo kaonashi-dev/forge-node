@@ -1,6 +1,6 @@
 use domain::{
-    AgentProfileId, AgentProviderId, EditorFindCommand, JuvaKind, ProjectId, SessionId,
-    ShareRuleId, WorkspaceId,
+    AgentProfileId, AgentProviderId, EditorFindCommand, JuvaKind, ProjectId, ReviewId, SessionId,
+    ShareRuleId, Tier, WorkspaceId,
 };
 use serde::Deserialize;
 
@@ -36,10 +36,27 @@ pub enum WorkbenchCommand {
     LoadSessionChanges {
         session: SessionId,
     },
-    /// One checkout's changes since its sessions began, for the review tab.
-    LoadWorkspaceReview {
+    /// Starts a Forge Review; progress arrives as `runtime:review_updated`.
+    StartReview {
         workspace: WorkspaceId,
-        context_lines: Option<u32>,
+        tier: Option<Tier>,
+        preset: Option<String>,
+        instructions: Option<String>,
+    },
+    /// The workspace's `.forge/review/` presets and rules, for the preset picker.
+    LoadReviewConfig {
+        workspace: WorkspaceId,
+    },
+    CancelReview {
+        review: ReviewId,
+    },
+    /// One run and its findings, for the review tab.
+    LoadReview {
+        review: ReviewId,
+    },
+    /// A workspace's runs, newest first.
+    ListReviews {
+        workspace: WorkspaceId,
     },
     /// The branch against its pull request's base, for the PR preview tab.
     LoadBranchCompare {

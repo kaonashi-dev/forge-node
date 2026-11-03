@@ -14,6 +14,7 @@ pub struct Config {
     pub git: GitConfig,
     pub github: GithubConfig,
     pub juva: JuvaConfig,
+    pub review: ReviewConfig,
     pub editor: EditorConfig,
     pub definitions: DefinitionsConfig,
     pub lsp: LspConfig,
@@ -341,6 +342,24 @@ pub struct JuvaConfig {
     pub api_key_env: String,
     /// Wall-clock budget for one call. `0` uses the built-in default.
     pub timeout_secs: u64,
+}
+
+/// Forge Review's reviewer. `provider` must declare structured review; a run
+/// that has not answered within `timeout_secs` fails and its session is stopped.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReviewConfig {
+    pub provider: String,
+    pub timeout_secs: u64,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            provider: "claude".to_owned(),
+            timeout_secs: 900,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -719,6 +738,14 @@ mod tests {
         // Every value in the example is meant to be a default, so parsing it
         // has to be indistinguishable from parsing nothing at all.
         assert_eq!(parsed, Config::default());
+    }
+
+    #[test]
+    fn review_defaults_to_claude_with_a_fifteen_minute_budget() {
+        let c: Config = toml::from_str("[review]\ntimeout_secs = 60\n").unwrap();
+        assert_eq!(c.review.provider, "claude");
+        assert_eq!(c.review.timeout_secs, 60);
+        assert_eq!(Config::default().review.timeout_secs, 900);
     }
 
     #[test]

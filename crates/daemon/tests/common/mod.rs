@@ -288,7 +288,7 @@ impl TestDaemon {
 // =====================================================================
 
 /// Quote `s` as one POSIX single-quoted literal, safe to embed in a script.
-fn sh_quote(s: &str) -> String {
+pub fn sh_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
@@ -303,7 +303,7 @@ fn sh_quote(s: &str) -> String {
 }
 
 /// Write `script` to `dir/name`, mark it `0755` and return its path.
-fn write_executable(dir: &Path, name: &str, script: &str) -> PathBuf {
+pub fn write_executable(dir: &Path, name: &str, script: &str) -> PathBuf {
     let path = dir.join(name);
     fs::write(&path, script).expect("write generated script");
     let mut perms = fs::metadata(&path).expect("stat script").permissions();

@@ -241,6 +241,19 @@ pub enum Response {
     /// carries a whole diff and would otherwise set the size of every
     /// `Response` on the wire path.
     WorkspaceReview(Box<WorkspaceReview>),
+    /// Answers `StartReview`; may name a run already in flight.
+    ReviewStarted {
+        review_id: domain::ReviewId,
+    },
+    /// Answers `GetReview`.
+    Review {
+        run: domain::ReviewRun,
+        findings: Vec<domain::Finding>,
+    },
+    /// Answers `ListReviews`, newest first.
+    Reviews(Vec<domain::ReviewRun>),
+    /// Answers `GetReviewConfig`.
+    ReviewConfig(domain::ReviewSettings),
     /// A branch against its pull request's base, answering
     /// `GetBranchCompare`. Boxed like `WorkspaceReview`.
     BranchCompare(Box<BranchCompare>),

@@ -38,7 +38,9 @@ import { hasExited } from "./exited";
 import { type ExternalAgentSession, type Session, type Workspace } from "../../contracts/runtime";
 import { LAST_WORKSPACE_KEY, SESSION_SPLIT_OPEN_KEY, readFlag } from "../../state/preferences";
 import { activeWorkspaceId, sessionsInWorkspace, storedWorkspaceId } from "./sessionScope";
-import { draftWithJuva, loadBranchCompare, loadWorkspaceReview } from "../git/commands";
+import { loadBranchCompare } from "../git/commands";
+import { startReview } from "../review/commands";
+import { setReviewStore } from "../review/state";
 import { loadExternalTranscript, loadSessionTranscript } from "./commands";
 import { activeWorkspace, focusWorkspace } from "../../state/workspace";
 
@@ -289,25 +291,17 @@ export function startExternalHandoff(session: ExternalAgentSession): void {
   );
 }
 
-/**
- * Open, or regenerate, this checkout's review tab.
- *
- * The diff and the prose are two requests on purpose: the summary opens a
- * socket and travels the ack-then-event path, so the diff lands first and the
- * tab is useful before — and without — the prose.
- */
-export function openCheckoutReview(): void {
-  // The checkout the window is pointed at, not the active session's: with the
-  // rail on a worktree whose terminals are all closed, those two differ, and
-  // "review this checkout" means the one on screen.
+/** Review the checkout the window is pointed at, which with every terminal
+ *  of a worktree closed is not the active session's. */
+export function reviewCurrentWorkspace(): void {
   const checkout = currentCheckout();
-  if (!checkout) return;
-  // The workbench has to be pointed at this checkout before the answer lands,
-  // or the event guard drops it as belonging to another one.
-  focusWorkspace(checkout.id);
-  openReview(checkout.id);
-  void loadWorkspaceReview(checkout.id).catch(() => undefined);
-  void draftWithJuva(checkout.id, "ChangeReview").catch(() => undefined);
+  if (checkout) void startReview(checkout.id).catch(() => undefined);
+}
+
+/** Open the review preset picker for the same checkout. */
+export function reviewWithPreset(): void {
+  const checkout = currentCheckout();
+  if (checkout) setReviewStore("picker", checkout.id);
 }
 
 /** Open this checkout's PR preview: its branch against the default branch. */
