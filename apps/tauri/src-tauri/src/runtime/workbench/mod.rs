@@ -75,10 +75,10 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
         }
         WorkbenchCommand::StartReview {
             workspace,
-            tier,
+            provider,
             preset,
             instructions,
-        } => git::start_review(app, client, workspace, tier, preset, instructions),
+        } => git::start_review(app, client, workspace, provider, preset, instructions),
         WorkbenchCommand::LoadReviewConfig { workspace } => {
             git::load_review_config(app, client, workspace)
         }

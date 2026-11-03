@@ -11,7 +11,7 @@
       "head_oid": "9b1e4d0c",
       "base_oid": "3f2a9c1e",
       "tier": "base",
-      "preset": "negocio",
+      "preset": "deep",
       "provider": "claude",
       "status": "Completed",
       "stage": "Validate",

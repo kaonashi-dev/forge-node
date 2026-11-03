@@ -121,9 +121,9 @@ describe("generated fixtures", () => {
         rules: [...fixture.coverage.rules],
       },
     };
-    expect(run.preset).toBe("negocio");
+    expect(run.preset).toBe("deep");
     expect(run.coverage.rules).toEqual(["pagos-idempotencia"]);
-    expect(request_start_review.StartReview.preset).toBe("negocio");
+    expect(request_start_review.StartReview.preset).toBe("deep");
     expect(request_start_review.StartReview.instructions).toBe("Check the refunds path.");
   });
 });

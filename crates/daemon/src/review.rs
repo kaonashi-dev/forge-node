@@ -228,6 +228,7 @@ impl Daemon {
                 .map(|preset| domain::ReviewPreset {
                     id: preset.id,
                     name: preset.name,
+                    detail: preset.detail,
                     tier: preset.tier,
                 })
                 .collect(),

@@ -1,19 +1,19 @@
 import { openReview } from "../../navigation/viewsStore";
 import { sendWorkbenchCommand } from "../../runtime/workbench";
 import { focusWorkspace } from "../../state/workspace";
-import type { Tier } from "../../contracts/workbench";
 import { setReviewStore } from "./state";
 
 export type ReviewOptions = {
   preset: string | null;
-  tier: Tier | null;
+  /** A provider id; `null` is the daemon's `[review] provider`. */
+  provider: string | null;
   instructions: string | null;
 };
 
 /** Open the workspace's review tab and start a review of it; no preset is the repository's default. */
 export async function startReview(
   workspace: string,
-  options: ReviewOptions = { preset: null, tier: null, instructions: null },
+  options: ReviewOptions = { preset: null, provider: null, instructions: null },
 ): Promise<void> {
   focusWorkspace(workspace);
   openReview(workspace);

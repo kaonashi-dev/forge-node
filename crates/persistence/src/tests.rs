@@ -1598,7 +1598,7 @@ fn mk_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::Re
         head_oid: "abc".into(),
         base_oid: Some("def".into()),
         tier: domain::Tier::Base,
-        preset: "seguridad".into(),
+        preset: "security".into(),
         provider: "claude".into(),
         status,
         stage: Some(domain::ReviewStage::Diff),

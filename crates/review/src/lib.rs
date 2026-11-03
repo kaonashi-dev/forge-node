@@ -12,8 +12,8 @@ pub use config::{Categories, Config, ContextSettings, Strictness, CATEGORIES};
 pub use output::{parse_output, RawFinding, ReviewOutput, SCHEMA};
 pub use pack::{build_pack, prompt, redact, PackMeta, TierCaps};
 pub use presets::{
-    builtins, default_preset, parse_presets, resolve, Preset, Resolved, DEFAULT_PRESET,
-    MAX_INSTRUCTIONS_BYTES,
+    builtins, default_preset, parse_presets, resolve, Preset, Resolved, CUSTOM_PRESET,
+    DEFAULT_PRESET, MAX_INSTRUCTIONS_BYTES,
 };
 pub use rules::{in_scope, parse_rules, Rule};
 pub use validate::{

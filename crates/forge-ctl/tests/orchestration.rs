@@ -3671,7 +3671,7 @@ fn review_start_takes_a_preset() {
             "--workspace",
             &workspace,
             "--preset",
-            "seguridad",
+            "security",
             "--instructions",
             "Mira la entrada.",
             "--wait",
@@ -3679,5 +3679,5 @@ fn review_start_takes_a_preset() {
         &[],
     ));
     assert_eq!(done["run"]["status"], "Completed", "{done}");
-    assert_eq!(done["run"]["preset"], "seguridad");
+    assert_eq!(done["run"]["preset"], "security");
 }

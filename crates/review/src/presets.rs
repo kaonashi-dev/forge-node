@@ -4,7 +4,9 @@ use toml::Value;
 use crate::config::{Categories, Config, ContextSettings, Strictness, CATEGORIES};
 use crate::rules::Rule;
 
-pub const DEFAULT_PRESET: &str = "estandar";
+pub const DEFAULT_PRESET: &str = "standard";
+/// The built-in with no wording of its own: a run of it must bring instructions.
+pub const CUSTOM_PRESET: &str = "custom";
 pub const MAX_INSTRUCTIONS_BYTES: usize = 4096;
 
 /// A built-in or a `.forge/review/presets/<id>.toml`.
@@ -12,6 +14,8 @@ pub const MAX_INSTRUCTIONS_BYTES: usize = 4096;
 pub struct Preset {
     pub id: String,
     pub name: String,
+    /// One line for the picker; empty when the file gives none.
+    pub detail: String,
     pub tier: Option<Tier>,
     /// Rule ids, or `["*"]` for every enabled rule.
     pub rules: Vec<String>,
@@ -40,6 +44,7 @@ pub struct Resolved {
 fn preset(
     id: &str,
     name: &str,
+    detail: &str,
     tier: Option<Tier>,
     categories: &[(&str, bool)],
     instructions: &str,
@@ -47,6 +52,7 @@ fn preset(
     Preset {
         id: id.to_owned(),
         name: name.to_owned(),
+        detail: detail.to_owned(),
         tier,
         rules: vec!["*".to_owned()],
         categories: categories
@@ -57,13 +63,39 @@ fn preset(
     }
 }
 
+/// The same four choices, names and details as the pull-request review recipes
+/// (`apps/tauri/src/features/pull-requests/prReview.ts`); the wording differs
+/// because the answer here is the structured JSON the prompt already specifies.
 #[must_use]
 pub fn builtins() -> Vec<Preset> {
     vec![
-        preset(DEFAULT_PRESET, "Estándar", None, &[], ""),
         preset(
-            "seguridad",
-            "Seguridad",
+            DEFAULT_PRESET,
+            "Review the change",
+            "Correctness, missing tests, and anything that would block a merge.",
+            None,
+            &[],
+            "Review the change the way a careful colleague would before approving it. Say \
+             plainly when it needs a test it does not have, and report only what the reader \
+             would have missed.",
+        ),
+        preset(
+            "deep",
+            "Deep review",
+            "Reads the surrounding code too — design, edge cases, cost.",
+            Some(Tier::Apex),
+            &CATEGORIES.map(|name| (name, true)),
+            "Review the change against the code around it, not only against itself: open the \
+             files it touches and their callers. Look for a case the change does not handle, an \
+             invariant it breaks somewhere else, an error path that silently swallows a failure, \
+             work that grows with the input where the caller assumed it would not, and a public \
+             contract that changed without its callers changing. A finding you cannot make \
+             concrete with an input or a state is not a finding.",
+        ),
+        preset(
+            "security",
+            "Security review",
+            "Input handling, secrets, authorization, injection, resource limits.",
             None,
             &[
                 ("security", true),
@@ -72,22 +104,19 @@ pub fn builtins() -> Vec<Preset> {
                 ("style", false),
                 ("docs", false),
             ],
-            "Focus on security: injection, authentication and authorization, secrets, unsafe \
-             input handling and data exposure.",
+            "Review the change for security defects only: input that reaches a shell, a query \
+             or a path without being bounded or escaped; a secret, token or key in the diff or \
+             in a log line; an authorization check that is missing or applied after the effect; \
+             an allocation sized by something the caller controls; and a dependency added or \
+             bumped without a reason. In each finding's body say what an attacker controls and \
+             what they get, and rank by what they get.",
         ),
         preset(
-            "negocio",
-            "Reglas de negocio",
-            Some(Tier::Plus),
-            &[("performance", false), ("style", false), ("docs", false)],
-            "Report only violations of the project's rules in <rules> and of the invariants \
-             in <project_context>. Ignore style.",
-        ),
-        preset(
-            "profundo",
-            "Profundo",
-            Some(Tier::Apex),
-            &CATEGORIES.map(|name| (name, true)),
+            CUSTOM_PRESET,
+            "Custom",
+            "Your own wording, remembered for next time.",
+            None,
+            &[],
             "",
         ),
     ]
@@ -130,6 +159,11 @@ fn parse_preset(id: &str, text: &str) -> Result<Preset, String> {
         None => id.to_owned(),
         Some(Value::String(name)) if !name.trim().is_empty() => name.trim().to_owned(),
         Some(_) => return Err("`name` must be a non-empty string".into()),
+    };
+    let detail = match table.get("detail") {
+        None => String::new(),
+        Some(Value::String(detail)) => detail.trim().to_owned(),
+        Some(_) => return Err("`detail` must be a string".into()),
     };
     let tier = match table.get("tier").map(|v| v.as_str()) {
         None => None,
@@ -179,6 +213,7 @@ fn parse_preset(id: &str, text: &str) -> Result<Preset, String> {
     Ok(Preset {
         id: id.to_owned(),
         name,
+        detail,
         tier,
         rules,
         categories,
@@ -210,8 +245,9 @@ pub fn default_preset(config: &Config, presets: &[Preset]) -> (String, Option<St
 /// tier and instructions.
 ///
 /// # Errors
-/// An explicit preset that is not in `presets`, or instructions over
-/// [`MAX_INSTRUCTIONS_BYTES`].
+/// An explicit preset that is not in `presets`, instructions over
+/// [`MAX_INSTRUCTIONS_BYTES`], or [`CUSTOM_PRESET`] with no wording from
+/// either the preset or the run.
 pub fn resolve(
     config: &Config,
     rules: &[Rule],
@@ -239,6 +275,11 @@ pub fn resolve(
         let known: Vec<&str> = presets.iter().map(|p| p.id.as_str()).collect();
         format!("unknown preset `{id}`; known presets: {}", known.join(", "))
     })?;
+    if chosen.id == CUSTOM_PRESET && chosen.instructions.is_empty() && instructions.is_empty() {
+        return Err(format!(
+            "the `{CUSTOM_PRESET}` preset needs instructions saying what to review"
+        ));
+    }
     let mut categories = config.categories;
     for (category, on) in &chosen.categories {
         categories.set(category, *on);

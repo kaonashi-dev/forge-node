@@ -163,6 +163,9 @@ pub struct ReviewSettings {
 pub struct ReviewPreset {
     pub id: String,
     pub name: String,
+    /// One line for the picker; empty when the preset file gives none.
+    #[serde(default)]
+    pub detail: String,
     pub tier: Option<Tier>,
 }
 
@@ -195,7 +198,7 @@ mod tests {
             head_oid: "abc".into(),
             base_oid: None,
             tier: Tier::Plus,
-            preset: "seguridad".into(),
+            preset: "security".into(),
             provider: "claude".into(),
             status: ReviewStatus::Running,
             stage: Some(ReviewStage::Model),

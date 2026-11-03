@@ -33,7 +33,7 @@ pub(super) fn start_review(
     app: &AppHandle,
     client: &Client,
     workspace: WorkspaceId,
-    tier: Option<domain::Tier>,
+    provider: Option<String>,
     preset: Option<String>,
     instructions: Option<String>,
 ) {
@@ -41,7 +41,7 @@ pub(super) fn start_review(
         workspace_id: workspace,
         base: None,
     };
-    match client.start_review(target, tier, None, preset, instructions) {
+    match client.start_review(target, None, provider, preset, instructions) {
         Ok(review) => emit(app, "workbench:review_started", &(workspace, review)),
         Err(error) => fail(app, "workbench:review_failed", Some(workspace), &error),
     }

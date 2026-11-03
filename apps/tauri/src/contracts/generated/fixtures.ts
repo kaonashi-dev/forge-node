@@ -18,7 +18,7 @@ export const client_kind_gui = "Gui" as const;
 
 export const client_message_hello = {
   Hello: {
-    protocol_version: 35,
+    protocol_version: 36,
     client_version: "0.1.0",
     client_kind: "Gui",
   },
@@ -89,7 +89,7 @@ export const daemon_message_event = {
 
 export const daemon_message_hello_ack = {
   HelloAck: {
-    protocol_version: 35,
+    protocol_version: 36,
     daemon_version: "0.1.0",
     instance_id: "forge-daemon-0001",
     started_at: "2026-08-30T12:00:00Z",
@@ -99,7 +99,7 @@ export const daemon_message_hello_ack = {
 
 export const daemon_message_hello_reject = {
   HelloReject: {
-    daemon_protocol_version: 35,
+    daemon_protocol_version: 36,
     reason: "protocol version mismatch",
   },
 } as const;
@@ -376,7 +376,7 @@ export const event_review_updated = {
       head_oid: "9b1e4d0c",
       base_oid: "3f2a9c1e",
       tier: "base",
-      preset: "negocio",
+      preset: "deep",
       provider: "claude",
       status: "Completed",
       stage: "Validate",
@@ -743,13 +743,13 @@ export const file_tree = {
 } as const;
 
 export const hello = {
-  protocol_version: 35,
+  protocol_version: 36,
   client_version: "0.1.0",
   client_kind: "Gui",
 } as const;
 
 export const hello_ack = {
-  protocol_version: 35,
+  protocol_version: 36,
   daemon_version: "0.1.0",
   instance_id: "forge-daemon-0001",
   started_at: "2026-08-30T12:00:00Z",
@@ -757,7 +757,7 @@ export const hello_ack = {
 } as const;
 
 export const hello_reject = {
-  daemon_protocol_version: 35,
+  daemon_protocol_version: 36,
   reason: "protocol version mismatch",
 } as const;
 
@@ -1037,7 +1037,7 @@ export const request_start_review = {
     },
     tier: "plus",
     provider: null,
-    preset: "negocio",
+    preset: "deep",
     instructions: "Check the refunds path.",
   },
 } as const;
@@ -1351,7 +1351,7 @@ export const response_review = {
       head_oid: "9b1e4d0c",
       base_oid: "3f2a9c1e",
       tier: "base",
-      preset: "negocio",
+      preset: "deep",
       provider: "claude",
       status: "Completed",
       stage: "Validate",
@@ -1393,17 +1393,19 @@ export const response_review = {
 
 export const response_review_config = {
   ReviewConfig: {
-    default_preset: "estandar",
+    default_preset: "standard",
     presets: [
       {
-        id: "estandar",
-        name: "Estándar",
+        id: "standard",
+        name: "Review the change",
+        detail: "Correctness, missing tests, and anything that would block a merge.",
         tier: null,
       },
       {
-        id: "negocio",
-        name: "Reglas de negocio",
-        tier: "plus",
+        id: "deep",
+        name: "Deep review",
+        detail: "Reads the surrounding code too — design, edge cases, cost.",
+        tier: "apex",
       },
     ],
     rules: [
@@ -1439,7 +1441,7 @@ export const response_reviews = {
       head_oid: "9b1e4d0c",
       base_oid: "3f2a9c1e",
       tier: "base",
-      preset: "negocio",
+      preset: "deep",
       provider: "claude",
       status: "Completed",
       stage: "Validate",

@@ -164,7 +164,7 @@ export type Finding = {
 
 export type ReviewReport = { run: ReviewRun; findings: Finding[] };
 
-export type ReviewPreset = { id: string; name: string; tier: Tier | null };
+export type ReviewPreset = { id: string; name: string; detail: string; tier: Tier | null };
 
 export type ReviewRule = {
   id: string;

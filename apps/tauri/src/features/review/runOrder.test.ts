@@ -10,7 +10,7 @@ function run(id: string, patch: Partial<ReviewRun> = {}): ReviewRun {
     head_oid: "h",
     base_oid: null,
     tier: "base",
-    preset: "estandar",
+    preset: "standard",
     provider: "claude",
     status: "Running",
     stage: "Model",

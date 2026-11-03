@@ -565,7 +565,7 @@ fn sample_review_run() -> domain::ReviewRun {
         head_oid: "9b1e4d0c".to_string(),
         base_oid: Some("3f2a9c1e".to_string()),
         tier: domain::Tier::Base,
-        preset: "negocio".to_string(),
+        preset: "deep".to_string(),
         provider: "claude".to_string(),
         status: domain::ReviewStatus::Completed,
         stage: Some(domain::ReviewStage::Validate),
@@ -979,7 +979,7 @@ fn main() {
             },
             tier: Some(domain::Tier::Plus),
             provider: None,
-            preset: Some("negocio".to_string()),
+            preset: Some("deep".to_string()),
             instructions: Some("Check the refunds path.".to_string()),
         },
     );
@@ -994,17 +994,21 @@ fn main() {
         &out,
         "response_review_config",
         &Response::ReviewConfig(domain::ReviewSettings {
-            default_preset: "estandar".to_string(),
+            default_preset: "standard".to_string(),
             presets: vec![
                 domain::ReviewPreset {
-                    id: "estandar".to_string(),
-                    name: "Estándar".to_string(),
+                    id: "standard".to_string(),
+                    name: "Review the change".to_string(),
+                    detail: "Correctness, missing tests, and anything that would block a merge."
+                        .to_string(),
                     tier: None,
                 },
                 domain::ReviewPreset {
-                    id: "negocio".to_string(),
-                    name: "Reglas de negocio".to_string(),
-                    tier: Some(domain::Tier::Plus),
+                    id: "deep".to_string(),
+                    name: "Deep review".to_string(),
+                    detail: "Reads the surrounding code too — design, edge cases, cost."
+                        .to_string(),
+                    tier: Some(domain::Tier::Apex),
                 },
             ],
             rules: vec![domain::ReviewRule {
