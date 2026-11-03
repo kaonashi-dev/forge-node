@@ -15,24 +15,17 @@ import {
   type SelectOption,
 } from "../../ui/index";
 
-type Preset = "claude" | "mix";
-
-const PRESETS: SelectOption<Preset>[] = [
-  { value: "claude", label: "Claude coder, medium effort" },
-  { value: "mix", label: "Cursor coder" },
-];
-
 const ROUNDS: SelectOption<string>[] = ["1", "2", "3", "4", "5"].map((value) => ({
   value,
   label: value === "1" ? "1 round" : `${value} rounds`,
 }));
 
-const PRESET_CODER = "";
+// The claude preset pins medium effort; any other provider is the mix preset with that coder.
+const CLAUDE_PRESET = "claude";
 
 export function RunSpecDialog(props: { request: RunSpecRequest; onDismiss: () => void }) {
   const [spec, setSpec] = createSignal(props.request.spec);
-  const [preset, setPreset] = createSignal<Preset>("claude");
-  const [coder, setCoder] = createSignal(PRESET_CODER);
+  const [coder, setCoder] = createSignal(CLAUDE_PRESET);
   const [worktree, setWorktree] = createSignal("");
   const [rounds, setRounds] = createSignal("3");
   const [starting, setStarting] = createSignal(false);
@@ -44,17 +37,23 @@ export function RunSpecDialog(props: { request: RunSpecRequest; onDismiss: () =>
   // One row per provider: the planner launches the coder by provider, never by profile.
   const coders = createMemo<SelectOption<string>[]>(() => {
     const seen = new Set<string>();
-    const rows: SelectOption<string>[] = [{ value: PRESET_CODER, label: "The preset's coder" }];
+    const rows: SelectOption<string>[] = [];
     for (const item of forgeStore.launchables) {
       if (item.kind !== "agent" || item.profile !== null || !item.provider) continue;
       if (seen.has(item.provider)) continue;
       seen.add(item.provider);
-      rows.push({
+      const claude = item.provider === CLAUDE_PRESET;
+      const row: SelectOption<string> = {
         value: item.provider,
-        label: item.label,
+        label: claude ? `${item.label}, medium effort` : item.label,
         disabled: !item.enabled || !item.supports_initial_prompt,
         glyph: <SessionGlyph providerId={item.provider} size={14} />,
-      });
+      };
+      if (claude) rows.unshift(row);
+      else rows.push(row);
+    }
+    if (!seen.has(CLAUDE_PRESET)) {
+      rows.unshift({ value: CLAUDE_PRESET, label: "Claude, medium effort" });
     }
     return rows;
   });
@@ -72,8 +71,8 @@ export function RunSpecDialog(props: { request: RunSpecRequest; onDismiss: () =>
     void launchSpec({
       workspace: props.request.workspace,
       spec: spec().trim(),
-      preset: preset(),
-      coder: coder() || null,
+      preset: coder() === CLAUDE_PRESET ? "claude" : "mix",
+      coder: coder() === CLAUDE_PRESET ? null : coder(),
       worktree: worktree().trim() || null,
       rounds: Number(rounds()),
     })
@@ -120,9 +119,8 @@ export function RunSpecDialog(props: { request: RunSpecRequest; onDismiss: () =>
       <Button size="sm" onClick={() => void choose()}>
         Choose a file…
       </Button>
-      <Select label="Preset" value={preset()} options={PRESETS} onChange={setPreset} />
-      <Disclosure summary={<span class="tree-label forge-truncate">Coder and review</span>}>
-        <Select label="Coder" value={coder()} options={coders()} onChange={setCoder} />
+      <Select label="Coder" value={coder()} options={coders()} onChange={setCoder} />
+      <Disclosure summary={<span class="tree-label forge-truncate">Worktree and review</span>}>
         <TextField
           label="Worktree branch"
           value={worktree()}
