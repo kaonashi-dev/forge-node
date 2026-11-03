@@ -170,17 +170,68 @@ pub struct ConfigPaths {
 ///
 /// Resolved per call rather than cached at startup: the file can appear or be
 /// deleted while the window is open, and the screen is the place that says
-/// which it is.
+/// which it is. This is the daemon's own pure resolver, not a second copy of it.
 #[tauri::command]
 pub fn config_paths() -> ConfigPaths {
-    let file = crate::paths::config_file();
+    let inputs = client::paths::PathInputs::from_env();
+    let resolved = client::paths::resolve(&inputs).ok();
+    let file = resolved.as_ref().map(|paths| paths.config_file.clone());
     ConfigPaths {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         config_exists: file.as_deref().is_some_and(std::path::Path::is_file),
         config_file: file.map(|path| path.display().to_string()),
-        config_dir: crate::paths::config_dir().map(|path| path.display().to_string()),
-        logs_dir: crate::paths::logs_dir().map(|path| path.display().to_string()),
+        config_dir: resolved
+            .as_ref()
+            .and_then(|paths| paths.config_file.parent())
+            .map(|path| path.display().to_string()),
+        logs_dir: resolved
+            .as_ref()
+            .map(|paths| paths.logs.display().to_string()),
     }
+}
+
+/// What the migration would do with `--move-worktrees`, without writing
+/// anything: the preview names what moves and why the rest is skipped.
+#[tauri::command]
+pub async fn migrate_home_preview() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        run_migration(
+            &["migrate-home", "--dry-run", "--move-worktrees", "--json"],
+            std::time::Duration::from_secs(60),
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Delete the old database and agent plugins once no worktree remains there.
+#[tauri::command]
+pub async fn remove_legacy_data() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        run_migration(
+            &["migrate-home", "--remove-legacy", "--json"],
+            std::time::Duration::from_secs(60),
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn run_migration(args: &[&str], timeout: std::time::Duration) -> Result<serde_json::Value, String> {
+    let executable = crate::daemon::locator::Locator::from_env().daemon_executable()?;
+    let mut command = std::process::Command::new(executable);
+    command.args(args);
+    let output = crate::daemon::process::run_bounded(command, timeout)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "migrate-home failed".to_string()
+        } else {
+            stderr
+        });
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("migrate-home returned invalid JSON: {error}"))
 }
 
 /// Force a check, for the `Check for Updates…` menu item.

@@ -197,6 +197,40 @@ impl Db {
         &self.conn
     }
 
+    /// Rewrite every stored path equal to `from` or under it.
+    ///
+    /// One transaction over the three path columns. Matching uses `substr`,
+    /// not `LIKE`: these paths routinely contain `_` and `%`.
+    ///
+    /// # Errors
+    /// [`DbError`] if a path is not UTF-8 or a statement fails.
+    pub fn replace_path_prefix(&self, from: &Path, to: &Path) -> Result<usize, DbError> {
+        let from = from
+            .to_str()
+            .ok_or_else(|| DbError::Encode(format!("non-UTF-8 path {}", from.display())))?;
+        let to = to
+            .to_str()
+            .ok_or_else(|| DbError::Encode(format!("non-UTF-8 path {}", to.display())))?;
+        let tx = self.conn.unchecked_transaction()?;
+        let mut changed = 0;
+        for table in ["workspaces", "worktree_ignores", "attempts"] {
+            let column = if table == "attempts" {
+                "result_path"
+            } else {
+                "path"
+            };
+            changed += tx.execute(
+                &format!(
+                    "UPDATE {table} SET {column} = ?2 || substr({column}, length(?1) + 1) \
+                     WHERE {column} = ?1 OR substr({column}, 1, length(?1) + 1) = ?1 || '/'"
+                ),
+                params![from, to],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// Any session that was `Starting` or
     /// `Running` when the daemon last stopped could not have kept its PTY alive
     /// so it is marked `Orphaned` with an `ended_at` of now. Returns the
@@ -329,9 +363,54 @@ impl Db {
     }
 }
 
+/// Copy `source` into `dest` with SQLite's `VACUUM INTO`.
+///
+/// The source is opened read-only, so the copy is consistent even with a WAL
+/// left behind and works while another process owns the database.
+///
+/// # Errors
+/// [`DbError`] if either database cannot be opened or the copy fails (including
+/// an existing `dest`).
+pub fn vacuum_into(source: &Path, dest: &Path) -> Result<(), DbError> {
+    let conn = Connection::open_with_flags(source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let dest = dest
+        .to_str()
+        .ok_or_else(|| DbError::Encode(format!("non-UTF-8 path {}", dest.display())))?;
+    conn.execute("VACUUM INTO ?1", params![dest])?;
+    Ok(())
+}
+
+/// Every managed worktree path in a database file, without migrating it.
+///
+/// # Errors
+/// [`DbError`] if the file cannot be opened read-only or queried.
+pub fn managed_worktree_paths(db: &Path) -> Result<Vec<PathBuf>, DbError> {
+    let conn = Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let has_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspaces')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare("SELECT path FROM workspaces WHERE managed_by_app = 1")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map(|paths| paths.into_iter().map(PathBuf::from).collect())
+        .map_err(DbError::from)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Db;
+    use super::{managed_worktree_paths, vacuum_into, Db};
+    use rusqlite::params;
+    use std::path::Path;
 
     #[test]
     fn context_writer_shares_metadata_without_sharing_the_core_connection() {
@@ -400,5 +479,111 @@ mod tests {
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
             .unwrap();
         assert_eq!(foreign_keys, 1);
+    }
+
+    #[test]
+    fn replace_path_prefix_matches_exact_and_children_but_not_siblings() {
+        let db = Db::open_in_memory().unwrap();
+        let project = "00000000-0000-7000-8000-000000000001";
+        db.conn()
+            .execute(
+                "INSERT INTO projects (id, name, root_path, created_at, last_opened_at) \
+                 VALUES (?1, 'p', '/repo', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                params![project],
+            )
+            .unwrap();
+        let old = "/legacy/worktrees/p_fe%x";
+        let paths = [
+            old.to_string(),
+            format!("{old}/branch"),
+            format!("{old}2/branch"),
+            "/elsewhere/worktree".to_string(),
+        ];
+        for (n, path) in paths.iter().enumerate() {
+            db.conn()
+                .execute(
+                    "INSERT INTO workspaces \
+                     (id, project_id, kind, path, managed_by_app, created_at) \
+                     VALUES (?1, ?2, 'GitWorktree', ?3, 1, '2026-01-01T00:00:00Z')",
+                    params![
+                        format!("00000000-0000-7000-8000-00000000000{}", n + 2),
+                        project,
+                        path
+                    ],
+                )
+                .unwrap();
+        }
+        db.conn()
+            .execute(
+                "INSERT INTO worktree_ignores (project_id, path, scope, created_at) \
+                 VALUES (?1, ?2, 'Exact', '2026-01-01T00:00:00Z')",
+                params![project, format!("{old}/branch")],
+            )
+            .unwrap();
+
+        let changed = db
+            .replace_path_prefix(Path::new(old), Path::new("/new/root"))
+            .unwrap();
+        assert_eq!(changed, 3, "two workspaces and the ignore rule move");
+
+        let moved: Vec<String> = {
+            let mut stmt = db
+                .conn()
+                .prepare("SELECT path FROM workspaces ORDER BY path")
+                .unwrap();
+            let rows = stmt.query_map([], |row| row.get(0)).unwrap();
+            rows.collect::<Result<_, _>>().unwrap()
+        };
+        assert_eq!(
+            moved,
+            vec![
+                "/elsewhere/worktree".to_string(),
+                format!("{old}2/branch"),
+                "/new/root".to_string(),
+                "/new/root/branch".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn vacuum_into_copies_rows_and_managed_worktree_paths_reads_without_migrating() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("legacy.db");
+        let dest = dir.path().join("copy.db");
+        {
+            let db = Db::open(&source).unwrap();
+            let project = "00000000-0000-7000-8000-000000000001";
+            db.conn()
+                .execute(
+                    "INSERT INTO projects (id, name, root_path, created_at, last_opened_at) \
+                     VALUES (?1, 'p', '/repo', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    params![project],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO workspaces \
+                     (id, project_id, kind, path, managed_by_app, created_at) \
+                     VALUES ('00000000-0000-7000-8000-000000000002', ?1, 'GitWorktree', \
+                             '/wt/one', 1, '2026-01-01T00:00:00Z')",
+                    params![project],
+                )
+                .unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO workspaces \
+                     (id, project_id, kind, path, managed_by_app, created_at) \
+                     VALUES ('00000000-0000-7000-8000-000000000003', ?1, 'Main', \
+                             '/repo', 0, '2026-01-01T00:00:00Z')",
+                    params![project],
+                )
+                .unwrap();
+        }
+
+        vacuum_into(&source, &dest).unwrap();
+        assert_eq!(
+            managed_worktree_paths(&dest).unwrap(),
+            vec![std::path::PathBuf::from("/wt/one")]
+        );
     }
 }

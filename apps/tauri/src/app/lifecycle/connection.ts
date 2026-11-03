@@ -49,6 +49,7 @@ export function applyConnected(payload: ConnectedPayload): void {
         instanceId: payload.daemon.instance_id,
         version: payload.daemon.daemon_version,
         editorSurface: payload.daemon.editor_surface,
+        storage: payload.daemon.storage,
       },
       activeSession: payload.active_session,
       activeTerminal: payload.active_terminal,

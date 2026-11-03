@@ -34,6 +34,7 @@ use terminal_core::{AlacrittyEngine, DeltaBuilder, PtyBackend, TerminalEngine};
 
 use crate::config::Config;
 use crate::environment::ShellEnvironmentService;
+use crate::paths::canonical_or_self;
 use crate::shares::{self, apply as share_apply, ShareContext};
 use crate::terminal::{pty_loop, TerminalRuntime};
 use crate::terminfo::{self, TermSelection};
@@ -147,6 +148,16 @@ pub(crate) struct Inner {
     pub(crate) ledger: crate::orchestration::Ledger,
 }
 
+/// Resolved Forge paths, plus the one value `config.toml` can override.
+///
+/// Immutable for the life of the daemon (`GetPaths` re-checks only `legacy`), and
+/// `agent-plugins`/`runs` never derive from the worktrees root.
+#[derive(Clone, Debug)]
+pub struct DaemonPaths {
+    pub forge: client::ForgePaths,
+    pub worktrees_root: PathBuf,
+}
+
 /// Shared as `Arc<Daemon>` across the accept loop and PTY threads.
 pub struct Daemon {
     pub(crate) context_writer: persistence::db::ContextWriter,
@@ -154,7 +165,7 @@ pub struct Daemon {
     pub(crate) registry: crate::registry::ClientRegistry,
     config: Config,
     pty_backend: Box<dyn PtyBackend>,
-    worktrees_root: PathBuf,
+    paths: DaemonPaths,
     /// Queued while no client is connected; replayed on the first snapshot.
     pending_notices: Mutex<Vec<DaemonEvent>>,
     /// Own lock: transcript scan is filesystem IO and must not sit on the core lock.
@@ -219,11 +230,11 @@ impl Daemon {
     pub fn start(
         db: Db,
         config: Config,
-        worktrees_root: PathBuf,
+        paths: DaemonPaths,
         instance_id: String,
         version: String,
     ) -> Result<Arc<Daemon>, String> {
-        let daemon = Self::load(db, config, worktrees_root, instance_id, version)?;
+        let daemon = Self::load(db, config, paths, instance_id, version)?;
 
         daemon.validate_known_paths();
         daemon.rescan_worktrees();
@@ -264,14 +275,14 @@ impl Daemon {
     pub(crate) fn load(
         db: Db,
         config: Config,
-        worktrees_root: PathBuf,
+        paths: DaemonPaths,
         instance_id: String,
         version: String,
     ) -> Result<Arc<Daemon>, String> {
         Self::load_with_backend(
             db,
             config,
-            worktrees_root,
+            paths,
             instance_id,
             version,
             Box::new(terminal_core::PortablePtyBackend::new()),
@@ -282,7 +293,7 @@ impl Daemon {
     pub fn load_with_backend(
         db: Db,
         config: Config,
-        worktrees_root: PathBuf,
+        paths: DaemonPaths,
         instance_id: String,
         version: String,
         pty_backend: Box<dyn PtyBackend>,
@@ -402,7 +413,7 @@ impl Daemon {
             ledger,
         };
 
-        let attention_assets = install_attention_assets(&worktrees_root);
+        let attention_assets = install_attention_assets(&paths.forge.agent_plugins);
         let definitions = crate::definitions::Definitions::new(&config.definitions);
         let lsp = crate::lsp::Manager::new(&config.lsp);
 
@@ -412,7 +423,7 @@ impl Daemon {
             registry: crate::registry::ClientRegistry::new(),
             config,
             pty_backend,
-            worktrees_root,
+            paths,
             pending_notices: Mutex::new(Vec::new()),
             external_agents: Mutex::new(crate::external_agents::Cache::default()),
             external_agents_stale: AtomicBool::new(false),
@@ -467,7 +478,7 @@ impl Daemon {
     // --- Notices ---
 
     /// Log and broadcast a notice; queue it if no client is connected yet.
-    fn notice(&self, level: NoticeLevel, message: impl Into<String>) {
+    pub(crate) fn notice(&self, level: NoticeLevel, message: impl Into<String>) {
         let message = message.into();
         match level {
             NoticeLevel::Error => tracing::error!(%message, "daemon notice"),
@@ -796,6 +807,10 @@ impl Daemon {
             Request::SetAppState { key, value } => self.set_app_state(&key, &value),
             Request::RefreshPullRequests => self.refresh_pull_requests(),
             Request::GetStats => Ok(Response::DaemonStats(self.collect_stats())),
+            Request::GetPaths => Ok(Response::Paths {
+                paths: self.current_forge_paths(),
+                worktrees_root: self.paths.worktrees_root.clone(),
+            }),
 
             Request::AddProject { path } => self.add_project(&path),
             Request::AddProjectToGroup {
@@ -1258,7 +1273,27 @@ impl Daemon {
     }
 
     pub(crate) fn worktrees_root_path(&self) -> &std::path::Path {
-        &self.worktrees_root
+        &self.paths.worktrees_root
+    }
+
+    /// The startup paths, except that a home layout drops `legacy` once
+    /// `migrate-home --remove-legacy` has deleted the old `app.db`: that runs
+    /// beside a live daemon, and a stale value keeps offering the removal.
+    fn current_forge_paths(&self) -> client::ForgePaths {
+        let mut paths = self.paths.forge.clone();
+        if paths.layout == client::Layout::Home
+            && paths
+                .legacy
+                .as_ref()
+                .is_some_and(|legacy| !legacy.join("app.db").is_file())
+        {
+            paths.legacy = None;
+        }
+        paths
+    }
+
+    pub(crate) fn forge_paths(&self) -> &client::ForgePaths {
+        &self.paths.forge
     }
 
     /// Recover from poison: `Inner` is a cache over SQLite, not an invariant a
@@ -3186,7 +3221,7 @@ impl Daemon {
         name: Option<&str>,
     ) -> Result<Workspace, ProtocolError> {
         let _span = tracing::info_span!("worktree.create", %project_id).entered();
-        let (git_root, existing_slugs) = {
+        let (git_root, existing_slugs, project_dir_name) = {
             let inner = self.lock();
             let project = inner
                 .projects
@@ -3201,19 +3236,29 @@ impl Daemon {
                 .filter(|w| w.project_id == project_id && w.managed_by_app)
                 .filter_map(|w| w.path.file_name().map(|s| s.to_string_lossy().into_owned()))
                 .collect();
-            (gr, slugs)
+            (
+                gr,
+                slugs,
+                crate::worktrees::project_dir_name(&project.root_path, project_id),
+            )
         };
 
         git_service::validate_branch_name(branch).map_err(git_err)?;
-        let slug = match name {
-            Some(n) => git_service::unique_slug(&existing_slugs, n),
-            None => git_service::unique_slug(&existing_slugs, branch),
+        let project_dir = self.worktrees_root_path().join(project_dir_name);
+        let mut taken = existing_slugs;
+        let slug = loop {
+            let candidate = match name {
+                Some(n) => git_service::unique_slug(&taken, n),
+                None => git_service::unique_slug(&taken, branch),
+            };
+            if std::fs::symlink_metadata(project_dir.join(&candidate)).is_err() {
+                break candidate;
+            }
+            taken.insert(candidate);
         };
-        let path = self.worktrees_root.join(project_id.to_string()).join(&slug);
-        if let Some(parent) = path.parent() {
-            crate::paths::ensure_private_dir(parent)
-                .map_err(|e| ProtocolError::new(ErrorCode::IoError, e.to_string()))?;
-        }
+        let path = project_dir.join(&slug);
+        crate::paths::ensure_private_dir(&project_dir)
+            .map_err(|e| ProtocolError::new(ErrorCode::IoError, e.to_string()))?;
 
         git_service::create(&git_root, &path, branch, base).map_err(git_err)?;
 
@@ -4013,6 +4058,7 @@ impl Daemon {
                 git_service::Force::No
             };
             git_service::remove(&git_root, &ws.path, force).map_err(git_err)?;
+            worktrees::remove_emptied_project_dir(&ws.path, self.worktrees_root_path());
         } else if !ws.path.exists() {
             git_service::prune(&git_root).map_err(git_err)?;
         }
@@ -7849,11 +7895,6 @@ fn unix_to_timestamp(secs: i64) -> Option<Timestamp> {
         .map(Timestamp::from_offset)
 }
 
-/// Fall back to the path unchanged if it no longer exists.
-fn canonical_or_self(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
 /// Seed a display name from the directory basename when it is shorter than the branch.
 fn inferred_display_name(path: &Path, branch: Option<&str>) -> Option<String> {
     let basename = path.file_name()?.to_string_lossy();
@@ -8070,21 +8111,16 @@ fn editor_program_from(
     is_executable_file(&sibling).then_some(sibling)
 }
 
-/// Install Forge attention assets beside the worktrees root.
+/// Install Forge attention assets in the resolved `agent-plugins` directory.
 ///
-/// Default layout puts worktrees under `data_dir/worktrees`, so the assets
-/// land at `data_dir/agent-plugins/`. A custom `worktrees.root` gets a sibling
-/// directory — still private to the daemon's tree.
-fn install_attention_assets(worktrees_root: &Path) -> Option<agents::AttentionAssets> {
-    let dir = worktrees_root
-        .parent()
-        .unwrap_or(worktrees_root)
-        .join("agent-plugins");
+/// The directory is independent of the worktrees root: a custom
+/// `[worktrees] root` must never put plugins beside the user's checkouts.
+fn install_attention_assets(dir: &Path) -> Option<agents::AttentionAssets> {
     let ctl = std::env::current_exe()
         .ok()
         .map(|exe| exe.with_file_name("forgectl"))
         .filter(|path| is_executable_file(path));
-    match agents::attention::install_assets_with_ctl(&dir, ctl.as_deref()) {
+    match agents::attention::install_assets_with_ctl(dir, ctl.as_deref()) {
         Ok(assets) => Some(assets),
         Err(error) => {
             tracing::warn!(
@@ -8535,10 +8571,19 @@ mod tests {
     ) -> (Arc<Daemon>, tempfile::TempDir, FakePtyBackend) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let db = Db::open_in_memory().expect("open db");
+        let forge = client::paths::resolve(&client::paths::PathInputs {
+            home: Some(tmp.path().to_path_buf()),
+            forge_home: Some(tmp.path().join("forge-home").into_os_string()),
+            ..client::paths::PathInputs::default()
+        })
+        .expect("resolve test forge paths");
         let daemon = Daemon::load_with_backend(
             db,
             config,
-            tmp.path().join("worktrees"),
+            DaemonPaths {
+                forge,
+                worktrees_root: tmp.path().join("worktrees"),
+            },
             "test-instance".to_string(),
             "0.0.0-test".to_string(),
             Box::new(backend.clone()),

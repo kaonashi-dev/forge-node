@@ -18,6 +18,7 @@ describe("file watch reconciliation", () => {
       instanceId: "daemon",
       version: "test",
       editorSurface: "dom",
+      storage: null,
     });
     watch.reconnectFileWatches();
   });

@@ -123,6 +123,11 @@ pub enum Request {
     /// Synchronous and local like [`Request::GetWorkspaceDiff`]: counts under
     /// the core lock plus the client registry, no network and no broadcast.
     GetStats,
+    /// The paths this daemon resolved at startup →
+    /// [`crate::response::Response::Paths`].
+    ///
+    /// Synchronous and local: a clone of an immutable `DaemonPaths`, no I/O.
+    GetPaths,
 
     // ----- Projects -----
     /// Add a project directory → `Ack`; `ProjectAdded` broadcast.
@@ -1373,6 +1378,14 @@ mod tests {
     #[test]
     fn get_stats_round_trips_through_messagepack() {
         let r = Request::GetStats;
+        let bytes = rmp_serde::to_vec_named(&r).unwrap();
+        let back: Request = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn get_paths_round_trips_through_messagepack() {
+        let r = Request::GetPaths;
         let bytes = rmp_serde::to_vec_named(&r).unwrap();
         let back: Request = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(r, back);

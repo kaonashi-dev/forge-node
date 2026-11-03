@@ -9,10 +9,14 @@ Crate: `crates/persistence`.
 
 ## Database
 
-- Path: `<data-dir>/app.db` (`~/Library/Application Support/Forge/app.db` on
-  macOS, `$XDG_DATA_HOME/forge/app.db` on Linux — `directories` lowercases the
-  application name there). The daemon integration tests use
-  `Db::open_in_memory()`.
+- Path: `~/.forge-node/app.db` (`$FORGE_HOME/app.db` when set). A legacy
+  install keeps `~/Library/Application Support/Forge/app.db` on macOS or
+  `$XDG_DATA_HOME/forge/app.db` on Linux until `forge-daemon migrate-home`; the
+  daemon integration tests use `Db::open_in_memory()`.
+- `migrate-home` copies the file with `persistence::vacuum_into` (SQLite's
+  `VACUUM INTO` on a read-only source), rewrites stored path prefixes with
+  `Db::replace_path_prefix`, and `info` counts legacy rows through
+  `managed_worktree_paths`, which opens the file read-only and never migrates it.
 - Per-connection pragmas, set in `Db::init` (shared by `open` and
   `open_in_memory`): `journal_mode = WAL`, `synchronous = NORMAL` (deliberate under WAL),
   `busy_timeout = 5000` and `foreign_keys = OFF`; migrations then run; only afterwards is

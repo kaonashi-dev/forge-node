@@ -28,6 +28,24 @@ enum Command {
     Session(SessionCli),
     /// Send or list context envelopes against a running daemon.
     Context(ContextCli),
+    /// Copy a legacy install into the Forge home.
+    MigrateHome {
+        /// Report what would happen without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also move managed worktrees with `git worktree move`.
+        #[arg(long)]
+        move_worktrees: bool,
+        /// Machine-readable report.
+        #[arg(long)]
+        json: bool,
+        /// Seconds to wait for a running daemon to release its locks.
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+        /// Delete the old database and agent plugins after a migration.
+        #[arg(long)]
+        remove_legacy: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -41,5 +59,18 @@ fn main() -> anyhow::Result<()> {
         Command::Stats => daemon::stats(),
         Command::Session(cli) => session_cli::run_session(cli),
         Command::Context(cli) => session_cli::run_context(cli),
+        Command::MigrateHome {
+            dry_run,
+            move_worktrees,
+            json,
+            wait,
+            remove_legacy,
+        } => daemon::migrate_home::run(&daemon::migrate_home::Options {
+            dry_run,
+            move_worktrees,
+            json,
+            wait_secs: wait,
+            remove_legacy,
+        }),
     }
 }

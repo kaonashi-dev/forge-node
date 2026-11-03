@@ -386,7 +386,7 @@ restart in memory, not across a daemon restart.
 The rail's `needs-you` marker combines ASCII BEL with reported `waiting`
 activity. Providers that do not emit BEL on a permission / question prompt get a Forge-owned adapter at launch
 (`crates/agents/src/attention.rs`). Assets live under
-`<data_dir>/agent-plugins/` (idempotent, content-hashed).
+`~/.forge-node/agent-plugins/` (or `$FORGE_HOME/agent-plugins/`; idempotent, content-hashed).
 
 The mark is a *question*, not a notification: `client::Store` keeps it for
 every terminal and spends it only when the user types into that terminal

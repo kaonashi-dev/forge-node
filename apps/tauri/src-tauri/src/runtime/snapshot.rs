@@ -89,6 +89,20 @@ pub struct DaemonInfoDto {
     pub started_at: domain::Timestamp,
     /// `"cells"` or `"dom"`: which pane the Code region mounts for an editor.
     pub editor_surface: client::EditorSurface,
+    /// Resolved storage paths, read once per connection. `None` when the
+    /// daemon refused `GetPaths`; Settings then falls back to the host's own
+    /// resolution.
+    pub storage: Option<StorageDto>,
+}
+
+/// The daemon's storage paths, with the effective worktrees root.
+///
+/// `worktrees_root` is separate because `[worktrees] root` can override the
+/// default without changing the rest of the layout.
+#[derive(Clone, Debug, Serialize)]
+pub struct StorageDto {
+    pub paths: client::ForgePaths,
+    pub worktrees_root: std::path::PathBuf,
 }
 
 impl From<&DaemonInfo> for DaemonInfoDto {
@@ -99,6 +113,7 @@ impl From<&DaemonInfo> for DaemonInfoDto {
             instance_id: info.instance_id.clone(),
             started_at: info.started_at,
             editor_surface: info.editor_surface,
+            storage: None,
         }
     }
 }

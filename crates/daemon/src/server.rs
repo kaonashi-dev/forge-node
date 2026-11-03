@@ -398,6 +398,7 @@ fn request_name(request: &Request) -> &'static str {
         Request::SetAppState { .. } => "SetAppState",
         Request::RefreshPullRequests => "RefreshPullRequests",
         Request::GetStats => "GetStats",
+        Request::GetPaths => "GetPaths",
         Request::AddProject { .. } => "AddProject",
         Request::AddProjectToGroup { .. } => "AddProjectToGroup",
         Request::CreateProjectGroup { .. } => "CreateProjectGroup",

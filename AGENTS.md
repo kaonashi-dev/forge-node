@@ -24,7 +24,7 @@
 
 ## Runtime And Tests
 
-- `scripts/dev daemon` isolates: a fresh `$FORGE_DEV_DIR` (unless already set) gets `FORGE_SOCKET`, `FORGE_DATA_DIR`, and `FORGE_CONFIG_DIR`, so it never contends with the daily daemon or wipes its tabs. `scripts/dev daemon info` prints those scratch paths. To inspect the daily daemon, run `forge-daemon info` (or `cargo run -p daemon --bin forge-daemon -- info`) without those variables.
+- `scripts/dev daemon` isolates: a fresh `$FORGE_DEV_DIR` (unless already set) gets `FORGE_SOCKET` and `FORGE_HOME`, so it never contends with the daily daemon or wipes its tabs and its worktrees stay in `$FORGE_DEV_DIR/worktrees`. `scripts/dev daemon info` prints those scratch paths. To inspect the daily daemon, run `forge-daemon info` (or `cargo run -p daemon --bin forge-daemon -- info`) without those variables.
 - A second daemon against the **same** lock exits successfully, so exit code 0 does not prove a new daemon started. An isolated `scripts/dev daemon` uses a different lock and can run beside the daily one.
 - `crates/daemon/tests/integration.rs` starts its own daemon with an in-memory DB and temporary socket; do not start a developer daemon for it. It needs writable `/tmp`, a real shell/PTY, and real `git`.
 - `git-service` integration tests return early when `git` is absent, so a green package test does not prove Git integration ran; daemon E2E tests fail instead.

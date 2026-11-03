@@ -235,10 +235,19 @@ impl Harness {
         cfg.sessions.long_running_warn_after_secs = 0;
         cfg.github.refresh_secs = 0;
         configure(&mut cfg);
+        let forge = client::paths::resolve(&client::paths::PathInputs {
+            home: Some(self.tmp.path().to_path_buf()),
+            forge_home: Some(self.tmp.path().join("forge-home").into_os_string()),
+            ..client::paths::PathInputs::default()
+        })
+        .expect("resolve test forge paths");
         let daemon = Daemon::start(
             db,
             cfg,
-            self.worktrees.clone(),
+            daemon::core::DaemonPaths {
+                forge,
+                worktrees_root: self.worktrees.clone(),
+            },
             "test-instance".into(),
             "0.0.0-test".into(),
         )

@@ -6,8 +6,6 @@
 
 use std::path::PathBuf;
 
-/// Filesystem namespace for ProjectDirs (not the display name "Forge Node").
-pub const APP_NAME: &str = "Forge";
 /// Directory and socket namespace.
 pub const APP_DIR: &str = "forge";
 /// Conservative cap on the socket path length (ADR-004: sun_path ≤ 104 on macOS).
@@ -29,8 +27,6 @@ pub enum PathError {
     Socket(client::SocketPathError),
     #[error("refusing to use {path}: {reason}")]
     NotPrivate { path: String, reason: String },
-    #[error("could not determine platform data directories")]
-    NoDataDir,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -149,48 +145,28 @@ fn lock_path_from(forge_socket: Option<std::ffi::OsString>) -> Result<PathBuf, P
     Ok(name.into())
 }
 
-/// Platform data directory root (`~/Library/Application Support/Forge` on macOS,
-/// `$XDG_DATA_HOME/forge` on Linux).
+/// A macOS-protected or synced-folder root a path may be caught in.
 ///
-/// When `FORGE_DATA_DIR` is set and non-empty, that directory is used as-is:
-/// a dev daemon runs against scratch state instead of the daily database.
-pub fn data_dir() -> Result<PathBuf, PathError> {
-    if let Some(dir) = std::env::var_os("FORGE_DATA_DIR") {
-        if !dir.is_empty() {
-            return Ok(PathBuf::from(dir));
-        }
-    }
-    let dirs = directories::ProjectDirs::from("", "", APP_NAME).ok_or(PathError::NoDataDir)?;
-    Ok(dirs.data_dir().to_path_buf())
+/// SQLite in WAL inside iCloud or Dropbox can be corrupted by the sync, and
+/// Desktop/Documents/Downloads may fail with "Operation not permitted" without
+/// an earlier warning.
+#[must_use]
+pub fn risky_location(path: &std::path::Path, home: &std::path::Path) -> Option<&'static str> {
+    [
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Library/Mobile Documents",
+        "Library/CloudStorage",
+    ]
+    .into_iter()
+    .find(|prefix| path.starts_with(home.join(prefix)))
 }
 
-///
-/// Same override shape as [`data_dir`]: `FORGE_CONFIG_DIR` points a dev
-/// daemon at a scratch config instead of the daily one.
-pub fn config_dir() -> Result<PathBuf, PathError> {
-    if let Some(dir) = std::env::var_os("FORGE_CONFIG_DIR") {
-        if !dir.is_empty() {
-            return Ok(PathBuf::from(dir));
-        }
-    }
-    let dirs = directories::ProjectDirs::from("", "", APP_NAME).ok_or(PathError::NoDataDir)?;
-    Ok(dirs.config_dir().to_path_buf())
-}
-
-pub fn config_file() -> Result<PathBuf, PathError> {
-    Ok(config_dir()?.join("config.toml"))
-}
-
-pub fn db_path() -> Result<PathBuf, PathError> {
-    Ok(data_dir()?.join("app.db"))
-}
-
-pub fn worktrees_root() -> Result<PathBuf, PathError> {
-    Ok(data_dir()?.join("worktrees"))
-}
-
-pub fn logs_dir() -> Result<PathBuf, PathError> {
-    Ok(data_dir()?.join("logs"))
+/// `path` canonicalized, or unchanged when it no longer exists.
+#[must_use]
+pub fn canonical_or_self(path: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Create `dir` with `0700` permissions, or verify an existing one is private
@@ -354,46 +330,22 @@ mod tests {
         assert!(d.to_string_lossy().contains(&format!("{APP_DIR}-")));
     }
 
-    /// Restores the previous value on drop, so a failing assert cannot leak
-    /// an override into a neighbouring test in the same process.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<std::ffi::OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &std::path::Path) -> Self {
-            let prev = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-
     #[test]
-    fn data_and_config_dirs_honor_forge_overrides() {
-        let tmp = tempfile::tempdir().unwrap();
-        let data = tmp.path().join("data");
-        let config = tmp.path().join("cfg");
-        let _data = EnvGuard::set("FORGE_DATA_DIR", &data);
-        let _config = EnvGuard::set("FORGE_CONFIG_DIR", &config);
-        assert_eq!(data_dir().unwrap(), data);
-        assert_eq!(config_dir().unwrap(), config);
-        assert_eq!(db_path().unwrap(), data.join("app.db"));
-        assert_eq!(config_file().unwrap(), config.join("config.toml"));
-        assert_eq!(worktrees_root().unwrap(), data.join("worktrees"));
-        // One test, not two: Rust runs tests on threads sharing one
-        // environment, so a second test touching the same variable races this
-        // one.
-        std::env::set_var("FORGE_DATA_DIR", "");
-        assert_ne!(data_dir().unwrap(), PathBuf::from(""));
+    fn risky_locations_cover_protected_and_synced_folders() {
+        let home = std::path::Path::new("/Users/dev");
+        for prefix in [
+            "Desktop",
+            "Documents",
+            "Downloads",
+            "Library/Mobile Documents",
+            "Library/CloudStorage",
+        ] {
+            assert_eq!(
+                risky_location(&home.join(prefix).join("forge"), home),
+                Some(prefix)
+            );
+        }
+        assert_eq!(risky_location(&home.join("code/forge"), home), None);
+        assert_eq!(risky_location(&home.join("Documents-old"), home), None);
     }
 }

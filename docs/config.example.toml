@@ -1,10 +1,15 @@
-# Copy to your platform config directory and edit:
+# Copy to your Forge home and edit:
+#   ~/.forge-node/config.toml                  ($FORGE_HOME/config.toml when set)
+#   Linux: the same paths as macOS.
+# An install that has not run `forge-daemon migrate-home` keeps today's file at
 #   macOS  ~/Library/Application Support/Forge/config.toml
 #   Linux  $XDG_CONFIG_HOME/forge/config.toml  (default ~/.config/forge/)
+# Moving FORGE_HOME also needs its own FORGE_SOCKET: the singleton lock follows
+# the socket, not the home.
 # A missing file uses these defaults. Changes require a restart in the MVP
 # (no hot reload). `forge-daemon info` prints the resolved socket, lockfile,
-# database, worktrees and log paths plus the effective settings — note it does
-# not currently print this file's own path.
+# layout, home, config, database, worktrees, runs, agent-plugins and log paths
+# plus the effective settings.
 
 [terminal]
 scrollback_lines = 10000        # per terminal; hard max 100000
@@ -45,7 +50,10 @@ long_running_warn_after_secs = 0  # report a session this old once, however busy
                                   # it is. Never stops anything.
 
 [worktrees]
-root = ""                       # empty = <data-dir>/worktrees
+root = ""                       # empty = ~/forge-node/worktrees
+                                # ($FORGE_HOME/worktrees when set). `~` and
+                                # `~/...` expand; a relative value is refused
+                                # and the default is used with a notice.
 ignore = []                     # subtree exclusions from adoption; relative to
                                 # each project root, or absolute paths
 

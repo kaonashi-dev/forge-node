@@ -9,7 +9,6 @@ mod commands;
 mod daemon;
 mod menus;
 mod open;
-mod paths;
 mod runtime;
 mod updates;
 
@@ -56,6 +55,8 @@ pub fn run() {
             commands::pick_directory,
             commands::pick_file,
             commands::config_paths,
+            commands::migrate_home_preview,
+            commands::remove_legacy_data,
             commands::check_for_update,
             commands::install_update,
         ])

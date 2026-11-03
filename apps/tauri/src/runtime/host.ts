@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ConfigPaths, ConnectedPayload, HostStatus, UpdateInfo } from "../contracts/runtime";
+import type {
+  ConfigPaths,
+  ConnectedPayload,
+  HostStatus,
+  MigrationReport,
+  UpdateInfo,
+} from "../contracts/runtime";
 
 export async function hostStatus(): Promise<HostStatus> {
   return invoke<HostStatus>("host_status");
@@ -21,6 +27,16 @@ export async function reconnect(): Promise<void> {
  */
 export async function configPaths(): Promise<ConfigPaths> {
   return invoke<ConfigPaths>("config_paths");
+}
+
+/** What `migrate-home --move-worktrees` would do. Writes nothing. */
+export async function migrateHomePreview(): Promise<MigrationReport> {
+  return invoke<MigrationReport>("migrate_home_preview");
+}
+
+/** Delete the old database and plugins after every worktree has moved. */
+export async function removeLegacyData(): Promise<{ removed: string[] }> {
+  return invoke<{ removed: string[] }>("remove_legacy_data");
 }
 
 /** Resolves on queue acceptance; execution failures arrive through runtime events. */

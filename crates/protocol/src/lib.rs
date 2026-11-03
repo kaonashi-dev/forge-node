@@ -11,6 +11,7 @@ pub mod error;
 pub mod event;
 pub mod framing;
 pub mod hello;
+pub mod paths;
 pub mod request;
 pub mod response;
 
@@ -23,6 +24,7 @@ pub use framing::{
     MAX_FRAME_SIZE,
 };
 pub use hello::{ClientKind, EditorSurface, Hello, HelloAck, HelloReject};
+pub use paths::{ForgePaths, Layout};
 pub use request::{
     CloseRunPullRequest, IntegrateHow, PromptDelivery, RemoveProjectPolicy, Request,
     SendContextSpawn, Signal,
@@ -38,7 +40,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// every new request with an undecodable frame and no `Response` — the caller
 /// waits on a reply that never comes. Equality at connect turns that stall
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
-pub const PROTOCOL_VERSION: u32 = 35;
+pub const PROTOCOL_VERSION: u32 = 36;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]

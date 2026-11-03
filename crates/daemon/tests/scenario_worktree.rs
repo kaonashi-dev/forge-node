@@ -15,6 +15,294 @@ mod common;
 
 use domain::WorkspaceKind;
 use protocol::{DaemonEvent, Request, Response};
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+
+/// A real git repository at `path`, so the basename the project-dir rule reads
+/// can contain a space or a case variant.
+fn init_repo_at(path: &Path) {
+    std::fs::create_dir_all(path).expect("create repo directory");
+    for args in [
+        &["-c", "init.defaultBranch=main", "init"][..],
+        &["config", "user.email", "forge-test@example.com"][..],
+        &["config", "user.name", "Forge Test"][..],
+        &["config", "commit.gpgsign", "false"][..],
+    ] {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?} failed");
+    }
+    std::fs::write(path.join("README.md"), "# forge test repo\n").expect("write README");
+    for args in [
+        &["add", "README.md"][..],
+        &["commit", "-m", "initial commit"][..],
+    ] {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?} failed");
+    }
+}
+
+fn mode_of(path: &Path) -> u32 {
+    std::fs::metadata(path).expect("stat").permissions().mode() & 0o777
+}
+
+fn project_snapshot(client: &client::Client) -> (domain::ProjectId, std::path::PathBuf) {
+    let Response::Snapshot { projects, .. } =
+        client.request(Request::GetSnapshot).expect("GetSnapshot")
+    else {
+        panic!("expected Snapshot");
+    };
+    (projects[0].id, projects[0].root_path.clone())
+}
+
+#[test]
+fn get_paths_returns_the_resolved_harness_paths() {
+    let harness = common::Harness::new();
+    let daemon = harness.boot();
+    let client = daemon.connect("paths");
+
+    let (paths, worktrees_root) = client.paths().expect("GetPaths");
+    assert_eq!(paths.layout, client::Layout::Home);
+    assert_eq!(paths.home, harness.forge_home());
+    assert_eq!(paths.db, harness.forge_home().join("app.db"));
+    assert_eq!(
+        paths.default_worktrees_root,
+        harness.forge_home().join("worktrees")
+    );
+    assert_eq!(worktrees_root, harness.worktrees_root());
+
+    common::stop_daemon(&client);
+}
+
+#[test]
+fn managed_worktrees_live_under_a_readable_project_directory() {
+    const BRANCH: &str = "feature/auth";
+
+    let harness = common::Harness::new();
+    let repo_root = harness.root().join("my repo");
+    init_repo_at(&repo_root);
+    let daemon = harness.boot();
+    let client = daemon.connect("readable-worktree");
+    let events = client.events();
+    common::add_main_workspace(&client, &repo_root);
+    let (project_id, _) = project_snapshot(&client);
+
+    client
+        .request(Request::CreateWorktree {
+            project_id,
+            branch: BRANCH.to_string(),
+            base: None,
+            name: None,
+        })
+        .expect("CreateWorktree");
+    let created = common::wait_for(
+        &events,
+        common::DEADLINE,
+        |event| matches!(event, DaemonEvent::WorkspaceCreated(w) if w.managed_by_app),
+    )
+    .expect("WorkspaceCreated");
+    let DaemonEvent::WorkspaceCreated(worktree) = created else {
+        unreachable!()
+    };
+
+    let project_dir = worktree.path.parent().expect("project directory");
+    let name = project_dir
+        .file_name()
+        .expect("project dir name")
+        .to_string_lossy();
+    let id = project_id.to_string();
+    assert!(name.starts_with("my-repo-"), "{name}");
+    assert!(name.ends_with(&id[id.len() - 6..]), "{name}");
+    assert!(!name.contains(' '), "{name}");
+    assert_eq!(
+        worktree.path.file_name().expect("worktree name"),
+        "feature-auth"
+    );
+    assert_eq!(project_dir.parent(), Some(harness.worktrees_root()));
+
+    common::stop_daemon(&client);
+}
+
+#[test]
+fn attention_plugins_stay_in_the_forge_home_with_a_custom_worktrees_root() {
+    let harness = common::Harness::new();
+    let daemon = harness.boot();
+    let client = daemon.connect("plugins-location");
+
+    assert!(
+        harness.forge_home().join("agent-plugins").is_dir(),
+        "agent-plugins belongs under the forge home"
+    );
+    assert!(
+        !harness.root().join("agent-plugins").exists(),
+        "and never beside a custom worktrees root"
+    );
+
+    common::stop_daemon(&client);
+}
+
+#[test]
+fn a_user_created_visible_folder_keeps_its_mode() {
+    let harness = common::Harness::new();
+    let visible = harness.home().join("forge-node");
+    std::fs::create_dir_all(&visible).expect("create visible folder");
+    std::fs::set_permissions(&visible, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let repo = test_support::init_repo().expect("git repo (git must be installed)");
+
+    let daemon = harness.boot_with(|cfg| {
+        cfg.worktrees.root = "~/forge-node/worktrees".to_string();
+    });
+    let client = daemon.connect("visible-mode");
+    let events = client.events();
+    common::add_main_workspace(&client, repo.path());
+    let (project_id, _) = project_snapshot(&client);
+    client
+        .request(Request::CreateWorktree {
+            project_id,
+            branch: "feature/mode".to_string(),
+            base: None,
+            name: None,
+        })
+        .expect("CreateWorktree");
+    let created = common::wait_for(
+        &events,
+        common::DEADLINE,
+        |event| matches!(event, DaemonEvent::WorkspaceCreated(w) if w.managed_by_app),
+    )
+    .expect("WorkspaceCreated");
+    let DaemonEvent::WorkspaceCreated(worktree) = created else {
+        unreachable!()
+    };
+
+    assert_eq!(mode_of(&visible), 0o755, "the user's folder keeps its mode");
+    assert_eq!(
+        mode_of(worktree.path.parent().expect("project directory")),
+        0o700
+    );
+
+    common::stop_daemon(&client);
+}
+
+#[test]
+fn an_existing_directory_on_disk_wins_the_slug_race() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo (git must be installed)");
+    let daemon = harness.boot();
+    let client = daemon.connect("slug-race");
+    let events = client.events();
+    common::add_main_workspace(&client, repo.path());
+    let (project_id, root_path) = project_snapshot(&client);
+    let project_dir = harness
+        .worktrees_root()
+        .join(daemon::worktrees::project_dir_name(&root_path, project_id));
+    let stale = project_dir.join("feature-x");
+    std::fs::create_dir_all(&stale).expect("pre-create the stale worktree directory");
+    std::fs::write(stale.join("left-behind.txt"), "stale\n").expect("write a file");
+
+    client
+        .request(Request::CreateWorktree {
+            project_id,
+            branch: "feature/x".to_string(),
+            base: None,
+            name: None,
+        })
+        .expect("CreateWorktree must not fail on a directory it does not own");
+    let created = common::wait_for(
+        &events,
+        common::DEADLINE,
+        |event| matches!(event, DaemonEvent::WorkspaceCreated(w) if w.managed_by_app),
+    )
+    .expect("WorkspaceCreated");
+    let DaemonEvent::WorkspaceCreated(worktree) = created else {
+        unreachable!()
+    };
+    assert_eq!(
+        worktree
+            .path
+            .file_name()
+            .expect("worktree name")
+            .to_string_lossy(),
+        "feature-x-2"
+    );
+    assert!(
+        stale.join("left-behind.txt").is_file(),
+        "the stale dir is untouched"
+    );
+
+    common::stop_daemon(&client);
+}
+
+#[test]
+fn removing_the_last_worktree_removes_the_emptied_project_directory() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo (git must be installed)");
+    let daemon = harness.boot();
+    let client = daemon.connect("rmdir-project");
+    let events = client.events();
+    common::add_main_workspace(&client, repo.path());
+    let (project_id, _) = project_snapshot(&client);
+
+    let mut created = Vec::new();
+    for branch in ["feature/one", "feature/two"] {
+        client
+            .request(Request::CreateWorktree {
+                project_id,
+                branch: branch.to_string(),
+                base: None,
+                name: None,
+            })
+            .expect("CreateWorktree");
+        let event = common::wait_for(
+            &events,
+            common::DEADLINE,
+            |event| matches!(event, DaemonEvent::WorkspaceCreated(w) if w.managed_by_app),
+        )
+        .expect("WorkspaceCreated");
+        let DaemonEvent::WorkspaceCreated(worktree) = event else {
+            unreachable!()
+        };
+        created.push(worktree);
+    }
+    let project_dir = created[0]
+        .path
+        .parent()
+        .expect("project directory")
+        .to_path_buf();
+
+    client
+        .request(Request::RemoveWorktree {
+            workspace_id: created[0].id,
+            force: false,
+        })
+        .expect("remove the first worktree");
+    assert!(
+        project_dir.is_dir(),
+        "the project dir still holds one worktree"
+    );
+
+    client
+        .request(Request::RemoveWorktree {
+            workspace_id: created[1].id,
+            force: false,
+        })
+        .expect("remove the last worktree");
+    assert!(!project_dir.exists(), "the emptied project dir is gone");
+    assert!(
+        harness.worktrees_root().is_dir(),
+        "but the worktrees root stays"
+    );
+
+    common::stop_daemon(&client);
+}
 
 #[test]
 fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
