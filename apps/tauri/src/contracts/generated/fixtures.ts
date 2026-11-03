@@ -1039,6 +1039,8 @@ export const request_start_review = {
     provider: null,
     preset: "deep",
     instructions: "Check the refunds path.",
+    model: "opus",
+    effort: "high",
   },
 } as const;
 

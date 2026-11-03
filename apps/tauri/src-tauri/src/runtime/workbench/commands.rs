@@ -43,6 +43,12 @@ pub enum WorkbenchCommand {
         provider: Option<String>,
         preset: Option<String>,
         instructions: Option<String>,
+        /// `None` takes `[review] model`, then the provider's own default.
+        #[serde(default)]
+        model: Option<String>,
+        /// `None` takes `[review] effort`, then the provider's own default.
+        #[serde(default)]
+        effort: Option<String>,
     },
     /// The workspace's `.forge/review/` presets and rules, for the review picker.
     LoadReviewConfig {

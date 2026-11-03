@@ -180,6 +180,15 @@ timeout_secs = 0                # 0 = the built-in 30 s budget
 # declares structured review is accepted (today, claude).
 provider = "claude"             # forgectl review start --provider overrides it
 timeout_secs = 900              # a run with no answer by then fails
+# The reviewer's model and effort; unset uses the provider's own default.
+# A run's --model / --effort overrides them; an effort the provider does not
+# list refuses the run.
+# model = "opus"
+# effort = "high"
+# Added to every repository's review prompt, before the repository's own
+# .forge/review/prompt.md, the preset's and the run's instructions. They never
+# replace the fixed prompt; over 4096 bytes is ignored with a note.
+instructions = ""
 
 [daemon]
 log_level = "info"             # trace | debug | info | warn | error (RUST_LOG overrides)

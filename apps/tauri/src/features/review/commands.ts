@@ -8,12 +8,22 @@ export type ReviewOptions = {
   /** A provider id; `null` is the daemon's `[review] provider`. */
   provider: string | null;
   instructions: string | null;
+  /** `null` is `[review] model`, then the provider's own default. */
+  model: string | null;
+  /** `null` is `[review] effort`, then the provider's own default; the daemon checks the level. */
+  effort: string | null;
 };
 
 /** Open the workspace's review tab and start a review of it; no preset is the repository's default. */
 export async function startReview(
   workspace: string,
-  options: ReviewOptions = { preset: null, provider: null, instructions: null },
+  options: ReviewOptions = {
+    preset: null,
+    provider: null,
+    instructions: null,
+    model: null,
+    effort: null,
+  },
 ): Promise<void> {
   focusWorkspace(workspace);
   openReview(workspace);

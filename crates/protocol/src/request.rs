@@ -597,6 +597,13 @@ pub enum Request {
         /// Added after the preset's own; over 4096 bytes is `InvalidRequest`.
         #[serde(default)]
         instructions: Option<String>,
+        /// `None` takes `[review] model`, and then the provider's own default.
+        #[serde(default)]
+        model: Option<String>,
+        /// `None` takes `[review] effort`, and then the provider's own default.
+        /// A level the provider does not list is `InvalidRequest`.
+        #[serde(default)]
+        effort: Option<String>,
     },
     /// The workspace's `.forge/review/` rules and presets → `Response::ReviewConfig`.
     /// Local read of the working tree; `NotFound` for an unknown workspace.

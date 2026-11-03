@@ -5,6 +5,7 @@
 //! reviewer is an ordinary read-only agent session that Forge reads the answer
 //! of once its hook reports it idle.
 
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,6 +21,9 @@ use crate::core::{db_err, Daemon};
 
 const MAX_RUNNING_REVIEWS: usize = 2;
 const MAX_REPO_FILE_BYTES: u64 = 64 * 1024;
+const MAX_REPO_PROMPT_BYTES: u64 = 16 * 1024;
+const REPO_PROMPT: &str = ".forge/review/prompt.md";
+const PROJECT_DOCS: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
 const MAX_RULE_FILES: usize = 100;
 const MAX_PRESET_FILES: usize = 50;
 const MAX_FILE_TEXT_BYTES: u64 = 2 * 1024 * 1024;
@@ -33,8 +37,9 @@ const ANSWER_GRACE: Duration = Duration::from_secs(2);
 
 pub(crate) struct RunningReview {
     pub(crate) id: ReviewId,
-    /// Head, base, provider, preset, tier and instructions: a start with the
-    /// same key joins this run, any other start for the workspace replaces it.
+    /// Head, base, provider, model, effort, preset, tier and instructions: a
+    /// start with the same key joins this run, any other start for the
+    /// workspace replaces it.
     pub(crate) key: String,
 }
 
@@ -51,28 +56,30 @@ impl Daemon {
         provider: Option<String>,
         preset: Option<String>,
         instructions: Option<String>,
+        options: domain::AgentLaunchOptions,
     ) -> Result<Response, ProtocolError> {
         let workspace_id = target.workspace_id();
         let path = self.workspace_path(workspace_id)?;
         let provider = provider.unwrap_or_else(|| self.config.review.provider.clone());
-        let structured = self
+        let options = domain::AgentLaunchOptions {
+            model: options.model.or_else(|| self.config.review.model.clone()),
+            effort: options.effort.or_else(|| self.config.review.effort.clone()),
+        };
+        let descriptor = self
             .lock()
             .agents
             .descriptor(&AgentProviderId::new(provider.as_str()))
-            .map(|descriptor| descriptor.structured_review.is_some());
-        match structured {
-            None => {
-                return Err(ProtocolError::invalid_request(format!(
-                    "unknown provider `{provider}`"
-                )))
-            }
-            Some(false) => {
-                return Err(ProtocolError::invalid_request(format!(
-                    "provider `{provider}` cannot run a structured review"
-                )))
-            }
-            Some(true) => {}
+            .cloned()
+            .ok_or_else(|| {
+                ProtocolError::invalid_request(format!("unknown provider `{provider}`"))
+            })?;
+        if descriptor.structured_review.is_none() {
+            return Err(ProtocolError::invalid_request(format!(
+                "provider `{provider}` cannot run a structured review"
+            )));
         }
+        agents::launch_options::validate(&descriptor, &options)
+            .map_err(|error| ProtocolError::invalid_request(error.to_string()))?;
         let head = git_service::head_commit(&path).ok_or_else(|| {
             ProtocolError::invalid_request("the workspace has no commit to review")
         })?;
@@ -85,7 +92,7 @@ impl Daemon {
                 "base `{base}` does not name a commit"
             )));
         }
-        let repo = load_review_dir(&path);
+        let repo = load_review_dir(&path, &self.config.review.instructions);
         let resolved = review::resolve(
             &repo.config,
             &repo.rules,
@@ -97,10 +104,19 @@ impl Daemon {
         .map_err(ProtocolError::invalid_request)?;
         let mut notes = repo.problems;
         notes.extend(resolved.notes.iter().cloned());
+        if options.model.is_some() || options.effort.is_some() {
+            let mut note = format!("reviewer: {provider}");
+            for (name, value) in [("model", &options.model), ("effort", &options.effort)] {
+                if let Some(value) = value {
+                    let _ = write!(note, ", {name} {value}");
+                }
+            }
+            notes.push(note);
+        }
         let context = read_context(&path, &resolved.context, &mut notes);
         let key = format!(
-            "{head}\0{base_ref:?}\0{provider}\0{}\0{:?}\0{}",
-            resolved.preset, resolved.tier, resolved.instructions
+            "{head}\0{base_ref:?}\0{provider}\0{:?}\0{:?}\0{}\0{:?}\0{}",
+            options.model, options.effort, resolved.preset, resolved.tier, resolved.instructions
         );
 
         let id = ReviewId::new();
@@ -161,9 +177,10 @@ impl Daemon {
 
         let daemon = Arc::clone(self);
         let mut queued = run.clone();
+        let launch = Launch { provider, options };
         std::thread::Builder::new()
             .name("forge-review".into())
-            .spawn(move || daemon.run_review(run, path, provider, base_ref, &resolved, &context))
+            .spawn(move || daemon.run_review(run, path, launch, base_ref, &resolved, &context))
             .map_err(|error| {
                 self.release_review(workspace_id, id);
                 queued.status = ReviewStatus::Failed;
@@ -216,7 +233,7 @@ impl Daemon {
         workspace_id: WorkspaceId,
     ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
-        let repo = load_review_dir(&path);
+        let repo = load_review_dir(&path, &self.config.review.instructions);
         let (default_preset, note) = review::default_preset(&repo.config, &repo.presets);
         let mut errors = repo.problems;
         errors.extend(note);
@@ -252,7 +269,7 @@ impl Daemon {
         self: Arc<Self>,
         mut run: ReviewRun,
         path: PathBuf,
-        provider: String,
+        launch: Launch,
         base_ref: Option<String>,
         resolved: &review::Resolved,
         context: &[(String, String)],
@@ -272,7 +289,7 @@ impl Daemon {
         run.status = ReviewStatus::Running;
         let stages = Stages {
             path: &path,
-            provider: &provider,
+            launch: &launch,
             base_ref,
             resolved,
             context,
@@ -319,7 +336,7 @@ impl Daemon {
         run: &mut ReviewRun,
         Stages {
             path,
-            provider,
+            launch,
             base_ref,
             resolved,
             context,
@@ -378,14 +395,14 @@ impl Daemon {
         let session_id = match self.create_session_with_options(
             run.workspace_id,
             SessionKind::Agent,
-            Some(AgentProviderId::new(provider)),
+            Some(AgentProviderId::new(launch.provider.as_str())),
             None,
             None,
             SessionRole::Generic,
             None,
             Some(review::prompt(resolved, &pack_file)),
             true,
-            Default::default(),
+            launch.options.clone(),
             Some(REVIEWER_TITLE.into()),
             Some(domain::StructuredReview {
                 session_id: transcript.clone(),
@@ -398,7 +415,7 @@ impl Daemon {
         };
         run.session_id = Some(session_id);
         self.publish_review(run);
-        let output = self.await_answer(run.id, session_id, path, &transcript, provider)?;
+        let output = self.await_answer(run.id, session_id, path, &transcript, &launch.provider)?;
 
         self.review_stage(run, ReviewStage::Validate)?;
         let changed: Vec<review::ChangedFile> = files
@@ -422,6 +439,12 @@ impl Daemon {
             run.coverage.notes.push(format!(
                 "{} finding(s) past max_findings ({}) were left out",
                 validated.trimmed, resolved.max_findings
+            ));
+        }
+        if validated.low_confidence > 0 {
+            run.coverage.notes.push(format!(
+                "{} finding(s) below min_confidence {} were dropped",
+                validated.low_confidence, resolved.min_confidence
             ));
         }
         let score = review::score(&validated.findings);
@@ -550,9 +573,14 @@ impl Daemon {
     }
 }
 
+struct Launch {
+    provider: String,
+    options: domain::AgentLaunchOptions,
+}
+
 struct Stages<'a> {
     path: &'a Path,
-    provider: &'a str,
+    launch: &'a Launch,
     base_ref: Option<String>,
     resolved: &'a review::Resolved,
     context: &'a [(String, String)],
@@ -615,7 +643,8 @@ struct ReviewDir {
     problems: Vec<String>,
 }
 
-fn load_review_dir(root: &Path) -> ReviewDir {
+/// `global` is `[review] instructions`, the lowest instruction layer.
+fn load_review_dir(root: &Path, global: &str) -> ReviewDir {
     let mut problems = Vec::new();
     let config = match read_inside(
         root,
@@ -633,6 +662,21 @@ fn load_review_dir(root: &Path) -> ReviewDir {
             review::Config::default()
         }
     };
+    let mut config = config;
+    let global = global.trim();
+    if global.len() > review::MAX_INSTRUCTIONS_BYTES {
+        problems.push(format!(
+            "[review] instructions is over {} bytes; ignored",
+            review::MAX_INSTRUCTIONS_BYTES
+        ));
+    } else {
+        config.base_instructions.push(global.to_owned());
+    }
+    match read_inside(root, Path::new(REPO_PROMPT), MAX_REPO_PROMPT_BYTES) {
+        Ok(Some(text)) => config.base_instructions.push(text),
+        Ok(None) => {}
+        Err(error) => problems.push(format!("{REPO_PROMPT}: {error}; ignored")),
+    }
     let rule_files = read_dir_files(root, "rules", "md", MAX_RULE_FILES, &mut problems);
     let (rules, errors) = review::parse_rules(&rule_files);
     problems.extend(errors);
@@ -691,7 +735,9 @@ fn read_dir_files(
         .collect()
 }
 
-/// `.forge/review/context.md`, then each `[context] include`, within `max_bytes` together.
+/// `.forge/review/context.md`, then `AGENTS.md` and `CLAUDE.md` unless
+/// `project_docs` is off, then each `[context] include`, within `max_bytes`
+/// together. A file reached twice, by name or through a symlink, is read once.
 fn read_context(
     root: &Path,
     settings: &review::ContextSettings,
@@ -699,9 +745,22 @@ fn read_context(
 ) -> Vec<(String, String)> {
     let mut left = u64::try_from(settings.max_bytes).unwrap_or(u64::MAX);
     let mut texts = Vec::new();
+    let mut seen = Vec::new();
+    let docs: &[&str] = if settings.project_docs {
+        &PROJECT_DOCS
+    } else {
+        &[]
+    };
     let paths = std::iter::once((".forge/review/context.md", true))
+        .chain(docs.iter().map(|path| (*path, true)))
         .chain(settings.include.iter().map(|path| (path.as_str(), false)));
     for (path, optional) in paths {
+        let full = root.join(path);
+        let identity = std::fs::canonicalize(&full).unwrap_or(full);
+        if seen.contains(&identity) {
+            continue;
+        }
+        seen.push(identity);
         match read_inside(root, Path::new(path), left) {
             Ok(Some(text)) => {
                 left = left.saturating_sub(u64::try_from(text.len()).unwrap_or(u64::MAX));

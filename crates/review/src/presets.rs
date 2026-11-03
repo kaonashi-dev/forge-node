@@ -25,7 +25,7 @@ pub struct Preset {
 }
 
 /// What one run is told and checked against, every layer already applied.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Resolved {
     pub preset: String,
     pub tier: Tier,
@@ -36,6 +36,7 @@ pub struct Resolved {
     pub language: String,
     pub strictness: Strictness,
     pub max_findings: usize,
+    pub min_confidence: f32,
     pub ignore: Vec<String>,
     pub context: ContextSettings,
     pub notes: Vec<String>,
@@ -242,7 +243,8 @@ pub fn default_preset(config: &Config, presets: &[Preset]) -> (String, Option<St
 }
 
 /// Apply, from lowest to highest: the config, the preset, then the run's own
-/// tier and instructions.
+/// tier and instructions. The instructions are the config's
+/// `base_instructions`, the preset's, then the run's, empty ones skipped.
 ///
 /// # Errors
 /// An explicit preset that is not in `presets`, instructions over
@@ -290,8 +292,11 @@ pub fn resolve(
         .filter(|rule| rule.enabled && (every || chosen.rules.contains(&rule.id)))
         .cloned()
         .collect();
-    let instructions = [chosen.instructions.as_str(), instructions]
-        .into_iter()
+    let instructions = config
+        .base_instructions
+        .iter()
+        .map(|text| text.trim())
+        .chain([chosen.instructions.as_str(), instructions])
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -304,6 +309,7 @@ pub fn resolve(
         language: config.language.clone(),
         strictness: config.strictness,
         max_findings: config.max_findings,
+        min_confidence: config.min_confidence,
         ignore: config.ignore.clone(),
         context: config.context.clone(),
         notes,

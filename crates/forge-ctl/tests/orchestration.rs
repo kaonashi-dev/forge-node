@@ -3392,6 +3392,7 @@ fn install_reviewer(harness: &Harness, answer: &str, block: bool) {
              if [ \"$1\" = --version ]; then echo 'claude 0.0.0-test'; exit 0; fi\n\
              id=''\nprev=''\n\
              for a in \"$@\"; do [ \"$prev\" = --session-id ] && id=$a; prev=$a; done\n\
+             printf '%s\\n' \"$*\" > {args}\n\
              slug=$(printf '%s' \"$FORGE_WORKSPACE\" | /usr/bin/tr '/.' '--')\n\
              dir={store}/projects/$slug\n\
              /bin/mkdir -p \"$dir\"\n\
@@ -3399,6 +3400,7 @@ fn install_reviewer(harness: &Harness, answer: &str, block: bool) {
              {tail}\n",
             store = sh_quote(&store.to_string_lossy()),
             answer = sh_quote(&answer_file.to_string_lossy()),
+            args = sh_quote(&harness.tmp.path().join("args").to_string_lossy()),
             tail = if block { "exec /bin/cat" } else { "exit 0" },
         ),
     );
@@ -3653,7 +3655,7 @@ fn review_rules_check_reports_broken_rules_by_file() {
 }
 
 #[test]
-fn review_start_takes_a_preset() {
+fn review_start_takes_a_preset_and_launch_options() {
     let harness = Harness::new();
     review_store();
     install_reviewer(&harness, &review_answer("file.txt", 1, "broken"), false);
@@ -3674,10 +3676,17 @@ fn review_start_takes_a_preset() {
             "security",
             "--instructions",
             "Mira la entrada.",
+            "--model",
+            "opus",
+            "--effort",
+            "high",
             "--wait",
         ],
         &[],
     ));
     assert_eq!(done["run"]["status"], "Completed", "{done}");
     assert_eq!(done["run"]["preset"], "security");
+    let args = fs::read_to_string(harness.tmp.path().join("args")).unwrap();
+    assert!(args.contains("--model opus"), "{args}");
+    assert!(args.contains("--effort high"), "{args}");
 }

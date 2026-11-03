@@ -637,6 +637,7 @@ impl Client {
         provider: Option<String>,
         preset: Option<String>,
         instructions: Option<String>,
+        options: domain::AgentLaunchOptions,
     ) -> Result<domain::ReviewId, ClientError> {
         match self.request(Request::StartReview {
             target,
@@ -644,6 +645,8 @@ impl Client {
             provider,
             preset,
             instructions,
+            model: options.model,
+            effort: options.effort,
         })? {
             Response::ReviewStarted { review_id } => Ok(review_id),
             _ => Err(ClientError::UnexpectedResponse {

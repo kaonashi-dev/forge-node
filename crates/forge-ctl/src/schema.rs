@@ -57,7 +57,8 @@ pub fn schema_value() -> Value {
             "session exec types one line only while the shell owns its terminal's foreground",
             "a malformed --timeout is a usage error; waits default to 600s unless a global --timeout is given",
             "a launch refused after creating a worktree names it in details.worktree_created",
-            "review start --wait exits 0 only when the run completes; failed, cancelled or interrupted runs exit 1"
+            "review start --wait exits 0 only when the run completes; failed, cancelled or interrupted runs exit 1",
+            "review start --model and --effort override [review] model and effort; unset uses the provider's own default"
         ]
     })
 }

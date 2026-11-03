@@ -351,6 +351,12 @@ pub struct JuvaConfig {
 pub struct ReviewConfig {
     pub provider: String,
     pub timeout_secs: u64,
+    /// `None` passes no flag, so the provider's own default applies.
+    pub model: Option<String>,
+    /// `None` passes no flag, so the provider's own default applies.
+    pub effort: Option<String>,
+    /// Added to every repository's review, before `.forge/review/prompt.md`.
+    pub instructions: String,
 }
 
 impl Default for ReviewConfig {
@@ -358,6 +364,9 @@ impl Default for ReviewConfig {
         Self {
             provider: "claude".to_owned(),
             timeout_secs: 900,
+            model: None,
+            effort: None,
+            instructions: String::new(),
         }
     }
 }
