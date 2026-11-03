@@ -8,6 +8,8 @@
     "tier": "plus",
     "provider": null,
     "preset": "deep",
-    "instructions": "Check the refunds path."
+    "instructions": "Check the refunds path.",
+    "model": "opus",
+    "effort": "high"
   }
 }

@@ -36,12 +36,13 @@ pub(super) fn start_review(
     provider: Option<String>,
     preset: Option<String>,
     instructions: Option<String>,
+    options: domain::AgentLaunchOptions,
 ) {
     let target = domain::ReviewTarget::Workspace {
         workspace_id: workspace,
         base: None,
     };
-    match client.start_review(target, None, provider, preset, instructions) {
+    match client.start_review(target, None, provider, preset, instructions, options) {
         Ok(review) => emit(app, "workbench:review_started", &(workspace, review)),
         Err(error) => fail(app, "workbench:review_failed", Some(workspace), &error),
     }

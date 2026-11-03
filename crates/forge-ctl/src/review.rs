@@ -27,6 +27,12 @@ pub(crate) enum ReviewCmd {
         /// Added after the preset's instructions; at most 4096 bytes.
         #[arg(long)]
         instructions: Option<String>,
+        /// The reviewer's model; defaults to `[review] model`, then the provider's own.
+        #[arg(long)]
+        model: Option<String>,
+        /// The reviewer's effort level; defaults to `[review] effort`, then the provider's own.
+        #[arg(long)]
+        effort: Option<String>,
         /// Block until the run ends and print it with its findings.
         #[arg(long)]
         wait: bool,
@@ -93,6 +99,8 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
             provider,
             preset,
             instructions,
+            model,
+            effort,
             wait,
         } => {
             let store = places::load(app, client)?;
@@ -106,6 +114,8 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
                 provider,
                 preset,
                 instructions,
+                model,
+                effort,
             };
             if !wait {
                 let response = app.call(client, start, true)?;
@@ -465,6 +475,8 @@ fn bench_case(
             provider: None,
             preset: None,
             instructions: None,
+            model: None,
+            effort: None,
         },
         Wait::Cancel,
     )

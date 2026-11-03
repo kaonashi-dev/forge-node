@@ -981,6 +981,8 @@ fn main() {
             provider: None,
             preset: Some("deep".to_string()),
             instructions: Some("Check the refunds path.".to_string()),
+            model: Some("opus".to_string()),
+            effort: Some("high".to_string()),
         },
     );
     write(

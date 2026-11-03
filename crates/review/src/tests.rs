@@ -304,9 +304,9 @@ fn the_spec_example_config_parses_and_ignores_unknown_keys() {
 
 #[test]
 fn a_bad_config_value_falls_back_with_a_note() {
-    let (config, notes) = Config::parse("default_tier = \"ultra\"\nlanguage = \"en\"\n");
+    let (config, notes) = Config::parse("default_tier = \"ultra\"\nlanguage = \"es\"\n");
     assert_eq!(config.default_tier, Tier::Base);
-    assert_eq!(config.language, "en");
+    assert_eq!(config.language, "es");
     assert_eq!(notes.len(), 1);
 
     let (config, notes) = Config::parse("this is = = not toml");
@@ -433,10 +433,49 @@ fn the_prompt_names_the_language_the_pack_and_the_schema() {
         &resolved(),
         std::path::Path::new("/data/review-packs/1/pack.md"),
     );
-    assert!(text.contains("es"));
+    assert!(text.contains("Write the summary and the findings in the language `en`."));
     assert!(text.contains("/data/review-packs/1/pack.md"));
     assert!(text.contains("forge.review/v1"));
     assert!(text.contains("evidence"));
+    assert!(text.contains("3. Hunt. For each changed hunk, read the code around it"));
+    assert!(text.contains("in these categories: logic|security|performance."));
+    assert!(text.contains("4. Verify. Keep a candidate only if you can name the input"));
+    assert!(text.contains(
+        "Drop it if it existed before this change, if a compiler, type checker or linter \
+         would report it, or if it is a matter of taste that neither an enabled category nor \
+         a rule in <rules> asks for."
+    ));
+    assert!(text.contains("5. Answer with exactly one JSON object and nothing else:"));
+    assert!(text.contains(
+        "`confidence` is your probability, from 0 to 1, that the finding is a real defect \
+         the author would fix."
+    ));
+}
+
+#[test]
+fn english_is_the_default_language_and_a_repository_can_change_it() {
+    assert_eq!(Config::default().language, "en");
+    let (config, notes) = Config::parse("language = \"es\"\n");
+    assert!(notes.is_empty(), "{notes:?}");
+    let resolved = resolve(&config, &[], &builtins(), None, None, None).unwrap();
+    assert!(prompt(&resolved, std::path::Path::new("/p")).contains("in the language `es`."));
+}
+
+#[test]
+fn a_prompt_with_no_category_asks_only_for_rule_violations() {
+    let mut r = resolved();
+    r.categories = Categories([false; 5]);
+    let text = prompt(&r, std::path::Path::new("/p/pack.md"));
+    assert!(
+        text.contains("Report only violations of the rules in <rules>."),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"category\":\"the rule's category\""),
+        "{text}"
+    );
+    assert!(!text.contains("categories: ."), "{text}");
+    assert!(!text.contains("\"category\":\"\""), "{text}");
 }
 
 const MONEY_RULE: &str = "---
@@ -866,12 +905,12 @@ fn prompt_reflects_the_resolved_configuration() {
     assert!(!text.contains("Report only defects you are confident"));
     assert!(!text.contains("Also report risky"));
     assert!(!text.contains("Additional instructions"));
-    assert!(text.contains("`es`"));
+    assert!(text.contains("`en`"));
 
     r.strictness = Strictness::Relajado;
     r.instructions = "Mira los cobros.".into();
     r.max_findings = 5;
-    r.language = "en".into();
+    r.language = "es".into();
     let text = prompt(&r, pack);
     assert!(text.contains("Report only defects you are confident break something."));
     assert!(text.contains("at most 5 findings"));
@@ -880,7 +919,7 @@ fn prompt_reflects_the_resolved_configuration() {
             .ends_with("## Additional instructions\n\nMira los cobros."),
         "{text}"
     );
-    assert!(text.contains("`en`"));
+    assert!(text.contains("`es`"));
 
     r.strictness = Strictness::Estricto;
     assert!(prompt(&r, pack).contains("Also report risky patterns and missing edge-case handling."));
@@ -1014,4 +1053,101 @@ fn fingerprint_differs_by_rule() {
         fingerprint("a.rs", "logic", Some("money"), "x"),
         fingerprint("a.rs", "logic", None, "x")
     );
+}
+
+#[test]
+fn base_instructions_come_before_the_preset_and_the_run() {
+    let mut config = Config {
+        base_instructions: vec!["GLOBAL".into(), "  ".into(), "REPO".into()],
+        ..Config::default()
+    };
+    let presets = builtins();
+    let standard = presets[0].instructions.clone();
+    let r = resolve(&config, &[], &presets, None, None, Some("RUN")).unwrap();
+    assert_eq!(
+        r.instructions,
+        format!("GLOBAL\n\nREPO\n\n{standard}\n\nRUN")
+    );
+    let text = prompt(&r, std::path::Path::new("/p"));
+    assert_eq!(text.matches("## Additional instructions").count(), 1);
+    assert!(text.ends_with(&format!("## Additional instructions\n\n{}", r.instructions)));
+
+    let error = resolve(&config, &[], &presets, Some("custom"), None, None).unwrap_err();
+    assert!(error.contains("needs instructions"), "{error}");
+    let r = resolve(&config, &[], &presets, Some("custom"), None, Some("RUN")).unwrap();
+    assert_eq!(r.instructions, "GLOBAL\n\nREPO\n\nRUN");
+
+    config.base_instructions.clear();
+    let r = resolve(&config, &[], &presets, Some("custom"), None, Some("RUN")).unwrap();
+    assert_eq!(r.instructions, "RUN");
+}
+
+#[test]
+fn validate_drops_findings_below_min_confidence() {
+    let r = resolved();
+    assert!((r.min_confidence - 0.5).abs() < f32::EPSILON);
+    let at = |confidence, category: &str| RawFinding {
+        confidence,
+        category: category.into(),
+        ..raw(Some(2), "fn b() {}")
+    };
+    let v = validate(
+        output(vec![
+            at(0.5, "logic"),
+            at(0.49, "security"),
+            at(0.1, "performance"),
+        ]),
+        &changed(),
+        &[],
+        &r,
+    )
+    .unwrap();
+    assert_eq!(v.findings.len(), 1, "{:?}", v.findings);
+    assert_eq!(v.findings[0].category, "logic", "0.5 is kept at 0.5");
+    assert_eq!(v.low_confidence, 2);
+}
+
+#[test]
+fn config_min_confidence_parses_clamps_and_falls_back() {
+    assert!((Config::default().min_confidence - 0.5).abs() < f32::EPSILON);
+    let (config, notes) = Config::parse("min_confidence = 0.7");
+    assert!(notes.is_empty(), "{notes:?}");
+    assert!((config.min_confidence - 0.7).abs() < 1e-6);
+    let (config, notes) = Config::parse("min_confidence = 1");
+    assert!(notes.is_empty(), "{notes:?}");
+    assert!((config.min_confidence - 1.0).abs() < f32::EPSILON);
+
+    let (config, notes) = Config::parse("min_confidence = 1.5");
+    assert!((config.min_confidence - 1.0).abs() < f32::EPSILON);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    let (config, notes) = Config::parse("min_confidence = -2");
+    assert!(config.min_confidence.abs() < f32::EPSILON);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+
+    for case in ["min_confidence = \"high\"", "min_confidence = nan"] {
+        let (config, notes) = Config::parse(case);
+        assert_eq!(config, Config::default(), "{case}");
+        assert_eq!(notes.len(), 1, "{case}: {notes:?}");
+    }
+    let r = resolve(
+        &Config::parse("min_confidence = 0.9").0,
+        &[],
+        &builtins(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!((r.min_confidence - 0.9).abs() < 1e-6);
+}
+
+#[test]
+fn config_project_docs_defaults_on_and_can_be_turned_off() {
+    assert!(Config::default().context.project_docs);
+    let (config, notes) = Config::parse("[context]\nproject_docs = false");
+    assert!(notes.is_empty(), "{notes:?}");
+    assert!(!config.context.project_docs);
+    let (config, notes) = Config::parse("[context]\nproject_docs = \"no\"");
+    assert_eq!(config, Config::default());
+    assert_eq!(notes.len(), 1, "{notes:?}");
 }

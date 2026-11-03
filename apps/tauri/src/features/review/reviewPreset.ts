@@ -84,3 +84,9 @@ export function reviewHint(
   }
   return `${reviewer.name} reads the change in ${reviewer.mode} — it cannot write to this checkout.`;
 }
+
+/** A blank model or effort is `null`: the daemon then falls back to `[review]`, then the provider. */
+export function launchOption(text: string): string | null {
+  const trimmed = text.trim();
+  return trimmed === "" ? null : trimmed;
+}

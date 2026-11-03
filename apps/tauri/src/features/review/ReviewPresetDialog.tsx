@@ -1,13 +1,14 @@
 import { For, Show, createEffect, createMemo, createSignal, onMount, untrack } from "solid-js";
 import { forgeStore } from "../../state/forgeStore";
 import { writeChoice } from "../../state/preferences";
-import { Button, Dialog, RadioGroup, Select, TextArea, toast } from "../../ui/index";
+import { Button, Dialog, RadioGroup, Select, TextArea, TextField, toast } from "../../ui/index";
 import { loadReviewConfig, startReview } from "./commands";
 import {
   CUSTOM_PRESET,
   REVIEW_CUSTOM_KEY,
   REVIEW_PROVIDER_KEY,
   initialPreset,
+  launchOption,
   preferredReviewer,
   presetKey,
   readyToReview,
@@ -20,6 +21,8 @@ export function ReviewPresetDialog(props: { workspace: string; onDismiss: () => 
   const [presetId, setPresetId] = createSignal("");
   const [reviewerId, setReviewerId] = createSignal<string | null>(null);
   const [custom, setCustom] = createSignal("");
+  const [model, setModel] = createSignal("");
+  const [effort, setEffort] = createSignal("");
 
   const projectId = () => forgeStore.workspaces.find((w) => w.id === props.workspace)?.project_id;
   const config = () => reviewStore.configs[props.workspace];
@@ -57,6 +60,8 @@ export function ReviewPresetDialog(props: { workspace: string; onDismiss: () => 
       preset: presetId(),
       provider: picked.id,
       instructions: isCustom() ? custom().trim() : null,
+      model: launchOption(model()),
+      effort: launchOption(effort()),
     })
       .then(() => props.onDismiss())
       .catch((error: unknown) =>
@@ -129,6 +134,20 @@ export function ReviewPresetDialog(props: { workspace: string; onDismiss: () => 
           label: `${option.name} · ${option.mode}`,
         }))}
         onChange={setReviewerId}
+      />
+      <TextField
+        class="pr-compose-field"
+        label="Model"
+        value={model()}
+        onChange={setModel}
+        placeholder="Provider default"
+      />
+      <TextField
+        class="pr-compose-field"
+        label="Effort"
+        value={effort()}
+        onChange={setEffort}
+        placeholder="Provider default"
       />
       <p class="settings-hint pr-compose-hint">{reviewHint(reviewer(), preset(), custom())}</p>
       <Show when={config()?.errors.length}>

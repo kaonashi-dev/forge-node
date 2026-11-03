@@ -78,7 +78,17 @@ fn run(app: &AppHandle, client: &Client, command: WorkbenchCommand) {
             provider,
             preset,
             instructions,
-        } => git::start_review(app, client, workspace, provider, preset, instructions),
+            model,
+            effort,
+        } => git::start_review(
+            app,
+            client,
+            workspace,
+            provider,
+            preset,
+            instructions,
+            domain::AgentLaunchOptions { model, effort },
+        ),
         WorkbenchCommand::LoadReviewConfig { workspace } => {
             git::load_review_config(app, client, workspace)
         }

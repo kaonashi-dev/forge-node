@@ -175,6 +175,8 @@ fn start(
         provider: provider.map(str::to_owned),
         preset: None,
         instructions: None,
+        model: None,
+        effort: None,
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -273,6 +275,10 @@ fn a_review_completes_with_anchored_findings_and_leaves_the_tree_alone() {
         "{args}"
     );
     assert!(args.contains("--add-dir "), "{args}");
+    assert!(
+        !args.contains("--model") && !args.contains("--effort"),
+        "unset leaves the provider's own default: {args}"
+    );
     assert_eq!(
         pack_dirs(&harness),
         1,
@@ -378,6 +384,8 @@ fn start_against(
         provider: None,
         preset: None,
         instructions: None,
+        model: None,
+        effort: None,
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -602,6 +610,8 @@ fn start_with(
         provider: None,
         preset: preset.map(str::to_owned),
         instructions,
+        model: None,
+        effort: None,
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -821,4 +831,302 @@ fn get_review_config_lists_presets_rules_and_errors() {
         Err(client::ClientError::Protocol(error)) => assert_eq!(error.code, ErrorCode::NotFound),
         other => panic!("expected NotFound, got {other:?}"),
     }
+}
+
+fn start_launching(
+    client: &client::Client,
+    workspace_id: WorkspaceId,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<ReviewId, ErrorCode> {
+    match client.request(Request::StartReview {
+        target: ReviewTarget::Workspace {
+            workspace_id,
+            base: None,
+        },
+        tier: None,
+        provider: None,
+        preset: None,
+        instructions: None,
+        model: model.map(str::to_owned),
+        effort: effort.map(str::to_owned),
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
+        Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
+        Err(client::ClientError::Protocol(error)) => Err(error.code),
+        Err(other) => panic!("transport: {other}"),
+    }
+}
+
+fn boot_configured(
+    harness: &common::Harness,
+    configure: impl FnOnce(&mut daemon::config::Config),
+) -> common::TestDaemon {
+    transcript_store();
+    let daemon = harness.boot_with(configure);
+    let client = daemon.connect("scenario-review");
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+    daemon
+}
+
+/// The fake's recorded argv once the reviewer of `review_id` has started.
+fn reviewer_args(
+    harness: &common::Harness,
+    events: &flume::Receiver<DaemonEvent>,
+    review_id: ReviewId,
+) -> (ReviewRun, String) {
+    let run = wait_run(events, review_id, |run| {
+        run.session_id.is_some() || run.status.is_finished()
+    });
+    assert!(run.session_id.is_some(), "{:?}", run.error);
+    assert!(common::poll_until(common::DEADLINE, || harness
+        .root()
+        .join("written")
+        .exists()));
+    let args = std::fs::read_to_string(harness.root().join("args")).expect("args");
+    let _ = std::fs::remove_file(harness.root().join("written"));
+    (run, args)
+}
+
+#[test]
+fn the_reviewer_takes_model_and_effort_from_the_config_then_the_run() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "", Reviewer::Silent);
+    let repo = seeded_repo();
+    let daemon = boot_configured(&harness, |config| {
+        config.review.model = Some("opus".into());
+        config.review.effort = Some("high".into());
+    });
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let first = start_launching(&client, workspace, None, None).expect("configured");
+    let (run, args) = reviewer_args(&harness, &events, first);
+    assert!(args.contains("--model opus"), "{args}");
+    assert!(args.contains("--effort high"), "{args}");
+    assert!(
+        run.coverage
+            .notes
+            .iter()
+            .any(|note| note == "reviewer: claude, model opus, effort high"),
+        "{:?}",
+        run.coverage.notes
+    );
+    assert_eq!(
+        start_launching(&client, workspace, None, None),
+        Ok(first),
+        "the same launch joins"
+    );
+
+    let second = start_launching(&client, workspace, Some("sonnet"), Some("low"))
+        .expect("the run's own options");
+    assert_ne!(second, first, "another model supersedes");
+    let old = wait_run(&events, first, |run| run.status.is_finished());
+    assert_eq!(old.status, ReviewStatus::Cancelled);
+    let (_, args) = reviewer_args(&harness, &events, second);
+    assert!(args.contains("--model sonnet"), "{args}");
+    assert!(args.contains("--effort low"), "{args}");
+    client
+        .request(Request::CancelReview { review_id: second })
+        .expect("cancel");
+}
+
+#[test]
+fn an_effort_the_provider_does_not_list_is_refused_before_any_run() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "", Reviewer::Silent);
+    let repo = seeded_repo();
+    let daemon = boot_configured(&harness, |config| {
+        config.review.effort = Some("turbo".into());
+    });
+    let client = daemon.connect("scenario-review");
+    let workspace = workspace_at(&client, repo.path());
+
+    assert_eq!(
+        start_launching(&client, workspace, None, None),
+        Err(ErrorCode::InvalidRequest),
+        "from the config"
+    );
+    match client.request(Request::StartReview {
+        target: ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        tier: None,
+        provider: None,
+        preset: None,
+        instructions: None,
+        model: None,
+        effort: Some("turbo".into()),
+    }) {
+        Err(client::ClientError::Protocol(error)) => {
+            assert_eq!(error.code, ErrorCode::InvalidRequest);
+            assert!(error.message.contains("effort"), "{}", error.message);
+        }
+        other => panic!("expected InvalidRequest, got {other:?}"),
+    }
+    let Response::Reviews(runs) = client
+        .request(Request::ListReviews {
+            workspace_id: workspace,
+            limit: 10,
+        })
+        .expect("ListReviews")
+    else {
+        panic!("expected Reviews");
+    };
+    assert!(runs.is_empty(), "{runs:?}");
+}
+
+#[test]
+fn global_and_repository_instructions_reach_the_reviewer_in_order() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "", Reviewer::Silent);
+    let repo = seeded_repo();
+    std::fs::create_dir_all(repo.path().join(".forge/review")).expect("dir");
+    std::fs::write(
+        repo.path().join(".forge/review/prompt.md"),
+        "REPO_PROMPT_MARKER\n",
+    )
+    .expect("prompt.md");
+    git(repo.path(), &["add", ".forge"]);
+    git(repo.path(), &["commit", "-qm", "review prompt"]);
+    let daemon = boot_configured(&harness, |config| {
+        config.review.instructions = "GLOBAL_PROMPT_MARKER".into();
+    });
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let review_id = start(&client, workspace, None).expect("StartReview");
+    let (_, args) = reviewer_args(&harness, &events, review_id);
+    let section = args
+        .find("## Additional instructions")
+        .expect("one instructions section");
+    let global = args.find("GLOBAL_PROMPT_MARKER").expect("global");
+    let local = args.find("REPO_PROMPT_MARKER").expect("repository");
+    let preset = args.find("Review the change the way").expect("preset");
+    assert!(
+        section < global && global < local && local < preset,
+        "{args}"
+    );
+    client
+        .request(Request::CancelReview { review_id })
+        .expect("cancel");
+}
+
+#[test]
+fn oversized_instructions_are_reported_and_left_out() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "", Reviewer::Silent);
+    let repo = seeded_repo();
+    std::fs::create_dir_all(repo.path().join(".forge/review")).expect("dir");
+    let big = format!("OVERSIZED_MARKER\n{}", "x".repeat(16 * 1024));
+    std::fs::write(repo.path().join(".forge/review/prompt.md"), big).expect("prompt.md");
+    let daemon = boot_configured(&harness, |config| {
+        config.review.instructions = format!("GLOBAL_OVERSIZED{}", "y".repeat(4096));
+    });
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let Response::ReviewConfig(settings) = client
+        .request(Request::GetReviewConfig {
+            workspace_id: workspace,
+        })
+        .expect("GetReviewConfig")
+    else {
+        panic!("expected ReviewConfig");
+    };
+    assert_eq!(settings.errors.len(), 2, "{:?}", settings.errors);
+    assert!(
+        settings.errors.iter().any(|e| e.contains("prompt.md")),
+        "{:?}",
+        settings.errors
+    );
+    assert!(
+        settings
+            .errors
+            .iter()
+            .any(|e| e.contains("[review] instructions")),
+        "{:?}",
+        settings.errors
+    );
+
+    let review_id = start(&client, workspace, None).expect("StartReview");
+    let (run, args) = reviewer_args(&harness, &events, review_id);
+    assert!(!args.contains("OVERSIZED_MARKER"), "{args}");
+    assert!(!args.contains("GLOBAL_OVERSIZED"), "{args}");
+    assert!(
+        run.coverage.notes.iter().any(|n| n.contains("prompt.md")),
+        "{:?}",
+        run.coverage.notes
+    );
+    client
+        .request(Request::CancelReview { review_id })
+        .expect("cancel");
+}
+
+#[test]
+fn agents_md_is_project_context_unless_the_repository_opts_out() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "", Reviewer::Silent);
+    let repo = seeded_repo();
+    std::fs::write(repo.path().join("AGENTS.md"), "AGENTS_MARKER\n").expect("AGENTS.md");
+    git(repo.path(), &["add", "AGENTS.md"]);
+    git(repo.path(), &["commit", "-qm", "agents"]);
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let pack = |review_id: ReviewId| {
+        reviewer_args(&harness, &events, review_id);
+        std::fs::read_to_string(
+            harness
+                .root()
+                .join("review-packs")
+                .join(review_id.to_string())
+                .join("pack.md"),
+        )
+        .expect("pack.md while the model runs")
+    };
+
+    let config = |text: &str| {
+        std::fs::create_dir_all(repo.path().join(".forge/review")).expect("dir");
+        std::fs::write(repo.path().join(".forge/review/config.toml"), text).expect("config");
+    };
+    let context_blocks = |text: &str| text.matches("<project_context path=\"AGENTS.md\">").count();
+    let finish = |review_id: ReviewId| {
+        client
+            .request(Request::CancelReview { review_id })
+            .expect("cancel");
+        wait_run(&events, review_id, |run| run.status.is_finished());
+    };
+
+    let first = start(&client, workspace, None).expect("default");
+    let text = pack(first);
+    assert_eq!(context_blocks(&text), 1, "{text}");
+    assert!(text.contains("AGENTS_MARKER"), "{text}");
+    assert!(!text.contains("CLAUDE.md"), "an absent file is skipped");
+    finish(first);
+
+    config("[context]\ninclude = [\"AGENTS.md\"]\n");
+    let second = start(&client, workspace, None).expect("listed again");
+    let text = pack(second);
+    assert_eq!(
+        context_blocks(&text),
+        1,
+        "listed again in `include`, read once: {text}"
+    );
+    finish(second);
+
+    config("[context]\nproject_docs = false\n");
+    let third = start(&client, workspace, None).expect("opted out");
+    let text = pack(third);
+    assert!(!text.contains("AGENTS_MARKER"), "{text}");
+    finish(third);
 }

@@ -55,6 +55,8 @@ impl Categories {
 /// `[context]`: repository-relative files read after `.forge/review/context.md`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextSettings {
+    /// `AGENTS.md` and `CLAUDE.md` at the checkout root, before `include`.
+    pub project_docs: bool,
     pub include: Vec<String>,
     /// The budget for every context file together.
     pub max_bytes: usize,
@@ -63,6 +65,7 @@ pub struct ContextSettings {
 impl Default for ContextSettings {
     fn default() -> Self {
         Self {
+            project_docs: true,
             include: Vec::new(),
             max_bytes: 64 * 1024,
         }
@@ -70,7 +73,7 @@ impl Default for ContextSettings {
 }
 
 /// `.forge/review/config.toml`; every key it does not know is ignored.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub language: String,
     /// Checked against the presets by [`crate::resolve`], not here.
@@ -78,23 +81,30 @@ pub struct Config {
     pub default_tier: Tier,
     pub strictness: Strictness,
     pub max_findings: usize,
+    /// A finding the model rates below this is dropped; `0.0..=1.0`.
+    pub min_confidence: f32,
     pub categories: Categories,
     pub context: ContextSettings,
     /// Globs over repository-relative paths, `[ignore] paths`.
     pub ignore: Vec<String>,
+    /// Instructions under the preset's, lowest first. Filled by the caller,
+    /// never from `config.toml`.
+    pub base_instructions: Vec<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            language: "es".to_owned(),
+            language: "en".to_owned(),
             default_preset: crate::presets::DEFAULT_PRESET.to_owned(),
             default_tier: Tier::Base,
             strictness: Strictness::Normal,
             max_findings: 40,
+            min_confidence: 0.5,
             categories: Categories::default(),
             context: ContextSettings::default(),
             ignore: Vec::new(),
+            base_instructions: Vec::new(),
         }
     }
 }
@@ -165,6 +175,26 @@ impl Config {
                 notes.push("review config: `max_findings` must be an integer; 40 used".into())
             }
         }
+        let min_confidence = match table.get("min_confidence") {
+            Some(Value::Float(n)) if !n.is_nan() => Some(*n),
+            Some(Value::Integer(n)) => Some(*n as f64),
+            _ => None,
+        };
+        match (table.get("min_confidence"), min_confidence) {
+            (None, _) => {}
+            (Some(_), Some(n)) => {
+                let clamped = n.clamp(0.0, 1.0);
+                if clamped != n {
+                    notes.push(format!(
+                        "review config: `min_confidence` {n} is outside 0..=1; {clamped} used"
+                    ));
+                }
+                config.min_confidence = clamped as f32;
+            }
+            (Some(_), None) => {
+                notes.push("review config: `min_confidence` must be a number; 0.5 used".into())
+            }
+        }
         match table.get("categories") {
             None => {}
             Some(Value::Table(categories)) => {
@@ -206,6 +236,13 @@ impl Config {
 }
 
 fn parse_context(context: &Value, settings: &mut ContextSettings, notes: &mut Vec<String>) {
+    match context.get("project_docs") {
+        None => {}
+        Some(Value::Boolean(on)) => settings.project_docs = *on,
+        Some(_) => {
+            notes.push("review config: `[context] project_docs` must be true or false".into())
+        }
+    }
     match context.get("include").map(Value::as_array) {
         None => {}
         Some(Some(paths)) => {

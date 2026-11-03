@@ -3,6 +3,7 @@ import type { ProviderInfo } from "../../contracts/runtime";
 import type { ReviewPreset, ReviewSettings } from "../../contracts/workbench";
 import {
   initialPreset,
+  launchOption,
   preferredReviewer,
   presetKey,
   readyToReview,
@@ -90,5 +91,13 @@ describe("reviewPreset", () => {
     expect(reviewHint(claude, standard, "")).toBe(
       "CLAUDE reads the change in plan mode — it cannot write to this checkout.",
     );
+  });
+});
+
+describe("launchOption", () => {
+  it("sends a blank field as null so the provider's own default applies", () => {
+    expect(launchOption("")).toBeNull();
+    expect(launchOption("   ")).toBeNull();
+    expect(launchOption(" opus ")).toBe("opus");
   });
 });

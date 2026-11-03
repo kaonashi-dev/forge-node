@@ -29,8 +29,11 @@ pub struct Validated {
     pub findings: Vec<Finding>,
     /// Lines outside every new-side hunk, demoted to general.
     pub invalid_anchors: u32,
-    /// Findings considered, after the caps and the category filter, before dedupe.
+    /// Findings considered, after the caps, the category and the confidence
+    /// filters, before dedupe.
     pub total: u32,
+    /// Dropped below `min_confidence`.
+    pub low_confidence: u32,
     /// Cut by `max_findings` after dedupe.
     pub trimmed: u32,
 }
@@ -57,7 +60,7 @@ pub fn hunks(patch: &str) -> Vec<(u32, u32)> {
 /// Anchor, cap, dedupe and fingerprint the model's findings against the diff.
 /// A `rule_id` survives only when it names one of the in-scope `rules`, whose
 /// severity then caps the finding's; a finding in a disabled known category
-/// without one is dropped.
+/// without one, or below `min_confidence`, is dropped.
 ///
 /// # Errors
 /// More than half of the anchors fell outside the diff.
@@ -86,6 +89,10 @@ pub fn validate(
             raw.rule_id.is_some() || resolved.categories.get(&raw.category) != Some(false)
         })
         .collect();
+    let (findings, low): (Vec<RawFinding>, Vec<RawFinding>) = findings
+        .into_iter()
+        .partition(|raw| raw.confidence >= resolved.min_confidence);
+    let low_confidence = u32::try_from(low.len()).unwrap_or(u32::MAX);
     let total = u32::try_from(findings.len()).unwrap_or(u32::MAX);
     let mut invalid_anchors = 0u32;
     let mut kept: Vec<Finding> = Vec::new();
@@ -182,6 +189,7 @@ pub fn validate(
         findings: kept,
         invalid_anchors,
         total,
+        low_confidence,
         trimmed,
     })
 }
