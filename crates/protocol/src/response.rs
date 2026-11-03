@@ -15,7 +15,7 @@ use domain::{
     ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState, Remote, RepoActionsFile,
     RunId, ScrollbackRows, SearchResults, Session, SessionChanges, SessionId, SessionTranscript,
     ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TaskId, TerminalId, TerminalSnapshot,
-    UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorkspaceReview, WorktreeIgnore,
+    UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -236,11 +236,6 @@ pub enum Response {
     /// One session's changes since its baseline, answering
     /// `GetSessionChanges`.
     SessionChanges(SessionChanges),
-    /// One checkout's changes since its sessions began, answering
-    /// `GetWorkspaceReview`. Boxed for the reason `UsageAnalytics` is: it
-    /// carries a whole diff and would otherwise set the size of every
-    /// `Response` on the wire path.
-    WorkspaceReview(Box<WorkspaceReview>),
     /// Answers `StartReview`; may name a run already in flight.
     ReviewStarted {
         review_id: domain::ReviewId,
@@ -255,7 +250,7 @@ pub enum Response {
     /// Answers `GetReviewConfig`.
     ReviewConfig(domain::ReviewSettings),
     /// A branch against its pull request's base, answering
-    /// `GetBranchCompare`. Boxed like `WorkspaceReview`.
+    /// `GetBranchCompare`. Boxed like `UsageAnalytics`: it carries a whole diff.
     BranchCompare(Box<BranchCompare>),
     /// Plain text off a session's terminal, answering
     /// `GetSessionTranscript`.

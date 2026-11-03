@@ -27,10 +27,14 @@ const KEEP_RUNS: u32 = 20;
 const KEEP_DAYS: i64 = 90;
 const MAX_LISTED_REVIEWS: u32 = 100;
 const REVIEWER_TITLE: &str = "Forge Review";
+/// How long an idle reviewer's unparseable answer is re-read before the run
+/// fails: the hook can report idle a moment before the transcript is flushed.
+const ANSWER_GRACE: Duration = Duration::from_secs(2);
 
 pub(crate) struct RunningReview {
     pub(crate) id: ReviewId,
-    /// Head, preset, tier and instructions: a start with the same key joins this run.
+    /// Head, base, provider, preset, tier and instructions: a start with the
+    /// same key joins this run, any other start for the workspace replaces it.
     pub(crate) key: String,
 }
 
@@ -72,6 +76,15 @@ impl Daemon {
         let head = git_service::head_commit(&path).ok_or_else(|| {
             ProtocolError::invalid_request("the workspace has no commit to review")
         })?;
+        let ReviewTarget::Workspace { base, .. } = &target else {
+            return Err(ProtocolError::invalid_request("unsupported review target"));
+        };
+        let base_ref = git_service::compare_base(&path, base.as_deref());
+        if let (Some(base), None) = (base, &base_ref) {
+            return Err(ProtocolError::invalid_request(format!(
+                "base `{base}` does not name a commit"
+            )));
+        }
         let repo = load_review_dir(&path);
         let resolved = review::resolve(
             &repo.config,
@@ -86,7 +99,7 @@ impl Daemon {
         notes.extend(resolved.notes.iter().cloned());
         let context = read_context(&path, &resolved.context, &mut notes);
         let key = format!(
-            "{head}\0{}\0{:?}\0{}",
+            "{head}\0{base_ref:?}\0{provider}\0{}\0{:?}\0{}",
             resolved.preset, resolved.tier, resolved.instructions
         );
 
@@ -150,7 +163,7 @@ impl Daemon {
         let mut queued = run.clone();
         std::thread::Builder::new()
             .name("forge-review".into())
-            .spawn(move || daemon.run_review(run, path, provider, &resolved, &context))
+            .spawn(move || daemon.run_review(run, path, provider, base_ref, &resolved, &context))
             .map_err(|error| {
                 self.release_review(workspace_id, id);
                 queued.status = ReviewStatus::Failed;
@@ -239,6 +252,7 @@ impl Daemon {
         mut run: ReviewRun,
         path: PathBuf,
         provider: String,
+        base_ref: Option<String>,
         resolved: &review::Resolved,
         context: &[(String, String)],
     ) {
@@ -255,8 +269,23 @@ impl Daemon {
                 .join(run.id.to_string()),
         );
         run.status = ReviewStatus::Running;
-        let outcome =
-            self.review_stages(&mut run, &path, &provider, resolved, context, &pack_dir.0);
+        let stages = Stages {
+            path: &path,
+            provider: &provider,
+            base_ref,
+            resolved,
+            context,
+            pack_dir: &pack_dir.0,
+        };
+        // A panic is a failed run, not one left `Running` until the next restart.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.review_stages(&mut run, stages)
+        }))
+        .unwrap_or_else(|_| Err(End::Failed("the review worker crashed".into())));
+        // Before the pack goes: the reviewer was given it with `--add-dir`.
+        if let Some(session_id) = run.session_id {
+            self.stop_reviewer(session_id);
+        }
         match outcome {
             Ok(findings) => {
                 if let Err(error) = self.review_store.insert_findings(run.id, &findings) {
@@ -287,17 +316,16 @@ impl Daemon {
     fn review_stages(
         self: &Arc<Self>,
         run: &mut ReviewRun,
-        path: &Path,
-        provider: &str,
-        resolved: &review::Resolved,
-        context: &[(String, String)],
-        pack_dir: &Path,
+        Stages {
+            path,
+            provider,
+            base_ref,
+            resolved,
+            context,
+            pack_dir,
+        }: Stages<'_>,
     ) -> Result<Vec<domain::Finding>, End> {
         self.review_stage(run, ReviewStage::Diff)?;
-        let ReviewTarget::Workspace { base, .. } = run.target.clone() else {
-            return Err(End::Failed("unsupported review target".into()));
-        };
-        let base_ref = git_service::compare_base(path, base.as_deref());
         let merge = base_ref
             .as_ref()
             .and_then(|base| git_service::merge_base(path, &[base.clone(), run.head_oid.clone()]));
@@ -369,7 +397,7 @@ impl Daemon {
         };
         run.session_id = Some(session_id);
         self.publish_review(run);
-        let output = self.await_answer(run.id, session_id, &transcript, provider)?;
+        let output = self.await_answer(run.id, session_id, path, &transcript, provider)?;
 
         self.review_stage(run, ReviewStage::Validate)?;
         let changed: Vec<review::ChangedFile> = files
@@ -403,17 +431,22 @@ impl Daemon {
     }
 
     /// Block until the reviewer's transcript holds a parseable answer, it
-    /// exits without one, the run is cancelled or the budget runs out.
+    /// stops or exits without one, the run is cancelled or the budget runs out.
+    /// The caller stops the reviewer whatever the outcome.
     fn await_answer(
-        self: &Arc<Self>,
+        &self,
         review_id: ReviewId,
         session_id: SessionId,
+        cwd: &Path,
         transcript: &str,
         provider: &str,
     ) -> Result<review::ReviewOutput, End> {
         let (wake_tx, wake_rx) = flume::bounded(1);
         self.lock().task_waiters.push(wake_tx);
         let deadline = Instant::now() + Duration::from_secs(self.config.review.timeout_secs);
+        let mut found = None;
+        let mut grace: Option<Instant> = None;
+        let mut last_error = None;
         loop {
             let (cancelled, session) = {
                 let inner = self.lock();
@@ -426,47 +459,53 @@ impl Daemon {
                 )
             };
             if cancelled {
-                self.stop_reviewer(session_id);
                 return Err(End::Cancelled);
             }
             let Some((exited, activity)) = session else {
                 return Err(End::Failed("the reviewer session was closed".into()));
             };
-            let answered = exited
-                || (matches!(activity.state, ActivityState::Idle | ActivityState::Waiting)
-                    && activity.evidence == Some(ActivityEvidence::Hook));
-            if answered {
-                match self.read_answer(transcript, provider) {
+            let hooked = activity.evidence == Some(ActivityEvidence::Hook);
+            let stopped = hooked && activity.state == ActivityState::Idle;
+            let waiting = hooked && activity.state == ActivityState::Waiting;
+            if exited || stopped || waiting {
+                match read_answer(&mut found, cwd, transcript, provider) {
                     Ok(output) => return Ok(output),
                     Err(error) if exited => {
                         return Err(End::Failed(format!(
                             "the reviewer ended without a valid review: {error}"
                         )))
                     }
-                    Err(error) => tracing::debug!(%review_id, %error, "no review answer yet"),
+                    Err(error) if stopped => {
+                        let until = *grace.get_or_insert_with(|| Instant::now() + ANSWER_GRACE);
+                        if Instant::now() >= until {
+                            return Err(End::Failed(format!(
+                                "the reviewer stopped without a valid review: {error}"
+                            )));
+                        }
+                        last_error = Some(error);
+                    }
+                    Err(error) => {
+                        grace = None;
+                        last_error = Some(error);
+                    }
                 }
+            } else {
+                grace = None;
             }
-            match wake_rx.recv_deadline(deadline) {
+            let wait_until = grace.map_or(deadline, |grace| grace.min(deadline));
+            match wake_rx.recv_deadline(wait_until) {
                 Ok(()) | Err(flume::RecvTimeoutError::Disconnected) => {}
+                Err(flume::RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
                 Err(flume::RecvTimeoutError::Timeout) => {
-                    self.stop_reviewer(session_id);
-                    return Err(End::Failed("timed out".into()));
+                    return Err(End::Failed(match last_error {
+                        Some(error) => {
+                            format!("timed out; the last answer was not a review: {error}")
+                        }
+                        None => "timed out".into(),
+                    }));
                 }
             }
         }
-    }
-
-    fn read_answer(
-        &self,
-        transcript: &str,
-        provider: &str,
-    ) -> Result<review::ReviewOutput, String> {
-        let session = self
-            .find_external_session(transcript, provider)
-            .ok_or_else(|| "no transcript found".to_owned())?;
-        let text = crate::external_agents::last_assistant_message(&session)
-            .ok_or_else(|| "the transcript has no answer".to_owned())?;
-        review::parse_output(&text)
     }
 
     fn stop_reviewer(self: &Arc<Self>, session_id: SessionId) {
@@ -508,6 +547,34 @@ impl Daemon {
         }
         inner.review_cancel.remove(&review_id);
     }
+}
+
+struct Stages<'a> {
+    path: &'a Path,
+    provider: &'a str,
+    base_ref: Option<String>,
+    resolved: &'a review::Resolved,
+    context: &'a [(String, String)],
+    pack_dir: &'a Path,
+}
+
+/// The reviewer's last answer, parsed. `found` keeps the transcript's path
+/// once it exists, so a re-read opens one known file rather than scanning.
+fn read_answer(
+    found: &mut Option<PathBuf>,
+    cwd: &Path,
+    transcript: &str,
+    provider: &str,
+) -> Result<review::ReviewOutput, String> {
+    if found.is_none() {
+        *found = crate::external_agents::minted_transcript(provider, cwd, transcript);
+    }
+    let path = found
+        .as_deref()
+        .ok_or_else(|| "no transcript found".to_owned())?;
+    let text = crate::external_agents::last_assistant_message(provider, path)
+        .ok_or_else(|| "the transcript has no answer".to_owned())?;
+    review::parse_output(&text)
 }
 
 /// Releases the run's claim however the worker ends: `Daemon::lock` recovers

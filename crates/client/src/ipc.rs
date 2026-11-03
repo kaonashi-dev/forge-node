@@ -626,26 +626,6 @@ impl Client {
         }
     }
 
-    /// Changes since the checkout's sessions began.
-    ///
-    /// # Errors
-    /// [`ClientError`] on a transport failure or a refusal from the daemon.
-    pub fn workspace_review(
-        &self,
-        workspace_id: domain::WorkspaceId,
-        context_lines: Option<u32>,
-    ) -> Result<domain::WorkspaceReview, ClientError> {
-        match self.request(Request::GetWorkspaceReview {
-            workspace_id,
-            context_lines,
-        })? {
-            Response::WorkspaceReview(review) => Ok(*review),
-            _ => Err(ClientError::UnexpectedResponse {
-                expected: "WorkspaceReview",
-            }),
-        }
-    }
-
     /// Start a Forge Review; the id may name a run already in flight.
     ///
     /// # Errors

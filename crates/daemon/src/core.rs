@@ -71,10 +71,6 @@ const DEFAULT_TRANSCRIPT_BYTES: u32 = 36_000;
 /// Hard cap on one capture, well inside the smallest per-argument limit.
 const MAX_TRANSCRIPT_BYTES: u32 = 96_000;
 
-/// Sessions a review header describes. Each one costs a `rev-list --count`,
-/// which is the only cost here that scales with the session list.
-const MAX_REVIEW_SESSIONS: usize = 20;
-
 /// Longest ref name `GetBranchCompare` accepts off the wire.
 const MAX_COMPARE_REF_BYTES: usize = 256;
 
@@ -883,10 +879,6 @@ impl Daemon {
                 context_lines,
             } => self.get_workspace_diff(workspace_id, context_lines),
             Request::GetSessionChanges { session_id } => self.get_session_changes(session_id),
-            Request::GetWorkspaceReview {
-                workspace_id,
-                context_lines,
-            } => self.get_workspace_review(workspace_id, context_lines),
             Request::StartReview {
                 target,
                 tier,
@@ -2360,105 +2352,6 @@ impl Daemon {
         }))
     }
 
-    /// Core lock released before git runs.
-    ///
-    /// One diff for the checkout, based at the common ancestor of every
-    /// baseline its sessions carry — `merge-base --octopus`, one subprocess
-    /// whatever the number of sessions. Each session costs a `rev-parse` (is its
-    /// baseline still a commit) and a `rev-list` (its commit count), which is
-    /// why the session list is capped: nothing else here scales with sessions.
-    fn get_workspace_review(
-        &self,
-        workspace_id: WorkspaceId,
-        context_lines: Option<u32>,
-    ) -> Result<Response, ProtocolError> {
-        let (path, mut sessions) = {
-            let inner = self.lock();
-            let path = inner
-                .workspaces
-                .get(&workspace_id)
-                .map(|ws| ws.path.clone())
-                .ok_or_else(|| ProtocolError::not_found("workspace"))?;
-            let sessions: Vec<Session> = inner
-                .sessions
-                .values()
-                .filter(|session| session.workspace_id == workspace_id)
-                .cloned()
-                .collect();
-            (path, sessions)
-        };
-
-        // Newest first: a review is read from the most recent work back.
-        sessions.sort_unstable_by(|a, b| b.created_at.cmp(&a.created_at));
-        sessions.truncate(MAX_REVIEW_SESSIONS);
-
-        // One `rev-parse` per session, shared by the merge base and the rows.
-        let valid_bases: Vec<Option<String>> = sessions
-            .iter()
-            .map(|session| {
-                session
-                    .base_commit
-                    .clone()
-                    .filter(|base| git_service::commit_exists(&path, base))
-            })
-            .collect();
-        let recorded: Vec<String> = valid_bases.iter().flatten().cloned().collect();
-        let had_baseline = sessions.iter().any(|s| s.base_commit.is_some());
-        let (base, origin) = match git_service::merge_base(&path, &recorded) {
-            Some(base) => (Some(base), domain::BaseOrigin::Recorded),
-            None if had_baseline => (None, domain::BaseOrigin::Unreachable),
-            None => (None, domain::BaseOrigin::Missing),
-        };
-
-        let context = context_lines.unwrap_or(git_service::DIFF_CONTEXT_LINES);
-        let diff =
-            git_service::working_tree_diff(&path, base.as_deref(), context).map_err(git_err)?;
-        let (commits, _) = match base.as_deref() {
-            Some(base) => git_service::commits_since(&path, base),
-            None => (Vec::new(), 0),
-        };
-
-        let rows = sessions
-            .into_iter()
-            .zip(valid_bases)
-            .map(|(session, base)| {
-                let base = base.as_deref();
-                domain::ReviewSession {
-                    session_id: session.id,
-                    title: session
-                        .title
-                        .resolve(session_fallback_title(&session))
-                        .to_owned(),
-                    provider: session
-                        .agent_provider_id
-                        .as_ref()
-                        .map(|id| id.as_str().to_owned()),
-                    active: session.state.is_active(),
-                    commit_count: base.map_or(0, |base| git_service::commit_count(&path, base)),
-                    base: base.map(git_service::short_commit),
-                    created_at: session.created_at,
-                    ended_at: session.ended_at,
-                }
-            })
-            .collect();
-
-        Ok(Response::WorkspaceReview(Box::new(
-            domain::WorkspaceReview {
-                workspace_id,
-                base: base.as_deref().map(git_service::short_commit),
-                origin,
-                sessions: rows,
-                commits: commits.into_iter().map(commit_line).collect(),
-                diff: domain::WorkspaceDiff {
-                    workspace_id,
-                    branch: diff.branch,
-                    files: diff.files.into_iter().map(diff_file).collect(),
-                    truncated: diff.truncated,
-                },
-            },
-        )))
-    }
-
     fn get_branch_compare(
         &self,
         workspace_id: WorkspaceId,
@@ -3221,30 +3114,6 @@ impl Daemon {
             })?;
 
         Ok(Response::Ack)
-    }
-
-    /// A discovered transcript by its provider-owned id, from a fresh scan.
-    /// Scans off the core lock, which is held only to clone the roots.
-    pub(crate) fn find_external_session(
-        &self,
-        session_id: &str,
-        provider: &str,
-    ) -> Option<domain::ExternalAgentSession> {
-        let (projects, workspaces, profiles) = {
-            let inner = self.lock();
-            (
-                inner.projects.values().cloned().collect::<Vec<_>>(),
-                inner.workspaces.values().cloned().collect::<Vec<_>>(),
-                inner.profiles.clone(),
-            )
-        };
-        let mut cache = self
-            .external_agents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache.invalidate();
-        cache.discover(&projects, &workspaces, &profiles);
-        cache.find(session_id, provider, None)
     }
 
     pub(crate) fn workspace_path(
@@ -8385,23 +8254,6 @@ fn profile_db_err(name: &str, e: persistence::DbError) -> ProtocolError {
     db_err(e)
 }
 
-/// The fallback a session's title falls back to, matching the tab strip.
-fn session_fallback_title(session: &Session) -> &str {
-    match session.kind {
-        SessionKind::Agent => session
-            .agent_provider_id
-            .as_ref()
-            .map_or("Agent", |id| id.as_str()),
-        SessionKind::Editor => "Editor",
-        SessionKind::Task => session
-            .action
-            .as_ref()
-            .map_or("Task", |run| run.label.as_str()),
-        // `SessionKind` is `#[non_exhaustive]`: Shell, and any future kind.
-        _ => "Shell",
-    }
-}
-
 /// `(base to diff against, why it is that)` for a recorded baseline.
 fn resolve_base(
     repo: &std::path::Path,
@@ -10572,16 +10424,6 @@ mod tests {
         // `a.txt` is clean on disk; only the baseline makes it visible.
         assert_eq!(paths, ["a.txt", "b.txt"]);
 
-        let Response::WorkspaceReview(review) = daemon
-            .get_workspace_review(workspace, None)
-            .expect("review")
-        else {
-            panic!("expected WorkspaceReview");
-        };
-        assert_eq!(review.origin, domain::BaseOrigin::Recorded);
-        assert_eq!(review.sessions.len(), 1);
-        assert_eq!(review.sessions[0].commit_count, 1);
-        assert_eq!(review.diff.files.len(), 2);
         backend.set_exited(terminal_core::ExitStatus::default());
     }
 
@@ -12279,33 +12121,6 @@ mod tests {
             "the refusal must say why: {}",
             error.message
         );
-    }
-
-    #[test]
-    fn an_editor_session_falls_back_to_the_editor_title() {
-        let id = SessionId::new();
-        let session = Session {
-            id,
-            workspace_id: WorkspaceId::new(),
-            kind: SessionKind::Editor,
-            role: SessionRole::Generic,
-            parent_session_id: None,
-            root_session_id: id,
-            terminal_id: None,
-            editor: None,
-            agent_provider_id: None,
-            agent_profile_id: None,
-            title: SessionTitle::default(),
-            state: SessionState::Running,
-            created_at: Timestamp::now(),
-            launch_command: None,
-            last_activity_at: Timestamp::now(),
-            ended_at: None,
-            base_commit: None,
-            activity: AgentActivity::unknown(),
-            action: None,
-        };
-        assert_eq!(session_fallback_title(&session), "Editor");
     }
 
     #[test]

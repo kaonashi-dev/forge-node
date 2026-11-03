@@ -121,8 +121,11 @@ pub fn validate(
                 line = Some(anchored);
                 end_line = raw
                     .end_line
-                    .map(|end| (end + anchored).saturating_sub(asked))
-                    .filter(|end| *end >= anchored);
+                    .and_then(|end| {
+                        let shifted = i64::from(end) + i64::from(anchored) - i64::from(asked);
+                        u32::try_from(shifted).ok()
+                    })
+                    .filter(|end| *end >= anchored && *end <= last_line(text));
             } else {
                 invalid_anchors += 1;
             }
@@ -282,4 +285,8 @@ pub fn verdict(findings: &[Finding], score: f32) -> Verdict {
     } else {
         Verdict::Ok
     }
+}
+
+fn last_line(text: &str) -> u32 {
+    u32::try_from(text.lines().count()).unwrap_or(u32::MAX)
 }

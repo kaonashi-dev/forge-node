@@ -296,21 +296,6 @@ pub enum Request {
         /// Session whose changes are counted.
         session_id: SessionId,
     },
-    /// One checkout's changes since its sessions began, with who those were →
-    /// [`crate::response::Response::WorkspaceReview`].
-    ///
-    /// Local and synchronous like [`Request::GetWorkspaceDiff`]. One diff, not
-    /// one per session: the base is the common ancestor of every baseline the
-    /// checkout's sessions carry, and the sessions are a header over it.
-    ///
-    /// The prose summary is not part of this answer — it opens a socket, so it
-    /// travels [`Request::DraftWithJuva`]'s ack-then-event path instead.
-    GetWorkspaceReview {
-        /// Workspace whose checkout is reviewed.
-        workspace_id: WorkspaceId,
-        /// Context lines around each hunk. `None` takes the service default.
-        context_lines: Option<u32>,
-    },
     /// One checkout's branch against the branch a pull request would target
     /// → [`crate::response::Response::BranchCompare`].
     ///
@@ -591,10 +576,12 @@ pub enum Request {
     /// Start a structured review → `Response::ReviewStarted`; progress and the
     /// outcome arrive as [`crate::event::DaemonEvent::ReviewUpdated`].
     ///
-    /// A run already in flight for the same workspace and head answers with
-    /// its id; one for an older head is cancelled. `NotFound` for an unknown
-    /// workspace, `InvalidRequest` for a provider without structured review,
-    /// `Conflict` while two reviews are already running.
+    /// A workspace has one run in flight: a start with the same head, base,
+    /// provider, preset, tier and instructions answers with that run's id, and
+    /// any other start cancels it and begins anew. `NotFound` for an unknown
+    /// workspace, `InvalidRequest` for a provider without structured review or
+    /// an explicit base that names no commit, `Conflict` while two other
+    /// workspaces' reviews are already running.
     StartReview {
         target: ReviewTarget,
         /// `None` takes the repository's `default_tier`.

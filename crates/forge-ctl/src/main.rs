@@ -33,6 +33,10 @@ use spec::SpecCmd;
 
 /// Default budget of every `--wait`/`wait`/`watch` command; `--timeout` before the subcommand overrides it.
 const DEFAULT_WAIT: Duration = Duration::from_secs(600);
+/// Default budget of a review `--wait` and of each bench case. The daemon ends
+/// every run by its own `[review] timeout_secs`, which can exceed
+/// [`DEFAULT_WAIT`]; this only backstops a daemon that never says so.
+const REVIEW_WAIT: Duration = Duration::from_secs(3600);
 /// Attention items `waiting` and `stalled` appear when a clock crosses a threshold, and no event announces that.
 const ATTENTION_RECHECK: Duration = Duration::from_secs(5);
 
@@ -371,6 +375,7 @@ struct App {
     socket: Option<PathBuf>,
     timeout: Duration,
     wait_timeout: Duration,
+    review_wait: Duration,
     request_id: Option<String>,
     capture: Option<std::cell::RefCell<Value>>,
 }
@@ -389,6 +394,7 @@ fn main() -> ExitCode {
         socket: cli.socket,
         timeout: explicit.unwrap_or(Duration::from_secs(30)),
         wait_timeout: explicit.unwrap_or(DEFAULT_WAIT),
+        review_wait: explicit.unwrap_or(REVIEW_WAIT),
         request_id: cli.request_id,
         capture: None,
     };

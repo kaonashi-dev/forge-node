@@ -51,7 +51,7 @@ pub use context::{
 };
 pub use diff::{
     BaseOrigin, BranchCompare, ChangeSummary, ChangeSummaryFile, CommitLine, DiffFile, DiffStatus,
-    ReviewSession, SessionChanges, WorkspaceDiff, WorkspaceReview,
+    SessionChanges, WorkspaceDiff,
 };
 pub use editor_frame::{
     editor_modifiers, EditorDecoration, EditorDecorationKind, EditorFold, EditorFrame,
