@@ -144,7 +144,7 @@ mod tests {
 
     fn store() -> Store {
         let mut store = Store::default();
-        store.providers = ["claude", "cursor"]
+        store.providers = ["claude", "cursor", "opencode"]
             .iter()
             .map(|id| client::ProviderInfo {
                 descriptor: agents::builtins::builtin(id).expect("builtin"),
@@ -223,7 +223,7 @@ mod tests {
         assert!(brief.contains("--provider cursor --role executor --parent self"));
 
         let mut named = request("Add a health endpoint");
-        named.coder = Some("opencode".into());
+        named.coder = Some("codex".into());
         let refused = planner_launch(
             &store(),
             &checkout(dir.path()),
@@ -233,8 +233,40 @@ mod tests {
         );
         assert_eq!(
             refused,
-            Err("the coder provider opencode is not available".to_owned())
+            Err("the coder provider codex is not available".to_owned())
         );
+    }
+
+    #[test]
+    fn every_coder_the_dialog_offers_launches_under_the_claude_planner() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (payload, spawn) in [
+            (
+                r#"{"spec":"Add a health endpoint","preset":"claude","coder":null}"#,
+                "--provider claude --role executor --effort medium --parent self",
+            ),
+            (
+                r#"{"spec":"Add a health endpoint","preset":"mix","coder":"cursor"}"#,
+                "--provider cursor --role executor --parent self",
+            ),
+            (
+                r#"{"spec":"Add a health endpoint","preset":"mix","coder":"opencode"}"#,
+                "--provider opencode --role executor --parent self",
+            ),
+        ] {
+            let request: SpecRequest = serde_json::from_str(payload).expect("payload");
+            let launch = planner_launch(
+                &store(),
+                &checkout(dir.path()),
+                request,
+                None,
+                "forgectl".into(),
+            )
+            .expect(payload);
+            assert_eq!(launch.provider.as_str(), "claude");
+            assert_eq!(launch.effort.as_deref(), Some("high"));
+            assert!(launch.brief.contains(spawn), "{payload}");
+        }
     }
 
     #[test]
