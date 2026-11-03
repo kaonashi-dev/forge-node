@@ -127,9 +127,10 @@ impl Config {
             Some(Value::String(id)) if !id.trim().is_empty() => {
                 config.default_preset = id.trim().to_owned();
             }
-            Some(_) => notes.push(
-                "review config: `default_preset` must be a non-empty string; estandar used".into(),
-            ),
+            Some(_) => notes.push(format!(
+                "review config: `default_preset` must be a non-empty string; {} used",
+                crate::presets::DEFAULT_PRESET
+            )),
         }
         match table.get("default_tier").map(|v| v.as_str()) {
             None => {}

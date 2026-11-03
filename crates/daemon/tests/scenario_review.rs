@@ -640,10 +640,10 @@ fn seed_review_dir(repo: &Path) {
     std::fs::write(dir.join("rules/docs.md"), DOCS_RULE).expect("docs");
     std::fs::write(dir.join("rules/broken.md"), "no frontmatter here\n").expect("broken");
     std::fs::write(
-        dir.join("presets/negocio.toml"),
-        "name = \"Nuestro negocio\"\n",
+        dir.join("presets/security.toml"),
+        "name = \"Nuestra seguridad\"\n",
     )
-    .expect("negocio");
+    .expect("security");
     std::fs::write(dir.join("presets/propio.toml"), "rules = [\"money\"]\n").expect("propio");
     std::fs::write(
         dir.join("context.md"),
@@ -698,7 +698,7 @@ fn a_rule_backed_review_applies_scope_context_and_ceilings() {
     report_idle(&client, model.session_id.expect("reviewer"));
     let done = wait_run(&events, review_id, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
-    assert_eq!(done.preset, "estandar");
+    assert_eq!(done.preset, "standard");
     assert_eq!(done.coverage.rules, ["money"]);
     assert!(
         done.coverage
@@ -745,10 +745,16 @@ fn presets_and_instructions_are_checked_and_change_the_run() {
         Err(ErrorCode::InvalidRequest)
     );
 
-    let review_id = start_with(&client, workspace, Some("seguridad"), None).expect("seguridad");
+    assert_eq!(
+        start_with(&client, workspace, Some("custom"), Some("  ".into())),
+        Err(ErrorCode::InvalidRequest),
+        "custom brings no wording of its own"
+    );
+
+    let review_id = start_with(&client, workspace, Some("security"), None).expect("security");
     let done = wait_run(&events, review_id, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
-    assert_eq!(done.preset, "seguridad");
+    assert_eq!(done.preset, "security");
 }
 
 #[test]
@@ -763,7 +769,7 @@ fn another_preset_on_the_same_head_supersedes_the_running_review() {
 
     let first = start_with(&client, workspace, None, None).expect("first");
     assert_eq!(start_with(&client, workspace, None, None), Ok(first));
-    let second = start_with(&client, workspace, Some("profundo"), None).expect("second");
+    let second = start_with(&client, workspace, Some("deep"), None).expect("second");
     assert_ne!(second, first);
     let old = wait_run(&events, first, |run| run.status.is_finished());
     assert_eq!(old.status, ReviewStatus::Cancelled);
@@ -796,11 +802,12 @@ fn get_review_config_lists_presets_rules_and_errors() {
         panic!("expected ReviewConfig");
     };
     let ids: Vec<&str> = settings.presets.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, ["standard", "deep", "security", "custom", "propio"]);
+    assert_eq!(settings.presets[2].name, "Nuestra seguridad");
     assert_eq!(
-        ids,
-        ["estandar", "seguridad", "negocio", "profundo", "propio"]
+        settings.presets[1].detail,
+        "Reads the surrounding code too — design, edge cases, cost."
     );
-    assert_eq!(settings.presets[2].name, "Nuestro negocio");
     assert_eq!(settings.default_preset, "propio");
     let rules: Vec<&str> = settings.rules.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(rules, ["docs-only", "money"]);

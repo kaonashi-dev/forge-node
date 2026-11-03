@@ -275,7 +275,7 @@ fn verdict_reviews_a_score_under_four_without_p1() {
 const SPEC_CONFIG: &str = r#"
 version = 1
 language = "es"
-default_preset = "estandar"
+default_preset = "standard"
 default_tier = "plus"
 strictness = "normal"
 max_findings = 40
@@ -531,7 +531,7 @@ fn rules_disabled_parses() {
 
 const PHASE2_CONFIG: &str = r#"
 language = "es"
-default_preset = "negocio"
+default_preset = "security"
 default_tier = "base"
 strictness = "estricto"
 max_findings = 25
@@ -555,7 +555,7 @@ paths = ["**/*.lock"]
 fn config_the_phase_two_keys_parse() {
     let (config, notes) = Config::parse(PHASE2_CONFIG);
     assert!(notes.is_empty(), "{notes:?}");
-    assert_eq!(config.default_preset, "negocio");
+    assert_eq!(config.default_preset, "security");
     assert_eq!(config.strictness, Strictness::Estricto);
     assert_eq!(config.max_findings, 25);
     assert_eq!(
@@ -569,7 +569,7 @@ fn config_the_phase_two_keys_parse() {
 #[test]
 fn config_defaults_for_the_phase_two_keys() {
     let config = Config::default();
-    assert_eq!(config.default_preset, "estandar");
+    assert_eq!(config.default_preset, "standard");
     assert_eq!(config.strictness, Strictness::Normal);
     assert_eq!(config.max_findings, 40);
     assert_eq!(
@@ -632,55 +632,82 @@ fn resolved() -> Resolved {
 fn presets_the_four_builtins() {
     let presets = builtins();
     let ids: Vec<&str> = presets.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(ids, ["estandar", "seguridad", "negocio", "profundo"]);
-    let by = |id: &str| presets.iter().find(|p| p.id == id).unwrap().clone();
+    assert_eq!(ids, ["standard", "deep", "security", "custom"]);
+    let names: Vec<&str> = presets.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(
-        (by("estandar").name, by("estandar").tier),
-        ("Estándar".into(), None)
+        names,
+        [
+            "Review the change",
+            "Deep review",
+            "Security review",
+            "Custom"
+        ],
+        "the pull-request review's recipe names"
     );
-    assert!(by("estandar").instructions.is_empty());
+    assert!(presets.iter().all(|p| !p.detail.is_empty()));
 
     let config = Config::default();
     let run = |id| resolve(&config, &[], &presets, Some(id), None, None).unwrap();
-    let seguridad = run("seguridad");
+    let standard = run("standard");
+    assert_eq!(standard.tier, Tier::Base);
+    assert_eq!(standard.categories, config.categories);
+    assert!(standard.instructions.contains("missed"));
+    let security = run("security");
     assert_eq!(
-        seguridad.categories.enabled().collect::<Vec<_>>(),
+        security.categories.enabled().collect::<Vec<_>>(),
         ["security"]
     );
-    assert!(seguridad.instructions.starts_with("Focus on security"));
-    assert_eq!(seguridad.tier, Tier::Base);
-    let negocio = run("negocio");
-    assert_eq!(negocio.tier, Tier::Plus);
-    assert_eq!(by("negocio").name, "Reglas de negocio");
+    assert!(security
+        .instructions
+        .starts_with("Review the change for security"));
+    assert_eq!(security.tier, Tier::Base);
+    let deep = run("deep");
+    assert_eq!(deep.tier, Tier::Apex);
+    assert_eq!(deep.categories.enabled().count(), 5);
+    assert!(deep.instructions.contains("callers"));
+}
+
+#[test]
+fn presets_custom_runs_only_with_instructions() {
+    let config = Config::default();
+    let presets = builtins();
+    let custom = |text| resolve(&config, &[], &presets, Some("custom"), None, text);
+    assert!(custom(None).unwrap_err().contains("custom"));
+    assert!(custom(Some("   ")).is_err());
+    let run = custom(Some("Check the refunds path.")).unwrap();
+    assert_eq!(run.instructions, "Check the refunds path.");
+    assert_eq!(run.categories, config.categories);
+
+    let (presets, errors) =
+        presets_with(&[("custom.toml", "instructions = \"Lo de siempre.\"")], &[]);
+    assert!(errors.is_empty(), "{errors:?}");
+    let run = resolve(&config, &[], &presets, Some("custom"), None, None).unwrap();
     assert_eq!(
-        negocio.categories.enabled().collect::<Vec<_>>(),
-        ["logic", "security"]
+        run.instructions, "Lo de siempre.",
+        "a repository custom preset brings its own wording"
     );
-    assert!(negocio.instructions.contains("<rules>"));
-    let profundo = run("profundo");
-    assert_eq!(profundo.tier, Tier::Apex);
-    assert_eq!(profundo.categories.enabled().count(), 5);
-    assert!(profundo.instructions.is_empty());
 }
 
 #[test]
 fn presets_a_repository_preset_replaces_a_builtin_in_place() {
     let (presets, errors) = presets_with(
         &[
-            ("seguridad.toml", "name = \"Mi seguridad\"\ntier = \"apex\""),
+            (
+                "security.toml",
+                "name = \"Mi seguridad\"\ndetail = \"Solo lo nuestro.\"\ntier = \"apex\"",
+            ),
             ("propio.toml", ""),
         ],
         &[],
     );
     assert!(errors.is_empty(), "{errors:?}");
     let ids: Vec<&str> = presets.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        ["estandar", "seguridad", "negocio", "profundo", "propio"]
-    );
-    assert_eq!(presets[1].name, "Mi seguridad");
-    assert_eq!(presets[1].tier, Some(Tier::Apex));
+    assert_eq!(ids, ["standard", "deep", "security", "custom", "propio"]);
+    assert_eq!(presets[2].name, "Mi seguridad");
+    assert_eq!(presets[2].detail, "Solo lo nuestro.");
+    assert_eq!(presets[2].tier, Some(Tier::Apex));
     assert_eq!(presets[4].name, "propio");
+    assert!(presets[4].detail.is_empty());
 }
 
 #[test]
@@ -695,9 +722,9 @@ fn presets_tier_precedence() {
             .unwrap()
             .tier
     };
-    assert_eq!(tier("estandar", None), Tier::Plus);
-    assert_eq!(tier("profundo", None), Tier::Apex);
-    assert_eq!(tier("profundo", Some(Tier::Base)), Tier::Base);
+    assert_eq!(tier("standard", None), Tier::Plus);
+    assert_eq!(tier("deep", None), Tier::Apex);
+    assert_eq!(tier("deep", Some(Tier::Base)), Tier::Base);
 }
 
 #[test]
@@ -750,7 +777,7 @@ fn presets_unknown_ids_and_bad_files() {
     let presets = builtins();
     let error = resolve(&Config::default(), &[], &presets, Some("nope"), None, None).unwrap_err();
     assert!(
-        error.contains("nope") && error.contains("seguridad"),
+        error.contains("nope") && error.contains("security"),
         "{error}"
     );
     assert!(resolve(
@@ -768,7 +795,7 @@ fn presets_unknown_ids_and_bad_files() {
         ..Config::default()
     };
     let r = resolve(&config, &[], &presets, None, None, None).unwrap();
-    assert_eq!(r.preset, "estandar");
+    assert_eq!(r.preset, "standard");
     assert_eq!(r.notes.len(), 1);
 
     let (presets, errors) = presets_with(
@@ -824,6 +851,11 @@ fn pack_carries_in_scope_rules_and_context() {
 fn prompt_reflects_the_resolved_configuration() {
     let pack = std::path::Path::new("/p/pack.md");
     let mut r = resolved();
+    assert!(
+        prompt(&r, pack).contains("## Additional instructions\n\nReview the change the way"),
+        "the default preset brings its recipe"
+    );
+    r.instructions.clear();
     let text = prompt(&r, pack);
     assert!(
         text.contains("\"category\":\"logic|security|performance\""),

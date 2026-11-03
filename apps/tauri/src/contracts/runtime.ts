@@ -182,6 +182,8 @@ export type ProviderInfo = {
      *  calls the mode. Absent means it has none, so it cannot be sent to
      *  review a pull request. */
     review?: { args: string[]; label: string } | null;
+    /** Present only for a provider that can answer a Forge Review of a workspace. */
+    structured_review?: { session_id_flag: string; add_dir_flag: string } | null;
     /** How this provider is pointed at a profile's own config directory
      *  Absent means it has no such switch, so a profile for it can
      *  only change the binary and the arguments. */

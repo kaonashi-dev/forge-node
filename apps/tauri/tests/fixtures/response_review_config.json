@@ -1,16 +1,18 @@
 {
   "ReviewConfig": {
-    "default_preset": "estandar",
+    "default_preset": "standard",
     "presets": [
       {
-        "id": "estandar",
-        "name": "Estándar",
+        "id": "standard",
+        "name": "Review the change",
+        "detail": "Correctness, missing tests, and anything that would block a merge.",
         "tier": null
       },
       {
-        "id": "negocio",
-        "name": "Reglas de negocio",
-        "tier": "plus"
+        "id": "deep",
+        "name": "Deep review",
+        "detail": "Reads the surrounding code too — design, edge cases, cost.",
+        "tier": "apex"
       }
     ],
     "rules": [

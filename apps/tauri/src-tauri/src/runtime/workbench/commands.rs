@@ -1,6 +1,6 @@
 use domain::{
     AgentProfileId, AgentProviderId, EditorFindCommand, JuvaKind, ProjectId, ReviewId, SessionId,
-    ShareRuleId, Tier, WorkspaceId,
+    ShareRuleId, WorkspaceId,
 };
 use serde::Deserialize;
 
@@ -39,11 +39,12 @@ pub enum WorkbenchCommand {
     /// Starts a Forge Review; progress arrives as `runtime:review_updated`.
     StartReview {
         workspace: WorkspaceId,
-        tier: Option<Tier>,
+        /// `None` takes `[review] provider`.
+        provider: Option<String>,
         preset: Option<String>,
         instructions: Option<String>,
     },
-    /// The workspace's `.forge/review/` presets and rules, for the preset picker.
+    /// The workspace's `.forge/review/` presets and rules, for the review picker.
     LoadReviewConfig {
         workspace: WorkspaceId,
     },

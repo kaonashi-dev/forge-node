@@ -400,7 +400,7 @@ export const ACTIONS: Action[] = [
   {
     id: "review_with_preset",
     label: "Review: With Preset…",
-    detail: "Pick a preset, a tier and extra instructions for this review",
+    detail: "Pick what to ask for and which agent reviews",
     palette: true,
   },
   {
