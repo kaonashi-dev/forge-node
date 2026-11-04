@@ -81,18 +81,21 @@ impl Cache {
     /// cost one scan rather than two — the second waits and gets the fresh
     /// result. The daemon's core lock must *not* be held across this call: the
     /// whole point is that transcript IO never blocks daemon state.
+    ///
+    /// `orphans` runs only on a rescan, because it walks the worktrees
+    /// directory.
     pub fn discover(
         &mut self,
         projects: &[Project],
         workspaces: &[Workspace],
         profiles: &[AgentProfile],
-        orphans: &[(ProjectId, PathBuf)],
+        orphans: impl FnOnce() -> Vec<(ProjectId, PathBuf)>,
     ) -> Vec<ExternalAgentSession> {
-        let fingerprint = fingerprint(projects, workspaces, profiles, orphans);
+        let fingerprint = fingerprint(projects, workspaces, profiles);
         let fresh = self.fingerprint == fingerprint
             && self.scanned_at.is_some_and(|at| at.elapsed() < CACHE_TTL);
         if !fresh {
-            self.sessions = discover(projects, workspaces, profiles, orphans);
+            self.sessions = discover(projects, workspaces, profiles, &orphans());
             self.scanned_at = Some(Instant::now());
             self.fingerprint = fingerprint;
         }
@@ -133,12 +136,7 @@ impl Cache {
     }
 }
 
-fn fingerprint(
-    projects: &[Project],
-    workspaces: &[Workspace],
-    profiles: &[AgentProfile],
-    orphans: &[(ProjectId, PathBuf)],
-) -> u64 {
+fn fingerprint(projects: &[Project], workspaces: &[Workspace], profiles: &[AgentProfile]) -> u64 {
     let mut keys: Vec<_> = projects.iter().map(|p| (p.id, &p.root_path)).collect();
     keys.sort_unstable();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -147,9 +145,6 @@ fn fingerprint(
         .iter()
         .map(|w| (w.id, w.project_id, &w.path))
         .collect();
-    keys.sort_unstable();
-    keys.hash(&mut hasher);
-    let mut keys: Vec<_> = orphans.iter().map(|(id, path)| (*id, path)).collect();
     keys.sort_unstable();
     keys.hash(&mut hasher);
     let mut keys: Vec<_> = profiles
@@ -182,9 +177,7 @@ struct Root {
 /// `workspaces` supplies the worktree directories: an agent run started inside
 /// a worktree records that path, not the project root, so without them the
 /// history of every worktree would be invisible. `orphans` are managed
-/// worktree directories still on disk under the worktrees root but without a
-/// workspace row — History still attributes them to the project so a removed
-/// or prunable checkout does not hide its runs. The returned list is unsorted
+/// worktree directories with no workspace row. The returned list is unsorted
 /// (the GUI sorts the history panel by time).
 #[must_use]
 pub fn discover(
@@ -227,9 +220,10 @@ fn discover_in(
 
     let mut out = Vec::new();
     for root in &roots {
+        let slugs = claude_slugs(&root.path);
         for account in &claude {
             let found = out.len();
-            discover_claude(&account.dir, root, &mut out);
+            discover_claude(&account.dir, root, &slugs, &mut out);
             stamp_account(&mut out[found..], account);
         }
         for account in &opencode {
@@ -335,10 +329,8 @@ fn stamp_account(found: &mut [ExternalAgentSession], account: &Account) {
 /// one exists — the workspace that owns it.
 ///
 /// Workspaces come first so a directory Forge tracks as a workspace keeps that
-/// attribution; orphans next so a managed worktree without a row is still
-/// scanned for the project; a project root with no workspace row still gets
-/// scanned, which is what covers a project added before its main workspace
-/// was created.
+/// attribution, then orphans, then project roots, which covers a project added
+/// before its main workspace was created.
 fn roots(
     projects: &[Project],
     workspaces: &[Workspace],
@@ -396,17 +388,15 @@ fn dedup_key(path: &Path) -> PathBuf {
 
 /// Scan Claude Code transcripts for one directory, in one account's store
 /// (`~/.claude`, or a profile's config directory).
-///
-/// Both the path Forge holds and its canonical form are tried: Claude writes
-/// under whichever spelling it saw as `cwd`, and a managed worktree under
-/// `~/Library/Application Support/…` is otherwise invisible next to a main
-/// checkout whose path has no spaces.
-fn discover_claude(store: &Path, root: &Root, out: &mut Vec<ExternalAgentSession>) {
+fn discover_claude(
+    store: &Path,
+    root: &Root,
+    slugs: &[String],
+    out: &mut Vec<ExternalAgentSession>,
+) {
+    let projects = store.join("projects");
     let mut seen = HashSet::new();
-    for spelling in path_spellings(&root.path) {
-        let dir = store
-            .join("projects")
-            .join(claude_slug(Path::new(&spelling)));
+    for dir in slugs.iter().flat_map(|slug| claude_dirs(&projects, slug)) {
         if !seen.insert(dir.clone()) {
             continue;
         }
@@ -418,52 +408,58 @@ fn discover_claude(store: &Path, root: &Root, out: &mut Vec<ExternalAgentSession
     }
 }
 
-/// Claude Code's project-directory slug (`sanitizePath`).
-///
-/// Every non-alphanumeric character becomes `-` — not only `/` and `.` — so
-/// `Application Support` and `my_app` land where Claude actually wrote them.
-/// Past 200 characters the name is truncated and a path hash is appended, the
-/// same rule Claude uses so a deep worktree still resolves.
+/// The slug of every spelling of `root`: Claude writes under whichever one it
+/// saw as `cwd`.
+fn claude_slugs(root: &Path) -> Vec<String> {
+    let mut slugs: Vec<String> = Vec::new();
+    for spelling in path_spellings(root) {
+        let slug = claude_slug(Path::new(&spelling));
+        if !slugs.contains(&slug) {
+            slugs.push(slug);
+        }
+    }
+    slugs
+}
+
+const CLAUDE_SLUG_MAX: usize = 200;
+
+/// Claude Code's `sanitizePath`, before truncation. Its `/[^a-zA-Z0-9]/g`
+/// replaces UTF-16 code units, so a character outside the BMP becomes two `-`;
+/// the result is ASCII, so byte length is Claude's `length`.
 fn claude_slug(root: &Path) -> String {
-    const MAX: usize = 200;
-    let path = root.to_string_lossy();
-    let encoded: String = path
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    if encoded.len() <= MAX {
-        return encoded;
+    let mut slug = String::new();
+    for c in root.to_string_lossy().chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else {
+            slug.extend(std::iter::repeat_n('-', c.len_utf16()));
+        }
     }
-    format!("{}-{}", &encoded[..MAX], claude_path_hash(&path))
+    slug
 }
 
-/// Claude's 32-bit rolling hash of the path, rendered base36.
-///
-/// Mirrors `sessionStoragePortable` (`(h << 5) - h + c | 0`, then `Math.abs`
-/// and `toString(36)`): a different arithmetic points at a different directory.
-fn claude_path_hash(path: &str) -> String {
-    let mut hash: i32 = 0;
-    for unit in path.encode_utf16() {
-        hash = hash
-            .wrapping_shl(5)
-            .wrapping_sub(hash)
-            .wrapping_add(i32::from(unit));
+/// A truncated slug is matched by its prefix, as Claude resolves it, rather
+/// than by reproducing Claude's hash suffix; another path sharing the prefix
+/// is rejected by `parse_transcript`'s `cwd` check.
+fn claude_dirs(projects: &Path, slug: &str) -> Vec<PathBuf> {
+    if slug.len() <= CLAUDE_SLUG_MAX {
+        return vec![projects.join(slug)];
     }
-    to_base36((hash as i64).unsigned_abs())
-}
-
-fn to_base36(mut value: u64) -> String {
-    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    if value == 0 {
-        return "0".into();
-    }
-    let mut out = Vec::new();
-    while value > 0 {
-        out.push(DIGITS[(value % 36) as usize]);
-        value /= 36;
-    }
-    out.reverse();
-    String::from_utf8(out).expect("base36 digits are ASCII")
+    let prefix = format!("{}-", &slug[..CLAUDE_SLUG_MAX]);
+    let Ok(entries) = std::fs::read_dir(projects) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&prefix))
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .map(|entry| entry.path())
+        .collect()
 }
 
 /// Cheap metadata scanned out of one transcript.
@@ -1366,9 +1362,11 @@ pub fn minted_transcript(provider: &str, cwd: &Path, session_id: &str) -> Option
 
 fn claude_transcript_in(store: &Path, cwd: &Path, session_id: &str) -> Option<PathBuf> {
     let file = format!("{session_id}.jsonl");
-    std::iter::once(cwd.to_path_buf())
-        .chain(std::fs::canonicalize(cwd).ok())
-        .map(|cwd| store.join("projects").join(claude_slug(&cwd)).join(&file))
+    let projects = store.join("projects");
+    claude_slugs(cwd)
+        .iter()
+        .flat_map(|slug| claude_dirs(&projects, slug))
+        .map(|dir| dir.join(&file))
         .find(|path| path.is_file())
 }
 
@@ -1755,9 +1753,11 @@ mod tests {
         let mut cache = Cache::default();
 
         // First call scans; the second reuses it without touching the clock.
-        let _ = cache.discover(std::slice::from_ref(&project), &[], &[], &[]);
+        let _ = cache.discover(std::slice::from_ref(&project), &[], &[], Vec::new);
         let first = cache.scanned_at.expect("scanned");
-        let _ = cache.discover(std::slice::from_ref(&project), &[], &[], &[]);
+        let _ = cache.discover(std::slice::from_ref(&project), &[], &[], || {
+            unreachable!("a fresh pass must not walk the worktrees directory")
+        });
         assert_eq!(cache.scanned_at, Some(first), "a fresh pass is reused");
 
         // A new worktree is a different question, not a stale answer: rescan
@@ -1767,7 +1767,7 @@ mod tests {
             std::slice::from_ref(&project),
             std::slice::from_ref(&workspace),
             &[],
-            &[],
+            Vec::new,
         );
         assert_ne!(cache.scanned_at, Some(first), "new roots force a rescan");
 
@@ -1779,7 +1779,7 @@ mod tests {
             std::slice::from_ref(&project),
             std::slice::from_ref(&workspace),
             std::slice::from_ref(&profile),
-            &[],
+            Vec::new,
         );
         assert_ne!(
             cache.scanned_at,
@@ -1794,7 +1794,7 @@ mod tests {
             std::slice::from_ref(&project),
             std::slice::from_ref(&workspace),
             std::slice::from_ref(&profile),
-            &[],
+            Vec::new,
         );
         assert_ne!(cache.scanned_at, Some(second));
     }
@@ -1805,8 +1805,8 @@ mod tests {
         let a = sample_project(&tmp.path().join("a"));
         let b = sample_project(&tmp.path().join("b"));
         assert_eq!(
-            fingerprint(&[a.clone(), b.clone()], &[], &[], &[]),
-            fingerprint(&[b, a], &[], &[], &[]),
+            fingerprint(&[a.clone(), b.clone()], &[], &[]),
+            fingerprint(&[b, a], &[], &[]),
             "projects come out of a HashMap, so the order varies run to run"
         );
     }
@@ -1986,8 +1986,6 @@ mod tests {
             claude_slug(Path::new("/Users/me/my.app")),
             "-Users-me-my-app"
         );
-        // Managed worktrees live under Application Support: a space that used
-        // to stay literal made every Forge-home checkout invisible to History.
         assert_eq!(
             claude_slug(Path::new(
                 "/Users/me/Library/Application Support/Forge/worktrees/proj/feat"
@@ -1998,19 +1996,52 @@ mod tests {
             claude_slug(Path::new("/Users/me/my_app")),
             "-Users-me-my-app"
         );
+        assert_eq!(
+            claude_slug(Path::new("/Users/me/\u{1F680}app")),
+            "-Users-me---app",
+            "an astral character is two UTF-16 units, so two dashes"
+        );
     }
 
     #[test]
-    fn slug_truncates_and_hashes_a_deep_path() {
-        let deep = format!("/{}", "a".repeat(220));
-        let encoded: String = deep
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-        assert_eq!(
-            claude_slug(Path::new(&deep)),
-            format!("{}-{}", &encoded[..200], claude_path_hash(&deep))
+    fn a_truncated_slug_is_found_by_prefix_whatever_its_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut workdir = tmp.path().to_path_buf();
+        for part in ["a", "b", "c", "d"] {
+            workdir.push(part.repeat(60));
+        }
+        std::fs::create_dir_all(&workdir).unwrap();
+        let slug = claude_slug(&workdir);
+        assert!(slug.len() > CLAUDE_SLUG_MAX);
+
+        let store = tmp.path().join(".claude");
+        let projects = store.join("projects");
+        let transcript = |dir: &str, id: &str, cwd: &Path| {
+            let dir = projects.join(format!("{}-{dir}", &slug[..CLAUDE_SLUG_MAX]));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(format!("{id}.jsonl")),
+                format!(
+                    r#"{{"type":"user","cwd":"{}","message":{{"content":"hello"}},"timestamp":"2026-01-01T00:00:00Z"}}"#,
+                    cwd.display()
+                ) + "\n",
+            )
+            .unwrap();
+        };
+        transcript("anyhash", "ses-deep", &workdir);
+        // Another path with the same 200-character prefix lands in a sibling.
+        transcript("otherhash", "ses-sibling", &workdir.join("elsewhere"));
+
+        let mut out = Vec::new();
+        discover_claude(
+            &store,
+            &root_of(&workdir),
+            &claude_slugs(&workdir),
+            &mut out,
         );
+        let ids: Vec<_> = out.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, ["ses-deep"]);
+        assert!(claude_transcript_in(&store, &workdir, "ses-deep").is_some());
     }
 
     #[test]
@@ -2033,7 +2064,7 @@ mod tests {
         .unwrap();
 
         let mut out = Vec::new();
-        discover_claude(&store, &root, &mut out);
+        discover_claude(&store, &root, &claude_slugs(&workdir), &mut out);
         assert_eq!(out.len(), 1, "a worktree under a spaced path is listed");
         assert_eq!(out[0].session_id, "ses-spaced");
     }
@@ -2287,7 +2318,7 @@ mod tests {
             profile: Some(AgentProfileId::new()),
         };
         let mut out = Vec::new();
-        discover_claude(&account.dir, &root, &mut out);
+        discover_claude(&account.dir, &root, &claude_slugs(&workdir), &mut out);
         stamp_account(&mut out, &account);
         assert_eq!(out.len(), 1, "the profile's transcript is listed");
         assert_eq!(out[0].session_id, "ses-personal");
@@ -2299,7 +2330,12 @@ mod tests {
         // ...and the default store, which holds nothing for this profile,
         // contributes nothing rather than erroring.
         let mut empty = Vec::new();
-        discover_claude(&tmp.path().join(".claude"), &root, &mut empty);
+        discover_claude(
+            &tmp.path().join(".claude"),
+            &root,
+            &claude_slugs(&workdir),
+            &mut empty,
+        );
         assert!(empty.is_empty());
     }
 
