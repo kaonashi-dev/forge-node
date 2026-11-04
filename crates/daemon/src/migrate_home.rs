@@ -322,7 +322,7 @@ fn candidates(
     for project in &projects {
         workspaces.extend(db.workspaces().list_by_project(project.id)?);
     }
-    let sessions = agents::history::discover(&projects, &workspaces, &profiles);
+    let sessions = agents::history::discover(&projects, &workspaces, &profiles, &[]);
     let mut transcripts: HashMap<WorkspaceId, usize> = HashMap::new();
     for session in sessions {
         if let Some(id) = session.workspace_id {

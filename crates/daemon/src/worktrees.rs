@@ -12,7 +12,7 @@
 //! by `RemoveWorktree` and collected by the GC once the worktree is really
 //! gone; a `Subtree` rule is policy written by the user and never collected.
 
-use domain::{IgnoreScope, ProjectId, WorkspaceId};
+use domain::{IgnoreScope, Project, ProjectId, WorkspaceId};
 use std::path::{Path, PathBuf};
 
 /// Kept short so `<repo>-<id6>/<branch>` stays readable in a prompt.
@@ -118,6 +118,40 @@ pub fn plan(listed: &[Listed], known: &[Known], rules: &[IgnoreRule]) -> Plan {
         kept_with_sessions,
         stale_rules,
     }
+}
+
+/// Directories under `project`'s managed worktree directories (legacy
+/// `<project-uuid>/` and `<repo-slug>-<id6>/`) that no rule covers, so History
+/// keeps the runs of a checkout whose row is gone. Live workspaces are included;
+/// History's roots deduplicate them.
+#[must_use]
+pub fn history_orphan_paths(
+    worktrees_root: &Path,
+    project: &Project,
+    rules: &[IgnoreRule],
+) -> Vec<PathBuf> {
+    let mut dirs = vec![
+        worktrees_root.join(project.id.to_string()),
+        worktrees_root.join(project_dir_name(&project.root_path, project.id)),
+    ];
+    dirs.dedup();
+    let mut orphans = Vec::new();
+    for project_dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&project_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if !ignores(rules, &canonical) {
+                orphans.push(path);
+            }
+        }
+    }
+    orphans
 }
 
 /// `<repo-slug>-<id6>`: the directory one project's managed worktrees live in.
@@ -318,5 +352,44 @@ mod tests {
         assert!(name.len() <= 32 + 1 + 6);
         assert!(!name.starts_with('-'));
         assert!(project_dir_name(Path::new("/"), ProjectId::new()).starts_with("worktree-"));
+    }
+
+    #[test]
+    fn history_orphans_cover_both_layouts_and_respect_ignore_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("worktrees");
+        let project_id = ProjectId::new();
+        let project = Project {
+            id: project_id,
+            project_group_id: None,
+            name: "api".into(),
+            icon: None,
+            root_path: PathBuf::from("/repo/api"),
+            git_root: Some(PathBuf::from("/repo/api")),
+            created_at: domain::Timestamp::now(),
+            last_opened_at: domain::Timestamp::now(),
+        };
+        let current_dir = root.join(project_dir_name(&project.root_path, project_id));
+        let legacy = root.join(project_id.to_string()).join("feat-legacy");
+        let current = current_dir.join("feat-current");
+        let forgotten = current_dir.join("feat-forgotten");
+        let scratch = current_dir.join("scratch");
+        for path in [&legacy, &current, &forgotten, &scratch.join("nested")] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let rule = |scope, path: &Path| IgnoreRule {
+            scope,
+            path: std::fs::canonicalize(path).unwrap(),
+            on_disk: true,
+        };
+        let rules = [
+            rule(IgnoreScope::Exact, &forgotten),
+            rule(IgnoreScope::Subtree, &scratch),
+        ];
+
+        let orphans: std::collections::HashSet<_> = history_orphan_paths(&root, &project, &rules)
+            .into_iter()
+            .collect();
+        assert_eq!(orphans, [legacy, current].into_iter().collect());
     }
 }

@@ -650,6 +650,32 @@ impl Daemon {
         rules
     }
 
+    /// Filesystem work: off the core lock, and only on a History rescan.
+    fn history_orphans(
+        &self,
+        projects: &[Project],
+        stored: &[WorktreeIgnore],
+    ) -> Vec<(ProjectId, PathBuf)> {
+        let mut orphans = Vec::new();
+        for project in projects {
+            let Some(git_root) = project.git_root.as_deref() else {
+                continue;
+            };
+            let stored: Vec<WorktreeIgnore> = stored
+                .iter()
+                .filter(|rule| rule.project_id == project.id)
+                .cloned()
+                .collect();
+            let rules = self.project_ignore_rules(&canonical_or_self(git_root), &stored);
+            orphans.extend(
+                worktrees::history_orphan_paths(self.worktrees_root_path(), project, &rules)
+                    .into_iter()
+                    .map(|path| (project.id, path)),
+            );
+        }
+        orphans
+    }
+
     /// One reconcile pass: adopt, drop, and collect tombstones.
     ///
     /// The core lock is taken twice with all `stat`/`canonicalize` work between
@@ -1394,6 +1420,7 @@ impl Daemon {
         };
         // Filesystem IO: after the core lock, through the TTL cache.
         let external_agents = if with_history {
+            let orphans = || self.history_orphans(&projects, &worktree_ignores);
             let mut cache = self
                 .external_agents
                 .lock()
@@ -1401,7 +1428,7 @@ impl Daemon {
             if self.external_agents_stale.swap(false, Ordering::AcqRel) {
                 cache.invalidate();
             }
-            cache.discover(&projects, &workspaces, &agent_profiles)
+            cache.discover(&projects, &workspaces, &agent_profiles, orphans)
         } else {
             Vec::new()
         };
@@ -3804,6 +3831,9 @@ impl Daemon {
         // Naming a folder is a request to stop seeing what is under it *now*,
         // not from the next restart on.
         self.rescan_project(project_id);
+        // History's orphan roots follow the rules, which its cache fingerprint
+        // does not cover.
+        self.external_agents_stale.store(true, Ordering::Release);
         Ok(Response::Ack)
     }
 

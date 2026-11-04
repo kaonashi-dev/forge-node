@@ -224,6 +224,7 @@ fn discovery_includes_profiles_and_keeps_same_ids_in_distinct_accounts() {
         &[project],
         std::slice::from_ref(&workspace),
         &profiles,
+        &[],
     );
     assert_eq!(sessions.len(), 4);
     assert!(sessions
