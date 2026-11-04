@@ -62,7 +62,7 @@ pub fn collect(
     let now = Timestamp::now();
     let cutoff = now.as_offset() - time::Duration::days(i64::from(window_days));
 
-    let mut daily: BTreeMap<String, u64> = BTreeMap::new();
+    let mut daily: BTreeMap<String, DayTotals> = BTreeMap::new();
     let mut providers = Vec::new();
     let mut scanned = 0_u32;
     let mut skipped = 0_u32;
@@ -88,8 +88,11 @@ pub fn collect(
                 totals.accounts[*store].sessions += 1;
             }
         }
-        for (date, tokens) in &totals.daily {
-            *daily.entry(date.clone()).or_default() += tokens;
+        for (date, totals) in &totals.daily {
+            daily
+                .entry(date.clone())
+                .or_default()
+                .add(totals.tokens, totals.cost_micros);
         }
         if let Some(analytics) = totals.finish(AgentProviderId::new(provider)) {
             providers.push(analytics);
@@ -112,6 +115,47 @@ pub fn collect(
 // Accumulation
 // ---------------------------------------------------------------------
 
+/// One day's token and cost totals while the scan runs.
+#[derive(Default)]
+struct DayTotals {
+    tokens: u64,
+    cost_micros: u64,
+}
+
+impl DayTotals {
+    fn add(&mut self, tokens: u64, cost_micros: u64) {
+        self.tokens += tokens;
+        self.cost_micros += cost_micros;
+    }
+}
+
+/// One account's running totals while its transcripts are read.
+struct AccountTotals {
+    profile_id: Option<AgentProfileId>,
+    tokens: TokenTotals,
+    sessions: u32,
+    turns: u32,
+    cost_micros: u64,
+    unpriced_turns: u32,
+    worked_secs: u64,
+    daily: BTreeMap<String, DayTotals>,
+}
+
+impl AccountTotals {
+    fn finish(self) -> AccountAnalytics {
+        AccountAnalytics {
+            profile_id: self.profile_id,
+            tokens: self.tokens,
+            sessions: self.sessions,
+            turns: self.turns,
+            cost_micros: self.cost_micros,
+            unpriced_turns: self.unpriced_turns,
+            worked_secs: self.worked_secs,
+            daily: daily_series(self.daily),
+        }
+    }
+}
+
 /// One provider's running totals while its transcripts are read.
 struct Totals {
     tokens: TokenTotals,
@@ -128,9 +172,9 @@ struct Totals {
     /// earlier records into the new transcript, so without this every resumed
     /// conversation would be billed twice.
     seen: HashSet<u64>,
-    daily: BTreeMap<String, u64>,
+    daily: BTreeMap<String, DayTotals>,
     /// One entry per [`Store`], indexed like [`Transcripts::stores`].
-    accounts: Vec<AccountAnalytics>,
+    accounts: Vec<AccountTotals>,
     /// The account the transcript being read belongs to.
     account: usize,
 }
@@ -151,13 +195,15 @@ impl Totals {
             daily: BTreeMap::new(),
             accounts: stores
                 .iter()
-                .map(|store| AccountAnalytics {
+                .map(|store| AccountTotals {
                     profile_id: store.profile_id,
                     tokens: TokenTotals::default(),
                     sessions: 0,
                     turns: 0,
                     cost_micros: 0,
                     unpriced_turns: 0,
+                    worked_secs: 0,
+                    daily: BTreeMap::new(),
                 })
                 .collect(),
             account: 0,
@@ -171,24 +217,32 @@ impl Totals {
         account.tokens.add(&turn.tokens);
         self.turns += 1;
         account.turns += 1;
-        match turn.model.as_deref().and_then(price_for) {
+        let cost = match turn.model.as_deref().and_then(price_for) {
             Some(price) => {
                 let cost = turn.cost_micros(price);
                 self.cost_micros += cost;
                 account.cost_micros += cost;
+                cost
             }
             None => {
                 self.unpriced_turns += 1;
                 account.unpriced_turns += 1;
+                0
             }
-        }
+        };
         if let Some(model) = &turn.model {
             *self.per_model.entry(model.clone()).or_default() += turn.tokens.total();
         }
         if let Some(at) = at {
             self.first = Some(self.first.map_or(at, |first| first.min(at)));
             self.last = Some(self.last.map_or(at, |last| last.max(at)));
-            *self.daily.entry(date_key(at)).or_default() += turn.tokens.total();
+            let date = date_key(at);
+            let tokens = turn.tokens.total();
+            self.daily
+                .entry(date.clone())
+                .or_default()
+                .add(tokens, cost);
+            account.daily.entry(date).or_default().add(tokens, cost);
         }
     }
 
@@ -196,7 +250,9 @@ impl Totals {
     fn worked(&mut self, span: Option<(Timestamp, Timestamp)>) {
         if let Some((first, last)) = span {
             let secs = (last.as_offset() - first.as_offset()).whole_seconds();
-            self.worked_secs += u64::try_from(secs).unwrap_or(0);
+            let secs = u64::try_from(secs).unwrap_or(0);
+            self.worked_secs += secs;
+            self.accounts[self.account].worked_secs += secs;
         }
     }
 
@@ -220,6 +276,7 @@ impl Totals {
             .accounts
             .into_iter()
             .filter(|account| account.turns > 0)
+            .map(AccountTotals::finish)
             .collect();
         accounts.sort_by(|a, b| b.tokens.total().cmp(&a.tokens.total()));
         Some(ProviderAnalytics {
@@ -239,10 +296,14 @@ impl Totals {
     }
 }
 
-fn daily_series(daily: BTreeMap<String, u64>) -> Vec<DailyUsage> {
+fn daily_series(daily: BTreeMap<String, DayTotals>) -> Vec<DailyUsage> {
     daily
         .into_iter()
-        .map(|(date, tokens)| DailyUsage { date, tokens })
+        .map(|(date, totals)| DailyUsage {
+            date,
+            tokens: totals.tokens,
+            cost_micros: totals.cost_micros,
+        })
         .collect()
 }
 
@@ -1007,6 +1068,18 @@ mod tests {
             split,
             [(Some(profiles[0].id), 1_000, 1), (None, 100, 1)],
             "each account keeps its own share, busiest first"
+        );
+        assert_eq!(
+            claude.accounts[0].daily,
+            vec![DailyUsage {
+                date: claude.accounts[0].daily[0].date.clone(),
+                tokens: 1_500,
+                cost_micros: claude.accounts[0].cost_micros,
+            }]
+        );
+        assert_eq!(
+            claude.accounts[0].worked_secs, 0,
+            "a one-turn transcript spans no measurable time"
         );
     }
 

@@ -406,15 +406,23 @@ mod tests {
                     turns: 2,
                     cost_micros: 42,
                     unpriced_turns: 0,
+                    worked_secs: 90,
+                    daily: vec![domain::DailyUsage {
+                        date: "2026-08-26".to_owned(),
+                        tokens: 10,
+                        cost_micros: 42,
+                    }],
                 }],
                 daily: vec![domain::DailyUsage {
                     date: "2026-08-26".to_owned(),
                     tokens: 10,
+                    cost_micros: 42,
                 }],
             }],
             daily: vec![domain::DailyUsage {
                 date: "2026-08-26".to_owned(),
                 tokens: 10,
+                cost_micros: 42,
             }],
             window_days: 30,
             scanned: 1,
