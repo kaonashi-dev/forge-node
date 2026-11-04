@@ -342,11 +342,16 @@ export type AccountAnalytics = {
   turns: number;
   cost_micros: number;
   unpriced_turns: number;
+  /** Absent from a daemon older than the per-account daily split. */
+  worked_secs?: number;
+  daily?: DailyUsage[];
 };
 
 export type DailyUsage = {
   date: string;
   tokens: number;
+  /** Absent from a daemon older than cost split by day. */
+  cost_micros?: number;
 };
 
 export type UsageAnalytics = {

@@ -3,6 +3,7 @@ import {
   providerName,
   type AgentProfile,
   type ProviderInfo,
+  type ProviderUsage,
 } from "../../contracts/runtime";
 import type {
   AccountAnalytics,
@@ -11,7 +12,12 @@ import type {
   TokenTotals,
   UsageAnalytics,
 } from "../../contracts/workbench";
-import { tokenTotal } from "../../contracts/workbench";
+import {
+  analyticsSessions,
+  analyticsTurns,
+  analyticsWorkedSecs,
+  tokenTotal,
+} from "../../contracts/workbench";
 
 /** One dollar, in the micro-dollar unit costs are counted in. */
 export const MICROS_PER_USD = 1_000_000;
@@ -41,23 +47,49 @@ export function statsProviders(
   return rows;
 }
 
+export type StatsMetric = "tokens" | "cost";
+
 /**
- * The daily series the bars draw: every provider by default, or one.
- *
- * A provider absent from the scan draws an empty window rather than falling
- * back to the total, which would put another agent's tokens under its name.
+ * What the page is looking at. `profileId` is absent for a whole provider and
+ * `null` for that provider's unnamed default account.
  */
-export function dailySeries(analytics: UsageAnalytics, provider: string | null): DailyUsage[] {
-  if (provider === null) return analytics.daily;
-  return analytics.providers.find((item) => item.provider_id === provider)?.daily ?? [];
+export type StatsScope = {
+  provider: string | null;
+  profileId?: string | null;
+};
+
+export function accountScopeKey(provider: string, profileId: string | null): string {
+  return `account:${provider}:${profileId ?? "default"}`;
+}
+
+export function scopeKey(scope: StatsScope): string {
+  if (scope.provider === null) return "all";
+  if (scope.profileId === undefined) return `provider:${scope.provider}`;
+  return accountScopeKey(scope.provider, scope.profileId);
+}
+
+export function parseScopeKey(key: string): StatsScope {
+  if (key === "all") return { provider: null };
+  const [kind, provider, profile] = key.split(":");
+  if (!provider) return { provider: null };
+  if (kind === "provider") return { provider };
+  if (kind === "account") {
+    return { provider, profileId: profile === "default" ? null : (profile ?? null) };
+  }
+  return { provider: null };
+}
+
+export function accountName(profileId: string | null, profiles: AgentProfile[]): string {
+  if (profileId === null) return "Default account";
+  return profiles.find((profile) => profile.id === profileId)?.name ?? "Removed account";
 }
 
 export type StatsAccount = {
   key: string;
   name: string;
   analytics: AccountAnalytics;
-  /** Whole percent of the provider's tokens. */
-  share: number;
+  /** Whole percent of the provider's tokens, with `<1%` kept visible. */
+  share: string;
 };
 
 /**
@@ -73,16 +105,47 @@ export function statsAccounts(
     return [];
   }
   const total = tokenTotal(provider.tokens);
-  return accounts.map((account) => {
-    const profile = account.profile_id
-      ? profiles.find((item) => item.id === account.profile_id)
-      : undefined;
-    return {
-      key: account.profile_id ?? "default",
-      name: account.profile_id ? (profile?.name ?? "Removed profile") : "Default",
-      analytics: account,
-      share: total === 0 ? 0 : Math.round((tokenTotal(account.tokens) * 100) / total),
-    };
+  return accounts.map((account) => ({
+    key: accountScopeKey(provider.provider_id, account.profile_id),
+    name: accountName(account.profile_id, profiles),
+    analytics: account,
+    share: percentLabel(tokenTotal(account.tokens), total),
+  }));
+}
+
+export type AccountScope = {
+  key: string;
+  providerId: string;
+  providerName: string;
+  profileId: string | null;
+  name: string;
+  tokens: number;
+  costMicros: number;
+  sessions: number;
+  turns: number;
+  workedSecs: number;
+};
+
+/** Every account a provider reported, ready to become a scope filter entry. */
+export function accountScopes(
+  providers: StatsProvider[],
+  profiles: AgentProfile[],
+): AccountScope[] {
+  return providers.flatMap((provider) => {
+    const analytics = provider.analytics;
+    if (!analytics) return [];
+    return (analytics.accounts ?? []).map((account) => ({
+      key: accountScopeKey(provider.id, account.profile_id),
+      providerId: provider.id,
+      providerName: provider.name,
+      profileId: account.profile_id,
+      name: accountName(account.profile_id, profiles),
+      tokens: tokenTotal(account.tokens),
+      costMicros: account.cost_micros,
+      sessions: account.sessions,
+      turns: account.turns,
+      workedSecs: account.worked_secs ?? 0,
+    }));
   });
 }
 
@@ -97,16 +160,113 @@ export type Overview = {
   cachePercent: number;
 };
 
-export function overview(analytics: UsageAnalytics): Overview {
-  const tokens = totals(analytics);
+export function cachePercent(tokens: TokenTotals): number {
   const total = tokenTotal(tokens);
   const cached = tokens.cache_read + tokens.cache_write;
+  return total === 0 ? 0 : Math.min(100, Math.round((cached * 100) / total));
+}
+
+export function overview(analytics: UsageAnalytics): Overview {
+  const tokens = totals(analytics);
   return {
-    tokens: total,
-    costMicros: analytics.providers.reduce((sum, p) => sum + p.cost_micros, 0),
-    unpricedTurns: analytics.providers.reduce((sum, p) => sum + p.unpriced_turns, 0),
+    tokens: tokenTotal(tokens),
+    costMicros: analytics.providers.reduce((sum, provider) => sum + provider.cost_micros, 0),
+    unpricedTurns: analytics.providers.reduce((sum, provider) => sum + provider.unpriced_turns, 0),
     activeDays: analytics.daily.length,
-    cachePercent: total === 0 ? 0 : Math.min(100, Math.round((cached * 100) / total)),
+    cachePercent: cachePercent(tokens),
+  };
+}
+
+export type ScopeSummary = Overview & {
+  label: string;
+  tokenTotals: TokenTotals;
+  sessions: number;
+  turns: number;
+  workedSecs: number;
+  daily: DailyUsage[];
+};
+
+/** The same reading as {@link overview}, narrowed to one provider or account. */
+export function scopedSummary(
+  analytics: UsageAnalytics,
+  providers: StatsProvider[],
+  scope: StatsScope,
+  profiles: AgentProfile[],
+): ScopeSummary {
+  if (scope.provider === null) {
+    const tokenTotals = totals(analytics);
+    return {
+      label: "All agents",
+      tokenTotals,
+      tokens: tokenTotal(tokenTotals),
+      costMicros: analytics.providers.reduce((sum, provider) => sum + provider.cost_micros, 0),
+      unpricedTurns: analytics.providers.reduce(
+        (sum, provider) => sum + provider.unpriced_turns,
+        0,
+      ),
+      sessions: analyticsSessions(analytics),
+      turns: analyticsTurns(analytics),
+      workedSecs: analyticsWorkedSecs(analytics),
+      activeDays: analytics.daily.length,
+      cachePercent: cachePercent(tokenTotals),
+      daily: analytics.daily,
+    };
+  }
+
+  const provider = providers.find((row) => row.id === scope.provider);
+  const row = provider?.analytics;
+  if (!provider || !row) return emptySummary("Unknown provider");
+
+  if (scope.profileId === undefined) {
+    return {
+      label: provider.name,
+      tokenTotals: row.tokens,
+      tokens: tokenTotal(row.tokens),
+      costMicros: row.cost_micros,
+      unpricedTurns: row.unpriced_turns,
+      sessions: row.sessions,
+      turns: row.turns,
+      workedSecs: row.worked_secs,
+      activeDays: (row.daily ?? []).length,
+      cachePercent: cachePercent(row.tokens),
+      daily: row.daily ?? [],
+    };
+  }
+
+  const account = (row.accounts ?? []).find(
+    (candidate) => candidate.profile_id === scope.profileId,
+  );
+  if (!account) return emptySummary(`${provider.name} · Unknown account`);
+  const daily = account.daily ?? [];
+  return {
+    label: `${provider.name} · ${accountName(account.profile_id, profiles)}`,
+    tokenTotals: account.tokens,
+    tokens: tokenTotal(account.tokens),
+    costMicros: account.cost_micros,
+    unpricedTurns: account.unpriced_turns,
+    sessions: account.sessions,
+    turns: account.turns,
+    workedSecs: account.worked_secs ?? 0,
+    activeDays: daily.length,
+    cachePercent: cachePercent(account.tokens),
+    daily,
+  };
+}
+
+function emptySummary(label: string): ScopeSummary {
+  const tokenTotals = { input: 0, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 };
+  return {
+    label,
+    tokenTotals,
+    tokens: 0,
+    costMicros: 0,
+    unpricedTurns: 0,
+    sessions: 0,
+    turns: 0,
+    workedSecs: 0,
+    activeDays: 0,
+    cachePercent: 0,
+    daily: [],
   };
 }
 
@@ -138,50 +298,200 @@ export function trackingSince(analytics: UsageAnalytics): string | null {
   return stamps[0] ?? null;
 }
 
-export type HeatCell = {
+export type DailyCell = {
   date: string;
   tokens: number;
-  /** 0 for a silent day, 1–4 for quarters of the busiest one. */
-  level: 0 | 1 | 2 | 3 | 4;
+  costMicros: number;
 };
 
 /**
- * The daily series as a calendar, gaps filled.
+ * The window as one cell per day, gaps filled.
  *
  * The daemon sends activity-only days ("a day with no activity is absent
- * rather than zero"), so the empty days are synthesized here — a calendar with
- * the quiet days missing is not a calendar, it is a list that looks like one.
- *
- * Levels are quarters of the busiest day rather than absolute thresholds: what
- * a heavy day costs differs by an order of magnitude between an agent that
- * reads a repository and one that answers a question.
+ * rather than zero"), so the empty days are synthesized here — a chart with
+ * the quiet days missing is not a chart, it is a list that looks like one.
  */
-export function heatmap(daily: DailyUsage[], windowDays: number, today: Date): HeatCell[] {
-  const byDate = new Map(daily.map((day) => [day.date, day.tokens]));
-  const busiest = daily.reduce((max, day) => Math.max(max, day.tokens), 0);
+export function dailyCells(daily: DailyUsage[], windowDays: number, today: Date): DailyCell[] {
+  const byDate = new Map(daily.map((day) => [day.date, day]));
   const days = Math.max(1, Math.min(windowDays, 366));
 
-  const cells: HeatCell[] = [];
+  const cells: DailyCell[] = [];
   for (let back = days - 1; back >= 0; back -= 1) {
     const date = isoDate(new Date(today.getTime() - back * 86_400_000));
-    const tokens = byDate.get(date) ?? 0;
-    cells.push({ date, tokens, level: level(tokens, busiest) });
+    const day = byDate.get(date);
+    cells.push({
+      date,
+      tokens: day?.tokens ?? 0,
+      costMicros: day?.cost_micros ?? 0,
+    });
   }
   return cells;
 }
 
-function level(tokens: number, busiest: number): HeatCell["level"] {
-  if (tokens === 0 || busiest === 0) return 0;
-  const quarter = Math.ceil((tokens / busiest) * 4);
-  return Math.min(4, Math.max(1, quarter)) as 1 | 2 | 3 | 4;
+export type ChartSeries = {
+  key: string;
+  name: string;
+  providerId: string;
+  colorSlot: number;
+  points: DailyCell[];
+  tokens: number;
+  costMicros: number;
+};
+
+export type StatsChart = {
+  dates: string[];
+  series: ChartSeries[];
+};
+
+/**
+ * The chart's series for the selected scope and metric.
+ *
+ * One series per provider by default. A provider or account scope narrows it
+ * to a single line rather than falling back to the total, which would put
+ * another agent's tokens under the selected name.
+ */
+export function statsChart(
+  providers: StatsProvider[],
+  profiles: AgentProfile[],
+  scope: StatsScope,
+  metric: StatsMetric,
+  windowDays: number,
+  today: Date,
+): StatsChart {
+  const dates = dailyCells([], windowDays, today).map((cell) => cell.date);
+  const slots = providerColorSlots(providers.map((provider) => provider.id));
+
+  const rows: {
+    key: string;
+    name: string;
+    providerId: string;
+    tokens: TokenTotals;
+    costMicros: number;
+    daily: DailyUsage[];
+  }[] = [];
+  if (scope.provider === null) {
+    for (const provider of providers) {
+      if (!provider.analytics) continue;
+      rows.push({
+        key: provider.id,
+        name: provider.name,
+        providerId: provider.id,
+        tokens: provider.analytics.tokens,
+        costMicros: provider.analytics.cost_micros,
+        daily: provider.analytics.daily ?? [],
+      });
+    }
+  } else {
+    const provider = providers.find((row) => row.id === scope.provider);
+    if (!provider?.analytics) return { dates, series: [] };
+    if (scope.profileId === undefined) {
+      rows.push({
+        key: provider.id,
+        name: provider.name,
+        providerId: provider.id,
+        tokens: provider.analytics.tokens,
+        costMicros: provider.analytics.cost_micros,
+        daily: provider.analytics.daily ?? [],
+      });
+    } else {
+      const account = (provider.analytics.accounts ?? []).find(
+        (candidate) => candidate.profile_id === scope.profileId,
+      );
+      rows.push({
+        key: accountScopeKey(provider.id, scope.profileId),
+        name: `${provider.name} · ${accountName(scope.profileId, profiles)}`,
+        providerId: provider.id,
+        tokens: account?.tokens ?? {
+          input: 0,
+          output: 0,
+          cache_write: 0,
+          cache_read: 0,
+          reasoning: 0,
+        },
+        costMicros: account?.cost_micros ?? 0,
+        daily: account?.daily ?? [],
+      });
+    }
+  }
+
+  const series = rows
+    .map((row) => {
+      return {
+        key: row.key,
+        name: row.name,
+        providerId: row.providerId,
+        colorSlot: slots.get(row.providerId) ?? 0,
+        points: dailyCells(row.daily, windowDays, today),
+        tokens: tokenTotal(row.tokens),
+        costMicros: row.costMicros,
+      };
+    })
+    .filter((row) => chartValue(row, metric) > 0)
+    .sort((left, right) => chartValue(right, metric) - chartValue(left, metric));
+
+  return { dates, series };
 }
 
-/** The day that produced the most tokens, or `null` when nothing did. */
-export function busiestDay(daily: DailyUsage[]): DailyUsage | null {
-  return daily.reduce<DailyUsage | null>(
-    (best, day) => (day.tokens > 0 && (!best || day.tokens > best.tokens) ? day : best),
-    null,
-  );
+/** A series' headline figure under the selected metric. */
+export function chartValue(series: ChartSeries, metric: StatsMetric): number {
+  return metric === "cost" ? series.costMicros : series.tokens;
+}
+
+/** The day the selected metric peaked across every visible series. */
+export function chartPeak(
+  chart: StatsChart,
+  metric: StatsMetric,
+): { date: string; value: number } | null {
+  let best: { date: string; value: number } | null = null;
+  for (const [index, date] of chart.dates.entries()) {
+    const value = chart.series.reduce(
+      (sum, series) => sum + pointValue(series.points[index], metric),
+      0,
+    );
+    if (value > 0 && (!best || value > best.value)) best = { date, value };
+  }
+  return best;
+}
+
+export function pointValue(point: DailyCell | undefined, metric: StatsMetric): number {
+  if (!point) return 0;
+  return metric === "cost" ? point.costMicros : point.tokens;
+}
+
+/** A stable palette slot per provider, so a metric switch does not recolor lines. */
+export function providerColorSlots(ids: string[]): Map<string, number> {
+  const unique = [...new Set(ids)].sort();
+  return new Map(unique.map((id, index) => [id, index]));
+}
+
+const SERIES_COLORS = [
+  "var(--forge-ansi-5)",
+  "var(--forge-ansi-4)",
+  "var(--forge-ansi-1)",
+  "var(--forge-ansi-2)",
+  "var(--forge-ansi-3)",
+  "var(--forge-ansi-6)",
+  "var(--forge-ansi-13)",
+  "var(--forge-ansi-14)",
+] as const;
+
+export function seriesColor(slot: number): string {
+  return SERIES_COLORS[slot % SERIES_COLORS.length] ?? SERIES_COLORS[0];
+}
+
+/** A "nice" zero-based scale for the chart's y-axis. */
+export function chartScale(peak: number, count = 4): { max: number; ticks: number[] } {
+  if (!(peak > 0)) return { max: 0, ticks: [0] };
+
+  const rawStep = peak / count;
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / magnitude;
+  const step = (normalized > 5 ? 10 : normalized > 2 ? 5 : normalized > 1 ? 2 : 1) * magnitude;
+
+  const max = Math.ceil(peak / step) * step;
+  const ticks: number[] = [];
+  for (let value = 0; value <= max + step * 1e-6; value += step) ticks.push(value);
+  return { max, ticks };
 }
 
 export type MixSegment = {
@@ -220,6 +530,75 @@ export function providerShare(provider: ProviderAnalytics, analytics: UsageAnaly
   return Math.round((tokenTotal(provider.tokens) * 100) / total);
 }
 
+/** The same share for the badge, where a real sliver must not read as 0%. */
+export function providerShareLabel(provider: ProviderAnalytics, analytics: UsageAnalytics): string {
+  return percentLabel(tokenTotal(provider.tokens), tokenTotal(totals(analytics)));
+}
+
+export type LimitGroup = {
+  id: string;
+  name: string;
+  readings: ProviderUsage[];
+};
+
+/** One group per provider, with every account reading kept in order. */
+export function limitGroups(readings: ProviderUsage[], providers: ProviderInfo[]): LimitGroup[] {
+  const names = new Map(
+    providers.map((provider) => [providerId(provider), providerName(provider)]),
+  );
+  const groups = new Map<string, LimitGroup>();
+  for (const reading of readings) {
+    const id = reading.provider_id;
+    const group = groups.get(id) ?? {
+      id,
+      name: names.get(id) ?? id,
+      readings: [],
+    };
+    group.readings.push(reading);
+    groups.set(id, group);
+  }
+  return [...groups.values()];
+}
+
+export type LimitPace = "under" | "on" | "ahead";
+
+/**
+ * The window's expected duration, from the label the provider gave it.
+ *
+ * Only a label we recognize gets a pace mark: inventing seven days for an
+ * unknown window would draw a marker that is not measuring anything.
+ */
+export function windowDurationSecs(label: string): number | null {
+  const normalized = label.trim().toLowerCase();
+  const hours = /^(\d+(?:\.\d+)?)h$/.exec(normalized);
+  if (hours) return Number(hours[1]) * 3600;
+  const days = /^(\d+(?:\.\d+)?)d$/.exec(normalized);
+  if (days) return Number(days[1]) * 86_400;
+  if (normalized === "day" || normalized === "daily") return 86_400;
+  if (normalized === "week" || normalized === "weekly") return 7 * 86_400;
+  if (normalized === "month" || normalized === "monthly") return 30 * 86_400;
+  return null;
+}
+
+/** How far through a window we are, or `null` when its start cannot be read. */
+export function elapsedPercent(resetsAt: string | null, window: string, now: Date): number | null {
+  const duration = windowDurationSecs(window);
+  if (duration === null || !resetsAt) return null;
+  const reset = new Date(resetsAt).getTime();
+  if (Number.isNaN(reset)) return null;
+  const started = reset - duration * 1000;
+  const elapsed = (now.getTime() - started) / (duration * 1000);
+  return Math.round(Math.min(1, Math.max(0, elapsed)) * 100);
+}
+
+/** Spending faster, even, or slower than the window elapses. */
+export function paceOf(usedPercent: number, elapsed: number | null): LimitPace | null {
+  if (elapsed === null) return null;
+  if (usedPercent >= elapsed + 5) return "ahead";
+  if (usedPercent <= elapsed - 5) return "under";
+  return "on";
+}
+
 // ------------------------------------------------------------- formatting ---
 
 /** `2.2B`, `21.2M`, `694.7k`, `812`. */
@@ -236,6 +615,16 @@ export function money(micros: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+/** A compact money label for axes and dense figures. */
+export function compactMoney(micros: number): string {
+  const usd = micros / MICROS_PER_USD;
+  if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(1)}M`;
+  if (usd >= 1000) return `$${(usd / 1000).toFixed(1)}k`;
+  if (usd >= 10) return `$${Math.round(usd)}`;
+  if (usd >= 1) return `$${usd.toFixed(1)}`;
+  return `$${usd.toFixed(2)}`;
 }
 
 /** `12,309`. */
@@ -279,7 +668,7 @@ export function dayLabel(stamp: string | null): string {
   return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-/** `Aug 30` — the short form the heatmap's ends and its best-day badge use. */
+/** `Aug 30` — the short form the chart's ends and its best-day badge use. */
 export function shortDay(date: string): string {
   const parsed = new Date(`${date}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime())) return date;

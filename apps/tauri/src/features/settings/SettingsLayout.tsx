@@ -12,19 +12,22 @@ export type PageProps = {
   title: string;
   /** One line on what the section is for. Not a paragraph. */
   summary?: string;
+  /** Lets a dashboard use the width a column of cards cannot. */
+  wide?: boolean;
   children: JSX.Element;
 };
 
 export function Page(props: PageProps) {
+  const wide = () => (props.wide ? "settings-wide" : "");
   return (
     <>
-      <header class="settings-page-head">
+      <header class={`settings-page-head ${wide()}`}>
         <h2 class="forge-section-title">{props.title}</h2>
         <Show when={props.summary}>
           {(text) => <p class="forge-body settings-page-summary">{text()}</p>}
         </Show>
       </header>
-      <div class="settings-groups">{props.children}</div>
+      <div class={`settings-groups ${wide()}`}>{props.children}</div>
     </>
   );
 }

@@ -554,7 +554,9 @@ what "reveal the transcript" has to point at.
 says what was actually spent. It reads the same transcript stores discovery
 walks, but for the one thing discovery ignores — the usage record on every
 billed turn — and aggregates them into a `domain::UsageAnalytics` for the
-settings screen's Stats & usage page.
+settings screen's Stats & usage page. Each provider keeps its own daily series
+and per-account split; every daily bucket carries tokens *and* estimated cost,
+so the page can switch its chart between the two readings without rescanning.
 
 | Provider | Read from it |
 |----------|--------------|

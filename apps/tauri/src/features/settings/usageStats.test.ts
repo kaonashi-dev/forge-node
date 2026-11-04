@@ -1,27 +1,49 @@
 import { describe, expect, it } from "vitest";
-import type { AgentProfile } from "../../contracts/runtime";
+import type { AgentProfile, ProviderInfo, ProviderUsage } from "../../contracts/runtime";
 import type {
   AccountAnalytics,
   ProviderAnalytics,
   UsageAnalytics,
 } from "../../contracts/workbench";
 import {
-  busiestDay,
+  accountName,
+  accountScopes,
+  cachePercent,
+  chartPeak,
+  chartScale,
+  compactMoney,
   compactTokens,
-  dailySeries,
+  dailyCells,
   dayLabel,
-  heatmap,
+  elapsedPercent,
+  limitGroups,
   money,
   overview,
+  paceOf,
+  parseScopeKey,
   percentLabel,
   providerShare,
+  providerShareLabel,
   resetsIn,
+  scopeKey,
+  scopedSummary,
   statsAccounts,
+  statsChart,
+  statsProviders,
   tokenMix,
   totals,
   trackingSince,
+  windowDurationSecs,
   workedLabel,
 } from "./usageStats";
+
+const CLAUDE = {
+  descriptor: { id: "claude", display_name: "Claude Code" },
+} satisfies ProviderInfo;
+
+const CODEX = {
+  descriptor: { id: "codex", display_name: "Codex CLI" },
+} satisfies ProviderInfo;
 
 function provider(partial: Partial<ProviderAnalytics> = {}): ProviderAnalytics {
   return {
@@ -50,6 +72,31 @@ function analytics(partial: Partial<UsageAnalytics> = {}): UsageAnalytics {
     ...partial,
   };
 }
+
+function account(profile_id: string | null, input: number): AccountAnalytics {
+  return {
+    profile_id,
+    tokens: { input, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
+    sessions: 1,
+    turns: 2,
+    cost_micros: 0,
+    unpriced_turns: 0,
+  };
+}
+
+function profile(id: string, name: string): AgentProfile {
+  return {
+    id,
+    provider_id: "claude",
+    name,
+    executable: null,
+    config_dir: `.claude-${id}`,
+    args: [],
+    created_at: "2026-08-01T00:00:00Z",
+  };
+}
+
+const TODAY = new Date("2026-08-30T12:00:00Z");
 
 describe("overview", () => {
   it("counts billed tokens and leaves reasoning out of the total", () => {
@@ -90,6 +137,23 @@ describe("overview", () => {
   });
 });
 
+describe("cachePercent", () => {
+  it("counts both halves of the cache and never exceeds 100", () => {
+    expect(
+      cachePercent({ input: 10, output: 10, cache_write: 10, cache_read: 70, reasoning: 0 }),
+    ).toBe(80);
+    expect(
+      cachePercent({ input: 0, output: 0, cache_write: 80, cache_read: 20, reasoning: 0 }),
+    ).toBe(100);
+  });
+
+  it("is 0 rather than NaN with nothing counted", () => {
+    expect(cachePercent({ input: 0, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 })).toBe(
+      0,
+    );
+  });
+});
+
 describe("totals", () => {
   it("adds every provider's five counters", () => {
     const summed = totals(analytics({ providers: [provider(), provider()] }));
@@ -121,59 +185,191 @@ describe("trackingSince", () => {
   });
 });
 
-describe("heatmap", () => {
-  const today = new Date("2026-08-30T12:00:00Z");
-
+describe("dailyCells", () => {
   it("fills the days the daemon left out, because absent means zero", () => {
-    const cells = heatmap([{ date: "2026-08-30", tokens: 100 }], 3, today);
+    const cells = dailyCells([{ date: "2026-08-30", tokens: 100, cost_micros: 250 }], 3, TODAY);
     expect(cells.map((cell) => cell.date)).toEqual(["2026-08-28", "2026-08-29", "2026-08-30"]);
     expect(cells.map((cell) => cell.tokens)).toEqual([0, 0, 100]);
-  });
-
-  it("levels are quarters of the busiest day, not absolute counts", () => {
-    const cells = heatmap(
-      [
-        { date: "2026-08-28", tokens: 100 },
-        { date: "2026-08-29", tokens: 50 },
-        { date: "2026-08-30", tokens: 1 },
-      ],
-      3,
-      today,
-    );
-    expect(cells.map((cell) => cell.level)).toEqual([4, 2, 1]);
-  });
-
-  it("gives a silent day level 0 and a busy day never less than 1", () => {
-    const cells = heatmap(
-      [
-        { date: "2026-08-30", tokens: 1_000_000 },
-        { date: "2026-08-29", tokens: 1 },
-      ],
-      2,
-      today,
-    );
-    expect(cells.map((cell) => cell.level)).toEqual([1, 4]);
+    expect(cells.map((cell) => cell.costMicros)).toEqual([0, 0, 250]);
   });
 
   it("is all zeroes rather than empty when nothing ran", () => {
-    const cells = heatmap([], 5, today);
+    const cells = dailyCells([], 5, TODAY);
     expect(cells).toHaveLength(5);
-    expect(cells.every((cell) => cell.level === 0)).toBe(true);
+    expect(cells.every((cell) => cell.tokens === 0 && cell.costMicros === 0)).toBe(true);
   });
 });
 
-describe("busiestDay", () => {
-  it("names the best day", () => {
-    expect(
-      busiestDay([
-        { date: "2026-08-28", tokens: 10 },
-        { date: "2026-08-30", tokens: 99 },
-      ]),
-    ).toEqual({ date: "2026-08-30", tokens: 99 });
+describe("scopedSummary", () => {
+  const providers = (data: UsageAnalytics) => statsProviders(data, [CLAUDE, CODEX]);
+
+  it("reads every provider for the all-agents scope", () => {
+    const data = analytics({
+      providers: [provider(), provider({ provider_id: "codex", cost_micros: 500_000 })],
+      daily: [{ date: "2026-08-30", tokens: 100 }],
+    });
+    const summary = scopedSummary(data, providers(data), { provider: null }, []);
+    expect(summary.label).toBe("All agents");
+    expect(summary.tokens).toBe(2000);
+    expect(summary.costMicros).toBe(2_000_000);
+    expect(summary.sessions).toBe(8);
+    expect(summary.activeDays).toBe(1);
   });
 
-  it("is null when every day is silent", () => {
-    expect(busiestDay([{ date: "2026-08-28", tokens: 0 }])).toBeNull();
+  it("narrows to one provider without falling back to the total", () => {
+    const data = analytics({ providers: [provider(), provider({ provider_id: "codex" })] });
+    const summary = scopedSummary(data, providers(data), { provider: "codex" }, []);
+    expect(summary.label).toBe("Codex CLI");
+    expect(summary.tokens).toBe(1000);
+    expect(summary.costMicros).toBe(1_500_000);
+  });
+
+  it("names an account and reads its own daily series", () => {
+    const work = profile("work", "Work");
+    const data = analytics({
+      providers: [
+        provider({
+          accounts: [
+            {
+              ...account("work", 900),
+              daily: [{ date: "2026-08-30", tokens: 900, cost_micros: 900_000 }],
+              worked_secs: 120,
+            },
+            account(null, 100),
+          ],
+        }),
+      ],
+    });
+    const summary = scopedSummary(
+      data,
+      providers(data),
+      { provider: "claude", profileId: "work" },
+      [work],
+    );
+    expect(summary.label).toBe("Claude Code · Work");
+    expect(summary.tokens).toBe(900);
+    expect(summary.workedSecs).toBe(120);
+    expect(summary.activeDays).toBe(1);
+  });
+
+  it("reports an unknown scope as zeroes rather than another scope's figures", () => {
+    const data = analytics();
+    expect(scopedSummary(data, providers(data), { provider: "grok" }, []).tokens).toBe(0);
+    expect(
+      scopedSummary(data, providers(data), { provider: "claude", profileId: "gone" }, []).tokens,
+    ).toBe(0);
+  });
+});
+
+describe("statsChart", () => {
+  const work = profile("work", "Work");
+  const data = analytics({
+    providers: [
+      provider({
+        provider_id: "claude",
+        tokens: { input: 15, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
+        cost_micros: 1500,
+        accounts: [
+          {
+            ...account("work", 5),
+            cost_micros: 500,
+            daily: [{ date: "2026-08-30", tokens: 5, cost_micros: 500 }],
+          },
+        ],
+        daily: [
+          { date: "2026-08-29", tokens: 10, cost_micros: 1000 },
+          { date: "2026-08-30", tokens: 5, cost_micros: 500 },
+        ],
+      }),
+      provider({
+        provider_id: "codex",
+        tokens: { input: 6, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
+        cost_micros: 200,
+        daily: [{ date: "2026-08-30", tokens: 6, cost_micros: 200 }],
+      }),
+    ],
+  });
+  const providers = statsProviders(data, [CLAUDE, CODEX]);
+
+  it("draws every provider by default, filling the quiet days", () => {
+    const chart = statsChart(providers, [], { provider: null }, "tokens", 3, TODAY);
+    expect(chart.dates).toEqual(["2026-08-28", "2026-08-29", "2026-08-30"]);
+    expect(chart.series.map((series) => [series.name, series.tokens])).toEqual([
+      ["Claude Code", 15],
+      ["Codex CLI", 6],
+    ]);
+    expect(chart.series[0]?.points.map((point) => point.tokens)).toEqual([0, 10, 5]);
+  });
+
+  it("switches the ranking to cost for the cost metric", () => {
+    const chart = statsChart(providers, [], { provider: null }, "cost", 3, TODAY);
+    expect(chart.series.map((series) => [series.name, series.costMicros])).toEqual([
+      ["Claude Code", 1500],
+      ["Codex CLI", 200],
+    ]);
+  });
+
+  it("does not recolor a provider when the metric changes", () => {
+    const tokens = statsChart(providers, [], { provider: null }, "tokens", 3, TODAY);
+    const cost = statsChart(providers, [], { provider: null }, "cost", 3, TODAY);
+    expect(tokens.series.map((series) => [series.key, series.colorSlot])).toEqual(
+      cost.series.map((series) => [series.key, series.colorSlot]),
+    );
+  });
+
+  it("draws one provider's own series when filtered", () => {
+    const chart = statsChart(providers, [], { provider: "codex" }, "tokens", 3, TODAY);
+    expect(chart.series.map((series) => series.tokens)).toEqual([6]);
+  });
+
+  it("draws one account's own series and names it", () => {
+    const chart = statsChart(
+      providers,
+      [work],
+      { provider: "claude", profileId: "work" },
+      "tokens",
+      3,
+      TODAY,
+    );
+    expect(chart.series.map((series) => [series.name, series.tokens])).toEqual([
+      ["Claude Code · Work", 5],
+    ]);
+  });
+
+  it("never falls back to the total for provider data it does not have", () => {
+    const chart = statsChart(providers, [], { provider: "grok" }, "tokens", 3, TODAY);
+    expect(chart.series).toEqual([]);
+  });
+});
+
+describe("chartPeak", () => {
+  it("sums the visible series per day", () => {
+    const data = analytics({
+      providers: [
+        provider({ provider_id: "claude", daily: [{ date: "2026-08-30", tokens: 10 }] }),
+        provider({ provider_id: "codex", daily: [{ date: "2026-08-30", tokens: 5 }] }),
+      ],
+    });
+    const providers = statsProviders(data, [CLAUDE, CODEX]);
+    const chart = statsChart(providers, [], { provider: null }, "tokens", 3, TODAY);
+    expect(chartPeak(chart, "tokens")).toEqual({ date: "2026-08-30", value: 15 });
+  });
+
+  it("is null when every visible day is silent", () => {
+    const chart = { dates: ["2026-08-30"], series: [] };
+    expect(chartPeak(chart, "tokens")).toBeNull();
+  });
+});
+
+describe("chartScale", () => {
+  it("rounds the top to a readable step", () => {
+    const scale = chartScale(3_900_000_000);
+    expect(scale.max).toBe(4_000_000_000);
+    expect(scale.ticks).toEqual([0, 1_000_000_000, 2_000_000_000, 3_000_000_000, 4_000_000_000]);
+  });
+
+  it("keeps a zero baseline with nothing counted", () => {
+    expect(chartScale(0)).toEqual({ max: 0, ticks: [0] });
   });
 });
 
@@ -211,6 +407,19 @@ describe("providerShare", () => {
     const data = analytics({ providers: [big, small] });
     expect(providerShare(big, data)).toBe(90);
     expect(providerShare(small, data)).toBe(10);
+    expect(providerShareLabel(big, data)).toBe("90%");
+  });
+
+  it("keeps a real sliver visible instead of calling it zero", () => {
+    const big = provider({
+      tokens: { input: 1000, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
+    });
+    const sliver = provider({
+      tokens: { input: 1, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
+    });
+    const data = analytics({ providers: [big, sliver] });
+    expect(providerShare(sliver, data)).toBe(0);
+    expect(providerShareLabel(sliver, data)).toBe("<1%");
   });
 
   it("is 0 rather than NaN when nothing was counted", () => {
@@ -218,6 +427,117 @@ describe("providerShare", () => {
       tokens: { input: 0, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
     });
     expect(providerShare(empty, analytics({ providers: [empty] }))).toBe(0);
+  });
+});
+
+describe("statsAccounts", () => {
+  it("names each account by its profile and the default one as Default account", () => {
+    const rows = statsAccounts(
+      provider({
+        tokens: { input: 1000, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
+        accounts: [account("work", 750), account(null, 250)],
+      }),
+      [profile("work", "Work")],
+    );
+    expect(rows.map((row) => [row.name, row.share])).toEqual([
+      ["Work", "75%"],
+      ["Default account", "25%"],
+    ]);
+  });
+
+  it("shows nothing for a lone default account", () => {
+    expect(statsAccounts(provider({ accounts: [account(null, 10)] }), [])).toEqual([]);
+    expect(statsAccounts(provider(), [])).toEqual([]);
+  });
+
+  it("keeps a lone named account and labels one whose profile was removed", () => {
+    const rows = statsAccounts(provider({ accounts: [account("gone", 10)] }), []);
+    expect(rows.map((row) => row.name)).toEqual(["Removed account"]);
+  });
+});
+
+describe("accountScopes", () => {
+  it("keeps every account, including the default one, as a filter entry", () => {
+    const data = analytics({
+      providers: [
+        provider({
+          accounts: [account("work", 750), account(null, 250)],
+        }),
+      ],
+    });
+    const scopes = accountScopes(statsProviders(data, [CLAUDE]), [profile("work", "Work")]);
+    expect(scopes.map((scope) => [scope.key, scope.name])).toEqual([
+      ["account:claude:work", "Work"],
+      ["account:claude:default", "Default account"],
+    ]);
+  });
+
+  it("names an account by its provider and profile", () => {
+    expect(accountName(null, [])).toBe("Default account");
+    expect(accountName("work", [profile("work", "Work")])).toBe("Work");
+    expect(accountName("gone", [])).toBe("Removed account");
+  });
+});
+
+describe("scope keys", () => {
+  it("round-trips all, provider and account scopes", () => {
+    for (const scope of [
+      { provider: null },
+      { provider: "claude" },
+      { provider: "claude", profileId: null },
+      { provider: "claude", profileId: "work" },
+    ]) {
+      expect(parseScopeKey(scopeKey(scope))).toEqual(scope);
+    }
+  });
+
+  it("falls back to all for an unrecognised key", () => {
+    expect(parseScopeKey("nonsense")).toEqual({ provider: null });
+  });
+});
+
+describe("plan window pace", () => {
+  it("reads the labels the providers actually send", () => {
+    expect(windowDurationSecs("5h")).toBe(5 * 3600);
+    expect(windowDurationSecs("week")).toBe(7 * 86_400);
+    expect(windowDurationSecs("month")).toBe(30 * 86_400);
+    expect(windowDurationSecs("whenever")).toBeNull();
+  });
+
+  it("places the even-pace tick where the window has elapsed", () => {
+    const now = new Date("2026-10-05T12:00:00Z");
+    expect(elapsedPercent("2026-10-05T15:00:00Z", "5h", now)).toBe(40);
+    expect(elapsedPercent(null, "5h", now)).toBeNull();
+    expect(elapsedPercent("2026-10-05T15:00:00Z", "whenever", now)).toBeNull();
+  });
+
+  it("calls spending ahead only outside a small tolerance", () => {
+    expect(paceOf(60, 40)).toBe("ahead");
+    expect(paceOf(41, 40)).toBe("on");
+    expect(paceOf(20, 40)).toBe("under");
+    expect(paceOf(20, null)).toBeNull();
+  });
+});
+
+describe("limitGroups", () => {
+  function reading(provider_id: string, profile_id: string | null): ProviderUsage {
+    return {
+      provider_id,
+      profile_id,
+      windows: [{ used_percent: 10, window: "5h", resets_at: null }],
+      collected_at: "2026-10-05T12:00:00Z",
+    };
+  }
+
+  it("groups accounts by provider in first-seen order", () => {
+    const groups = limitGroups(
+      [reading("claude", "work"), reading("codex", null), reading("claude", null)],
+      [CLAUDE, CODEX],
+    );
+    expect(groups.map((group) => [group.name, group.readings.length])).toEqual([
+      ["Claude Code", 2],
+      ["Codex CLI", 1],
+    ]);
   });
 });
 
@@ -232,6 +552,13 @@ describe("formatting", () => {
   it("prints money with both decimals", () => {
     expect(money(1_526_250_000)).toBe("$1,526.25");
     expect(money(0)).toBe("$0.00");
+  });
+
+  it("compacts money for axes without losing its unit", () => {
+    expect(compactMoney(2_000_000_000)).toBe("$2.0k");
+    expect(compactMoney(25_000_000)).toBe("$25");
+    expect(compactMoney(1_500_000)).toBe("$1.5");
+    expect(compactMoney(0)).toBe("$0.00");
   });
 
   it("never rounds real activity down to 0%", () => {
@@ -258,77 +585,5 @@ describe("formatting", () => {
   it("says — for a date it cannot read", () => {
     expect(dayLabel(null)).toBe("—");
     expect(dayLabel("not a date")).toBe("—");
-  });
-});
-
-function account(profile_id: string | null, input: number): AccountAnalytics {
-  return {
-    profile_id,
-    tokens: { input, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
-    sessions: 1,
-    turns: 2,
-    cost_micros: 0,
-    unpriced_turns: 0,
-  };
-}
-
-function profile(id: string, name: string): AgentProfile {
-  return {
-    id,
-    provider_id: "claude",
-    name,
-    executable: null,
-    config_dir: `.claude-${id}`,
-    args: [],
-    created_at: "2026-08-01T00:00:00Z",
-  };
-}
-
-describe("dailySeries", () => {
-  const data = analytics({
-    daily: [{ date: "2026-08-25", tokens: 15 }],
-    providers: [
-      provider({ provider_id: "claude", daily: [{ date: "2026-08-25", tokens: 10 }] }),
-      provider({ provider_id: "codex", daily: [{ date: "2026-08-25", tokens: 5 }] }),
-    ],
-  });
-
-  it("draws every provider by default", () => {
-    expect(dailySeries(data, null)).toEqual([{ date: "2026-08-25", tokens: 15 }]);
-  });
-
-  it("draws one provider's own series when filtered", () => {
-    expect(dailySeries(data, "codex")).toEqual([{ date: "2026-08-25", tokens: 5 }]);
-  });
-
-  it("never falls back to the total for a provider that sent no series", () => {
-    expect(dailySeries(data, "grok")).toEqual([]);
-    expect(dailySeries(analytics(), "claude")).toEqual([]);
-  });
-});
-
-describe("statsAccounts", () => {
-  it("names each account by its profile and the default one as Default", () => {
-    const rows = statsAccounts(
-      provider({
-        tokens: { input: 1000, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
-        accounts: [account("work", 750), account(null, 250)],
-      }),
-      [profile("work", "Work")],
-    );
-    expect(rows.map((row) => [row.name, row.share])).toEqual([
-      ["Work", 75],
-      ["Default", 25],
-    ]);
-  });
-
-  it("shows nothing for a lone default account", () => {
-    expect(statsAccounts(provider({ accounts: [account(null, 10)] }), [])).toEqual([]);
-    expect(statsAccounts(provider(), [])).toEqual([]);
-  });
-
-  it("keeps a lone named account and labels one whose profile was removed", () => {
-    const rows = statsAccounts(provider({ accounts: [account("gone", 10)] }), []);
-    expect(rows.map((row) => row.name)).toEqual(["Removed profile"]);
   });
 });

@@ -114,16 +114,27 @@ pub struct AccountAnalytics {
     pub turns: u32,
     pub cost_micros: u64,
     pub unpriced_turns: u32,
+    /// Wall-clock time this account's transcripts covered, with parallel runs
+    /// counted twice like the provider total.
+    #[serde(default)]
+    pub worked_secs: u64,
+    /// This account's share of the provider's daily series.
+    #[serde(default)]
+    pub daily: Vec<DailyUsage>,
 }
 
-/// One day's token total, keyed by its UTC calendar date (`YYYY-MM-DD`).
+/// One day's totals, keyed by its UTC calendar date (`YYYY-MM-DD`).
 ///
 /// A day with no activity is absent rather than zero: the series is a list of
-/// facts, and the view fills the gaps when it draws a calendar.
+/// facts, and the view fills the gaps when it draws the chart.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DailyUsage {
     pub date: String,
     pub tokens: u64,
+    /// Estimated spend for the day. Turns on an unpriced model contribute
+    /// nothing, matching [`ProviderAnalytics::cost_micros`].
+    #[serde(default)]
+    pub cost_micros: u64,
 }
 
 ///
@@ -294,10 +305,12 @@ mod tests {
                 DailyUsage {
                     date: "2026-08-25".to_owned(),
                     tokens: 10,
+                    cost_micros: 500,
                 },
                 DailyUsage {
                     date: "2026-08-26".to_owned(),
                     tokens: 4,
+                    cost_micros: 200,
                 },
             ],
             window_days: 30,

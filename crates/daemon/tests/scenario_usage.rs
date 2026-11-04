@@ -83,6 +83,8 @@ fn usage_analytics_are_read_from_the_transcripts_on_disk() {
     // $5 of input plus $25 of output, in micro-dollars.
     assert_eq!(claude.cost_micros, 30 * domain::MICROS_PER_USD);
     assert_eq!(claude.unpriced_turns, 0);
+    assert_eq!(first.daily[0].cost_micros, claude.cost_micros);
+    assert_eq!(claude.accounts[0].daily[0].cost_micros, claude.cost_micros);
     assert_eq!(first.active_days(), 1);
     assert_eq!(first.skipped, 0, "nothing was left unread");
 
