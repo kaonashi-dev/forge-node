@@ -475,13 +475,15 @@ before the project was added to Forge — is still a run the user remembers.
 that ride along on every `GetSnapshot`. The daemon re-exports this module as
 `external_agents` and holds its cache behind a separate mutex.
 
-Discovery is per **directory**, not per project: each project root *and* each of
-its worktrees is scanned, which is what attributes a run to the worktree it
-actually happened in.
+Discovery is per **directory**, not per project: each project root, each of its
+workspace rows, *and* any managed worktree still on disk under the worktrees
+root without a row (pruned or forgotten) is scanned, which is what attributes a
+run to the worktree it actually happened in and keeps History's project scope
+complete when a checkout is gone.
 
 | Provider | On disk | Read from it |
 |----------|---------|--------------|
-| Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl`, `<slug>` = the directory with `/` and `.` collapsed to `-`; subagents in `<sessionId>/subagents/*.jsonl` | recorded `cwd`/`gitBranch`, min/max `timestamp`, latest `aiTitle`, turn count, the last assistant `text` block and its `message.model` |
+| Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl`, `<slug>` = every non-alphanumeric in the directory collapsed to `-` (Claude's `sanitizePath`; past 200 characters, truncated plus a path hash); subagents in `<sessionId>/subagents/*.jsonl` | recorded `cwd`/`gitBranch`, min/max `timestamp`, latest `aiTitle`, turn count, the last assistant `text` block and its `message.model` |
 | opencode ≥ 1.17 | `~/.local/share/opencode/opencode.db` (and any `opencode-<suffix>.db` beside it), read by `crates/agents/src/history/opencode_db.rs` | `session` rows whose `directory` is the scanned one: `id`, `title`, `time_created`/`time_updated`, turns from `message`, the newest non-synthetic `text` part of the last assistant message, and that message's `modelID`. `parent_id` marks a subagent run — counted against its parent, never listed — and `time_archived` hides one the user put away |
 | opencode < 1.17 (legacy tree) | `~/.local/share/opencode/storage` (XDG on every platform): `project/<hash>.json` → `worktree`, sessions in `session/<hash>/`, conversation in `message/<sessionID>/` and `part/<messageID>/` | `id`, `title`, `directory`, `time.created`/`updated`, turn count, the last assistant message's text parts and its `modelID`. A session with a `parentID` is a subagent run, counted against its parent rather than listed |
 | Codex | `$CODEX_HOME/sessions/YYYY/MM/DD/*.jsonl` (default `~/.codex`) | `session_meta.payload` supplies the resume id, `cwd`, branch and start time; `turn_context` supplies the model. Only `response_item` user/assistant prose counts, avoiding duplicate `event_msg` records and injected context. Explicit subagent sources are not listed |

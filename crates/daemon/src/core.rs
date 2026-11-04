@@ -1394,6 +1394,12 @@ impl Daemon {
         };
         // Filesystem IO: after the core lock, through the TTL cache.
         let external_agents = if with_history {
+            let known: HashSet<_> = workspaces
+                .iter()
+                .map(|workspace| canonical_or_self(&workspace.path))
+                .collect();
+            let orphans =
+                worktrees::history_orphan_paths(self.worktrees_root_path(), &projects, &known);
             let mut cache = self
                 .external_agents
                 .lock()
@@ -1401,7 +1407,7 @@ impl Daemon {
             if self.external_agents_stale.swap(false, Ordering::AcqRel) {
                 cache.invalidate();
             }
-            cache.discover(&projects, &workspaces, &agent_profiles)
+            cache.discover(&projects, &workspaces, &agent_profiles, &orphans)
         } else {
             Vec::new()
         };

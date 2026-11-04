@@ -224,6 +224,7 @@ fn discovery_includes_profiles_and_keeps_same_ids_in_distinct_accounts() {
         &[project],
         std::slice::from_ref(&workspace),
         &profiles,
+        &[],
     );
     assert_eq!(sessions.len(), 4);
     assert!(sessions
@@ -304,10 +305,13 @@ fn cache_identity_includes_account_provider_and_workspace_identity() {
         args: Vec::new(),
         created_at: Timestamp::now(),
     };
-    let first = fingerprint(&[], &[], std::slice::from_ref(&profile));
+    let first = fingerprint(&[], &[], std::slice::from_ref(&profile), &[]);
     profile.provider_id = AgentProviderId::new("grok");
-    assert_ne!(first, fingerprint(&[], &[], std::slice::from_ref(&profile)));
-    let second = fingerprint(&[], &[], std::slice::from_ref(&profile));
+    assert_ne!(
+        first,
+        fingerprint(&[], &[], std::slice::from_ref(&profile), &[])
+    );
+    let second = fingerprint(&[], &[], std::slice::from_ref(&profile), &[]);
     profile.id = AgentProfileId::new();
-    assert_ne!(second, fingerprint(&[], &[], &[profile]));
+    assert_ne!(second, fingerprint(&[], &[], &[profile], &[]));
 }

@@ -12,7 +12,8 @@
 //! by `RemoveWorktree` and collected by the GC once the worktree is really
 //! gone; a `Subtree` rule is policy written by the user and never collected.
 
-use domain::{IgnoreScope, ProjectId, WorkspaceId};
+use domain::{IgnoreScope, Project, ProjectId, WorkspaceId};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Kept short so `<repo>-<id6>/<branch>` stays readable in a prompt.
@@ -118,6 +119,48 @@ pub fn plan(listed: &[Listed], known: &[Known], rules: &[IgnoreRule]) -> Plan {
         kept_with_sessions,
         stale_rules,
     }
+}
+
+/// Managed worktree directories still on disk under `worktrees_root` that have
+/// no workspace row.
+///
+/// History discovery needs them: a prunable or forgotten checkout leaves its
+/// agent transcripts behind, and the project filter should still list those
+/// runs. Covers both the legacy `<project-uuid>/` layout and the current
+/// `<repo-slug>-<id6>/` one. Paths already present in `known` are skipped so a
+/// live workspace keeps its `workspace_id` attribution.
+#[must_use]
+pub fn history_orphan_paths(
+    worktrees_root: &Path,
+    projects: &[Project],
+    known: &HashSet<PathBuf>,
+) -> Vec<(ProjectId, PathBuf)> {
+    let mut orphans = Vec::new();
+    for project in projects {
+        let mut dirs = vec![
+            worktrees_root.join(project.id.to_string()),
+            worktrees_root.join(project_dir_name(&project.root_path, project.id)),
+        ];
+        dirs.sort();
+        dirs.dedup();
+        for project_dir in dirs {
+            let Ok(entries) = std::fs::read_dir(&project_dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if known.contains(&key) || known.contains(&path) {
+                    continue;
+                }
+                orphans.push((project.id, path));
+            }
+        }
+    }
+    orphans
 }
 
 /// `<repo-slug>-<id6>`: the directory one project's managed worktrees live in.
@@ -318,5 +361,40 @@ mod tests {
         assert!(name.len() <= 32 + 1 + 6);
         assert!(!name.starts_with('-'));
         assert!(project_dir_name(Path::new("/"), ProjectId::new()).starts_with("worktree-"));
+    }
+
+    #[test]
+    fn history_orphans_cover_legacy_and_current_layouts_without_known_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("worktrees");
+        let project_id = ProjectId::new();
+        let project = Project {
+            id: project_id,
+            project_group_id: None,
+            name: "api".into(),
+            icon: None,
+            root_path: PathBuf::from("/repo/api"),
+            git_root: Some(PathBuf::from("/repo/api")),
+            created_at: domain::Timestamp::now(),
+            last_opened_at: domain::Timestamp::now(),
+        };
+        let legacy = root.join(project_id.to_string()).join("feat-legacy");
+        let current = root
+            .join(project_dir_name(&project.root_path, project_id))
+            .join("feat-current");
+        let known_path = root
+            .join(project_dir_name(&project.root_path, project_id))
+            .join("feat-known");
+        for path in [&legacy, &current, &known_path] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+
+        let known = HashSet::from([std::fs::canonicalize(&known_path).unwrap()]);
+        let orphans = history_orphan_paths(&root, std::slice::from_ref(&project), &known);
+        let paths: HashSet<_> = orphans.iter().map(|(_, path)| path.clone()).collect();
+        assert!(paths.contains(&legacy));
+        assert!(paths.contains(&current));
+        assert!(!paths.contains(&known_path));
+        assert!(orphans.iter().all(|(id, _)| *id == project_id));
     }
 }
