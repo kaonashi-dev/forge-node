@@ -164,12 +164,16 @@ impl Fixture {
         )
         .expect("config");
 
-        let slug = movable
-            .path
-            .to_string_lossy()
-            .chars()
-            .map(|c| if c == '/' || c == '.' { '-' } else { c })
-            .collect::<String>();
+        // Claude's sanitizePath: every non-alphanumeric becomes `-` (spaces in
+        // "Application Support" included). Slash-and-dot encoding misses them.
+        let mut slug = String::new();
+        for c in movable.path.to_string_lossy().chars() {
+            if c.is_ascii_alphanumeric() {
+                slug.push(c);
+            } else {
+                slug.extend(std::iter::repeat_n('-', c.len_utf16()));
+            }
+        }
         let transcripts = home.join(".claude/projects").join(slug);
         std::fs::create_dir_all(&transcripts).expect("transcript dir");
         std::fs::write(
