@@ -180,9 +180,9 @@ describe("review agents", () => {
   it("falls back to the first agent when the remembered one is gone", () => {
     const agents = [
       agent,
-      { id: "codex", provider: "codex", profile: null, name: "Codex", mode: "read-only sandbox" },
+      { id: "cursor", provider: "cursor", profile: null, name: "Cursor", mode: "ask mode" },
     ];
-    expect(preferredAgent(agents, "codex")?.id).toBe("codex");
+    expect(preferredAgent(agents, "cursor")?.id).toBe("cursor");
     expect(preferredAgent(agents, "gone")?.id).toBe("claude");
     expect(preferredAgent([], "claude")).toBeNull();
   });

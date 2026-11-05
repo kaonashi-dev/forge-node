@@ -3,7 +3,7 @@
 //! Every daemon here boots with a `PATH` containing exactly one directory the
 //! test wrote (see `common`), so detection reports what the fixtures
 //! say and nothing about the machine running the suite. That is what makes
-//! "OpenCode is not found" and "`agent` is the Grok CLI, not Cursor" testable
+//! "OpenCode is not found" and "`agent` is another CLI, not Cursor" testable
 //! at all: a developer machine usually has the real agent CLIs installed.
 //!
 //! Not covered here: the picker rows and the "Set path…" dialog, and
@@ -24,9 +24,9 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
     let repo = test_support::init_repo().expect("git repo (git must be installed)");
 
     // `agent` is the Cursor descriptor's preferred candidate, but on many
-    // machines it is the Grok CLI — the reason that descriptor carries
+    // machines another CLI owns that name — the reason that descriptor carries
     // `expect_substring = "cursor"`.
-    common::write_fake_agent_cli(harness.bin(), "agent", "forge_grok", "grok-cli 1.2.0");
+    common::write_fake_agent_cli(harness.bin(), "agent", "forge_other", "other-cli 1.2.0");
     // One provider that really is installed, so "the others keep working" is
     // observable rather than vacuous.
     common::write_fake_agent_cli(harness.bin(), "claude", "forge_claude", "Claude Code 1.0.0");
@@ -134,7 +134,7 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
 
     // The override is what actually runs: the foreign `agent` is still first on
     // PATH, so a launch that ignored the override would announce itself as
-    // `forge_grok_cwd_ok` instead.
+    // `forge_other_cwd_ok` instead.
     let (cursor_session, cursor_terminal) =
         common::create_agent_session(&client, &events, workspace_id, "cursor");
     assert_eq!(
@@ -163,15 +163,14 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
     common::stop_daemon(&client);
 }
 
-/// The four providers coexist as four live sessions of the
-/// same workspace, each with its own PTY. (The `Cmd+Shift+]` switch budget of
-/// the scenario is a GUI measurement.)
+/// Every provider coexists as a live session of the same workspace, each
+/// with its own PTY. (The `Cmd+Shift+]` switch budget of the scenario is a
+/// GUI measurement.)
 #[test]
-fn the_four_providers_coexist_as_live_sessions_of_one_workspace() {
+fn every_provider_coexists_as_a_live_session_of_one_workspace() {
     // (provider id, binary name detection looks for, marker prefix)
-    const PROVIDERS: [(&str, &str); 4] = [
+    const PROVIDERS: [(&str, &str); 3] = [
         ("claude", "claude"),
-        ("codex", "codex"),
         ("opencode", "opencode"),
         // The Cursor descriptor accepts `cursor-agent` on the strength of its
         // name alone.
@@ -218,7 +217,7 @@ fn the_four_providers_coexist_as_live_sessions_of_one_workspace() {
     assert_eq!(sessions.len(), PROVIDERS.len());
     assert!(
         sessions.iter().all(|s| s.state == SessionState::Running),
-        "all four sessions are live at the same time (§19 B)"
+        "every session is live at the same time"
     );
     assert!(
         sessions.iter().all(|s| s.workspace_id == workspace_id),
@@ -240,7 +239,7 @@ fn the_four_providers_coexist_as_live_sessions_of_one_workspace() {
 fn launching_a_provider_whose_only_candidate_was_rejected_is_refused() {
     let harness = common::Harness::new();
     let repo = test_support::init_repo().expect("git repo (git must be installed)");
-    common::write_fake_agent_cli(harness.bin(), "agent", "forge_grok", "grok-cli 1.2.0");
+    common::write_fake_agent_cli(harness.bin(), "agent", "forge_other", "other-cli 1.2.0");
 
     let daemon = harness.boot();
     let client = daemon.connect("cursor-rejected");

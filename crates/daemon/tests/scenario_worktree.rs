@@ -7,7 +7,7 @@
 //! directory (`cwd = workspace.path`), and that none of it moves the main
 //! checkout off its branch (`git worktree add`, never `checkout`).
 //!
-//! The agent half runs a generated fake CLI rather than a real Codex, so the
+//! The agent half runs a generated fake CLI rather than a real OpenCode, so the
 //! test needs no installed agent CLI; it
 //! is still the complete daemon launch path, PTY included.
 
@@ -310,8 +310,13 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
 
     let harness = common::Harness::new();
     let repo = test_support::init_repo().expect("git repo (git must be installed)");
-    // A stand-in for Codex on the daemon's (hermetic) PATH.
-    common::write_fake_agent_cli(harness.bin(), "codex", "forge_codex", "codex-cli 1.0.0");
+    // A stand-in for OpenCode on the daemon's (hermetic) PATH.
+    common::write_fake_agent_cli(
+        harness.bin(),
+        "opencode",
+        "forge_opencode",
+        "opencode 1.0.0",
+    );
 
     let daemon = harness.boot();
     let client = daemon.connect("scenario-c");
@@ -389,15 +394,15 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
     common::wait_for_detection(&client, |providers| {
         providers
             .iter()
-            .any(|p| p.descriptor.id.as_str() == "codex" && p.detection.status.is_installed())
+            .any(|p| p.descriptor.id.as_str() == "opencode" && p.detection.status.is_installed())
     });
     let (agent_session, agent_terminal) =
-        common::create_agent_session(&client, &events, worktree.id, "codex");
+        common::create_agent_session(&client, &events, worktree.id, "opencode");
     let agent_verdict =
-        common::attach_and_read_line(&client, &events, agent_terminal, "forge_codex_cwd_");
+        common::attach_and_read_line(&client, &events, agent_terminal, "forge_opencode_cwd_");
     assert_eq!(
         agent_verdict.as_deref(),
-        Some("forge_codex_cwd_ok"),
+        Some("forge_opencode_cwd_ok"),
         "the agent must be launched in the worktree the daemon advertises \
          through FORGE_WORKSPACE (§13.3)"
     );

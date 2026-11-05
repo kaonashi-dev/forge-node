@@ -1776,7 +1776,6 @@ export const response_snapshot_populated = {
             },
           },
           prompt: null,
-          acp: null,
           review: {
             args: ["--permission-mode", "plan"],
             label: "plan mode",

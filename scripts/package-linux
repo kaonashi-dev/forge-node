@@ -212,7 +212,7 @@ Depends: libc6,${gui_depends}
  git
 ${deb_recommends}
 Description: Terminals and coding agents across Git repositories
- Forge Node runs many terminal sessions and CLI coding agents (claude, codex,
+ Forge Node runs many terminal sessions and CLI coding agents (claude,
  opencode, cursor-agent) across one or more Git repositories, with first-class
  worktree support. A per-user daemon owns the PTYs, so closing the window never
  kills a running agent.

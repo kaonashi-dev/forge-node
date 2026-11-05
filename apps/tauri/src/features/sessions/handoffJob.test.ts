@@ -18,7 +18,7 @@ const options = {
   sourceTitle: "Auth",
   summarizerProvider: "claude",
   summarizerProfile: "flash-profile",
-  targetProvider: "codex",
+  targetProvider: "opencode",
   targetProfile: "implementation-profile",
   parent: "source",
   focus: "auth",
@@ -165,7 +165,7 @@ describe("handoff confirmation", () => {
     expect(commands.launchBackgroundAgent).toHaveBeenCalledTimes(2);
     expect(commands.launchBackgroundAgent).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        provider: "codex",
+        provider: "opencode",
         profile: "implementation-profile",
         parent: "source",
         read_only: false,

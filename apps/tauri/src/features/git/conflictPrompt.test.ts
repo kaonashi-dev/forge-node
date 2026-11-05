@@ -255,9 +255,9 @@ describe("resolverFor", () => {
       app_state: {},
       launchables: [
         launchable({ provider: "claude", key: "claude" }),
-        launchable({ provider: "codex", key: "codex" }),
+        launchable({ provider: "cursor", key: "cursor" }),
       ],
-      providers: [provider("claude", true), provider("codex", true)],
+      providers: [provider("claude", true), provider("cursor", true)],
     });
     const resolver = resolverFor(snapshot);
     expect(resolver.kind).toBe("unavailable");
@@ -316,24 +316,24 @@ describe("resolverFor", () => {
 
   it("prefers the configured default over an agent listed before it", () => {
     const snapshot = store({
-      app_state: { "ui.default_agent": "provider:codex" },
+      app_state: { "ui.default_agent": "provider:cursor" },
       launchables: [
         launchable({ key: "claude" }),
-        launchable({ key: "codex", label: "Codex", provider: "codex" }),
+        launchable({ key: "cursor", label: "Cursor", provider: "cursor" }),
       ],
-      providers: [provider("claude", true), provider("codex", true)],
+      providers: [provider("claude", true), provider("cursor", true)],
     });
-    expect(resolverFor(snapshot)).toEqual({ kind: "agent", provider: "codex", profile: null });
+    expect(resolverFor(snapshot)).toEqual({ kind: "agent", provider: "cursor", profile: null });
   });
 
   it("falls back when the configured default is no longer installed", () => {
     const snapshot = store({
-      app_state: { "ui.default_agent": "provider:codex" },
+      app_state: { "ui.default_agent": "provider:cursor" },
       launchables: [
-        launchable({ key: "codex", provider: "codex", enabled: false }),
+        launchable({ key: "cursor", provider: "cursor", enabled: false }),
         launchable({ key: "claude" }),
       ],
-      providers: [provider("codex", true), provider("claude", true)],
+      providers: [provider("cursor", true), provider("claude", true)],
     });
     expect(resolverFor(snapshot)).toEqual({ kind: "agent", provider: "claude", profile: null });
   });
@@ -343,27 +343,27 @@ describe("resolverFor", () => {
       app_state: { "ui.default_agent": "provider:claude" },
       launchables: [
         launchable({ key: "claude" }),
-        launchable({ key: "codex", label: "Codex", provider: "codex" }),
+        launchable({ key: "cursor", label: "Cursor", provider: "cursor" }),
       ],
-      providers: [provider("claude", true), provider("codex", true)],
+      providers: [provider("claude", true), provider("cursor", true)],
     });
-    expect(resolverFor(snapshot, "codex")).toEqual({
+    expect(resolverFor(snapshot, "cursor")).toEqual({
       kind: "agent",
-      provider: "codex",
+      provider: "cursor",
       profile: null,
     });
   });
 
   it("reads the remembered pick when none is passed", () => {
     const snapshot = store({
-      app_state: { [RESOLVE_AGENT_KEY]: "codex" },
+      app_state: { [RESOLVE_AGENT_KEY]: "cursor" },
       launchables: [
         launchable({ key: "claude" }),
-        launchable({ key: "codex", label: "Codex", provider: "codex" }),
+        launchable({ key: "cursor", label: "Cursor", provider: "cursor" }),
       ],
-      providers: [provider("claude", true), provider("codex", true)],
+      providers: [provider("claude", true), provider("cursor", true)],
     });
-    expect(resolverFor(snapshot)).toEqual({ kind: "agent", provider: "codex", profile: null });
+    expect(resolverFor(snapshot)).toEqual({ kind: "agent", provider: "cursor", profile: null });
   });
 
   it("falls through a pick that can no longer take a prompt", () => {
@@ -390,10 +390,10 @@ describe("resolverChoices", () => {
         launchable({ key: "claude" }),
         launchable({ key: "profile:x", label: "Reviewer", profile: "x" }),
         launchable({ key: "opencode", label: "OpenCode", provider: "opencode" }),
-        launchable({ key: "codex", label: "Codex", provider: "codex", enabled: false }),
+        launchable({ key: "cursor", label: "Cursor", provider: "cursor", enabled: false }),
         launchable({ kind: "shell", key: "shell", label: "Shell", provider: null }),
       ],
-      providers: [provider("claude", true), provider("opencode", false), provider("codex", true)],
+      providers: [provider("claude", true), provider("opencode", false), provider("cursor", true)],
     });
     expect(resolverChoices(snapshot).map((choice) => choice.key)).toEqual(["claude", "profile:x"]);
   });

@@ -296,14 +296,19 @@ fn a_profile_cannot_be_applied_to_a_different_provider() {
     let harness = common::Harness::new();
     let repo = test_support::init_repo().expect("git repo (git must be installed)");
     common::write_env_reporting_cli(harness.bin(), "claude", MARKER, "Claude Code 1.0.0");
-    common::write_fake_agent_cli(harness.bin(), "codex", "forge_codex", "codex 1.0.0");
+    common::write_fake_agent_cli(
+        harness.bin(),
+        "opencode",
+        "forge_opencode",
+        "opencode 1.0.0",
+    );
 
     let daemon = harness.boot();
     let client = daemon.connect("profile-mismatch");
     let workspace_id = common::add_main_workspace(&client, repo.path());
     common::wait_for_detection(&client, |providers| {
         providers.iter().all(|p| match p.descriptor.id.as_str() {
-            "claude" | "codex" => p.detection.status.is_installed(),
+            "claude" | "opencode" => p.detection.status.is_installed(),
             _ => true,
         })
     });
@@ -318,7 +323,7 @@ fn a_profile_cannot_be_applied_to_a_different_provider() {
     let refused = client
         .request(Request::CreateAgentSession {
             workspace_id,
-            provider_id: AgentProviderId::new("codex"),
+            provider_id: AgentProviderId::new("opencode"),
             profile_id: Some(work.id),
             parent: None,
             role: SessionRole::Generic,
@@ -329,7 +334,7 @@ fn a_profile_cannot_be_applied_to_a_different_provider() {
             effort: None,
             title: None,
         })
-        .expect_err("a Claude profile cannot launch Codex");
+        .expect_err("a Claude profile cannot launch OpenCode");
     assert_eq!(protocol_code(&refused), ErrorCode::InvalidRequest);
 
     let unknown = client

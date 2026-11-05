@@ -1423,7 +1423,7 @@ mod tests {
     fn provider_usage_is_replaced_wholesale_not_merged() {
         let mut store = Store::new();
         let outcome = store.apply_event(&DaemonEvent::ProviderUsageChanged {
-            usage: vec![sample_usage("claude", 40), sample_usage("codex", 10)],
+            usage: vec![sample_usage("claude", 40), sample_usage("opencode", 10)],
         });
         assert_eq!(outcome, EventOutcome::Applied);
         assert_eq!(store.usage.len(), 2);

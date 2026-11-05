@@ -181,7 +181,7 @@ impl Timestamp {
         )?))
     }
 
-    /// Build from a Unix epoch second count (Codex's `reset_at`, etc.).
+    /// Build from a Unix epoch second count.
     #[must_use]
     pub fn from_unix_secs(secs: i64) -> Option<Self> {
         OffsetDateTime::from_unix_timestamp(secs).ok().map(Self)

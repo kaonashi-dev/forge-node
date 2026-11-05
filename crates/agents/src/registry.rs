@@ -171,7 +171,7 @@ mod tests {
     fn seeds_the_builtins_in_order() {
         let reg = AgentRegistry::new();
         let ids: Vec<String> = reg.descriptors().iter().map(|d| d.id.to_string()).collect();
-        assert_eq!(ids, ["claude", "codex", "opencode", "cursor", "grok"]);
+        assert_eq!(ids, ["claude", "opencode", "cursor"]);
     }
 
     #[test]
@@ -182,14 +182,14 @@ mod tests {
 
         let mut reg = AgentRegistry::new();
         let results = reg.detect_all(&env);
-        assert_eq!(results.len(), 5);
+        assert_eq!(results.len(), 3);
 
         let claude = AgentProviderId::new("claude");
         assert!(reg.detection(&claude).unwrap().status.is_installed());
 
-        let codex = AgentProviderId::new("codex");
+        let opencode = AgentProviderId::new("opencode");
         assert!(matches!(
-            reg.detection(&codex).unwrap().status,
+            reg.detection(&opencode).unwrap().status,
             DetectionStatus::NotFound
         ));
     }
@@ -197,15 +197,15 @@ mod tests {
     #[test]
     fn build_launch_routes_and_applies_stored_override() {
         let dir = tempfile::tempdir().unwrap();
-        let over = write_script(dir.path(), "codex-custom", &echo_script("x"));
+        let over = write_script(dir.path(), "opencode-custom", &echo_script("x"));
         // Empty PATH: only the stored override can supply the program.
         let env = env_with_path(vec![]);
 
         let mut reg = AgentRegistry::new();
-        reg.set_override(&AgentProviderId::new("codex"), Some(over.clone()));
+        reg.set_override(&AgentProviderId::new("opencode"), Some(over.clone()));
 
         let req = LaunchAgentRequest {
-            provider_id: AgentProviderId::new("codex"),
+            provider_id: AgentProviderId::new("opencode"),
             cwd: dir.path().to_path_buf(),
             extra_args: Vec::new(),
             executable_override: None,
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(spec.program, over);
 
         // Clearing the override removes it again.
-        reg.set_override(&AgentProviderId::new("codex"), None);
+        reg.set_override(&AgentProviderId::new("opencode"), None);
         assert!(matches!(
             reg.build_launch(&req, &env),
             Err(AgentError::NotInstalled(_))

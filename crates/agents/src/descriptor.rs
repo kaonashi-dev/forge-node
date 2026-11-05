@@ -135,8 +135,8 @@ impl AgentAdapter for DescriptorAdapter {
 ///
 /// **The `PATH` fallback is unverified**: it finds a *file with the right name*,
 /// not a binary the version probe accepted, and those differ exactly where it
-/// matters — `agent` on `PATH` is often the Grok CLI, which [`detection::detect`]
-/// rejects for the `cursor` descriptor. A caller that has a
+/// matters — `agent` on `PATH` is often another vendor's CLI, which
+/// [`detection::detect`] rejects for the `cursor` descriptor. A caller that has a
 /// detection result must therefore pass its
 /// [`DetectionStatus::Installed`](domain::DetectionStatus::Installed)
 /// executable as `req.executable_override`; the daemon always does, so
@@ -181,10 +181,6 @@ pub fn build_launch_with_config_dir(
     let program = resolve_program(descriptor, req, env)?;
 
     let mut args = descriptor.default_args.clone();
-    // Resume leads the arguments: `codex resume <id>` is a subcommand, and a
-    // subcommand that came after a profile's flags would not parse. The two
-    // that spell it as a flag do not care where it sits, so one order serves
-    // both.
     if let Some(session_id) = &req.resume_session_id {
         let style = descriptor
             .resume
@@ -424,15 +420,15 @@ mod tests {
     #[test]
     fn a_structured_review_is_refused_without_the_capability_or_read_only() {
         let dir = tempfile::tempdir().unwrap();
-        write_script(dir.path(), "codex", &echo_script("codex 1.0"));
+        write_script(dir.path(), "agent", &echo_script("cursor 1.0"));
         write_script(dir.path(), "claude", &echo_script("Claude Code 1.0"));
         let env = env_with_path(vec![dir.path().to_path_buf()]);
 
         let mut req = launch_req(dir.path().to_path_buf());
-        req.provider_id = AgentProviderId::new("codex");
+        req.provider_id = AgentProviderId::new("cursor");
         req.read_only = true;
         req.structured_review = structured(dir.path());
-        let err = build_launch(&builtins::builtin("codex").unwrap(), &req, &env).unwrap_err();
+        let err = build_launch(&builtins::builtin("cursor").unwrap(), &req, &env).unwrap_err();
         assert!(matches!(err, AgentError::ReviewUnsupported(_)));
 
         let mut req = launch_req(dir.path().to_path_buf());
@@ -683,25 +679,6 @@ mod tests {
                 "opus".to_owned(),
             ]
         );
-    }
-
-    /// Codex spells resume as a subcommand, so it has to come first — after a
-    /// flag it would not parse at all.
-    #[test]
-    fn codex_resumes_with_a_leading_subcommand() {
-        let dir = tempfile::tempdir().unwrap();
-        write_script(dir.path(), "codex", &echo_script("codex 1.0"));
-        let env = env_with_path(vec![dir.path().to_path_buf()]);
-
-        let mut req = launch_req(dir.path().to_path_buf());
-        req.provider_id = AgentProviderId::new("codex");
-        req.resume_session_id = Some("abc".to_owned());
-        req.extra_args = vec!["--model".to_owned(), "gpt-5.3-codex".to_owned()];
-
-        let spec = build_launch(&builtins::builtin("codex").unwrap(), &req, &env).unwrap();
-
-        assert_eq!(spec.args.first().unwrap(), "resume");
-        assert_eq!(spec.args[1], "abc");
     }
 
     #[test]

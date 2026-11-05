@@ -125,7 +125,6 @@ pub struct FlagSpec {
 #[non_exhaustive]
 pub enum EffortSpelling {
     Flag(String),
-    Config { flag: String, key: String },
     ModelSuffix,
 }
 
@@ -223,13 +222,8 @@ impl ProviderUsage {
 pub enum UsageSource {
     /// Run a CLI that prints the documented usage JSON on stdout.
     Cli(UsageProbe),
-    /// Read `~/.codex/auth.json` and call the ChatGPT usage endpoint.
-    CodexOAuth,
     /// Read Claude's local credentials and call the Anthropic usage endpoint.
     ClaudeOauth,
-    /// Ask Grok over its own ACP entry ([`AcpSpec::args`]) rather than over
-    /// HTTP: the account meter is a JSON-RPC extension method, not a URL.
-    GrokAcp,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,9 +295,6 @@ impl PromptStyle {
 pub enum ResumeStyle {
     /// A flag carrying the id: `claude --resume <id>`, `opencode --session <id>`.
     Flag { flag: String },
-    /// A subcommand carrying the id: `codex resume <id>`. It has to lead the
-    /// command line, which is why it is not just a flag with a funny name.
-    Subcommand { command: String },
 }
 
 impl ResumeStyle {
@@ -312,21 +303,8 @@ impl ResumeStyle {
     pub fn args(&self, session_id: &str) -> Vec<String> {
         match self {
             Self::Flag { flag } => vec![flag.clone(), session_id.to_owned()],
-            Self::Subcommand { command } => vec![command.clone(), session_id.to_owned()],
         }
     }
-}
-
-/// How a provider speaks [Agent Client Protocol](https://agentclientprotocol.com)
-/// over stdio.
-///
-/// `None` on a descriptor means the provider has no ACP entry. Grok's usage
-/// reading spawns `args` rather than spelling the subcommand a second time.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcpSpec {
-    /// Extra args after the executable when spawning as an ACP agent.
-    #[serde(default)]
-    pub args: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -344,9 +322,6 @@ pub struct AgentDescriptor {
     /// How the provider takes a prompt at launch. `None` means it only
     /// takes one typed into its TUI, so nothing may be launched *for* it.
     pub prompt: Option<PromptStyle>,
-    /// How the provider speaks ACP over stdio. `None` means it has no ACP entry.
-    #[serde(default)]
-    pub acp: Option<AcpSpec>,
     /// How the provider is put in a read-only posture. `None` means it
     /// has none, so nothing may launch it for a review.
     #[serde(default)]

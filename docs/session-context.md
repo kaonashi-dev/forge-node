@@ -11,7 +11,7 @@ Source: `crates/daemon/src/context_xfer.rs`, `session_cli.rs`, `core.rs`
 
 **Forge mediates. Providers do not peer.**
 
-Claude cannot call Codex, and Codex cannot read Claude's transcript. Both talk
+Claude cannot call OpenCode, and OpenCode cannot read Claude's transcript. Both talk
 only to the daemon (protocol or `forgectl`; `forge-daemon session` and
 `forge-daemon context` still run and print a deprecation hint). ACP is Client↔one Agent,
 not agent↔agent. Cross-provider work always looks like:
@@ -60,7 +60,7 @@ forge-daemon session list
 forge-daemon session read <session-id>
 
 # Nested agent, any provider
-forge-daemon session spawn-child --provider codex --prompt "Review the plan"
+forge-daemon session spawn-child --provider opencode --prompt "Review the plan"
 
 # Hand work to an existing session (PTY paste when live)
 forge-daemon context send --to <session-id> \

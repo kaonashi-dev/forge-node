@@ -12,12 +12,10 @@ ADR-007 (declarative provider registry).
 | id | Display name | Binary candidates (in order) | Probe | Marker | Config directory | Resume | Prompt | Read-only |
 |----|--------------|------------------------------|-------|--------|------------------|--------|--------|-----------|
 | `claude` | Claude Code | `claude` | `--version`, 3 s | — | `CLAUDE_CONFIG_DIR` | `--resume <id>` | positional | `--permission-mode plan` |
-| `codex` | Codex CLI | `codex` | `--version`, 3 s | — | `CODEX_HOME` | `resume <id>` (subcommand) | positional | `-s read-only` |
 | `opencode` | OpenCode | `opencode`, `opencode2` | `--version`, 3 s | — | `OPENCODE_CONFIG_DIR` + `XDG_DATA_HOME` | `--session <id>` | `--prompt <text>` | unsupported in V2 |
 | `cursor` | Cursor CLI | `agent`, `cursor-agent` | `--version`, 3 s | output or unambiguous basename must contain `cursor` | — | `--resume <id>` | positional | `--mode ask` |
-| `grok` | Grok | `grok` | `--version`, 3 s | output must contain `grok` | `GROK_HOME` | `--resume <id>` | positional | `--permission-mode plan` |
 
-All five are interactive TUIs and take no `default_args`. Each capability flag
+All three are interactive TUIs and take no `default_args`. Each capability flag
 restates whether the matching spelling is declared — `supports_resume` a
 `ResumeStyle`, `supports_initial_prompt` a `PromptStyle`, `supports_review` a
 `ReviewStyle` — so the GUI can read the flag and the launch builder the
@@ -25,20 +23,13 @@ spelling. OpenCode is the one that names its prompt: `opencode [project]`
 reads its positional as a *directory*, so a prompt put there would launch it
 in a folder named after the prompt.
 
-## ACP entry
-
-Grok publishes no usage URL. `usage::grok` asks the account meter over the ACP
-entry declared on `AgentDescriptor.acp` (`grok agent stdio`) rather than spelling
-that subcommand a second time. Claude declares the same kind of entry (`claude acp`);
-the other built-ins do not.
-
 ## Read-only mode (§16.9)
 
 `AgentDescriptor.review` is how a provider is launched so that it reads and
 reasons but does not write — the third sibling of `ResumeStyle` and
 `PromptStyle`, and declared for the same reason. It carries the flags and the
 name the provider itself uses for the mode, which is what lets a menu say which
-of four different postures the user is picking.
+of two different postures the user is picking.
 
 It exists because an automatic pull-request review starts in a checkout the
 user is working in. `build_launch` appends those flags **after** a profile's own
@@ -61,13 +52,11 @@ session wearing the same name.
 ## Resume (§13.5)
 
 `AgentDescriptor.resume` is how a provider re-enters one of its own earlier
-sessions, as data rather than behavior: `ResumeStyle::Flag` for providers that
-spell it as a flag, `ResumeStyle::Subcommand` for Codex, whose `resume` has to
-lead the command line. `build_launch` puts those arguments after
-`default_args` and *before* a profile's own — a subcommand after a flag would
-not parse — and refuses with `AgentError::ResumeUnsupported` when a resume is
-asked of a provider that declares none, rather than silently starting a fresh
-conversation.
+sessions, as data rather than behavior: `ResumeStyle::Flag` names the flag
+that precedes the id. `build_launch` puts those arguments after
+`default_args` and *before* a profile's own, and refuses with
+`AgentError::ResumeUnsupported` when a resume is asked of a provider that
+declares none, rather than silently starting a fresh conversation.
 
 Cursor's `--resume` takes an optional chat id; Forge always supplies the explicit
 id discovered from its chat directory, before any profile flags.
@@ -81,8 +70,8 @@ because the default account has never heard of an id recorded under a profile's
 config directory. See `docs/ui.md` for the history panel that sends them.
 
 The `cursor` marker exists because `agent` is an ambiguous name — on many
-machines it is the Grok CLI. That generic candidate is `Rejected` when its
-probe output lacks the marker, then detection falls through to `cursor-agent`.
+machines it is another vendor's CLI. That generic candidate is `Rejected` when
+its probe output lacks the marker, then detection falls through to `cursor-agent`.
 The unambiguous `cursor-agent` basename is accepted even if its version output
 is only a number.
 
@@ -93,13 +82,13 @@ is only a number.
 2. **`AgentAdapter` trait** — for providers that need behavior (initial
    prompts, session detection). The MVP ships **no** real adapter; the generic
    `DescriptorAdapter` wraps a descriptor with no special behavior. Resume did
-   not need one: its two spellings fit in the descriptor as data.
+   not need one: its spelling fits in the descriptor as data.
 
 ### Adding a provider
 
 1. Add an entry to `builtins()` in `crates/agents/src/builtins.rs`, following
    the current `descriptor` helper and keeping picker order. Declare usage,
-   config-directory, resume, prompt, ACP and read-only capabilities from the
+   config-directory, resume, prompt and read-only capabilities from the
    CLI's contract, using `None` for unsupported capabilities. Set
    `expect_substring` whenever a candidate name can belong to another program.
 2. Nothing else changes: `AgentRegistry::new()` seeds itself from `builtins()`,
@@ -151,11 +140,10 @@ ConfigDirSpec {
 ```
 
 `CLAUDE_CONFIG_DIR` is the documented account switch for Claude Code (settings,
-session history and plugins move with it); `CODEX_HOME` is its Codex
-equivalent, and `usage/codex.rs` already reads credentials through it. OpenCode
-needs two variables for the one directory, because it splits what the other two
-keep together: `OPENCODE_CONFIG_DIR` moves the directory `opencode.json` is
-read from — and with it the agents, commands and plugins declared beside it —
+session history and plugins move with it). OpenCode needs two variables for
+the one directory, because it splits what Claude keeps together:
+`OPENCODE_CONFIG_DIR` moves the directory `opencode.json` is read from — and
+with it the agents, commands and plugins declared beside it —
 while `XDG_DATA_HOME` is what moves `opencode/auth.json` and the session
 storage. Setting only one would switch half an account, so a profile sets both.
 Cursor CLI declares none: it documents no configuration switch, so its profiles
@@ -184,43 +172,25 @@ transcripts with it, so both scans take the profile list and walk one store per
 account, dropping duplicates by canonical path:
 
 - `agents::history::discover` (the history panel) scans `<config dir>/projects`
-  for Claude Code, `<config dir>/sessions` for Codex and Grok, and
-  `<config dir>/opencode` for OpenCode — the latter because the directory *is*
-  `XDG_DATA_HOME` for the launch — alongside each provider's default store.
-  Default stores honor `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME` and
+  for Claude Code and `<config dir>/opencode` for OpenCode — the latter
+  because the directory *is* `XDG_DATA_HOME` for the launch — alongside each
+  provider's default store. Default stores honor `CLAUDE_CONFIG_DIR` and
   `XDG_DATA_HOME`. Cursor reads `~/.cursor/chats`. The cache fingerprint includes
   account identities, providers and directories, so changing a profile refreshes
   attribution immediately; identical session ids in distinct accounts stay distinct.
 - `agents::collect_analytics` (the usage page) sums `<config dir>/projects` for
-  Claude and `<config dir>/sessions` for Codex with the default account's. The
-  page is what the machine spent, not what one login did, so the totals are the
-  sum; saving or deleting a profile drops the cached scan.
+  Claude with the default account's. The page is what the machine spent, not
+  what one login did, so the totals are the sum; saving or deleting a profile
+  drops the cached scan.
 
 ### Where a meter comes from
 
 `AgentDescriptor.usage_source` names the mechanism; `crates/agents/src/usage`
-holds the provider-shaped half. Three of the five declare one:
+holds the provider-shaped half. Only Claude declares one:
 
 | id | Source | How it is read |
 |----|--------|----------------|
 | `claude` | `ClaudeOauth` | `~/.claude/.credentials.json` (or the Keychain) → the Anthropic usage endpoint |
-| `codex` | `CodexOAuth` | `$CODEX_HOME/auth.json` → the ChatGPT usage endpoint |
-| `grok` | `GrokAcp` | spawn the descriptor's own ACP entry, `initialize`, then the `_x.ai/billing` extension method |
-
-Grok is the reason a fourth kind of source exists. It publishes no usage URL at
-all: its account meter is a JSON-RPC extension method on the same
-`grok agent stdio` wire the ACP spec already names, so `usage/grok.rs` spends one
-short-lived child process and two lines of stdin instead of one GET. The spawn
-reuses `AcpSpec::args` rather than spelling `agent stdio` twice, and the
-credentials are never opened here — the binary that owns them is asked. The
-reply's `config.creditUsagePercent` is the percentage and `config.currentPeriod`
-names and dates the window (`USAGE_PERIOD_TYPE_WEEKLY` → `week`, to sit beside
-Codex's own `week`).
-
-One non-obvious thing that handshake depends on: stdin stays **open** until the
-reply arrives. Grok reads EOF on the ACP wire as the client hanging up and shuts
-down, so closing the pipe after writing — the obvious thing to do — loses the
-race against its own answer and the meter reads empty every time.
 
 The allowance meter (`usage::collect`) reads one account at a time, and the
 daemon sweeps all of them: the default login plus every profile that moved the
@@ -240,8 +210,8 @@ until that account is signed in.
 
 ### Rules
 
-- A profile belongs to one provider. Launching Codex with a Claude profile is
-  `InvalidRequest`, not a silently ignored field.
+- A profile belongs to one provider. Launching OpenCode with a Claude profile
+  is `InvalidRequest`, not a silently ignored field.
 - Names are unique per provider, case-insensitively (a unique index in SQLite,
   surfaced as `Conflict`): two profiles cannot render as the same menu entry.
 - A config directory for a provider that declares no `ConfigDirSpec` is
@@ -299,8 +269,8 @@ Notes:
 - A user override (`SetProviderExecutable`) skips the PATH search but is still
   verified by the probe.
 - When every candidate was rejected, the *last* rejection is reported rather
-  than `NotFound` — the picker can then say why (`agent` was the Grok CLI)
-  instead of "not installed".
+  than `NotFound` — the picker can then say why (`agent` was another vendor's
+  CLI) instead of "not installed".
 - A candidate that cannot even be spawned is also `Rejected` (reason: "failed
   to run version probe: …"); only a hang produces `ProbeTimeout`.
 - `version` is the first non-empty line of stdout **and** stderr combined
@@ -369,9 +339,7 @@ or levels are `InvalidRequest`, never silently ignored.
 | Provider | Model | Effort |
 |----------|-------|--------|
 | Claude | `--model <id>` | `--effort low\|medium\|high\|xhigh\|max` |
-| Codex | `-m <id>` | `-c model_reasoning_effort="<level>"` |
 | Cursor | `--model <id>` | `--model <id>[effort=<level>]`; requires an explicit model |
-| Grok | `-m <id>` | `--reasoning-effort <level>` |
 | OpenCode | unsupported | unsupported |
 
 The exact allowed levels are the descriptor's `EffortSpec.allowed`, not a
@@ -398,19 +366,7 @@ user looks somewhere else. See [terminal.md](./terminal.md#the-pty-loop-daemonsr
 |----------|-----------|--------|
 | `opencode` | `OPENCODE_CLI_CONFIG_CONTENT` → CLI-only V2 `forge-attention.js` | execution events → working/idle; permission/form events → waiting, with BEL fallback |
 | `claude` | `--settings` → Forge JSON (does **not** rewrite `~/.claude`) | turn/question/permission hooks → `forge-activity.sh`, with BEL fallback |
-| `codex` | turn-complete `notify` command + TUI BEL settings | notify → idle; TUI BEL on approval only |
 | `cursor` | Merge `beforeShellExecution` / `beforeMCPExecution` into `~/.cursor/hooks.json` (FORGE-gated) | Best-effort — Cursor has no permission-prompt hook |
-| `grok` | Write `~/.grok/hooks/forge-attention.json` (FORGE-gated), and set `GROK_CURSOR_HOOKS_ENABLED=false` | `Notification(permission_prompt)` → BEL |
-
-Grok is the one that needs an opt-out as well as a hook. It reads
-`~/.cursor/hooks.json` by default (its Cursor compatibility layer, always
-trusted at the global scope) and maps `beforeShellExecution` /
-`beforeMCPExecution` onto its own `PreToolUse` — and that file is exactly where
-the Cursor row above already put `forge-ring-bell.sh`. Without
-`GROK_CURSOR_HOOKS_ENABLED=false`, a machine that has ever launched Cursor from
-Forge would ring BEL on *every* Grok tool call, leaving `needs-you` lit instead
-of marking the permission prompts it means. A launch that sets the variable
-itself keeps its own value.
 
 Cursor is the only best-effort row, and it fails in both directions: it has no
 permission-prompt hook, so a shell call rings even in a mode that never asks,
@@ -487,19 +443,15 @@ directories is part of the TTL-gated rescan, never of a fresh snapshot.
 | Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl`, `<slug>` = every non-alphanumeric in the directory collapsed to `-` (Claude's `sanitizePath`, per UTF-16 unit; past 200 characters Claude truncates and appends a path hash, so a long slug is found by its 200-character prefix, as Claude does); subagents in `<sessionId>/subagents/*.jsonl` | recorded `cwd`/`gitBranch`, min/max `timestamp`, latest `aiTitle`, turn count, the last assistant `text` block and its `message.model` |
 | opencode ≥ 1.17 | `~/.local/share/opencode/opencode.db` (and any `opencode-<suffix>.db` beside it), read by `crates/agents/src/history/opencode_db.rs` | `session` rows whose `directory` is the scanned one: `id`, `title`, `time_created`/`time_updated`, turns from `message`, the newest non-synthetic `text` part of the last assistant message, and that message's `modelID`. `parent_id` marks a subagent run — counted against its parent, never listed — and `time_archived` hides one the user put away |
 | opencode < 1.17 (legacy tree) | `~/.local/share/opencode/storage` (XDG on every platform): `project/<hash>.json` → `worktree`, sessions in `session/<hash>/`, conversation in `message/<sessionID>/` and `part/<messageID>/` | `id`, `title`, `directory`, `time.created`/`updated`, turn count, the last assistant message's text parts and its `modelID`. A session with a `parentID` is a subagent run, counted against its parent rather than listed |
-| Codex | `$CODEX_HOME/sessions/YYYY/MM/DD/*.jsonl` (default `~/.codex`) | `session_meta.payload` supplies the resume id, `cwd`, branch and start time; `turn_context` supplies the model. Only `response_item` user/assistant prose counts, avoiding duplicate `event_msg` records and injected context. Explicit subagent sources are not listed |
 | Cursor CLI | `~/.cursor/chats/<workspace-hash>/<chat-id>/meta.json` | Recorded `cwd`, title, `createdAtMs`/`updatedAtMs`, and `hasConversation`; the directory name is the resume id. Readable prompts come from newest-first `prompt_history.json`. Conversation blobs are encrypted, so the count covers readable prompts, there is no assistant preview, and transcript reads report `truncated: true` |
-| Grok | `$GROK_HOME/sessions/<encoded-or-hashed-cwd>/<session-id>/summary.json` (default `~/.grok`) | `info.id`/`info.cwd`, title, branch, model and timestamps; prose comes from `chat_history.jsonl`, excluding synthetic context, reasoning and tools. Subagent sessions are omitted from cards and sibling `subagents/*/meta.json` entries are counted |
 
-The three additional readers enumerate each account once and match recorded
+The Cursor reader enumerates each account once and matches recorded
 directories to the known checkouts, including canonical path aliases. Candidate
 enumeration stops at 20,000 directory entries and retains at most 4,096 recent
-files per account, with 60 cards per checkout. JSON records are limited to 1 MiB
-before parsing; JSONL reads use at most the final 16 MiB, discard incomplete or
-oversized records, and report partial transcript reads as truncated. Discovery
-limits are logged at debug level. Cursor and Grok deletion removes the named
-session directory, including its metadata, so a removed card cannot be rediscovered
-from surviving metadata.
+files per account, with 60 cards per checkout. JSON files are limited to 1 MiB
+before parsing. Discovery limits are logged at debug level. Cursor deletion
+removes the named session directory, including its metadata, so a removed card
+cannot be rediscovered from surviving metadata.
 
 Four rules keep it honest and cheap:
 
@@ -561,7 +513,6 @@ so the page can switch its chart between the two readings without rescanning.
 | Provider | Read from it |
 |----------|--------------|
 | Claude Code | every `type: "assistant"` record's `message.usage`: `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, the `output_tokens_details.thinking_tokens` subset, and the `cache_creation` 5m/1h split that prices a cache write. `message.model` names the model, `message.id` dedupes |
-| Codex CLI | each `token_count` event's `info.total_token_usage`, which is **cumulative**: a turn is the difference between consecutive events. `cached_input_tokens` is subtracted out of `input_tokens`, because Codex counts cache reads inside the input while Claude keeps them apart. The model comes from the preceding `turn_context` |
 
 OpenCode and Cursor are absent for the same reason they declare no
 `UsageSource`: OpenCode bills through whichever model provider it is configured
@@ -579,9 +530,8 @@ The same four rules as discovery apply, with different constants:
   the window, so re-rendering the page re-reads nothing and asking a *different*
   question is not answered with the previous one's numbers.
 - **Cheap where it can be.** Only files modified inside the window are opened,
-  and only lines containing `"usage"`, `"token_count"`, or `"turn_context"` are
-  parsed — the last to carry Codex's model into the next turn; most of a
-  transcript is user turns and tool traffic.
+  and only lines containing `"usage"` are parsed; most of a transcript is user
+  turns and tool traffic.
 
 Two counting rules are worth stating because getting either wrong silently
 doubles a number:
@@ -631,14 +581,12 @@ There is no unrestricted `PostToolUse` hook. An explicit profile `--settings`
 or `--settings=…` suppresses Forge's entire settings injection, including
 activity; copy the generated hooks into that settings file if desired.
 
-Codex installs a notify command for turn completion unless the profile supplies
-one already. Working resumes on input; it does not report permission waiting,
-so approval attention still uses BEL. OpenCode's V2 terminal-local plugin uses
-typed execution/permission/form events, filters other session families, and
-never applies a child's completion as the root's idle. It keeps one reporting
+OpenCode's V2 terminal-local plugin uses typed execution/permission/form
+events, filters other session families, and never applies a child's completion
+as the root's idle. It keeps one reporting
 child and one coalesced pending state; timeout kills the process group and
 unload removes subscriptions. An explicit `OPENCODE_CLI_CONFIG_CONTENT`
-overlay suppresses injection. Cursor and Grok retain attention-only adapters.
+overlay suppresses injection. Cursor retains an attention-only adapter.
 
 The GUI's activity markers prefer reported state over the output-age heuristic;
 idle means a turn boundary, not successful work. Needs-you remains hidden for

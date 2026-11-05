@@ -492,7 +492,7 @@ mod tests {
             workspace_id: Some(WorkspaceId::new()),
             branch: None,
             base_commit: None,
-            provider_id: AgentProviderId::new("codex"),
+            provider_id: AgentProviderId::new("opencode"),
             profile_id: None,
             read_only: false,
             phase: AttemptPhase::Reported,

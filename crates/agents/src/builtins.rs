@@ -1,9 +1,9 @@
 //! Static descriptors for the built-in providers, in picker order.
 
 use domain::{
-    AcpSpec, AgentCapabilities, AgentDescriptor, AgentProviderId, ConfigDirSpec, EffortSpec,
-    EffortSpelling, FlagSpec, PromptStyle, ResumeStyle, ReviewStyle, StructuredReviewStyle,
-    UsageSource, VersionProbe,
+    AgentCapabilities, AgentDescriptor, AgentProviderId, ConfigDirSpec, EffortSpec, EffortSpelling,
+    FlagSpec, PromptStyle, ResumeStyle, ReviewStyle, StructuredReviewStyle, UsageSource,
+    VersionProbe,
 };
 
 /// `claude --resume <session-id>`: the id its transcripts record, resumed from
@@ -11,14 +11,6 @@ use domain::{
 fn claude_resume() -> Option<ResumeStyle> {
     Some(ResumeStyle::Flag {
         flag: "--resume".to_owned(),
-    })
-}
-
-/// `codex resume <session-id>` — a subcommand, not a flag, so it leads the
-/// command line.
-fn codex_resume() -> Option<ResumeStyle> {
-    Some(ResumeStyle::Subcommand {
-        command: "resume".to_owned(),
     })
 }
 
@@ -30,20 +22,9 @@ fn opencode_resume() -> Option<ResumeStyle> {
     })
 }
 
-/// Claude Code as an ACP agent. Grok's usage path is the one that spawns an
-/// ACP entry today; Claude's is declared the same way so the subcommand lives
-/// in one place.
-fn claude_acp() -> Option<AcpSpec> {
-    Some(AcpSpec {
-        args: vec!["acp".to_owned()],
-    })
-}
-
-///
 /// Each was read off the CLI's own `--help`, and each is the provider's own
 /// answer to "look but do not touch" rather than a sandbox Forge imposes:
-/// Claude's plan permission mode, Codex's read-only sandbox policy, the `plan`
-/// agent OpenCode ships, and Cursor's ask mode. An automatic pull-request
+/// Claude's plan permission mode and Cursor's ask mode. An automatic pull-request
 /// review starts in a checkout the user is working in, so a provider that
 /// could not be put in one of these would not be offered at all.
 fn review(label: &str, args: &[&str]) -> Option<ReviewStyle> {
@@ -53,30 +34,9 @@ fn review(label: &str, args: &[&str]) -> Option<ReviewStyle> {
     })
 }
 
-fn grok_resume() -> Option<ResumeStyle> {
-    Some(ResumeStyle::Flag {
-        flag: "--resume".to_owned(),
-    })
-}
-
 fn cursor_resume() -> Option<ResumeStyle> {
     Some(ResumeStyle::Flag {
         flag: "--resume".to_owned(),
-    })
-}
-
-/// Grok as an ACP agent: `grok agent stdio`. Usage reads billing over this
-/// entry rather than spelling the subcommand again.
-fn grok_acp() -> Option<AcpSpec> {
-    Some(AcpSpec {
-        args: vec!["agent".to_owned(), "stdio".to_owned()],
-    })
-}
-
-fn grok_config_dir() -> Option<ConfigDirSpec> {
-    Some(ConfigDirSpec {
-        vars: vec!["GROK_HOME".to_owned()],
-        help: "A separate account: its own config, credentials and sessions.".to_owned(),
     })
 }
 
@@ -84,8 +44,7 @@ fn grok_config_dir() -> Option<ConfigDirSpec> {
 #[must_use]
 pub fn builtins() -> Vec<AgentDescriptor> {
     vec![
-        // Claude and Codex read their existing local OAuth credentials to report
-        // usage, and Grok answers the same question over its ACP entry.
+        // Claude reads its existing local OAuth credentials to report usage.
         // OpenCode bills per model provider and Cursor exposes no local endpoint
         // of any kind, so neither declares a usage source.
         descriptor(
@@ -98,26 +57,9 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             claude_resume(),
             // `claude [options] [command] [prompt]` — its own usage line.
             Some(PromptStyle::Positional),
-            claude_acp(),
             // `--permission-mode plan`: reads and runs read-only tools, and
             // asks before anything that would write.
             review("plan mode", &["--permission-mode", "plan"]),
-        ),
-        descriptor(
-            "codex",
-            "Codex CLI",
-            &["codex"],
-            None,
-            Some(UsageSource::CodexOAuth),
-            codex_config_dir(),
-            codex_resume(),
-            // `codex [OPTIONS] [PROMPT]`, forwarded to the interactive CLI
-            // when no subcommand is given.
-            Some(PromptStyle::Positional),
-            None,
-            // `-s read-only` is the sandbox policy applied to every command
-            // the model runs, not a prompt it can talk its way past.
-            review("read-only sandbox", &["-s", "read-only"]),
         ),
         descriptor(
             "opencode",
@@ -133,15 +75,14 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             Some(PromptStyle::Flag {
                 flag: "--prompt".to_owned(),
             }),
-            None,
             // V2 has no interactive --agent flag; refuse rather than silently run a writable review.
             None,
         ),
         descriptor(
             "cursor",
             "Cursor CLI",
-            // `agent` is preferred but ambiguous — on many machines it is the
-            // Grok CLI — so the `cursor` marker below is what keeps it honest.
+            // `agent` is preferred but ambiguous — other CLIs install the same
+            // name — so the `cursor` marker below is what keeps it honest.
             &["agent", "cursor-agent"],
             Some("cursor"),
             None,
@@ -152,26 +93,8 @@ pub fn builtins() -> Vec<AgentDescriptor> {
             // `agent [options] [command] [prompt...]`, documented as "Initial
             // prompt for the agent".
             Some(PromptStyle::Positional),
-            None,
             // `--mode ask` is its own Q&A posture: explanations, no edits.
             review("ask mode", &["--mode", "ask"]),
-        ),
-        descriptor(
-            "grok",
-            "Grok",
-            // Unambiguous `grok` only — `agent` on PATH is often this CLI, but
-            // the cursor descriptor already claims that name with a marker.
-            &["grok"],
-            Some("grok"),
-            // Grok publishes no usage URL; `usage::grok` asks its ACP entry
-            // instead, which is why this is the one source that needs the
-            // binary rather than a credentials file.
-            Some(UsageSource::GrokAcp),
-            grok_config_dir(),
-            grok_resume(),
-            Some(PromptStyle::Positional),
-            grok_acp(),
-            review("plan mode", &["--permission-mode", "plan"]),
         ),
     ]
 }
@@ -192,18 +115,9 @@ fn claude_config_dir() -> Option<ConfigDirSpec> {
     })
 }
 
-/// `CODEX_HOME` selects Codex's account;
-/// `usage::codex` already reads credentials through it.
-fn codex_config_dir() -> Option<ConfigDirSpec> {
-    Some(ConfigDirSpec {
-        vars: vec!["CODEX_HOME".to_owned()],
-        help: "A separate account: its own credentials and history.".to_owned(),
-    })
-}
-
 /// OpenCode needs two variables to switch both config and credentials.
 ///
-/// OpenCode splits what the other two keep together: `OPENCODE_CONFIG_DIR`
+/// OpenCode splits what Claude keeps together: `OPENCODE_CONFIG_DIR`
 /// moves `opencode.json` and the agents, commands and plugins beside it, while
 /// the credentials and session storage live under `<XDG_DATA_HOME>/opencode`.
 /// Pointing both at the profile's directory is what makes it one account and
@@ -235,7 +149,6 @@ fn descriptor(
     config_dir: Option<ConfigDirSpec>,
     resume: Option<ResumeStyle>,
     prompt: Option<PromptStyle>,
-    acp: Option<AcpSpec>,
     review: Option<ReviewStyle>,
 ) -> AgentDescriptor {
     let supports_resume = resume.is_some();
@@ -255,7 +168,6 @@ fn descriptor(
         config_dir,
         resume,
         prompt,
-        acp,
         review,
         // `--session-id` takes a UUID the caller minted, so Forge knows which
         // transcript holds the answer; `--add-dir` lets plan mode read the pack.
@@ -267,7 +179,6 @@ fn descriptor(
             "claude" | "cursor" => Some(FlagSpec {
                 flag: "--model".into(),
             }),
-            "codex" | "grok" => Some(FlagSpec { flag: "-m".into() }),
             _ => None,
         },
         effort: match id {
@@ -275,20 +186,9 @@ fn descriptor(
                 EffortSpelling::Flag("--effort".into()),
                 &["low", "medium", "high", "xhigh", "max"],
             )),
-            "codex" => Some(effort(
-                EffortSpelling::Config {
-                    flag: "-c".into(),
-                    key: "model_reasoning_effort".into(),
-                },
-                &["none", "minimal", "low", "medium", "high", "xhigh"],
-            )),
             "cursor" => Some(effort(
                 EffortSpelling::ModelSuffix,
                 &["low", "medium", "high", "xhigh", "max"],
-            )),
-            "grok" => Some(effort(
-                EffortSpelling::Flag("--reasoning-effort".into()),
-                &["low", "medium", "high"],
             )),
             _ => None,
         },
@@ -320,7 +220,7 @@ mod tests {
     /// positional, so its prompt has to be named.
     #[test]
     fn every_builtin_declares_how_it_takes_a_prompt() {
-        for id in ["claude", "codex", "cursor", "grok"] {
+        for id in ["claude", "cursor"] {
             let descriptor = builtin(id).unwrap();
             assert_eq!(
                 descriptor.prompt,
@@ -365,9 +265,9 @@ mod tests {
     }
 
     #[test]
-    fn there_are_five_builtins_in_order() {
+    fn there_are_three_builtins_in_order() {
         let ids: Vec<String> = builtins().iter().map(|d| d.id.to_string()).collect();
-        assert_eq!(ids, ["claude", "codex", "opencode", "cursor", "grok"]);
+        assert_eq!(ids, ["claude", "opencode", "cursor"]);
     }
 
     #[test]
@@ -396,45 +296,18 @@ mod tests {
     }
 
     #[test]
-    fn claude_and_grok_declare_their_acp_entry() {
-        assert_eq!(
-            builtin("claude")
-                .unwrap()
-                .acp
-                .expect("claude speaks ACP")
-                .args,
-            ["acp"]
-        );
-        assert_eq!(
-            builtin("grok").unwrap().acp.expect("grok speaks ACP").args,
-            ["agent", "stdio"]
-        );
-        for id in ["codex", "opencode", "cursor"] {
-            assert!(builtin(id).unwrap().acp.is_none(), "{id}");
-        }
-    }
-
-    #[test]
     fn each_provider_resumes_the_way_its_cli_spells_it() {
         let args = |id: &str| builtin(id).unwrap().resume.map(|r| r.args("s-1"));
-        assert_eq!(
-            args("claude"),
-            Some(vec!["--resume".to_owned(), "s-1".to_owned()])
-        );
-        assert_eq!(
-            args("codex"),
-            Some(vec!["resume".to_owned(), "s-1".to_owned()])
-        );
-        assert_eq!(
-            args("opencode"),
-            Some(vec!["--session".to_owned(), "s-1".to_owned()])
-        );
-        for id in ["cursor", "grok"] {
+        for id in ["claude", "cursor"] {
             assert_eq!(
                 args(id),
                 Some(vec!["--resume".to_owned(), "s-1".to_owned()])
             );
         }
+        assert_eq!(
+            args("opencode"),
+            Some(vec!["--session".to_owned(), "s-1".to_owned()])
+        );
     }
 
     #[test]
@@ -455,26 +328,18 @@ mod tests {
 
     #[test]
     fn providers_without_a_marker_do_not_expect_one() {
-        for id in ["claude", "codex", "opencode"] {
+        for id in ["claude", "opencode"] {
             assert!(builtin(id)
                 .unwrap()
                 .version_probe
                 .expect_substring
                 .is_none());
         }
-        assert_eq!(
-            builtin("grok")
-                .unwrap()
-                .version_probe
-                .expect_substring
-                .as_deref(),
-            Some("grok")
-        );
     }
 
     #[test]
     fn every_provider_but_cursor_can_move_its_config_directory() {
-        for id in ["claude", "codex", "opencode", "grok"] {
+        for id in ["claude", "opencode"] {
             let spec = builtin(id).unwrap().config_dir.expect(id);
             assert!(!spec.vars.is_empty(), "{id}");
             assert!(!spec.help.trim().is_empty(), "{id}");
@@ -515,39 +380,13 @@ mod tests {
     }
 
     #[test]
-    fn three_providers_declare_a_usage_source_each_of_its_own_kind() {
-        use domain::UsageSource;
+    fn only_claude_declares_a_usage_source() {
         assert!(matches!(
             builtin("claude").unwrap().usage_source,
             Some(UsageSource::ClaudeOauth)
         ));
-        assert!(matches!(
-            builtin("codex").unwrap().usage_source,
-            Some(UsageSource::CodexOAuth)
-        ));
-        assert!(matches!(
-            builtin("grok").unwrap().usage_source,
-            Some(UsageSource::GrokAcp)
-        ));
         // OpenCode bills per model provider; Cursor exposes nothing local.
         assert!(builtin("opencode").unwrap().usage_source.is_none());
         assert!(builtin("cursor").unwrap().usage_source.is_none());
-    }
-
-    /// `usage::grok` spawns [`AcpSpec::args`] rather than spelling
-    /// `agent stdio` a second time, so a provider reading its meter over ACP
-    /// has to declare that entry or the reading has nothing to spawn.
-    #[test]
-    fn an_acp_usage_source_comes_with_the_acp_entry_it_spawns() {
-        use domain::UsageSource;
-        for descriptor in builtins() {
-            if matches!(descriptor.usage_source, Some(UsageSource::GrokAcp)) {
-                assert!(
-                    descriptor.acp.is_some(),
-                    "{} reads usage over ACP but declares no ACP entry",
-                    descriptor.id
-                );
-            }
-        }
     }
 }

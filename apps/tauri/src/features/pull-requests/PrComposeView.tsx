@@ -109,7 +109,9 @@ export function PrComposeView() {
     if (!d || diffIsEmpty(d)) return;
     const provider = promptCapableProvider();
     if (!provider) {
-      setNotice("No installed agent accepts a prompt at launch. Install Claude, Codex, or Cursor.");
+      setNotice(
+        "No installed agent accepts a prompt at launch. Install Claude, OpenCode, or Cursor.",
+      );
       return;
     }
     const ws = workspace();

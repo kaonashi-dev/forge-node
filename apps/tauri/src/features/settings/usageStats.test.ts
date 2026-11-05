@@ -41,8 +41,8 @@ const CLAUDE = {
   descriptor: { id: "claude", display_name: "Claude Code" },
 } satisfies ProviderInfo;
 
-const CODEX = {
-  descriptor: { id: "codex", display_name: "Codex CLI" },
+const OPENCODE = {
+  descriptor: { id: "opencode", display_name: "OpenCode" },
 } satisfies ProviderInfo;
 
 function provider(partial: Partial<ProviderAnalytics> = {}): ProviderAnalytics {
@@ -201,11 +201,11 @@ describe("dailyCells", () => {
 });
 
 describe("scopedSummary", () => {
-  const providers = (data: UsageAnalytics) => statsProviders(data, [CLAUDE, CODEX]);
+  const providers = (data: UsageAnalytics) => statsProviders(data, [CLAUDE, OPENCODE]);
 
   it("reads every provider for the all-agents scope", () => {
     const data = analytics({
-      providers: [provider(), provider({ provider_id: "codex", cost_micros: 500_000 })],
+      providers: [provider(), provider({ provider_id: "opencode", cost_micros: 500_000 })],
       daily: [{ date: "2026-08-30", tokens: 100 }],
     });
     const summary = scopedSummary(data, providers(data), { provider: null }, []);
@@ -217,9 +217,9 @@ describe("scopedSummary", () => {
   });
 
   it("narrows to one provider without falling back to the total", () => {
-    const data = analytics({ providers: [provider(), provider({ provider_id: "codex" })] });
-    const summary = scopedSummary(data, providers(data), { provider: "codex" }, []);
-    expect(summary.label).toBe("Codex CLI");
+    const data = analytics({ providers: [provider(), provider({ provider_id: "opencode" })] });
+    const summary = scopedSummary(data, providers(data), { provider: "opencode" }, []);
+    expect(summary.label).toBe("OpenCode");
     expect(summary.tokens).toBe(1000);
     expect(summary.costMicros).toBe(1_500_000);
   });
@@ -254,7 +254,7 @@ describe("scopedSummary", () => {
 
   it("reports an unknown scope as zeroes rather than another scope's figures", () => {
     const data = analytics();
-    expect(scopedSummary(data, providers(data), { provider: "grok" }, []).tokens).toBe(0);
+    expect(scopedSummary(data, providers(data), { provider: "missing" }, []).tokens).toBe(0);
     expect(
       scopedSummary(data, providers(data), { provider: "claude", profileId: "gone" }, []).tokens,
     ).toBe(0);
@@ -282,21 +282,21 @@ describe("statsChart", () => {
         ],
       }),
       provider({
-        provider_id: "codex",
+        provider_id: "opencode",
         tokens: { input: 6, output: 0, cache_write: 0, cache_read: 0, reasoning: 0 },
         cost_micros: 200,
         daily: [{ date: "2026-08-30", tokens: 6, cost_micros: 200 }],
       }),
     ],
   });
-  const providers = statsProviders(data, [CLAUDE, CODEX]);
+  const providers = statsProviders(data, [CLAUDE, OPENCODE]);
 
   it("draws every provider by default, filling the quiet days", () => {
     const chart = statsChart(providers, [], { provider: null }, "tokens", 3, TODAY);
     expect(chart.dates).toEqual(["2026-08-28", "2026-08-29", "2026-08-30"]);
     expect(chart.series.map((series) => [series.name, series.tokens])).toEqual([
       ["Claude Code", 15],
-      ["Codex CLI", 6],
+      ["OpenCode", 6],
     ]);
     expect(chart.series[0]?.points.map((point) => point.tokens)).toEqual([0, 10, 5]);
   });
@@ -305,7 +305,7 @@ describe("statsChart", () => {
     const chart = statsChart(providers, [], { provider: null }, "cost", 3, TODAY);
     expect(chart.series.map((series) => [series.name, series.costMicros])).toEqual([
       ["Claude Code", 1500],
-      ["Codex CLI", 200],
+      ["OpenCode", 200],
     ]);
   });
 
@@ -318,7 +318,7 @@ describe("statsChart", () => {
   });
 
   it("draws one provider's own series when filtered", () => {
-    const chart = statsChart(providers, [], { provider: "codex" }, "tokens", 3, TODAY);
+    const chart = statsChart(providers, [], { provider: "opencode" }, "tokens", 3, TODAY);
     expect(chart.series.map((series) => series.tokens)).toEqual([6]);
   });
 
@@ -337,7 +337,7 @@ describe("statsChart", () => {
   });
 
   it("never falls back to the total for provider data it does not have", () => {
-    const chart = statsChart(providers, [], { provider: "grok" }, "tokens", 3, TODAY);
+    const chart = statsChart(providers, [], { provider: "missing" }, "tokens", 3, TODAY);
     expect(chart.series).toEqual([]);
   });
 });
@@ -347,10 +347,10 @@ describe("chartPeak", () => {
     const data = analytics({
       providers: [
         provider({ provider_id: "claude", daily: [{ date: "2026-08-30", tokens: 10 }] }),
-        provider({ provider_id: "codex", daily: [{ date: "2026-08-30", tokens: 5 }] }),
+        provider({ provider_id: "opencode", daily: [{ date: "2026-08-30", tokens: 5 }] }),
       ],
     });
-    const providers = statsProviders(data, [CLAUDE, CODEX]);
+    const providers = statsProviders(data, [CLAUDE, OPENCODE]);
     const chart = statsChart(providers, [], { provider: null }, "tokens", 3, TODAY);
     expect(chartPeak(chart, "tokens")).toEqual({ date: "2026-08-30", value: 15 });
   });
@@ -531,12 +531,12 @@ describe("limitGroups", () => {
 
   it("groups accounts by provider in first-seen order", () => {
     const groups = limitGroups(
-      [reading("claude", "work"), reading("codex", null), reading("claude", null)],
-      [CLAUDE, CODEX],
+      [reading("claude", "work"), reading("opencode", null), reading("claude", null)],
+      [CLAUDE, OPENCODE],
     );
     expect(groups.map((group) => [group.name, group.readings.length])).toEqual([
       ["Claude Code", 2],
-      ["Codex CLI", 1],
+      ["OpenCode", 1],
     ]);
   });
 });

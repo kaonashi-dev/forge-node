@@ -1016,11 +1016,11 @@ fn reconnect_with_a_new_client_preserves_the_grid() {
 }
 
 /// Reference-machine smoke, ignored in CI because it needs
-/// the four real provider binaries and their user-level authentication state.
+/// the real provider binaries and their user-level authentication state.
 #[test]
-#[ignore = "requires installed claude, codex, opencode, and cursor-agent TUIs"]
+#[ignore = "requires installed claude, opencode, and cursor-agent TUIs"]
 fn installed_agent_tuis_render_and_accept_input() {
-    const PROVIDERS: [&str; 5] = ["claude", "codex", "opencode", "cursor", "grok"];
+    const PROVIDERS: [&str; 3] = ["claude", "opencode", "cursor"];
 
     let td = start_daemon();
     let client = Client::connect(&td.socket, "agent-tui-smoke").expect("connect");

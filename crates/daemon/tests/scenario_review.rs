@@ -473,7 +473,7 @@ fn refusals_are_errors_and_failures_are_runs() {
     let workspace = workspace_at(&client, repo.path());
 
     assert_eq!(
-        start(&client, workspace, Some("codex")),
+        start(&client, workspace, Some("opencode")),
         Err(ErrorCode::InvalidRequest)
     );
     assert_eq!(

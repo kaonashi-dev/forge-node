@@ -38,8 +38,8 @@ forge-tauri (GUI)  ──UDS + MessagePack──►  forge-daemon  ◄── for
   renders cells from a replica              sessions, git, SQLite            reports
 ```
 
-- **Terminal-first:** an agent is a CLI (`claude`, `codex`, `opencode`,
-  `cursor-agent`, `grok`) running in a PTY. Providers are descriptors, not
+- **Terminal-first:** an agent is a CLI (`claude`, `opencode`,
+  `cursor-agent`) running in a PTY. Providers are descriptors, not
   integrations.
 - **The daemon owns execution:** closing the GUI never kills a session; the
   daemon is a per-user singleton.

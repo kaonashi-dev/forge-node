@@ -2,8 +2,8 @@
 
 <p align="center">
   <b>A native desktop workbench for terminals and AI coding agents.</b><br>
-  Run Claude Code, Codex, OpenCode, Cursor and Grok across Git repositories and
-  isolated worktrees — with sessions that outlive the window.
+  Run Claude Code, OpenCode and Cursor across Git repositories and isolated
+  worktrees — with sessions that outlive the window.
 </p>
 
 <p align="center">
@@ -34,10 +34,9 @@
 
 ## Features
 
-- **Your agents, their own CLIs.** Launch Claude Code, Codex, OpenCode, Cursor
-  CLI and Grok in real terminals, using their existing authentication and
-  configuration. Forge runs their interactive interfaces, not a replacement
-  chat UI.
+- **Your agents, their own CLIs.** Launch Claude Code, OpenCode and Cursor CLI
+  in real terminals, using their existing authentication and configuration.
+  Forge runs their interactive interfaces, not a replacement chat UI.
 - **Isolated workspaces.** Give parallel tasks separate Git worktrees and
   branches. Per-project share rules can copy, clone or link files such as `.env`
   and dependencies, or run a setup command in a new worktree.
@@ -150,10 +149,8 @@ for the full layout and platform-specific behavior.
 | Agent | CLI candidates | Separate account directory | Usage in Forge |
 | --- | --- | --- | --- |
 | Claude Code | `claude` | `CLAUDE_CONFIG_DIR` | Allowance + token analytics |
-| Codex CLI | `codex` | `CODEX_HOME` | Allowance + token analytics |
 | OpenCode | `opencode`, `opencode2` | `OPENCODE_CONFIG_DIR` + `XDG_DATA_HOME` | — |
 | Cursor CLI | `agent`, `cursor-agent` | Not supported | — |
-| Grok | `grok` | `GROK_HOME` | Allowance |
 
 A **launch profile** saves a provider's executable, account directory and
 arguments. Use profiles to run the same provider with different accounts or

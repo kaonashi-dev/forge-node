@@ -37,12 +37,11 @@ pub use action::{
     MAX_READY_TIMEOUT_SECS, PORT_PLACEHOLDER,
 };
 pub use agent::{
-    AcpSpec, AgentCapabilities, AgentDescriptor, AgentLaunchOptions, AgentProfile,
-    ChildWorkspacePolicy, ConfigDirSpec, DetectionResult, DetectionStatus, EffortSpec,
-    EffortSpelling, EnvSource, FlagSpec, LaunchAgentRequest, PromptStyle, ProviderUsage, PtySize,
-    ResolvedEnvironment, ResumeStyle, ReviewStyle, SpawnSpec, StructuredReview,
-    StructuredReviewStyle, UsageProbe, UsageSource, UsageWindow, VersionProbe,
-    RESERVED_PROFILE_VARS,
+    AgentCapabilities, AgentDescriptor, AgentLaunchOptions, AgentProfile, ChildWorkspacePolicy,
+    ConfigDirSpec, DetectionResult, DetectionStatus, EffortSpec, EffortSpelling, EnvSource,
+    FlagSpec, LaunchAgentRequest, PromptStyle, ProviderUsage, PtySize, ResolvedEnvironment,
+    ResumeStyle, ReviewStyle, SpawnSpec, StructuredReview, StructuredReviewStyle, UsageProbe,
+    UsageSource, UsageWindow, VersionProbe, RESERVED_PROFILE_VARS,
 };
 pub use branch::{BranchRef, RefScope, Remote};
 pub use change::{ChangeContext, ChangeFile, JuvaDraft, JuvaKind};

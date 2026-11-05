@@ -313,7 +313,6 @@ mod tests {
                     flag: "--resume".to_string(),
                 }),
                 prompt: None,
-                acp: None,
                 review: Some(domain::ReviewStyle {
                     args: vec!["--permission-mode".to_string(), "plan".to_string()],
                     label: "plan mode".to_string(),

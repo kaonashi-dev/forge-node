@@ -177,8 +177,8 @@ hides the mark for the terminal currently on screen (`session_wants_you`), not
 the store. Agents that do not emit BEL natively reach the same path through
 Forge-injected adapters; see [agents.md](./agents.md#attention-needs-you).
 
-An OSC string may be terminated by BEL, and Codex animates its terminal title
-about once a second while it waits — so the engine must keep consuming that
+An OSC string may be terminated by BEL, and agent TUIs animate their terminal
+title about once a second while they wait — so the engine must keep consuming that
 byte as the OSC terminator rather than dispatching it
 (`terminal-core/tests/engine.rs::title_and_bell`), or `needs-you` would latch on
 permanently.
