@@ -91,7 +91,6 @@
             }
           },
           "prompt": null,
-          "acp": null,
           "review": {
             "args": [
               "--permission-mode",

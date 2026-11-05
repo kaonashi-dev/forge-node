@@ -1,17 +1,14 @@
 //! Reading account usage from a provider.
 //!
 //! A provider declares *where* its usage comes from with a [`UsageSource`]: a CLI
-//! that prints one documented JSON document, the provider's existing local OAuth
-//! credentials plus its usage endpoint (Claude, Codex), or its own ACP entry
-//! (Grok, which publishes no usage URL). Every failure — no source, not signed
+//! that prints one documented JSON document, or the provider's existing local
+//! OAuth credentials plus its usage endpoint (Claude). Every failure — no source, not signed
 //! in, network down, an unexpected shape — resolves to `None`: the provider is
 //! absent from the result, and an error never becomes a number on screen.
 
 pub mod analytics;
 mod claude;
 mod cli;
-mod codex;
-mod grok;
 mod http;
 mod pricing;
 
@@ -44,7 +41,7 @@ pub struct UsageAccount<'a> {
 /// Read one account's usage for `descriptor`.
 ///
 /// `executable` is the resolved provider binary, needed only by the CLI source;
-/// the OAuth sources read local credentials and ignore it. `account` selects
+/// the OAuth source reads local credentials and ignores it. `account` selects
 /// the login: the probe runs against an environment whose config-directory
 /// variables point at that account, so the CLI source and the credential reads
 /// agree on which login they are describing.
@@ -61,13 +58,9 @@ pub fn collect(
     let env = &crate::descriptor::env_for_config_dir(descriptor, env, account.config_dir);
     let mut usage = match descriptor.usage_source.as_ref()? {
         UsageSource::Cli(probe) => cli::collect(descriptor, executable?, probe, env),
-        UsageSource::CodexOAuth => codex::collect(descriptor, env, &UreqClient::default()),
         UsageSource::ClaudeOauth => {
             claude::collect(descriptor, env, account, &UreqClient::default())
         }
-        // Like the CLI source, this one needs the binary: the reading comes out
-        // of the provider rather than out of a URL.
-        UsageSource::GrokAcp => grok::collect(descriptor, executable?, env),
         // A source variant this build does not know reports no usage.
         _ => None,
     }?;
@@ -78,9 +71,9 @@ pub fn collect(
 /// Extract a whole-percent reading from a window object.
 ///
 /// Three conventions appear in the wild:
-/// - `used_percent` / `usage_percent` — already `0..=100` (Codex).
+/// - `used_percent` / `usage_percent` — already `0..=100`.
 /// - `utilization` — also `0..=100` on Anthropic's OAuth usage endpoint
-///   (CodexBar / Claude Code). Treating it as a `0..=1` fraction was the bug
+///   (as Claude Code reads it). Treating it as a `0..=1` fraction was the bug
 ///   that pegged every meter at 100%.
 /// - `used_fraction` / `fraction_used` — explicit `0..=1` (our CLI probe).
 ///
@@ -107,7 +100,7 @@ fn percent_from(window: &Value) -> Option<u8> {
 /// Extract a reset timestamp from a window object, if it carries one.
 ///
 /// Accepts `resets_at` / `reset_at` as an RFC-3339 string (Claude) or as a
-/// Unix-seconds number (Codex).
+/// Unix-seconds number.
 fn resets_from(window: &Value) -> Option<Timestamp> {
     let value = window.get("resets_at").or_else(|| window.get("reset_at"))?;
     if let Some(raw) = value.as_str() {

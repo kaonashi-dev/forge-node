@@ -207,7 +207,7 @@ export function launchHint(
   running: boolean,
 ): string {
   if (!agent) {
-    return "No installed agent has a read-only mode. Install Claude, Codex, OpenCode, or Cursor.";
+    return "No installed agent has a read-only mode. Install Claude or Cursor.";
   }
   if (running) return "A review is already running for this pull request.";
   if (recipe.id === CUSTOM_RECIPE && !custom.trim()) {

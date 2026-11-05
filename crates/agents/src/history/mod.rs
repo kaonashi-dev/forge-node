@@ -25,9 +25,7 @@ use time::OffsetDateTime;
 use crate::jsonl::{self, Object, Text};
 
 mod bounded;
-mod codex;
 mod cursor;
-mod grok;
 mod opencode_db;
 
 #[cfg(test)]
@@ -153,12 +151,7 @@ fn fingerprint(projects: &[Project], workspaces: &[Workspace], profiles: &[Agent
         .collect();
     keys.sort_unstable();
     keys.hash(&mut hasher);
-    for variable in [
-        "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
-        "GROK_HOME",
-        "XDG_DATA_HOME",
-    ] {
+    for variable in ["CLAUDE_CONFIG_DIR", "XDG_DATA_HOME"] {
         std::env::var_os(variable).hash(&mut hasher);
     }
     hasher.finish()
@@ -232,27 +225,10 @@ fn discover_in(
             stamp_account(&mut out[found..], account);
         }
     }
-    for (provider, variable, fallback, scan) in [
-        (
-            "codex",
-            "CODEX_HOME",
-            ".codex",
-            codex::discover as fn(&Path, &[Root], &mut Vec<ExternalAgentSession>),
-        ),
-        ("grok", "GROK_HOME", ".grok", grok::discover),
-        ("cursor", "", ".cursor", cursor::discover),
-    ] {
-        for account in accounts(
-            &default_dir(home, variable, fallback),
-            provider,
-            profiles,
-            home,
-            "",
-        ) {
-            let found = out.len();
-            scan(&account.dir, &roots, &mut out);
-            stamp_account(&mut out[found..], &account);
-        }
+    for account in accounts(&home.join(".cursor"), "cursor", profiles, home, "") {
+        let found = out.len();
+        cursor::discover(&account.dir, &roots, &mut out);
+        stamp_account(&mut out[found..], &account);
     }
     let mut seen = HashSet::new();
     out.retain(|session| {
@@ -1281,16 +1257,6 @@ pub fn read_transcript(
     let probe = limit.saturating_add(1);
     let mut incomplete = false;
     let turns = match (session.provider.as_str(), session.store) {
-        ("codex", _) => {
-            let read = codex::turns(&session.transcript_path, probe);
-            incomplete = read.truncated;
-            read.turns
-        }
-        ("grok", _) => {
-            let read = grok::turns(&session.transcript_path, probe);
-            incomplete = read.truncated;
-            read.turns
-        }
         ("cursor", _) => {
             incomplete = true;
             cursor::turns(&session.transcript_path, probe)
@@ -1539,8 +1505,7 @@ pub fn delete_transcript(session: &ExternalAgentSession) -> Result<(), DeleteErr
     }
     let path = &session.transcript_path;
     match session.provider.as_str() {
-        "cursor" | "grok" => return bounded::delete_session_directory(session),
-        "codex" => {}
+        "cursor" => return bounded::delete_session_directory(session),
         OPENCODE_PROVIDER => delete_opencode_siblings(path, &session.session_id),
         CLAUDE_PROVIDER => delete_claude_siblings(path, &session.session_id),
         _ => {
@@ -2746,7 +2711,7 @@ mod tests {
             assistant(serde_json::json!([{"type": "text", "text": "hi"}])),
         )
         .unwrap();
-        assert_eq!(last_assistant_message("codex", &other), None);
+        assert_eq!(last_assistant_message("cursor", &other), None);
     }
 
     #[test]
@@ -2764,7 +2729,7 @@ mod tests {
             claude_transcript_in(store.path(), cwd.path(), id),
             Some(dir.join(format!("{id}.jsonl")))
         );
-        assert_eq!(minted_transcript("codex", cwd.path(), id), None);
+        assert_eq!(minted_transcript("cursor", cwd.path(), id), None);
         assert_eq!(minted_transcript(CLAUDE_PROVIDER, cwd.path(), "../x"), None);
     }
 

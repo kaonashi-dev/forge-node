@@ -225,7 +225,7 @@ fn version_nine_profiles_keep_their_config_directory() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("forge-v9.db");
     let claude = AgentProfileId::new();
-    let codex = AgentProfileId::new();
+    let opencode = AgentProfileId::new();
     let plain = AgentProfileId::new();
     let now = Timestamp::now().to_rfc3339();
     {
@@ -257,7 +257,12 @@ fn version_nine_profiles_keep_their_config_directory() {
             "Personal",
             r#"[["HTTP_PROXY","http://localhost:8080"],["CLAUDE_CONFIG_DIR","/home/me/.claude-personal"]]"#,
         );
-        insert(&codex, "codex", "Work", r#"[["CODEX_HOME",".codex-work"]]"#);
+        insert(
+            &opencode,
+            "opencode",
+            "Work",
+            r#"[["OPENCODE_CONFIG_DIR",".opencode-work"]]"#,
+        );
         insert(&plain, "claude", "Bare", "[]");
     }
 
@@ -271,8 +276,8 @@ fn version_nine_profiles_keep_their_config_directory() {
         Some(std::path::PathBuf::from("/home/me/.claude-personal"))
     );
     assert_eq!(
-        by_id(codex).config_dir,
-        Some(std::path::PathBuf::from(".codex-work"))
+        by_id(opencode).config_dir,
+        Some(std::path::PathBuf::from(".opencode-work"))
     );
     assert_eq!(by_id(plain).config_dir, None);
     assert_eq!(by_id(plain).args, ["--model", "opus"]);
@@ -429,7 +434,7 @@ fn a_profile_name_is_unique_per_provider_ignoring_case() {
 
     // Another provider may reuse the name.
     db.agent_profiles()
-        .upsert(&mk_profile("codex", "Work"))
+        .upsert(&mk_profile("opencode", "Work"))
         .unwrap();
     assert_eq!(db.agent_profiles().list().unwrap().len(), 2);
 }
@@ -438,7 +443,7 @@ fn a_profile_name_is_unique_per_provider_ignoring_case() {
 fn profiles_are_listed_by_provider_then_name() {
     let db = Db::open_in_memory().unwrap();
     for (provider, name) in [
-        ("codex", "Work"),
+        ("opencode", "Work"),
         ("claude", "work"),
         ("claude", "Personal"),
     ] {
@@ -458,7 +463,7 @@ fn profiles_are_listed_by_provider_then_name() {
         [
             ("claude".to_owned(), "Personal".to_owned()),
             ("claude".to_owned(), "work".to_owned()),
-            ("codex".to_owned(), "Work".to_owned()),
+            ("opencode".to_owned(), "Work".to_owned()),
         ]
     );
 }

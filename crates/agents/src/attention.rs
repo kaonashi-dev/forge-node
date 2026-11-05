@@ -6,7 +6,7 @@ use domain::{AgentDescriptor, SpawnSpec};
 
 /// OpenCode plugin filename under the agent-plugins directory.
 pub const OPENCODE_PLUGIN_FILENAME: &str = "forge-attention.js";
-/// Shared BEL script used by Claude / Cursor / Grok hooks.
+/// Shared BEL script used by Claude / Cursor hooks.
 pub const RING_BELL_FILENAME: &str = "forge-ring-bell.sh";
 /// Claude `--settings` fragment naming the activity script.
 pub const CLAUDE_SETTINGS_FILENAME: &str = "forge-claude-attention.json";
@@ -14,9 +14,6 @@ pub const ACTIVITY_FILENAME: &str = "forge-activity.sh";
 
 const OPENCODE_CLI_CONFIG_CONTENT: &str = "OPENCODE_CLI_CONFIG_CONTENT";
 const FORGE_HOOK_MARKER: &str = "forge-ring-bell.sh";
-/// Grok's opt-out of the Cursor hook compatibility scan (PTY hints are unaffected:
-/// this is a launch detail, not a terminal-contract variable).
-const GROK_CURSOR_HOOKS_ENABLED: &str = "GROK_CURSOR_HOOKS_ENABLED";
 
 /// Absolute paths of the installed attention assets.
 #[derive(Clone, Debug)]
@@ -107,8 +104,8 @@ pub fn install_assets_with_ctl(
 /// Inject the provider's attention adapter into `spec`.
 ///
 /// Returns whether anything was changed. Never overwrites a user-supplied
-/// OpenCode config overlay or an existing `--settings` / `tui.notification_*`
-/// the launch already carries.
+/// OpenCode config overlay or an existing `--settings` the launch already
+/// carries.
 pub fn inject_attention(
     descriptor: &AgentDescriptor,
     spec: &mut SpawnSpec,
@@ -117,9 +114,7 @@ pub fn inject_attention(
     match descriptor.id.as_str() {
         "opencode" => inject_opencode(spec, assets),
         "claude" => inject_claude(spec, assets),
-        "codex" => inject_codex(spec, assets),
         "cursor" => inject_cursor(spec, assets),
-        "grok" => inject_grok(spec, assets),
         _ => false,
     }
 }
@@ -157,35 +152,6 @@ fn inject_claude(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
     true
 }
 
-fn inject_codex(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
-    let mut changed = false;
-    if !args_contain_config_key(&spec.args, "notify") {
-        let command = serde_json::json!([assets.activity, "idle", "codex"]);
-        spec.args
-            .extend(["-c".to_owned(), format!("notify={command}")]);
-        changed = true;
-    }
-    if args_contain_config_key(&spec.args, "tui.notification_method")
-        || args_contain_config_key(&spec.args, "tui.notifications")
-    {
-        tracing::info!(
-            "codex launch already overrides TUI notifications; leaving Forge attention unset"
-        );
-        return changed;
-    }
-    // approval-requested only — agent-turn-complete would paint needs-you on every idle turn.
-    // condition=always: Forge's PTY has no focus state, so "unfocused" never fires.
-    spec.args.extend([
-        "-c".to_owned(),
-        r#"tui.notifications=["approval-requested"]"#.to_owned(),
-        "-c".to_owned(),
-        r#"tui.notification_method="bel""#.to_owned(),
-        "-c".to_owned(),
-        r#"tui.notification_condition="always""#.to_owned(),
-    ]);
-    true
-}
-
 fn inject_cursor(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
     let Some(home) = env_home(&spec.env) else {
         return false;
@@ -197,43 +163,6 @@ fn inject_cursor(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
             false
         }
     }
-}
-
-/// Grok's own hook file, and an opt-out of the *Cursor* hooks Grok also reads.
-///
-/// The opt-out is the half that is not obvious. Grok scans `~/.cursor/hooks.json`
-/// by default (its Cursor compatibility layer, always trusted at the global
-/// scope) and maps `beforeShellExecution` / `beforeMCPExecution` onto its own
-/// `PreToolUse`. That file is exactly where [`ensure_cursor_hooks`] already put
-/// `forge-ring-bell.sh`, so on a machine where Cursor has ever been launched
-/// from Forge a Grok session would ring BEL on *every tool call* — `needs-you`
-/// lit permanently rather than on the permission prompts the marker means. The
-/// hook Grok should ring from is the one written below; the Cursor file is
-/// Cursor's.
-fn inject_grok(spec: &mut SpawnSpec, assets: &AttentionAssets) -> bool {
-    let home = env_var(&spec.env, "GROK_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env_home(&spec.env).map(|h| h.join(".grok")));
-    let Some(grok_home) = home else {
-        return false;
-    };
-    let mut changed = set_env_if_unset(spec, GROK_CURSOR_HOOKS_ENABLED, "false");
-    match ensure_grok_hooks(&grok_home, &assets.ring_bell) {
-        Ok(wrote) => changed |= wrote,
-        Err(error) => tracing::warn!(%error, "could not install Grok attention hooks"),
-    }
-    changed
-}
-
-/// Set `key` on the launch unless it already carries one — a profile that says
-/// so itself wins, as it does for every other injection here.
-fn set_env_if_unset(spec: &mut SpawnSpec, key: &str, value: &str) -> bool {
-    if spec.env.iter().any(|(k, _)| k == key) {
-        tracing::info!(key, "launch already sets it; leaving the Forge value unset");
-        return false;
-    }
-    spec.env.push((key.to_owned(), value.to_owned()));
-    true
 }
 
 /// Cursor has no permission-prompt hook; `beforeShellExecution` /
@@ -296,31 +225,6 @@ fn ensure_cursor_hooks(home: &Path, ring_bell: &Path, activity: &Path) -> std::i
     Ok(true)
 }
 
-fn ensure_grok_hooks(grok_home: &Path, ring_bell: &Path) -> std::io::Result<bool> {
-    let dir = grok_home.join("hooks");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("forge-attention.json");
-    let body = serde_json::json!({
-        "hooks": {
-            "Notification": [{
-                "matcher": "permission_prompt",
-                "hooks": [{
-                    "type": "command",
-                    "command": ring_bell.to_string_lossy(),
-                    "timeout": 5
-                }]
-            }]
-        }
-    });
-    let bytes = format!("{body}\n").into_bytes();
-    match std::fs::read(&path) {
-        Ok(existing) if existing == bytes => return Ok(false),
-        _ => {}
-    }
-    std::fs::write(&path, bytes)?;
-    Ok(true)
-}
-
 fn push_hook_command(
     hooks: &mut serde_json::Value,
     event: &str,
@@ -374,14 +278,6 @@ fn args_contain(args: &[String], needle: &str) -> bool {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn args_contain_config_key(args: &[String], key: &str) -> bool {
-    args.windows(2)
-        .any(|w| w[0] == "-c" && w[1].starts_with(key))
-        || args.iter().any(|a| {
-            a.starts_with(&format!("-c{key}")) || a.starts_with(&format!("--config={key}"))
-        })
 }
 
 fn env_home(vars: &[(String, String)]) -> Option<PathBuf> {
@@ -642,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_keeps_equals_settings_and_codex_keeps_custom_notify() {
+    fn claude_keeps_equals_settings() {
         let dir = tempfile::tempdir().unwrap();
         let assets = install_assets(dir.path()).unwrap();
         let mut spec = empty_spec();
@@ -652,109 +548,6 @@ mod tests {
             &mut spec,
             &assets
         ));
-        spec.args = vec!["-c".into(), "notify=[\"/mine\"]".into()];
-        inject_attention(&builtins::builtin("codex").unwrap(), &mut spec, &assets);
-        assert_eq!(
-            spec.args
-                .iter()
-                .filter(|arg| arg.starts_with("notify="))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn codex_gets_bel_notification_overrides() {
-        let dir = tempfile::tempdir().unwrap();
-        let assets = install_assets(&dir.path().join("p")).unwrap();
-        let descriptor = builtins::builtin("codex").unwrap();
-        let mut spec = empty_spec();
-        assert!(inject_attention(&descriptor, &mut spec, &assets));
-        assert!(spec.args.iter().any(|a| a.contains("approval-requested")));
-        assert!(spec
-            .args
-            .iter()
-            .any(|a| a.contains(r#"notification_method="bel""#)));
-        assert!(spec
-            .args
-            .iter()
-            .any(|a| a.contains(r#"notification_condition="always""#)));
-    }
-
-    #[test]
-    fn grok_writes_a_permission_notification_hook() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        std::fs::create_dir_all(home.join(".grok")).unwrap();
-        let assets = install_assets(&dir.path().join("p")).unwrap();
-        let descriptor = builtins::builtin("grok").unwrap();
-        let mut spec = empty_spec();
-        spec.env = vec![("HOME".into(), home.to_string_lossy().into_owned())];
-        assert!(inject_attention(&descriptor, &mut spec, &assets));
-        let hook = std::fs::read_to_string(home.join(".grok/hooks/forge-attention.json")).unwrap();
-        assert!(hook.contains("permission_prompt"));
-        assert!(hook.contains("forge-ring-bell.sh"));
-        assert!(!inject_attention(&descriptor, &mut spec, &assets));
-    }
-
-    /// The bug this guards: Grok reads `~/.cursor/hooks.json` too, and Forge's
-    /// *Cursor* injection put `forge-ring-bell.sh` on `beforeShellExecution` /
-    /// `beforeMCPExecution` there. Grok maps both to `PreToolUse`, so without
-    /// the opt-out a Grok session rings BEL on every tool call and `needs-you`
-    /// never goes out.
-    #[test]
-    fn grok_ignores_the_cursor_hooks_forge_wrote_for_cursor() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        std::fs::create_dir_all(home.join(".grok")).unwrap();
-        let assets = install_assets(&dir.path().join("p")).unwrap();
-
-        // Exactly the state a machine is in after one Cursor launch.
-        let cursor = builtins::builtin("cursor").unwrap();
-        let mut cursor_spec = empty_spec();
-        cursor_spec.env = vec![("HOME".into(), home.to_string_lossy().into_owned())];
-        assert!(inject_attention(&cursor, &mut cursor_spec, &assets));
-        let cursor_hooks = std::fs::read_to_string(home.join(".cursor/hooks.json")).unwrap();
-        assert!(cursor_hooks.contains("forge-ring-bell.sh"));
-
-        let mut spec = empty_spec();
-        spec.env = vec![("HOME".into(), home.to_string_lossy().into_owned())];
-        assert!(inject_attention(
-            &builtins::builtin("grok").unwrap(),
-            &mut spec,
-            &assets
-        ));
-        assert_eq!(
-            env_var(&spec.env, "GROK_CURSOR_HOOKS_ENABLED"),
-            Some("false")
-        );
-    }
-
-    /// A profile that says so itself wins, as it does for every other
-    /// injection here.
-    #[test]
-    fn grok_leaves_an_explicit_cursor_hooks_choice_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        std::fs::create_dir_all(home.join(".grok")).unwrap();
-        let assets = install_assets(&dir.path().join("p")).unwrap();
-        let mut spec = empty_spec();
-        spec.env = vec![
-            ("HOME".into(), home.to_string_lossy().into_owned()),
-            ("GROK_CURSOR_HOOKS_ENABLED".into(), "true".into()),
-        ];
-        inject_attention(&builtins::builtin("grok").unwrap(), &mut spec, &assets);
-        assert_eq!(
-            env_var(&spec.env, "GROK_CURSOR_HOOKS_ENABLED"),
-            Some("true")
-        );
-        assert_eq!(
-            spec.env
-                .iter()
-                .filter(|(k, _)| k == "GROK_CURSOR_HOOKS_ENABLED")
-                .count(),
-            1
-        );
     }
 
     #[test]

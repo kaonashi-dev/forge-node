@@ -624,10 +624,9 @@ would have caught any finding on this page.
 
 `forgectl hook` fires at turn boundaries or attention events, not every tool
 call, and activity reports do not touch SQLite. Claude installs turn/question/
-permission hooks, Codex installs a turn-complete notify command, and OpenCode
-V2 installs a terminal-local event plugin. Its reporter keeps at most one child
-and one pending state, bounds execution, kills the process group on timeout,
-and removes subscriptions on unload. A `ClientKind::Cli` connection skips `TerminalActivity`,
+permission hooks and OpenCode V2 installs a terminal-local event plugin. Its
+reporter keeps at most one child and one pending state, bounds execution, kills
+the process group on timeout, and removes subscriptions on unload. A `ClientKind::Cli` connection skips `TerminalActivity`,
 `TerminalBell`, `ClipboardStore`, `EditorFrame`, and `ProviderUsageChanged`,
 so a controller blocked in `run wait` is not queued behind a terminal burst.
 Ledger message bodies are not written into a PTY. Explicit `SendSessionPrompt`

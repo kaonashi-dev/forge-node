@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -8,8 +8,6 @@ use super::{DeleteError, ExternalAgentSession, Root, Scan, Timestamp, Transcript
 
 const MAX_ENTRIES: usize = 20_000;
 pub(super) const MAX_RECORD_BYTES: u64 = 1024 * 1024;
-const MAX_SCAN_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_TURN_CHARS: usize = 16_384;
 
 pub(super) fn files(
     dir: &Path,
@@ -62,31 +60,6 @@ pub(super) fn json(path: &Path) -> Option<Value> {
     serde_json::from_reader(file.take(MAX_RECORD_BYTES)).ok()
 }
 
-/// Read a bounded tail, skipping a partial first record and oversized lines whole.
-pub(super) fn jsonl(path: &Path, mut visit: impl FnMut(&Value)) -> bool {
-    let Ok(mut file) = File::open(path) else {
-        return false;
-    };
-    let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = size.saturating_sub(MAX_SCAN_BYTES);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return true;
-    }
-    let mut reader = BufReader::new(file.take(MAX_SCAN_BYTES));
-    let mut truncated = start > 0;
-    if start > 0 {
-        let _ = reader.skip_until(b'\n');
-    }
-    let unread = crate::jsonl::for_each(reader, MAX_RECORD_BYTES, |line| {
-        if let Ok(value) = serde_json::from_slice(line) {
-            visit(&value);
-        } else {
-            truncated = true;
-        }
-    });
-    truncated || unread.any()
-}
-
 pub(super) fn root_for<'a>(cwd: &str, roots: &'a [Root]) -> Option<&'a Root> {
     let path = Path::new(cwd);
     roots.iter().find(|root| super::same_path(path, &root.path))
@@ -128,78 +101,10 @@ pub(super) fn session(
     }
 }
 
-pub(super) fn text(content: &Value) -> Option<String> {
-    match content {
-        Value::String(text) => super::non_empty(text),
-        Value::Array(parts) => {
-            let mut text = String::new();
-            for part in parts {
-                if !matches!(
-                    part.get("type").and_then(Value::as_str),
-                    Some("text" | "input_text" | "output_text")
-                ) {
-                    continue;
-                }
-                if let Some(chunk) = part.get("text").and_then(Value::as_str) {
-                    if !text.is_empty() {
-                        text.push('\n');
-                    }
-                    text.push_str(chunk);
-                }
-            }
-            super::non_empty(&text)
-        }
-        _ => None,
-    }
-}
-
 #[derive(Default)]
 pub(super) struct Conversation {
     pub turns: Vec<Turn>,
     pub truncated: bool,
-}
-
-pub(super) fn conversation(
-    path: &Path,
-    limit: usize,
-    parse: fn(&Value) -> Option<Turn>,
-) -> Conversation {
-    let mut turns = std::collections::VecDeque::new();
-    let mut dropped = false;
-    let truncated = jsonl(path, |value| {
-        if let Some(mut turn) = parse(value) {
-            if turn.text.chars().count() > MAX_TURN_CHARS {
-                turn.text = super::cap(&turn.text, MAX_TURN_CHARS);
-                dropped = true;
-            }
-            turns.push_back(turn);
-            if turns.len() > limit {
-                turns.pop_front();
-                dropped = true;
-            }
-        }
-    });
-    Conversation {
-        turns: turns.into(),
-        truncated: truncated || dropped,
-    }
-}
-
-pub(super) fn fold_turn(scan: &mut Scan, turn: Turn) {
-    scan.messages = scan.messages.saturating_add(1);
-    if turn.speaker == super::USER_SPEAKER && scan.first_user.is_none() {
-        scan.first_user = Some(super::truncate_title(&turn.text));
-    } else if turn.speaker == super::AGENT_SPEAKER {
-        scan.last_assistant = Some(super::fold_preview(&turn.text));
-    }
-}
-
-pub(super) fn timestamp(value: Option<&Value>) -> Option<time::OffsetDateTime> {
-    time::OffsetDateTime::parse(
-        value?.as_str()?,
-        &time::format_description::well_known::Rfc3339,
-    )
-    .ok()
 }
 
 pub(super) fn delete_session_directory(session: &ExternalAgentSession) -> Result<(), DeleteError> {

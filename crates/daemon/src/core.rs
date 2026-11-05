@@ -9806,7 +9806,7 @@ mod tests {
         assert_eq!(respawn.args[..2], ["--permission-mode", "plan"]);
     }
 
-    /// OpenCode never rings BEL itself; Claude / Codex / Cursor / Grok need a
+    /// OpenCode never rings BEL itself; Claude / Cursor need a
     /// Forge adapter too. Each launch carries its provider's attention wiring.
     #[test]
     fn an_opencode_launch_carries_the_attention_plugin() {
@@ -9908,49 +9908,6 @@ mod tests {
             .args
             .windows(2)
             .any(|w| { w[0] == "--settings" && w[1] == settings.to_string_lossy() }));
-    }
-
-    #[test]
-    fn a_codex_launch_requests_bel_on_approval() {
-        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
-        let workspace = seeded_workspace(&daemon, tmp.path());
-        let provider = AgentProviderId::new("codex");
-        let executable = test_support::write_fake_agent(tmp.path(), "codex", "0.153.0");
-        {
-            let mut inner = daemon.lock();
-            inner.detections.insert(
-                provider.clone(),
-                DetectionResult {
-                    provider_id: provider.clone(),
-                    status: DetectionStatus::Installed {
-                        executable,
-                        version: Some("0.153.0".to_owned()),
-                    },
-                    checked_at: Timestamp::now(),
-                },
-            );
-        }
-
-        daemon
-            .create_session(
-                workspace,
-                SessionKind::Agent,
-                Some(provider),
-                None,
-                None,
-                SessionRole::Generic,
-                None,
-                None,
-                false,
-            )
-            .expect("create a codex session");
-
-        let spec = backend.last_spawn().expect("a spawn happened");
-        assert!(spec
-            .args
-            .iter()
-            .any(|a| a.contains(r#"notification_method="bel""#)));
-        assert!(spec.args.iter().any(|a| a.contains("approval-requested")));
     }
 
     #[test]

@@ -9,7 +9,7 @@ matching page under [`docs/`](../docs/).
 | [skills/forge-clean-code/SKILL.md](./skills/forge-clean-code/SKILL.md) | architecture / docs / quality review that implements fixes (`/forge-clean-code`) |
 
 Skills live in `skills/<name>/SKILL.md` and this directory is the only copy.
-Grok and Cursor discover `.agents/skills` natively, so the repository keeps no
+Cursor discovers `.agents/skills` natively, so the repository keeps no
 per-client mirror or symlink. Claude Code reads only `.claude/skills`; a
 developer who wants these skills there creates that symlink locally.
 

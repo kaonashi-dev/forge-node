@@ -365,8 +365,8 @@ mod tests {
     #[test]
     fn foreign_agent_alone_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        // On this machine `agent` on PATH is actually the Grok CLI.
-        write_script(dir.path(), "agent", &echo_script("grok-cli 1.2"));
+        // On this machine `agent` on PATH belongs to another CLI.
+        write_script(dir.path(), "agent", &echo_script("other-cli 1.2"));
         let env = env_with_path(vec![dir.path().to_path_buf()]);
 
         let result = detect(&builtins::builtin("cursor").unwrap(), &env, None);
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn rejects_foreign_agent_then_detects_cursor_agent() {
         let dir = tempfile::tempdir().unwrap();
-        write_script(dir.path(), "agent", &echo_script("grok-cli 1.2"));
+        write_script(dir.path(), "agent", &echo_script("other-cli 1.2"));
         write_script(
             dir.path(),
             "cursor-agent",
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn cursor_agent_name_is_enough_when_version_is_numeric() {
         let dir = tempfile::tempdir().unwrap();
-        write_script(dir.path(), "agent", &echo_script("grok-cli 1.2"));
+        write_script(dir.path(), "agent", &echo_script("other-cli 1.2"));
         write_script(
             dir.path(),
             "cursor-agent",

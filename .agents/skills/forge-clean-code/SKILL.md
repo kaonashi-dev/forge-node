@@ -91,7 +91,7 @@ Do not treat this as a closed checklist. It is where previous passes found real 
 
 - `scripts/dev daemon` is **isolated** (`FORGE_DEV_DIR`). A sentence that says it uses daily per-user paths is false.
 - `forge-daemon dump` is unwired; `stats` is live `GetStats`. Do not lump them.
-- Built-ins are whatever `crates/agents/src/builtins.rs` lists (currently five, including `grok`). Count from code.
+- Built-ins are whatever `crates/agents/src/builtins.rs` lists (currently three: `claude`, `opencode`, `cursor`). Count from code.
 - `PROTOCOL_VERSION` in `docs/protocol.md` must match `protocol::PROTOCOL_VERSION`.
 - Workspace members in `Cargo.toml` must appear in the crate map (`docs/architecture.md`, `README.md`).
 - Toolchain leftovers after a runtime change (`pnpm` vs Bun in `tauri.conf.json`, docs, CI).

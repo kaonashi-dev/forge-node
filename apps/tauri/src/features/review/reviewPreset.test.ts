@@ -64,7 +64,7 @@ describe("reviewPreset", () => {
   it("offers only installed providers that can answer a structured review", () => {
     const missing: ProviderInfo = { ...provider("gone", true), detection: undefined };
     const list = reviewers([
-      provider("codex", false),
+      provider("cursor", false),
       provider("claude", true),
       missing,
       provider("noplan", true, null),

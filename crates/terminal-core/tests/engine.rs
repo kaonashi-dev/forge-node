@@ -179,7 +179,7 @@ fn title_and_bell() {
     assert_eq!(e.title(), Some("My Title"));
     assert!(!e.take_bell(), "OSC terminator must not ring the bell");
 
-    // BEL is also a legal OSC terminator; Codex animates its title with it, so
+    // BEL is also a legal OSC terminator; agent TUIs animate their title with it, so
     // treating it as a bell would latch `needs-you` on permanently.
     e.feed(b"\x1b]0;Second\x07");
     assert_eq!(e.title(), Some("Second"));

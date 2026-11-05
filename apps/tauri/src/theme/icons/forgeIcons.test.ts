@@ -79,25 +79,15 @@ describe("forgeIcons", () => {
    * the stroke path and lose the mask-tint the brand set depends on.
    */
   it("keeps brand and state marks out of the stroke registry", () => {
-    for (const name of [
-      "claude",
-      "codex",
-      "opencode",
-      "cursor",
-      "grok",
-      "editor-zed",
-      "state-running",
-    ]) {
+    for (const name of ["claude", "opencode", "cursor", "editor-zed", "state-running"]) {
       expect(Object.keys(ICONS)).not.toContain(name);
     }
   });
 
   it("maps a provider to its brand, or to none when it has no logo", () => {
     expect(brandForProvider("claude")).toBe("claude");
-    expect(brandForProvider("codex")).toBe("codex");
     expect(brandForProvider("opencode")).toBe("opencode");
     expect(brandForProvider("cursor")).toBe("cursor");
-    expect(brandForProvider("grok")).toBe("grok");
     expect(brandForProvider("custom")).toBeNull();
   });
 });

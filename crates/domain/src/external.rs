@@ -59,7 +59,7 @@ pub struct ExternalAgentSession {
     /// prompt).
     pub preview: Option<String>,
     /// The model that produced the last agent message, as the provider names
-    /// it (`claude-opus-5`, `gpt-5.3-codex`, …).
+    /// it (`claude-opus-5`, `gpt-5.3`, …).
     pub model: Option<String>,
     /// Conversation turns in the transcript: prompts the user typed plus
     /// replies the agent wrote. Tool traffic is not counted — it would swamp

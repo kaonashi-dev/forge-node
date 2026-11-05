@@ -223,7 +223,7 @@ mod tests {
         assert!(brief.contains("--provider cursor --role executor --parent self"));
 
         let mut named = request("Add a health endpoint");
-        named.coder = Some("codex".into());
+        named.coder = Some("missing".into());
         let refused = planner_launch(
             &store(),
             &checkout(dir.path()),
@@ -233,7 +233,7 @@ mod tests {
         );
         assert_eq!(
             refused,
-            Err("the coder provider codex is not available".to_owned())
+            Err("the coder provider missing is not available".to_owned())
         );
     }
 

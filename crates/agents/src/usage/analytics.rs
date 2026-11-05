@@ -1,7 +1,7 @@
 //! Token analytics read from the transcripts the agent CLIs already write.
 //!
 //! Billing facts stay in this crate (principle P2): Claude's `message.usage`,
-//! deduped on `message.id`, and Codex's cumulative `total_token_usage`.
+//! deduped on `message.id`.
 //! Stores and counting rules: `docs/agents.md`.
 
 use std::cmp::Reverse;
@@ -65,38 +65,30 @@ pub fn collect(
     let mut daily: BTreeMap<String, DayTotals> = BTreeMap::new();
     let mut providers = Vec::new();
     let mut scanned = 0_u32;
-    let mut skipped = 0_u32;
 
-    for (provider, files) in [
-        ("claude", claude_transcripts(env, profiles, cutoff)),
-        ("codex", codex_transcripts(env, profiles, cutoff)),
-    ] {
-        skipped += files.skipped;
-        let mut totals = Totals::new(&files.stores);
-        for (path, store) in &files.paths {
-            totals.account = *store;
-            let Scanned { counted, unread } = match provider {
-                "claude" => scan_claude(path, cutoff, &mut totals),
-                _ => scan_codex(path, cutoff, &mut totals),
-            };
-            scanned += 1;
-            if unread.any() {
-                skipped += 1;
-            }
-            if counted {
-                totals.sessions += 1;
-                totals.accounts[*store].sessions += 1;
-            }
+    let files = claude_transcripts(env, profiles, cutoff);
+    let mut skipped = files.skipped;
+    let mut totals = Totals::new(&files.stores);
+    for (path, store) in &files.paths {
+        totals.account = *store;
+        let Scanned { counted, unread } = scan_claude(path, cutoff, &mut totals);
+        scanned += 1;
+        if unread.any() {
+            skipped += 1;
         }
-        for (date, totals) in &totals.daily {
-            daily
-                .entry(date.clone())
-                .or_default()
-                .add(totals.tokens, totals.cost_micros);
+        if counted {
+            totals.sessions += 1;
+            totals.accounts[*store].sessions += 1;
         }
-        if let Some(analytics) = totals.finish(AgentProviderId::new(provider)) {
-            providers.push(analytics);
-        }
+    }
+    for (date, totals) in &totals.daily {
+        daily
+            .entry(date.clone())
+            .or_default()
+            .add(totals.tokens, totals.cost_micros);
+    }
+    if let Some(analytics) = totals.finish(AgentProviderId::new("claude")) {
+        providers.push(analytics);
     }
 
     providers.sort_by(|a, b| b.tokens.total().cmp(&a.tokens.total()));
@@ -478,124 +470,6 @@ fn scan_claude(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -
     Scanned { counted, unread }
 }
 
-// ---------------------------------------------------------------------
-// Codex CLI
-// ---------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct CodexRecord<'a> {
-    #[serde(borrow, default)]
-    timestamp: Text<'a>,
-    #[serde(borrow, default)]
-    payload: Object<CodexPayload<'a>>,
-}
-
-impl CodexRecord<'_> {
-    fn from_value(value: &Value) -> CodexRecord<'static> {
-        CodexRecord {
-            timestamp: text_of(value, "timestamp"),
-            payload: Object(
-                value
-                    .get("payload")
-                    .filter(|payload| payload.is_object())
-                    .map(|payload| CodexPayload {
-                        model: text_of(payload, "model"),
-                        info: payload.get("info").cloned(),
-                    }),
-            ),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct CodexPayload<'a> {
-    #[serde(borrow, default)]
-    model: Text<'a>,
-    #[serde(default, deserialize_with = "present")]
-    info: Option<Value>,
-}
-
-/// Read one Codex rollout.
-///
-/// `total_token_usage` is cumulative over the session, so a turn is the
-/// *difference* between consecutive events. Summing the events themselves would
-/// multiply a long session by its own length.
-fn scan_codex(path: &Path, cutoff: time::OffsetDateTime, totals: &mut Totals) -> Scanned {
-    let Ok(file) = fs::File::open(path) else {
-        return Scanned {
-            counted: false,
-            unread: jsonl::Unread::default(),
-        };
-    };
-    let mut counted = false;
-    let mut span: Option<(Timestamp, Timestamp)> = None;
-    let mut previous = TokenTotals::default();
-    let mut model: Option<String> = None;
-    let unread = jsonl::for_each(BufReader::new(file), MAX_RECORD_BYTES, |line| {
-        let Ok(line) = std::str::from_utf8(line) else {
-            return;
-        };
-        let is_usage = line.contains("\"token_count\"");
-        if !is_usage && !line.contains("\"turn_context\"") {
-            return;
-        }
-        let Some(record) = typed_or_value(line, CodexRecord::from_value) else {
-            return;
-        };
-        let Some(payload) = record.payload.0 else {
-            return;
-        };
-        if !is_usage {
-            // The model can change mid-session; the latest one before a turn is
-            // the one that turn ran on.
-            if let Some(name) = payload.model.as_str() {
-                model = Some(name.to_owned());
-            }
-            return;
-        }
-        let Some(cumulative) = payload
-            .info
-            .as_ref()
-            .and_then(|info| info.get("total_token_usage"))
-        else {
-            return;
-        };
-        let running = codex_totals(cumulative);
-        let turn = Turn {
-            tokens: TokenTotals {
-                input: running.input.saturating_sub(previous.input),
-                output: running.output.saturating_sub(previous.output),
-                cache_write: running.cache_write.saturating_sub(previous.cache_write),
-                cache_read: running.cache_read.saturating_sub(previous.cache_read),
-                reasoning: running.reasoning.saturating_sub(previous.reasoning),
-            },
-            model: model.clone(),
-            ..Turn::default()
-        };
-        previous = running;
-        if turn.is_empty() {
-            return;
-        }
-        let at = record
-            .timestamp
-            .as_str()
-            .and_then(|raw| Timestamp::parse_rfc3339(raw).ok());
-        if at.is_some_and(|at| at.as_offset() < cutoff) {
-            return;
-        }
-        if let Some(at) = at {
-            span = Some(match span {
-                Some((first, last)) => (first.min(at), last.max(at)),
-                None => (at, at),
-            });
-        }
-        totals.turn(&turn, at);
-        counted = true;
-    });
-    totals.worked(span);
-    Scanned { counted, unread }
-}
-
 /// One record, typed so the bulk of it is skipped unallocated, or read as a
 /// `Value` when the typed parse refuses it. `None` for a line that is not
 /// JSON, or not an object.
@@ -606,19 +480,6 @@ fn typed_or_value<'a, T: Deserialize<'a>>(line: &'a str, from_value: fn(&Value) 
             .ok()
             .filter(Value::is_object)
             .map(|value| from_value(&value)),
-    }
-}
-
-/// Codex counts cached input *inside* `input_tokens`; Claude keeps them apart.
-/// Normalizing here is what lets one [`TokenTotals`] describe both.
-fn codex_totals(usage: &Value) -> TokenTotals {
-    let cached = number(usage, "cached_input_tokens");
-    TokenTotals {
-        input: number(usage, "input_tokens").saturating_sub(cached),
-        output: number(usage, "output_tokens"),
-        cache_write: number(usage, "cache_write_input_tokens"),
-        cache_read: cached,
-        reasoning: number(usage, "reasoning_output_tokens"),
     }
 }
 
@@ -687,20 +548,6 @@ fn claude_transcripts(
             .map(|home| PathBuf::from(home).join(".claude"))
     });
     recent_transcripts(stores(default, "claude", profiles, env, "projects"), cutoff)
-}
-
-/// `$CODEX_HOME/sessions` and every profile's, falling back to
-/// `$HOME/.codex/sessions`.
-fn codex_transcripts(
-    env: &ResolvedEnvironment,
-    profiles: &[AgentProfile],
-    cutoff: time::OffsetDateTime,
-) -> Transcripts {
-    let default = env.get("CODEX_HOME").map(PathBuf::from).or_else(|| {
-        env.get("HOME")
-            .map(|home| PathBuf::from(home).join(".codex"))
-    });
-    recent_transcripts(stores(default, "codex", profiles, env, "sessions"), cutoff)
 }
 
 /// Every directory `provider`'s transcripts may live in: one per launch
@@ -772,9 +619,9 @@ struct Budget {
     exhausted: bool,
 }
 
-/// Depth-bounded walk. Claude nests two levels (`<slug>/<session>/subagents`)
-/// and Codex three (`<year>/<month>/<day>`); anything deeper is not a store we
-/// know, and recursing into it would only buy IO.
+/// Depth-bounded walk. Claude nests two levels (`<slug>/<session>/subagents`);
+/// anything deeper is not a store we know, and recursing into it would only
+/// buy IO.
 fn collect_jsonl(
     dir: &Path,
     store: usize,
@@ -960,27 +807,6 @@ mod tests {
         .to_string()
     }
 
-    fn codex_event(at: &str, input: u64, cached: u64, output: u64) -> String {
-        serde_json::json!({
-            "timestamp": at,
-            "type": "event_msg",
-            "payload": {
-                "type": "token_count",
-                "info": {
-                    "total_token_usage": {
-                        "input_tokens": input,
-                        "cached_input_tokens": cached,
-                        "cache_write_input_tokens": 0,
-                        "output_tokens": output,
-                        "reasoning_output_tokens": 0,
-                        "total_tokens": input + output
-                    }
-                }
-            }
-        })
-        .to_string()
-    }
-
     /// A timestamp `days_ago` days before now, as RFC-3339.
     fn ago(days: i64) -> String {
         Timestamp::from_offset(time::OffsetDateTime::now_utc() - time::Duration::days(days))
@@ -1052,7 +878,7 @@ mod tests {
         let profiles = [
             profile("claude", ".claude-personal"),
             // Another provider's profile must not drag Claude's scan sideways.
-            profile("codex", ".codex-work"),
+            profile("opencode", ".opencode-work"),
         ];
         let claude = &collect(30, &env(home.path()), &profiles).providers[0];
         assert_eq!(claude.turns, 2, "both accounts are summed");
@@ -1230,31 +1056,6 @@ mod tests {
             );
         }
         assert!(typed_or_value(r#"["assistant"]"#, ClaudeRecord::from_value).is_none());
-
-        for line in [
-            r#"{"timestamp":"t","payload":{"type":"token_count","info":{"total_token_usage":{}}}}"#,
-            r#"{"payload":null}"#,
-            r#"{"payload":"turn_context"}"#,
-            r#"{"payload":["model","x"]}"#,
-            r#"{"payload":{"model":3,"info":null}}"#,
-            r#"{"payload":{"model":"a","model":"b"}}"#,
-        ] {
-            let value: Value = serde_json::from_str(line).unwrap();
-            let typed = typed_or_value(line, CodexRecord::from_value).unwrap();
-            let expected = CodexRecord::from_value(&value);
-            let view = |record: &CodexRecord| {
-                (
-                    record.timestamp.as_str().map(str::to_owned),
-                    record.payload.0.as_ref().map(|payload| {
-                        (
-                            payload.model.as_str().map(str::to_owned),
-                            payload.info.clone(),
-                        )
-                    }),
-                )
-            };
-            assert_eq!(view(&typed), view(&expected), "{line}");
-        }
     }
 
     #[test]
@@ -1278,40 +1079,6 @@ mod tests {
         );
         assert!(budget.exhausted);
         assert_eq!(found.newest.len(), 3);
-    }
-
-    #[test]
-    fn codex_events_are_differenced_because_the_counter_is_cumulative() {
-        let home = tempfile::tempdir().expect("tempdir");
-        write(
-            &home
-                .path()
-                .join(".codex/sessions/2026/08/26/rollout-test.jsonl"),
-            &[
-                serde_json::json!({
-                    "timestamp": ago(1),
-                    "type": "turn_context",
-                    "payload": { "model": "gpt-5.6-sol" }
-                })
-                .to_string(),
-                codex_event(&ago(1), 1_000, 400, 100),
-                codex_event(&ago(1), 3_000, 1_400, 250),
-            ],
-        );
-
-        let codex = &collect(30, &env(home.path()), &[]).providers[0];
-        assert_eq!(codex.provider_id.to_string(), "codex");
-        assert_eq!(codex.turns, 2);
-        // Fresh input is 600 then 1_000: the cached half never counts as new.
-        assert_eq!(codex.tokens.input, 1_600);
-        assert_eq!(codex.tokens.cache_read, 1_400);
-        assert_eq!(codex.tokens.output, 250);
-        assert_eq!(codex.top_model.as_deref(), Some("gpt-5.6-sol"));
-        assert_eq!(
-            codex.unpriced_turns, 2,
-            "an OpenAI model carries no price in this build"
-        );
-        assert_eq!(codex.cost_micros, 0);
     }
 
     #[test]

@@ -17,7 +17,7 @@ Source: `crates/domain/src/`.
 | **Workspace** | A directory where sessions actually run: the main checkout *or* a Git worktree. The main checkout is never a special case. |
 | **Session** | A unit of work — a shell, agent CLI or editor — and a node of the session graph. Metadata survives daemon restarts only with `sessions.persist_history = true`; no live process survives. |
 | **Terminal** | The live PTY + VT engine behind a session. Runtime-only; a `TerminalId` is regenerated on every spawn/restart and never persisted. |
-| **Agent provider** | A coding-agent CLI (`claude`, `codex`, `opencode`, `cursor`, `grok`). Described declaratively by an `AgentDescriptor`. |
+| **Agent provider** | A coding-agent CLI (`claude`, `opencode`, `cursor`). Described declaratively by an `AgentDescriptor`. |
 | **Session graph** | Logical parent/child relationships between sessions (a session can spawn sessions). Independent of the OS process tree. |
 | **Context envelope** | An explicit, persisted hand-off of context, delivered to an existing session or used to seed a child. See [session-context.md](./session-context.md). |
 | **Managed worktree** | A worktree Forge created itself (`managed_by_app = true`). Only these are ever removed from disk. |
@@ -337,7 +337,7 @@ patch is not a patch, and a viewer that rendered one would show a lie.
 | `ConfigDirSpec` | How a provider is pointed at a profile's directory, as data: the variables it is written to (two for OpenCode, which splits configuration from credentials) and one line of help. `None` on a descriptor means the provider has no such switch. |
 | `VersionProbe` | `args` (`--version`), optional `expect_substring` to reject look-alike binaries, `timeout_ms`. |
 | `AgentCapabilities` | `interactive_tui`, `supports_initial_prompt` — informational. `supports_resume` restates whether the descriptor carries a `ResumeStyle`; `supports_review` whether it carries a `ReviewStyle`. |
-| `ResumeStyle` | How a provider re-enters an earlier session of its own (§13.5): `Flag { flag }` (`claude --resume <id>`) or `Subcommand { command }` (`codex resume <id>`). `None` on the descriptor means its history is read-only. |
+| `ResumeStyle` | How a provider re-enters an earlier session of its own (§13.5): `Flag { flag }` (`claude --resume <id>`). `None` on the descriptor means its history is read-only. |
 | `DetectionResult` / `DetectionStatus` | `Installed { executable, version }`, `NotFound`, `Rejected { candidate, reason }`, `ProbeTimeout`. |
 | `ResolvedEnvironment` | The login-shell environment resolved once by the daemon (`EnvSource::LoginShell` or `ProcessFallback`). |
 | `LaunchAgentRequest` | `provider_id`, `cwd`, `extra_args`, `executable_override`, `resume_session_id`, `initial_prompt`, `read_only`. |
@@ -353,7 +353,7 @@ answers neither question.
 
 | Type | Role |
 |------|------|
-| `UsageSource` / `UsageProbe` | Where a provider's *allowance* reading comes from: a CLI printing one documented JSON document, its existing local OAuth credentials (`ClaudeOauth`, `CodexOAuth`), or its own ACP entry (`GrokAcp`). |
+| `UsageSource` / `UsageProbe` | Where a provider's *allowance* reading comes from: a CLI printing one documented JSON document (`Cli`), or its existing local OAuth credentials (`ClaudeOauth`). |
 | `ProviderUsage` / `UsageWindow` | The provider's own word on how much of a rolling window is gone: a whole `used_percent` (no float in a wire type), a human `window` label, an optional `resets_at`, and `collected_at` so a stale reading can be shown as stale. Empty `windows` means "reported nothing", rendered as no meter — never as 0%. A reading belongs to one *account*: `profile_id` names the launch profile whose login it describes, `None` being the provider's default one (§13.4). |
 | `UsageAnalytics` | *Our* count, from the transcripts the CLIs write to disk: `providers`, activity-only `daily` buckets carrying tokens and estimated cost, the `window_days` scanned, `scanned`/`skipped` so a bounded scan never looks exhaustive, and `collected_at`. |
 | `ProviderAnalytics` | One provider's totals: `tokens`, `sessions`, `turns`, `cost_micros`, `unpriced_turns` (a non-zero count means the cost is a floor), `top_model`, `worked_secs`, the first/last activity seen, `daily`, and `accounts: Vec<AccountAnalytics>` splitting the same totals by config directory (`profile_id`, `tokens`, `sessions`, `turns`, `cost_micros`, `unpriced_turns`, `worked_secs`, `daily`). Profiles that share a directory share an account. |

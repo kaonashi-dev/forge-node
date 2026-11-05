@@ -14,7 +14,7 @@ export type SessionGlyphContext = {
  *
  * Identity is the default — including the session the user is in. `sessionWork`
  * treats any output inside a minute as "working", and attaching a session
- * bumps that clock, so a Codex sitting at a prompt would spin the whole time
+ * bumps that clock, so an agent sitting at a prompt would spin the whole time
  * it was being read. A spinner is only for work the user is not looking at:
  * still starting, or producing unseen output. A bell is an agent that stopped
  * to ask and outranks both, because it is the one state a person has to act

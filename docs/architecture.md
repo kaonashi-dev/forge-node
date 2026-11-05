@@ -55,8 +55,8 @@ terminal-input   pure key/mouse/paste mapping shared without PTY/VT dependencies
 editor-core      document, transactions, history, search and syntax; no I/O
 editor-control   independent daemon–editor control framing and messages
 editor-cli       standalone/integrated editor host      → binary forge-editor
-agents           provider registry, verified detection, five built-ins
-                 (claude, codex, opencode, cursor, grok)
+agents           provider registry, verified detection, three built-ins
+                 (claude, opencode, cursor)
 git-service      git CLI wrapper (LC_ALL=C, 30s local timeout), repo + worktree ops
 fs-service       workspace list/read/write/search; paths stay inside the checkout;
                  the go-to-definition provider trait and the grep heuristic

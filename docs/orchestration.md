@@ -303,14 +303,6 @@ inherit `FORGE_SOCKET`. For Claude, a launch-local file supplied with
 last option in a profile before Forge's positional prompt. Follow it with a
 separate option, or use Claude's ordinary project MCP configuration instead.
 
-Codex's own `config.toml` accepts:
-
-```toml
-[mcp_servers.forge]
-command = "/absolute/path/forgectl"
-args = ["mcp"]
-```
-
 OpenCode V2's server configuration (not `cli.json`) accepts:
 
 ```json

@@ -125,9 +125,8 @@ impl Harness {
         &self.db
     }
 
-    /// The transcript stores the usage scan reads: `claude/projects/…`
-    /// and `codex/sessions/…` live under here, and the harness' login shell
-    /// points `CLAUDE_CONFIG_DIR`/`CODEX_HOME` at them.
+    /// The transcript store the usage scan reads: `claude/projects/…` lives
+    /// under here, and the harness' login shell points `CLAUDE_CONFIG_DIR` at it.
     #[must_use]
     pub fn agent_home(&self) -> PathBuf {
         self.tmp.path().join("agent-home")
@@ -332,8 +331,7 @@ fn login_shell_script(bin: &Path) -> String {
          # the harness tree: without this a token count would be read off the\n\
          # developer's own ~/.claude, which is neither hermetic nor cheap.\n\
          CLAUDE_CONFIG_DIR={claude}\n\
-         CODEX_HOME={codex}\n\
-         export CLAUDE_CONFIG_DIR CODEX_HOME\n\
+         export CLAUDE_CONFIG_DIR\n\
          # A profile's relative config directory lands under this, not under\n\
          # the developer's own home (§13.4).\n\
          HOME={home}\n\
@@ -344,7 +342,6 @@ fn login_shell_script(bin: &Path) -> String {
          exec /bin/sh \"$@\"\n",
         path = sh_quote(&bin.to_string_lossy()),
         claude = sh_quote(&agent_home.join("claude").to_string_lossy()),
-        codex = sh_quote(&agent_home.join("codex").to_string_lossy()),
         home = sh_quote(
             &bin.parent()
                 .expect("bin has a parent")

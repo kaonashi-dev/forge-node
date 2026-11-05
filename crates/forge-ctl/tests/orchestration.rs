@@ -33,10 +33,7 @@ fn scratch_dir() -> Option<PathBuf> {
         fs::create_dir_all(&path).ok()?;
         return Some(path);
     }
-    let path = PathBuf::from(
-        "/var/folders/sq/wn3p2b8j4292071rl49wpvm40000gn/T/grok-goal-4ee1d712dc72/implementer",
-    );
-    path.is_dir().then_some(path)
+    None
 }
 
 fn append_log(name: &str, body: &str) {
@@ -205,10 +202,8 @@ impl Harness {
         );
         for (command, provider, version) in [
             ("claude", "claude", "claude 0.0.0-test"),
-            ("codex", "codex", "codex 0.0.0-test"),
             ("opencode", "opencode", "opencode 0.0.0-test"),
             ("agent", "cursor", "cursor 0.0.0-test"),
-            ("grok", "grok", "grok 0.0.0-test"),
         ] {
             install_fake_agent(&bin, &capture, command, provider, version);
         }
@@ -2416,16 +2411,14 @@ fn scenario_providers_hand_work_to_each_other() {
     add_project(&client, &repo);
     let ctl = Ctl::new(&running.socket);
 
-    let providers = poll("five providers detected", || {
+    let providers = poll("every provider detected", || {
         let providers = ok(&ctl.run(&["providers"], &[]));
-        let ready = ["claude", "codex", "opencode", "cursor", "grok"]
-            .iter()
-            .all(|id| {
-                providers.as_array().unwrap().iter().any(|row| {
-                    row["descriptor"]["id"] == *id
-                        && row["detection"]["status"].get("Installed").is_some()
-                })
-            });
+        let ready = ["claude", "opencode", "cursor"].iter().all(|id| {
+            providers.as_array().unwrap().iter().any(|row| {
+                row["descriptor"]["id"] == *id
+                    && row["detection"]["status"].get("Installed").is_some()
+            })
+        });
         ready.then_some(providers)
     });
     let versions: Vec<String> = providers
@@ -2488,37 +2481,37 @@ fn scenario_providers_hand_work_to_each_other() {
         "controller provider=claude session={controller} prompt=argv json=1"
     ));
 
-    let task = add_task_in(&ctl, &run_id, "codex writes", "PROMPT_TOKEN_codex", false);
-    let codex = ok(&ctl.run(
-        &["task", "start", &task, "--provider", "codex"],
+    let task = add_task_in(&ctl, &run_id, "cursor writes", "PROMPT_TOKEN_cursor", false);
+    let writer = ok(&ctl.run(
+        &["task", "start", &task, "--provider", "cursor"],
         &[("FORGE_SESSION_ID", controller.as_str())],
     ));
-    let codex_attempt = field(&codex, "attempt_id");
-    let codex_session = field(&codex, "session_id");
-    let codex_capture = await_ready(&ctl, &harness, &codex);
+    let writer_attempt = field(&writer, "attempt_id");
+    let writer_session = field(&writer, "session_id");
+    let writer_capture = await_ready(&ctl, &harness, &writer);
     assert!(
-        codex_capture.contains("PROVIDER=codex\n"),
-        "{codex_capture}"
+        writer_capture.contains("PROVIDER=cursor\n"),
+        "{writer_capture}"
     );
-    assert!(codex_capture.contains("BIN=codex\n"), "{codex_capture}");
+    assert!(writer_capture.contains("BIN=agent\n"), "{writer_capture}");
     assert!(
-        codex_capture.contains("PROMPT_TOKEN_codex"),
-        "codex launch argv dropped the spec: {codex_capture}"
-    );
-    assert!(
-        !codex_capture.contains("--prompt"),
-        "codex was given OpenCode's prompt flag: {codex_capture}"
+        writer_capture.contains("PROMPT_TOKEN_cursor"),
+        "cursor launch argv dropped the spec: {writer_capture}"
     );
     assert!(
-        codex_capture.contains(&format!("TASK={task}\n")),
-        "{codex_capture}"
+        !writer_capture.contains("--prompt"),
+        "cursor was given OpenCode's prompt flag: {writer_capture}"
     );
     assert!(
-        codex_capture.contains(&format!("ATTEMPT={codex_attempt}\n")),
-        "{codex_capture}"
+        writer_capture.contains(&format!("TASK={task}\n")),
+        "{writer_capture}"
     );
     assert!(
-        !transcript(&ctl, &codex_session).contains("PROMPT_TOKEN_codex"),
+        writer_capture.contains(&format!("ATTEMPT={writer_attempt}\n")),
+        "{writer_capture}"
+    );
+    assert!(
+        !transcript(&ctl, &writer_session).contains("PROMPT_TOKEN_cursor"),
         "worker prompt was pasted into the terminal"
     );
     let integration = show(&ctl)["run"]["integration_workspace_id"]
@@ -2526,12 +2519,12 @@ fn scenario_providers_hand_work_to_each_other() {
         .unwrap()
         .to_owned();
     assert_ne!(
-        field(&codex, "workspace_id"),
+        field(&writer, "workspace_id"),
         integration,
         "write attempt shared the integration checkout"
     );
     notes.line(format!(
-        "worker provider=codex session={codex_session} attempt={codex_attempt} prompt=positional not-pasted worktree=own"
+        "worker provider=cursor session={writer_session} attempt={writer_attempt} prompt=positional not-pasted worktree=own"
     ));
 
     let mut asking = Command::new(env!("CARGO_BIN_EXE_forgectl"))
@@ -2545,39 +2538,39 @@ fn scenario_providers_hand_work_to_each_other() {
             "--wait",
             "--timeout",
             "12s",
-            "CODEX_QUESTION",
+            "WRITER_QUESTION",
         ])
         .env("FORGE_SOCKET", &running.socket)
-        .env("FORGE_SESSION_ID", &codex_session)
+        .env("FORGE_SESSION_ID", &writer_session)
         .env("FORGE_RUN_ID", &run_id)
         .env("FORGE_TASK_ID", &task)
-        .env("FORGE_ATTEMPT_ID", &codex_attempt)
+        .env("FORGE_ATTEMPT_ID", &writer_attempt)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("codex ask");
-    poll("codex question", || {
+        .expect("cursor ask");
+    poll("cursor question", || {
         let view = show(&ctl);
         view["attention"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["kind"] == "question" && item["text"] == "CODEX_QUESTION")
+            .any(|item| item["kind"] == "question" && item["text"] == "WRITER_QUESTION")
             .then_some(())
     });
     ok(&ctl.run(
         &[
             "send",
             "--to",
-            &format!("session:{codex_session}"),
+            &format!("session:{writer_session}"),
             "--kind",
             "answer",
             "CLAUDE_ANSWER",
         ],
         &[("FORGE_SESSION_ID", controller.as_str())],
     ));
-    let finished = poll("codex ask returned", || asking.try_wait().ok().flatten());
+    let finished = poll("cursor ask returned", || asking.try_wait().ok().flatten());
     assert!(finished.success(), "ask --wait exit {finished:?}");
     let mut stdout = String::new();
     asking
@@ -2587,14 +2580,14 @@ fn scenario_providers_hand_work_to_each_other() {
         .read_to_string(&mut stdout)
         .unwrap();
     assert!(stdout.contains("CLAUDE_ANSWER"), "{stdout}");
-    notes.line("codex asked; claude controller answered");
+    notes.line("cursor asked; claude controller answered");
 
-    report_done(&ctl, &codex, &run_id, "REPORT_FROM_CODEX");
+    report_done(&ctl, &writer, &run_id, "REPORT_FROM_CURSOR");
     let reviewed = ok(&ctl.run(&["task", "show", &task], &[]));
     assert_eq!(reviewed["status"], "review");
-    assert_eq!(reviewed["attempt"]["provider_id"], "codex");
-    assert_eq!(reviewed["report"]["summary"], "REPORT_FROM_CODEX");
-    notes.line("codex report settled the task status=review");
+    assert_eq!(reviewed["attempt"]["provider_id"], "cursor");
+    assert_eq!(reviewed["report"]["summary"], "REPORT_FROM_CURSOR");
+    notes.line("cursor report settled the task status=review");
 
     let retried = ok(&ctl.run(
         &[
@@ -2602,31 +2595,34 @@ fn scenario_providers_hand_work_to_each_other() {
             "reject",
             &task,
             "--feedback",
-            "FEEDBACK_FOR_GROK",
+            "FEEDBACK_FOR_CLAUDE",
             "--retry",
             "--provider",
-            "grok",
+            "claude",
         ],
         &[("FORGE_SESSION_ID", controller.as_str())],
     ));
-    let grok_attempt = field(&retried, "attempt_id");
-    let grok_capture = await_ready(&ctl, &harness, &retried);
-    assert!(grok_capture.contains("PROVIDER=grok\n"), "{grok_capture}");
-    assert!(grok_capture.contains("BIN=grok\n"), "{grok_capture}");
+    let retry_attempt = field(&retried, "attempt_id");
+    let retry_capture = await_ready(&ctl, &harness, &retried);
     assert!(
-        grok_capture.contains("FEEDBACK_FOR_GROK"),
-        "grok launch dropped the claude feedback: {grok_capture}"
+        retry_capture.contains("PROVIDER=claude\n"),
+        "{retry_capture}"
+    );
+    assert!(retry_capture.contains("BIN=claude\n"), "{retry_capture}");
+    assert!(
+        retry_capture.contains("FEEDBACK_FOR_CLAUDE"),
+        "retry launch dropped the controller feedback: {retry_capture}"
     );
     assert!(
-        grok_capture.contains("REPORT_FROM_CODEX"),
-        "grok launch dropped the codex report: {grok_capture}"
+        retry_capture.contains("REPORT_FROM_CURSOR"),
+        "retry launch dropped the cursor report: {retry_capture}"
     );
     assert_ne!(
         field(&retried, "workspace_id"),
-        field(&codex, "workspace_id")
+        field(&writer, "workspace_id")
     );
     notes.line(format!(
-        "retry provider=grok attempt={grok_attempt} prompt includes codex report and claude feedback"
+        "retry provider=claude attempt={retry_attempt} prompt includes cursor report and controller feedback"
     ));
 
     let reviewer = add_task_in(&ctl, &run_id, "opencode reads", "OPENCODE_TOKEN", true);

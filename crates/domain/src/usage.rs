@@ -287,7 +287,7 @@ mod tests {
                     daily: Vec::new(),
                 },
                 ProviderAnalytics {
-                    provider_id: AgentProviderId::new("codex"),
+                    provider_id: AgentProviderId::new("opencode"),
                     tokens: totals(1, 1, 1, 1),
                     sessions: 1,
                     turns: 3,

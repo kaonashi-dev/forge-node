@@ -725,7 +725,7 @@ function Primitives() {
               onChange={setPicked}
               options={[
                 { value: "claude", label: "Claude" },
-                { value: "codex", label: "Codex" },
+                { value: "cursor", label: "Cursor" },
                 { value: "opencode", label: "opencode" },
               ]}
             />

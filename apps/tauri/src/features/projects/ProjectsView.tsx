@@ -1611,7 +1611,7 @@ function SessionRow(props: {
       <For each={props.through ?? []}>
         {(level) => <span class="tree-rail" style={{ "--rail": String(level) }} />}
       </For>
-      {/* What it runs, not just that it exists: a terminal and a Codex
+      {/* What it runs, not just that it exists: a terminal and a Claude
           agent in the same checkout are unreadable as two identical labels. */}
       <SessionGlyph
         providerId={props.session.agent_provider_id}

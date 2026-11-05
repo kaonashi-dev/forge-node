@@ -62,9 +62,6 @@ pub(crate) fn append(
                 remove_flag(args, &[flag]);
                 args.extend([flag.clone(), effort.clone()]);
             }
-            EffortSpelling::Config { flag, key } => {
-                args.extend([flag.clone(), format!("{key}=\"{effort}\"")])
-            }
             EffortSpelling::ModelSuffix => {}
             _ => {
                 return Err(AgentError::InvalidLaunchOptions(
@@ -110,22 +107,10 @@ mod tests {
                 vec!["--model", "opus", "--effort", "xhigh"],
             ),
             (
-                "codex",
-                "gpt-5",
-                "high",
-                vec!["-m", "gpt-5", "-c", "model_reasoning_effort=\"high\""],
-            ),
-            (
                 "cursor",
                 "opus",
                 "high",
                 vec!["--model", "opus[effort=high]"],
-            ),
-            (
-                "grok",
-                "grok-4",
-                "high",
-                vec!["-m", "grok-4", "--reasoning-effort", "high"],
             ),
         ] {
             let mut args = vec![];
