@@ -3389,7 +3389,7 @@ fn install_reviewer(harness: &Harness, answer: &str, block: bool) {
              id=''\nprev=''\n\
              for a in \"$@\"; do [ \"$prev\" = --session-id ] && id=$a; prev=$a; done\n\
              printf '%s\\n' \"$*\" > {args}\n\
-             slug=$(printf '%s' \"$FORGE_WORKSPACE\" | /usr/bin/tr '/.' '--')\n\
+             slug=$(printf '%s' \"$FORGE_WORKSPACE\" | /usr/bin/tr -c 'A-Za-z0-9' '-')\n\
              dir={store}/projects/$slug\n\
              /bin/mkdir -p \"$dir\"\n\
              /bin/cat {answer} > \"$dir/$id.jsonl\"\n\
