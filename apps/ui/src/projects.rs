@@ -165,8 +165,12 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .gap(4.0)
             .child(
                 row()
+                    .key(format!("project-row-{project_id}"))
                     .gap(10.0)
                     .items_center()
+                    .on_secondary_press(move |s: &mut AppState, point, _| {
+                        crate::menus::open(s, crate::menus::Target::Project(project_id), point);
+                    })
                     .child(
                         text(project.name.clone())
                             .font(k.ty.small_medium)
@@ -343,6 +347,9 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                 })
                 .hover(k.c.hover)
                 .on_press(move |s: &mut AppState| s.focus_checkout(id))
+                .on_secondary_press(move |s: &mut AppState, point, _| {
+                    crate::menus::open(s, crate::menus::Target::Checkout(id), point);
+                })
                 .child(
                     rune::row()
                         .gap(6.0)

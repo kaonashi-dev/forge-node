@@ -146,6 +146,7 @@ pub struct AppState {
     pub theme_editor: crate::appearance::ThemeEditor,
     pub settings: crate::settings::Settings,
     pub sync: crate::sync::Sync,
+    pub menus: crate::menus::Menus,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
     /// A live session whose close waits for a person to confirm it.
@@ -221,6 +222,7 @@ impl AppState {
             theme_editor: crate::appearance::ThemeEditor::default(),
             settings: crate::settings::Settings::default(),
             sync: crate::sync::Sync::default(),
+            menus: crate::menus::Menus::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
             pending_close: std::collections::HashSet::new(),
@@ -414,9 +416,12 @@ impl AppState {
             .as_ref()
     }
 
-    pub fn editor_key(&mut self, ev: &KeyEvent, _tx: &mut Tx) -> bool {
+    pub fn editor_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
         if self.global_key(ev) {
             return true;
+        }
+        if crate::menus::tree_menu_key(ev, tx) {
+            return false;
         }
         if self.active_line_editor().is_none() || !self.session_shown() || !self.editor.key(ev) {
             return false;
@@ -1525,6 +1530,7 @@ impl AppState {
                     }
                 }
                 self.settings_result(label, ok, &message);
+                crate::menus::command_result(self, label, ok, &message);
                 if label == "DraftWithJuva" && !ok {
                     self.commit.drafting = false;
                     self.commit.error = Some(message.clone());
@@ -1819,7 +1825,7 @@ impl AppState {
         if self.global_key(ev) {
             return true;
         }
-        if !self.session_shown() {
+        if !self.session_shown() || crate::menus::tree_menu_key(ev, tx) {
             return false;
         }
         self.observe_terminal_resync();
@@ -2114,6 +2120,17 @@ impl AppState {
         if let Some(session) = self.confirm_close.take() {
             self.send_close(session, true);
         }
+    }
+
+    /// Closes without asking: kills it first while it still runs.
+    pub fn close_now(&mut self, session: SessionId) {
+        let live = self.store.as_ref().is_some_and(|store| {
+            store
+                .sessions
+                .iter()
+                .any(|candidate| candidate.id == session && candidate.state.is_active())
+        });
+        self.send_close(session, live);
     }
 
     fn send_close(&mut self, session: SessionId, live: bool) {

@@ -72,6 +72,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     close_dialog(s, &k, &mut overlays);
     crate::history::delete_dialog(s, &k, &mut overlays);
     crate::settings::dialogs(s, &k, &mut overlays);
+    crate::menus::layer(s, &k, &mut overlays);
     let root = rune_kit::root(root, overlays);
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
@@ -193,7 +194,11 @@ pub fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) ->
     if let Some(ended) = &session.ended {
         item = item.detail(ended.as_str());
     }
-    item.build(k).key(format!("session-row-{index}"))
+    item.build(k)
+        .key(format!("session-row-{index}"))
+        .on_secondary_press(move |s: &mut AppState, point, _| {
+            crate::menus::open(s, crate::menus::Target::Session(id), point);
+        })
 }
 
 fn status_row(s: &AppState, k: &Kit) -> El {

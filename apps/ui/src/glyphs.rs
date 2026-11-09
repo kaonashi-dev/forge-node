@@ -252,10 +252,6 @@ brand!(
     "M16 6H8v12h8V6zm4 16H4V2h16v20z"
 );
 brand!(
-    #[expect(
-        dead_code,
-        reason = "for a checkout's Open in Zed, which Rune has no menu for yet"
-    )]
     ZED,
     "forge-brand-editor-zed",
     96.0,

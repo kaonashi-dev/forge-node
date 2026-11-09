@@ -11,6 +11,7 @@ mod glyphs;
 mod history;
 mod keymap;
 mod launch;
+mod menus;
 mod palette;
 mod pr_review;
 mod probe;

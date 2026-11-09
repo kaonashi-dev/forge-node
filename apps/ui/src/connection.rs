@@ -175,6 +175,44 @@ pub enum Command {
     },
     SaveAgentProfile(Box<domain::AgentProfile>),
     RemoveAgentProfile(domain::AgentProfileId),
+    RefreshProject(domain::ProjectId),
+    RefreshWorkspaceStatus(WorkspaceId),
+    RenameWorkspace {
+        workspace_id: WorkspaceId,
+        display_name: Option<String>,
+    },
+    SetProjectIcon {
+        project_id: domain::ProjectId,
+        icon: Option<String>,
+    },
+    RemoveProject {
+        project_id: domain::ProjectId,
+        policy: protocol::RemoveProjectPolicy,
+    },
+    /// A project's whole rule set, which replaces the one it had.
+    SetWorktreeIgnores {
+        project_id: domain::ProjectId,
+        rules: Vec<domain::WorktreeIgnore>,
+    },
+    CreatePath {
+        workspace_id: WorkspaceId,
+        path: String,
+        directory: bool,
+    },
+    RenamePath {
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    },
+    CopyPath {
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    },
+    DeletePath {
+        workspace_id: WorkspaceId,
+        path: String,
+    },
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
@@ -525,6 +563,92 @@ impl ConnectionHandle {
 
     pub fn remove_worktree(&self, workspace_id: WorkspaceId) -> Result<(), String> {
         self.send(Command::RemoveWorktree { workspace_id })
+    }
+
+    pub fn refresh_project(&self, project_id: domain::ProjectId) -> Result<(), String> {
+        self.send(Command::RefreshProject(project_id))
+    }
+
+    pub fn refresh_workspace_status(&self, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::RefreshWorkspaceStatus(workspace_id))
+    }
+
+    pub fn rename_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        display_name: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::RenameWorkspace {
+            workspace_id,
+            display_name,
+        })
+    }
+
+    pub fn set_project_icon(
+        &self,
+        project_id: domain::ProjectId,
+        icon: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::SetProjectIcon { project_id, icon })
+    }
+
+    pub fn remove_project(
+        &self,
+        project_id: domain::ProjectId,
+        policy: protocol::RemoveProjectPolicy,
+    ) -> Result<(), String> {
+        self.send(Command::RemoveProject { project_id, policy })
+    }
+
+    pub fn set_worktree_ignores(
+        &self,
+        project_id: domain::ProjectId,
+        rules: Vec<domain::WorktreeIgnore>,
+    ) -> Result<(), String> {
+        self.send(Command::SetWorktreeIgnores { project_id, rules })
+    }
+
+    pub fn create_path(
+        &self,
+        workspace_id: WorkspaceId,
+        path: String,
+        directory: bool,
+    ) -> Result<(), String> {
+        self.send(Command::CreatePath {
+            workspace_id,
+            path,
+            directory,
+        })
+    }
+
+    pub fn rename_path(
+        &self,
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    ) -> Result<(), String> {
+        self.send(Command::RenamePath {
+            workspace_id,
+            from,
+            to,
+        })
+    }
+
+    pub fn copy_path(
+        &self,
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    ) -> Result<(), String> {
+        self.send(Command::CopyPath {
+            workspace_id,
+            from,
+            to,
+        })
+    }
+
+    pub fn delete_path(&self, workspace_id: WorkspaceId, path: String) -> Result<(), String> {
+        self.send(Command::DeletePath { workspace_id, path })
     }
 
     pub fn set_app_state(&self, key: &str, value: &str) -> Result<(), String> {
@@ -1032,7 +1156,17 @@ fn handle_fixture_command(
         | Command::RefreshAgentDetection
         | Command::SetProviderExecutable { .. }
         | Command::SaveAgentProfile(_)
-        | Command::RemoveAgentProfile(_) => {}
+        | Command::RemoveAgentProfile(_)
+        | Command::RefreshProject(_)
+        | Command::RefreshWorkspaceStatus(_)
+        | Command::RenameWorkspace { .. }
+        | Command::SetProjectIcon { .. }
+        | Command::RemoveProject { .. }
+        | Command::SetWorktreeIgnores { .. }
+        | Command::CreatePath { .. }
+        | Command::RenamePath { .. }
+        | Command::CopyPath { .. }
+        | Command::DeletePath { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
     }
 }
@@ -1835,6 +1969,122 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             sink(vec![UiEvent::Paths { generation, result }]);
         }
+        Command::RefreshProject(project_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .refresh_project(project_id)
+                .map(|()| "refreshing project".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "RefreshProject", result, sink, metrics, started);
+        }
+        Command::RefreshWorkspaceStatus(workspace_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .refresh_workspace_status(workspace_id)
+                .map(|()| "refreshing status".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RefreshWorkspaceStatus",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::RenameWorkspace {
+            workspace_id,
+            display_name,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .rename_workspace(workspace_id, display_name)
+                .map(|()| "renamed checkout".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RenameWorkspace",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SetProjectIcon { project_id, icon } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_project_icon(project_id, icon)
+                .map(|()| "set icon".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "SetProjectIcon", result, sink, metrics, started);
+        }
+        Command::RemoveProject { project_id, policy } => {
+            metrics.note_socket_op();
+            let result = client
+                .remove_project(project_id, policy)
+                .map(|()| "removed project".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "RemoveProject", result, sink, metrics, started);
+        }
+        Command::SetWorktreeIgnores { project_id, rules } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_worktree_ignores(project_id, rules)
+                .map(|()| "ignoring worktrees".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetWorktreeIgnores",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::CreatePath {
+            workspace_id,
+            path,
+            directory,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_path(workspace_id, path.clone(), directory)
+                .map(|()| format!("created {path}"))
+                .map_err(|error| error.to_string());
+            live_result(generation, "CreatePath", result, sink, metrics, started);
+        }
+        Command::RenamePath {
+            workspace_id,
+            from,
+            to,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .rename_path(workspace_id, from, to.clone())
+                .map(|()| format!("moved to {to}"))
+                .map_err(|error| error.to_string());
+            live_result(generation, "RenamePath", result, sink, metrics, started);
+        }
+        Command::CopyPath {
+            workspace_id,
+            from,
+            to,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .copy_path(workspace_id, from, to.clone())
+                .map(|()| format!("copied to {to}"))
+                .map_err(|error| error.to_string());
+            live_result(generation, "CopyPath", result, sink, metrics, started);
+        }
+        Command::DeletePath { workspace_id, path } => {
+            metrics.note_socket_op();
+            let result = client
+                .delete_path(workspace_id, path.clone())
+                .map(|()| format!("deleted {path}"))
+                .map_err(|error| error.to_string());
+            live_result(generation, "DeletePath", result, sink, metrics, started);
+        }
         Command::AddProject(path) => {
             metrics.note_socket_op();
             let result = client
@@ -2098,6 +2348,16 @@ fn command_label(command: &Command) -> &'static str {
         Command::SetProviderExecutable { .. } => "SetProviderExecutable",
         Command::SaveAgentProfile(_) => "SaveAgentProfile",
         Command::RemoveAgentProfile(_) => "RemoveAgentProfile",
+        Command::RefreshProject(_) => "RefreshProject",
+        Command::RefreshWorkspaceStatus(_) => "RefreshWorkspaceStatus",
+        Command::RenameWorkspace { .. } => "RenameWorkspace",
+        Command::SetProjectIcon { .. } => "SetProjectIcon",
+        Command::RemoveProject { .. } => "RemoveProject",
+        Command::SetWorktreeIgnores { .. } => "SetWorktreeIgnores",
+        Command::CreatePath { .. } => "CreatePath",
+        Command::RenamePath { .. } => "RenamePath",
+        Command::CopyPath { .. } => "CopyPath",
+        Command::DeletePath { .. } => "DeletePath",
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",

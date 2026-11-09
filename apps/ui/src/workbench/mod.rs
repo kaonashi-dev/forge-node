@@ -277,6 +277,11 @@ impl Workbench {
         }
     }
 
+    /// Lists `dir` again, after a write the daemon does not announce.
+    pub fn reread(&mut self, dir: &str) {
+        self.queue(Read::Directory(dir.to_string()));
+    }
+
     fn queue(&mut self, read: Read) {
         if !self.reads.contains(&read) {
             self.reads.push(read);
