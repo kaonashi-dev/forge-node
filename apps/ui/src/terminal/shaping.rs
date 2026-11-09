@@ -101,6 +101,22 @@ struct Fallback {
     cache: SourceCache,
     faces: Vec<FallbackFace>,
     by_char: HashMap<char, Option<usize>>,
+    /// Installed Nerd Font families, best first; listed once, on first need.
+    nerd: Option<Vec<String>>,
+}
+
+/// The face Tauri's terminal names after Geist Mono (`tokens.css`).
+const PREFERRED_NERD: &str = "JetBrainsMono Nerd Font Mono";
+
+/// Installed Nerd Font families, in the order a prompt icon is looked for:
+/// Tauri's face, then any monospaced one (its icons fit a cell), then the
+/// rest. Prompt glyphs live in the Private Use Area, which no script
+/// fallback and no system symbol face covers.
+fn nerd_families<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut found: Vec<&str> = names.filter(|name| name.contains("Nerd Font")).collect();
+    found.sort_by_key(|name| (*name != PREFERRED_NERD, !name.ends_with("Mono"), *name));
+    found.dedup();
+    found.into_iter().map(str::to_string).collect()
 }
 
 fn invisible(c: char) -> bool {
@@ -139,6 +155,7 @@ impl Fallback {
             cache: SourceCache::new(SourceCacheOptions::default()),
             faces: Vec::new(),
             by_char: HashMap::new(),
+            nerd: None,
         }
     }
 
@@ -172,6 +189,21 @@ impl Fallback {
             let mut query = self.collection.query(&mut self.cache);
             query.set_families(SYMBOL_FAMILIES);
             hit = probe(&mut query, c);
+        }
+        if hit.is_none() && !emoji {
+            let families = match &self.nerd {
+                Some(families) => families.clone(),
+                None => {
+                    let families = nerd_families(self.collection.family_names());
+                    self.nerd = Some(families.clone());
+                    families
+                }
+            };
+            if !families.is_empty() {
+                let mut query = self.collection.query(&mut self.cache);
+                query.set_families(families.iter().map(String::as_str));
+                hit = probe(&mut query, c);
+            }
         }
         let face = hit?;
         if let Some(i) = self
@@ -626,6 +658,39 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn nerd_fonts_are_found_by_family_with_tauris_face_first() {
+        let installed = [
+            "Geist Mono",
+            "CaskaydiaCove Nerd Font",
+            "CaskaydiaCove Nerd Font Mono",
+            "JetBrainsMono Nerd Font Mono",
+            "Menlo",
+        ];
+        assert_eq!(
+            nerd_families(installed.into_iter()),
+            vec![
+                "JetBrainsMono Nerd Font Mono".to_string(),
+                "CaskaydiaCove Nerd Font Mono".to_string(),
+                "CaskaydiaCove Nerd Font".to_string(),
+            ]
+        );
+        assert!(nerd_families(["Menlo"].into_iter()).is_empty());
+    }
+
+    /// Machine-dependent, as the CJK case is: with a Nerd Font installed, a
+    /// prompt's branch glyph (U+E0A0) comes from it rather than a box.
+    #[test]
+    fn a_prompt_icon_comes_from_an_installed_nerd_font() {
+        let mut fallback = Fallback::new();
+        let installed = nerd_families(fallback.collection.family_names());
+        if installed.is_empty() {
+            eprintln!("no Nerd Font installed; nothing to find");
+            return;
+        }
+        assert!(fallback.find('\u{e0a0}', false).is_some(), "{installed:?}");
+    }
+
     #[test]
     fn cjk_uses_a_fallback_face_and_fits_its_two_columns() {
         let mut s = shaper();

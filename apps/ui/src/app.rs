@@ -49,6 +49,8 @@ pub struct SessionRow {
     pub kind: SessionKind,
     /// Started by an agent provider; what `tabOrder` groups after shells.
     pub agent: bool,
+    /// The provider's id, for its mark on the tab and the row.
+    pub provider: Option<String>,
     /// `None` for an editor the daemon presents as lines, whose PTY carries
     /// no screen this side should paint.
     pub terminal_id: Option<TerminalId>,
@@ -288,6 +290,7 @@ impl AppState {
                     id: session.id,
                     kind: session.kind,
                     agent: session.agent_provider_id.is_some(),
+                    provider: session.agent_provider_id.as_ref().map(ToString::to_string),
                     terminal_id: session.terminal_id.filter(|_| !lines),
                     id_text: session.id.to_string(),
                     workspace_id: session.workspace_id,
@@ -2770,6 +2773,7 @@ mod tests {
             id,
             kind,
             agent: kind == SessionKind::Agent,
+            provider: None,
             terminal_id: live.then(domain::TerminalId::new),
             id_text: id.to_string(),
             title: String::new(),

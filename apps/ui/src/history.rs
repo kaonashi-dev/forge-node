@@ -282,7 +282,14 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 row()
                     .gap(6.0)
                     .items_center()
-                    .child(icon(&crate::glyphs::AGENT, 13.0).color(k.c.icon_muted))
+                    .child(
+                        icon(
+                            crate::glyphs::brand(&session.provider)
+                                .unwrap_or(&crate::glyphs::AGENT),
+                            13.0,
+                        )
+                        .color(k.c.icon_muted),
+                    )
                     .child(
                         text(session.title.clone())
                             .font(k.ty.small_medium)

@@ -60,11 +60,7 @@ fn icon_button(
 }
 
 fn kind_glyph(row: &SessionRow) -> &'static Icon {
-    match row.kind {
-        domain::SessionKind::Agent => &glyphs::AGENT,
-        domain::SessionKind::Editor => &glyphs::CODE,
-        _ => &glyphs::TERMINAL,
-    }
+    glyphs::for_session(row.kind, row.provider.as_deref())
 }
 
 fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {

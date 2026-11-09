@@ -147,11 +147,7 @@ fn sidebar(s: &AppState, k: &Kit) -> El {
 pub fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) -> El {
     let selected = s.active == Some(session.id) && s.workbench.mode == CenterMode::Session;
     let id = session.id;
-    let glyph = match session.kind {
-        domain::SessionKind::Agent => &crate::glyphs::AGENT,
-        domain::SessionKind::Editor => &crate::glyphs::CODE,
-        _ => &crate::glyphs::TERMINAL,
-    };
+    let glyph = crate::glyphs::for_session(session.kind, session.provider.as_deref());
     let mut item = SidebarRow::new(session.title.as_str())
         .select_only()
         .height(30.0)
