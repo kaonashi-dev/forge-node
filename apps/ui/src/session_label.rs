@@ -155,4 +155,37 @@ mod tests {
             "no such binary"
         );
     }
+
+    #[test]
+    fn a_title_prefers_the_user_then_the_terminal_then_the_kind() {
+        let store = crate::connection::fixture_store(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"),
+        )
+        .expect("fixture snapshot decodes");
+        let mut session = store.sessions[0].clone();
+        session.kind = SessionKind::Shell;
+        session.agent_provider_id = None;
+        session.title.user = Some("mine".into());
+        session.title.terminal = Some("osc".into());
+        assert_eq!(session_title(&session), "mine");
+        session.title.user = None;
+        assert_eq!(session_title(&session), "osc");
+        session.title.terminal = Some("  ".into());
+        assert_eq!(session_title(&session), "Shell", "whitespace is unset");
+        session.title.terminal = Some("dev@mbp:/Users/dev/acme/admin-portal".into());
+        assert_eq!(session_title(&session), "Shell ~/acme/admin-portal");
+        session.kind = SessionKind::Agent;
+        session.agent_provider_id = Some(domain::AgentProviderId::new("cursor"));
+        session.title.terminal = Some(String::new());
+        assert_eq!(session_title(&session), "cursor");
+        session.kind = SessionKind::Editor;
+        session.agent_provider_id = None;
+        session.title.terminal = Some("main.rs".into());
+        assert_eq!(
+            session_title(&session),
+            "main.rs",
+            "the editor's own title wins"
+        );
+        assert_ne!(session_title(&session), "Shell");
+    }
 }

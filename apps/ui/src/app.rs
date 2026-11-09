@@ -2100,14 +2100,27 @@ fn kind_label(kind: SessionKind) -> &'static str {
     }
 }
 
+/// The tab's marker, after Tauri's `sessionWork`: waiting for the person
+/// outranks everything; an editor or a shell is never busy, since only an
+/// agent's hooks report a turn; and a keystroke into an idle agent is a
+/// guard the daemon raises, not a turn.
 fn row_status(session: &domain::Session) -> Option<SessionStatus> {
     if session.state.is_terminal() {
         return None;
     }
+    if session.activity.state == ActivityState::Waiting {
+        return Some(SessionStatus::Attention);
+    }
+    if session.kind == SessionKind::Editor || session.agent_provider_id.is_none() {
+        return None;
+    }
     match session.activity.state {
-        ActivityState::Working | ActivityState::Starting => Some(SessionStatus::Busy),
-        ActivityState::Waiting => Some(SessionStatus::Attention),
-        ActivityState::Idle | ActivityState::Unknown | ActivityState::Unrecognized => None,
+        ActivityState::Working
+            if session.activity.evidence != Some(domain::ActivityEvidence::Input) =>
+        {
+            Some(SessionStatus::Busy)
+        }
+        ActivityState::Starting => Some(SessionStatus::Busy),
         _ => None,
     }
 }
@@ -2635,5 +2648,56 @@ mod tests {
         ] {
             assert!(!super::closes_session(mode), "{mode:?}");
         }
+    }
+
+    #[test]
+    fn markers_follow_session_work() {
+        let state = state();
+        let mut session = state.store.as_ref().expect("store").sessions[0].clone();
+        session.state = domain::SessionState::Running;
+        session.kind = SessionKind::Agent;
+        session.agent_provider_id = Some(domain::AgentProviderId::new("claude"));
+        let with = |session: &domain::Session, activity: ActivityState, evidence| {
+            let mut session = session.clone();
+            session.activity.state = activity;
+            session.activity.evidence = evidence;
+            super::row_status(&session)
+        };
+        let hook = Some(domain::ActivityEvidence::Hook);
+        let input = Some(domain::ActivityEvidence::Input);
+        assert_eq!(
+            with(&session, ActivityState::Working, hook),
+            Some(SessionStatus::Busy)
+        );
+        assert_eq!(
+            with(&session, ActivityState::Working, input),
+            None,
+            "a keystroke into an idle agent is not a turn"
+        );
+        assert_eq!(
+            with(&session, ActivityState::Waiting, hook),
+            Some(SessionStatus::Attention)
+        );
+        let mut shell = session.clone();
+        shell.kind = SessionKind::Shell;
+        shell.agent_provider_id = None;
+        assert_eq!(
+            with(&shell, ActivityState::Working, hook),
+            None,
+            "a shell is never busy"
+        );
+        let mut editor = shell.clone();
+        editor.kind = SessionKind::Editor;
+        assert_eq!(with(&editor, ActivityState::Working, hook), None);
+        assert_eq!(
+            with(&editor, ActivityState::Waiting, hook),
+            Some(SessionStatus::Attention),
+            "waiting for the person outranks the kind"
+        );
+        session.state = domain::SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        };
+        assert_eq!(with(&session, ActivityState::Waiting, hook), None);
     }
 }
