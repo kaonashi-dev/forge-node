@@ -142,12 +142,68 @@ pub enum Command {
         workspace_id: WorkspaceId,
         provider_id: domain::AgentProviderId,
         profile_id: Option<domain::AgentProfileId>,
+        /// The session this agent continues, when one is named.
+        parent: Option<SessionId>,
+        role: SessionRole,
         initial_prompt: Option<String>,
         /// In the provider's own review mode: a launch that may not write.
         read_only: bool,
         /// The provider's own id of a conversation to re-enter.
         resume: Option<String>,
     },
+    /// A child agent under a parent, in the checkout or a managed worktree.
+    CreateChild {
+        parent_session_id: SessionId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        role: SessionRole,
+        workspace_policy: domain::ChildWorkspacePolicy,
+        initial_prompt: Option<String>,
+    },
+    /// A recorded run's conversation, or a live terminal's tail, as plain text.
+    SessionTranscript {
+        generation: u64,
+        session_id: SessionId,
+        max_lines: Option<u32>,
+        max_bytes: Option<u32>,
+    },
+    /// One session's changes since its own baseline.
+    SessionChanges {
+        generation: u64,
+        session_id: SessionId,
+    },
+    /// Persist and deliver a context envelope, or spawn a child with it.
+    SendContext {
+        source_session_id: SessionId,
+        target_session_id: Option<SessionId>,
+        spawn: Option<protocol::SendContextSpawn>,
+        summary: Option<String>,
+        instructions: Option<String>,
+        include_transcript: bool,
+        max_transcript_bytes: Option<u32>,
+    },
+    StartReview {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        preset: Option<String>,
+        tier: Option<domain::Tier>,
+        provider: Option<String>,
+        instructions: Option<String>,
+    },
+    ReviewConfig {
+        generation: u64,
+        workspace_id: WorkspaceId,
+    },
+    ListReviews {
+        generation: u64,
+        workspace_id: WorkspaceId,
+    },
+    GetReview {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        review_id: domain::ReviewId,
+    },
+    CancelReview(domain::ReviewId),
     RestartSession(SessionId),
     /// Deletes a recorded run's transcript from disk, then re-reads the
     /// snapshot: history reaches the client only on a snapshot.
@@ -368,6 +424,36 @@ pub enum UiEvent {
         session_id: SessionId,
         result: Result<Box<(String, String)>, String>,
     },
+    SessionTranscript {
+        generation: u64,
+        session_id: SessionId,
+        result: Result<domain::SessionTranscript, String>,
+    },
+    SessionChanges {
+        generation: u64,
+        session_id: SessionId,
+        result: Result<domain::SessionChanges, String>,
+    },
+    ReviewStarted {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<domain::ReviewId, String>,
+    },
+    ReviewConfig {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<domain::ReviewSettings, String>,
+    },
+    Reviews {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<Vec<domain::ReviewRun>, String>,
+    },
+    Review {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<Box<(domain::ReviewRun, Vec<domain::Finding>)>, String>,
+    },
 }
 
 pub type EventSink = Arc<dyn Fn(Vec<UiEvent>) + Send + Sync>;
@@ -541,10 +627,149 @@ impl ConnectionHandle {
             workspace_id,
             provider_id,
             profile_id,
+            parent: None,
+            role: SessionRole::Generic,
             initial_prompt,
             read_only,
             resume: None,
         })
+    }
+
+    /// A handoff: the new agent is a child of the session it continues.
+    pub fn continue_agent(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        parent: SessionId,
+        initial_prompt: String,
+    ) -> Result<(), String> {
+        self.send(Command::CreateAgent {
+            workspace_id,
+            provider_id,
+            profile_id,
+            parent: Some(parent),
+            role: SessionRole::Generic,
+            initial_prompt: Some(initial_prompt),
+            read_only: false,
+            resume: None,
+        })
+    }
+
+    pub fn create_child(
+        &self,
+        parent_session_id: SessionId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        role: SessionRole,
+        workspace_policy: domain::ChildWorkspacePolicy,
+        initial_prompt: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::CreateChild {
+            parent_session_id,
+            provider_id,
+            profile_id,
+            role,
+            workspace_policy,
+            initial_prompt,
+        })
+    }
+
+    pub fn session_transcript(
+        &self,
+        generation: u64,
+        session_id: SessionId,
+        max_lines: Option<u32>,
+        max_bytes: Option<u32>,
+    ) -> Result<(), String> {
+        self.send(Command::SessionTranscript {
+            generation,
+            session_id,
+            max_lines,
+            max_bytes,
+        })
+    }
+
+    pub fn session_changes(&self, generation: u64, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::SessionChanges {
+            generation,
+            session_id,
+        })
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the target and envelope fields are independent request fields"
+    )]
+    pub fn send_context(
+        &self,
+        source_session_id: SessionId,
+        target_session_id: Option<SessionId>,
+        spawn: Option<protocol::SendContextSpawn>,
+        summary: Option<String>,
+        instructions: Option<String>,
+        include_transcript: bool,
+        max_transcript_bytes: Option<u32>,
+    ) -> Result<(), String> {
+        self.send(Command::SendContext {
+            source_session_id,
+            target_session_id,
+            spawn,
+            summary,
+            instructions,
+            include_transcript,
+            max_transcript_bytes,
+        })
+    }
+
+    pub fn start_review(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+        preset: Option<String>,
+        tier: Option<domain::Tier>,
+        provider: Option<String>,
+        instructions: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::StartReview {
+            generation,
+            workspace_id,
+            preset,
+            tier,
+            provider,
+            instructions,
+        })
+    }
+
+    pub fn review_config(&self, generation: u64, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::ReviewConfig {
+            generation,
+            workspace_id,
+        })
+    }
+
+    pub fn list_reviews(&self, generation: u64, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::ListReviews {
+            generation,
+            workspace_id,
+        })
+    }
+
+    pub fn get_review(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+        review_id: domain::ReviewId,
+    ) -> Result<(), String> {
+        self.send(Command::GetReview {
+            generation,
+            workspace_id,
+            review_id,
+        })
+    }
+
+    pub fn cancel_review(&self, review_id: domain::ReviewId) -> Result<(), String> {
+        self.send(Command::CancelReview(review_id))
     }
 
     /// Re-enters a recorded conversation: the ordinary agent launch, told
@@ -560,6 +785,8 @@ impl ConnectionHandle {
             workspace_id,
             provider_id,
             profile_id,
+            parent: None,
+            role: SessionRole::Generic,
             initial_prompt: None,
             read_only: false,
             resume: Some(resume),
@@ -1318,6 +1545,225 @@ fn handle_fixture_command(
             );
             fixture_result(generation, label, result, sink, metrics, started);
         }
+        Command::CreateAgent {
+            workspace_id,
+            provider_id,
+            profile_id,
+            parent,
+            role,
+            initial_prompt,
+            ..
+        } => {
+            let result = fixture_create_agent(
+                &mut link.store,
+                workspace_id,
+                provider_id.clone(),
+                profile_id,
+                parent,
+                role,
+                initial_prompt,
+            );
+            if let Ok((_, Some(DaemonEvent::SessionCreated(session)))) = &result {
+                sink(vec![UiEvent::SessionOpened {
+                    generation,
+                    session_id: session.id,
+                }]);
+            }
+            fixture_result(
+                generation,
+                "CreateAgentSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::CreateChild {
+            parent_session_id,
+            provider_id,
+            profile_id,
+            role,
+            initial_prompt,
+            ..
+        } => {
+            let workspace_id = link
+                .store
+                .sessions
+                .iter()
+                .find(|session| session.id == parent_session_id)
+                .map(|session| session.workspace_id);
+            let Some(workspace_id) = workspace_id else {
+                fixture_result(
+                    generation,
+                    "CreateChildSession",
+                    Err("fixture: no parent session".into()),
+                    sink,
+                    metrics,
+                    started,
+                );
+                return;
+            };
+            let result = fixture_create_agent(
+                &mut link.store,
+                workspace_id,
+                provider_id,
+                profile_id,
+                Some(parent_session_id),
+                role,
+                initial_prompt,
+            );
+            if let Ok((_, Some(DaemonEvent::SessionCreated(session)))) = &result {
+                sink(vec![UiEvent::SessionOpened {
+                    generation,
+                    session_id: session.id,
+                }]);
+            }
+            fixture_result(
+                generation,
+                "CreateChildSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SessionTranscript {
+            generation: command_generation,
+            session_id,
+            max_lines,
+            max_bytes,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            let result = fixture_transcript(&link.store, session_id, max_lines, max_bytes);
+            sink(vec![UiEvent::SessionTranscript {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::SessionChanges {
+            generation: command_generation,
+            session_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            let result = fixture_session_changes(&link.store, session_id);
+            sink(vec![UiEvent::SessionChanges {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::SendContext {
+            source_session_id,
+            target_session_id,
+            spawn,
+            ..
+        } => {
+            let result = if let Some(spawn) = spawn {
+                let workspace_id = link
+                    .store
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == source_session_id)
+                    .map(|session| session.workspace_id);
+                match (workspace_id, spawn.provider_id) {
+                    (Some(workspace_id), Some(provider_id)) => fixture_create_agent(
+                        &mut link.store,
+                        workspace_id,
+                        provider_id,
+                        spawn.profile_id,
+                        Some(source_session_id),
+                        spawn.role,
+                        None,
+                    ),
+                    _ => Err("fixture: the spawn names no provider".into()),
+                }
+            } else if target_session_id.is_some_and(|target| {
+                link.store
+                    .sessions
+                    .iter()
+                    .any(|session| session.id == target)
+            }) {
+                Ok(("sent context".to_string(), None))
+            } else {
+                Err("fixture: no target session".into())
+            };
+            if let Ok((_, Some(DaemonEvent::SessionCreated(session)))) = &result {
+                sink(vec![UiEvent::SessionOpened {
+                    generation,
+                    session_id: session.id,
+                }]);
+            }
+            fixture_result(generation, "SendContext", result, sink, metrics, started);
+        }
+        Command::StartReview {
+            generation: command_generation,
+            workspace_id,
+            ..
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::ReviewStarted {
+                generation,
+                workspace_id,
+                result: Err("the recorded snapshot has no review store".into()),
+            }]);
+        }
+        Command::ReviewConfig {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::ReviewConfig {
+                generation,
+                workspace_id,
+                result: Ok(fixture_review_config()),
+            }]);
+        }
+        Command::ListReviews {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::Reviews {
+                generation,
+                workspace_id,
+                result: Ok(Vec::new()),
+            }]);
+        }
+        Command::GetReview {
+            generation: command_generation,
+            workspace_id,
+            ..
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::Review {
+                generation,
+                workspace_id,
+                result: Err("the recorded snapshot has no review store".into()),
+            }]);
+        }
+        Command::CancelReview(_) => {
+            fixture_result(
+                generation,
+                "CancelReview",
+                Err("the recorded snapshot has no review store".into()),
+                sink,
+                metrics,
+                started,
+            );
+        }
         Command::OpenEditor { .. }
         | Command::EditorView { .. }
         | Command::EditorInput { .. }
@@ -1337,7 +1783,6 @@ fn handle_fixture_command(
         | Command::RefreshPullRequests
         | Command::DraftCommit { .. }
         | Command::Commit { .. }
-        | Command::CreateAgent { .. }
         | Command::StopDaemon { .. }
         | Command::FactoryReset
         | Command::RefreshAgentDetection
@@ -1504,6 +1949,189 @@ fn fixture_rename(
     ))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the launch fields mirror CreateAgentSession"
+)]
+fn fixture_create_agent(
+    store: &mut Store,
+    workspace_id: WorkspaceId,
+    provider_id: domain::AgentProviderId,
+    profile_id: Option<domain::AgentProfileId>,
+    parent: Option<SessionId>,
+    role: SessionRole,
+    initial_prompt: Option<String>,
+) -> Result<(String, Option<DaemonEvent>), String> {
+    if !store
+        .workspaces
+        .iter()
+        .any(|workspace| workspace.id == workspace_id)
+    {
+        return Err(format!("fixture: no workspace {workspace_id}"));
+    }
+    let now = Timestamp::now();
+    let id = SessionId::new();
+    let root_session_id = parent
+        .and_then(|parent| {
+            store
+                .sessions
+                .iter()
+                .find(|session| session.id == parent)
+                .map(|session| session.root_session_id)
+        })
+        .unwrap_or(id);
+    let title = initial_prompt
+        .as_deref()
+        .and_then(|prompt| prompt.lines().next())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map_or_else(
+            || format!("fixture {provider_id}"),
+            |line| line.chars().take(60).collect(),
+        );
+    let session = Session {
+        id,
+        workspace_id,
+        kind: SessionKind::Agent,
+        role,
+        parent_session_id: parent,
+        root_session_id,
+        terminal_id: Some(TerminalId::new()),
+        editor: None,
+        agent_provider_id: Some(provider_id.clone()),
+        agent_profile_id: profile_id,
+        title: SessionTitle {
+            user: Some(title),
+            terminal: None,
+        },
+        state: SessionState::Running,
+        created_at: now,
+        launch_command: None,
+        last_activity_at: now,
+        ended_at: None,
+        base_commit: None,
+        activity: AgentActivity::unknown(),
+        action: None,
+    };
+    store.sessions.push(session.clone());
+    Ok((
+        format!(
+            "started {provider_id} in {}",
+            short_id(&session.workspace_id)
+        ),
+        Some(DaemonEvent::SessionCreated(session)),
+    ))
+}
+
+fn fixture_transcript(
+    store: &Store,
+    session_id: SessionId,
+    max_lines: Option<u32>,
+    max_bytes: Option<u32>,
+) -> Result<domain::SessionTranscript, String> {
+    let Some(session) = store
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+    else {
+        return Err(format!("fixture: no session {session_id}"));
+    };
+    let title = session.title.resolve("session");
+    let mut rows: Vec<String> = (0..24)
+        .map(|index| match index {
+            0 => format!("$ {title}"),
+            23 => "$ build finished".to_string(),
+            _ => format!("fixture transcript line {index}"),
+        })
+        .collect();
+    let line_cap = max_lines.unwrap_or(800).min(4_096) as usize;
+    let byte_cap = max_bytes.unwrap_or(36_000).min(96_000) as usize;
+    let mut truncated = rows.len() > line_cap;
+    if truncated {
+        rows = rows.split_off(rows.len() - line_cap);
+    }
+    let mut text = rows.join("\n");
+    if text.len() > byte_cap {
+        let mut start = text.len() - byte_cap;
+        while start < text.len() && !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text = text[start..].to_string();
+        truncated = true;
+    }
+    Ok(domain::SessionTranscript {
+        session_id,
+        lines: u32::try_from(text.lines().count()).unwrap_or(u32::MAX),
+        text,
+        truncated,
+    })
+}
+
+fn fixture_session_changes(
+    store: &Store,
+    session_id: SessionId,
+) -> Result<domain::SessionChanges, String> {
+    let Some(session) = store
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+    else {
+        return Err(format!("fixture: no session {session_id}"));
+    };
+    let branch = store
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == session.workspace_id)
+        .and_then(|workspace| workspace.branch.clone());
+    let sharing_sessions = store
+        .sessions
+        .iter()
+        .filter(|candidate| {
+            candidate.id != session_id
+                && candidate.workspace_id == session.workspace_id
+                && candidate.state.is_active()
+        })
+        .count();
+    Ok(domain::SessionChanges {
+        session_id,
+        origin: domain::BaseOrigin::Missing,
+        summary: domain::ChangeSummary {
+            branch,
+            ..domain::ChangeSummary::default()
+        },
+        sharing_sessions: u32::try_from(sharing_sessions).unwrap_or(u32::MAX),
+    })
+}
+
+pub(crate) fn fixture_review_config() -> domain::ReviewSettings {
+    domain::ReviewSettings {
+        default_preset: "standard".into(),
+        presets: vec![
+            domain::ReviewPreset {
+                id: "standard".into(),
+                name: "Review the change".into(),
+                detail: "Correctness, missing tests, and anything that would block a merge.".into(),
+                tier: None,
+            },
+            domain::ReviewPreset {
+                id: "security".into(),
+                name: "Security review".into(),
+                detail: "Input handling, secrets, authorization, injection, resource limits."
+                    .into(),
+                tier: None,
+            },
+            domain::ReviewPreset {
+                id: crate::code_review::CUSTOM_PRESET.into(),
+                name: "Custom".into(),
+                detail: "Your own wording, remembered for next time.".into(),
+                tier: None,
+            },
+        ],
+        rules: Vec::new(),
+        errors: Vec::new(),
+    }
+}
+
 struct LiveCtx<'a> {
     generation: u64,
     socket: &'a std::path::Path,
@@ -1562,7 +2190,7 @@ fn run_live(ctx: LiveCtx<'_>) -> Result<(), String> {
         let events = link.events.clone();
         let selected = Selector::new()
             .recv(&events, |message| Msg::Event(message.ok().map(Box::new)))
-            .recv(rx, |message| Msg::Command(message.ok()))
+            .recv(rx, |message| Msg::Command(message.ok().map(Box::new)))
             .wait_timeout(Duration::from_millis(250));
         match selected {
             Ok(Msg::Event(Some(event))) => match event.as_ref() {
@@ -1597,22 +2225,24 @@ fn run_live(ctx: LiveCtx<'_>) -> Result<(), String> {
             Ok(Msg::Event(None)) => {
                 return Err("daemon closed the connection".to_string());
             }
-            Ok(Msg::Command(Some(Command::Shutdown))) => {
-                stop.store(true, Ordering::Release);
-                return Ok(());
-            }
-            Ok(Msg::Command(Some(Command::ForceReconnect))) => {
-                return Err("reconnect requested".to_string());
-            }
-            Ok(Msg::Command(Some(command))) => handle_live_command(
-                generation,
-                &link.client,
-                command,
-                sink,
-                wake,
-                metrics,
-                terminal,
-            ),
+            Ok(Msg::Command(Some(command))) => match *command {
+                Command::Shutdown => {
+                    stop.store(true, Ordering::Release);
+                    return Ok(());
+                }
+                Command::ForceReconnect => {
+                    return Err("reconnect requested".to_string());
+                }
+                command => handle_live_command(
+                    generation,
+                    &link.client,
+                    command,
+                    sink,
+                    wake,
+                    metrics,
+                    terminal,
+                ),
+            },
             Ok(Msg::Command(None)) => {
                 stop.store(true, Ordering::Release);
                 return Ok(());
@@ -1628,7 +2258,7 @@ fn run_live(ctx: LiveCtx<'_>) -> Result<(), String> {
 
 enum Msg {
     Event(Option<Box<DaemonEvent>>),
-    Command(Option<Command>),
+    Command(Option<Box<Command>>),
 }
 
 fn connect_live(
@@ -2001,6 +2631,8 @@ fn handle_live_command(
             workspace_id,
             provider_id,
             profile_id,
+            parent,
+            role,
             initial_prompt,
             read_only,
             resume,
@@ -2013,8 +2645,8 @@ fn handle_live_command(
                     workspace_id,
                     provider_id.clone(),
                     profile_id,
-                    None,
-                    domain::SessionRole::Generic,
+                    parent,
+                    role,
                     resume,
                     initial_prompt,
                     read_only,
@@ -2035,6 +2667,206 @@ fn handle_live_command(
                 metrics,
                 started,
             );
+        }
+        Command::CreateChild {
+            parent_session_id,
+            provider_id,
+            profile_id,
+            role,
+            workspace_policy,
+            initial_prompt,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_child_session(
+                    parent_session_id,
+                    SessionKind::Agent,
+                    Some(provider_id.clone()),
+                    profile_id,
+                    role,
+                    workspace_policy,
+                    initial_prompt,
+                )
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("spawned {provider_id} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateChildSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SessionTranscript {
+            generation: command_generation,
+            session_id,
+            max_lines,
+            max_bytes,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .session_transcript(session_id, max_lines, max_bytes)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::SessionTranscript {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::SessionChanges {
+            generation: command_generation,
+            session_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .session_changes(session_id)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::SessionChanges {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::SendContext {
+            source_session_id,
+            target_session_id,
+            spawn,
+            summary,
+            instructions,
+            include_transcript,
+            max_transcript_bytes,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .send_context(
+                    source_session_id,
+                    target_session_id,
+                    spawn,
+                    summary,
+                    instructions,
+                    include_transcript,
+                    max_transcript_bytes,
+                )
+                .map(|outcome| match outcome {
+                    client::SendContextResult::Delivered => "sent context".to_string(),
+                    client::SendContextResult::Spawned {
+                        session_id,
+                        terminal_id: _,
+                    } => {
+                        sink(vec![UiEvent::SessionOpened {
+                            generation,
+                            session_id,
+                        }]);
+                        format!("spawned context receiver {}", short_id(&session_id))
+                    }
+                })
+                .map_err(|error| error.to_string());
+            live_result(generation, "SendContext", result, sink, metrics, started);
+        }
+        Command::StartReview {
+            generation: command_generation,
+            workspace_id,
+            preset,
+            tier,
+            provider,
+            instructions,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .start_review(
+                    domain::ReviewTarget::Workspace {
+                        workspace_id,
+                        base: None,
+                    },
+                    tier,
+                    provider,
+                    preset,
+                    instructions,
+                    domain::AgentLaunchOptions::default(),
+                )
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::ReviewStarted {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
+        Command::ReviewConfig {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .get_review_config(workspace_id)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::ReviewConfig {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
+        Command::ListReviews {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .list_reviews(workspace_id, 20)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Reviews {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
+        Command::GetReview {
+            generation: command_generation,
+            workspace_id,
+            review_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .get_review(review_id)
+                .map(Box::new)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Review {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
+        Command::CancelReview(review_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .cancel_review(review_id)
+                .map(|()| "cancelling".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "CancelReview", result, sink, metrics, started);
         }
         Command::DraftCommit { workspace_id } => {
             metrics.note_socket_op();
@@ -2833,6 +3665,15 @@ fn command_label(command: &Command) -> &'static str {
         Command::DraftCommit { .. } => "DraftWithJuva",
         Command::Commit { .. } => "CreateCommit",
         Command::CreateAgent { .. } => "CreateAgentSession",
+        Command::CreateChild { .. } => "CreateChildSession",
+        Command::SessionTranscript { .. } => "GetSessionTranscript",
+        Command::SessionChanges { .. } => "GetSessionChanges",
+        Command::SendContext { .. } => "SendContext",
+        Command::StartReview { .. } => "StartReview",
+        Command::ReviewConfig { .. } => "GetReviewConfig",
+        Command::ListReviews { .. } => "ListReviews",
+        Command::GetReview { .. } => "GetReview",
+        Command::CancelReview(_) => "CancelReview",
         Command::StopDaemon { .. } => "StopDaemon",
         Command::FactoryReset => "FactoryReset",
         Command::RefreshAgentDetection => "RefreshAgentDetection",

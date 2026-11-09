@@ -151,6 +151,7 @@ impl AppState {
     }
 
     pub fn resume_run(&mut self, at: usize) {
+        let active_workspace = self.workbench.workspace;
         let Some(store) = &self.store else {
             return;
         };
@@ -160,13 +161,23 @@ impl AppState {
         if self.resume_blocked(session).is_some() {
             return;
         }
-        // A run recorded outside any known checkout resumes in its project's
-        // first one, so the provider can find its transcript by project.
-        let workspace = session.workspace_id.or_else(|| {
-            crate::projects::checkouts_of(&store.workspaces, session.project_id)
-                .first()
-                .map(|workspace| workspace.id)
-        });
+        // The recorded checkout when it still exists, else the one the window
+        // is pointed at, so a run outside a tracked worktree is still resumable.
+        let known = |workspace: WorkspaceId| {
+            store
+                .workspaces
+                .iter()
+                .any(|candidate| candidate.id == workspace)
+        };
+        let workspace = session
+            .workspace_id
+            .filter(|workspace| known(*workspace))
+            .or(active_workspace.filter(|workspace| known(*workspace)))
+            .or_else(|| {
+                crate::projects::checkouts_of(&store.workspaces, session.project_id)
+                    .first()
+                    .map(|workspace| workspace.id)
+            });
         let (Some(workspace), Some(connection)) = (workspace, &self.connection) else {
             return;
         };
@@ -318,6 +329,9 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     .truncate(),
             );
         }
+        card = card.on_secondary_press(move |s: &mut AppState, point, _| {
+            crate::menus::open(s, crate::menus::Target::HistoryRun(at), point);
+        });
         let delete = Button::new("Delete…")
             .variant(ButtonVariant::GhostMuted)
             .control_size(ControlSize::Small)

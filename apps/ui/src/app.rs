@@ -147,6 +147,9 @@ pub struct AppState {
     pub sync: crate::sync::Sync,
     pub menus: crate::menus::Menus,
     pub split: crate::terminal::split::Split,
+    pub agent_ops: crate::agent_ops::AgentOps,
+    pub session_changes: crate::session_changes::SessionChangesView,
+    pub code_review: crate::code_review::CodeReview,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
     /// A live session whose close waits for a person to confirm it.
@@ -226,6 +229,9 @@ impl AppState {
             sync: crate::sync::Sync::default(),
             menus: crate::menus::Menus::default(),
             split: crate::terminal::split::Split::default(),
+            agent_ops: crate::agent_ops::AgentOps::default(),
+            session_changes: crate::session_changes::SessionChangesView::default(),
+            code_review: crate::code_review::CodeReview::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
             pending_close: std::collections::HashSet::new(),
@@ -271,6 +277,9 @@ impl AppState {
             return;
         }
         self.split.focused = false;
+        if self.active != Some(id) && self.workbench.mode == CenterMode::SessionChanges {
+            self.workbench.show(CenterMode::Session);
+        }
         if self.active == Some(id) {
             self.terminal.focus_terminal = true;
             return;
@@ -482,7 +491,11 @@ impl AppState {
         }
         match action {
             Action::CommandPalette => {
-                let agents = self.installed_agents();
+                let agents = self
+                    .store
+                    .as_ref()
+                    .map(|store| crate::agent_ops::choices(store, false))
+                    .unwrap_or_default();
                 let actions = self.palette_actions();
                 self.palette.show_with(false, "", agents);
                 self.palette.set_actions(actions);
@@ -682,12 +695,12 @@ impl AppState {
                         self.run_action(workspace, action);
                     }
                 }
-                Command::NewAgent(provider) => {
+                Command::NewAgent(provider, profile) => {
                     self.sync_workbench_workspace();
                     if let (Some(connection), Some(workspace)) =
                         (&self.connection, self.workbench.workspace)
                     {
-                        let _ = connection.create_agent(workspace, provider, None, None, false);
+                        let _ = connection.create_agent(workspace, provider, profile, None, false);
                         self.workbench.show(CenterMode::Session);
                     }
                 }
@@ -1123,6 +1136,7 @@ impl AppState {
         }
         self.sync_usage();
         self.sync_storage();
+        self.sync_review();
         self.commit.follow(self.workbench.workspace);
         if let Some(query) = self.palette.take_search() {
             self.sync_workbench_workspace();
@@ -1246,6 +1260,10 @@ impl AppState {
             UiEvent::Daemon { generation, event } => {
                 if !self.accept_generation(generation) {
                     return false;
+                }
+                if let protocol::DaemonEvent::ReviewUpdated { run } = event.as_ref() {
+                    self.apply_review_run(run);
+                    return true;
                 }
                 crate::project_ops::observe(self, event.as_ref());
                 if let protocol::DaemonEvent::ClipboardStore { terminal_id, text } = event.as_ref()
@@ -1552,6 +1570,8 @@ impl AppState {
                 }
                 self.settings_result(label, ok, &message);
                 crate::menus::command_result(self, label, ok, &message);
+                crate::agent_ops::command_result(self, label, ok, &message);
+                self.review_command_result(label, ok, &message);
                 if label == "DraftWithJuva" && !ok {
                     self.commit.drafting = false;
                     self.commit.error = Some(message.clone());
@@ -1584,6 +1604,66 @@ impl AppState {
                 }
                 self.apply_editor_conflict(session_id, result);
                 true
+            }
+            UiEvent::SessionTranscript {
+                generation,
+                session_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                crate::agent_ops::apply_transcript(self, session_id, result)
+            }
+            UiEvent::SessionChanges {
+                generation,
+                session_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                crate::session_changes::apply(self, session_id, result)
+            }
+            UiEvent::ReviewStarted {
+                generation,
+                workspace_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.review_started(workspace_id, result)
+            }
+            UiEvent::ReviewConfig {
+                generation,
+                workspace_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_review_config(workspace_id, result)
+            }
+            UiEvent::Reviews {
+                generation,
+                workspace_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_reviews(workspace_id, result)
+            }
+            UiEvent::Review {
+                generation,
+                workspace_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_review_report(workspace_id, result)
             }
         }
     }
@@ -2348,7 +2428,11 @@ impl AppState {
 
     /// The palette scoped to what can be launched: a terminal or an agent.
     pub fn open_launch_palette(&mut self) {
-        let agents = self.installed_agents();
+        let agents = self
+            .store
+            .as_ref()
+            .map(|store| crate::agent_ops::choices(store, false))
+            .unwrap_or_default();
         self.palette.show_launch(agents);
     }
 

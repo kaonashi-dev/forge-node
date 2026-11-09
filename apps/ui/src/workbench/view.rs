@@ -61,7 +61,7 @@ fn notice(k: &Kit, key: &'static str, message: String) -> El {
 }
 
 /// A diff status as one letter, as Tauri's `statusLetter`.
-fn status_letter(status: domain::DiffStatus) -> &'static str {
+pub(crate) fn status_letter(status: domain::DiffStatus) -> &'static str {
     match status {
         domain::DiffStatus::Added => "A",
         domain::DiffStatus::Modified => "M",
@@ -72,7 +72,7 @@ fn status_letter(status: domain::DiffStatus) -> &'static str {
 }
 
 /// A diff status in words for the row's accessible name, as Tauri's `statusWord`.
-fn status_word(status: domain::DiffStatus) -> &'static str {
+pub(crate) fn status_word(status: domain::DiffStatus) -> &'static str {
     match status {
         domain::DiffStatus::Added => "added",
         domain::DiffStatus::Modified => "modified",

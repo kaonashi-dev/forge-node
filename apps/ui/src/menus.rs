@@ -45,6 +45,8 @@ pub enum Target {
     Group(ProjectGroupId),
     /// The text of a line editor, for `EditorTerminalPane`'s menu.
     Editor(SessionId),
+    /// One recorded agent run in the History panel, by store position.
+    HistoryRun(usize),
 }
 
 /// A menu that drops from a button rather than opening at a pointer. The
@@ -158,11 +160,6 @@ pub fn icon(glyph: &Glyph) -> Option<&'static Icon> {
 pub enum Unported {
     PreviewPr,
     OpenPrWithAgent,
-    ContinueInNewSession,
-    SpawnChild,
-    SendContext,
-    SessionChanges,
-    Review,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,6 +228,13 @@ pub enum Act {
     EditorPaste(SessionId),
     RevealInFiles(String),
     OpenDiff,
+    ContinueInNewSession(SessionId),
+    SpawnChild(SessionId),
+    SendContext(SessionId),
+    SessionChanges(SessionId),
+    ReviewWorkspace(WorkspaceId),
+    ContinueExternal(usize),
+    DeleteExternal(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -357,6 +361,7 @@ pub fn items(s: &AppState, target: &Target) -> Vec<Entry> {
         Target::Files(workspace, file) => file_items(s, *workspace, file),
         Target::Group(group) => group_items(*group),
         Target::Editor(session) => editor_pane_items(s, *session),
+        Target::HistoryRun(at) => history_items(s, *at),
     }
 }
 
@@ -649,6 +654,11 @@ fn checkout_items(s: &AppState, workspace_id: WorkspaceId) -> Vec<Entry> {
             Act::CommitWithJuva(workspace_id),
         ),
         item(
+            "Review",
+            Glyph::ListChecks,
+            Act::ReviewWorkspace(workspace_id),
+        ),
+        item(
             "Preview PR",
             Glyph::PullRequest,
             Act::Unported(Unported::PreviewPr),
@@ -886,25 +896,29 @@ fn session_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
         item(
             "Continue in a New Session…",
             Glyph::MessagePlus,
-            Act::Unported(Unported::ContinueInNewSession),
+            Act::ContinueInNewSession(session_id),
         ),
         item(
             "Spawn Child…",
             Glyph::SpawnChild,
-            Act::Unported(Unported::SpawnChild),
+            Act::SpawnChild(session_id),
         ),
         item(
             "Send Context…",
             Glyph::MessagePlus,
-            Act::Unported(Unported::SendContext),
+            Act::SendContext(session_id),
         ),
         item(
             "Session Changes",
             Glyph::Columns,
-            Act::Unported(Unported::SessionChanges),
+            Act::SessionChanges(session_id),
         ),
-        item("Review", Glyph::ListChecks, Act::Unported(Unported::Review))
-            .enabled(session.kind == SessionKind::Agent),
+        item(
+            "Review",
+            Glyph::ListChecks,
+            Act::ReviewWorkspace(session.workspace_id),
+        )
+        .enabled(session.kind == SessionKind::Agent),
         Entry::Rule,
         if running {
             item("Kill", Glyph::Close, Act::Kill(session_id)).danger()
@@ -912,6 +926,33 @@ fn session_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
             item("Restart", Glyph::Plus, Act::Restart(session_id))
         },
         item("Close", Glyph::Trash, Act::Close(session_id)).danger(),
+    ]
+}
+
+/// `historyMenuItems`: continue a recorded run in a new session, or delete its
+/// transcript. A run in a shared store cannot be deleted on its own.
+fn history_items(s: &AppState, at: usize) -> Vec<Entry> {
+    let Some(store) = &s.store else {
+        return Vec::new();
+    };
+    let Some(session) = store.external_agents.get(at) else {
+        return Vec::new();
+    };
+    let blocked = s.resume_blocked(session);
+    let shared = session.store == domain::TranscriptStore::SharedDatabase;
+    vec![
+        item(
+            "Continue in a New Session…",
+            Glyph::MessagePlus,
+            Act::ContinueExternal(at),
+        )
+        .enabled(blocked.is_none())
+        .detail(blocked),
+        Entry::Rule,
+        item("Delete Transcript…", Glyph::Trash, Act::DeleteExternal(at))
+            .danger()
+            .enabled(!shared)
+            .detail(shared.then(|| "opencode records this run in a shared database".to_string())),
     ]
 }
 
@@ -1615,6 +1656,13 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
         Act::EditorPaste(session) => s.editor_paste(session, tx),
         Act::RevealInFiles(path) => s.reveal_in_files(path, tx),
         Act::OpenDiff => s.show_mode(CenterMode::Changes),
+        Act::ContinueInNewSession(session) => crate::agent_ops::open_handoff(s, session),
+        Act::SpawnChild(session) => crate::agent_ops::open_spawn_child(s, session),
+        Act::SendContext(session) => crate::agent_ops::open_send_context(s, session),
+        Act::SessionChanges(session) => crate::session_changes::toggle(s, session),
+        Act::ReviewWorkspace(workspace) => crate::code_review::open(s, workspace),
+        Act::ContinueExternal(at) => s.resume_run(at),
+        Act::DeleteExternal(at) => s.request_delete(at),
     }
 }
 
@@ -2379,6 +2427,7 @@ mod tests {
                 "—",
                 "# Juva & Git",
                 "Commit with Juva…",
+                "Review",
                 "—",
                 "# Workspace",
                 "Shared files…",
@@ -2427,6 +2476,7 @@ mod tests {
                 "—",
                 "# Juva & Git",
                 "Commit with Juva…",
+                "Review",
                 "Preview PR",
                 "Open PR with agent…",
                 "—",
@@ -2448,6 +2498,11 @@ mod tests {
         assert_eq!(
             act_of(&all, "Copy path"),
             Act::Copy("/home/dev/forge-node-rune-shell".into())
+        );
+        assert_eq!(
+            act_of(&all, "Review"),
+            Act::ReviewWorkspace(shell),
+            "the checkout menu opens a review of that checkout"
         );
         let Some(Entry::Submenu { entries, .. }) = all.last() else {
             panic!("Open in is last");
@@ -2480,12 +2535,50 @@ mod tests {
             "Review is for agents"
         );
         assert_eq!(
-            labels(&rendered(running)),
-            ["Rename…", "—", "Kill!", "Close!"]
+            labels(&rendered(running.clone())),
+            [
+                "Rename…",
+                "Continue in a New Session…",
+                "Spawn Child…",
+                "Send Context…",
+                "Session Changes",
+                "Review (off)",
+                "—",
+                "Kill!",
+                "Close!",
+            ],
+            "every session item is ported"
         );
         assert_eq!(
+            act_of(&running, "Continue in a New Session…"),
+            Act::ContinueInNewSession(id("1000"))
+        );
+        assert_eq!(
+            act_of(&running, "Spawn Child…"),
+            Act::SpawnChild(id("1000"))
+        );
+        assert_eq!(
+            act_of(&running, "Send Context…"),
+            Act::SendContext(id("1000"))
+        );
+        assert_eq!(
+            act_of(&running, "Session Changes"),
+            Act::SessionChanges(id("1000"))
+        );
+        assert_eq!(act_of(&running, "Review"), Act::ReviewWorkspace(id(MAIN)));
+        assert_eq!(
             labels(&rendered(items(&s, &Target::Tab(id("1003"))))),
-            ["Rename…", "—", "Restart", "Close!"],
+            [
+                "Rename…",
+                "Continue in a New Session…",
+                "Spawn Child…",
+                "Send Context…",
+                "Session Changes",
+                "Review (off)",
+                "—",
+                "Restart",
+                "Close!"
+            ],
             "a shell's tab has the session's menu"
         );
     }
@@ -2593,8 +2686,61 @@ mod tests {
     }
 
     #[test]
+    fn a_history_run_offers_continue_and_refuses_to_delete_a_shared_store() {
+        let mut store = store();
+        store.providers = vec![crate::test_support::provider("claude", true, true, false)];
+        let project: ProjectId = id(PROJECT);
+        let workspace: WorkspaceId = id(MAIN);
+        let run = |id: &str, workspace: Option<WorkspaceId>, shared: bool| {
+            serde_json::from_value::<domain::ExternalAgentSession>(serde_json::json!({
+                "session_id": id,
+                "project_id": project,
+                "workspace_id": workspace,
+                "provider": "claude",
+                "profile_id": null,
+                "title": "A recorded run",
+                "branch": "main",
+                "preview": null,
+                "model": null,
+                "message_count": 4,
+                "subagent_count": 0,
+                "transcript_path": "/tmp/t.jsonl",
+                "store": if shared { "SharedDatabase" } else { "File" },
+                "started_at": "2026-11-01T00:00:00Z",
+                "last_activity": "2026-11-02T00:00:00Z"
+            }))
+            .expect("a recorded run")
+        };
+        store.external_agents = vec![run("a", Some(workspace), false), run("b", None, true)];
+        let s = state(store);
+        let first = items(&s, &Target::HistoryRun(0));
+        assert_eq!(
+            labels(&first),
+            ["Continue in a New Session…", "—", "Delete Transcript…!"]
+        );
+        assert_eq!(
+            act_of(&first, "Continue in a New Session…"),
+            Act::ContinueExternal(0)
+        );
+        let second = items(&s, &Target::HistoryRun(1));
+        assert_eq!(
+            labels(&second),
+            [
+                "Continue in a New Session…",
+                "—",
+                "Delete Transcript… (off)!"
+            ],
+            "a run outside a checkout still resumes somewhere, but a shared store cannot lose one row"
+        );
+        assert_eq!(
+            act_of(&second, "Delete Transcript…"),
+            Act::DeleteExternal(1)
+        );
+    }
+
+    #[test]
     fn rendering_drops_what_unported_items_leave_empty() {
-        let unported = || item("x", Glyph::None, Act::Unported(Unported::Review));
+        let unported = || item("x", Glyph::None, Act::Unported(Unported::PreviewPr));
         let kept = || item("y", Glyph::None, Act::CollapseFolders);
         let entries = vec![
             Entry::Rule,
