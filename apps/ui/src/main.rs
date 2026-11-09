@@ -14,6 +14,7 @@ mod sync;
 mod terminal;
 mod theme;
 mod ui;
+mod usage;
 mod workbench;
 
 use std::path::PathBuf;

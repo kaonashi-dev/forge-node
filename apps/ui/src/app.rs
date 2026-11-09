@@ -95,6 +95,7 @@ pub struct AppState {
     pub projects: crate::projects::Projects,
     pub commit: crate::commit::CommitBox,
     pub review: Option<crate::pr_review::ReviewDialog>,
+    pub usage: crate::usage::Usage,
     pub sync: crate::sync::Sync,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
@@ -164,6 +165,7 @@ impl AppState {
             projects: crate::projects::Projects::default(),
             commit: crate::commit::CommitBox::default(),
             review: None,
+            usage: crate::usage::Usage::default(),
             sync: crate::sync::Sync::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
@@ -888,7 +890,25 @@ impl AppState {
         self.workbench.set_workspace(workspace);
     }
 
+    /// Reads the analytics while Settings shows them, once per window; the
+    /// daemon keeps them for a minute, so asking again is cheap but pointless.
+    fn sync_usage(&mut self) {
+        let usage = &mut self.usage;
+        if self.workbench.mode != CenterMode::Settings
+            || usage.analytics.is_some()
+            || usage.pending == Some(usage.window_days)
+        {
+            return;
+        }
+        if let Some(connection) = &self.connection
+            && connection.usage(self.generation, usage.window_days).is_ok()
+        {
+            usage.pending = Some(usage.window_days);
+        }
+    }
+
     fn sync_workbench(&mut self) {
+        self.sync_usage();
         self.commit.follow(self.workbench.workspace);
         if let Some(query) = self.palette.take_search() {
             self.sync_workbench_workspace();
@@ -1138,6 +1158,28 @@ impl AppState {
                 }
                 self.workbench
                     .apply_file(workspace_id, result.map(|file| *file));
+                true
+            }
+            UiEvent::Usage {
+                generation,
+                window_days,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                if self.usage.pending == Some(window_days) {
+                    self.usage.pending = None;
+                }
+                if window_days == self.usage.window_days {
+                    match result {
+                        Ok(analytics) => {
+                            self.usage.error = None;
+                            self.usage.analytics = Some(*analytics);
+                        }
+                        Err(error) => self.usage.error = Some(error),
+                    }
+                }
                 true
             }
             UiEvent::Search {

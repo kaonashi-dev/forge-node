@@ -558,7 +558,11 @@ pub fn settings(s: &AppState, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(bar(k, "Settings".into(), "Appearance".into()))
+        .child(bar(
+            k,
+            "Settings".into(),
+            "Appearance · Stats & usage".into(),
+        ))
         .child(
             col()
                 .key("settings-body")
@@ -571,7 +575,9 @@ pub fn settings(s: &AppState, k: &Kit) -> El {
                     stick_bottom: false,
                 })
                 .child(text("Theme").font(k.ty.body_medium).color(k.c.text_base))
-                .child(list),
+                .child(list)
+                .child(el().h(1.0).w_full().fill(k.c.border_weak))
+                .child(crate::usage::section(s, k)),
         )
 }
 

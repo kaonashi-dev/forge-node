@@ -103,6 +103,10 @@ pub enum Command {
         value: String,
     },
     AddProject(std::path::PathBuf),
+    Usage {
+        generation: u64,
+        window_days: u16,
+    },
     KillSession(SessionId),
     CloseSession(SessionId),
     RebaseStep {
@@ -199,6 +203,11 @@ pub enum UiEvent {
         generation: u64,
         query: String,
         result: Result<Vec<String>, String>,
+    },
+    Usage {
+        generation: u64,
+        window_days: u16,
+        result: Result<Box<domain::UsageAnalytics>, String>,
     },
     Rebase {
         generation: u64,
@@ -422,6 +431,13 @@ impl ConnectionHandle {
 
     pub fn close_session(&self, session_id: SessionId) -> Result<(), String> {
         self.send(Command::CloseSession(session_id))
+    }
+
+    pub fn usage(&self, generation: u64, window_days: u16) -> Result<(), String> {
+        self.send(Command::Usage {
+            generation,
+            window_days,
+        })
     }
 
     pub fn add_project(&self, path: std::path::PathBuf) -> Result<(), String> {
@@ -895,6 +911,7 @@ fn handle_fixture_command(
         | Command::Read { .. }
         | Command::SetAppState { .. }
         | Command::AddProject(_)
+        | Command::Usage { .. }
         | Command::KillSession(_)
         | Command::CloseSession(_)
         | Command::RebaseStep { .. }
@@ -1642,6 +1659,24 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             live_result(generation, "CloseSession", result, sink, metrics, started);
         }
+        Command::Usage {
+            generation: command_generation,
+            window_days,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .usage_analytics(Some(window_days))
+                .map(Box::new)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Usage {
+                generation,
+                window_days,
+                result,
+            }]);
+        }
         Command::AddProject(path) => {
             metrics.note_socket_op();
             let result = client
@@ -1818,6 +1853,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::Read { .. } => "WorkspaceRead",
         Command::SetAppState { .. } => "SetAppState",
         Command::AddProject(_) => "AddProject",
+        Command::Usage { .. } => "GetUsageAnalytics",
         Command::KillSession(_) => "KillSession",
         Command::CloseSession(_) => "CloseSession",
         Command::RebaseStep { .. } => "RebaseStep",
