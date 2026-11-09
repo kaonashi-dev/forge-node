@@ -315,7 +315,7 @@ fn init() -> AppState {
 }
 
 fn app_key(s: &mut AppState, ev: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
-    if s.global_key(ev) {
+    if s.editor_chord(ev, tx) || s.global_key(ev) {
         return true;
     }
     if ev.mods.cmd {

@@ -38,6 +38,8 @@ pub enum Target {
     /// its Code strip and gives that strip's menu.
     Tab(SessionId),
     Files(WorkspaceId, FileTarget),
+    /// The text of a line editor, for `EditorTerminalPane`'s menu.
+    Editor(SessionId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,6 +174,10 @@ pub enum Act {
     RefreshFiles,
     CollapseFolders,
     Unported(Unported),
+    EditorCopy(SessionId),
+    EditorPaste(SessionId),
+    RevealInFiles(String),
+    OpenDiff,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -296,7 +302,33 @@ pub fn items(s: &AppState, target: &Target) -> Vec<Entry> {
             }
         }
         Target::Files(workspace, file) => file_items(s, *workspace, file),
+        Target::Editor(session) => editor_pane_items(s, *session),
     }
+}
+
+/// `EditorTerminalPane`'s `menuItems`: the editor owns the selection, so
+/// Copy asks it, and Paste reads the pasteboard here.
+fn editor_pane_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
+    let path = s.store.as_ref().and_then(|store| {
+        store
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(|session| session.editor.as_ref())
+            .map(|editor| editor.path.clone())
+    });
+    vec![
+        item("Copy", Glyph::Copy, Act::EditorCopy(session_id)),
+        item("Paste", Glyph::None, Act::EditorPaste(session_id)),
+        Entry::Rule,
+        item(
+            "Reveal in Files",
+            Glyph::Folder,
+            Act::RevealInFiles(path.clone().unwrap_or_default()),
+        )
+        .enabled(path.is_some()),
+        item("Open Diff", Glyph::GitBranch, Act::OpenDiff),
+    ]
 }
 
 /// `launchItems` over the host's `launchables`: a terminal, then each agent
@@ -1276,6 +1308,10 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
         Act::RefreshFiles => s.workbench.refresh(),
         Act::CollapseFolders => s.workbench.files.tree.collapse_all(),
         Act::Unported(_) => {}
+        Act::EditorCopy(session) => s.editor_copy(session),
+        Act::EditorPaste(session) => s.editor_paste(session, tx),
+        Act::RevealInFiles(path) => s.reveal_in_files(path, tx),
+        Act::OpenDiff => s.show_mode(CenterMode::Changes),
     }
 }
 

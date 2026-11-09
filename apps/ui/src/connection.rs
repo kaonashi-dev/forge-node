@@ -216,6 +216,21 @@ pub enum Command {
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
+    EditorFind {
+        session_id: SessionId,
+        command: domain::EditorFindCommand,
+    },
+    SetEditorAutosave {
+        session_id: SessionId,
+        autosave: bool,
+    },
+    /// The two sides of a refused save, answered as `UiEvent::EditorConflict`.
+    EditorConflict {
+        generation: u64,
+        session_id: SessionId,
+    },
+    ReloadEditorBuffer(SessionId),
+    OverwriteEditorBuffer(SessionId),
 }
 
 #[derive(Debug)]
@@ -288,6 +303,12 @@ pub enum UiEvent {
         ok: bool,
         message: String,
         took_us: u64,
+    },
+    /// `(disk, mine)`, the two sides of a refused editor save.
+    EditorConflict {
+        generation: u64,
+        session_id: SessionId,
+        result: Result<Box<(String, String)>, String>,
     },
 }
 
@@ -693,6 +714,39 @@ impl ConnectionHandle {
 
     pub fn force_reconnect(&self) -> Result<(), String> {
         self.send(Command::ForceReconnect)
+    }
+
+    pub fn editor_find(
+        &self,
+        session_id: SessionId,
+        command: domain::EditorFindCommand,
+    ) -> Result<(), String> {
+        self.send(Command::EditorFind {
+            session_id,
+            command,
+        })
+    }
+
+    pub fn set_editor_autosave(&self, session_id: SessionId, autosave: bool) -> Result<(), String> {
+        self.send(Command::SetEditorAutosave {
+            session_id,
+            autosave,
+        })
+    }
+
+    pub fn editor_conflict(&self, generation: u64, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::EditorConflict {
+            generation,
+            session_id,
+        })
+    }
+
+    pub fn reload_editor_buffer(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::ReloadEditorBuffer(session_id))
+    }
+
+    pub fn overwrite_editor_buffer(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::OverwriteEditorBuffer(session_id))
     }
 
     pub fn activate(
@@ -1168,6 +1222,11 @@ fn handle_fixture_command(
         | Command::CopyPath { .. }
         | Command::DeletePath { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
+        Command::EditorFind { .. }
+        | Command::SetEditorAutosave { .. }
+        | Command::EditorConflict { .. }
+        | Command::ReloadEditorBuffer(_)
+        | Command::OverwriteEditorBuffer(_) => {}
     }
 }
 
@@ -2211,6 +2270,81 @@ fn handle_live_command(
             }
         }
         Command::ForceReconnect | Command::Shutdown => {}
+        Command::EditorFind {
+            session_id,
+            command,
+        } => {
+            metrics.note_socket_op();
+            if let Err(error) = client.editor_find(session_id, command) {
+                eprintln!("forge-ui: EditorFind: {error}");
+            }
+        }
+        Command::SetEditorAutosave {
+            session_id,
+            autosave,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_editor_autosave(session_id, autosave)
+                .map(|()| format!("autosave {}", if autosave { "on" } else { "off" }))
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetEditorAutosave",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::EditorConflict {
+            generation: command_generation,
+            session_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .editor_conflict(session_id)
+                .map(|(_, disk, mine)| Box::new((disk, mine)))
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::EditorConflict {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::ReloadEditorBuffer(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .reload_editor_buffer(session_id)
+                .map(|()| "took the disk's copy".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "ReloadEditorBuffer",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::OverwriteEditorBuffer(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .overwrite_editor_buffer(session_id)
+                .map(|()| "kept this copy".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "OverwriteEditorBuffer",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
     }
 }
 
@@ -2361,6 +2495,11 @@ fn command_label(command: &Command) -> &'static str {
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",
+        Command::EditorFind { .. } => "EditorFind",
+        Command::SetEditorAutosave { .. } => "SetEditorAutosave",
+        Command::EditorConflict { .. } => "GetEditorConflict",
+        Command::ReloadEditorBuffer(_) => "ReloadEditorBuffer",
+        Command::OverwriteEditorBuffer(_) => "OverwriteEditorBuffer",
     }
 }
 

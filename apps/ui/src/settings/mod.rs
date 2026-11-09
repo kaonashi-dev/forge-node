@@ -182,6 +182,9 @@ impl AppState {
                 None => store.app_state.push((key.to_string(), value.to_string())),
             }
         }
+        if key.starts_with("ui.editor.") {
+            self.apply_editor_prefs();
+        }
     }
 
     #[must_use]

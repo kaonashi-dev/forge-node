@@ -5,12 +5,18 @@
 //! are forwarded, never applied here, so the two can never disagree about what
 //! a key did.
 
+pub mod actions;
 pub mod aria;
+pub mod autosave;
+pub mod conflict;
+pub mod find;
 pub mod metrics;
+pub mod tabs;
 pub mod theme;
 pub mod view;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use domain::{
@@ -21,8 +27,12 @@ use rune::{Ime, Key, KeyEvent};
 
 use metrics::MetricsCache;
 
-pub const ROW_H: f32 = 20.0;
+/// The row at the default size and spacing: `round(13 × 1.35)`, as Tauri's
+/// `measureCell` rounds it.
+pub const ROW_H: f32 = 18.0;
+/// The gutter at the default size; its line numbers grow with the type.
 pub const GUTTER_W: f32 = 88.0;
+pub const NUMBER_W: f32 = 40.0;
 /// The gutter's right edge holds the fold chevron; a press there toggles it.
 pub const FOLD_HIT_W: f32 = 20.0;
 pub const TEXT_PAD: f32 = 4.0;
@@ -56,6 +66,22 @@ pub struct EditorUi {
     requested: Option<(SessionId, u32, u32)>,
     pending: Vec<EditorInputEvent>,
     last_caret: Option<EditorPlace>,
+    /// `ui.editor.font_size` and the row it makes with `ui.editor.line_height`.
+    pub font_size: f32,
+    pub row_h: f32,
+    /// Bumped with the type, so memoised rows and gutters draw at the new size.
+    pub type_rev: u32,
+    pub find: find::FindField,
+    pub conflicts: HashMap<SessionId, conflict::Conflict>,
+    pub autosave: autosave::AutosaveSync,
+    pub closed: tabs::Closed,
+    /// A path Reveal in Files is opening the tree towards, folder by folder,
+    /// as each listing arrives.
+    pub reveal: Option<String>,
+    /// The last frame of a session not shown yet. A new editor publishes its
+    /// first window unasked, often before its row is listed and selected, and
+    /// nothing asks again until a frame has mounted the scroller.
+    early: Option<(SessionId, EditorFrame)>,
 }
 
 /// What [`EditorUi::take_requests`] wants sent.
@@ -79,12 +105,20 @@ impl Default for EditorUi {
             requested: None,
             pending: Vec::new(),
             last_caret: None,
+            font_size: metrics::MONO_SIZE,
+            row_h: ROW_H,
+            type_rev: 0,
+            find: find::FindField::default(),
+            conflicts: HashMap::new(),
+            autosave: autosave::AutosaveSync::default(),
+            closed: tabs::Closed::default(),
+            reveal: None,
+            early: None,
         }
     }
 }
 
 impl EditorUi {
-    /// Points the surface at `session`, dropping everything about the previous one.
     /// Points the editor at `session`. Input queued for the one it leaves is
     /// handed back with that session, to be sent there rather than dropped,
     /// as Tauri's editor flushes its batch to the original surface.
@@ -107,6 +141,11 @@ impl EditorUi {
         self.a11y_rows.clear();
         self.last_caret = None;
         self.scroll.set([0.0, self.scroll.get()[1]]);
+        if let Some((early, frame)) = self.early.take()
+            && Some(early) == session
+        {
+            let _ = self.apply_frame(early, frame);
+        }
         left
     }
 
@@ -123,6 +162,7 @@ impl EditorUi {
     /// put two frames on the socket out of the order they were built in.
     pub fn apply_frame(&mut self, session: SessionId, frame: EditorFrame) -> Option<f32> {
         if self.session != Some(session) {
+            self.early = Some((session, frame));
             return None;
         }
         if let Some(held) = &self.frame
@@ -179,14 +219,44 @@ impl EditorUi {
         if viewport <= 0.0 {
             return None;
         }
-        let y = caret_row(frame)? as f32 * ROW_H;
+        let row_h = self.row_h;
+        let y = caret_row(frame)? as f32 * row_h;
         if y < offset {
             Some(y)
-        } else if y + ROW_H > offset + viewport {
-            Some(y + ROW_H - viewport)
+        } else if y + row_h > offset + viewport {
+            Some(y + row_h - viewport)
         } else {
             None
         }
+    }
+
+    /// Draws at `font_size` with rows `line_height` times as tall, and returns
+    /// the offset that keeps the top row in place, when anything changed.
+    pub fn set_type(&mut self, font_size: f32, line_height: f32) -> Option<f32> {
+        let row_h = (font_size * line_height).round().max(1.0);
+        if font_size == self.font_size && row_h == self.row_h {
+            return None;
+        }
+        let [offset, viewport] = self.scroll.get();
+        let offset = offset / self.row_h * row_h;
+        self.scroll.set([offset, viewport]);
+        self.font_size = font_size;
+        self.row_h = row_h;
+        self.type_rev = self.type_rev.wrapping_add(1);
+        self.metrics.get_mut().set_size(font_size);
+        self.requested = None;
+        Some(offset)
+    }
+
+    /// The gutter at the current size: the number column grows with the type.
+    #[must_use]
+    pub fn gutter_w(&self) -> f32 {
+        GUTTER_W + self.number_w() - NUMBER_W
+    }
+
+    #[must_use]
+    pub fn number_w(&self) -> f32 {
+        (NUMBER_W * self.font_size / metrics::MONO_SIZE).round()
     }
 
     pub fn queue(&mut self, event: EditorInputEvent) {
@@ -221,8 +291,8 @@ impl EditorUi {
         if viewport <= 0.0 {
             return None;
         }
-        let visible = (viewport / ROW_H).ceil().max(1.0) as u32;
-        let top = (offset.max(0.0) / ROW_H).floor() as u32;
+        let visible = (viewport / self.row_h).ceil().max(1.0) as u32;
+        let top = (offset.max(0.0) / self.row_h).floor() as u32;
         let count = (visible + 2 * OVERSCAN).min(MAX_WINDOW);
         let first_visual = top.saturating_sub(OVERSCAN);
         let Some(frame) = &self.frame else {
@@ -711,5 +781,37 @@ pub(crate) mod tests {
         edited.doc_version = 3;
         ui.apply_frame(session, edited);
         assert!(ui.a11y_text.starts_with("fn b"));
+    }
+
+    #[test]
+    fn a_first_window_that_beats_the_selection_is_kept_for_it() {
+        let (mut ui, shown) = surface(0.0);
+        let opened = SessionId::new();
+        ui.apply_frame(opened, frame(0, &[(0, "fresh")], 1, (0, 0)));
+        assert!(ui.frame.is_none(), "not drawn under another session");
+        ui.set_session(Some(opened));
+        assert_eq!(ui.frame.as_ref().unwrap().rows[0].text(), "fresh");
+        ui.set_session(Some(shown));
+        ui.set_session(Some(opened));
+        assert!(ui.frame.is_none(), "taken once, not replayed");
+    }
+
+    #[test]
+    fn a_new_type_size_keeps_the_top_row_and_asks_for_its_window_again() {
+        let (mut ui, session) = surface(10.0 * ROW_H);
+        assert_eq!(
+            ui.set_type(13.0, 1.35),
+            None,
+            "the defaults are the default row"
+        );
+        ui.scroll.set([40.0 * ROW_H, 10.0 * ROW_H]);
+        ui.take_requests();
+        let offset = ui.set_type(20.0, 1.5).expect("a change");
+        assert_eq!(ui.row_h, 30.0);
+        assert_eq!(offset, 40.0 * 30.0, "row 40 stays at the top");
+        assert_eq!(ui.gutter_w(), GUTTER_W + 22.0);
+        let view = ui.take_requests().view.expect("the window is asked again");
+        assert_eq!(view.0, session);
+        assert_eq!(view.2, 10 * ROW_H as u32 / 30 + 2 * OVERSCAN);
     }
 }
