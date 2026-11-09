@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use client::{CellGrid, Client, DaemonEvent, EventOutcome, StopSessions, Store};
+use client::{CellGrid, Client, DaemonEvent, EventOutcome, RowDamage, StopSessions, Store};
 use domain::{
     AgentProfileId, AgentProviderId, MouseMode, ProjectId, PtySize, SessionId, TerminalId,
     Timestamp, WorkspaceId,
@@ -25,7 +25,7 @@ use domain::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter as _};
 
-use super::cells::{self, Damage};
+use super::cells;
 use super::commands::RuntimeCommand;
 use super::input;
 use super::snapshot::{
@@ -70,7 +70,7 @@ const fn cell_send_floor(scroll_offset: u64) -> Duration {
 /// One pane's output held back by [`cell_send_floor`], merged until it lifts.
 #[derive(Default)]
 struct FrameFloor {
-    held: Option<(Instant, Damage)>,
+    held: Option<(Instant, RowDamage)>,
     last_sent: Option<Instant>,
 }
 
@@ -79,7 +79,7 @@ impl FrameFloor {
     ///
     /// `urgent` skips the floor: anything the shell also cares about goes out
     /// at once, so a session appearing is never delayed by terminal output.
-    fn offer(&mut self, damage: Damage, floor: Duration, urgent: bool) -> Option<Damage> {
+    fn offer(&mut self, damage: RowDamage, floor: Duration, urgent: bool) -> Option<RowDamage> {
         let within_floor = self.last_sent.is_some_and(|sent| sent.elapsed() < floor);
         if !urgent && within_floor {
             self.held = Some(match self.held.take() {
@@ -92,7 +92,7 @@ impl FrameFloor {
     }
 
     /// Publish `damage` now, with whatever was held folded in.
-    fn release(&mut self, damage: Damage) -> Damage {
+    fn release(&mut self, damage: RowDamage) -> RowDamage {
         self.last_sent = Some(Instant::now());
         match self.held.take() {
             Some((_, held)) => held.merge(damage),
@@ -101,7 +101,7 @@ impl FrameFloor {
     }
 
     /// Held output whose floor has lifted.
-    fn due(&mut self, floor: Duration) -> Option<Damage> {
+    fn due(&mut self, floor: Duration) -> Option<RowDamage> {
         let (since, _) = self.held.as_ref()?;
         if since.elapsed() < floor {
             return None;
@@ -328,11 +328,11 @@ impl Emitter<'_> {
     }
 
     /// Publish one terminal frame.
-    fn cells(&self, store: &mut Store, at: &Attached, damage: &Damage, echo_id: u64) {
+    fn cells(&self, store: &mut Store, at: &Attached, damage: &RowDamage, echo_id: u64) {
         self.emit_cells(store, at.terminal, at.scroll_offset, damage, echo_id);
     }
 
-    fn split_cells(&self, store: &mut Store, open: &mut SplitAttachment, damage: &Damage) {
+    fn split_cells(&self, store: &mut Store, open: &mut SplitAttachment, damage: &RowDamage) {
         if open.parked {
             return;
         }
@@ -345,7 +345,7 @@ impl Emitter<'_> {
         store: &mut Store,
         terminal: TerminalId,
         scroll_offset: u64,
-        damage: &Damage,
+        damage: &RowDamage,
         echo_id: u64,
     ) {
         request_scrollback(self.client, store, terminal, scroll_offset);
@@ -362,7 +362,7 @@ impl Emitter<'_> {
         );
     }
 
-    fn editor_cells(&self, store: &mut Store, terminal: TerminalId, damage: &Damage) {
+    fn editor_cells(&self, store: &mut Store, terminal: TerminalId, damage: &RowDamage) {
         let Some(grid) = store.terminal(&terminal) else {
             return;
         };
@@ -504,7 +504,7 @@ fn runtime_loop(
         };
         let _ = app.emit("runtime:connected", &payload);
         remember_connected(&latest, payload);
-        emitter.cells(&mut store, &at, &Damage::Full, 0);
+        emitter.cells(&mut store, &at, &RowDamage::Full, 0);
 
         let events = client.events();
         let mut pending_command = None;
@@ -753,7 +753,7 @@ fn runtime_loop(
                     if let Some(open) = split.as_mut() {
                         if follow_split_terminal(&client, &mut store, open, at.terminal, terminal) {
                             let _ = app.emit("runtime:terminal_split", open.opened());
-                            batch.split_damage = Some((open.terminal, Damage::Full));
+                            batch.split_damage = Some((open.terminal, RowDamage::Full));
                         }
                     }
                 }
@@ -781,7 +781,7 @@ fn runtime_loop(
                             main_floor = FrameFloor::default();
                             preferred_session = Some(next_session);
                             batch.shell = true;
-                            batch.damage = Some(Damage::Full);
+                            batch.damage = Some(RowDamage::Full);
                             // Without this the WebView keeps the column and paints
                             // the promoted session twice, both panes resizing one PTY.
                             let _ = app.emit(
@@ -805,7 +805,7 @@ fn runtime_loop(
                                 at.terminal = next_terminal;
                                 at.scroll_offset = 0;
                                 preferred_session = Some(next_session);
-                                batch.damage = Some(Damage::Full);
+                                batch.damage = Some(RowDamage::Full);
                             }
                             Err(error) => {
                                 tracing::warn!(%error, "failed to leave a removed session");
@@ -1102,19 +1102,19 @@ struct Effect {
     /// The shell lists changed.
     shell: bool,
     /// The viewport has to repaint.
-    damage: Option<Damage>,
+    damage: Option<RowDamage>,
     /// Text a copy cut off the grid, for the host's clipboard writer.
     clipboard: Option<String>,
     /// A refusal or a caveat the person has to be told about.
     notice: Option<String>,
     /// A side editor terminal has to repaint.
-    editor_damage: Option<(TerminalId, Damage)>,
+    editor_damage: Option<(TerminalId, RowDamage)>,
     /// A new editor session was spawned; the WebView opens its Code view.
     editor_opened: Option<EditorOpened>,
     /// A new shell occupies the extra column; the WebView mounts its pane.
     split_opened: Option<SplitOpened>,
     /// The extra column's grid, keyed so it does not merge with the main pane.
-    split_damage: Option<(TerminalId, Damage)>,
+    split_damage: Option<(TerminalId, RowDamage)>,
     /// The Code pane let an editor go.
     editor_detached: Option<SessionId>,
     /// An unforced worktree removal needs a second confirmation.
@@ -1158,7 +1158,7 @@ impl Effect {
     fn shell() -> Self {
         Self {
             shell: true,
-            damage: Some(Damage::Full),
+            damage: Some(RowDamage::Full),
             ..Self::default()
         }
     }
@@ -1166,7 +1166,7 @@ impl Effect {
     fn repaint() -> Self {
         Self {
             shell: false,
-            damage: Some(Damage::Full),
+            damage: Some(RowDamage::Full),
             ..Self::default()
         }
     }
@@ -1509,7 +1509,7 @@ fn run_command(
             Ok(Effect {
                 shell: true,
                 split_opened: Some(opened),
-                split_damage: Some((terminal_id, Damage::Full)),
+                split_damage: Some((terminal_id, RowDamage::Full)),
                 ..Effect::nothing()
             })
         }
@@ -1522,7 +1522,7 @@ fn run_command(
             };
             open.parked = parked;
             Ok(Effect {
-                split_damage: (!parked).then_some((open.terminal, Damage::Full)),
+                split_damage: (!parked).then_some((open.terminal, RowDamage::Full)),
                 ..Effect::nothing()
             })
         }
@@ -1698,7 +1698,7 @@ fn run_command(
                 open.size = requested;
                 open.scroll_offset = 0;
                 return Ok(Effect {
-                    split_damage: Some((open.terminal, Damage::Full)),
+                    split_damage: Some((open.terminal, RowDamage::Full)),
                     ..Effect::nothing()
                 });
             }
@@ -1778,7 +1778,7 @@ fn run_command(
                             forget_pending_close: Some(session_id),
                             shell: true,
                             split_opened: opened,
-                            split_damage: Some((terminal, Damage::Full)),
+                            split_damage: Some((terminal, RowDamage::Full)),
                             ..Effect::nothing()
                         });
                     }
@@ -2026,7 +2026,7 @@ fn run_command(
                     workspace: session.workspace_id,
                     path,
                 }),
-                editor_damage: Some((terminal_id, Damage::Full)),
+                editor_damage: Some((terminal_id, RowDamage::Full)),
                 shell: true,
                 ..Effect::nothing()
             })
@@ -2136,7 +2136,7 @@ fn run_command(
         RuntimeCommand::RepaintEditor { session_id } => {
             let terminal = attach_editor(client, store, editors, session_id)?;
             Ok(Effect {
-                editor_damage: Some((terminal, Damage::Full)),
+                editor_damage: Some((terminal, RowDamage::Full)),
                 ..Effect::nothing()
             })
         }
@@ -2343,7 +2343,7 @@ fn open_editor(
                 workspace,
                 path,
             }),
-            editor_damage: Some((terminal_id, Damage::Full)),
+            editor_damage: Some((terminal_id, RowDamage::Full)),
             shell: true,
             ..Effect::nothing()
         });
@@ -2376,7 +2376,7 @@ fn open_editor(
             workspace,
             path,
         }),
-        editor_damage: Some((terminal_id, Damage::Full)),
+        editor_damage: Some((terminal_id, RowDamage::Full)),
         shell: true,
         ..Effect::nothing()
     })
@@ -2516,7 +2516,7 @@ fn resize_editor(
     // the geometry it was born with.
     resize_and_reattach(client, store, terminal, requested)?;
     Ok(Effect {
-        editor_damage: Some((terminal, Damage::Full)),
+        editor_damage: Some((terminal, RowDamage::Full)),
         ..Effect::nothing()
     })
 }
@@ -2695,8 +2695,8 @@ struct Batch {
     /// nothing from that event: [`ShellSnapshot`] is a pure function of the
     /// store, so such an event cannot change it.
     shell_before_event: bool,
-    damage: Option<Damage>,
-    split_damage: Option<(TerminalId, Damage)>,
+    damage: Option<RowDamage>,
+    split_damage: Option<(TerminalId, RowDamage)>,
     split_removed: bool,
     /// The split's session reported a terminal the column is not attached to:
     /// a restart minted one, possibly after the restart command's own attach
@@ -2708,7 +2708,7 @@ struct Batch {
     departing: Option<Departing>,
     /// Side editor terminals that have to repaint, keyed so two editors
     /// in the Code strip do not merge their damage.
-    editor_damage: HashMap<TerminalId, Damage>,
+    editor_damage: HashMap<TerminalId, RowDamage>,
     /// The newest window each DOM editor surface published in this batch.
     ///
     /// Last wins rather than merged: a frame *is* the whole window, so an
@@ -2788,15 +2788,15 @@ impl Batch {
         let split_terminal = split.map(|open| open.terminal);
         let damage = match event {
             DaemonEvent::TerminalDelta { terminal_id, delta } if *terminal_id == at.terminal => {
-                Some(delta_damage(delta))
+                Some(RowDamage::of_delta(delta))
             }
             DaemonEvent::TerminalResync { terminal_id, .. } if *terminal_id == at.terminal => {
-                Some(Damage::Full)
+                Some(RowDamage::Full)
             }
             DaemonEvent::TerminalDelta { terminal_id, delta }
                 if split_terminal == Some(*terminal_id) =>
             {
-                let d = delta_damage(delta);
+                let d = RowDamage::of_delta(delta);
                 self.split_damage = Some(match self.split_damage.take() {
                     Some((terminal, existing)) if terminal == *terminal_id => {
                         (terminal, existing.merge(d))
@@ -2808,11 +2808,11 @@ impl Batch {
             DaemonEvent::TerminalResync { terminal_id, .. }
                 if split_terminal == Some(*terminal_id) =>
             {
-                self.split_damage = Some((*terminal_id, Damage::Full));
+                self.split_damage = Some((*terminal_id, RowDamage::Full));
                 None
             }
             DaemonEvent::TerminalDelta { terminal_id, delta } => {
-                let d = editor_delta_damage(delta);
+                let d = RowDamage::of_rewrite(delta);
                 let merged = match self.editor_damage.remove(terminal_id) {
                     Some(existing) => existing.merge(d),
                     None => d,
@@ -2821,7 +2821,7 @@ impl Batch {
                 None
             }
             DaemonEvent::TerminalResync { terminal_id, .. } => {
-                self.editor_damage.insert(*terminal_id, Damage::Full);
+                self.editor_damage.insert(*terminal_id, RowDamage::Full);
                 None
             }
             _ => None,
@@ -2870,9 +2870,9 @@ impl Batch {
                 if let Ok(snapshot) = client.attach_terminal(terminal_id, attach_size) {
                     store.attach_terminal(terminal_id, &snapshot);
                     if split_size.is_some() {
-                        self.split_damage = Some((terminal_id, Damage::Full));
+                        self.split_damage = Some((terminal_id, RowDamage::Full));
                     } else {
-                        self.damage = Some(Damage::Full);
+                        self.damage = Some(RowDamage::Full);
                     }
                 }
             }
@@ -2924,26 +2924,6 @@ fn changes_shell(event: &DaemonEvent, store: &Store) -> bool {
         DaemonEvent::TerminalBell { terminal_id } => !store.wants_attention(terminal_id),
         _ => true,
     }
-}
-
-/// What one delta damages for the attached terminal.
-///
-/// A scroll moves every row, and the rows the delta names are only the ones
-/// that *also* changed content — so a scrolled delta is a full repaint however
-/// few rows it lists.
-fn delta_damage(delta: &domain::TerminalDelta) -> Damage {
-    if delta.scrolled_lines > 0 {
-        Damage::Full
-    } else {
-        Damage::Rows(delta.changed_rows().map(|(index, _)| index).collect())
-    }
-}
-
-/// Editor attachments do not walk terminal scrollback: the TUI rewrites the
-/// live grid in place. `scrolled_lines` from the VT engine must not force a
-/// blanking `paintAll` on the canvas.
-fn editor_delta_damage(delta: &domain::TerminalDelta) -> Damage {
-    Damage::Rows(delta.changed_rows().map(|(index, _)| index).collect())
 }
 
 fn bootstrap(
@@ -3377,7 +3357,7 @@ mod tests {
         let store = Store::new();
         let mut batch = Batch::default();
         batch.absorb(&delta(at.terminal, vec![3, 1], 0), &store, &at);
-        assert_eq!(batch.damage, Some(Damage::Rows(vec![3, 1])));
+        assert_eq!(batch.damage, Some(RowDamage::Rows(vec![3, 1])));
         assert!(!batch.shell, "terminal output is not shell state");
     }
 
@@ -3417,7 +3397,7 @@ mod tests {
         let store = Store::new();
         let mut batch = Batch::default();
         batch.absorb(&delta(at.terminal, vec![0], 2), &store, &at);
-        assert_eq!(batch.damage, Some(Damage::Full));
+        assert_eq!(batch.damage, Some(RowDamage::Full));
     }
 
     /// A delta for a terminal this window is not attached to is not shell
@@ -3438,14 +3418,14 @@ mod tests {
         let mut floor = FrameFloor::default();
         let span = Duration::from_secs(60);
         assert_eq!(
-            floor.offer(Damage::Rows(vec![1]), span, false),
-            Some(Damage::Rows(vec![1]))
+            floor.offer(RowDamage::Rows(vec![1]), span, false),
+            Some(RowDamage::Rows(vec![1]))
         );
-        assert_eq!(floor.offer(Damage::Rows(vec![3]), span, false), None);
-        assert_eq!(floor.offer(Damage::Rows(vec![2]), span, false), None);
+        assert_eq!(floor.offer(RowDamage::Rows(vec![3]), span, false), None);
+        assert_eq!(floor.offer(RowDamage::Rows(vec![2]), span, false), None);
         assert!(floor.wait(span).is_some());
         assert_eq!(floor.due(span), None, "held until the floor lifts");
-        assert_eq!(floor.due(Duration::ZERO), Some(Damage::Rows(vec![2, 3])));
+        assert_eq!(floor.due(Duration::ZERO), Some(RowDamage::Rows(vec![2, 3])));
         assert_eq!(floor.wait(span), None);
     }
 
@@ -3453,13 +3433,13 @@ mod tests {
     fn urgent_output_skips_the_floor_and_carries_what_was_held() {
         let mut floor = FrameFloor::default();
         let span = Duration::from_secs(60);
-        let _ = floor.offer(Damage::Rows(vec![0]), span, false);
-        assert_eq!(floor.offer(Damage::Rows(vec![4]), span, false), None);
+        let _ = floor.offer(RowDamage::Rows(vec![0]), span, false);
+        assert_eq!(floor.offer(RowDamage::Rows(vec![4]), span, false), None);
         assert_eq!(
-            floor.offer(Damage::Rows(vec![5]), span, true),
-            Some(Damage::Rows(vec![4, 5]))
+            floor.offer(RowDamage::Rows(vec![5]), span, true),
+            Some(RowDamage::Rows(vec![4, 5]))
         );
-        assert_eq!(floor.release(Damage::Full), Damage::Full);
+        assert_eq!(floor.release(RowDamage::Full), RowDamage::Full);
     }
 
     #[test]
@@ -3512,7 +3492,7 @@ mod tests {
             .map(|pane| pane.route(Effect::shell()))
             .expect("the split column resolves");
         assert_eq!(column.damage, None);
-        assert_eq!(column.split_damage, Some((extra, Damage::Full)));
+        assert_eq!(column.split_damage, Some((extra, RowDamage::Full)));
         assert!(column.shell);
 
         split = None;
@@ -3527,7 +3507,10 @@ mod tests {
         let split = SplitAttachment::new(SessionId::new(), extra, DEFAULT_SIZE);
         let mut batch = Batch::default();
         batch.absorb_named(&delta(extra, vec![2, 4], 0), &store, &at, Some(&split));
-        assert_eq!(batch.split_damage, Some((extra, Damage::Rows(vec![2, 4]))));
+        assert_eq!(
+            batch.split_damage,
+            Some((extra, RowDamage::Rows(vec![2, 4])))
+        );
         assert!(batch.editor_damage.is_empty());
         assert_eq!(batch.damage, None);
         assert!(!batch.shell);
@@ -3543,7 +3526,7 @@ mod tests {
         assert_eq!(batch.damage, None);
         assert_eq!(
             batch.editor_damage.get(&editor).cloned(),
-            Some(Damage::Rows(vec![1]))
+            Some(RowDamage::Rows(vec![1]))
         );
         assert!(!batch.shell);
     }
@@ -3559,7 +3542,7 @@ mod tests {
         batch.absorb(&delta(editor, vec![0, 2, 4], 3), &store, &at);
         assert_eq!(
             batch.editor_damage.get(&editor).cloned(),
-            Some(Damage::Rows(vec![0, 2, 4]))
+            Some(RowDamage::Rows(vec![0, 2, 4]))
         );
         assert_eq!(batch.damage, None);
     }
@@ -3719,7 +3702,7 @@ mod tests {
         let mut batch = Batch::default();
         batch.absorb(&delta(at.terminal, vec![1], 0), &store, &at);
         batch.absorb(&delta(at.terminal, vec![2], 0), &store, &at);
-        assert_eq!(batch.damage, Some(Damage::Rows(vec![1, 2])));
+        assert_eq!(batch.damage, Some(RowDamage::Rows(vec![1, 2])));
     }
 
     #[test]
@@ -3746,7 +3729,7 @@ mod tests {
             &store,
             &at,
         );
-        assert_eq!(batch.damage, Some(Damage::Full));
+        assert_eq!(batch.damage, Some(RowDamage::Full));
     }
 
     #[test]
@@ -4136,7 +4119,7 @@ mod tests {
     fn a_shell_effect_also_repaints_because_the_terminal_changed_under_it() {
         let effect = Effect::shell();
         assert!(effect.shell);
-        assert_eq!(effect.damage, Some(Damage::Full));
+        assert_eq!(effect.damage, Some(RowDamage::Full));
         assert!(Effect::nothing().damage.is_none());
     }
 

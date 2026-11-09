@@ -5,11 +5,13 @@
 //! Wire types are re-exported so `forge-tauri` does not depend on `protocol`.
 
 mod clamp;
+mod damage;
 mod ipc;
 pub mod paths;
 mod store;
 
 pub use clamp::{read_capped, CappedBytes};
+pub use damage::RowDamage;
 pub use paths::{resolve_socket, socket_path, SocketPathError, SocketQuery, MAX_SOCKET_PATH_LEN};
 
 pub use domain::{DirectoryListing, SymlinkTarget};

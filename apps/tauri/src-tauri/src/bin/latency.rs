@@ -14,9 +14,9 @@
 
 use std::time::{Duration, Instant};
 
-use client::{CellGrid, Client, DaemonEvent};
+use client::{CellGrid, Client, DaemonEvent, RowDamage};
 use domain::{PtySize, SessionId, TerminalId, WorkspaceId};
-use forge_tauri::cells::{self, Damage};
+use forge_tauri::cells;
 use forge_tauri::{connect_or_spawn, Locator};
 
 /// The gate: `p95 ≤ 50 ms`.
@@ -160,13 +160,7 @@ fn run(mode: &Mode) -> Result<bool, String> {
             let damage = match &event {
                 DaemonEvent::TerminalDelta {
                     terminal_id, delta, ..
-                } if *terminal_id == terminal => {
-                    if delta.scrolled_lines > 0 {
-                        Damage::Full
-                    } else {
-                        Damage::Rows(delta.changed_rows().map(|(index, _)| index).collect())
-                    }
-                }
+                } if *terminal_id == terminal => RowDamage::of_delta(delta),
                 _ => {
                     if let DaemonEvent::SessionUpdated(updated) = &event {
                         if updated.id == session && updated.editor.is_some() {
@@ -309,7 +303,7 @@ fn report(
             domain::TerminalId::new(),
             grid,
             0,
-            &Damage::Full,
+            &RowDamage::Full,
             false,
             0,
         )) {

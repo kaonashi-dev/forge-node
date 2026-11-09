@@ -17,7 +17,7 @@
 //! entirely. Copying still asks the thread for the text, because only the grid
 //! knows what a run's cells actually hold.
 
-use client::CellGrid;
+use client::{CellGrid, RowDamage};
 use domain::{Cell, CellFlags, Color, CursorShape, Row, TermModes, TerminalId};
 use serde::Serialize;
 
@@ -115,32 +115,6 @@ pub struct CellsPayload {
     pub echo_id: u64,
 }
 
-/// What of the viewport a frame has to repaint.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Damage {
-    /// Specific visible row indices.
-    Rows(Vec<u16>),
-    /// The whole viewport: attach, resync, resize, or any scrolled viewport,
-    /// whose rows all shift when history moves.
-    Full,
-}
-
-impl Damage {
-    /// Merge two damages, widening to [`Damage::Full`] when either is.
-    #[must_use]
-    pub fn merge(self, other: Damage) -> Damage {
-        match (self, other) {
-            (Damage::Full, _) | (_, Damage::Full) => Damage::Full,
-            (Damage::Rows(mut a), Damage::Rows(b)) => {
-                a.extend(b);
-                a.sort_unstable();
-                a.dedup();
-                Damage::Rows(a)
-            }
-        }
-    }
-}
-
 /// The row a viewport at `scroll_offset` paints at `line`, or `None` when it is
 /// history the cache does not hold yet.
 ///
@@ -196,13 +170,13 @@ pub fn frame(
     terminal: TerminalId,
     grid: &CellGrid,
     scroll_offset: u64,
-    damage: &Damage,
+    damage: &RowDamage,
     bell: bool,
     echo_id: u64,
 ) -> CellsPayload {
     let scroll_offset = scroll_offset.min(grid.scrollback_len);
     let height = grid.visible.len();
-    let full = matches!(damage, Damage::Full) || scroll_offset > 0;
+    let full = matches!(damage, RowDamage::Full) || scroll_offset > 0;
     let patch = if full {
         (0..height)
             .map(|line| {
@@ -214,7 +188,7 @@ pub fn frame(
             .collect()
     } else {
         match damage {
-            Damage::Rows(rows) => rows
+            RowDamage::Rows(rows) => rows
                 .iter()
                 .filter(|index| usize::from(**index) < height)
                 .map(|index| {
@@ -224,7 +198,7 @@ pub fn frame(
                     )
                 })
                 .collect(),
-            Damage::Full => Vec::new(),
+            RowDamage::Full => Vec::new(),
         }
     };
 
@@ -608,7 +582,7 @@ mod tests {
             modes: TermModes::default(),
             title: None,
         });
-        let payload = frame(TerminalId::new(), &grid, 2, &Damage::Full, false, 0);
+        let payload = frame(TerminalId::new(), &grid, 2, &RowDamage::Full, false, 0);
         assert_eq!(payload.patch.len(), 2);
         assert!(payload.patch.iter().all(|(_, row)| row.is_none()));
         assert!(payload.full);
@@ -621,7 +595,7 @@ mod tests {
             TerminalId::new(),
             &grid,
             1,
-            &Damage::Rows(vec![0]),
+            &RowDamage::Rows(vec![0]),
             false,
             0,
         );
@@ -636,7 +610,7 @@ mod tests {
             TerminalId::new(),
             &grid,
             0,
-            &Damage::Rows(vec![2]),
+            &RowDamage::Rows(vec![2]),
             false,
             0,
         );
@@ -652,24 +626,11 @@ mod tests {
             TerminalId::new(),
             &grid,
             0,
-            &Damage::Rows(vec![9]),
+            &RowDamage::Rows(vec![9]),
             false,
             0,
         );
         assert!(payload.patch.is_empty());
-    }
-
-    #[test]
-    fn merging_damage_widens_to_full() {
-        assert_eq!(
-            Damage::Rows(vec![1]).merge(Damage::Full),
-            Damage::Full,
-            "a resync in the same batch invalidates the row list"
-        );
-        assert_eq!(
-            Damage::Rows(vec![2, 1]).merge(Damage::Rows(vec![1, 3])),
-            Damage::Rows(vec![1, 2, 3])
-        );
     }
 
     #[test]
