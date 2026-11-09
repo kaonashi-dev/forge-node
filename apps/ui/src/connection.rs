@@ -94,7 +94,7 @@ pub enum Command {
     },
     Read {
         generation: u64,
-        workspace_id: WorkspaceId,
+        scope: crate::workbench::Scope,
         read: crate::workbench::Read,
     },
     /// A preference shared with every client, in the daemon's `app_state`.
@@ -113,7 +113,7 @@ pub enum Command {
     KillSession(SessionId),
     CloseSession(SessionId),
     RebaseStep {
-        workspace_id: WorkspaceId,
+        scope: crate::workbench::Scope,
         step: crate::workbench::RebaseStep,
     },
     RunAction {
@@ -188,18 +188,18 @@ pub enum UiEvent {
     },
     Diff {
         generation: u64,
-        workspace_id: WorkspaceId,
+        scope: crate::workbench::Scope,
         result: Result<Box<domain::WorkspaceDiff>, String>,
     },
     Directory {
         generation: u64,
-        workspace_id: WorkspaceId,
+        scope: crate::workbench::Scope,
         path: String,
         result: Result<domain::DirectoryListing, String>,
     },
     File {
         generation: u64,
-        workspace_id: WorkspaceId,
+        scope: crate::workbench::Scope,
         result: Result<Box<domain::FileContents>, String>,
     },
     Search {
@@ -218,7 +218,7 @@ pub enum UiEvent {
     },
     Rebase {
         generation: u64,
-        workspace_id: WorkspaceId,
+        scope: crate::workbench::Scope,
         result: Result<Box<domain::RebaseState>, String>,
     },
     CommandResult {
@@ -352,12 +352,12 @@ impl ConnectionHandle {
     pub fn read(
         &self,
         generation: u64,
-        workspace_id: WorkspaceId,
+        scope: crate::workbench::Scope,
         read: crate::workbench::Read,
     ) -> Result<(), String> {
         self.send(Command::Read {
             generation,
-            workspace_id,
+            scope,
             read,
         })
     }
@@ -426,10 +426,10 @@ impl ConnectionHandle {
 
     pub fn rebase_step(
         &self,
-        workspace_id: WorkspaceId,
+        scope: crate::workbench::Scope,
         step: crate::workbench::RebaseStep,
     ) -> Result<(), String> {
-        self.send(Command::RebaseStep { workspace_id, step })
+        self.send(Command::RebaseStep { scope, step })
     }
 
     pub fn kill_session(&self, session_id: SessionId) -> Result<(), String> {
@@ -1432,9 +1432,10 @@ fn handle_live_command(
         }
         Command::Read {
             generation: command_generation,
-            workspace_id,
+            scope,
             read,
         } => {
+            let workspace_id = scope.workspace;
             if command_generation != generation {
                 return;
             }
@@ -1442,7 +1443,7 @@ fn handle_live_command(
             let event = match read {
                 crate::workbench::Read::Diff => UiEvent::Diff {
                     generation,
-                    workspace_id,
+                    scope,
                     result: client
                         .workspace_diff(workspace_id, None)
                         .map(Box::new)
@@ -1450,7 +1451,7 @@ fn handle_live_command(
                 },
                 crate::workbench::Read::Directory(path) => UiEvent::Directory {
                     generation,
-                    workspace_id,
+                    scope,
                     result: client
                         .list_directory(workspace_id, path.clone())
                         .map_err(|error| error.to_string()),
@@ -1471,7 +1472,7 @@ fn handle_live_command(
                 },
                 crate::workbench::Read::Rebase => UiEvent::Rebase {
                     generation,
-                    workspace_id,
+                    scope,
                     result: client
                         .rebase_state(workspace_id)
                         .map(Box::new)
@@ -1479,7 +1480,7 @@ fn handle_live_command(
                 },
                 crate::workbench::Read::File(path) => UiEvent::File {
                     generation,
-                    workspace_id,
+                    scope,
                     result: client
                         .read_file(workspace_id, path)
                         .map(Box::new)
@@ -1626,8 +1627,9 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             live_result(generation, "RunAction", result, sink, metrics, started);
         }
-        Command::RebaseStep { workspace_id, step } => {
+        Command::RebaseStep { scope, step } => {
             use crate::workbench::RebaseStep;
+            let workspace_id = scope.workspace;
             metrics.note_socket_op();
             let label = match step {
                 RebaseStep::Resolve(_) => "MarkConflictResolved",
@@ -1650,7 +1652,7 @@ fn handle_live_command(
                 .map_err(Clone::clone);
             sink(vec![UiEvent::Rebase {
                 generation,
-                workspace_id,
+                scope,
                 result: state.map(Box::new),
             }]);
             live_result(generation, label, result, sink, metrics, started);

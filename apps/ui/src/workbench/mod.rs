@@ -41,6 +41,15 @@ pub fn opens_rendered(path: &str) -> bool {
     }
 }
 
+/// One visit to a checkout. A reply carries the scope it was asked in, so
+/// after leaving a checkout and coming back (A → B → A) an answer to the
+/// first visit is dropped rather than landing over the second's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scope {
+    pub workspace: WorkspaceId,
+    pub visit: u64,
+}
+
 /// What the sidebar shows, as Tauri's sidebar views. The centre keeps the
 /// session, a diff picked from Git, or Settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -83,6 +92,7 @@ const MAX_PREVIEW_LINES: usize = 20_000;
 pub struct Workbench {
     pub mode: CenterMode,
     pub panel: Panel,
+    visit: u64,
     pub workspace: Option<WorkspaceId>,
     pub changes: Changes,
     pub files: Files,
@@ -161,9 +171,18 @@ impl Workbench {
             return;
         }
         self.workspace = workspace;
+        self.visit += 1;
         self.changes = Changes::default();
         self.files = Files::default();
         self.reads.clear();
+    }
+
+    #[must_use]
+    pub fn scope(&self) -> Option<Scope> {
+        self.workspace.map(|workspace| Scope {
+            workspace,
+            visit: self.visit,
+        })
     }
 
     /// Projects, Files and Pull Requests are sidebar panels and Git is both:
@@ -253,12 +272,8 @@ impl Workbench {
         std::mem::take(&mut self.reads)
     }
 
-    pub fn apply_rebase(
-        &mut self,
-        workspace: WorkspaceId,
-        state: Result<domain::RebaseState, String>,
-    ) {
-        if self.workspace != Some(workspace) {
+    pub fn apply_rebase(&mut self, scope: Scope, state: Result<domain::RebaseState, String>) {
+        if self.scope() != Some(scope) {
             return;
         }
         match state {
@@ -270,8 +285,8 @@ impl Workbench {
         }
     }
 
-    pub fn apply_diff(&mut self, workspace: WorkspaceId, diff: Result<WorkspaceDiff, String>) {
-        if self.workspace != Some(workspace) {
+    pub fn apply_diff(&mut self, scope: Scope, diff: Result<WorkspaceDiff, String>) {
+        if self.scope() != Some(scope) {
             return;
         }
         let changes = &mut self.changes;
@@ -327,11 +342,11 @@ impl Workbench {
 
     pub fn apply_directory(
         &mut self,
-        workspace: WorkspaceId,
+        scope: Scope,
         path: &str,
         listing: Result<DirectoryListing, String>,
     ) {
-        if self.workspace != Some(workspace) {
+        if self.scope() != Some(scope) {
             return;
         }
         let files = &mut self.files;
@@ -352,8 +367,8 @@ impl Workbench {
         files.rebuild();
     }
 
-    pub fn apply_file(&mut self, workspace: WorkspaceId, file: Result<FileContents, String>) {
-        if self.workspace != Some(workspace) {
+    pub fn apply_file(&mut self, scope: Scope, file: Result<FileContents, String>) {
+        if self.scope() != Some(scope) {
             return;
         }
         match file {
@@ -522,11 +537,12 @@ mod tests {
 
     #[test]
     fn the_files_view_lists_the_root_then_each_folder_once_it_is_opened() {
-        let (mut bench, workspace) = bench();
+        let (mut bench, _) = bench();
+        let scope = bench.scope().expect("a scope");
         bench.show(CenterMode::Files);
         assert_eq!(bench.take_reads(), vec![Read::Directory(String::new())]);
         bench.apply_directory(
-            workspace,
+            scope,
             "",
             Ok(listing(
                 "",
@@ -547,7 +563,7 @@ mod tests {
         assert_eq!(bench.take_reads(), vec![Read::Directory("src".into())]);
         assert_eq!(bench.take_reads(), Vec::new(), "asked once");
         bench.apply_directory(
-            workspace,
+            scope,
             "src",
             Ok(listing("src", vec![entry("src/main.rs", FileKind::File)])),
         );
@@ -559,7 +575,10 @@ mod tests {
     fn an_answer_for_another_workspace_is_dropped() {
         let (mut bench, _) = bench();
         bench.apply_directory(
-            WorkspaceId::new(),
+            Scope {
+                workspace: WorkspaceId::new(),
+                visit: 0,
+            },
             "",
             Ok(listing("", vec![entry("a", FileKind::File)])),
         );
@@ -569,6 +588,7 @@ mod tests {
     #[test]
     fn the_changes_view_parses_every_patch_and_names_what_has_none() {
         let (mut bench, workspace) = bench();
+        let scope = bench.scope().expect("a scope");
         bench.show(CenterMode::Changes);
         assert_eq!(bench.take_reads(), vec![Read::Diff, Read::Rebase]);
         let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
@@ -582,7 +602,7 @@ mod tests {
             truncated: false,
         };
         bench.apply_diff(
-            workspace,
+            scope,
             Ok(WorkspaceDiff {
                 workspace_id: workspace,
                 branch: Some("main".into()),
@@ -640,5 +660,31 @@ mod tests {
         assert!(!opens_rendered("a/.md"));
         assert!(!opens_rendered("src/main.rs"));
         assert!(!opens_rendered("Makefile"));
+    }
+
+    #[test]
+    fn a_reply_to_an_earlier_visit_is_dropped_after_coming_back() {
+        let (mut bench, a) = bench();
+        let first = bench.scope().expect("a scope");
+        bench.set_workspace(Some(WorkspaceId::new()));
+        bench.set_workspace(Some(a));
+        let second = bench.scope().expect("a scope");
+        assert_ne!(first, second, "returning to A is a new visit");
+        bench.apply_directory(
+            first,
+            "",
+            Ok(listing("", vec![entry("stale", FileKind::File)])),
+        );
+        assert!(
+            bench.files.tree.is_empty(),
+            "the first visit's answer is dropped"
+        );
+        bench.apply_directory(
+            second,
+            "",
+            Ok(listing("", vec![entry("fresh", FileKind::File)])),
+        );
+        let roots: Vec<&str> = bench.files.tree.children(None).collect();
+        assert_eq!(roots, vec!["fresh"]);
     }
 }

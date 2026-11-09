@@ -644,9 +644,10 @@ mod tests {
             s.show_panel(crate::workbench::Panel::Files);
             s.workbench.preview("a.rs");
             let workspace = s.workbench.workspace.expect("a workspace");
+            let scope = s.workbench.scope().expect("a scope");
             let code: String = (0..200).map(|i| format!("let x{i} = {i};\n")).collect();
             s.workbench
-                .apply_file(workspace, Ok(file("a.rs", &code, "rust", workspace)));
+                .apply_file(scope, Ok(file("a.rs", &code, "rust", workspace)));
         });
         rt.frame(0.1);
         rt.frame(0.2);
@@ -658,8 +659,9 @@ mod tests {
         );
         rt.update(|s, _| {
             let workspace = s.workbench.workspace.expect("a workspace");
+            let scope = s.workbench.scope().expect("a scope");
             s.workbench.apply_file(
-                workspace,
+                scope,
                 Ok(file(
                     "README.md",
                     "# Title\n\nBody.\n",

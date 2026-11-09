@@ -748,11 +748,10 @@ impl AppState {
     }
 
     pub fn rebase_step(&mut self, step: crate::workbench::RebaseStep) {
-        let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
-        else {
+        let (Some(connection), Some(scope)) = (&self.connection, self.workbench.scope()) else {
             return;
         };
-        let _ = connection.rebase_step(workspace, step);
+        let _ = connection.rebase_step(scope, step);
     }
 
     pub fn add_project(&mut self, path: std::path::PathBuf) {
@@ -980,24 +979,21 @@ impl AppState {
         self.commit.follow(self.workbench.workspace);
         if let Some(query) = self.palette.take_search() {
             self.sync_workbench_workspace();
-            if let (Some(connection), Some(workspace)) =
-                (&self.connection, self.workbench.workspace)
-            {
+            if let (Some(connection), Some(scope)) = (&self.connection, self.workbench.scope()) {
                 let _ = connection.read(
                     self.generation,
-                    workspace,
+                    scope,
                     crate::workbench::Read::Search(query),
                 );
             }
         }
         // The sidebar's panels read while a session holds the centre.
         let reads = self.workbench.take_reads();
-        let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
-        else {
+        let (Some(connection), Some(scope)) = (&self.connection, self.workbench.scope()) else {
             return;
         };
         for read in reads {
-            let _ = connection.read(self.generation, workspace, read);
+            let _ = connection.read(self.generation, scope, read);
         }
     }
 
@@ -1191,38 +1187,36 @@ impl AppState {
             }
             UiEvent::Diff {
                 generation,
-                workspace_id,
+                scope,
                 result,
             } => {
                 if !self.accept_generation(generation) {
                     return false;
                 }
-                self.workbench
-                    .apply_diff(workspace_id, result.map(|diff| *diff));
+                self.workbench.apply_diff(scope, result.map(|diff| *diff));
                 true
             }
             UiEvent::Directory {
                 generation,
-                workspace_id,
+                scope,
                 path,
                 result,
             } => {
                 if !self.accept_generation(generation) {
                     return false;
                 }
-                self.workbench.apply_directory(workspace_id, &path, result);
+                self.workbench.apply_directory(scope, &path, result);
                 true
             }
             UiEvent::File {
                 generation,
-                workspace_id,
+                scope,
                 result,
             } => {
                 if !self.accept_generation(generation) {
                     return false;
                 }
-                self.workbench
-                    .apply_file(workspace_id, result.map(|file| *file));
+                self.workbench.apply_file(scope, result.map(|file| *file));
                 true
             }
             UiEvent::Paths { generation, result } => {
@@ -1275,7 +1269,7 @@ impl AppState {
             }
             UiEvent::Rebase {
                 generation,
-                workspace_id,
+                scope,
                 result,
             } => {
                 if !self.accept_generation(generation) {
@@ -1284,7 +1278,7 @@ impl AppState {
                 let finished = self.workbench.changes.rebase.is_some()
                     && result.as_ref().is_ok_and(|state| state.operation.is_none());
                 self.workbench
-                    .apply_rebase(workspace_id, result.map(|state| *state));
+                    .apply_rebase(scope, result.map(|state| *state));
                 if finished {
                     self.workbench.refresh();
                 }
