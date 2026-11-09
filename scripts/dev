@@ -61,8 +61,11 @@ case "$cmd" in
       run)
         exec cargo run "${manifest[@]}" --release -- "${@:3}"
         ;;
+      build)
+        cargo build "${manifest[@]}" --release "${@:3}"
+        ;;
       *)
-        echo "usage: scripts/dev ui {check|run [forge-ui args]}" >&2
+        echo "usage: scripts/dev ui {check|build [cargo args]|run [forge-ui args]}" >&2
         exit 2
         ;;
     esac

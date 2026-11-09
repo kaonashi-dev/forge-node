@@ -38,7 +38,8 @@ endif
         build-rust build-rust-release build-daemon build-daemon-release \
         test test-rust test-frontend test-tauri check check-fast \
         codegen tokens fixtures fmt clippy clean clean-rust clean-ui clean-tauri \
-        package package-linux dist install-local info
+        package package-linux dist install-local info \
+        build-rune build-rune-debug run-rune check-rune
 
 help: ## Show this help
 	@printf 'Forge make targets (macOS=%s)\n\n' "$(UNAME_S)"
@@ -53,6 +54,10 @@ help: ## Show this help
 	@printf '  make build-release         # release daemon + bundle\n'
 	@printf '  make package               # macOS Forge.app (scripts/package-macos)\n'
 	@printf '  make install-local         # rebuild, replace /Applications app, relaunch\n'
+	@printf '\nRune client (apps/ui, own toolchain):\n'
+	@printf '  make build-rune            # release forge-ui\n'
+	@printf '  make run-rune              # build and run against the daily daemon\n'
+	@printf '  make check-rune            # fmt + clippy + tests for apps/ui\n'
 	@printf '\nGate:\n'
 	@printf '  make check                 # fmt + clippy + rust + vitest + tsc\n'
 
@@ -114,6 +119,23 @@ build-daemon: ## Build forge-daemon only (debug)
 
 build-daemon-release: ## Build forge-daemon only (release)
 	cargo build --release -p daemon --bin forge-daemon
+
+# ------------------------------------------------------------ Rune client ---
+# apps/ui is its own Cargo workspace on its own toolchain; scripts/dev pins it
+# and honours CARGO_TARGET_DIR (never point that at the root target/).
+
+build-rune: ## Release build of the Rune client (`forge-ui`)
+	"$(ROOT)/scripts/dev" ui build
+
+build-rune-debug: ## Debug build of the Rune client
+	cd "$(ROOT)" && RUSTUP_TOOLCHAIN="$$(sed -n 's/^channel = "\(.*\)"/\1/p' apps/ui/rust-toolchain.toml)" \
+		cargo build --manifest-path apps/ui/Cargo.toml
+
+run-rune: ## Build and run the Rune client (release)
+	"$(ROOT)/scripts/dev" ui run
+
+check-rune: ## Rune gate: fmt + clippy + tests for apps/ui
+	"$(ROOT)/scripts/dev" ui check
 
 # --------------------------------------------------------- Tauri: codegen ---
 

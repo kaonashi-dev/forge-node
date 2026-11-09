@@ -16,7 +16,7 @@
 
 - The canonical gate is `scripts/dev check` (also the default for bare `scripts/dev`): `cargo fmt --all -- --check`, then `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo test --workspace`. CI runs the same gate on macOS.
 - Build everything with `cargo build --workspace`; run one package with `cargo test -p <package>`.
-- The Rune client has its own gate and runner: `scripts/dev ui check` (fmt, clippy `-D warnings`, tests) and `scripts/dev ui run [--daemon | --bench | --help]`. They honour `CARGO_TARGET_DIR`; never point it at the root `target/`.
+- The Rune client has its own gate and runner: `scripts/dev ui check` (fmt, clippy `-D warnings`, tests) `scripts/dev ui build` (release; `make build-rune`), and `scripts/dev ui run [--daemon | --bench | --help]`. They honour `CARGO_TARGET_DIR`; never point it at the root `target/`.
 - Exact unit-test example: `cargo test -p client --lib ipc::tests::connect_request_and_event_round_trip -- --exact`.
 - Exact daemon E2E example: `cargo test -p daemon --test integration end_to_end_shell_session -- --exact`; run every daemon test (that file and the `scenario_*.rs` binaries) with `cargo test -p daemon`.
 - Exact terminal golden example: `cargo test -p terminal-core --test golden plain_text -- --exact`. Snapshots live in `crates/terminal-core/tests/snapshots/`; `cargo insta review` requires a separately installed `cargo-insta`.
