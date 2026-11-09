@@ -111,7 +111,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .on_press(|s: &mut AppState| s.refresh_pull_requests())
         .build(k)
         .key("prs-refresh");
-    let mut list = col().key("pr-list").w_full().gap(6.0).padding(16.0);
+    let mut list = col().key("pr-list").w_full().gap(6.0);
     let state = s.store.as_ref().map(|store| &store.pull_requests);
     if let Some(error) = state.and_then(|state| state.error.as_ref()) {
         list = list.child(text(error.clone()).font(k.ty.small).color(k.c.warning.fg));
@@ -155,7 +155,8 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         .child(
                             text(pr_line(pr))
                                 .font(k.ty.text_xsmall)
-                                .color(k.c.text_faint),
+                                .color(k.c.text_faint)
+                                .truncate(),
                         ),
                 )
                 .child(
@@ -177,8 +178,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             row()
                 .key("prs-bar")
                 .w_full()
-                .h(36.0)
-                .px(12.0)
+                .h(30.0)
                 .items_center()
                 .child(
                     text("Pull Requests")

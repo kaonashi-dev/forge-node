@@ -8,19 +8,19 @@ use rune_kit::Kit;
 
 use crate::app::{AppState, LinkStatus, SessionRow, SessionStatus};
 use crate::glyphs;
-use crate::workbench::CenterMode;
+use crate::workbench::{CenterMode, Panel};
 
 /// Tauri's `tabH`: the chip inside the strip's band.
 const TAB_H: f32 = 30.0;
 /// A tab never grows past this, as `.session-tab-wrap { max-width: 280px }`.
 const TAB_MAX_W: f32 = 240.0;
 
-/// The sidebar's views, in Tauri's order; each shows in the centre here.
-pub const VIEWS: [(CenterMode, &str, &Icon); 4] = [
-    (CenterMode::Projects, "Projects", &glyphs::PROJECTS),
-    (CenterMode::Files, "Files", &glyphs::FILES),
-    (CenterMode::PullRequests, "PR", &glyphs::PULL_REQUEST),
-    (CenterMode::Changes, "Git", &glyphs::GIT),
+/// The sidebar's views, in Tauri's order.
+pub const VIEWS: [(Panel, &str, &Icon); 4] = [
+    (Panel::Projects, "Projects", &glyphs::PROJECTS),
+    (Panel::Files, "Files", &glyphs::FILES),
+    (Panel::PullRequests, "PR", &glyphs::PULL_REQUEST),
+    (Panel::Git, "Git", &glyphs::GIT),
 ];
 
 fn icon_button(
@@ -167,16 +167,17 @@ pub fn strip(s: &AppState, k: &Kit) -> El {
         .center_y()
         .min_w(0.0)
         .shrink()
-        .scroll_x()
-        .clip_fade(0.0, 0.0, 24.0, 0.0);
+        .scroll_x();
     if tabs.is_empty() {
-        strip = strip.child(
+        return strip.child(
             text("No sessions")
                 .key("tab-empty")
                 .font(k.ty.small)
                 .color(k.c.text_faint),
         );
     }
+    // A tab cut at the strip's end fades out rather than stopping hard.
+    strip = strip.clip_fade(0.0, 0.0, 24.0, 0.0);
     for session in tabs {
         strip = strip.child(tab(s, session, k));
     }
@@ -203,8 +204,7 @@ pub fn actions(k: &Kit) -> [El; 2] {
     ]
 }
 
-/// The sidebar's view switcher, as Tauri's `sidebar-views`: a second press
-/// on the shown view goes back to the terminal.
+/// The sidebar's view switcher, as Tauri's `sidebar-views`.
 pub fn views(s: &AppState, k: &Kit) -> El {
     let mut bar = row()
         .key("sidebar-views")
@@ -213,8 +213,8 @@ pub fn views(s: &AppState, k: &Kit) -> El {
         .w_full()
         .gap(2.0)
         .padding(3.0);
-    for (mode, label, glyph) in VIEWS {
-        let shown = s.workbench.mode == mode;
+    for (panel, label, glyph) in VIEWS {
+        let shown = s.workbench.panel == panel;
         bar = bar.child(
             col()
                 .key(format!("view-{}", label.to_ascii_lowercase()))
@@ -232,14 +232,7 @@ pub fn views(s: &AppState, k: &Kit) -> El {
                     rune::Color::TRANSPARENT
                 })
                 .hover(k.c.hover)
-                .on_press(move |s: &mut AppState| {
-                    let next = if s.workbench.mode == mode {
-                        CenterMode::Session
-                    } else {
-                        mode
-                    };
-                    s.show_mode(next);
-                })
+                .on_press(move |s: &mut AppState| s.show_panel(panel))
                 .child(icon(glyph, 15.0).color(if shown {
                     k.c.icon_accent
                 } else {

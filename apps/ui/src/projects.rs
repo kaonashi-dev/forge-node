@@ -119,8 +119,8 @@ fn small(label: &'static str, k: &Kit, key: String, press: impl Fn(&mut AppState
 }
 
 pub fn view(s: &AppState, k: &Kit) -> El {
-    let add = Button::new("Add project…")
-        .variant(ButtonVariant::Outline)
+    let add = Button::new("Add…")
+        .variant(ButtonVariant::GhostMuted)
         .control_size(ControlSize::Small)
         .on_press_tx(|_s: &mut AppState, tx| {
             tx.open_folder(
@@ -137,7 +137,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         })
         .build(k)
         .key("add-project");
-    let mut list = col().key("project-list").w_full().gap(18.0).padding(16.0);
+    let mut list = col().key("project-list").w_full().gap(14.0);
     let Some(store) = &s.store else {
         return col()
             .key("projects")
@@ -156,19 +156,21 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .key(format!("project-{}", project.id))
             .role("group")
             .label(project.name.clone())
-            .gap(6.0)
+            .gap(4.0)
             .child(
                 row()
                     .gap(10.0)
                     .items_center()
                     .child(
                         text(project.name.clone())
-                            .font(k.ty.body_medium)
-                            .color(k.c.text_base)
-                            .grow(1.0),
+                            .font(k.ty.small_medium)
+                            .color(k.c.text_muted)
+                            .grow(1.0)
+                            .truncate()
+                            .min_w(0.0),
                     )
                     .child(small(
-                        "New worktree…",
+                        "+ Worktree",
                         k,
                         format!("new-worktree-{project_id}"),
                         move |s: &mut AppState| {
@@ -195,26 +197,17 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
+        .gap(8.0)
         .child(
             row()
                 .key("projects-bar")
                 .w_full()
-                .h(36.0)
-                .px(12.0)
                 .items_center()
                 .child(
                     text("Projects")
                         .font(k.ty.small_medium)
                         .color(k.c.text_base)
                         .grow(1.0),
-                )
-                .child(
-                    Button::new("Refresh PRs")
-                        .variant(ButtonVariant::GhostMuted)
-                        .control_size(ControlSize::Small)
-                        .on_press(|s: &mut AppState| s.refresh_pull_requests())
-                        .build(k)
-                        .key("refresh-prs"),
                 )
                 .child(add),
         )
@@ -243,6 +236,7 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
         .unwrap_or_else(|| "detached".into());
     let mut actions = row()
         .gap(2.0)
+        .flex_wrap()
         .child(small(
             "Shell",
             k,
@@ -250,7 +244,7 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
             move |s: &mut AppState| s.shell_in(id),
         ))
         .child(small(
-            "Changes",
+            "Git",
             k,
             format!("changes-{id}"),
             move |s: &mut AppState| {
@@ -307,26 +301,57 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                 .key(format!("remove-{id}")),
         );
     }
-    row()
+    let current = s.workbench.workspace == Some(id);
+    let sessions = s
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.workspace_id == id)
+        .map(|(index, row)| crate::ui::session_row(s, row, index, k));
+    col()
         .key(format!("workspace-{id}"))
         .role("group")
         .label(format!("{} · {branch}", workspace.label()))
         .w_full()
-        .gap(10.0)
-        .px(10.0)
-        .py(6.0)
-        .radius(6.0)
-        .fill(k.c.surface_hover)
-        .items_center()
+        .gap(4.0)
         .child(
             col()
-                .grow(1.0)
-                .min_w(0.0)
+                .key(format!("checkout-{id}"))
+                .role("button")
+                .label(format!("Show {}", workspace.label()))
+                .w_full()
+                .px(8.0)
+                .py(5.0)
+                .radius(6.0)
+                .fill(if current {
+                    k.c.surface_hover
+                } else {
+                    rune::Color::TRANSPARENT
+                })
+                .hover(k.c.hover)
+                .on_press(move |s: &mut AppState| s.focus_checkout(id))
                 .child(
-                    text(format!("{} · {branch}", workspace.label()))
-                        .font(k.ty.small)
-                        .color(k.c.text_base)
-                        .truncate(),
+                    rune::row()
+                        .gap(6.0)
+                        .items_center()
+                        .child(
+                            rune::icon(
+                                if workspace.kind == WorkspaceKind::Main {
+                                    &crate::glyphs::FILES
+                                } else {
+                                    &crate::glyphs::GIT
+                                },
+                                13.0,
+                            )
+                            .color(k.c.icon_muted),
+                        )
+                        .child(
+                            text(format!("{} · {branch}", workspace.label()))
+                                .font(k.ty.small_medium)
+                                .color(k.c.text_base)
+                                .truncate()
+                                .min_w(0.0),
+                        ),
                 )
                 .child(
                     text(format!(
@@ -355,7 +380,8 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                         }),
                 ),
         )
-        .child(actions)
+        .children(sessions)
+        .child(actions.px(4.0))
 }
 
 /// The branch prompt for a new worktree, as a dialog layer.

@@ -26,6 +26,32 @@ pub enum CenterMode {
     Settings,
 }
 
+/// Whether a path opens rendered rather than in the editor, as Tauri's
+/// `previewKindFor` decides for Markdown: by extension, and a dotfile's name
+/// is not an extension.
+#[must_use]
+pub fn opens_rendered(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => {
+            let extension = name[dot + 1..].to_ascii_lowercase();
+            matches!(extension.as_str(), "md" | "markdown" | "mdx")
+        }
+        _ => false,
+    }
+}
+
+/// What the sidebar shows, as Tauri's sidebar views. The centre keeps the
+/// session, a diff picked from Git, or Settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Panel {
+    #[default]
+    Projects,
+    Files,
+    PullRequests,
+    Git,
+}
+
 /// A read the worker should make for the current workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
@@ -56,6 +82,7 @@ const MAX_PREVIEW_LINES: usize = 20_000;
 #[derive(Default)]
 pub struct Workbench {
     pub mode: CenterMode,
+    pub panel: Panel,
     pub workspace: Option<WorkspaceId>,
     pub changes: Changes,
     pub files: Files,
@@ -139,21 +166,45 @@ impl Workbench {
         self.reads.clear();
     }
 
+    /// Projects, Files and Pull Requests are sidebar panels and Git is both:
+    /// asking for one shows its panel, and only Changes and Settings (or the
+    /// session) take the centre.
     pub fn show(&mut self, mode: CenterMode) {
-        self.mode = mode;
-        if mode == CenterMode::Changes && !self.changes.loaded {
+        match mode {
+            CenterMode::Projects => self.show_panel(Panel::Projects),
+            CenterMode::Files => self.show_panel(Panel::Files),
+            CenterMode::PullRequests => self.show_panel(Panel::PullRequests),
+            CenterMode::Changes => {
+                self.show_panel(Panel::Git);
+                self.mode = CenterMode::Changes;
+            }
+            CenterMode::Session | CenterMode::Settings => self.mode = mode,
+        }
+    }
+
+    /// Shows `path` rendered in the centre.
+    pub fn preview(&mut self, path: &str) {
+        self.files.preview = None;
+        self.files.error = None;
+        self.queue(Read::File(path.to_string()));
+        self.mode = CenterMode::Files;
+    }
+
+    pub fn show_panel(&mut self, panel: Panel) {
+        self.panel = panel;
+        if panel == Panel::Git && !self.changes.loaded {
             self.queue(Read::Diff);
             self.queue(Read::Rebase);
         }
     }
 
     pub fn refresh(&mut self) {
-        match self.mode {
-            CenterMode::Changes => {
-                self.queue(Read::Diff);
-                self.queue(Read::Rebase);
-            }
-            CenterMode::Files => {
+        if self.panel == Panel::Git || self.mode == CenterMode::Changes {
+            self.queue(Read::Diff);
+            self.queue(Read::Rebase);
+        }
+        match self.panel {
+            Panel::Files => {
                 let open = self
                     .files
                     .preview
@@ -164,10 +215,7 @@ impl Workbench {
                     self.queue(Read::File(path));
                 }
             }
-            CenterMode::Session
-            | CenterMode::Projects
-            | CenterMode::PullRequests
-            | CenterMode::Settings => {}
+            Panel::Projects | Panel::PullRequests | Panel::Git => {}
         }
     }
 
@@ -184,7 +232,7 @@ impl Workbench {
             self.reads.clear();
             return Vec::new();
         }
-        if self.mode == CenterMode::Files {
+        if self.panel == Panel::Files {
             if !self.files.root_requested {
                 self.files.root_requested = true;
                 self.queue(Read::Directory(String::new()));
@@ -578,5 +626,19 @@ mod tests {
                 .iter()
                 .all(|(range, _)| range.end <= "let x = 1;".len())
         );
+    }
+
+    #[test]
+    fn markdown_opens_rendered_and_a_dotfile_is_not_an_extension() {
+        assert!(opens_rendered("docs/README.md"));
+        assert!(
+            opens_rendered("NOTES.MD"),
+            "the extension is read case-blind"
+        );
+        assert!(opens_rendered("page.mdx"));
+        assert!(!opens_rendered(".md"));
+        assert!(!opens_rendered("a/.md"));
+        assert!(!opens_rendered("src/main.rs"));
+        assert!(!opens_rendered("Makefile"));
     }
 }

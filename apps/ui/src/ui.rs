@@ -4,20 +4,14 @@
 
 use std::time::Instant;
 
-use rune::{Cx, El, Icon, col, effect, el, row, text};
-use rune_kit::shell::{Sidebar, SidebarRow, SidebarToggle, SplitView, Toolbar};
+use rune::{Cx, El, col, effect, el, icon, row, text};
+use rune_kit::shell::{SidebarRow, SidebarToggle, SplitView, Toolbar};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 
 use crate::app::{AppState, CommandStatus, LinkStatus, SessionRow, SessionStatus};
 use crate::terminal::input::{Pointer, Press};
 use crate::terminal::renderer::{CELL_PT, MARK_BASE};
 use crate::workbench::CenterMode;
-
-static PLUS: Icon = Icon {
-    name: "shell-plus",
-    view: 16.0,
-    body: r#"<path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>"#,
-};
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     s.metrics.note_ui_thread();
@@ -115,53 +109,59 @@ fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
     bar.trailing(create).trailing(jump)
 }
 
+/// Tauri's sidebar: the view switcher, the chosen view, and the footer. Each
+/// view scrolls itself, so Git can keep its commit box in reach.
 fn sidebar(s: &AppState, k: &Kit) -> El {
-    let header = col()
-        .key("sidebar-header")
+    use crate::workbench::Panel;
+    let panel = match s.workbench.panel {
+        Panel::Projects => crate::projects::view(s, k),
+        Panel::Files => crate::workbench::view::files_panel(s, k),
+        Panel::PullRequests => crate::pr_review::view(s, k),
+        Panel::Git => crate::workbench::view::git_panel(s, k),
+    };
+    col()
+        .key("sidebar")
+        .role("complementary")
+        .label("Sidebar")
         .w_full()
-        .gap(8.0)
+        .h_full()
+        .min_h(0.0)
+        .gap(10.0)
         .child(crate::chrome::views(s, k))
         .child(
-            SidebarRow::new("New terminal")
-                .select_only()
-                .icon(&PLUS)
-                .height(32.0)
-                .detail("⌘T")
-                .on_select(|s: &mut AppState, _| s.request_create())
-                .build(k)
-                .key("sidebar-new-session"),
-        );
-    let body = Sidebar::new()
-        .label("Sessions")
-        .inset(0.0)
-        .header_gap(4.0)
-        .header_padding(0.0, 12.0)
-        .row_gap(4.0)
-        .header(header)
-        .footer(status_row(s, k));
-    let body = if s.rows.is_empty() {
-        body.child(empty_row(k))
-    } else {
-        s.rows
-            .iter()
-            .enumerate()
-            .fold(body, |body, (index, session)| {
-                body.child(session_row(s, session, index, k))
-            })
-    };
-    body.build(k)
+            col()
+                .key("sidebar-panel")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .child(panel),
+        )
+        .child(status_row(s, k))
 }
 
-fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) -> El {
-    let selected = s.active == Some(session.id);
+/// A session under its checkout in Projects: select-only, so a press walks
+/// up to the terminal's focus proxy and typing reaches the terminal.
+pub fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) -> El {
+    let selected = s.active == Some(session.id) && s.workbench.mode == CenterMode::Session;
     let id = session.id;
+    let glyph = match session.kind {
+        domain::SessionKind::Agent => &crate::glyphs::AGENT,
+        domain::SessionKind::Editor => &crate::glyphs::CODE,
+        _ => &crate::glyphs::TERMINAL,
+    };
     let mut item = SidebarRow::new(session.title.as_str())
         .select_only()
-        .height(46.0)
-        .avatar(avatar(index, k))
-        .subtitle(format!("{} · {}", session.workspace, session.detail).as_str())
+        .height(30.0)
+        .avatar(icon(glyph, 14.0).color(if selected {
+            k.c.icon_base
+        } else {
+            k.c.icon_muted
+        }))
         .selected(selected)
-        .on_select(move |s: &mut AppState, _| s.select(id))
+        .on_select(move |s: &mut AppState, _| {
+            s.select(id);
+            s.show_mode(CenterMode::Session);
+        })
         .on_double_click(move |s: &mut AppState, _| {
             s.select(id);
             s.request_rename();
@@ -169,36 +169,10 @@ fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) -> El 
     if let Some(status) = session.status {
         item = item.status(row_status(status));
     }
+    if let Some(ended) = &session.ended {
+        item = item.detail(ended.as_str());
+    }
     item.build(k).key(format!("session-row-{index}"))
-}
-
-fn avatar(index: usize, k: &Kit) -> El {
-    let fills = [
-        k.c.bg_accent,
-        k.c.info.icon,
-        k.c.success.icon,
-        k.c.warning.icon,
-    ];
-    let fill = fills[index % fills.len()];
-    row()
-        .size(18.0, 18.0)
-        .radius(5.0)
-        .center()
-        .fill(fill)
-        .child(
-            text(format!("{}", index + 1))
-                .font(k.ty.text_xsmall_medium)
-                .color(k.c.text_inverse),
-        )
-}
-
-fn empty_row(k: &Kit) -> El {
-    row()
-        .key("empty-sessions")
-        .w_full()
-        .px(10.0)
-        .py(8.0)
-        .child(text("No sessions").font(k.ty.small).color(k.c.text_faint))
 }
 
 fn status_row(s: &AppState, k: &Kit) -> El {
@@ -238,16 +212,18 @@ fn status_row(s: &AppState, k: &Kit) -> El {
 
 fn center(s: &AppState, k: &Kit) -> El {
     let has_terminal = s.active_row().and_then(|row| row.terminal_id).is_some();
-    let body = if s.workbench.mode == CenterMode::Projects {
-        crate::projects::view(s, k)
-    } else if s.workbench.mode == CenterMode::Changes {
+    // A session of another checkout is not this window's to show.
+    let in_checkout = s
+        .active
+        .is_some_and(|active| s.tab_rows().iter().any(|row| row.id == active));
+    let body = if s.workbench.mode == CenterMode::Changes {
         crate::workbench::view::changes(s, k)
     } else if s.workbench.mode == CenterMode::Files {
-        crate::workbench::view::files(s, k)
-    } else if s.workbench.mode == CenterMode::PullRequests {
-        crate::pr_review::view(s, k)
+        crate::workbench::view::preview(s, k)
     } else if s.workbench.mode == CenterMode::Settings {
         crate::workbench::view::settings(s, k)
+    } else if !in_checkout {
+        empty_center(s, k)
     } else if s.active_line_editor().is_some() {
         crate::editor::view::pane(s, k)
     } else if has_terminal {

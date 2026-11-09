@@ -18,7 +18,7 @@ use crate::terminal::SharedTerminal;
 use crate::terminal::input::{self, Effects, Outbox, Pointer, Press};
 use crate::terminal::pane::TerminalUi;
 use crate::terminal::renderer::CELL_PT;
-use crate::workbench::{CenterMode, Workbench};
+use crate::workbench::{CenterMode, Panel, Workbench};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkStatus {
@@ -53,10 +53,10 @@ pub struct SessionRow {
     pub id_text: String,
     pub title: String,
     pub workspace_id: WorkspaceId,
-    pub workspace: String,
-    pub detail: String,
     pub status: Option<SessionStatus>,
     pub running: bool,
+    /// How a session that stopped ended, in Tauri's words.
+    pub ended: Option<String>,
 }
 
 #[must_use]
@@ -176,7 +176,7 @@ impl AppState {
     ) -> Self {
         metrics.note_ui_thread();
         let mut state = Self {
-            sidebar: PaneState::new(276.0).range(180.0, 480.0),
+            sidebar: PaneState::new(300.0).range(220.0, 520.0),
             store: None,
             rows: Vec::new(),
             workspaces: Vec::new(),
@@ -266,12 +266,6 @@ impl AppState {
             .sessions
             .iter()
             .map(|session| {
-                let workspace = store
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.id == session.workspace_id)
-                    .map(|workspace| workspace.label())
-                    .unwrap_or_else(|| "unknown workspace".to_string());
                 let lines = session.kind == SessionKind::Editor
                     && self.editor_surface == protocol::EditorSurface::Dom;
                 SessionRow {
@@ -281,14 +275,10 @@ impl AppState {
                     id_text: session.id.to_string(),
                     workspace_id: session.workspace_id,
                     title: crate::session_label::session_title(session),
-                    workspace,
-                    detail: format!(
-                        "{} · {}",
-                        kind_label(session.kind),
-                        crate::session_label::state_label(&session.state)
-                    ),
                     status: row_status(session),
                     running: session.state.is_active(),
+                    ended: (!session.state.is_active())
+                        .then(|| crate::session_label::state_label(&session.state)),
                 }
             })
             .collect();
@@ -424,6 +414,10 @@ impl AppState {
         {
             return;
         }
+        if crate::workbench::opens_rendered(path) {
+            self.workbench.preview(path);
+            return;
+        }
         let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
         else {
             return;
@@ -457,12 +451,13 @@ impl AppState {
             }
             Action::NewAgent => self.launch_default(),
             Action::PullRequests => {
-                let next = if self.workbench.mode == CenterMode::PullRequests {
-                    CenterMode::Session
+                let next = if self.workbench.panel == Panel::PullRequests && self.sidebar.is_open()
+                {
+                    Panel::Projects
                 } else {
-                    CenterMode::PullRequests
+                    Panel::PullRequests
                 };
-                self.show_mode(next);
+                self.show_panel(next);
             }
             Action::Settings => {
                 let next = if self.workbench.mode == CenterMode::Settings {
@@ -779,6 +774,22 @@ impl AppState {
         }
     }
 
+    /// Points the window at a checkout, as a rail card does in Tauri: its
+    /// tabs, Git and Files follow, and its first session is selected.
+    pub fn focus_checkout(&mut self, workspace: WorkspaceId) {
+        if let Some(id) = self
+            .rows
+            .iter()
+            .find(|row| row.workspace_id == workspace && row.terminal_id.is_some())
+            .map(|row| row.id)
+        {
+            self.select(id);
+        }
+        // After `select`, which forgets a chosen checkout for the session's.
+        self.chosen_workspace = Some(workspace);
+        self.sync_workbench_workspace();
+    }
+
     /// Shows Changes or Files for `workspace` rather than the active session's.
     pub fn inspect(&mut self, workspace: WorkspaceId, mode: CenterMode) {
         self.chosen_workspace = Some(workspace);
@@ -903,6 +914,16 @@ impl AppState {
     pub fn show_mode(&mut self, mode: CenterMode) {
         self.sync_workbench_workspace();
         self.workbench.show(mode);
+        if !matches!(mode, CenterMode::Session | CenterMode::Settings) {
+            self.sidebar.set_open(true);
+        }
+    }
+
+    /// Shows a sidebar view, opening the sidebar if it was hidden.
+    pub fn show_panel(&mut self, panel: Panel) {
+        self.sync_workbench_workspace();
+        self.workbench.show_panel(panel);
+        self.sidebar.set_open(true);
     }
 
     /// The workspace the active session runs in, or the first one.
@@ -952,6 +973,8 @@ impl AppState {
     }
 
     fn sync_workbench(&mut self) {
+        // The sidebar's panels follow the window's checkout as the strip does.
+        self.sync_workbench_workspace();
         self.sync_usage();
         self.sync_storage();
         self.commit.follow(self.workbench.workspace);
@@ -967,10 +990,7 @@ impl AppState {
                 );
             }
         }
-        if self.workbench.mode == CenterMode::Session {
-            return;
-        }
-        self.sync_workbench_workspace();
+        // The sidebar's panels read while a session holds the centre.
         let reads = self.workbench.take_reads();
         let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
         else {
@@ -2088,16 +2108,6 @@ pub fn poll(state: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
     state.poll(clock, tx)
 }
 
-fn kind_label(kind: SessionKind) -> &'static str {
-    match kind {
-        SessionKind::Shell => "shell",
-        SessionKind::Agent => "agent",
-        SessionKind::Editor => "editor",
-        SessionKind::Task => "task",
-        _ => "session",
-    }
-}
-
 /// The tab's marker, after Tauri's `sessionWork`: waiting for the person
 /// outranks everything; an editor or a shell is never busy, since only an
 /// agent's hooks report a turn; and a keystroke into an idle agent is a
@@ -2597,10 +2607,9 @@ mod tests {
             id_text: id.to_string(),
             title: String::new(),
             workspace_id: workspace,
-            workspace: String::new(),
-            detail: String::new(),
             status: None,
             running: live,
+            ended: None,
         }
     }
 

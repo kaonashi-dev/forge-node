@@ -104,7 +104,7 @@ pub fn commit_box(s: &AppState, k: &Kit, files: usize) -> El {
         .build(k)
         .key("commit-message")
         .h(96.0);
-    let draft = Button::new("Draft the message with Juva")
+    let draft = Button::new("Draft with Juva")
         .variant(ButtonVariant::GhostMuted)
         .control_size(ControlSize::Small)
         .on_press(|s: &mut AppState| s.draft_commit())
@@ -119,15 +119,18 @@ pub fn commit_box(s: &AppState, k: &Kit, files: usize) -> El {
     let mut view = col()
         .key("commit-box")
         .w_full()
+        .min_w(0.0)
         .gap(6.0)
-        .padding(10.0)
+        .pt(6.0)
         .child(area)
         .child(
             row()
                 .gap(6.0)
                 .items_center()
+                .w_full()
+                .min_w(0.0)
                 .child(draft)
-                .child(rune::el().grow(1.0))
+                .child(rune::el().grow(1.0).min_w(0.0))
                 .child(go),
         )
         .child(

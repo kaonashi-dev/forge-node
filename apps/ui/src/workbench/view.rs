@@ -1,16 +1,15 @@
 //! The Changes and Files views, and the switch between them and the session.
 
-use rune::{El, GrowthSpec, ScrollSpec, col, el, rich, row, text};
+use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, rich, row, text};
 use rune_kit::diff::DiffView;
 use rune_kit::syntax::SyntaxTheme;
 use rune_kit::{
     Button, ButtonVariant, ControlSize, FileNode, Kit, Markdown, Tree, TreeItem, TreeStyle,
 };
 
-use super::Preview;
+use super::{CenterMode, Preview};
 use crate::app::AppState;
 
-const TREE_W: f32 = 280.0;
 const CODE_ROW_H: f32 = 18.0;
 
 fn bar(k: &Kit, title: String, detail: String) -> El {
@@ -68,72 +67,37 @@ fn status_word(status: domain::DiffStatus) -> &'static str {
     }
 }
 
-pub fn changes(s: &AppState, k: &Kit) -> El {
+fn changed_rows(s: &AppState, k: &Kit) -> El {
     let changes = &s.workbench.changes;
-    let mut detail = changes.branch.clone().unwrap_or_default();
-    let project = s.store.as_ref().and_then(|store| {
-        let workspace = s.workbench.workspace?;
-        store
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)
-            .map(|found| found.project_id)
-    });
-    if let Some(note) = project.and_then(|id| s.sync.fetched.get(&id)) {
-        if !detail.is_empty() {
-            detail.push_str(" · ");
-        }
-        detail.push_str(note);
-    }
-    let fetching = project.is_some_and(|id| s.sync.fetching.contains(&id));
-    let mut header = bar(k, "Git".into(), detail).child(
-        Button::new(if fetching { "Fetching…" } else { "Fetch" })
-            .variant(ButtonVariant::GhostMuted)
-            .control_size(ControlSize::Small)
-            .on_press(|s: &mut AppState| s.fetch())
-            .build(k)
-            .key("changes-fetch"),
-    );
-    if changes.loaded && changes.error.is_none() {
-        header = header.child(
-            Button::new("Preview PR")
-                .variant(ButtonVariant::Outline)
-                .control_size(ControlSize::Small)
-                .on_press(|s: &mut AppState| s.open_pr_dialog())
-                .build(k)
-                .key("changes-open-pr"),
-        );
-    }
-
-    let mut list = col().key("changed-files").w_full().gap(1.0).padding(6.0);
+    let mut list = col().key("changed-files").w_full().gap(1.0);
+    let note = |message: String| text(message).font(k.ty.small).color(k.c.text_faint);
     if s.workbench.workspace.is_none() {
-        list = list.child(
-            text("No workspace for this session.")
-                .font(k.ty.small)
-                .color(k.c.text_faint),
-        );
-    } else if let Some(error) = &changes.error {
-        list = list.child(
-            text(format!("Could not read the diff: {error}"))
-                .font(k.ty.small)
-                .color(k.c.text_faint),
-        );
-    } else if !changes.loaded {
-        list = list.child(
-            text("Reading the working tree…")
-                .font(k.ty.small)
-                .color(k.c.text_faint),
-        );
-    } else if changes.files.is_empty() {
-        list = list.child(
-            text("Nothing uncommitted.")
-                .key("changes-clean")
-                .font(k.ty.small)
-                .color(k.c.text_faint),
-        );
+        return list.child(note("No checkout in this window.".into()));
     }
+    if let Some(error) = &changes.error {
+        return list.child(note(format!("Could not read the diff: {error}")));
+    }
+    if !changes.loaded {
+        return list.child(note("Reading the working tree…".into()));
+    }
+    if changes.files.is_empty() {
+        list = list.child(note("Nothing uncommitted.".into()).key("changes-clean"));
+    }
+    let shown = s.workbench.mode == CenterMode::Changes;
     for (index, file) in changes.files.iter().enumerate() {
-        let selected = changes.selected == Some(index);
+        let selected = shown && changes.selected == Some(index);
+        let name = file
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&file.path)
+            .to_string();
+        let dir = file
+            .path
+            .strip_suffix(name.as_str())
+            .unwrap_or_default()
+            .trim_end_matches('/')
+            .to_string();
         list = list.child(
             row()
                 .key(format!("changed-{}", file.path))
@@ -148,7 +112,7 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
                 .w_full()
                 .h(26.0)
                 .px(8.0)
-                .gap(8.0)
+                .gap(6.0)
                 .radius(5.0)
                 .items_center()
                 .fill(if selected {
@@ -156,18 +120,28 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
                 } else {
                     rune::Color::TRANSPARENT
                 })
-                .on_press(move |s: &mut AppState| s.workbench.select_change(index))
+                .hover(k.c.hover)
+                .on_press(move |s: &mut AppState| {
+                    s.workbench.select_change(index);
+                    s.workbench.mode = CenterMode::Changes;
+                })
                 .child(
                     text(status_letter(file.status))
                         .font(k.ty.mono)
-                        .color(k.c.text_muted)
+                        .color(if file.status == domain::DiffStatus::Conflicted {
+                            k.c.warning.fg
+                        } else {
+                            k.c.text_muted
+                        })
                         .w(12.0),
                 )
+                .child(text(name).font(k.ty.small).color(k.c.text_base))
                 .child(
-                    text(file.path.clone())
-                        .font(k.ty.small)
-                        .color(k.c.text_base)
+                    text(dir)
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint)
                         .grow(1.0)
+                        .min_w(0.0)
                         .truncate(),
                 )
                 .child(
@@ -189,11 +163,92 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
                 .color(k.c.text_faint),
         );
     }
-    let mut rail = col()
-        .key("changes-rail")
-        .w(TREE_W + 40.0)
+    list
+}
+
+/// The sidebar's Git panel, as Tauri's `GitPanel`: the branch and its sync,
+/// the changed files, and the commit box. A file's diff opens in the centre.
+pub fn git_panel(s: &AppState, k: &Kit) -> El {
+    let changes = &s.workbench.changes;
+    let project = s.store.as_ref().and_then(|store| {
+        let workspace = s.workbench.workspace?;
+        store
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .map(|found| found.project_id)
+    });
+    let fetching = project.is_some_and(|id| s.sync.fetching.contains(&id));
+    let mut actions = row().gap(4.0).flex_wrap().child(
+        Button::new(if fetching { "Fetching…" } else { "Fetch" })
+            .variant(ButtonVariant::GhostMuted)
+            .control_size(ControlSize::Small)
+            .on_press(|s: &mut AppState| s.fetch())
+            .build(k)
+            .key("changes-fetch"),
+    );
+    if changes.loaded && changes.error.is_none() {
+        actions = actions.child(
+            Button::new("Preview PR")
+                .variant(ButtonVariant::Outline)
+                .control_size(ControlSize::Small)
+                .on_press(|s: &mut AppState| s.open_pr_dialog())
+                .build(k)
+                .key("changes-open-pr"),
+        );
+    }
+    let mut head = col().key("git-head").w_full().gap(4.0).child(
+        row()
+            .gap(6.0)
+            .items_center()
+            .child(icon(&crate::glyphs::GIT, 14.0).color(k.c.icon_muted))
+            .child(
+                text(changes.branch.clone().unwrap_or_else(|| "Git".into()))
+                    .font(k.ty.small_medium)
+                    .color(k.c.text_base)
+                    .truncate()
+                    .min_w(0.0),
+            ),
+    );
+    if let Some(note) = project.and_then(|id| s.sync.fetched.get(&id)) {
+        head = head.child(
+            text(note.clone())
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint),
+        );
+    }
+    head = head.child(actions);
+    if let Some(state) = &changes.rebase {
+        head = head.child(
+            row()
+                .key("git-stopped")
+                .role("button")
+                .label("Open the stopped operation")
+                .w_full()
+                .px(8.0)
+                .py(6.0)
+                .radius(6.0)
+                .fill(k.c.warning.bg)
+                .hover(k.c.hover)
+                .on_press(|s: &mut AppState| s.workbench.mode = CenterMode::Changes)
+                .child(
+                    text(format!(
+                        "{} stopped · {} conflicts",
+                        operation_name(state.operation),
+                        state.conflicts.len()
+                    ))
+                    .font(k.ty.small)
+                    .color(k.c.warning.fg),
+                ),
+        );
+    }
+    let mut panel = col()
+        .key("git-panel")
+        .w_full()
         .h_full()
         .min_h(0.0)
+        .gap(8.0)
+        .child(head)
         .child(
             col()
                 .key("changes-list-scroll")
@@ -203,12 +258,29 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
-                .child(list),
+                .child(changed_rows(s, k)),
         );
     if changes.loaded && changes.error.is_none() {
-        rail = rail.child(crate::commit::commit_box(s, k, changes.files.len()));
+        panel = panel.child(crate::commit::commit_box(s, k, changes.files.len()));
     }
-    let patch = match changes.selected.and_then(|index| changes.files.get(index)) {
+    panel
+}
+
+/// The centre's diff of the file picked in Git, under a stopped operation's
+/// panel when there is one.
+pub fn changes(s: &AppState, k: &Kit) -> El {
+    let changes = &s.workbench.changes;
+    let selected = changes.selected.and_then(|index| changes.files.get(index));
+    let title = selected.map_or_else(|| "Git".to_string(), |file| file.path.clone());
+    let detail = selected.map_or_else(String::new, |file| {
+        format!(
+            "{} · +{} −{}",
+            status_word(file.status),
+            file.additions,
+            file.deletions
+        )
+    });
+    let patch = match selected {
         Some(_) if changes.state.files().is_empty() => notice(
             k,
             "changes-no-patch",
@@ -222,32 +294,34 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
         .key("changes-diff")
         .grow(1.0)
         .min_h(0.0),
-        None => el().grow(1.0),
+        None => notice(
+            k,
+            "changes-hint",
+            "Pick a changed file in Git to see its diff.".into(),
+        ),
     };
     let mut view = col()
         .key("changes")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(header);
+        .child(bar(k, title, detail));
     if let Some(state) = &changes.rebase {
         view = view.child(stopped(state, changes.rebase_error.as_deref(), k));
     }
-    view.child(
-        row()
-            .key("changes-body")
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .child(rail)
-            .child(el().w(1.0).h_full().fill(k.c.border_weak))
-            .child(patch),
-    )
+    view.child(patch)
 }
 
-pub fn files(s: &AppState, k: &Kit) -> El {
-    let bench = &s.workbench;
-    let tree = Tree::new(
+/// The sidebar's Files panel: the checkout's tree. A Markdown file opens
+/// rendered in the centre, anything else in an editor, as Tauri routes them.
+pub fn files_panel(s: &AppState, k: &Kit) -> El {
+    if s.workbench.workspace.is_none() {
+        return text("No checkout in this window.")
+            .key("files-empty")
+            .font(k.ty.small)
+            .color(k.c.text_faint);
+    }
+    Tree::new(
         |s: &AppState| &s.workbench.files.tree,
         |s: &mut AppState| &mut s.workbench.files.tree,
         FileNode::label,
@@ -255,43 +329,34 @@ pub fn files(s: &AppState, k: &Kit) -> El {
     .row(|node: &FileNode<()>, r| TreeItem::file(node, r))
     .style(TreeStyle::from_kit(k).chevron_only_folders(true))
     .name("Files")
-    // One click opens the file in an editor, as in Tauri's tree.
     .on_select(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))
     .on_open(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))
     .build(s, k)
     .key("files-tree-view")
-    .w(TREE_W)
-    .h_full();
-    let preview = match (&bench.files.preview, &bench.files.error) {
+    .w_full()
+    .h_full()
+}
+
+/// A rendered file in the centre: Markdown, or text when it is not.
+pub fn preview(s: &AppState, k: &Kit) -> El {
+    let bench = &s.workbench;
+    let body = match (&bench.files.preview, &bench.files.error) {
         (_, Some(error)) => notice(k, "files-error", format!("Could not read: {error}")),
         (Some(preview), None) => preview_view(preview, k),
-        (None, None) => notice(
-            k,
-            "files-hint",
-            "Click a file to open it in an editor.".into(),
-        ),
+        (None, None) => notice(k, "files-hint", "Reading…".into()),
     };
     let title = bench
         .files
         .preview
         .as_ref()
-        .map_or_else(|| "Files".to_string(), |preview| preview.path.clone());
+        .map_or_else(|| "Preview".to_string(), |preview| preview.path.clone());
     col()
         .key("files")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(bar(k, title, "read only".into()))
-        .child(
-            row()
-                .key("files-body")
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                .child(tree)
-                .child(el().w(1.0).h_full().fill(k.c.border_weak))
-                .child(preview),
-        )
+        .child(bar(k, title, "rendered · read only".into()))
+        .child(body)
 }
 
 fn preview_view(preview: &Preview, k: &Kit) -> El {
@@ -540,7 +605,6 @@ mod tests {
     use crate::app::AppState;
     use crate::connection::{Metrics, fixture_store};
     use crate::terminal::SharedTerminal;
-    use crate::workbench::CenterMode;
 
     fn file(
         path: &str,
@@ -577,7 +641,8 @@ mod tests {
             },
         );
         rt.update(|s, _| {
-            s.show_mode(CenterMode::Files);
+            s.show_panel(crate::workbench::Panel::Files);
+            s.workbench.preview("a.rs");
             let workspace = s.workbench.workspace.expect("a workspace");
             let code: String = (0..200).map(|i| format!("let x{i} = {i};\n")).collect();
             s.workbench
