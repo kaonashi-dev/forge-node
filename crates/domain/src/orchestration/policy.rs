@@ -106,7 +106,7 @@ pub fn pointer_decision(
 pub fn pointer_line(unread: usize) -> String {
     let n = unread.max(1);
     let noun = if n == 1 { "message" } else { "messages" };
-    format!("Forge: {n} new {noun} for this task — run: forgectl inbox")
+    format!("Forge: {n} new {noun} for this task — read your inbox")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

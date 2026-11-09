@@ -20,7 +20,7 @@ pub use policy::{
 pub use prompt::{
     accepted_dependency_summaries, attempt_id_of, compose_context_digest,
     compose_controller_prompt, compose_worker_prompt, ContextDigestInput, ControllerPromptInput,
-    DependencySummary, ReportLine, TaskLine, WorkerPromptInput,
+    DependencySummary, ReportLine, TaskLine, ToolSurface, WorkerPromptInput,
 };
 
 use crate::ids::{

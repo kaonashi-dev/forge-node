@@ -26,7 +26,7 @@ type SessionRow = {
   state: SessionState;
 };
 
-/** What `forgectl pr draft` hands back; mirrors `domain::PullRequestDraft`. */
+/** What `pr_draft` hands back; mirrors `domain::PullRequestDraft`. */
 export type PrDraft = {
   title: string;
   body: string;

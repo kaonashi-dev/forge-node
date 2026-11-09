@@ -275,25 +275,64 @@ effort only with `--coder-model`, since its effort is a model suffix.
 
 ### MCP stdio
 
-`forgectl mcp` exposes `list_projects`, `list_providers`, `list_workspaces`,
-`list_sessions`, `show_session`, `read_session`, `session_changes`,
+Agents reach Forge through MCP first. `forgectl mcp` serves every agent-facing
+command as a tool: places (`list_projects`, `list_providers`,
+`list_workspaces`, `list_actions`, `run_action`, `status`, `guide`), sessions
+(`list_sessions`, `show_session`, `read_session`, `session_changes`,
 `spawn_session`, `spawn_shell`, `exec_shell`, `send_prompt`, `wait_session`,
 `rename_session`, `signal_session`, `kill_session`, `restart_session`,
-`close_session`, `list_actions`, `run_action`, `run_spec` and `spec_brief`.
-A positional `-` is refused, since stdin is the request stream. It invokes the same CLI
-handlers in-process, not a child `forgectl`. Input lines are capped at 64 KiB;
-tool schemas reject extra arguments and key-injection options, and every
-positional value is passed after `--`. Up to 8 `tools/call` requests run at
-once, each on its own daemon connection (a shared one would let concurrent
-waits consume each other's events); a ninth waits for a free slot, so a long
-`wait_session` (maximum 600 s) no longer stalls the calls behind it. Responses
-can therefore arrive out of request order; match them by `id`.
+`close_session`, `run_spec`, `spec_brief`), a worker's side of a run
+(`context`, `report`, `report_show`, `ask`, `inbox`, `send_message`,
+`state_list`, `state_get`, `state_set`, `state_delete`, `state_watch`,
+`pr_draft`), a controller's (`run_start`, `run_list`, `run_show`,
+`run_brief`, `run_wait`, `run_close`, `run_resume`, `task_add`, `task_list`,
+`task_show`, `task_start`, `task_review`, `task_accept`, `task_reject`,
+`task_cancel`, `task_integrate`, `task_cleanup`) and Forge Review
+(`review_start`, `review_show`, `review_status`, `review_cancel`). A tool's
+arguments are the command's flags without dashes; `report`'s `outcome` and
+`task_integrate`'s `how` name the flag (`done`, `squash`), and list arguments
+(`ack`, `after`, `task`) repeat it. `session watch`, `review bench`,
+`review rules check` and `hook` stay CLI-only.
 
-Configure it explicitly; launching an agent does not silently grant dispatch
-tools, especially to a pull-request reviewer. Use the absolute installed
+It invokes the same CLI handlers in-process, not a child `forgectl`. A
+positional `-` is refused, since stdin is the request stream; `pr_draft` and
+`run_close` take `body` as text instead. Input lines are capped at 64 KiB;
+tool schemas reject extra arguments and key-injection options, an enum-valued
+flag is admitted only from its schema's list, and every positional value is
+passed after `--`. Up to 8 `tools/call` requests run at once, each on its own
+daemon connection (a shared one would let concurrent waits consume each
+other's events); a ninth waits for a free slot, so a long `wait_session` or
+`ask` with `wait` (maximum 600 s) does not stall the calls behind it.
+Responses can therefore arrive out of request order; match them by `id`.
+
+The daemon registers the server as `forge` in every **writable** Claude and
+OpenCode launch when `[orchestration] mcp` is on (the default) and a
+`forgectl` sits beside `forge-daemon`. The server's environment carries the
+session's identity (`FORGE_SOCKET`, `FORGE_SESSION_ID`, `FORGE_WORKSPACE` and,
+for orchestration, `FORGE_RUN_ID`, `FORGE_TASK_ID`, `FORGE_ATTEMPT_ID`), since
+a provider need not pass its own environment to an MCP child. Claude gets a
+trailing `--mcp-config <inline JSON>`; it adds to a profile's own
+`--mcp-config`, and goes after the prompt because the option is variadic.
+OpenCode gets `OPENCODE_CONFIG_CONTENT` with
+`{"mcp":{"forge":{"type":"local","command":[…],"environment":{…}}}}`, unless
+the launch already sets that variable. Cursor takes no launch-local MCP
+configuration, so it keeps the CLI.
+
+A read-only launch (a pull-request reviewer, a read-only task) never gets the
+server: dispatching a writing agent is itself a mutation, and `exec_shell`
+runs a command line in any shell session at its prompt. A writable agent
+already has a shell, and so `forgectl`, so the server grants it nothing new.
+
+Launch prompts follow what the agent has (`domain::orchestration::ToolSurface`):
+worker and controller prompts name MCP tools when the daemon registers the
+server and the CLI otherwise, and the MCP wording keeps one line pointing at
+`forgectl guide` in case the provider did not load it. The pull-request draft
+task names `pr_draft` first and `forgectl pr draft` as its fallback, because
+the GUI composes it without knowing the provider's surface.
+
+To configure the server by hand elsewhere, use the absolute installed
 `forgectl` path and pass `--socket <path>` before `mcp` if the host does not
-inherit `FORGE_SOCKET`. For Claude, a launch-local file supplied with
-`--mcp-config <file>` can contain:
+inherit `FORGE_SOCKET`. For Claude:
 
 ```json
 {"mcpServers":{"forge":{"command":"/absolute/path/forgectl","args":["mcp"]}}}
@@ -302,15 +341,3 @@ inherit `FORGE_SOCKET`. For Claude, a launch-local file supplied with
 `--mcp-config` is variadic, like Claude's `--add-dir`: do not leave it as the
 last option in a profile before Forge's positional prompt. Follow it with a
 separate option, or use Claude's ordinary project MCP configuration instead.
-
-OpenCode V2's server configuration (not `cli.json`) accepts:
-
-```json
-{"mcp":{"servers":{"forge":{"type":"local","command":["/absolute/path/forgectl","mcp"]}}}}
-```
-
-An OpenCode shared service may not inherit a Forge PTY's environment; specify
-the daemon socket explicitly in its command. This server has no filesystem
-write tool, but dispatching a writing agent is itself a mutation, and
-`exec_shell` runs a command line in any shell session at its prompt: review the
-provider's MCP permissions before exposing it to a read-only planner.

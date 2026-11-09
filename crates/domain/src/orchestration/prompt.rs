@@ -1,12 +1,21 @@
-//! Launch prompts and the `forgectl context` digest.
+//! Launch prompts and the `context` digest.
 //!
 //! The fixed contract stays short. Everything else is truncated and marked,
-//! and the worker is pointed at `forgectl context` for the rest.
+//! and the worker is pointed at `context` for the rest.
 
 use super::{clamp_text, Attempt, Task, MAX_CONTEXT_DIGEST_BYTES, MAX_PROMPT_BYTES};
 use crate::ids::{AttemptId, RunId, TaskId};
 
-const CONTRACT: &str = "\
+/// How a launched agent reaches Forge: the `forge` MCP server the daemon
+/// registered in its launch, or `forgectl` in its shell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolSurface {
+    Mcp,
+    #[default]
+    Cli,
+}
+
+const CLI_CONTRACT: &str = "\
 ## Contract — Forge reads these commands, not your terminal
 - Commit your work on this branch. Do not push, open pull requests, or create worktrees.
 - Decisions on scope, ownership or architecture go to the controller:
@@ -18,6 +27,40 @@ const CONTRACT: &str = "\
   forgectl report --done|--failed|--blocked --summary \"<what changed; how verified; what is left>\"
 - Full contract: forgectl guide worker
 ";
+
+const MCP_CONTRACT: &str = "\
+## Contract — Forge reads its MCP tools, not your terminal
+Your Forge tools are the `forge` MCP server's.
+- Commit your work on this branch. Do not push, open pull requests, or create worktrees.
+- Decisions on scope, ownership or architecture go to the controller: `ask` with `wait: true`.
+- Record a decision or claim others must see: `state_set` (key, JSON value, if_version).
+- If you see \"Forge: N new message(s)\", call `inbox`.
+- When finished or unable to finish, call `report` exactly once (outcome done, failed or blocked; summary: what changed; how verified; what is left), then stop and wait.
+- Full contract: `guide` with topic worker. Without the forge tools, run: forgectl guide worker
+";
+
+impl ToolSurface {
+    fn worker_contract(self) -> &'static str {
+        match self {
+            Self::Mcp => MCP_CONTRACT,
+            Self::Cli => CLI_CONTRACT,
+        }
+    }
+
+    fn report_show(self, task_id: TaskId) -> String {
+        match self {
+            Self::Mcp => format!("report_show task {task_id}"),
+            Self::Cli => format!("forgectl report show {task_id}"),
+        }
+    }
+
+    fn controller_loop(self) -> &'static str {
+        match self {
+            Self::Mcp => "\nLoop with the forge MCP tools: task_add → task_start → run_wait for attention,reported,question → act. Never poll with sleep.\nFull contract: `guide` with topic controller. Without the forge tools, run: forgectl guide controller\n",
+            Self::Cli => "\nLoop: task add → task start → run wait --for attention,reported,question → act. Never poll with sleep.\nFull contract: forgectl guide controller\n",
+        }
+    }
+}
 
 /// Inputs already clamped by the caller, except the whole prompt which this
 /// function fits to [`MAX_PROMPT_BYTES`].
@@ -38,6 +81,7 @@ pub struct WorkerPromptInput<'a> {
     pub dependencies: &'a [DependencySummary<'a>],
     pub feedback: Option<&'a str>,
     pub previous_report: Option<&'a str>,
+    pub surface: ToolSurface,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +103,7 @@ pub struct ControllerPromptInput<'a> {
     pub questions: &'a [(&'a str, &'a str)],
     pub board_keys: &'a [&'a str],
     pub resume: bool,
+    pub surface: ToolSurface,
 }
 
 #[derive(Clone, Debug)]
@@ -118,8 +163,10 @@ pub fn compose_worker_prompt(input: &WorkerPromptInput<'_>) -> String {
     } else {
         for dep in input.dependencies {
             deps.push_str(&format!(
-                "- {}: {} (full: forgectl report show {})\n",
-                dep.title, dep.summary, dep.task_id
+                "- {}: {} (full: {})\n",
+                dep.title,
+                dep.summary,
+                input.surface.report_show(dep.task_id)
             ));
         }
     }
@@ -139,7 +186,7 @@ pub fn compose_worker_prompt(input: &WorkerPromptInput<'_>) -> String {
     if let Some(feedback) = input.feedback {
         push_section(&mut body, "Feedback on the previous attempt", feedback);
     }
-    body.push_str(CONTRACT);
+    body.push_str(input.surface.worker_contract());
     fit(&body, MAX_PROMPT_BYTES)
 }
 
@@ -213,13 +260,11 @@ pub fn compose_controller_prompt(input: &ControllerPromptInput<'_>) -> String {
         input.board_keys.join("\n")
     };
     push_section(&mut body, "Board keys", &keys);
-    body.push_str(
-        "\nLoop: task add → task start → run wait --for attention,reported,question → act. Never poll with sleep.\nFull contract: forgectl guide controller\n",
-    );
+    body.push_str(input.surface.controller_loop());
     fit(&body, MAX_PROMPT_BYTES)
 }
 
-/// What `forgectl context` prints. Current brief and newly accepted deps.
+/// What `context` returns. Current brief and newly accepted deps.
 #[must_use]
 pub fn compose_context_digest(input: &ContextDigestInput<'_>) -> String {
     let mut body = String::new();
@@ -365,6 +410,7 @@ mod tests {
             dependencies: &deps,
             feedback: Some("Name the button Export"),
             previous_report: Some("First attempt missed the label"),
+            surface: ToolSurface::Cli,
         });
         assert!(worker.contains("Ship export"));
         assert!(worker.contains("Add the button"));
@@ -401,6 +447,7 @@ mod tests {
             questions: &[("UI button", "Which icon?")],
             board_keys: &["decision/export-format"],
             resume: true,
+            surface: ToolSurface::Cli,
         });
         assert!(controller.contains("Ship export"));
         assert!(controller.contains("Add the button"));
@@ -410,6 +457,54 @@ mod tests {
         assert!(controller.contains("interrupted"));
         assert!(controller.contains("decision/export-format"));
         assert!(controller.contains("Which icon?"));
+    }
+
+    #[test]
+    fn the_mcp_surface_names_tools_and_keeps_a_cli_way_out() {
+        let (run_id, task_id) = ids();
+        let dep_id = TaskId::new();
+        let deps = [DependencySummary {
+            task_id: dep_id,
+            title: "API",
+            summary: "done",
+        }];
+        let worker = compose_worker_prompt(&WorkerPromptInput {
+            run_id,
+            task_id,
+            attempt_n: 1,
+            title: "t",
+            objective: "o",
+            spec: "s",
+            acceptance: "a",
+            brief: "",
+            brief_version: 0,
+            workspace_path: "/tmp/wt",
+            branch: "b",
+            base_short: "abc",
+            dependencies: &deps,
+            feedback: None,
+            previous_report: None,
+            surface: ToolSurface::Mcp,
+        });
+        assert!(worker.contains("call `report` exactly once"));
+        assert!(worker.contains(&format!("report_show task {dep_id}")));
+        assert!(!worker.contains("forgectl report"));
+        assert!(worker.contains("forgectl guide worker"));
+        let controller = compose_controller_prompt(&ControllerPromptInput {
+            run_id,
+            objective: "o",
+            brief: "",
+            brief_version: 0,
+            base: "main",
+            tasks: &[],
+            reports: &[],
+            questions: &[],
+            board_keys: &[],
+            resume: false,
+            surface: ToolSurface::Mcp,
+        });
+        assert!(controller.contains("task_add → task_start → run_wait"));
+        assert!(controller.contains("forgectl guide controller"));
     }
 
     #[test]
@@ -432,6 +527,7 @@ mod tests {
             dependencies: &[],
             feedback: None,
             previous_report: None,
+            surface: ToolSurface::Mcp,
         });
         assert!(worker.len() <= MAX_PROMPT_BYTES);
         assert!(worker.contains("[truncated]"));

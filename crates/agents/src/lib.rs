@@ -11,6 +11,7 @@ pub mod detection;
 pub mod history;
 mod jsonl;
 pub mod launch_options;
+pub mod mcp;
 pub mod registry;
 pub mod usage;
 
@@ -27,5 +28,6 @@ pub use descriptor::{
     resolve_executable, AgentAdapter, AgentError, DescriptorAdapter,
 };
 pub use detection::detect;
+pub use mcp::{accepts_forge_mcp, inject_forge_mcp, ForgeMcp};
 pub use registry::AgentRegistry;
 pub use usage::{collect as collect_usage, collect_analytics, UsageAccount};

@@ -211,6 +211,9 @@ pub struct Daemon {
     /// Absolute paths of the Forge attention assets, or `None` when install
     /// failed. Injected at launch by [`agents::inject_attention`].
     attention_assets: Option<agents::AttentionAssets>,
+    /// The `forgectl` beside this binary when `[orchestration] mcp` is on;
+    /// registered as an MCP server in writable agent launches.
+    forge_mcp: Option<PathBuf>,
     /// The socket this process is actually listening on, injected into PTYs.
     bound_socket: Mutex<Option<PathBuf>>,
     /// `TERM`/`TERMINFO` for shells. Resolved once, off the core lock.
@@ -425,6 +428,7 @@ impl Daemon {
         };
 
         let attention_assets = install_attention_assets(&paths.forge.agent_plugins);
+        let forge_mcp = config.orchestration.mcp.then(sibling_forgectl).flatten();
         let definitions = crate::definitions::Definitions::new(&config.definitions);
         let lsp = crate::lsp::Manager::new(&config.lsp);
 
@@ -455,6 +459,7 @@ impl Daemon {
             editor_file_operations: Mutex::new(()),
             env_capture: Mutex::new(()),
             attention_assets,
+            forge_mcp,
             bound_socket: Mutex::new(None),
             term_selection: OnceLock::new(),
         }))
@@ -5581,6 +5586,7 @@ impl Daemon {
         extra_env: &[(String, String)],
     ) -> Result<SpawnSpec, ProtocolError> {
         let env: ResolvedEnvironment = self.resolved_env(inner);
+        let mut forge_mcp_for: Option<domain::AgentProviderId> = None;
         let mut spec = match kind {
             SessionKind::Shell | SessionKind::Task => {
                 let mut vars: Vec<(String, String)> = env.vars.clone();
@@ -5684,6 +5690,9 @@ impl Daemon {
                         agents::inject_attention(descriptor, &mut spec, assets);
                     }
                 }
+                if !req.read_only {
+                    forge_mcp_for = Some(req.provider_id.clone());
+                }
                 spec
             }
             SessionKind::Editor => {
@@ -5768,7 +5777,47 @@ impl Daemon {
         // Agents call `forge-daemon session|context …` with FORGE_SESSION_ID;
         // the daemon binary's directory must be on PATH inside the PTY.
         prepend_daemon_bin_to_path(&mut spec.env);
+        // After the env above: the server's identity is the session's final one.
+        if let (Some(provider_id), Some(command)) = (forge_mcp_for, &self.forge_mcp) {
+            if let Some(descriptor) = inner.agents.descriptor(&provider_id) {
+                let env = spec
+                    .env
+                    .iter()
+                    .filter(|(key, _)| FORGE_MCP_ENV.contains(&key.as_str()))
+                    .cloned()
+                    .collect();
+                agents::inject_forge_mcp(
+                    descriptor,
+                    &mut spec,
+                    &agents::ForgeMcp {
+                        command: command.clone(),
+                        env,
+                    },
+                );
+            }
+        }
         Ok(spec)
+    }
+
+    /// How a launch of `provider_id` will reach Forge, so its prompt names
+    /// what it has; matches the injection in [`Self::build_spawn_spec`].
+    pub(crate) fn tool_surface(
+        &self,
+        inner: &Inner,
+        provider_id: &domain::AgentProviderId,
+        read_only: bool,
+    ) -> domain::orchestration::ToolSurface {
+        let mcp = !read_only
+            && self.forge_mcp.is_some()
+            && inner
+                .agents
+                .descriptor(provider_id)
+                .is_some_and(agents::accepts_forge_mcp);
+        if mcp {
+            domain::orchestration::ToolSurface::Mcp
+        } else {
+            domain::orchestration::ToolSurface::Cli
+        }
     }
 
     pub(crate) fn spawn_terminal(
@@ -8085,16 +8134,29 @@ fn editor_program_from(
     is_executable_file(&sibling).then_some(sibling)
 }
 
+/// What `forgectl mcp` needs to act as the session that started it.
+const FORGE_MCP_ENV: &[&str] = &[
+    "FORGE_SOCKET",
+    "FORGE_SESSION_ID",
+    "FORGE_WORKSPACE",
+    "FORGE_RUN_ID",
+    "FORGE_TASK_ID",
+    "FORGE_ATTEMPT_ID",
+];
+
+fn sibling_forgectl() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .map(|exe| exe.with_file_name("forgectl"))
+        .filter(|path| is_executable_file(path))
+}
+
 /// Install Forge attention assets in the resolved `agent-plugins` directory.
 ///
 /// The directory is independent of the worktrees root: a custom
 /// `[worktrees] root` must never put plugins beside the user's checkouts.
 fn install_attention_assets(dir: &Path) -> Option<agents::AttentionAssets> {
-    let ctl = std::env::current_exe()
-        .ok()
-        .map(|exe| exe.with_file_name("forgectl"))
-        .filter(|path| is_executable_file(path));
-    match agents::attention::install_assets_with_ctl(dir, ctl.as_deref()) {
+    match agents::attention::install_assets_with_ctl(dir, sibling_forgectl().as_deref()) {
         Ok(assets) => Some(assets),
         Err(error) => {
             tracing::warn!(

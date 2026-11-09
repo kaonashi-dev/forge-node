@@ -71,7 +71,7 @@ Lifecycle: session kill, session restart (an agent's initial prompt is not re-se
 Project actions: forgectl action list --project <name>; forgectl action run <label|id> --project <name>
 Idle only means the agent stopped its turn: inspect the transcript, diff and tests before declaring completion.
 Only an explicit report settles an orchestration attempt. Session dispatch does not choose tasks or integrate branches.
-forgectl mcp exposes the same commands as tools over stdio and runs up to 8 calls at once; configure it explicitly in the provider's own MCP settings.
+forgectl mcp exposes the same commands as tools over stdio and runs up to 8 calls at once. Forge registers it as the server `forge` in writable Claude and OpenCode launches; elsewhere configure it in the provider's own MCP settings.
 ";
 
 const CONTROLLER: &str = "\
@@ -88,7 +88,9 @@ You are the controller. The daemon keeps the ledger and the rails. It does not c
 7. Finish with run close --pr --cleanup when agent_may_integrate allows the pull request. An agent may open that pull request and may not merge it.
 8. run resume starts a new controller from the ledger. It does not revive workers.
 
-Only an explicit forgectl report settles an attempt. Idle, exit, and timeouts raise attention instead.
+Only an explicit report settles an attempt. Idle, exit, and timeouts raise attention instead.
+
+Over the forge MCP server every command is a tool named with an underscore (task_add, task_start, run_wait, task_review, task_accept, task_integrate, run_close); a flag is an argument without its dashes.
 ";
 
 const WORKER: &str = "\
@@ -102,6 +104,8 @@ Carry out the task in this checkout.
 - If you see \"Forge: N new message(s)\", run: forgectl inbox
 - When finished, run exactly once: forgectl report --done|--failed|--blocked --summary \"...\"
 - The full current brief is: forgectl context
+
+Over the forge MCP server the same commands are the tools ask, state_set, inbox, report (outcome, summary) and context; a flag is an argument without its dashes.
 
 Do not edit AGENTS.md or CLAUDE.md. Forge will not either.
 ";

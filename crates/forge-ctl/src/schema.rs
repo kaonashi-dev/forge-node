@@ -58,7 +58,9 @@ pub fn schema_value() -> Value {
             "a malformed --timeout is a usage error; waits default to 600s unless a global --timeout is given",
             "a launch refused after creating a worktree names it in details.worktree_created",
             "review start --wait exits 0 only when the run completes; failed, cancelled or interrupted runs exit 1",
-            "review start --model and --effort override [review] model and effort; unset uses the provider's own default"
+            "review start --model and --effort override [review] model and effort; unset uses the provider's own default",
+            "mcp serves every agent-facing command as a tool; Forge registers it in writable Claude and OpenCode launches",
+            "pr draft takes the body from --body, --body-file or stdin"
         ]
     })
 }
