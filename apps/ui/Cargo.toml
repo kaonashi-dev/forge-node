@@ -14,6 +14,7 @@ client = { path = "../../crates/client" }
 domain = { path = "../../crates/domain" }
 terminal-input = { path = "../../crates/terminal-input" }
 protocol = { path = "../../crates/protocol" }
+editor-control = { path = "../../crates/editor-control" }
 flume = "0.11"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
@@ -23,6 +24,11 @@ wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl
 bytemuck = { version = "1.25", features = ["derive"] }
 swash = "0.2.10"
 fontique = "0.12.0"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+minisign-verify = "0.2.5"
+tar = "0.4"
+flate2 = "1"
+semver = "1"
 
 [profile.release]
 debug = 1

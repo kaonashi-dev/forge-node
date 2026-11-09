@@ -324,6 +324,7 @@ fn needs_you_block(s: &AppState, k: &Kit) -> Option<El> {
         return None;
     }
     let now = domain::Timestamp::now();
+    let roles = crate::theme::roles(k);
     let mut block = col()
         .key("needs-you")
         .role("region")
@@ -359,14 +360,17 @@ fn needs_you_block(s: &AppState, k: &Kit) -> Option<El> {
                 .px(8.0)
                 .py(6.0)
                 .radius(6.0)
-                .fill(k.c.warning.bg)
+                .fill(roles.needs_you.soft)
                 .hover(k.c.hover)
                 .on_press(move |s: &mut AppState| s.focus_session(id))
                 .child(
                     row()
                         .gap(6.0)
                         .items_center()
-                        .child(rune::icon(&crate::glyphs::NEEDS_YOU, 12.0).color(k.c.warning.icon))
+                        .child(
+                            rune::icon(&crate::glyphs::NEEDS_YOU, 12.0)
+                                .color(roles.needs_you.solid),
+                        )
                         .child(
                             text(title)
                                 .font(k.ty.small_medium)
@@ -446,7 +450,10 @@ fn group_header(s: &AppState, k: &Kit, group: ProjectGroupId, projects: &[Projec
                 .grow(1.0),
         );
     if asking {
-        line = line.child(rune::icon(&crate::glyphs::NEEDS_YOU, 12.0).color(k.c.warning.icon));
+        line = line.child(
+            rune::icon(&crate::glyphs::NEEDS_YOU, 12.0)
+                .color(crate::theme::roles(k).needs_you.solid),
+        );
     }
     cursored(s, k, &id, line)
 }
@@ -491,7 +498,7 @@ fn project_block(s: &AppState, k: &Kit, project: &domain::Project) -> El {
                 .min_w(0.0),
         );
     if asking {
-        head = head.child(rune::icon(&crate::glyphs::NEEDS_YOU, 12.0).color(k.c.warning.icon));
+        head = head.child(rune::icon(&crate::glyphs::NEEDS_YOU, 12.0).color(roles.needs_you.solid));
     }
     head = head
         .child(rune::icon(chevron(open), 12.0).color(k.c.icon_muted))

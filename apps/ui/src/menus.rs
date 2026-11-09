@@ -57,6 +57,8 @@ pub enum ButtonMenu {
     Run(WorkspaceId),
     /// A share rule's ⋯.
     ShareRule(ProjectId, ShareRuleId),
+    /// Settings › Agents' "New profile ▾": one entry per provider.
+    NewProfile,
 }
 
 impl ButtonMenu {
@@ -65,6 +67,7 @@ impl ButtonMenu {
             ButtonMenu::RailAdd => "rail-add".into(),
             ButtonMenu::Run(workspace) => format!("run-{workspace}"),
             ButtonMenu::ShareRule(_, rule) => format!("share-rule-menu-{rule}"),
+            ButtonMenu::NewProfile => "new-profile".into(),
         }
     }
 
@@ -222,6 +225,7 @@ pub enum Act {
     Actions(ProjectId, WorkspaceId),
     IgnoredWorktrees(ProjectId),
     RunAction(WorkspaceId, ProjectActionId),
+    NewProfile(AgentProviderId),
     FocusSession(SessionId),
     OpenUrl(String),
     ReapplyRule(ProjectId, ShareRuleId),
@@ -401,6 +405,19 @@ pub fn button_items(s: &AppState, menu: &ButtonMenu) -> Vec<Entry> {
             ),
             item("Remove…", Glyph::Trash, Act::RemoveRule(*project, *rule)).danger(),
         ],
+        ButtonMenu::NewProfile => s.store.as_ref().map_or_else(Vec::new, |store| {
+            store
+                .providers
+                .iter()
+                .map(|info| {
+                    item(
+                        info.descriptor.display_name.clone(),
+                        Glyph::Agent(Some(info.descriptor.id.to_string())),
+                        Act::NewProfile(info.descriptor.id.clone()),
+                    )
+                })
+                .collect()
+        }),
     }
 }
 
@@ -1600,6 +1617,9 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
         Act::Actions(project, workspace) => crate::actions_editor::open(s, project, workspace),
         Act::IgnoredWorktrees(project) => s.projects.ignores = Some(project),
         Act::RunAction(workspace, action) => s.run_action(workspace, action),
+        Act::NewProfile(provider) => {
+            s.settings.profile = Some(crate::settings::ProfileForm::new(provider));
+        }
         Act::FocusSession(session) => s.focus_session(session),
         Act::OpenUrl(url) => {
             if let Err(error) = tx.open_url(&url) {

@@ -6,6 +6,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 
 use super::{group, notice, setting_row};
 use crate::app::{AppState, LinkStatus};
+use crate::updates::{APP_VERSION, UpdateKind, UpdateState};
 
 fn plural(count: usize, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
@@ -101,6 +102,20 @@ pub fn section(s: &AppState, k: &Kit) -> El {
             k,
             "Projects",
             format!("{projects} in {}", plural(checkouts, "checkout")),
+        ))
+        .child(fact(
+            k,
+            "Terminal",
+            match s.terminal.shared.measured() {
+                Some((cols, rows)) => format!(
+                    "{cols} × {rows} · p95 {}",
+                    s.metrics.frame_p95().map_or_else(
+                        || "not measured".to_string(),
+                        |ms| format!("{ms:.1} ms/frame"),
+                    )
+                ),
+                None => "not measured yet".to_string(),
+            },
         ));
 
     let paths = s.storage.paths.as_ref().map(|(paths, _)| paths);
@@ -242,10 +257,127 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         .w_full()
         .gap(24.0)
         .child(overview)
+        .child(updates(s, k))
         .child(config)
         .child(daemon)
         .children(notice(s, k))
         .child(danger)
+}
+
+fn updates(s: &AppState, k: &Kit) -> El {
+    let state = &s.updates.state;
+    let (line, detail, busy) = match state {
+        UpdateState::Idle => (
+            "Not checked yet.".to_string(),
+            "Forge Node checks once shortly after launch, then every six hours.".to_string(),
+            false,
+        ),
+        UpdateState::Checking => ("Checking for updates…".to_string(), String::new(), true),
+        UpdateState::UpToDate => (
+            format!("Forge Node {APP_VERSION} is up to date."),
+            "This window and its daemon speak the same protocol.".to_string(),
+            false,
+        ),
+        UpdateState::Available {
+            version,
+            notes,
+            kind,
+        } => (
+            format!("Version {version} is available."),
+            match kind {
+                UpdateKind::Soft => notes.clone(),
+                UpdateKind::Hard => format!(
+                    "{version} replaces the daemon too. This build refuses it in place; download \
+                     and run the full installer instead.\n\n{notes}"
+                ),
+            },
+            false,
+        ),
+        UpdateState::Downloading { percent } => (
+            format!("Downloading… {percent}%"),
+            "The release is verified before anything is unpacked.".to_string(),
+            true,
+        ),
+        UpdateState::Installing => (
+            "Installing and relaunching…".to_string(),
+            "The daemon keeps running; the new window reconnects to it.".to_string(),
+            true,
+        ),
+        UpdateState::Failed { message } => (message.clone(), String::new(), false),
+    };
+    let checking = matches!(
+        state,
+        UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing
+    );
+    let mut actions = row().gap(6.0);
+    if busy {
+        actions = actions.child(crate::ui::busy(s, k));
+    }
+    if !checking {
+        actions = actions.child(button(
+            k,
+            if matches!(state, UpdateState::Idle) {
+                "Check for Updates"
+            } else {
+                "Check again"
+            },
+            "general-update-check",
+            ButtonVariant::Outline,
+            |s| s.check_for_updates(true),
+        ));
+    }
+    let installable = s
+        .updates
+        .pending
+        .as_ref()
+        .is_some_and(|release| release.kind == UpdateKind::Soft)
+        && !checking;
+    if installable {
+        actions = actions.child(button(
+            k,
+            "Install and Relaunch",
+            "general-update-install",
+            ButtonVariant::Submit,
+            AppState::install_update,
+        ));
+    }
+    let mut words = col().gap(2.0).grow(1.0).min_w(0.0).child(
+        text(line)
+            .key("general-update-state")
+            .role("status")
+            .font(k.ty.small)
+            .color(if matches!(state, UpdateState::Failed { .. }) {
+                k.c.warning.fg
+            } else {
+                k.c.text_base
+            })
+            .wrap(),
+    );
+    if !detail.is_empty() {
+        words = words.child(
+            text(detail)
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .wrap(),
+        );
+    }
+    group(
+        k,
+        "general-updates",
+        "Updates",
+        Some(
+            "Signed with Forge Node's release key. A protocol change is never installed in place.",
+        ),
+    )
+    .child(
+        row()
+            .key("general-update-row")
+            .w_full()
+            .gap(12.0)
+            .items_center()
+            .child(words)
+            .child(actions),
+    )
 }
 
 impl AppState {

@@ -409,7 +409,7 @@ fn terminal_125_inner(store: Store, frames: usize) -> Result<TerminalReport, Str
         (760.0 * scale).round() as u32,
     );
     let stats = Arc::new(Mutex::new(Stats::with_capacity(frames + 16)));
-    let mut compositor = Terminal::new(Arc::clone(&shared), Arc::clone(&stats));
+    let mut compositor = Terminal::new(Arc::clone(&shared), Arc::clone(&stats), None);
     let gpu_started = Instant::now();
     let gpu = rune::render::Gpu::try_with_features(
         rune::render::Gpu::instance(),

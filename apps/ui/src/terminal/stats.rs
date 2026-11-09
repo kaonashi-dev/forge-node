@@ -39,6 +39,18 @@ fn percentile(v: &mut [f64], p: f64) -> f64 {
 }
 
 impl Stats {
+    /// The 95th percentile of the last 600 frame totals, in microseconds.
+    #[must_use]
+    pub fn p95_us(&self) -> Option<u64> {
+        let start = self.total_us.len().saturating_sub(600);
+        let mut recent = self.total_us[start..].to_vec();
+        if recent.is_empty() {
+            return None;
+        }
+        let p95 = percentile(&mut recent, 0.95).max(0.0);
+        Some(p95 as u64)
+    }
+
     pub fn with_capacity(n: usize) -> Self {
         Stats {
             tick_us: Vec::with_capacity(n * 4),

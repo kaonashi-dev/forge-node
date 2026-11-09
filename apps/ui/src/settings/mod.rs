@@ -221,6 +221,26 @@ impl AppState {
         prefs::read_flag(self.pref(prefs::REDUCE_MOTION_KEY), false)
     }
 
+    #[must_use]
+    pub fn density(&self) -> prefs::Density {
+        prefs::Density::read(self.pref(prefs::DENSITY_KEY))
+    }
+
+    #[must_use]
+    pub fn trimmed(&self) -> bool {
+        prefs::read_flag(self.pref(prefs::TRIM_KEY), false)
+    }
+
+    #[must_use]
+    pub fn glass(&self) -> bool {
+        prefs::read_flag(self.pref(prefs::GLASS_KEY), false)
+    }
+
+    #[must_use]
+    pub fn chrome_metrics(&self) -> prefs::ChromeMetrics {
+        prefs::ChromeMetrics::of(self.density(), self.trimmed())
+    }
+
     /// Opens Settings, on `section` when one is named.
     pub fn open_settings(&mut self, section: Option<Section>) {
         if let Some(section) = section {
@@ -305,7 +325,7 @@ pub fn nav(s: &AppState, k: &Kit) -> El {
         "Back to work"
     })
     .icon(&glyphs::ARROW_LEFT)
-    .height(30.0)
+    .height(s.chrome_metrics().row)
     .trailing(
         text("esc esc")
             .font(k.ty.text_xsmall)
@@ -335,7 +355,7 @@ pub fn nav(s: &AppState, k: &Kit) -> El {
         list = list.child(
             SidebarRow::new(section.label())
                 .icon(section.icon())
-                .height(30.0)
+                .height(s.chrome_metrics().row)
                 .selected(current)
                 .on_select(move |s: &mut AppState, _| s.show_section(section))
                 .build(k)

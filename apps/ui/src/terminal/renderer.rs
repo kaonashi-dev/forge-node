@@ -7,6 +7,7 @@ use rune::compose::{Compositor, Frame};
 use rune::render::EffectSite;
 
 use crate::AppState;
+use crate::connection::Metrics;
 use crate::terminal::SharedTerminal;
 use crate::terminal::alloc;
 use crate::terminal::atlas::{Atlas, BOLD, ITALIC, MAX_GLYPHS_PER_CELL, NO_RUN, REGULAR};
@@ -120,17 +121,19 @@ pub struct Terminal {
     /// The theme base `palette` was built from; a change repaints every row.
     palette_base: String,
     stats: Shared,
+    metrics: Option<Arc<Metrics>>,
     shared: Arc<SharedTerminal>,
     last_atlas_gen: u64,
 }
 
 impl Terminal {
-    pub fn new(shared: Arc<SharedTerminal>, stats: Shared) -> Self {
+    pub fn new(shared: Arc<SharedTerminal>, stats: Shared, metrics: Option<Arc<Metrics>>) -> Self {
         Terminal {
             gpu: None,
             palette: Palette::for_base(crate::theme::DEFAULT_BASE),
             palette_base: crate::theme::DEFAULT_BASE.to_string(),
             stats,
+            metrics,
             shared,
             last_atlas_gen: 0,
         }
@@ -888,6 +891,12 @@ impl Compositor<AppState> for Terminal {
             st.build_us.push(build);
             st.encode_us.push(encode);
             st.total_us.push(update + build + encode);
+            if st.frames.is_multiple_of(60)
+                && let Some(p95) = st.p95_us()
+                && let Some(metrics) = &self.metrics
+            {
+                metrics.note_frame_p95(p95);
+            }
         }
     }
 
