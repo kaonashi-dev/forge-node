@@ -5,12 +5,16 @@ use client::{
 use domain::{MouseMode, TermModes};
 use rune::{Ime, Key, KeyEvent, Mods, WheelEvent};
 
-use crate::terminal::pane::{DragPoint, FetchRequest, Gesture, TerminalUi, Viewport};
+use crate::terminal::pane::{CursorClick, DragPoint, FetchRequest, Gesture, TerminalUi, Viewport};
 use crate::terminal::selection::{CopyError, Granularity, Selection, copy_text};
 
 pub const PREEDIT_MAX_CHARS: usize = 64;
 pub const MAX_PASTE_BYTES: usize = 1 << 20;
 const MAX_WHEEL_REPORTS: i64 = 10;
+/// Arrow presses one click may send, as the Tauri host's `MAX_CURSOR_STEPS`.
+const MAX_CURSOR_STEPS: usize = 4096;
+/// Points a click may wander and still be a click, as Tauri's `CursorClick`.
+pub const CLICK_SLOP: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Press {
@@ -27,6 +31,8 @@ pub struct Pointer {
     pub clicks: u32,
     pub cancelled: bool,
     pub shift: bool,
+    /// No modifier held: only such a click may move the cursor.
+    pub plain: bool,
 }
 
 pub struct Entry {
@@ -106,6 +112,7 @@ pub fn render_bytes(bytes: &[u8]) -> String {
 fn snap_to_live(ui: &mut TerminalUi) {
     ui.scroll = 0;
     ui.selection = None;
+    ui.link = None;
 }
 
 fn reporting(modes: &TermModes, shift: bool) -> bool {
@@ -422,6 +429,19 @@ pub fn pointer(
         Press::Down => {
             ui.preedit.clear();
             ui.request_frame();
+            ui.cursor_click = (p.plain
+                && p.clicks <= 1
+                && ui.scroll == 0
+                && (!modes.alt_screen || ui.agent)
+                && modes.mouse_mode == MouseMode::Off
+                && grid.cursor.visible)
+                .then_some(CursorClick {
+                    row,
+                    col,
+                    seq: grid.last_seq,
+                    x: p.x,
+                    y: p.y,
+                });
             if reporting(&modes, p.shift) {
                 ui.gesture = Some(Gesture::Report);
                 ui.last_cell = Some((col, row));
@@ -471,6 +491,12 @@ pub fn pointer(
                 }
             }
             Some(Gesture::Select) => {
+                if ui
+                    .cursor_click
+                    .is_some_and(|click| (p.x - click.x).hypot(p.y - click.y) > CLICK_SLOP)
+                {
+                    ui.cursor_click = None;
+                }
                 if let Some(drag) = ui.drag.as_mut() {
                     drag.moved |= drag.x != p.x || drag.y != p.y;
                     drag.x = p.x;
@@ -486,11 +512,22 @@ pub fn pointer(
         },
         Press::Up => {
             let gesture = ui.gesture.take();
+            let click = ui.cursor_click.take();
             ui.drag = None;
             if p.cancelled {
                 ui.selection = None;
                 ui.request_frame();
                 return;
+            }
+            if let Some(click) = click
+                && p.plain
+                && ui.scroll == 0
+                && (p.x - click.x).hypot(p.y - click.y) <= CLICK_SLOP
+                && (click.row, click.col) == (row, col)
+                && click.seq == grid.last_seq
+                && let Some(bytes) = encode_cursor_move(grid, row, col, ui.agent)
+            {
+                out.emit(idx, bytes, format!("cursor to {row}:{col}"));
             }
             match gesture {
                 Some(Gesture::Report) => {
@@ -617,6 +654,62 @@ pub fn ime(idx: usize, ui: &mut TerminalUi, ev: &Ime, out: &mut Outbox) -> bool 
         }
         Ime::Enabled | Ime::Disabled => true,
     }
+}
+
+/// The arrow presses that walk the cursor to (`row`, `col`) on the live
+/// screen, as the Tauri host's `encode_cursor_move`. Only along one logical
+/// line: a hard line break between them is a different prompt line, and a
+/// shell would recall history rather than move.
+#[must_use]
+pub fn encode_cursor_move(grid: &CellGrid, row: u16, col: u16, agent: bool) -> Option<Vec<u8>> {
+    let modes = grid.modes;
+    if modes.mouse_mode != MouseMode::Off || (modes.alt_screen && !agent) || !grid.cursor.visible {
+        return None;
+    }
+    let width = grid.visible.first().map_or(0, |row| row.cells.len());
+    let cursor = (usize::from(grid.cursor.line), usize::from(grid.cursor.col));
+    let mut target = (usize::from(row), usize::from(col));
+    if width == 0 || target.1 >= width || cursor.1 >= width {
+        return None;
+    }
+    if grid
+        .visible
+        .get(target.0)?
+        .cells
+        .get(target.1)?
+        .flags
+        .contains(domain::CellFlags::WIDE_SPACER)
+    {
+        target.1 = target.1.checked_sub(1)?;
+    }
+    let (start, end, key) = if target < cursor {
+        (target, cursor, TKey::Left)
+    } else {
+        (cursor, target, TKey::Right)
+    };
+    let distance = (end.0 - start.0)
+        .checked_mul(width)?
+        .checked_add(end.1)?
+        .checked_sub(start.1)?;
+    if distance == 0 || distance > MAX_CURSOR_STEPS {
+        return None;
+    }
+    let mut steps = 0;
+    for line in start.0..=end.0 {
+        let row = grid.visible.get(line)?;
+        if line < end.0 && !row.wrapped {
+            return None;
+        }
+        let from = if line == start.0 { start.1 } else { 0 };
+        let to = if line == end.0 { end.1 } else { width };
+        steps += row
+            .cells
+            .get(from..to)?
+            .iter()
+            .filter(|cell| !cell.flags.contains(domain::CellFlags::WIDE_SPACER))
+            .count();
+    }
+    Some(encode_key(key, Modifiers::none(), &modes).repeat(steps))
 }
 
 fn missing_history(ui: &TerminalUi, viewport: &Viewport<'_>) -> Option<FetchRequest> {
@@ -872,8 +965,66 @@ mod tests {
             clicks,
             cancelled: false,
             shift: false,
+            plain: false,
         };
         pointer(0, ui, grid, pt, CELL, out, &mut Effects::default());
+    }
+
+    fn click(
+        ui: &mut TerminalUi,
+        grid: &client::CellGrid,
+        at: (f32, f32),
+        up: (f32, f32),
+    ) -> String {
+        let mut out = Outbox::default();
+        for (phase, (x, y)) in [(Press::Down, at), (Press::Move, up), (Press::Up, up)] {
+            let pt = Pointer {
+                phase,
+                x,
+                y,
+                clicks: 1,
+                cancelled: false,
+                shift: false,
+                plain: true,
+            };
+            pointer(0, ui, grid, pt, CELL, &mut out, &mut Effects::default());
+        }
+        out.entries.iter().map(|e| render_bytes(&e.bytes)).collect()
+    }
+
+    #[test]
+    fn a_plain_click_walks_the_cursor_along_its_line_only() {
+        let (mut ui, mut grid) = surface(ModeSet::Plain);
+        grid.cursor.line = 2;
+        grid.cursor.col = 5;
+        grid.cursor.visible = true;
+        let cell = |col: f32, row: f32| (col * CELL.0 + 1.0, row * CELL.1 + 1.0);
+        assert_eq!(
+            click(&mut ui, &grid, cell(8.0, 2.0), cell(8.0, 2.0)),
+            "\\x1b[C".repeat(3)
+        );
+        assert_eq!(
+            click(&mut ui, &grid, cell(3.0, 2.0), cell(3.0, 2.0)),
+            "\\x1b[D".repeat(2)
+        );
+        assert_eq!(
+            click(&mut ui, &grid, cell(8.0, 2.0), cell(20.0, 2.0)),
+            "",
+            "a drag is a selection, not a click"
+        );
+        assert_eq!(
+            click(&mut ui, &grid, cell(8.0, 4.0), cell(8.0, 4.0)),
+            "",
+            "a hard break is another line"
+        );
+        grid.modes.alt_screen = true;
+        assert_eq!(click(&mut ui, &grid, cell(8.0, 2.0), cell(8.0, 2.0)), "");
+        ui.agent = true;
+        assert_eq!(
+            click(&mut ui, &grid, cell(8.0, 2.0), cell(8.0, 2.0)),
+            "\\x1b[C".repeat(3),
+            "an agent's full-screen prompt still takes a click"
+        );
     }
 
     #[test]

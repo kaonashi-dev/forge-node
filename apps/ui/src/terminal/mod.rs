@@ -9,12 +9,15 @@ pub mod alloc;
 pub mod atlas;
 pub mod attach;
 pub mod fixture;
+pub mod host;
 pub mod input;
+pub mod links;
 pub mod palette;
 pub mod pane;
 pub mod renderer;
 pub mod selection;
 pub mod shaping;
+pub mod split;
 pub mod stats;
 
 /// State the worker publishes behind one short lock. `grid` is the only copy of the
@@ -42,6 +45,8 @@ pub struct SharedTerminal {
     rendered_epoch: AtomicU64,
     notify_enabled: AtomicBool,
     notifier: Mutex<Option<flume::Sender<u64>>>,
+    /// The split column's replica; only the primary has one.
+    beside: Option<Arc<SharedTerminal>>,
 }
 
 pub struct Meta {
@@ -54,7 +59,11 @@ pub struct Meta {
 
 impl SharedTerminal {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new(Self::bare(Some(Arc::new(Self::bare(None)))))
+    }
+
+    fn bare(beside: Option<Arc<SharedTerminal>>) -> Self {
+        Self {
             slot: Mutex::new(Slot {
                 generation: 0,
                 session_id: None,
@@ -72,7 +81,25 @@ impl SharedTerminal {
             rendered_epoch: AtomicU64::new(0),
             notify_enabled: AtomicBool::new(false),
             notifier: Mutex::new(None),
-        })
+            beside,
+        }
+    }
+
+    /// The split column's replica, beside this primary one.
+    #[must_use]
+    pub fn beside(&self) -> Option<&Arc<SharedTerminal>> {
+        self.beside.as_ref()
+    }
+
+    /// The replica, primary or split, that holds `terminal`.
+    #[must_use]
+    pub fn holding(&self, terminal: TerminalId) -> Option<&SharedTerminal> {
+        if self.lock().terminal_id == Some(terminal) {
+            return Some(self);
+        }
+        self.beside
+            .as_deref()
+            .filter(|beside| beside.lock().terminal_id == Some(terminal))
     }
 
     pub fn lock(&self) -> MutexGuard<'_, Slot> {

@@ -216,6 +216,30 @@ pub enum Command {
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
+    /// A new shell attached into the split column's replica.
+    SplitShell {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        size: (u16, u16),
+    },
+    /// The split column's terminal, attached again after a reconnect.
+    AttachSplit {
+        generation: u64,
+        session: SessionId,
+        terminal: TerminalId,
+        size: (u16, u16),
+    },
+    /// The split column closes; its session keeps running.
+    DetachSplit {
+        generation: u64,
+        terminal: TerminalId,
+    },
+    /// A file a terminal line named, opened at the line it named.
+    OpenReference {
+        workspace_id: WorkspaceId,
+        path: String,
+        line: Option<u32>,
+    },
 }
 
 #[derive(Debug)]
@@ -751,6 +775,54 @@ impl ConnectionHandle {
         })
     }
 
+    pub fn split_shell(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+        size: (u16, u16),
+    ) -> Result<(), String> {
+        self.send(Command::SplitShell {
+            generation,
+            workspace_id,
+            size,
+        })
+    }
+
+    pub fn attach_split(
+        &self,
+        generation: u64,
+        session: SessionId,
+        terminal: TerminalId,
+        size: (u16, u16),
+    ) -> Result<(), String> {
+        self.send(Command::AttachSplit {
+            generation,
+            session,
+            terminal,
+            size,
+        })
+    }
+
+    pub fn detach_split(&self, generation: u64, terminal: TerminalId) -> Result<(), String> {
+        self.send(Command::DetachSplit {
+            generation,
+            terminal,
+        })
+    }
+
+    pub fn open_reference(
+        &self,
+        workspace_id: WorkspaceId,
+        path: String,
+        line: Option<u32>,
+    ) -> Result<(), String> {
+        self.send(Command::OpenReference {
+            workspace_id,
+            path,
+            line,
+        })
+    }
+
     fn send(&self, command: Command) -> Result<(), String> {
         self.metrics.commands_sent.fetch_add(1, Ordering::Relaxed);
         self.tx
@@ -830,6 +902,9 @@ fn worker(
         if let Err(reason) = outcome {
             sink(vec![UiEvent::Disconnected { generation, reason }]);
             boot.terminal.clear(generation, None);
+            if let Some(split) = boot.terminal.beside() {
+                split.clear(generation, None);
+            }
         }
         if matches!(boot.mode, Mode::Fixture { .. }) {
             continue;
@@ -1048,6 +1123,7 @@ fn handle_fixture_command(
             ..
         } => {
             let size = size.sanitized();
+            let terminal = terminal.holding(terminal_id).unwrap_or(terminal);
             let session = {
                 let slot = terminal.lock();
                 slot.session_id
@@ -1071,6 +1147,9 @@ fn handle_fixture_command(
             bytes,
             ..
         } => {
+            let Some(terminal) = terminal.holding(terminal_id) else {
+                return;
+            };
             let delta = {
                 let slot = terminal.lock();
                 let Some(grid) = slot.grid.as_ref() else {
@@ -1100,6 +1179,9 @@ fn handle_fixture_command(
             count,
             ..
         } => {
+            let Some(terminal) = terminal.holding(terminal_id) else {
+                return;
+            };
             let block = {
                 let slot = terminal.lock();
                 let Some(grid) = slot.grid.as_ref() else {
@@ -1168,6 +1250,41 @@ fn handle_fixture_command(
         | Command::CopyPath { .. }
         | Command::DeletePath { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
+        Command::SplitShell {
+            workspace_id, size, ..
+        } => {
+            let result = fixture_create(&mut link.store, workspace_id);
+            if let (Ok((_, Some(DaemonEvent::SessionCreated(session)))), Some(split)) =
+                (&result, terminal.beside())
+                && let Some(terminal_id) = session.terminal_id
+            {
+                let grid = fixture::titled_grid(size.0, size.1, "fixture split");
+                let pty = grid.size;
+                split.publish_grid(generation, session.id, terminal_id, grid, pty);
+                wake();
+            }
+            fixture_result(generation, "SplitShell", result, sink, metrics, started);
+        }
+        Command::AttachSplit {
+            session,
+            terminal: terminal_id,
+            size,
+            ..
+        } => {
+            if let Some(split) = terminal.beside() {
+                let grid = fixture::titled_grid(size.0, size.1, "fixture split");
+                let pty = grid.size;
+                split.publish_grid(generation, session, terminal_id, grid, pty);
+                wake();
+            }
+        }
+        Command::DetachSplit { .. } => {
+            if let Some(split) = terminal.beside() {
+                split.clear(generation, None);
+                wake();
+            }
+        }
+        Command::OpenReference { .. } => {}
     }
 }
 
@@ -1329,21 +1446,28 @@ fn run_live(ctx: LiveCtx<'_>) -> Result<(), String> {
             Ok(Msg::Event(Some(event))) => match event.as_ref() {
                 DaemonEvent::TerminalDelta { terminal_id, delta } => {
                     metrics.terminal_deltas.fetch_add(1, Ordering::Relaxed);
-                    if terminal.apply_delta(generation, *terminal_id, delta)
-                        == client::DeltaOutcome::NeedsResync
+                    let mut target = terminal;
+                    let mut outcome = terminal.apply_delta(generation, *terminal_id, delta);
+                    if outcome == client::DeltaOutcome::Stale
+                        && let Some(split) = terminal.beside()
                     {
-                        let _ =
-                            resync_live(generation, &link.client, terminal, *terminal_id, metrics);
-                        wake();
-                    } else {
-                        wake();
+                        target = split;
+                        outcome = split.apply_delta(generation, *terminal_id, delta);
                     }
+                    if outcome == client::DeltaOutcome::NeedsResync {
+                        let _ =
+                            resync_live(generation, &link.client, target, *terminal_id, metrics);
+                    }
+                    wake();
                 }
                 DaemonEvent::TerminalResync {
                     terminal_id,
                     snapshot,
                 } => {
                     terminal.resync(generation, *terminal_id, snapshot);
+                    if let Some(split) = terminal.beside() {
+                        split.resync(generation, *terminal_id, snapshot);
+                    }
                     wake();
                 }
                 _ => sink(vec![UiEvent::Daemon { generation, event }]),
@@ -1471,8 +1595,10 @@ fn handle_live_command(
                 let slot = terminal.lock();
                 slot.terminal_id
             };
+            let split = terminal.beside().and_then(|split| split.lock().terminal_id);
             if old != terminal_id
                 && let Some(old) = old
+                && Some(old) != split
             {
                 metrics.note_socket_op();
                 let _ = client.detach_terminal(old);
@@ -1511,6 +1637,7 @@ fn handle_live_command(
                 return;
             }
             metrics.note_socket_op();
+            let terminal = terminal.holding(terminal_id).unwrap_or(terminal);
             let result = client
                 .resize_terminal(terminal_id, size)
                 .and_then(|()| client.attach_terminal(terminal_id, size));
@@ -1576,7 +1703,11 @@ fn handle_live_command(
             metrics.note_socket_op();
             match client.fetch_scrollback(terminal_id, from_line, count) {
                 Ok(block) => {
-                    terminal.merge_scrollback(generation, terminal_id, &block);
+                    if !terminal.merge_scrollback(generation, terminal_id, &block)
+                        && let Some(split) = terminal.beside()
+                    {
+                        split.merge_scrollback(generation, terminal_id, &block);
+                    }
                     wake();
                 }
                 Err(error) => eprintln!("forge-ui: FetchScrollback: {error}"),
@@ -2211,6 +2342,97 @@ fn handle_live_command(
             }
         }
         Command::ForceReconnect | Command::Shutdown => {}
+        Command::SplitShell {
+            generation: command_generation,
+            workspace_id,
+            size,
+        } => {
+            if command_generation < generation {
+                return;
+            }
+            let Some(split) = terminal.beside() else {
+                return;
+            };
+            metrics.note_socket_op();
+            let result = client
+                .create_shell_session(workspace_id)
+                .and_then(|(session, terminal_id)| {
+                    let snapshot = client.attach_terminal(terminal_id, pty_size(Some(size)))?;
+                    split.publish_snapshot(generation, session, terminal_id, &snapshot);
+                    Ok(format!("split {}", short_id(&session)))
+                })
+                .map_err(|error| error.to_string());
+            wake();
+            live_result(generation, "SplitShell", result, sink, metrics, started);
+        }
+        Command::AttachSplit {
+            generation: command_generation,
+            session,
+            terminal: terminal_id,
+            size,
+        } => {
+            if command_generation < generation {
+                return;
+            }
+            let Some(split) = terminal.beside() else {
+                return;
+            };
+            metrics.note_socket_op();
+            match client.attach_terminal(terminal_id, pty_size(Some(size))) {
+                Ok(snapshot) => {
+                    split.publish_snapshot(generation, session, terminal_id, &snapshot);
+                    wake();
+                }
+                Err(error) => live_result(
+                    generation,
+                    "AttachTerminal",
+                    Err(error.to_string()),
+                    sink,
+                    metrics,
+                    started,
+                ),
+            }
+        }
+        Command::DetachSplit {
+            generation: command_generation,
+            terminal: terminal_id,
+        } => {
+            let Some(split) = terminal.beside() else {
+                return;
+            };
+            split.clear(generation, None);
+            wake();
+            if command_generation < generation || terminal.lock().terminal_id == Some(terminal_id) {
+                return;
+            }
+            metrics.note_socket_op();
+            let _ = client.detach_terminal(terminal_id);
+        }
+        Command::OpenReference {
+            workspace_id,
+            path,
+            line,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_editor_session(workspace_id, &path, line, false, false)
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("opened {path} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateEditorSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
     }
 }
 
@@ -2361,6 +2583,10 @@ fn command_label(command: &Command) -> &'static str {
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",
+        Command::SplitShell { .. } => "SplitShell",
+        Command::AttachSplit { .. } => "AttachTerminal",
+        Command::DetachSplit { .. } => "DetachTerminal",
+        Command::OpenReference { .. } => "CreateEditorSession",
     }
 }
 

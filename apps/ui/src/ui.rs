@@ -10,7 +10,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 
 use crate::app::{AppState, CommandStatus, LinkStatus, SessionRow, SessionStatus};
 use crate::terminal::input::{Pointer, Press};
-use crate::terminal::renderer::{CELL_PT, MARK_BASE};
+use crate::terminal::renderer::MARK_BASE;
 use crate::workbench::CenterMode;
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
@@ -306,24 +306,139 @@ fn terminal_surface(s: &AppState, k: &Kit) -> El {
         .child(session_crumbs(s, k))
         .children(provider_chip(s, k))
         .children(s.debug.then_some(focus));
+    let body = if s.pane_count() == 2 {
+        let ratio = s.split_ratio();
+        row()
+            .key("terminal-split")
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .on_layout_tx(|s: &mut AppState, rect, tx| {
+                s.split.width = rect[2];
+                tx.live_only();
+            })
+            .child(pane_inset(s, k, 0).w(0.0).grow(ratio).min_w(0.0))
+            .child(split_handle(k))
+            .child(
+                col()
+                    .key("terminal-split-extra")
+                    .w(0.0)
+                    .grow(1.0 - ratio)
+                    .min_w(0.0)
+                    .h_full()
+                    .child(split_header(s, k))
+                    .child(pane_inset(s, k, 1).w_full().grow(1.0)),
+            )
+    } else {
+        pane_inset(s, k, 0).w_full().grow(1.0)
+    };
     col()
         .key("terminal-surface")
         .w_full()
         .h_full()
         .min_h(0.0)
         .child(header)
+        .child(body)
+}
+
+/// Tauri's terminalPadX / terminalPadY, painted in the terminal's own ground;
+/// the pane inside keeps its coordinates.
+fn pane_inset(s: &AppState, k: &Kit, idx: usize) -> El {
+    col()
+        .key(if idx == 0 {
+            "terminal-inset"
+        } else {
+            "terminal-inset-split"
+        })
+        .min_h(0.0)
+        .px(24.0)
+        .py(16.0)
+        .fill(terminal_ground(s, k))
+        .child(terminal_pane(s, k, idx))
+}
+
+/// A column divider that stores a fraction, as Tauri's `SplitHandle`: a
+/// remembered width of one column would starve the other after a resize.
+fn split_handle(k: &Kit) -> El {
+    el().key("terminal-split-handle")
+        .role("separator")
+        .label("Resize the split")
+        .w(5.0)
+        .h_full()
+        .fill(k.c.border_base)
+        .cursor(rune::Cursor::ResizeColumn)
+        .on_drag(|s: &mut AppState, drag, tx| {
+            let from = match drag.phase {
+                rune::Phase::Down => {
+                    let ratio = s.split_ratio();
+                    s.split.drag_from = Some((drag.dx, ratio));
+                    return;
+                }
+                _ => s.split.drag_from,
+            };
+            let Some((x0, ratio)) = from else {
+                return;
+            };
+            if drag.phase == rune::Phase::Move {
+                let width = s.split.width.max(1.0);
+                s.split.dragging = Some(crate::terminal::split::clamp_ratio(
+                    ratio + (drag.dx - x0) / width,
+                ));
+                tx.instant();
+            } else if drag.cancelled() {
+                s.split.dragging = None;
+                s.split.drag_from = None;
+            } else {
+                s.commit_split_ratio();
+            }
+        })
+        .on_double_press(|s: &mut AppState| {
+            s.split.dragging = Some(crate::terminal::split::RATIO_FALLBACK);
+            s.commit_split_ratio();
+        })
+}
+
+/// The split column's own header: its session, and the join that closes it.
+fn split_header(s: &AppState, k: &Kit) -> El {
+    let title = s
+        .split
+        .pane
+        .as_ref()
+        .and_then(|pane| s.rows.iter().find(|row| row.id == pane.session))
+        .map_or_else(|| "Terminal".to_string(), |row| row.title.clone());
+    row()
+        .key("terminal-split-header")
+        .w_full()
+        .h(28.0)
+        .pl(10.0)
+        .pr(4.0)
+        .gap(6.0)
+        .center_y()
+        .fill(k.c.bg_deep)
         .child(
-            // Tauri's terminalPadX / terminalPadY, painted in the terminal's
-            // own ground; the pane inside keeps its coordinates.
-            col()
-                .key("terminal-inset")
-                .w_full()
+            text(title)
+                .role("heading")
+                .font(k.ty.small_medium)
+                .color(if s.focused_pane() == 1 {
+                    k.c.text_base
+                } else {
+                    k.c.text_muted
+                })
+                .truncate()
                 .grow(1.0)
-                .min_h(0.0)
-                .px(24.0)
-                .py(16.0)
-                .fill(terminal_ground(s, k))
-                .child(terminal_pane(s, k)),
+                .min_w(0.0),
+        )
+        .child(
+            row()
+                .key("terminal-split-join")
+                .role("button")
+                .label("Join panes")
+                .size(22.0, 22.0)
+                .radius(5.0)
+                .center()
+                .hover(k.c.hover)
+                .on_press(|s: &mut AppState| s.join_panes())
+                .child(icon(&crate::glyphs::CLOSE, 14.0).color(k.c.icon_muted)),
         )
 }
 
@@ -431,14 +546,20 @@ fn provider_chip(s: &AppState, k: &Kit) -> Option<El> {
     )
 }
 
-fn terminal_pane(s: &AppState, k: &Kit) -> El {
+fn terminal_pane(s: &AppState, k: &Kit, idx: usize) -> El {
+    let ui = s.pane(idx);
     let title = s
-        .active_row()
+        .pane_session(idx)
+        .and_then(|session| s.rows.iter().find(|row| row.id == session))
         .map(|row| row.title.clone())
         .unwrap_or_else(|| "Terminal".to_string());
-    let cursor = s.terminal.cursor().unwrap_or_default();
+    let cursor = ui.cursor().unwrap_or_default();
     let mut pane = col()
-        .key("terminal-pane")
+        .key(if idx == 0 {
+            "terminal-pane"
+        } else {
+            "terminal-pane-split"
+        })
         .w_full()
         .grow(1.0)
         .min_h(0.0)
@@ -447,36 +568,61 @@ fn terminal_pane(s: &AppState, k: &Kit) -> El {
         .description(format!(
             "Cursor on row {}: {}",
             cursor.line + 1,
-            s.terminal.mirror_cursor
+            ui.mirror_cursor
         ))
-        .a11y_value(s.terminal.mirror.clone())
+        .a11y_value(ui.mirror.clone())
         .live_region(rune::LiveRegion::Off)
         .focusable(true)
-        .on_key(|s: &mut AppState, ev, tx| s.terminal_key(ev, tx))
-        .on_wheel(|s: &mut AppState, ev, tx| s.terminal_wheel(&ev, tx))
-        .on_drag(|s: &mut AppState, drag, tx| {
+        .on_key(move |s: &mut AppState, ev, tx| {
+            if !ev.mods.cmd {
+                s.focus_pane(idx);
+            }
+            s.terminal_key(ev, tx)
+        })
+        .on_wheel(move |s: &mut AppState, ev, tx| s.terminal_wheel(idx, &ev, tx))
+        .on_drag(move |s: &mut AppState, drag, tx| {
             let phase = match drag.phase {
                 rune::Phase::Down => Press::Down,
                 rune::Phase::Move => Press::Move,
                 _ => Press::Up,
             };
+            let mods = tx.mods();
             s.terminal_pointer(
+                idx,
                 Pointer {
                     phase,
                     x: drag.x,
                     y: drag.y,
                     clicks: drag.clicks,
                     cancelled: drag.cancelled(),
-                    shift: tx.mods().shift,
+                    shift: mods.shift,
+                    plain: !(mods.shift || mods.cmd || mods.alt || mods.ctrl),
                 },
                 tx,
             );
         })
-        .on_secondary_press_local(|s: &mut AppState, p, tx| {
-            s.terminal_secondary(p.x, p.y, tx);
+        .on_secondary_press_local(move |s: &mut AppState, p, tx| {
+            s.terminal_secondary(idx, p.x, p.y, tx);
         })
-        .child(effect(MARK_BASE).absolute(0.0, 0.0).w_full().h_full());
-    if let Some(notice) = s.terminal.attach_notice() {
+        .on_pointer_move_local(move |s: &mut AppState, p, tx| {
+            s.terminal_hover(idx, Some((p.x, p.y)), tx);
+        })
+        .on_hover_change(move |s: &mut AppState, over, tx| {
+            if !over {
+                s.terminal_hover(idx, None, tx);
+            }
+        })
+        .on_drop_files(move |s: &mut AppState, files, tx| s.terminal_drop(idx, files, tx))
+        .child(
+            effect(MARK_BASE + idx as u32)
+                .absolute(0.0, 0.0)
+                .w_full()
+                .h_full(),
+        );
+    if ui.link.is_some() {
+        pane = pane.cursor(rune::Cursor::Pointer);
+    }
+    if let Some(notice) = ui.attach_notice() {
         pane = pane.child(
             row()
                 .key("terminal-hold-notice")
@@ -492,15 +638,13 @@ fn terminal_pane(s: &AppState, k: &Kit) -> El {
                 .child(text(notice).font(k.ty.small).color(k.c.warning.fg)),
         );
     }
-    if s.terminal.focus_terminal {
-        let (x, y) = (
-            cursor.col as f32 * CELL_PT.0,
-            cursor.line as f32 * CELL_PT.1,
-        );
+    if s.terminal.focus_terminal && s.focused_pane() == idx {
+        let cell = s.cell_pt();
+        let (x, y) = (cursor.col as f32 * cell.0, cursor.line as f32 * cell.1);
         pane = pane.child(
             el().key("terminal-ime")
                 .absolute(x, y)
-                .size(CELL_PT.0, CELL_PT.1)
+                .size(cell.0, cell.1)
                 .ime_cursor()
                 .a11y_hidden(),
         );

@@ -29,6 +29,17 @@ pub struct DragPoint {
     pub stepped_at: f64,
 }
 
+/// A plain click that may move the shell's cursor, as Tauri's `CursorClick`:
+/// it lands only on the cell it started on, against the grid it saw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CursorClick {
+    pub row: u16,
+    pub col: u16,
+    pub seq: u64,
+    pub x: f32,
+    pub y: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gesture {
     Select,
@@ -124,6 +135,15 @@ pub struct TerminalUi {
     pub attach_generation: u64,
     seen_resync: u64,
     pub requested: Option<((u16, u16), std::time::Instant)>,
+    /// The pane's session is an agent's; its alternate screen still takes a cursor click.
+    pub agent: bool,
+    pub cursor_click: Option<CursorClick>,
+    /// The pointer over the pane, pane-local, for a ⌘ pressed without moving.
+    pub hover: Option<(f32, f32)>,
+    /// The link under a ⌘-hover, underlined by the compositor.
+    pub link: Option<crate::terminal::links::Link>,
+    /// Where a ⌘-click on a link went down; a drag past the slop cancels it.
+    pub link_press: Option<(f32, f32)>,
     fixture: Option<FixtureCache>,
 }
 
@@ -155,6 +175,11 @@ impl TerminalUi {
             attach_generation: 0,
             seen_resync: 0,
             requested: None,
+            agent: false,
+            cursor_click: None,
+            hover: None,
+            link: None,
+            link_press: None,
             fixture: None,
         };
         if fixture {

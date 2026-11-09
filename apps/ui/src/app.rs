@@ -17,7 +17,6 @@ use crate::editor::EditorUi;
 use crate::terminal::SharedTerminal;
 use crate::terminal::input::{self, Effects, Outbox, Pointer, Press};
 use crate::terminal::pane::TerminalUi;
-use crate::terminal::renderer::CELL_PT;
 use crate::workbench::{CenterMode, Panel, Workbench};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +146,7 @@ pub struct AppState {
     pub settings: crate::settings::Settings,
     pub sync: crate::sync::Sync,
     pub menus: crate::menus::Menus,
+    pub split: crate::terminal::split::Split,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
     /// A live session whose close waits for a person to confirm it.
@@ -223,6 +223,7 @@ impl AppState {
             settings: crate::settings::Settings::default(),
             sync: crate::sync::Sync::default(),
             menus: crate::menus::Menus::default(),
+            split: crate::terminal::split::Split::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
             pending_close: std::collections::HashSet::new(),
@@ -263,6 +264,10 @@ impl AppState {
 
     pub fn select(&mut self, id: SessionId) {
         self.chosen_workspace = None;
+        if self.select_split(id) {
+            return;
+        }
+        self.split.focused = false;
         if self.active == Some(id) {
             self.terminal.focus_terminal = true;
             return;
@@ -299,7 +304,11 @@ impl AppState {
                     id_text: session.id.to_string(),
                     workspace_id: session.workspace_id,
                     title: crate::session_label::session_title(session),
-                    status: row_status(session),
+                    status: if crate::terminal::host::asks(&store, session) {
+                        Some(SessionStatus::Attention)
+                    } else {
+                        row_status(session)
+                    },
                     running: session.state.is_active(),
                     ended: (!session.state.is_active())
                         .then(|| crate::session_label::state_label(&session.state)),
@@ -357,6 +366,7 @@ impl AppState {
         if changed {
             tx.instant();
             self.sync_terminal();
+            self.sync_split();
         }
         if let Some(text) = self.pending_copy.take() {
             tx.copy(text);
@@ -470,6 +480,9 @@ impl AppState {
         let Some(action) = crate::keymap::action_for(ev) else {
             return false;
         };
+        if let Some(taken) = self.terminal_action(action) {
+            return taken;
+        }
         match action {
             Action::CommandPalette => {
                 let agents = self.installed_agents();
@@ -501,6 +514,7 @@ impl AppState {
             }
             Action::NextSession => self.step_session(1),
             Action::PreviousSession => self.step_session(-1),
+            Action::SplitPane | Action::TerminalZoom(_) => {}
         }
         true
     }
@@ -1349,6 +1363,7 @@ impl AppState {
                         | protocol::DaemonEvent::WorkspaceCreated(_)
                         | protocol::DaemonEvent::WorkspaceUpdated(_)
                         | protocol::DaemonEvent::WorkspaceRemoved { .. }
+                        | protocol::DaemonEvent::TerminalBell { .. }
                 );
                 if rebuild && let Some(store) = self.store.take() {
                     self.set_store(store);
@@ -1595,7 +1610,7 @@ impl AppState {
                 self.terminal.requested = None;
             }
         }
-        self.refresh_attach_state();
+        self.refresh_attach_state(0);
         if !self.terminal.is_live() {
             return;
         }
@@ -1647,32 +1662,34 @@ impl AppState {
     /// measured pane exist, then release held input in order through the same
     /// encoder live input uses. This is idempotent: an already-live pane only
     /// refreshes its measured size.
-    fn refresh_attach_state(&mut self) {
-        let Some(target) = self.active_row().and_then(|row| row.terminal_id) else {
+    pub(crate) fn refresh_attach_state(&mut self, idx: usize) {
+        let Some(target) = self.pane_target(idx) else {
             return;
         };
-        let meta = self.terminal.shared.meta();
-        let measured = self.terminal.shared.measured();
-        if meta.generation == self.generation && meta.terminal_id == Some(target) && meta.has_grid {
+        let generation = self.generation;
+        let pane = self.pane_mut(idx);
+        let meta = pane.shared.meta();
+        let measured = pane.shared.measured();
+        if meta.generation == generation && meta.terminal_id == Some(target) && meta.has_grid {
             let size = meta
                 .size
                 .map(|size| (size.cols, size.rows))
                 .or(measured)
                 .unwrap_or((80, 24));
-            self.terminal.note_snapshot(self.generation, target, size);
+            pane.note_snapshot(generation, target, size);
         }
-        self.terminal.note_measured_if_fresh();
-        if self.terminal.is_live() {
-            self.flush_held_input();
+        pane.note_measured_if_fresh();
+        if pane.is_live() {
+            self.flush_held_input(idx);
         }
     }
 
-    fn flush_held_input(&mut self) {
-        let held = self.terminal.take_held();
+    fn flush_held_input(&mut self, idx: usize) {
+        let held = self.pane_mut(idx).take_held();
         if held.is_empty() {
             return;
         }
-        let shared = Arc::clone(&self.terminal.shared);
+        let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             eprintln!("[hold] dropped {} gesture(s): no grid", held.len());
@@ -1681,13 +1698,14 @@ impl AppState {
         let (mut gestures, mut bytes) = (0usize, 0u64);
         for event in held {
             let before = self.out.sent_bytes;
+            let (pane, out) = self.pane_io(idx);
             match event {
                 crate::terminal::attach::HeldInput::Key(ev) => {
                     let mut fx = Effects::default();
-                    input::key(0, &mut self.terminal, grid, &ev, &mut self.out, &mut fx);
+                    input::key(idx, pane, grid, &ev, out, &mut fx);
                 }
                 crate::terminal::attach::HeldInput::Paste(text) => {
-                    input::paste_text(0, &mut self.terminal, grid, &text, &mut self.out);
+                    input::paste_text(idx, pane, grid, &text, out);
                 }
             }
             gestures += 1;
@@ -1701,29 +1719,33 @@ impl AppState {
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.metrics.note_ui_thread();
         self.sync_terminal();
+        self.sync_split();
         self.sync_editor();
         self.sync_workbench();
         self.close_due();
         let mut changed = self.settings.esc.expire(Instant::now());
         if clock - self.mirror_at >= 0.125 {
-            let version = self.terminal.shared.grid_epoch();
-            let dims = {
-                let slot = self.terminal.shared.lock();
-                slot.grid.as_ref().map(|grid| {
-                    (
-                        grid.cursor,
-                        grid.visible.first().map_or(0, |row| row.cells.len()) as u16,
-                        grid.visible.len() as u16,
-                    )
-                })
-            };
-            if let Some((cursor, cols, rows)) = dims
-                && (version != self.terminal.mirror_version
-                    || self.terminal.scroll != self.terminal.mirror_scroll
-                    || cursor != self.terminal.built_cursor)
-            {
-                self.terminal.refresh_mirror(version, cols, rows);
-                changed = true;
+            for idx in 0..self.pane_count() {
+                let pane = self.pane_mut(idx);
+                let version = pane.shared.grid_epoch();
+                let dims = {
+                    let slot = pane.shared.lock();
+                    slot.grid.as_ref().map(|grid| {
+                        (
+                            grid.cursor,
+                            grid.visible.first().map_or(0, |row| row.cells.len()) as u16,
+                            grid.visible.len() as u16,
+                        )
+                    })
+                };
+                if let Some((cursor, cols, rows)) = dims
+                    && (version != pane.mirror_version
+                        || pane.scroll != pane.mirror_scroll
+                        || cursor != pane.built_cursor)
+                {
+                    pane.refresh_mirror(version, cols, rows);
+                    changed = true;
+                }
             }
             self.mirror_at = clock;
         }
@@ -1732,11 +1754,14 @@ impl AppState {
         } else {
             0.016
         };
-        if let Some(drag) = self.terminal.drag {
+        for idx in 0..self.pane_count() {
+            let Some(drag) = self.pane(idx).drag else {
+                continue;
+            };
             // A selection held at an edge keeps scrolling with a still pointer.
             if clock - drag.stepped_at >= input::EDGE_STEP_SECS {
-                changed |= self.terminal_edge_step();
-                if let Some(drag) = self.terminal.drag.as_mut() {
+                changed |= self.terminal_edge_step(idx);
+                if let Some(drag) = self.pane_mut(idx).drag.as_mut() {
                     drag.stepped_at = clock;
                 }
             }
@@ -1746,29 +1771,35 @@ impl AppState {
         changed
     }
 
-    fn terminal_edge_step(&mut self) -> bool {
-        let shared = Arc::clone(&self.terminal.shared);
+    fn terminal_edge_step(&mut self, idx: usize) -> bool {
+        let cell = self.cell_pt();
+        let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return false;
         };
-        input::edge_scroll(0, &mut self.terminal, grid, CELL_PT, &mut self.out)
+        let (pane, out) = self.pane_io(idx);
+        input::edge_scroll(idx, pane, grid, cell, out)
+    }
+
+    /// Where a pane's input goes, and whether its replica is that terminal's.
+    fn pane_route(&self, idx: usize) -> Option<(TerminalId, bool)> {
+        let shared = &self.pane(idx).shared;
+        let terminal_id = self
+            .pane_target(idx)
+            .or_else(|| shared.meta().terminal_id)?;
+        Some((terminal_id, shared.meta().terminal_id == Some(terminal_id)))
     }
 
     pub fn flush_outbox(&mut self) {
-        let Some(terminal_id) = self
-            .active_row()
-            .and_then(|row| row.terminal_id)
-            .or_else(|| self.terminal.shared.meta().terminal_id)
-        else {
-            self.out = Outbox::default();
-            return;
-        };
-        let ready = self.terminal.shared.meta().terminal_id == Some(terminal_id);
         for note in self.out.notes.drain(..) {
             eprintln!("[note] {note}");
         }
-        for (_, request) in self.out.fetches.drain(..) {
+        let fetches = std::mem::take(&mut self.out.fetches);
+        for (idx, request) in fetches {
+            let Some((terminal_id, ready)) = self.pane_route(idx) else {
+                continue;
+            };
             if !ready {
                 continue;
             }
@@ -1789,7 +1820,11 @@ impl AppState {
                 });
             }
         }
-        for (_, bytes, labels) in self.out.drain_batches() {
+        let mut answered = false;
+        for (idx, bytes, labels) in self.out.drain_batches() {
+            let Some((terminal_id, ready)) = self.pane_route(idx) else {
+                continue;
+            };
             let summary = format!(
                 "{} bytes \"{}\" <- {}",
                 bytes.len(),
@@ -1813,6 +1848,13 @@ impl AppState {
                     took_us: 0,
                 });
             }
+            answered |= self
+                .store
+                .as_mut()
+                .is_some_and(|store| store.answer_attention(&terminal_id));
+        }
+        if answered && let Some(store) = self.store.take() {
+            self.set_store(store);
         }
         self.terminal.request_frame();
     }
@@ -1824,10 +1866,11 @@ impl AppState {
         if !self.session_shown() || crate::menus::tree_menu_key(ev, tx) {
             return false;
         }
+        let idx = self.focused_pane();
         self.observe_terminal_resync();
         self.last_focus = tx.focused().map(str::to_owned);
         self.terminal.focus_terminal = true;
-        if !self.terminal.is_live() {
+        if !self.pane(idx).is_live() {
             if ev.mods.cmd {
                 if ev.is_command('v') {
                     tx.request_paste();
@@ -1835,34 +1878,36 @@ impl AppState {
                 }
                 return false;
             }
-            self.refresh_attach_state();
-            if !self.terminal.is_live() {
-                if self.terminal.hold_key(ev) {
+            self.refresh_attach_state(idx);
+            let pane = self.pane_mut(idx);
+            if !pane.is_live() {
+                if pane.hold_key(ev) {
                     eprintln!(
                         "[hold] held {:?}{} ({}) — {} bytes, {} gestures",
                         ev.key,
                         input::mod_suffix(ev.mods),
-                        self.terminal.attach.state_name(),
-                        self.terminal.attach.held_bytes(),
-                        self.terminal.attach.held_len()
+                        pane.attach.state_name(),
+                        pane.attach.held_bytes(),
+                        pane.attach.held_len()
                     );
                 } else {
                     eprintln!(
                         "[hold] refused {:?}: 64 KiB hold buffer full ({} refused)",
                         ev.key,
-                        self.terminal.attach.refused()
+                        pane.attach.refused()
                     );
                 }
                 return true;
             }
         }
-        let shared = Arc::clone(&self.terminal.shared);
+        let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return false;
         };
         let mut fx = Effects::default();
-        let taken = input::key(0, &mut self.terminal, grid, ev, &mut self.out, &mut fx);
+        let (pane, out) = self.pane_io(idx);
+        let taken = input::key(idx, pane, grid, ev, out, &mut fx);
         drop(slot);
         if taken {
             self.apply_effects(fx, tx);
@@ -1871,40 +1916,39 @@ impl AppState {
     }
 
     fn observe_terminal_resync(&mut self) {
-        self.terminal.observe_resync(
-            self.terminal.shared.resync_epoch(),
-            self.terminal.shared.measure_epoch(),
-        );
+        for idx in 0..=usize::from(self.split.pane.is_some()) {
+            let pane = self.pane_mut(idx);
+            pane.observe_resync(pane.shared.resync_epoch(), pane.shared.measure_epoch());
+        }
     }
 
-    pub fn terminal_pointer(&mut self, pointer: Pointer, tx: &mut Tx) {
-        let shared = Arc::clone(&self.terminal.shared);
+    pub fn terminal_pointer(&mut self, idx: usize, pointer: Pointer, tx: &mut Tx) {
+        if self.link_press(idx, &pointer, tx) {
+            return;
+        }
+        self.focus_pane(idx);
+        let cell = self.cell_pt();
+        let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return;
         };
-        self.terminal.focus_terminal = true;
         let mut fx = Effects::default();
-        input::pointer(
-            0,
-            &mut self.terminal,
-            grid,
-            pointer,
-            CELL_PT,
-            &mut self.out,
-            &mut fx,
-        );
+        let (pane, out) = self.pane_io(idx);
+        input::pointer(idx, pane, grid, pointer, cell, out, &mut fx);
         drop(slot);
         self.apply_effects(fx, tx);
     }
 
-    pub fn terminal_wheel(&mut self, ev: &rune::WheelEvent, tx: &mut Tx) -> bool {
-        let shared = Arc::clone(&self.terminal.shared);
+    pub fn terminal_wheel(&mut self, idx: usize, ev: &rune::WheelEvent, tx: &mut Tx) -> bool {
+        let cell = self.cell_pt();
+        let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return false;
         };
-        let taken = input::wheel(0, &mut self.terminal, grid, ev, CELL_PT, &mut self.out);
+        let (pane, out) = self.pane_io(idx);
+        let taken = input::wheel(idx, pane, grid, ev, cell, out);
         drop(slot);
         if taken {
             self.flush_outbox();
@@ -1913,8 +1957,9 @@ impl AppState {
         taken
     }
 
-    pub fn terminal_secondary(&mut self, x: f32, y: f32, tx: &mut Tx) {
-        let shared = Arc::clone(&self.terminal.shared);
+    pub fn terminal_secondary(&mut self, idx: usize, x: f32, y: f32, tx: &mut Tx) {
+        let cell = self.cell_pt();
+        let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return;
@@ -1926,17 +1971,11 @@ impl AppState {
             clicks: 1,
             cancelled: false,
             shift: tx.mods().shift,
+            plain: false,
         };
         let mut fx = Effects::default();
-        input::secondary(
-            0,
-            &mut self.terminal,
-            grid,
-            pointer,
-            CELL_PT,
-            &mut self.out,
-            &mut fx,
-        );
+        let (pane, out) = self.pane_io(idx);
+        input::secondary(idx, pane, grid, pointer, cell, out, &mut fx);
         drop(slot);
         self.apply_effects(fx, tx);
     }
@@ -1956,34 +1995,37 @@ impl AppState {
     }
 
     pub fn terminal_paste(&mut self, text: &str, tx: &mut Tx) {
+        let idx = self.focused_pane();
         self.observe_terminal_resync();
         self.last_focus = tx.focused().map(str::to_owned);
         self.terminal.focus_terminal = true;
-        if !self.terminal.is_live() {
-            self.refresh_attach_state();
-            if !self.terminal.is_live() {
-                if self.terminal.hold_paste(text) {
+        if !self.pane(idx).is_live() {
+            self.refresh_attach_state(idx);
+            let pane = self.pane_mut(idx);
+            if !pane.is_live() {
+                if pane.hold_paste(text) {
                     eprintln!(
                         "[hold] held paste {} bytes ({} held total)",
                         text.len(),
-                        self.terminal.attach.held_bytes()
+                        pane.attach.held_bytes()
                     );
                 } else {
                     eprintln!(
                         "[hold] refused paste {} bytes: 64 KiB hold buffer full ({} refused)",
                         text.len(),
-                        self.terminal.attach.refused()
+                        pane.attach.refused()
                     );
                 }
                 return;
             }
         }
-        let shared = Arc::clone(&self.terminal.shared);
+        let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return;
         };
-        input::paste_text(0, &mut self.terminal, grid, text, &mut self.out);
+        let (pane, out) = self.pane_io(idx);
+        input::paste_text(idx, pane, grid, text, out);
         drop(slot);
         self.flush_outbox();
         tx.live_only();
@@ -1993,40 +2035,43 @@ impl AppState {
         if !self.session_shown() {
             return false;
         }
+        let idx = self.focused_pane();
         self.observe_terminal_resync();
-        if !self.terminal.is_live() {
+        if !self.pane(idx).is_live() {
+            let pane = self.pane_mut(idx);
             match ev {
                 Ime::Commit(text) => {
                     let clean: String = text.chars().filter(|c| !c.is_control()).collect();
-                    if self.terminal.hold_paste(&clean) {
+                    if pane.hold_paste(&clean) {
                         eprintln!(
                             "[hold] held IME commit {} bytes ({} held total)",
                             clean.len(),
-                            self.terminal.attach.held_bytes()
+                            pane.attach.held_bytes()
                         );
                     } else {
                         eprintln!(
                             "[hold] refused IME commit: 64 KiB hold buffer full ({} refused)",
-                            self.terminal.attach.refused()
+                            pane.attach.refused()
                         );
                     }
                     return true;
                 }
                 Ime::Preedit(text, _) => {
-                    self.terminal.preedit = text.chars().take(input::PREEDIT_MAX_CHARS).collect();
-                    self.terminal.request_frame();
+                    pane.preedit = text.chars().take(input::PREEDIT_MAX_CHARS).collect();
+                    pane.request_frame();
                     return true;
                 }
                 Ime::Enabled | Ime::Disabled => return true,
             }
         }
-        let shared = Arc::clone(&self.terminal.shared);
+        let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return false;
         };
         let _ = grid;
-        let taken = input::ime(0, &mut self.terminal, ev, &mut self.out);
+        let (pane, out) = self.pane_io(idx);
+        let taken = input::ime(idx, pane, ev, out);
         drop(slot);
         if taken {
             self.flush_outbox();
@@ -2036,12 +2081,14 @@ impl AppState {
     }
 
     pub fn terminal_window_focus(&mut self, focused: bool, tx: &mut Tx) {
-        let shared = Arc::clone(&self.terminal.shared);
+        let idx = self.focused_pane();
+        let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return;
         };
-        input::focus(0, &mut self.terminal, grid, focused, &mut self.out);
+        let (pane, out) = self.pane_io(idx);
+        input::focus(idx, pane, grid, focused, out);
         drop(slot);
         self.flush_outbox();
         tx.live_only();

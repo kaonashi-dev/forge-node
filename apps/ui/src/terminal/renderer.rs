@@ -12,6 +12,7 @@ use crate::terminal::alloc;
 use crate::terminal::atlas::{Atlas, BOLD, ITALIC, MAX_GLYPHS_PER_CELL, NO_RUN, REGULAR};
 use crate::terminal::fixture::is_wide_cluster;
 use crate::terminal::input::PREEDIT_MAX_CHARS;
+use crate::terminal::links::Link;
 use crate::terminal::palette::{Palette, mix, rgb, with_alpha};
 use crate::terminal::pane::TerminalUi;
 use crate::terminal::selection::{Selection, span_on};
@@ -19,7 +20,11 @@ use crate::terminal::shaping::is_extender;
 use crate::terminal::stats::Shared;
 use client::RowDamage;
 
+/// The primary pane's effect mark; the split column's is the next one.
 pub const MARK_BASE: u32 = 0x100;
+pub const PANES: usize = 2;
+/// Underline slots for a ⌘-hovered link: one per row a soft wrap joins.
+const LINK_SLOTS: usize = 17;
 /// Geist Mono at Tauri's 1.35 line height. 8 × 18 pt is 13.3 pt type rather
 /// than 13: whole device pixels at 1× and 2×, so the drawn cell and the IME
 /// caret rect never round apart.
@@ -95,7 +100,7 @@ impl PaneGpu {
 }
 
 fn extras_len(rows: usize) -> usize {
-    rows + 1 + PREEDIT_MAX_CHARS * (2 + GLYPHS)
+    rows + 1 + PREEDIT_MAX_CHARS * (2 + GLYPHS) + LINK_SLOTS
 }
 
 struct Gpu {
@@ -105,7 +110,8 @@ struct Gpu {
     pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     atlas: Atlas,
     bind: wgpu::BindGroup,
-    pane: Option<PaneGpu>,
+    cell_pt: (f32, f32),
+    panes: [Option<PaneGpu>; PANES],
 }
 
 pub struct Terminal {
@@ -131,7 +137,12 @@ impl Terminal {
     }
 }
 
-fn make_gpu(device: &wgpu::Device, key: rune::compose::DeviceKey, scale: f32) -> Gpu {
+fn make_gpu(
+    device: &wgpu::Device,
+    key: rune::compose::DeviceKey,
+    scale: f32,
+    cell_pt: (f32, f32),
+) -> Gpu {
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("terminal"),
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -154,7 +165,7 @@ fn make_gpu(device: &wgpu::Device, key: rune::compose::DeviceKey, scale: f32) ->
         label: Some("terminal"),
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
-    let atlas = Atlas::new(device, CELL_PT, scale);
+    let atlas = Atlas::new(device, cell_pt, scale);
     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("terminal"),
         layout: &bgl,
@@ -170,7 +181,8 @@ fn make_gpu(device: &wgpu::Device, key: rune::compose::DeviceKey, scale: f32) ->
         pipelines: Vec::new(),
         atlas,
         bind,
-        pane: None,
+        cell_pt,
+        panes: [None, None],
     }
 }
 
@@ -382,24 +394,47 @@ fn fnv(bytes: &[u8]) -> u64 {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn extras_key(
-    grid: &client::CellGrid,
+/// What a pane draws over its cells, read from its `TerminalUi`.
+#[derive(Clone, Copy)]
+struct Overlay<'a> {
     scroll: usize,
     selection: Option<Selection>,
-    preedit: &str,
+    preedit: &'a str,
     cursor_on: bool,
-    scale: f32,
-) -> u64 {
+    link: Option<&'a Link>,
+}
+
+impl<'a> Overlay<'a> {
+    fn of(ui: &'a TerminalUi) -> Self {
+        Overlay {
+            scroll: ui.scroll,
+            selection: ui.selection,
+            preedit: &ui.preedit,
+            cursor_on: ui.cursor_on,
+            link: ui.link.as_ref(),
+        }
+    }
+}
+
+fn extras_key(grid: &client::CellGrid, o: Overlay<'_>, scale: f32) -> u64 {
+    let scroll = o.scroll;
     let viewport = crate::terminal::pane::Viewport { grid, scroll };
-    let sel = selection.map(|s| s.range(&viewport));
-    let mut h = fnv(preedit.as_bytes());
+    let sel = o.selection.map(|s| s.range(&viewport));
+    let mut h = fnv(o.preedit.as_bytes());
     let mix64 = |h: u64, v: u64| (h ^ v).wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(23);
     if let Some(((c0, l0), (c1, l1))) = sel {
         for v in [c0 as u64, l0 as u64, c1 as u64, l1 as u64, 1] {
             h = mix64(h, v);
         }
     }
+    if let Some(link) = o.link {
+        for &(line, from, to) in &link.spans {
+            for v in [line as u64, from as u64, to as u64, 2] {
+                h = mix64(h, v);
+            }
+        }
+    }
+    let cursor_on = o.cursor_on;
     let cur = grid.cursor;
     for v in [
         cur.col as u64,
@@ -419,12 +454,17 @@ fn extras_key(
 fn encode_extras(
     atlas: &mut Atlas,
     grid: &client::CellGrid,
-    scroll: usize,
-    selection: Option<Selection>,
-    preedit: &str,
-    cursor_on: bool,
+    o: Overlay<'_>,
+    link_color: u32,
     out: &mut [Inst],
 ) {
+    let Overlay {
+        scroll,
+        selection,
+        preedit,
+        cursor_on,
+        link,
+    } = o;
     let (cw, ch, scale) = (atlas.cell_w, atlas.cell_h, atlas.scale);
     let viewport = crate::terminal::pane::Viewport { grid, scroll };
     let (cols, rows) = (viewport.cols(), viewport.rows());
@@ -493,6 +533,25 @@ fn encode_extras(
             k += 1;
         }
     }
+    if let Some(link) = link {
+        let at = out.len() - LINK_SLOTS;
+        let top = viewport.top_abs();
+        let line = scale.max(1.0);
+        let spans = link
+            .spans
+            .iter()
+            .filter(|(abs, ..)| *abs >= top && *abs < top + rows as i64);
+        for (slot, &(abs, from, to)) in out[at..].iter_mut().zip(spans) {
+            let y = (abs - top) as f32 * ch;
+            *slot = solid(
+                from as f32 * cw,
+                y + atlas.baseline + line * 1.5,
+                (to - from + 1) as f32 * cw,
+                line,
+                link_color,
+            );
+        }
+    }
 }
 
 /// The caret's rectangle in device pixels, as Tauri's `caretRect`: a beam
@@ -541,32 +600,146 @@ fn row_state<'a>(
     (clean, row.map(|r| &r.cells))
 }
 
+#[derive(Default)]
+struct Encoded {
+    work: Option<(usize, usize)>,
+    extras_dirty: bool,
+    rows_uploaded: u64,
+    allocs: u64,
+}
+
+/// Diffs one pane's replica against what its buffer holds and re-encodes
+/// only the rows that changed, as the single-pane path always did.
+fn encode_pane(
+    gpu: &mut Gpu,
+    idx: usize,
+    device: &wgpu::Device,
+    palette: &Palette,
+    shared: &SharedTerminal,
+    o: Overlay<'_>,
+    repaint: bool,
+) -> Encoded {
+    let mut done = Encoded::default();
+    let scale = gpu.atlas.scale;
+    let mut slot = shared.lock();
+    let damage = std::mem::take(&mut slot.damage);
+    let Some(grid) = slot.grid.as_ref() else {
+        gpu.panes[idx] = None;
+        return done;
+    };
+    let (cols, rows) = (
+        grid.visible.first().map_or(0, |row| row.cells.len()),
+        grid.visible.len(),
+    );
+    if cols == 0 || rows == 0 {
+        return done;
+    }
+    if gpu.panes[idx]
+        .as_ref()
+        .is_none_or(|pane| pane.cols != cols || pane.rows != rows)
+    {
+        gpu.panes[idx] = Some(make_pane_gpu(device, cols, rows));
+    }
+    let Some(pg) = gpu.panes[idx].as_mut() else {
+        return done;
+    };
+    let scroll = o.scroll;
+    let total_cells = pg.cells();
+    let full = repaint || matches!(damage, RowDamage::Full) || pg.uploaded_scroll != Some(scroll);
+    let damaged = damage.rows();
+    let e0 = alloc::count();
+    let mut run: Option<usize> = None;
+    let mut work: Option<(usize, usize)> = None;
+    for v in 0..=rows {
+        if v == rows {
+            if let Some(start) = run.take() {
+                work = Some(match work {
+                    Some((a, b)) => (a.min(start), b.max(rows)),
+                    None => (start, rows),
+                });
+            }
+            break;
+        }
+        let forced = full || damaged.is_some_and(|rows| rows.contains(&(v as u16)));
+        let (clean, cells) = row_state(grid, scroll, v, &pg.uploaded[v]);
+        if forced || !clean {
+            match cells {
+                Some(arc) => {
+                    encode_row(
+                        &mut gpu.atlas,
+                        palette,
+                        arc,
+                        v,
+                        (cols, total_cells),
+                        &mut pg.insts,
+                    );
+                    pg.uploaded[v] = Uploaded::Row(Arc::clone(arc));
+                }
+                None => {
+                    encode_row(
+                        &mut gpu.atlas,
+                        palette,
+                        &[],
+                        v,
+                        (cols, total_cells),
+                        &mut pg.insts,
+                    );
+                    pg.uploaded[v] = Uploaded::Blank;
+                }
+            }
+            done.rows_uploaded += 1;
+            run.get_or_insert(v);
+        } else if let Some(start) = run.take() {
+            work = Some(match work {
+                Some((a, b)) => (a.min(start), b.max(v)),
+                None => (start, v),
+            });
+        }
+    }
+    let key = extras_key(grid, o, scale);
+    if key != pg.extras_key {
+        let at = pg.extras_at();
+        encode_extras(&mut gpu.atlas, grid, o, palette.fg, &mut pg.insts[at..]);
+        pg.extras_key = key;
+        done.extras_dirty = true;
+    }
+    pg.uploaded_scroll = Some(scroll);
+    done.work = work;
+    done.allocs = alloc::count() - e0;
+    done
+}
+
 impl Compositor<AppState> for Terminal {
     fn features(&self) -> wgpu::Features {
         wgpu::Features::IMMEDIATES
     }
 
     fn animating(&self) -> bool {
-        self.shared.animating()
+        self.shared.animating() || self.shared.beside().is_some_and(|split| split.animating())
     }
 
     fn render(&mut self, f: &mut Frame<'_, AppState>) {
-        let epoch = self.shared.render_epoch();
+        let epochs = [
+            Some(self.shared.render_epoch()),
+            self.shared.beside().map(|split| split.render_epoch()),
+        ];
         let t0 = Instant::now();
         let a0 = alloc::count();
         let mut encode_allocs = 0u64;
         let (device, queue) = (f.device, f.queue);
         let scale = f.rt.env.scale;
+        let cell_pt = f.rt.state.cell_pt();
         let key = f.device_key();
         let stale = match &self.gpu {
-            Some(g) => g.key != key || g.atlas.scale != scale,
+            Some(g) => g.key != key || g.atlas.scale != scale || g.cell_pt != cell_pt,
             None => true,
         };
         if stale {
-            self.gpu = Some(make_gpu(device, key, scale));
+            self.gpu = Some(make_gpu(device, key, scale, cell_pt));
             self.last_atlas_gen = 0;
         }
         let shared = Arc::clone(&self.shared);
+        let split = shared.beside().cloned();
         let gpu = self.gpu.as_mut().unwrap();
         let misses0 = gpu.atlas.misses;
 
@@ -577,134 +750,52 @@ impl Compositor<AppState> for Terminal {
             self.palette = Palette::for_base(base);
             self.palette_base = base.to_string();
         }
-        let terminal: &TerminalUi = &f.rt.state.terminal;
-        let scroll = terminal.scroll;
-        let selection = terminal.selection;
-        let preedit = terminal.preedit.clone();
-        let cursor_on = terminal.cursor_on;
         let mut rows_uploaded = 0u64;
-        let mut extras_dirty = false;
-        let mut work: Option<(usize, usize)> = None;
-
-        {
-            let mut slot = shared.lock();
-            let damage = std::mem::take(&mut slot.damage);
-            if let Some(grid) = slot.grid.as_ref() {
-                let (cols, rows) = (
-                    grid.visible.first().map_or(0, |row| row.cells.len()),
-                    grid.visible.len(),
-                );
-                if cols > 0 && rows > 0 {
-                    if gpu
-                        .pane
-                        .as_ref()
-                        .is_none_or(|pane| pane.cols != cols || pane.rows != rows)
-                    {
-                        gpu.pane = Some(make_pane_gpu(device, cols, rows));
-                    }
-                    let pg = gpu.pane.as_mut().unwrap();
-                    let total_cells = pg.cells();
-                    let full = repaint
-                        || matches!(damage, RowDamage::Full)
-                        || pg.uploaded_scroll != Some(scroll);
-                    let damaged = damage.rows();
-                    let e0 = alloc::count();
-                    let mut run: Option<usize> = None;
-                    for v in 0..=rows {
-                        if v == rows {
-                            if let Some(start) = run.take() {
-                                work = Some(match work {
-                                    Some((a, b)) => (a.min(start), b.max(rows)),
-                                    None => (start, rows),
-                                });
-                            }
-                            break;
-                        }
-                        let forced = full || damaged.is_some_and(|rows| rows.contains(&(v as u16)));
-                        let (clean, cells) = row_state(grid, scroll, v, &pg.uploaded[v]);
-                        if forced || !clean {
-                            match cells {
-                                Some(arc) => {
-                                    encode_row(
-                                        &mut gpu.atlas,
-                                        &self.palette,
-                                        arc,
-                                        v,
-                                        (cols, total_cells),
-                                        &mut pg.insts,
-                                    );
-                                    pg.uploaded[v] = Uploaded::Row(Arc::clone(arc));
-                                }
-                                None => {
-                                    encode_row(
-                                        &mut gpu.atlas,
-                                        &self.palette,
-                                        &[],
-                                        v,
-                                        (cols, total_cells),
-                                        &mut pg.insts,
-                                    );
-                                    pg.uploaded[v] = Uploaded::Blank;
-                                }
-                            }
-                            rows_uploaded += 1;
-                            run.get_or_insert(v);
-                        } else if let Some(start) = run.take() {
-                            work = Some(match work {
-                                Some((a, b)) => (a.min(start), b.max(v)),
-                                None => (start, v),
-                            });
-                        }
-                    }
-                    let key = extras_key(grid, scroll, selection, &preedit, cursor_on, scale);
-                    if key != pg.extras_key {
-                        let at = pg.extras_at();
-                        encode_extras(
-                            &mut gpu.atlas,
-                            grid,
-                            scroll,
-                            selection,
-                            &preedit,
-                            cursor_on,
-                            &mut pg.insts[at..],
-                        );
-                        pg.extras_key = key;
-                        extras_dirty = true;
-                    }
-                    pg.uploaded_scroll = Some(scroll);
-                    encode_allocs += alloc::count() - e0;
-                }
-            } else {
-                gpu.pane = None;
-            }
+        let mut encoded: [Encoded; PANES] = Default::default();
+        let state = &f.rt.state;
+        for (idx, done) in encoded.iter_mut().enumerate().take(state.pane_count()) {
+            let replica = match (idx, &split) {
+                (0, _) => &*shared,
+                (_, Some(split)) => &**split,
+                _ => continue,
+            };
+            let overlay = Overlay::of(state.pane(idx));
+            *done = encode_pane(gpu, idx, device, &self.palette, replica, overlay, repaint);
+            rows_uploaded += done.rows_uploaded;
+            encode_allocs += done.allocs;
         }
 
         gpu.atlas.flush(queue);
-        if let (Some((start, end)), Some(pg)) = (work, gpu.pane.as_ref()) {
-            let total_cells = pg.cells();
-            for region in 0..REGIONS {
-                let (a, b) = (
-                    region * total_cells + start * pg.cols,
-                    region * total_cells + end * pg.cols,
-                );
+        for (done, pg) in encoded.iter().zip(&gpu.panes) {
+            let Some(pg) = pg else {
+                continue;
+            };
+            if let Some((start, end)) = done.work {
+                let total_cells = pg.cells();
+                for region in 0..REGIONS {
+                    let (a, b) = (
+                        region * total_cells + start * pg.cols,
+                        region * total_cells + end * pg.cols,
+                    );
+                    f.write_buffer(
+                        &pg.buffer,
+                        (a * size_of::<Inst>()) as u64,
+                        bytemuck::cast_slice(&pg.insts[a..b]),
+                    );
+                }
+            }
+            if done.extras_dirty {
+                let at = pg.extras_at();
                 f.write_buffer(
                     &pg.buffer,
-                    (a * size_of::<Inst>()) as u64,
-                    bytemuck::cast_slice(&pg.insts[a..b]),
+                    (at * size_of::<Inst>()) as u64,
+                    bytemuck::cast_slice(&pg.insts[at..]),
                 );
             }
         }
-        if extras_dirty && let Some(pg) = gpu.pane.as_ref() {
-            let at = pg.extras_at();
-            f.write_buffer(
-                &pg.buffer,
-                (at * size_of::<Inst>()) as u64,
-                bytemuck::cast_slice(&pg.insts[at..]),
-            );
-        }
         if gpu.atlas.generation != self.last_atlas_gen {
             self.last_atlas_gen = gpu.atlas.generation;
-            if let Some(pg) = gpu.pane.as_mut() {
+            for pg in gpu.panes.iter_mut().flatten() {
                 pg.uploaded.iter_mut().for_each(|u| *u = Uploaded::Unset);
             }
         }
@@ -726,13 +817,17 @@ impl Compositor<AppState> for Terminal {
             f.target,
             clear,
             &mut |pass: &mut wgpu::RenderPass<'_>, s: &EffectSite<'_>| {
-                if s.mark == MARK_BASE {
-                    let r = s.instance.rect;
-                    if let Some((cols, rows)) = grid_cells(r[2], r[3], cell_w, cell_h) {
-                        shared.set_measured(cols, rows);
-                    }
+                let idx = s.mark.wrapping_sub(MARK_BASE) as usize;
+                let replica = match (idx, &split) {
+                    (0, _) => &*shared,
+                    (1, Some(split)) => &**split,
+                    _ => return,
+                };
+                let r = s.instance.rect;
+                if let Some((cols, rows)) = grid_cells(r[2], r[3], cell_w, cell_h) {
+                    replica.set_measured(cols, rows);
                 }
-                let Some(pg) = gpu.pane.as_ref() else {
+                let Some(pg) = gpu.panes[idx].as_ref() else {
                     return;
                 };
                 let h0 = alloc::count();
@@ -757,7 +852,11 @@ impl Compositor<AppState> for Terminal {
         );
         let t2 = Instant::now();
 
-        shared.mark_rendered_to(epoch);
+        for (replica, epoch) in [Some(&shared), split.as_ref()].into_iter().zip(epochs) {
+            if let (Some(replica), Some(epoch)) = (replica, epoch) {
+                replica.mark_rendered_to(epoch);
+            }
+        }
         let us = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1e6;
         let mut st = self.stats.lock().unwrap();
         st.frames += 1;
