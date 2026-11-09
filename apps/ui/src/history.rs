@@ -112,7 +112,7 @@ impl AppState {
         let installed = self
             .installed_agents()
             .iter()
-            .any(|(id, _)| id.as_str() == session.provider);
+            .any(|row| row.provider.as_str() == session.provider);
         (!installed).then(|| format!("{} is not installed", session.provider))
     }
 

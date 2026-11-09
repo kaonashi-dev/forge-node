@@ -166,6 +166,7 @@ pub struct Settings {
     pub commands: HashMap<String, TextEdit>,
     /// The daemon's answer to the last General or Agents action.
     pub notice: Option<(bool, String)>,
+    pub keyboard: keyboard::Keyboard,
 }
 
 impl Settings {
@@ -191,8 +192,15 @@ impl AppState {
     /// Writes a shared preference and keeps the replica in step: the daemon
     /// broadcasts no change to `app_state`, so only a snapshot would.
     pub fn write_pref(&mut self, key: &str, value: &str) {
+        let _ = self.write_pref_checked(key, value);
+    }
+
+    /// Writes a preference and reports a refused socket write, for the few
+    /// callers that have somewhere to say so.
+    #[must_use = "a refused write leaves the preference ahead of the daemon"]
+    pub fn write_pref_checked(&mut self, key: &str, value: &str) -> Result<(), String> {
         if let Some(connection) = &self.connection {
-            let _ = connection.set_app_state(key, value);
+            connection.set_app_state(key, value)?;
         }
         if let Some(store) = &mut self.store {
             match store.app_state.iter_mut().find(|(k, _)| k == key) {
@@ -203,6 +211,7 @@ impl AppState {
         if key.starts_with("ui.editor.") {
             self.apply_editor_prefs();
         }
+        Ok(())
     }
 
     #[must_use]
@@ -433,7 +442,7 @@ pub fn page(s: &AppState, k: &Kit) -> El {
     let body = match section {
         Section::General => general::section(s, k),
         Section::Agents => agents::section(s, k),
-        Section::Keyboard => keyboard::section(k),
+        Section::Keyboard => keyboard::section(s, k),
         Section::SharedFiles => crate::shares::page(s, k, crate::shares::current_project(s), None),
         Section::Storage => crate::storage::section(s, k),
         Section::Stats => crate::usage::section(s, k),

@@ -85,6 +85,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
             s.paste(text, tx);
         });
     let mut overlays = Vec::new();
+    overlays.extend(crate::chrome::drop_marker(s, &k));
     if s.palette.open {
         palette(s, &k, &mut overlays);
     }
@@ -98,6 +99,8 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::settings::dialogs(s, &k, &mut overlays);
     crate::menus::layer(s, &k, &mut overlays);
     crate::native_menus::dialog(s, &k, &mut overlays);
+    tab_switcher(s, &k, &mut overlays);
+    overlays.extend(crate::toasts::layer(s, &k));
     let root = rune_kit::root(root, overlays);
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
@@ -849,14 +852,42 @@ fn command_line(command: Option<&CommandStatus>, k: &Kit) -> El {
 
 fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let entries = s.palette.entries();
+    let (scope, _) = s.palette.parsed();
     let field = rune_kit::TextInput::new(&s.palette.edit)
         .placeholder(s.palette.placeholder())
         .label("Command palette")
+        .width(None)
         .on_edit(|s: &mut AppState| &mut s.palette.edit)
-        .on_change(|s: &mut AppState, _| s.palette.selected = 0)
+        .on_change(|s: &mut AppState, _| {
+            s.palette.selected = 0;
+            s.palette.clear_error();
+        })
         .on_key(|s: &mut AppState, ev, _| s.palette_key(ev))
         .build(k)
         .key("palette-input");
+    let mut heading = row().key("palette-scope").w_full().gap(8.0).items_center();
+    if let Some((prefix, label)) = s.palette.chip() {
+        heading = heading.child(
+            row()
+                .px(7.0)
+                .py(2.0)
+                .radius(5.0)
+                .fill(k.c.surface_hover)
+                .gap(4.0)
+                .child(
+                    text(prefix.to_string())
+                        .font(k.ty.mono)
+                        .color(k.c.text_faint)
+                        .a11y_hidden(),
+                )
+                .child(
+                    text(label)
+                        .font(k.ty.text_xsmall_medium)
+                        .color(k.c.text_muted),
+                ),
+        );
+    }
+    heading = heading.child(field);
     let mut list = col()
         .key("palette-list")
         .gap(2.0)
@@ -865,42 +896,88 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     for (index, entry) in entries.iter().enumerate().take(30) {
         let selected = index == s.palette.selected;
         let chosen = entry.clone();
-        let (kind, mark) = match entry {
-            crate::palette::Entry::Command { command, .. } => {
-                (crate::palette::chord(command).unwrap_or_default(), None)
-            }
+        let mut row = row()
+            .key(format!("palette-{index}"))
+            .role("option")
+            .label(entry.label().to_string())
+            .focus_selected(selected)
+            .w_full()
+            .h(30.0)
+            .px(10.0)
+            .gap(8.0)
+            .items_center()
+            .radius(6.0)
+            .fill(if selected {
+                k.c.surface_hover
+            } else {
+                rune::Color::TRANSPARENT
+            })
+            .on_press(move |s: &mut AppState| s.run_palette(chosen.clone()));
+        let (mark, hint, note) = match entry {
+            crate::palette::Entry::Command { command, .. } => (
+                None,
+                s.palette.chord(command).unwrap_or_default().to_string(),
+                None,
+            ),
             crate::palette::Entry::File(path) => (
-                "file",
                 Some(crate::file_icons::for_path(path).icon(!k.dark)),
+                "file".to_string(),
+                None,
+            ),
+            crate::palette::Entry::Session {
+                agent,
+                kind,
+                waiting,
+                note,
+                ..
+            } => {
+                let glyph = if *waiting {
+                    &crate::glyphs::NEEDS_YOU
+                } else {
+                    crate::glyphs::for_session(*kind, agent.as_deref())
+                };
+                (
+                    Some(glyph),
+                    if *waiting { "waiting" } else { "" }.to_string(),
+                    Some(note.as_str()),
+                )
+            }
+            crate::palette::Entry::Checkout { note, .. } => (
+                Some(&crate::glyphs::WORKTREE),
+                "checkout".to_string(),
+                Some(note.as_str()),
+            ),
+            crate::palette::Entry::Symbol(hit) => (
+                Some(crate::file_icons::for_path(&hit.path).icon(!k.dark)),
+                format!("{}:{}", hit.path, hit.line),
+                Some(hit.text.as_str()),
             ),
         };
-        list = list.child(
-            row()
-                .key(format!("palette-{index}"))
-                .role("option")
-                .label(entry.label().to_string())
-                .w_full()
-                .h(30.0)
-                .px(10.0)
-                .gap(8.0)
-                .items_center()
-                .radius(6.0)
-                .fill(if selected {
-                    k.c.surface_hover
-                } else {
-                    rune::Color::TRANSPARENT
-                })
-                .on_press(move |s: &mut AppState| s.run_palette(chosen.clone()))
-                .children(mark.map(|mark| icon(mark, 14.0)))
-                .child(
-                    text(entry.label().to_string())
-                        .font(k.ty.small)
-                        .color(k.c.text_base)
-                        .grow(1.0)
-                        .truncate(),
-                )
-                .child(text(kind).font(k.ty.text_xsmall).color(k.c.text_faint)),
+        if let Some(mark) = mark {
+            row = row.child(icon(mark, 14.0));
+        }
+        row = row.child(
+            text(entry.label().to_string())
+                .font(k.ty.small)
+                .color(k.c.text_base)
+                .grow(1.0)
+                .min_w(0.0)
+                .truncate(),
         );
+        if let Some(note) = note.filter(|note| !note.is_empty()) {
+            row = row.child(
+                text(note.to_string())
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_faint)
+                    .truncate()
+                    .min_w(0.0)
+                    .shrink(),
+            );
+        }
+        if !hint.is_empty() {
+            row = row.child(text(hint).font(k.ty.mono).color(k.c.text_faint).w(90.0));
+        }
+        list = list.child(row);
     }
     if entries.is_empty() {
         let mut empty = row().gap(8.0).items_center();
@@ -909,33 +986,151 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         }
         list = list.child(
             empty.child(
-                text(if s.palette.searching() {
-                    "Searching files…"
-                } else {
-                    "Nothing matches."
-                })
-                .font(k.ty.small)
-                .color(k.c.text_faint),
+                text(s.palette.empty_message())
+                    .font(k.ty.small)
+                    .color(k.c.text_faint),
             ),
         );
     }
-    rune_kit::Dialog::new(
-        "palette",
-        if s.palette.files_only {
-            "Open File…"
-        } else if s.palette.launch {
-            "New Session"
+    if let Some(error) = &s.palette.error {
+        list = list.child(
+            text(error.clone())
+                .key("palette-error")
+                .role("status")
+                .font(k.ty.text_xsmall)
+                .color(k.c.danger.fg),
+        );
+    }
+    let title = match scope {
+        crate::palette::Scope::Everything => "Command Palette".to_string(),
+        crate::palette::Scope::Commands => "Commands".to_string(),
+        crate::palette::Scope::Files => "Open File".to_string(),
+        crate::palette::Scope::Places => "Go to".to_string(),
+        crate::palette::Scope::Symbols => "Go to Symbol".to_string(),
+        crate::palette::Scope::Launch => "New Session".to_string(),
+    };
+    rune_kit::Dialog::new("palette", title)
+        .open(true)
+        .click_outside(true)
+        .width(640.0)
+        .on_close(|s: &mut AppState| s.palette.close())
+        .child(heading)
+        .child(list)
+        .build(k, layer);
+}
+
+/// Hold-Control tab list. It never takes focus: the gesture is keyboard-only,
+/// Tab steps it, and releasing Control commits the highlighted row.
+fn tab_switcher(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
+    let Some((targets, index, foreign_at)) = s.tabs.shown_gesture() else {
+        return;
+    };
+    let ids: Vec<domain::SessionId> = targets.to_vec();
+    let mut card = col()
+        .gap(2.0)
+        .w(420.0)
+        .padding(10.0)
+        .radius(8.0)
+        .fill(k.c.layer_01)
+        .border(1.0, k.c.border_base);
+    let mut list = col()
+        .key("tab-switcher-list")
+        .role("listbox")
+        .label("Switch Tab")
+        .gap(2.0);
+    for (at, id) in ids.iter().enumerate() {
+        let Some(session) = s.rows.iter().find(|row| row.id == *id) else {
+            continue;
+        };
+        let selected = at == index;
+        let glyph = crate::glyphs::for_row(session, selected, !k.dark);
+        let note = if at >= foreign_at {
+            s.store
+                .as_ref()
+                .and_then(|store| {
+                    let workspace = store
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.id == session.workspace_id)?;
+                    store
+                        .projects
+                        .iter()
+                        .find(|project| project.id == workspace.project_id)
+                        .map(|project| project.name.clone())
+                        .or_else(|| workspace.branch.clone())
+                })
+                .unwrap_or_default()
         } else {
-            "Command Palette"
-        },
-    )
-    .open(true)
-    .click_outside(true)
-    .width(560.0)
-    .on_close(|s: &mut AppState| s.palette.close())
-    .child(field)
-    .child(list)
-    .build(k, layer);
+            String::new()
+        };
+        let mut item = row()
+            .key(format!("tab-switcher-{at}"))
+            .role("option")
+            .label(session.title.clone())
+            .focus_selected(selected)
+            .w_full()
+            .h(30.0)
+            .px(8.0)
+            .gap(8.0)
+            .items_center()
+            .radius(6.0)
+            .fill(if selected {
+                k.c.surface_hover
+            } else {
+                rune::Color::TRANSPARENT
+            })
+            .child(icon(glyph, 14.0).color(k.c.icon_muted))
+            .child(
+                text(session.title.clone())
+                    .font(if selected {
+                        k.ty.small_medium
+                    } else {
+                        k.ty.small
+                    })
+                    .color(if selected {
+                        k.c.text_base
+                    } else {
+                        k.c.text_muted
+                    })
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .truncate(),
+            );
+        if !note.is_empty() {
+            item = item.child(
+                text(note)
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_faint)
+                    .truncate(),
+            );
+        }
+        list = list.child(item);
+    }
+    card = card
+        .child(
+            text("Switch Tab")
+                .font(k.ty.text_xsmall_medium)
+                .color(k.c.text_faint)
+                .px(8.0)
+                .pb(4.0),
+        )
+        .child(list)
+        .child(
+            text("hold ctrl · tab steps · release commits · esc cancels")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .px(8.0)
+                .pt(6.0),
+        );
+    layer.push(
+        el().key("tab-switcher-layer")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .pt(72.0)
+            .items_center()
+            .child(card),
+    );
 }
 
 /// Tauri's empty centre (`EmptyCenter.tsx`): what can be started from here.

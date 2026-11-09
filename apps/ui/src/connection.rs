@@ -375,6 +375,12 @@ pub enum UiEvent {
         query: String,
         result: Result<Vec<String>, String>,
     },
+    Symbols {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        query: String,
+        result: Result<Box<domain::SearchResults>, String>,
+    },
     Usage {
         generation: u64,
         window_days: u16,
@@ -383,6 +389,11 @@ pub enum UiEvent {
     Paths {
         generation: u64,
         result: Result<Box<(protocol::ForgePaths, std::path::PathBuf)>, String>,
+    },
+    PreferenceFailed {
+        generation: u64,
+        key: String,
+        error: String,
     },
     Rebase {
         generation: u64,
@@ -2599,6 +2610,20 @@ fn handle_live_command(
                         .map_err(|error| error.to_string()),
                     query,
                 },
+                crate::workbench::Read::Definition(query) => UiEvent::Symbols {
+                    generation,
+                    scope,
+                    result: client
+                        .search_files(
+                            workspace_id,
+                            query.clone(),
+                            domain::SearchKind::Definition,
+                            Some(crate::palette::FILE_LIMIT),
+                        )
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                    query,
+                },
                 crate::workbench::Read::Rebase => UiEvent::Rebase {
                     generation,
                     scope,
@@ -3307,6 +3332,11 @@ fn handle_live_command(
             metrics.note_socket_op();
             if let Err(error) = client.set_app_state(&key, &value) {
                 eprintln!("forge-ui: saving {key}: {error}");
+                sink(vec![UiEvent::PreferenceFailed {
+                    generation,
+                    key,
+                    error: error.to_string(),
+                }]);
             }
         }
         Command::RefreshSnapshot => {

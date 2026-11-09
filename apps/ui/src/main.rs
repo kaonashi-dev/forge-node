@@ -31,10 +31,12 @@ mod settings;
 mod shares;
 mod storage;
 mod sync;
+mod tabs;
 mod terminal;
 #[cfg(test)]
 mod test_support;
 mod theme;
+mod toasts;
 mod ui;
 mod updates;
 mod usage;
@@ -45,7 +47,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use client::Store;
-use rune::{App, AppSpec, Chrome, Key};
+use rune::{App, AppSpec, Chrome};
 
 use app::AppState;
 use connection::{Boot, Metrics, Mode};
@@ -329,23 +331,6 @@ fn init() -> AppState {
 fn app_key(s: &mut AppState, ev: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
     if s.editor_chord(ev, tx) || s.global_key(ev) {
         return true;
-    }
-    if ev.mods.cmd {
-        match &ev.key {
-            Key::Command('n') => {
-                s.request_create();
-                return true;
-            }
-            Key::Command('r') if ev.mods.shift => {
-                s.request_reconnect();
-                return true;
-            }
-            Key::Command('r') => {
-                s.request_refresh();
-                return true;
-            }
-            _ => {}
-        }
     }
     if s.active_line_editor().is_some() {
         return s.editor_key(ev, tx);

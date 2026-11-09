@@ -148,12 +148,7 @@ pub fn send(s: &mut AppState, op: Op) -> bool {
     match result {
         Ok(()) => true,
         Err(message) => {
-            s.last_command = Some(CommandStatus {
-                label,
-                ok: false,
-                message,
-                took_us: 0,
-            });
+            s.command_failed(label, message);
             false
         }
     }
@@ -276,16 +271,16 @@ pub fn apply(s: &mut AppState, reply: Reply) {
         (Op::AddProjectTo(..), Ok(_)) => s.request_refresh(),
         _ => {}
     }
-    s.last_command = Some(CommandStatus {
-        label,
-        ok: message.is_empty(),
-        message: if message.is_empty() {
-            "done".to_string()
-        } else {
-            message
-        },
-        took_us: 0,
-    });
+    if !message.is_empty() {
+        s.command_failed(label, message);
+    } else {
+        s.last_command = Some(CommandStatus {
+            label,
+            ok: true,
+            message: "done".to_string(),
+            took_us: 0,
+        });
+    }
 }
 
 /// Asks for the per-rule state of every checkout of `project`.

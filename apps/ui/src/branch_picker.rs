@@ -374,20 +374,11 @@ fn launch_options(s: &AppState) -> Vec<(String, Launch)> {
         ("Nothing".to_string(), Launch::Nothing),
         ("New Terminal".to_string(), Launch::Shell),
     ];
-    for (provider, name) in s.installed_agents() {
-        out.push((format!("New {name}"), Launch::Agent(provider.clone(), None)));
-        if let Some(store) = &s.store {
-            for profile in store
-                .agent_profiles
-                .iter()
-                .filter(|p| p.provider_id == provider)
-            {
-                out.push((
-                    format!("New {}", profile.name),
-                    Launch::Agent(provider.clone(), Some(profile.id)),
-                ));
-            }
-        }
+    for row in s.installed_agents() {
+        out.push((
+            format!("New {}", row.label),
+            Launch::Agent(row.provider, row.profile),
+        ));
     }
     out
 }
