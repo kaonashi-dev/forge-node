@@ -108,6 +108,8 @@ struct Gpu {
 pub struct Terminal {
     gpu: Option<Gpu>,
     palette: Palette,
+    /// The theme base `palette` was built from; a change repaints every row.
+    palette_base: String,
     stats: Shared,
     shared: Arc<SharedTerminal>,
     last_atlas_gen: u64,
@@ -117,7 +119,8 @@ impl Terminal {
     pub fn new(shared: Arc<SharedTerminal>, stats: Shared) -> Self {
         Terminal {
             gpu: None,
-            palette: Palette::forge_dark(),
+            palette: Palette::for_base(crate::theme::DEFAULT_BASE),
+            palette_base: crate::theme::DEFAULT_BASE.to_string(),
             stats,
             shared,
             last_atlas_gen: 0,
@@ -541,6 +544,13 @@ impl Compositor<AppState> for Terminal {
         let gpu = self.gpu.as_mut().unwrap();
         let misses0 = gpu.atlas.misses;
 
+        // Compared as `&str`, so a frame whose theme did not change allocates nothing.
+        let base = f.rt.state.theme_base(f.rt.env.system_dark);
+        let repaint = base != self.palette_base;
+        if repaint {
+            self.palette = Palette::for_base(base);
+            self.palette_base = base.to_string();
+        }
         let terminal: &TerminalUi = &f.rt.state.terminal;
         let scroll = terminal.scroll;
         let selection = terminal.selection;
@@ -568,8 +578,9 @@ impl Compositor<AppState> for Terminal {
                     }
                     let pg = gpu.pane.as_mut().unwrap();
                     let total_cells = pg.cells();
-                    let full =
-                        matches!(damage, RowDamage::Full) || pg.uploaded_scroll != Some(scroll);
+                    let full = repaint
+                        || matches!(damage, RowDamage::Full)
+                        || pg.uploaded_scroll != Some(scroll);
                     let damaged = damage.rows();
                     let e0 = alloc::count();
                     let mut run: Option<usize> = None;

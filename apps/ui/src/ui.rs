@@ -25,9 +25,7 @@ static PLUS: Icon = Icon {
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     s.metrics.note_ui_thread();
     let started = Instant::now();
-    let dark = crate::theme::theme(s.theme_base(cx.system_dark()))
-        .map_or(cx.system_dark(), |theme| !theme.light);
-    let k = Kit::neutral(dark);
+    let k = crate::theme::kit(s.theme_base(cx.system_dark()), cx.system_dark());
     let main = col()
         .key("main-pane")
         .w_full()

@@ -4,6 +4,7 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16 | 0xff00_0000
 }
 
+#[derive(Clone)]
 pub struct Palette {
     pub fg: u32,
     pub bg: u32,
@@ -29,7 +30,37 @@ const FORGE_DARK: [u32; 16] = [
     rgb(0xed, 0xe5, 0xd6),
 ];
 
+fn parse_hex(value: &str) -> Option<u32> {
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(hex, 16).ok()?;
+    Some(rgb((n >> 16) as u8, (n >> 8) as u8, n as u8))
+}
+
 impl Palette {
+    /// The terminal colours of a `tokens.ts` base, or forge-dark when the base
+    /// is unknown or its entry does not parse.
+    pub fn for_base(base: &str) -> Self {
+        let mut palette = Self::forge_dark();
+        let Some(colors) = crate::theme::theme(base).map(|theme| &theme.palette) else {
+            return palette;
+        };
+        let named: Option<Vec<u32>> = colors.ansi.iter().take(16).map(|c| parse_hex(c)).collect();
+        if let (Some(fg), Some(bg), Some(named)) = (
+            parse_hex(&colors.term_fg),
+            parse_hex(&colors.term_bg),
+            named,
+        ) && named.len() == 16
+        {
+            palette.fg = fg;
+            palette.bg = bg;
+            palette.ansi[..16].copy_from_slice(&named);
+        }
+        palette
+    }
+
     /// The 16 named colors and default fg/bg come from `forge-dark` in `apps/tauri/src/theme/tokens.ts`; 16..=255 is the xterm cube and ramp.
     pub fn forge_dark() -> Self {
         let mut ansi = [0u32; 256];
@@ -72,4 +103,22 @@ pub fn mix(a: u32, b: u32, alpha: u32) -> u32 {
 
 pub fn with_alpha(color: u32, alpha: u8) -> u32 {
     (color & 0x00ff_ffff) | (alpha as u32) << 24
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    #[test]
+    fn a_base_brings_its_own_terminal_colours() {
+        let calm = Palette::for_base("calm-dark");
+        assert_eq!(calm.bg, rgb(0x11, 0x11, 0x12), "tokens.ts calm-dark termBg");
+        assert_eq!(calm.fg, rgb(0xc9, 0xc9, 0xcf));
+        let light = Palette::for_base("calm-light");
+        assert_ne!(light.bg, calm.bg);
+        assert_eq!(
+            Palette::for_base("no-such-base").bg,
+            Palette::forge_dark().bg
+        );
+    }
 }

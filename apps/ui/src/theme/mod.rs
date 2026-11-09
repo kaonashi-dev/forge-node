@@ -25,7 +25,21 @@ struct ThemeFile {
 pub struct Theme {
     pub label: String,
     pub light: bool,
+    pub palette: TermColors,
     pub editor: EditorColors,
+}
+
+/// The palette's ground, text and accent for the chrome, and the terminal's
+/// ground, text and sixteen named colours.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermColors {
+    pub bg: String,
+    pub text: String,
+    pub accent: String,
+    pub term_bg: String,
+    pub term_fg: String,
+    pub ansi: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +99,36 @@ pub fn theme(base: &str) -> Option<&'static Theme> {
 #[must_use]
 pub fn default_base(dark: bool) -> &'static str {
     if dark { "calm-dark" } else { "calm-light" }
+}
+
+/// The chrome's kit for `base`, derived by `rune-kit` from the palette's
+/// ground, text and accent; `fallback_dark` decides when the base is unknown.
+pub fn kit(base: &str, fallback_dark: bool) -> rune_kit::Kit {
+    thread_local! {
+        static KITS: std::cell::RefCell<HashMap<String, rune_kit::Kit>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    KITS.with(|kits| {
+        if let Some(kit) = kits.borrow().get(base) {
+            return kit.clone();
+        }
+        let parse = |value: &str| rune::color::hex(value);
+        let kit = match theme(base) {
+            Some(found) => match (
+                parse(&found.palette.bg),
+                parse(&found.palette.text),
+                parse(&found.palette.accent),
+            ) {
+                (Some(bg), Some(fg), Some(accent)) => {
+                    rune_kit::Kit::from_palette(rune_kit::PaletteSeed { bg, fg, accent })
+                }
+                _ => rune_kit::Kit::neutral(!found.light),
+            },
+            None => rune_kit::Kit::neutral(fallback_dark),
+        };
+        kits.borrow_mut().insert(base.to_string(), kit.clone());
+        kit
+    })
 }
 
 #[cfg(test)]
