@@ -800,7 +800,7 @@ mod tests {
             scroll: ui.scroll,
         };
         let text = copy_text(&viewport, &ui.selection.unwrap()).unwrap();
-        assert_eq!(text, "/Users/kaonashi/dev/forge-node/src/main.rs:42");
+        assert_eq!(text, "/Users/me/dev/forge-node/src/main.rs:42");
         let wrapped_row = 14;
         let y = wrapped_row as f32 * CELL.1 + 1.0;
         drag(&mut ui, &grid, Press::Down, 10.0, y, 3, &mut out);

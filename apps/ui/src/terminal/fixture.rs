@@ -371,7 +371,7 @@ fn showcase(cols: usize, rows: usize) -> Vec<Row> {
     let mut r = RowBuilder::new(cols);
     r.plain(
         0,
-        "word select: /Users/kaonashi/dev/forge-node/src/main.rs:42 https://example.com/a?b=c done",
+        "word select: /Users/me/dev/forge-node/src/main.rs:42 https://example.com/a?b=c done",
     );
     out.push(r.build());
 
