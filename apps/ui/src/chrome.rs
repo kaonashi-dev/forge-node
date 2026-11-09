@@ -130,6 +130,9 @@ fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
     // The strip's bottom edge carries the active tab's line, as `.tab-indicator::after`.
     col()
         .key(format!("tab-{}", session.id_text))
+        .on_secondary_press(move |s: &mut AppState, point, _| {
+            crate::menus::open(s, crate::menus::Target::Tab(id), point);
+        })
         .h_full()
         .justify_center()
         .child(chip)

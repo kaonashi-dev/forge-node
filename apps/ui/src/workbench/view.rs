@@ -321,20 +321,43 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
             .font(k.ty.small)
             .color(k.c.text_faint);
     }
-    Tree::new(
+    let tree = Tree::new(
         |s: &AppState| &s.workbench.files.tree,
         |s: &mut AppState| &mut s.workbench.files.tree,
         FileNode::label,
     )
-    .row(|node: &FileNode<()>, r| TreeItem::file(node, r))
+    .row(|node: &FileNode<()>, r| {
+        let item = TreeItem::file(node, r);
+        if node.path.is_empty() {
+            item
+        } else {
+            item.trailing(crate::menus::tree_row_catcher(&node.path, node.dir))
+        }
+    })
     .style(TreeStyle::from_kit(k).chevron_only_folders(true))
     .name("Files")
     .on_select(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))
     .on_open(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))
     .build(s, k)
-    .key("files-tree-view")
+    .key(crate::menus::FILES_TREE)
+    .on_secondary_press(crate::menus::files_secondary)
     .w_full()
-    .h_full()
+    .grow(1.0)
+    .min_h(0.0);
+    col()
+        .key("files-panel")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .gap(4.0)
+        .children(s.menus.file_error.as_ref().map(|error| {
+            text(error.clone())
+                .key("files-error-notice")
+                .role("status")
+                .font(k.ty.text_xsmall)
+                .color(k.c.warning.fg)
+        }))
+        .child(tree)
 }
 
 /// A rendered file in the centre: Markdown, or text when it is not.

@@ -12,13 +12,14 @@ Done: the rail (projects, checkouts, sessions, add project, new/remove worktree,
 chips), terminal and agent sessions, the tab strip and sidebar views, the GPU terminal,
 the daemon editor surface, a read-only file tree with markdown and code previews, quick
 open, the Git panel (diff, commit, Juva draft, fetch, stopped rebase), opening and
-reviewing pull requests, History, Processes, the palette, and Settings › Theme, Storage
-and Stats.
+reviewing pull requests, History, Processes, the palette, Settings › Theme, Storage
+and Stats, and the context menus of projects, checkouts, sessions, tabs and the file tree
+(with its create, rename, duplicate, move and delete). Menu items whose feature is not
+ported yet are built in Tauri's order and left out by `menus::ported`.
 
 Pending, in order: settings split into sections (General, Agents, Keyboard, Shared files,
 Appearance controls), theme colours across the whole chrome, file-type and the remaining
-Forge icons, context menus (project, checkout, session, file tree, tabs), file tree
-writes and content search, the editor find panel and go to definition, terminal splits
+Forge icons, file tree content search, the editor find panel and go to definition, terminal splits
 and links, handoff/child/send-context, project management (groups, icons, remove,
 rename, branch picker), shares and worktree ignores, branch compare and code review,
 native menus and the updater. Tauri is removed once this list is empty.
