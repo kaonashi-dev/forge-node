@@ -14,10 +14,11 @@ use swash::zeno::Format;
 use swash::{CacheKey, FontRef};
 
 pub const ATLAS_SIZE: u32 = 2048;
+// Geist Mono, the face Tauri's terminal uses first (`tokens.ts`).
 const FONTS: [&[u8]; 3] = [
-    include_bytes!("../../assets/JetBrainsMono-Regular.ttf"),
-    include_bytes!("../../assets/JetBrainsMono-Bold.ttf"),
-    include_bytes!("../../assets/JetBrainsMono-Italic.ttf"),
+    include_bytes!("../../assets/GeistMono-Regular.ttf"),
+    include_bytes!("../../assets/GeistMono-Bold.ttf"),
+    include_bytes!("../../assets/GeistMono-Italic.ttf"),
 ];
 
 pub const REGULAR: usize = 0;
@@ -63,7 +64,7 @@ pub struct Placed {
 pub struct Run {
     pub start: u32,
     pub len: u8,
-    /// 0..3 are the bundled JetBrains Mono styles; larger is a system fallback face.
+    /// 0..3 are the bundled Geist Mono styles; larger is a system fallback face.
     pub face: u16,
     pub notdef: bool,
     /// A color glyph (emoji) drawn as a monochrome mask; see [`flatten_color`].
@@ -632,7 +633,7 @@ mod tests {
         let run = s.run_at(id);
         assert!(
             run.face as usize >= PRIMARY_FACES,
-            "JetBrains Mono has no CJK: {run:?}"
+            "Geist Mono has no CJK: {run:?}"
         );
         assert!(!run.notdef, "{run:?}");
         let p = s.placed(&run, 0);

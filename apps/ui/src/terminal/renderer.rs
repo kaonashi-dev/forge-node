@@ -20,7 +20,10 @@ use crate::terminal::stats::Shared;
 use client::RowDamage;
 
 pub const MARK_BASE: u32 = 0x100;
-pub const CELL_PT: (f32, f32) = (7.0, 14.0);
+/// Geist Mono at Tauri's 1.35 line height. 8 × 18 pt is 13.3 pt type rather
+/// than 13: whole device pixels at 1× and 2×, so the drawn cell and the IME
+/// caret rect never round apart.
+pub const CELL_PT: (f32, f32) = (8.0, 18.0);
 
 const GLYPHS: usize = MAX_GLYPHS_PER_CELL;
 const R_BG: usize = 0;

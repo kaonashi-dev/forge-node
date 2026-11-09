@@ -356,7 +356,27 @@ fn terminal_surface(s: &AppState, k: &Kit) -> El {
         .h_full()
         .min_h(0.0)
         .child(header)
-        .child(terminal_pane(s, k))
+        .child(
+            // Tauri's terminalPadX / terminalPadY, painted in the terminal's
+            // own ground; the pane inside keeps its coordinates.
+            col()
+                .key("terminal-inset")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .px(24.0)
+                .py(16.0)
+                .fill(terminal_ground(s, k))
+                .child(terminal_pane(s, k)),
+        )
+}
+
+/// The active theme's terminal background, as a Rune colour.
+fn terminal_ground(s: &AppState, k: &Kit) -> rune::Color {
+    let packed = crate::terminal::palette::Palette::for_base(s.theme_base(k.dark)).bg;
+    let channel = |shift: u32| (packed >> shift) & 0xff;
+    let srgb = format!("#{:02x}{:02x}{:02x}", channel(0), channel(8), channel(16));
+    rune::color::hex(&srgb).unwrap_or(k.c.bg_base)
 }
 
 /// Tauri's `SessionHeader` crumbs: project / checkout / session.
