@@ -1569,13 +1569,32 @@ impl AppState {
             }
             self.mirror_at = clock;
         }
-        let floor = if self.terminal.shared.meta().has_grid {
+        let mut floor: f64 = if self.terminal.shared.meta().has_grid {
             0.100
         } else {
             0.016
         };
+        if let Some(drag) = self.terminal.drag {
+            // A selection held at an edge keeps scrolling with a still pointer.
+            if clock - drag.stepped_at >= input::EDGE_STEP_SECS {
+                changed |= self.terminal_edge_step();
+                if let Some(drag) = self.terminal.drag.as_mut() {
+                    drag.stepped_at = clock;
+                }
+            }
+            floor = floor.min(input::EDGE_STEP_SECS);
+        }
         tx.wake_after(Duration::from_secs_f64(floor));
         changed
+    }
+
+    fn terminal_edge_step(&mut self) -> bool {
+        let shared = Arc::clone(&self.terminal.shared);
+        let slot = shared.lock();
+        let Some(grid) = slot.grid.as_ref() else {
+            return false;
+        };
+        input::edge_scroll(0, &mut self.terminal, grid, CELL_PT, &mut self.out)
     }
 
     pub fn flush_outbox(&mut self) {

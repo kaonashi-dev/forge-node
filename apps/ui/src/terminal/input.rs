@@ -5,7 +5,7 @@ use client::{
 use domain::{MouseMode, TermModes};
 use rune::{Ime, Key, KeyEvent, Mods, WheelEvent};
 
-use crate::terminal::pane::{FetchRequest, Gesture, TerminalUi, Viewport};
+use crate::terminal::pane::{DragPoint, FetchRequest, Gesture, TerminalUi, Viewport};
 use crate::terminal::selection::{CopyError, Granularity, Selection, copy_text};
 
 pub const PREEDIT_MAX_CHARS: usize = 64;
@@ -289,6 +289,107 @@ pub fn wheel(
     true
 }
 
+/// Seconds between edge steps, and the most lines one step moves, as Tauri's
+/// `SCROLL_INTERVAL_MS` and `MAX_SCROLL_LINES`.
+pub const EDGE_STEP_SECS: f64 = 0.050;
+const MAX_EDGE_LINES: i64 = 4;
+
+/// The cell a drag points at: above the pane is the first column, below it
+/// the last, so dragging off an edge means "to the line's start or end".
+fn drag_cell(viewport: &Viewport<'_>, x: f32, y: f32, cell: (f32, f32)) -> (u16, i64) {
+    let height = viewport.rows() as f32 * cell.1;
+    let x = if y < 0.0 {
+        0.0
+    } else if y >= height {
+        f32::MAX / 4.0
+    } else {
+        x
+    };
+    viewport.cell_at(x, y, cell)
+}
+
+/// Lines a drag held at an edge scrolls by, as Tauri's `scrollStep`:
+/// positive goes into history. None for a click that never moved, an
+/// alternate or mouse-reporting screen, or past either end of the history.
+#[must_use]
+pub fn edge_lines(
+    drag: &DragPoint,
+    rows: usize,
+    cell_h: f32,
+    scroll: usize,
+    max_scroll: usize,
+    modes: &TermModes,
+) -> i64 {
+    if !drag.moved || modes.alt_screen || modes.mouse_mode != MouseMode::Off || rows == 0 {
+        return 0;
+    }
+    let height = rows as f32 * cell_h;
+    let edge = cell_h.min(height / 2.0);
+    let distance = if drag.y < edge {
+        edge - drag.y
+    } else if drag.y >= height - edge {
+        height - edge - drag.y
+    } else {
+        0.0
+    };
+    if distance == 0.0 {
+        return 0;
+    }
+    let lines = ((distance.abs() / cell_h).ceil() as i64).clamp(1, MAX_EDGE_LINES);
+    if distance > 0.0 {
+        lines.min(max_scroll.saturating_sub(scroll) as i64)
+    } else {
+        -lines.min(scroll as i64)
+    }
+}
+
+/// One edge step of a selection drag: scrolls, moves the selection's head
+/// to where the still pointer now is, and asks for history it reached. No
+/// step while history asked for has not arrived, so a held pointer cannot
+/// outrun what is on screen. Returns whether it scrolled.
+pub fn edge_scroll(
+    idx: usize,
+    ui: &mut TerminalUi,
+    grid: &CellGrid,
+    cell: (f32, f32),
+    out: &mut Outbox,
+) -> bool {
+    let Some(drag) = ui.drag else {
+        return false;
+    };
+    if ui.fetch_pending.is_some() || !matches!(ui.gesture, Some(Gesture::Select)) {
+        return false;
+    }
+    let viewport = Viewport {
+        grid,
+        scroll: ui.scroll,
+    };
+    let lines = edge_lines(
+        &drag,
+        viewport.rows(),
+        cell.1,
+        ui.scroll,
+        viewport.max_scroll(),
+        &grid.modes,
+    );
+    if lines == 0 {
+        return false;
+    }
+    ui.scroll = (ui.scroll as i64 + lines).clamp(0, viewport.max_scroll() as i64) as usize;
+    let viewport = Viewport {
+        grid,
+        scroll: ui.scroll,
+    };
+    let at = drag_cell(&viewport, drag.x, drag.y, cell);
+    if let Some(selection) = ui.selection.as_mut() {
+        selection.head = at;
+    }
+    let request = missing_history(ui, &viewport);
+    out.fetch(idx, request, ui);
+    ui.request_frame();
+    true
+}
+
 pub fn pointer(
     idx: usize,
     ui: &mut TerminalUi,
@@ -327,6 +428,12 @@ pub fn pointer(
                 }
             } else {
                 ui.gesture = Some(Gesture::Select);
+                ui.drag = Some(DragPoint {
+                    x: p.x,
+                    y: p.y,
+                    moved: false,
+                    stepped_at: f64::NEG_INFINITY,
+                });
                 let granularity = match p.clicks {
                     0 | 1 => Granularity::Cell,
                     2 => Granularity::Word,
@@ -355,7 +462,12 @@ pub fn pointer(
                 }
             }
             Some(Gesture::Select) => {
-                let at = viewport.cell_at(p.x, p.y, cell);
+                if let Some(drag) = ui.drag.as_mut() {
+                    drag.moved |= drag.x != p.x || drag.y != p.y;
+                    drag.x = p.x;
+                    drag.y = p.y;
+                }
+                let at = drag_cell(&viewport, p.x, p.y, cell);
                 if let Some(selection) = ui.selection.as_mut() {
                     selection.head = at;
                     ui.request_frame();
@@ -365,6 +477,7 @@ pub fn pointer(
         },
         Press::Up => {
             let gesture = ui.gesture.take();
+            ui.drag = None;
             if p.cancelled {
                 ui.selection = None;
                 ui.request_frame();
@@ -885,5 +998,143 @@ mod tests {
         ui.scroll = 40;
         press(Key::Text("a".into()), Mods::default(), &mut ui, &grid);
         assert_eq!(ui.scroll, 0);
+    }
+
+    fn edge(ui: &mut TerminalUi, grid: &client::CellGrid) -> bool {
+        edge_scroll(0, ui, grid, CELL, &mut Outbox::default())
+    }
+
+    #[test]
+    fn a_still_pointer_at_the_top_edge_scrolls_into_history_and_keeps_the_anchor() {
+        let mut out = Outbox::default();
+        let (mut ui, grid) = surface(ModeSet::Plain);
+        drag(
+            &mut ui,
+            &grid,
+            Press::Down,
+            40.0,
+            10.0 * CELL.1 + 1.0,
+            1,
+            &mut out,
+        );
+        let anchor = ui.selection.expect("a selection").anchor;
+        drag(&mut ui, &grid, Press::Move, 40.0, 1.0, 1, &mut out);
+        assert!(edge(&mut ui, &grid));
+        assert_eq!(ui.scroll, 1);
+        let selection = ui.selection.expect("still selecting");
+        assert_eq!(
+            selection.anchor, anchor,
+            "the anchor stays where it was put"
+        );
+        let top = Viewport {
+            grid: &grid,
+            scroll: 1,
+        }
+        .top_abs();
+        assert_eq!(
+            selection.head,
+            (5, top),
+            "the head follows the still pointer"
+        );
+        assert!(edge(&mut ui, &grid));
+        assert_eq!(ui.scroll, 2);
+        drag(&mut ui, &grid, Press::Up, 40.0, 1.0, 1, &mut out);
+        assert!(!edge(&mut ui, &grid), "a released drag stops");
+    }
+
+    #[test]
+    fn an_offscreen_pointer_steps_four_lines_and_clamps_to_line_ends() {
+        let mut out = Outbox::default();
+        let (mut ui, grid) = surface(ModeSet::Plain);
+        drag(
+            &mut ui,
+            &grid,
+            Press::Down,
+            40.0,
+            10.0 * CELL.1,
+            1,
+            &mut out,
+        );
+        drag(&mut ui, &grid, Press::Move, 40.0, -10_000.0, 1, &mut out);
+        assert!(edge(&mut ui, &grid));
+        assert_eq!(ui.scroll, 4, "bounded steps");
+        assert_eq!(
+            ui.selection.expect("selecting").head.0,
+            0,
+            "above the pane is the line start"
+        );
+        drag(&mut ui, &grid, Press::Move, 40.0, 10_000.0, 1, &mut out);
+        assert!(edge(&mut ui, &grid));
+        assert_eq!(ui.scroll, 0);
+        assert_eq!(
+            ui.selection.expect("selecting").head.0,
+            99,
+            "below it is the line end"
+        );
+    }
+
+    #[test]
+    fn no_step_without_a_drag_in_the_middle_or_while_history_is_coming() {
+        let mut out = Outbox::default();
+        let (mut ui, grid) = surface(ModeSet::Plain);
+        drag(&mut ui, &grid, Press::Down, 40.0, 1.0, 1, &mut out);
+        assert!(
+            !edge(&mut ui, &grid),
+            "a click held at the edge is not a drag"
+        );
+        drag(
+            &mut ui,
+            &grid,
+            Press::Move,
+            40.0,
+            10.0 * CELL.1,
+            1,
+            &mut out,
+        );
+        assert!(
+            !edge(&mut ui, &grid),
+            "the middle of the pane does not scroll"
+        );
+        drag(&mut ui, &grid, Press::Move, 40.0, 1.0, 1, &mut out);
+        ui.fetch_pending = Some(FetchRequest {
+            from_line: -100,
+            count: 10,
+        });
+        assert!(!edge(&mut ui, &grid), "waits for the history it asked for");
+    }
+
+    #[test]
+    fn edge_lines_stop_at_the_ends_and_for_screens_that_own_the_mouse() {
+        let plain = ModeSet::Plain.modes();
+        let at = |y: f32| DragPoint {
+            x: 0.0,
+            y,
+            moved: true,
+            stepped_at: 0.0,
+        };
+        let rows = 30;
+        assert_eq!(edge_lines(&at(1.0), rows, CELL.1, 99, 100, &plain), 1);
+        assert_eq!(
+            edge_lines(&at(1.0), rows, CELL.1, 100, 100, &plain),
+            0,
+            "top of history"
+        );
+        let bottom = rows as f32 * CELL.1 + 50.0;
+        assert_eq!(edge_lines(&at(bottom), rows, CELL.1, 1, 100, &plain), -1);
+        assert_eq!(
+            edge_lines(&at(bottom), rows, CELL.1, 0, 100, &plain),
+            0,
+            "the live screen"
+        );
+        assert_eq!(
+            edge_lines(&at(1.0), 0, CELL.1, 0, 100, &plain),
+            0,
+            "an empty viewport"
+        );
+        let mut alternate = plain;
+        alternate.alt_screen = true;
+        assert_eq!(edge_lines(&at(1.0), rows, CELL.1, 0, 100, &alternate), 0);
+        let mouse = ModeSet::Mouse.modes();
+        assert_eq!(edge_lines(&at(1.0), rows, CELL.1, 0, 100, &mouse), 0);
     }
 }

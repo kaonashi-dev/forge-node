@@ -18,6 +18,17 @@ pub struct FetchRequest {
     pub count: u32,
 }
 
+/// A selection drag's pointer. `moved` stays false for a click held still,
+/// which never scrolls, as in Tauri's `SelectionDrag`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DragPoint {
+    pub x: f32,
+    pub y: f32,
+    pub moved: bool,
+    /// When the last edge step was taken, on the poll clock.
+    pub stepped_at: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gesture {
     Select,
@@ -97,6 +108,8 @@ pub struct TerminalUi {
     pub selection: Option<Selection>,
     pub preedit: String,
     pub gesture: Option<Gesture>,
+    /// Where a selection drag's pointer is, pane-local, while it is down.
+    pub drag: Option<DragPoint>,
     pub last_cell: Option<(u16, u16)>,
     pub wheel_rem: f32,
     pub fetch_pending: Option<FetchRequest>,
@@ -128,6 +141,7 @@ impl TerminalUi {
             selection: None,
             preedit: String::new(),
             gesture: None,
+            drag: None,
             last_cell: None,
             wheel_rem: 0.0,
             fetch_pending: None,
