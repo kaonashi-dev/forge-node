@@ -59,10 +59,6 @@ fn icon_button(
         .child(icon(glyph, 16.0).color(k.c.icon_muted))
 }
 
-fn kind_glyph(row: &SessionRow) -> &'static Icon {
-    glyphs::for_session(row.kind, row.provider.as_deref())
-}
-
 fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
     let active = s.active == Some(session.id) && s.workbench.mode == CenterMode::Session;
     let id = session.id;
@@ -94,7 +90,7 @@ fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
             s.select(id);
             s.request_rename();
         })
-        .child(icon(kind_glyph(session), 14.0).color(tint))
+        .child(icon(glyphs::for_row(session, active, !k.dark), 14.0).color(tint))
         .child(
             text(session.title.clone())
                 .font(if active {
@@ -247,11 +243,13 @@ pub fn views(s: &AppState, k: &Kit) -> El {
                 .on_press(move |s: &mut AppState| s.show_panel(panel))
                 // Six views share 300 pt, so the glyph stands alone; the name
                 // is what assistive tech and the panel's heading say.
-                .child(icon(glyph, 16.0).color(if shown {
-                    k.c.icon_accent
-                } else {
-                    k.c.icon_muted
-                })),
+                .child(
+                    icon(if shown { glyphs::chosen(glyph) } else { glyph }, 16.0).color(if shown {
+                        k.c.icon_accent
+                    } else {
+                        k.c.icon_muted
+                    }),
+                ),
         );
     }
     bar

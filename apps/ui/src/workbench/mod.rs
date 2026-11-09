@@ -14,6 +14,8 @@ use rune_kit::diff::DiffState;
 use rune_kit::syntax::Highlight;
 use rune_kit::{FileNode, TreeModel, natural_cmp};
 
+use crate::file_icons::FileIcon;
+
 /// What the centre shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CenterMode {
@@ -151,7 +153,7 @@ pub struct Changes {
 }
 
 pub struct Files {
-    pub tree: TreeModel<FileNode<()>>,
+    pub tree: TreeModel<FileNode<FileIcon>>,
     pub preview: Option<Preview>,
     pub error: Option<String>,
     /// Each folder's entries as listed, folders first; `""` is the root.
@@ -453,7 +455,7 @@ impl Files {
                         name: name.to_string(),
                         path: entry.path.clone(),
                         dir: folder,
-                        data: (!folder).then_some(()),
+                        data: (!folder).then(|| crate::file_icons::for_path(name)),
                     },
                 );
                 if !folder {
