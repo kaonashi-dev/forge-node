@@ -103,6 +103,8 @@ pub enum Command {
         value: String,
     },
     AddProject(std::path::PathBuf),
+    KillSession(SessionId),
+    CloseSession(SessionId),
     RebaseStep {
         workspace_id: WorkspaceId,
         step: crate::workbench::RebaseStep,
@@ -401,6 +403,14 @@ impl ConnectionHandle {
         step: crate::workbench::RebaseStep,
     ) -> Result<(), String> {
         self.send(Command::RebaseStep { workspace_id, step })
+    }
+
+    pub fn kill_session(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::KillSession(session_id))
+    }
+
+    pub fn close_session(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::CloseSession(session_id))
     }
 
     pub fn add_project(&self, path: std::path::PathBuf) -> Result<(), String> {
@@ -874,6 +884,8 @@ fn handle_fixture_command(
         | Command::Read { .. }
         | Command::SetAppState { .. }
         | Command::AddProject(_)
+        | Command::KillSession(_)
+        | Command::CloseSession(_)
         | Command::RebaseStep { .. }
         | Command::RunAction { .. }
         | Command::Fetch { .. }
@@ -1585,6 +1597,22 @@ fn handle_live_command(
             }]);
             live_result(generation, label, result, sink, metrics, started);
         }
+        Command::KillSession(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .kill_session(session_id)
+                .map(|()| "stopping".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "KillSession", result, sink, metrics, started);
+        }
+        Command::CloseSession(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .close_session(session_id)
+                .map(|()| "closed".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "CloseSession", result, sink, metrics, started);
+        }
         Command::AddProject(path) => {
             metrics.note_socket_op();
             let result = client
@@ -1761,6 +1789,8 @@ fn command_label(command: &Command) -> &'static str {
         Command::Read { .. } => "WorkspaceRead",
         Command::SetAppState { .. } => "SetAppState",
         Command::AddProject(_) => "AddProject",
+        Command::KillSession(_) => "KillSession",
+        Command::CloseSession(_) => "CloseSession",
         Command::RebaseStep { .. } => "RebaseStep",
         Command::RunAction { .. } => "RunAction",
         Command::Fetch { .. } => "FetchRemote",

@@ -78,6 +78,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::commit::dialog(s, &k, &mut overlays);
     crate::sync::dialog(s, &k, &mut overlays);
     rename_dialog(s, &k, &mut overlays);
+    close_dialog(s, &k, &mut overlays);
     let root = rune_kit::root(root, overlays);
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
@@ -124,10 +125,11 @@ fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
 }
 
 fn tabbar(s: &AppState, cx: &mut Cx<AppState>, k: &Kit) -> El {
-    let items = s.rows.iter().map(|session| {
+    let tabs = s.tab_rows();
+    let items = tabs.iter().map(|session| {
         TabItem::new(session.id_text.as_str(), session.title.as_str())
             .status(tab_status(session.status))
-            .closable(false)
+            .closable(true)
     });
     let strip = TabStrip::new("session-tabs", TabOrientation::Horizontal)
         .tabs(items)
@@ -138,6 +140,11 @@ fn tabbar(s: &AppState, cx: &mut Cx<AppState>, k: &Kit) -> El {
         .on_select(|s: &mut AppState, id: &str, _| {
             if let Ok(id) = id.parse::<domain::SessionId>() {
                 s.select(id);
+            }
+        })
+        .on_close(|s: &mut AppState, id: &str, _| {
+            if let Ok(id) = id.parse::<domain::SessionId>() {
+                s.request_close(id);
             }
         })
         .build(k);
@@ -811,5 +818,41 @@ fn rename_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .click_outside(true)
         .on_close(|s: &mut AppState| s.rename = None)
         .child(field)
+        .build(k, layer);
+}
+
+/// Tauri's confirmation before a close stops a live process.
+fn close_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
+    let Some(session) = s.confirm_close else {
+        return;
+    };
+    let title = s
+        .rows
+        .iter()
+        .find(|row| row.id == session)
+        .map_or_else(|| "This session".to_string(), |row| row.title.clone());
+    let cancel = Button::new("Cancel")
+        .variant(ButtonVariant::Ghost)
+        .on_press(|s: &mut AppState| s.confirm_close = None)
+        .build(k)
+        .key("close-cancel");
+    let close = Button::new("Close session")
+        .variant(ButtonVariant::Danger)
+        .on_press(|s: &mut AppState| s.confirm_close_session())
+        .build(k)
+        .key("close-confirm");
+    rune_kit::Dialog::new("close-session", format!("{title} is still running."))
+        .description("Closing it stops the process. Anything it has not written is lost.")
+        .open(true)
+        .fit()
+        .width(420.0)
+        .on_close(|s: &mut AppState| s.confirm_close = None)
+        .child(
+            row()
+                .gap(8.0)
+                .child(el().grow(1.0))
+                .child(cancel)
+                .child(close),
+        )
         .build(k, layer);
 }

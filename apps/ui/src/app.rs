@@ -52,6 +52,7 @@ pub struct SessionRow {
     pub terminal_id: Option<TerminalId>,
     pub id_text: String,
     pub title: String,
+    pub workspace_id: WorkspaceId,
     pub workspace: String,
     pub detail: String,
     pub status: Option<SessionStatus>,
@@ -96,6 +97,11 @@ pub struct AppState {
     pub sync: crate::sync::Sync,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
+    /// A live session whose close waits for a person to confirm it.
+    pub confirm_close: Option<SessionId>,
+    /// Sessions killed on the way to closing; each is closed once it is
+    /// terminal, because the daemon refuses to close a live one.
+    pub pending_close: std::collections::HashSet<SessionId>,
     /// The session being renamed and the name being typed.
     pub rename: Option<(SessionId, rune::TextEdit)>,
     /// Shows the client's probes (socket counts, Refresh, Reconnect): on for
@@ -158,6 +164,8 @@ impl AppState {
             commit: crate::commit::CommitDialog::default(),
             sync: crate::sync::Sync::default(),
             scratch_edit: rune::TextEdit::new(""),
+            confirm_close: None,
+            pending_close: std::collections::HashSet::new(),
             rename: None,
             debug: fixture || std::env::var_os("FORGE_UI_DEBUG").is_some(),
             chosen_workspace: None,
@@ -233,6 +241,7 @@ impl AppState {
                     kind: session.kind,
                     terminal_id: session.terminal_id.filter(|_| !lines),
                     id_text: session.id.to_string(),
+                    workspace_id: session.workspace_id,
                     title: session
                         .title
                         .resolve(session.editor.as_ref().map_or("untitled", |editor| {
@@ -406,6 +415,11 @@ impl AppState {
             }
             Action::FilePalette => self.palette.show(true),
             Action::NewShell => self.request_create(),
+            Action::CloseSession => {
+                if let Some(active) = self.active {
+                    self.request_close(active);
+                }
+            }
             Action::NewAgent => self.open_launch_palette(),
             Action::Settings => {
                 let next = if self.workbench.mode == CenterMode::Settings {
@@ -456,17 +470,31 @@ impl AppState {
             .collect()
     }
 
+    /// The sessions the tab strip shows: the active session's checkout only,
+    /// as Tauri scopes its strip.
+    #[must_use]
+    pub fn tab_rows(&self) -> Vec<&SessionRow> {
+        let Some(workspace) = self.active_row().map(|row| row.workspace_id) else {
+            return self.rows.iter().collect();
+        };
+        self.rows
+            .iter()
+            .filter(|row| row.workspace_id == workspace)
+            .collect()
+    }
+
     fn step_session(&mut self, delta: isize) {
-        let count = self.rows.len();
+        let tabs: Vec<SessionId> = self.tab_rows().iter().map(|row| row.id).collect();
+        let count = tabs.len();
         if count == 0 {
             return;
         }
         let at = self
             .active
-            .and_then(|id| self.rows.iter().position(|row| row.id == id))
+            .and_then(|id| tabs.iter().position(|tab| *tab == id))
             .unwrap_or(0);
         let next = (at as isize + delta).rem_euclid(count as isize) as usize;
-        let id = self.rows[next].id;
+        let id = tabs[next];
         self.workbench.show(CenterMode::Session);
         self.select(id);
     }
@@ -1289,6 +1317,7 @@ impl AppState {
         self.sync_terminal();
         self.sync_editor();
         self.sync_workbench();
+        self.close_due();
         let mut changed = false;
         if clock - self.mirror_at >= 0.125 {
             let version = self.terminal.shared.grid_epoch();
@@ -1659,6 +1688,71 @@ impl AppState {
                 }
             }
             None => self.worker_not_ready("CreateShellSession"),
+        }
+    }
+
+    /// Closes a session: at once when it is no longer running, after a
+    /// confirmation when it is, as Tauri's `closeSessionFromUi` does.
+    pub fn request_close(&mut self, session: SessionId) {
+        let live = self.store.as_ref().is_some_and(|store| {
+            store
+                .sessions
+                .iter()
+                .any(|candidate| candidate.id == session && candidate.state.is_active())
+        });
+        if live {
+            self.confirm_close = Some(session);
+        } else {
+            self.send_close(session, false);
+        }
+    }
+
+    pub fn confirm_close_session(&mut self) {
+        if let Some(session) = self.confirm_close.take() {
+            self.send_close(session, true);
+        }
+    }
+
+    fn send_close(&mut self, session: SessionId, live: bool) {
+        let Some(connection) = &self.connection else {
+            return self.worker_not_ready("CloseSession");
+        };
+        if live {
+            if connection.kill_session(session).is_ok() {
+                self.pending_close.insert(session);
+            }
+        } else {
+            let _ = connection.close_session(session);
+        }
+    }
+
+    /// Closes every killed session that has reached a terminal state.
+    fn close_due(&mut self) {
+        if self.pending_close.is_empty() {
+            return;
+        }
+        let Some(store) = &self.store else {
+            return;
+        };
+        let due: Vec<SessionId> = self
+            .pending_close
+            .iter()
+            .copied()
+            .filter(|id| {
+                store
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == *id)
+                    .is_none_or(|session| !session.state.is_active())
+            })
+            .collect();
+        for id in due {
+            self.pending_close.remove(&id);
+            if let Some(connection) = &self.connection
+                && store.sessions.iter().any(|session| session.id == id)
+            {
+                let _ = connection.close_session(id);
+            }
         }
     }
 
