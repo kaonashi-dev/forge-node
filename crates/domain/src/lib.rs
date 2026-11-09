@@ -8,6 +8,7 @@ pub mod action;
 pub mod agent;
 pub mod branch;
 pub mod change;
+pub mod conflict_prompt;
 pub mod context;
 pub mod diff;
 pub mod editor_frame;
