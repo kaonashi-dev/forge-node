@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use client::Store;
-use domain::{ActivityState, SessionId, SessionKind, SessionState, TerminalId, WorkspaceId};
+use domain::{ActivityState, SessionId, SessionKind, TerminalId, WorkspaceId};
 use rune::{Ime, KeyEvent, Tx};
 use rune_kit::shell::{PaneState, TabDragState};
 
@@ -242,17 +242,12 @@ impl AppState {
                     terminal_id: session.terminal_id.filter(|_| !lines),
                     id_text: session.id.to_string(),
                     workspace_id: session.workspace_id,
-                    title: session
-                        .title
-                        .resolve(session.editor.as_ref().map_or("untitled", |editor| {
-                            editor.path.rsplit('/').next().unwrap_or(&editor.path)
-                        }))
-                        .to_string(),
+                    title: crate::session_label::session_title(session),
                     workspace,
                     detail: format!(
                         "{} · {}",
                         kind_label(session.kind),
-                        state_label(&session.state)
+                        crate::session_label::state_label(&session.state)
                     ),
                     status: row_status(session),
                     running: session.state.is_active(),
@@ -1878,17 +1873,6 @@ fn kind_label(kind: SessionKind) -> &'static str {
         SessionKind::Editor => "editor",
         SessionKind::Task => "task",
         _ => "session",
-    }
-}
-
-fn state_label(state: &SessionState) -> &'static str {
-    match state {
-        SessionState::Starting => "starting",
-        SessionState::Running => "running",
-        SessionState::Exited { .. } => "exited",
-        SessionState::Failed { .. } => "failed",
-        SessionState::Orphaned => "orphaned",
-        _ => "unknown",
     }
 }
 

@@ -8,6 +8,7 @@ mod launch;
 mod palette;
 mod probe;
 mod projects;
+mod session_label;
 mod sync;
 mod terminal;
 mod theme;
