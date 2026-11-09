@@ -118,6 +118,18 @@ fn small(label: &'static str, k: &Kit, key: String, press: impl Fn(&mut AppState
         .key(key)
 }
 
+/// A project's checkouts as Tauri's `workspaceOrder` lists them: the
+/// repository's own checkout first, then its worktrees by name.
+#[must_use]
+pub fn checkouts_of(workspaces: &[Workspace], project: ProjectId) -> Vec<&Workspace> {
+    let mut owned: Vec<&Workspace> = workspaces
+        .iter()
+        .filter(|workspace| workspace.project_id == project)
+        .collect();
+    owned.sort_by_key(|workspace| (workspace.kind != WorkspaceKind::Main, workspace.label()));
+    owned
+}
+
 pub fn view(s: &AppState, k: &Kit) -> El {
     let add = Button::new("Add…")
         .variant(ButtonVariant::GhostMuted)
@@ -144,13 +156,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .child(text("No replica yet.").font(k.ty.small));
     };
     for project in &store.projects {
-        let mut workspaces: Vec<&Workspace> = store
-            .workspaces
-            .iter()
-            .filter(|workspace| workspace.project_id == project.id)
-            .collect();
-        workspaces
-            .sort_by_key(|workspace| (workspace.kind != WorkspaceKind::Main, workspace.label()));
+        let workspaces = checkouts_of(&store.workspaces, project.id);
         let project_id = project.id;
         let mut block = col()
             .key(format!("project-{}", project.id))
@@ -261,7 +267,14 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
         ));
     // Pinned actions are the ones a checkout keeps in reach; the rest are in
     // the palette ("Run: …").
-    for action in s.actions_for(id).into_iter().filter(|action| action.pinned) {
+    let mut pinned: Vec<_> = s
+        .actions_for(id)
+        .into_iter()
+        .filter(|action| action.pinned)
+        .collect();
+    // In the project's own order, as Tauri's `actionState` lays out the chips.
+    pinned.sort_by_key(|action| action.position);
+    for action in pinned {
         let running = s.action_running(id, &action.id);
         let action_id = action.id;
         actions = actions.child(
@@ -497,11 +510,19 @@ mod tests {
             port: None,
             depends_on: Vec::new(),
             source: ActionSource::Manual,
-            position: 0,
+            position: 1,
             created_at: domain::Timestamp::now(),
         };
         let chip = format!("action-{}-{}", workspace.id, action.id);
+        let first = ProjectAction {
+            id: ProjectActionId::new(),
+            label: "lint".into(),
+            position: 0,
+            ..action.clone()
+        };
+        let first_chip = format!("action-{}-{}", workspace.id, first.id);
         store.project_actions.push(action.clone());
+        store.project_actions.push(first.clone());
         let running = store
             .sessions
             .iter_mut()
@@ -518,6 +539,20 @@ mod tests {
             AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
         state.show_mode(crate::workbench::CenterMode::Projects);
         assert!(state.action_running(workspace.id, &action.id));
+        assert!(
+            !state.action_running(workspace.id, &first.id),
+            "a session running another action does not mark this one"
+        );
+        if let Some(other) = state
+            .store
+            .as_ref()
+            .and_then(|store| store.workspaces.iter().find(|w| w.id != workspace.id))
+        {
+            assert!(
+                !state.action_running(other.id, &action.id),
+                "a run is keyed by its checkout"
+            );
+        }
         let mut rt = Runtime::new(
             state,
             crate::ui::view,
@@ -528,11 +563,18 @@ mod tests {
             },
         );
         rt.frame(0.1);
-        let found = rt
-            .elements()
-            .into_iter()
-            .find(|element| element.key.as_deref() == Some(chip.as_str()));
-        assert!(found.is_some(), "the pinned action is on its checkout");
+        let at = |key: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|element| element.key.as_deref() == Some(key))
+                .map(|element| element.rect)
+        };
+        let found = at(&chip).expect("the pinned action is on its checkout");
+        let before = at(&first_chip).expect("both pinned actions are chips");
+        assert!(
+            (before[1], before[0]) < (found[1], found[0]),
+            "chips follow the actions' position"
+        );
     }
 
     #[test]
@@ -572,5 +614,35 @@ mod tests {
             removal_block("removal is temporarily unavailable"),
             vec!["removal is temporarily unavailable".to_string()]
         );
+    }
+
+    #[test]
+    fn the_main_checkout_leads_then_worktrees_by_name() {
+        let project = ProjectId::new();
+        let checkout = |kind, name: &str| Workspace {
+            id: domain::WorkspaceId::new(),
+            project_id: project,
+            kind,
+            path: format!("/tmp/{name}").into(),
+            branch: Some(name.into()),
+            display_name: None,
+            managed_by_app: false,
+            created_at: domain::Timestamp::now(),
+            status: domain::WorkspaceStatus::default(),
+        };
+        let all = vec![
+            checkout(WorkspaceKind::GitWorktree, "zeta"),
+            checkout(WorkspaceKind::Main, "main"),
+            checkout(WorkspaceKind::GitWorktree, "alpha"),
+            Workspace {
+                project_id: ProjectId::new(),
+                ..checkout(WorkspaceKind::Main, "elsewhere")
+            },
+        ];
+        let names: Vec<String> = checkouts_of(&all, project)
+            .iter()
+            .map(|workspace| workspace.label())
+            .collect();
+        assert_eq!(names, vec!["main", "alpha", "zeta"]);
     }
 }

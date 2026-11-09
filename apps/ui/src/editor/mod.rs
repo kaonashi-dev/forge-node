@@ -504,6 +504,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_window_has_edges_as_editor_window_does() {
+        let (mut ui, session) = surface(5000.0 * ROW_H);
+        assert_eq!(
+            ui.take_requests().view,
+            Some((session, 0, MAX_WINDOW)),
+            "a tall viewport is capped"
+        );
+        let (mut ui, _) = surface(0.0);
+        assert_eq!(
+            ui.take_requests().view,
+            None,
+            "an unmeasured viewport asks nothing"
+        );
+        let (mut ui, session) = surface(10.0 * ROW_H);
+        let lines: Vec<(u32, String)> = (0..42).map(|line| (line, format!("{line}"))).collect();
+        let lines: Vec<(u32, &str)> = lines.iter().map(|(l, t)| (*l, t.as_str())).collect();
+        ui.apply_frame(session, frame(0, &lines, 42, (0, 0)));
+        ui.take_requests();
+        ui.scroll.set([400.0 * ROW_H, 10.0 * ROW_H]);
+        assert_eq!(
+            ui.take_requests().view,
+            None,
+            "a scroll past the end asks for nothing past the last line"
+        );
+    }
+
+    #[test]
     fn folds_above_the_window_shift_it_up_among_the_rows() {
         let shown = frame(50, &[(50, "a"), (51, "b"), (60, "c")], 200, (8, 20));
         assert_eq!(visual_base(&shown), 42);

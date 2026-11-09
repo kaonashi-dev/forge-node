@@ -734,8 +734,8 @@ impl AppState {
         })
     }
 
-    /// Hands the stopped operation to the first installed agent, with the
-    /// shared prompt; the daemon launches it like any other agent.
+    /// Hands the stopped operation to the agent `prompt_agent` picks, with
+    /// the shared prompt; the daemon launches it like any other agent.
     pub fn resolve_with_agent(&mut self) {
         let Some(state) = self.workbench.changes.rebase.as_ref() else {
             return;
