@@ -1,0 +1,16 @@
+[
+  { "t": 0.3, "key": "terminal-pane" },
+  { "t": 0.5, "type": "click", "key": "view-git" },
+  { "t": 0.8, "type": "click", "key": "changes-preview-pr" },
+  { "t": 1.2, "type": "click", "key": "compare-file-README.md" },
+  { "t": 1.5, "type": "click", "key": "segment1" },
+  { "t": 1.8, "type": "click", "key": "compare-commits-toggle" },
+  { "t": 2.1, "type": "click", "key": "view-pr" },
+  { "t": 2.4, "type": "click", "key": "pr-row-github.com/forge/forge#42" },
+  { "t": 2.7, "type": "click", "key": "pr-detail-tab-details" },
+  { "t": 3.0, "type": "click", "key": "pr-detail-tab-description" },
+  { "t": 3.3, "type": "click", "key": "pr-compose-open" },
+  { "t": 3.6, "type": "click", "key": "compose-launch" },
+  { "t": 4.2, "type": "click", "key": "compose-submit" },
+  { "t": 4.6, "type": "click", "key": "close-center" }
+]

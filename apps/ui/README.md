@@ -1,10 +1,10 @@
 # forge-ui
 
-The Rune client for Forge Node. It is built and run beside `apps/tauri` while it reaches
-parity. The Tauri app is still the one that ships.
+The Rune client for Forge Node, and the app that ships.
 
 It is its own Cargo workspace on Rust 1.99.1 (`rust-toolchain.toml`), because Rune needs
-edition 2024 and the root workspace stays on 1.89.0. `scripts/dev check` does not build it.
+edition 2024 and the root workspace stays on 1.89.0. `scripts/dev check` runs the root
+gate and then this one.
 
 ## Parity
 
@@ -18,16 +18,21 @@ to definition and back, the conflict note with Compare, type size, line spacing,
 autosave, reopen closed and the pane menu), a live file tree (watched folders, git
 decorations, filter, following the active editor) with Markdown, CSV, image and code
 previews, project search (⇧⌘F), quick open with recent files, the Git panel (diff,
-commit, Juva draft, fetch, stopped rebase), opening and reviewing pull requests, History,
-Processes, the palette, Settings › Theme, Storage and Stats, and the context menus of
-projects, checkouts, sessions, tabs and the file tree
-(with its create, rename, duplicate, move and delete). Menu items whose feature is not
-ported yet are built in Tauri's order and left out by `menus::ported`.
+commit, Juva draft, fetch, stopped rebase, branch compare, conflict blocks and a split
+layout), pull requests (scope filters, detail, review with an agent, agent-composed
+draft), session workflow (handoff, spawn child, send context, session changes,
+structured review), History, Processes, palette scopes (`>` `/` `@` `#`), Ctrl-Tab MRU,
+tab drag order, a rebindable keymap, toasts, Settings (theme, appearance controls,
+agents and profiles, keyboard, shared files, Storage with legacy-home migration, Stats),
+native menus, About, the signed updater, and the context menus of projects, checkouts,
+sessions, tabs, the editor pane and the file tree (with its create, rename, duplicate,
+move and delete).
 
-Pending, in order: settings split into sections (General, Agents, Keyboard,
-Appearance controls), theme colours across the whole chrome, file-type and the remaining
-Forge icons, handoff/child/send-context, branch compare and code review, native menus and
-the updater. Tauri is removed once this list is empty.
+Known gaps, none of which block the shipping app: the compare view renders plain patch
+rows rather than syntax-coloured ones; ⌘D splits terminals, not an open file; the
+`/` and `#` palette scopes answer from the daemon, so the recorded fixture cannot show
+results; Glass uses translucent chrome tokens because Rune's window is opaque; and a
+protocol-breaking update still needs a manual install.
 
 ## Commands
 

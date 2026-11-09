@@ -41,12 +41,13 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         s.trimmed(),
     );
     let metrics = s.chrome_metrics();
+    let mut overlays = Vec::new();
     let main = col()
         .key("main-pane")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(center(s, &k));
+        .child(center(s, &k, &mut overlays));
     let shell = SplitView::new(main)
         .sidebar(
             &s.sidebar,
@@ -84,7 +85,6 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .on_paste(|s: &mut AppState, text: &str, tx: &mut rune::Tx| {
             s.paste(text, tx);
         });
-    let mut overlays = Vec::new();
     overlays.extend(crate::chrome::drop_marker(s, &k));
     if s.palette.open {
         palette(s, &k, &mut overlays);
@@ -274,7 +274,7 @@ fn status_row(s: &AppState, k: &Kit) -> El {
         .child(text(detail).font(k.ty.text_xsmall).color(k.c.text_faint))
 }
 
-fn center(s: &AppState, k: &Kit) -> El {
+fn center(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
     let has_terminal = s.active_row().and_then(|row| row.terminal_id).is_some();
     // A session of another checkout is not this window's to show.
     let in_checkout = s
@@ -292,6 +292,12 @@ fn center(s: &AppState, k: &Kit) -> El {
         crate::session_changes::view(s, k)
     } else if s.workbench.mode == CenterMode::Review {
         crate::code_review::view(s, k)
+    } else if s.workbench.mode == CenterMode::Compare {
+        crate::workbench::compare::view(s, k, layer)
+    } else if s.workbench.mode == CenterMode::PrDetail {
+        crate::pr_detail::view(s, k)
+    } else if s.workbench.mode == CenterMode::PrCompose {
+        crate::pr_compose::view(s, k)
     } else if !in_checkout {
         empty_center(s, k)
     } else if s.active_line_editor().is_some() {

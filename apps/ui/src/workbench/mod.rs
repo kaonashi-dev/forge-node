@@ -4,9 +4,12 @@
 //! `SearchFiles`, `WatchFiles`); this side only keeps the answers and never
 //! touches the checkout (ADR-012).
 
+pub mod compare;
+pub mod conflict;
 pub mod csv;
 pub mod decorations;
 pub mod hooks;
+pub mod patch;
 pub mod recent;
 pub mod search;
 pub mod search_view;
@@ -23,6 +26,7 @@ use rune_kit::syntax::Highlight;
 use rune_kit::{FileNode, TreeModel, natural_cmp};
 
 use crate::file_icons::FileIcon;
+use crate::pr_detail;
 
 /// What the centre shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -39,6 +43,12 @@ pub enum CenterMode {
     SessionChanges,
     /// A structured Forge Review of the focused checkout.
     Review,
+    /// A branch against the branch a pull request would target.
+    Compare,
+    /// One pull request from the last refresh.
+    PrDetail,
+    /// Preparing a pull request with an agent.
+    PrCompose,
 }
 
 /// The rendered surface a file opens on instead of the editor.
@@ -148,6 +158,8 @@ pub enum Read {
     Content(String),
     /// Whether a rebase, merge or cherry-pick is stopped, read from git.
     Rebase,
+    /// A branch against `base`, or the daemon's default base when `None`.
+    Compare(Option<String>),
 }
 
 /// A step on a stopped operation; each answers with the state git is in now.
@@ -183,6 +195,15 @@ pub struct Workbench {
     pub changes: Changes,
     pub files: Files,
     pub search: search::ProjectSearch,
+    pub compare: compare::Compare,
+    /// Branches per project, read on demand for the compare base picker.
+    pub branches: HashMap<domain::ProjectId, client::Branches>,
+    pub branches_pending: HashSet<domain::ProjectId>,
+    /// The pull request the centre shows, by `pr_filters::key`.
+    pub pr_detail: Option<String>,
+    pub pr_tab: pr_detail::Tab,
+    /// The last read's searchable pull-request rows.
+    pub pr_index: crate::pr_filters::Index,
     reads: Vec<Read>,
     watch: Watch,
 }
@@ -218,6 +239,9 @@ pub struct ChangedFile {
     pub status: domain::DiffStatus,
     pub additions: u32,
     pub deletions: u32,
+    pub binary: bool,
+    pub truncated: bool,
+    pub patch: String,
     diffs: Vec<rune_kit::diff::FileDiff>,
 }
 
@@ -225,6 +249,8 @@ pub struct ChangedFile {
 pub struct Changes {
     pub state: DiffState,
     pub files: Vec<ChangedFile>,
+    /// The checkout this diff belongs to.
+    pub workspace: Option<WorkspaceId>,
     /// The file whose patch `state` shows.
     pub selected: Option<usize>,
     /// Read on every load, never remembered: staging a path is what takes it
@@ -239,9 +265,141 @@ pub struct Changes {
     pub loaded: bool,
     pub error: Option<String>,
     pub decorations: Rc<decorations::Decorations>,
+    /// The conflicted path the three-way view is showing.
+    pub conflict_focus: Option<String>,
+    /// Read off the focused path's patch, so the view never parses per frame.
+    pub conflict_blocks: Vec<conflict::Block>,
+    /// The focused path's patch as rows, for the proposed-resolution view.
+    pub conflict_rows: Vec<patch::Row>,
+    pub conflict_pairs: Vec<patch::Pair>,
+    /// Whether the focused path has a patch to read at all.
+    pub conflict_readable: bool,
+    /// The region "Next conflict" last jumped to.
+    pub conflict_region: usize,
     last_read: Option<Instant>,
     /// When a watched change re-reads the diff.
     due: Option<Instant>,
+}
+
+impl Changes {
+    /// The working tree as the prompt composer and the diff view need it.
+    #[must_use]
+    pub fn diff(&self) -> Option<WorkspaceDiff> {
+        if !self.loaded || self.error.is_some() {
+            return None;
+        }
+        Some(WorkspaceDiff {
+            workspace_id: self.workspace?,
+            branch: self.branch.clone(),
+            files: self
+                .files
+                .iter()
+                .map(|file| domain::DiffFile {
+                    path: file.path.clone(),
+                    status: file.status,
+                    additions: file.additions,
+                    deletions: file.deletions,
+                    patch: file.patch.clone(),
+                    binary: file.binary,
+                    truncated: file.truncated,
+                })
+                .collect(),
+            truncated: self.truncated,
+        })
+    }
+
+    /// Picks the conflicted path the block view shows and reads its markers.
+    pub fn focus_conflict(&mut self, path: String) {
+        self.conflict_focus = Some(path);
+        self.conflict_region = 0;
+        self.read_conflict();
+    }
+
+    /// The next (`by = 1`) or previous (`by = -1`) conflicted path.
+    pub fn step_conflict(&mut self, by: isize) {
+        let paths: Vec<String> = self
+            .rebase
+            .as_ref()
+            .map(|state| {
+                state
+                    .conflicts
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if paths.is_empty() {
+            return;
+        }
+        let at = self
+            .conflict_focus
+            .as_ref()
+            .and_then(|path| paths.iter().position(|candidate| candidate == path))
+            .unwrap_or(0);
+        let next = (at as isize + by).rem_euclid(paths.len() as isize) as usize;
+        self.focus_conflict(paths[next].clone());
+    }
+
+    /// Wraps the region cursor; the view scrolls to the returned index.
+    pub fn next_conflict_region(&mut self) -> Option<usize> {
+        if self.conflict_blocks.is_empty() {
+            return None;
+        }
+        self.conflict_region = (self.conflict_region + 1) % self.conflict_blocks.len();
+        Some(self.conflict_region)
+    }
+
+    fn read_conflict(&mut self) {
+        self.conflict_blocks.clear();
+        self.conflict_rows.clear();
+        self.conflict_pairs.clear();
+        self.conflict_readable = false;
+        let Some(path) = &self.conflict_focus else {
+            return;
+        };
+        let Some(file) = self.files.iter().find(|file| &file.path == path) else {
+            return;
+        };
+        self.conflict_readable = !file.binary && !file.truncated && !file.patch.is_empty();
+        if !self.conflict_readable {
+            return;
+        }
+        self.conflict_blocks = conflict::blocks(&file.patch);
+        self.conflict_rows = patch::rows(&file.patch);
+        self.conflict_pairs = patch::pairs(&self.conflict_rows);
+    }
+
+    fn sync_conflict(&mut self) {
+        let paths: Vec<String> = self
+            .rebase
+            .as_ref()
+            .filter(|state| !state.conflicts.is_empty())
+            .map(|state| {
+                state
+                    .conflicts
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if paths.is_empty() {
+            self.conflict_focus = None;
+            self.conflict_blocks.clear();
+            self.conflict_rows.clear();
+            self.conflict_pairs.clear();
+            self.conflict_readable = false;
+            return;
+        }
+        let keep = self
+            .conflict_focus
+            .as_ref()
+            .is_some_and(|path| paths.contains(path));
+        if !keep {
+            self.conflict_focus = Some(paths[0].clone());
+            self.conflict_region = 0;
+        }
+        self.read_conflict();
+    }
 }
 
 pub const FILES_TREE_KEY: &str = "files-tree";
@@ -320,10 +478,14 @@ impl Workbench {
         self.visit += 1;
         self.changes = Changes::default();
         self.files = Files::default();
+        self.compare = compare::Compare::default();
         self.reads.clear();
         self.search.rescope(Instant::now());
         if self.shows_diff() {
             self.read_diff();
+        }
+        if self.mode == CenterMode::Compare {
+            self.compare.request(None);
         }
     }
 
@@ -350,10 +512,21 @@ impl Workbench {
                 self.search.edit.focused = true;
                 self.mode = CenterMode::Search;
             }
-            CenterMode::SessionChanges
-            | CenterMode::Review
-            | CenterMode::Session
-            | CenterMode::Settings => self.mode = mode,
+            CenterMode::SessionChanges | CenterMode::Review => self.mode = mode,
+            CenterMode::Compare => {
+                self.mode = CenterMode::Compare;
+                if self.compare.data.is_none() && !self.compare.loading() {
+                    self.compare.request(None);
+                }
+            }
+            CenterMode::PrDetail => self.mode = CenterMode::PrDetail,
+            CenterMode::PrCompose => {
+                self.mode = CenterMode::PrCompose;
+                if !self.changes.loaded {
+                    self.read_diff();
+                }
+            }
+            CenterMode::Session | CenterMode::Settings => self.mode = mode,
         }
     }
 
@@ -392,9 +565,10 @@ impl Workbench {
     }
 
     /// Where git's view of the checkout shows: the Git panel and its diff,
-    /// or the Files tree's decorations.
+    /// the Files tree's decorations, or the compose view's change summary.
     fn shows_diff(&self) -> bool {
-        matches!(self.panel, Panel::Git | Panel::Files) || self.mode == CenterMode::Changes
+        matches!(self.panel, Panel::Git | Panel::Files)
+            || matches!(self.mode, CenterMode::Changes | CenterMode::PrCompose)
     }
 
     fn read_diff(&mut self) {
@@ -412,6 +586,9 @@ impl Workbench {
         } else {
             self.changes.loaded = false;
         }
+        if self.mode == CenterMode::Compare {
+            self.compare.reload();
+        }
     }
 
     pub fn show_panel(&mut self, panel: Panel) {
@@ -426,6 +603,9 @@ impl Workbench {
     pub fn refresh(&mut self) {
         if self.shows_diff() {
             self.read_diff();
+        }
+        if self.mode == CenterMode::Compare {
+            self.compare.reload();
         }
         if self.panel == Panel::Files {
             self.rescan();
@@ -488,6 +668,11 @@ impl Workbench {
         if self.shows_diff() && self.changes.due.is_some_and(|due| due <= now) {
             self.changes.due = None;
             self.read_diff();
+        }
+        if self.mode == CenterMode::Compare
+            && let Some(base) = self.compare.take_request()
+        {
+            self.queue(Read::Compare(base));
         }
         let reads = std::mem::take(&mut self.reads);
         if reads.contains(&Read::Diff) {
@@ -635,6 +820,7 @@ impl Workbench {
             }
             Err(error) => self.changes.rebase_error = Some(error),
         }
+        self.changes.sync_conflict();
     }
 
     pub fn apply_diff(&mut self, scope: Scope, diff: Result<WorkspaceDiff, String>) {
@@ -643,6 +829,7 @@ impl Workbench {
         }
         let changes = &mut self.changes;
         changes.loaded = true;
+        changes.workspace = Some(scope.workspace);
         match diff {
             Ok(diff) => {
                 changes.error = None;
@@ -670,13 +857,45 @@ impl Workbench {
                         status: file.status,
                         additions: file.additions,
                         deletions: file.deletions,
+                        binary: file.binary,
+                        truncated: file.truncated,
+                        patch: file.patch,
                     })
                     .collect();
                 let again = kept.and_then(|path| changes.files.iter().position(|f| f.path == path));
                 self.select_change(again.unwrap_or(0));
+                self.changes.sync_conflict();
             }
-            Err(error) => changes.error = Some(error),
+            Err(error) => {
+                changes.error = Some(error);
+                self.changes.sync_conflict();
+            }
         }
+    }
+
+    /// Accepts the daemon's branch compare for the request it answers. A late
+    /// answer to an older base is dropped rather than painted under the newer
+    /// one.
+    pub fn apply_compare(
+        &mut self,
+        scope: Scope,
+        requested: Option<String>,
+        result: Result<domain::BranchCompare, String>,
+    ) {
+        if self.scope() != Some(scope) {
+            return;
+        }
+        self.compare.apply(scope, requested, result);
+    }
+
+    /// A layout toggle is a redraw, never another git read.
+    pub fn set_split(&mut self, split: bool) {
+        self.changes.state.set_mode(if split {
+            rune_kit::diff::DiffMode::Split
+        } else {
+            rune_kit::diff::DiffMode::Unified
+        });
+        self.compare.set_split(split);
     }
 
     /// Shows one changed file's patch, as Tauri opens one file at a time.
@@ -686,12 +905,56 @@ impl Workbench {
             Some(file) => {
                 changes.selected = Some(index);
                 changes.state.set_files(file.diffs.clone());
+                let conflicted = changes.rebase.as_ref().is_some_and(|state| {
+                    state
+                        .conflicts
+                        .iter()
+                        .any(|conflict| conflict.path == file.path)
+                });
+                if conflicted {
+                    changes.conflict_focus = Some(file.path.clone());
+                    changes.conflict_region = 0;
+                    changes.read_conflict();
+                }
             }
             None => {
                 changes.selected = None;
                 changes.state.set_files(Vec::new());
             }
         }
+    }
+
+    /// Reads a project's branches for the compare base picker, unless they are
+    /// already here or in flight.
+    pub fn request_branches(&mut self, project: domain::ProjectId) -> bool {
+        if self.branches.contains_key(&project) || self.branches_pending.contains(&project) {
+            return false;
+        }
+        self.branches_pending.insert(project);
+        true
+    }
+
+    pub fn apply_branches(
+        &mut self,
+        project: domain::ProjectId,
+        branches: Result<client::Branches, String>,
+    ) {
+        self.branches_pending.remove(&project);
+        if let Ok(branches) = branches {
+            self.branches.insert(project, branches);
+        }
+    }
+
+    /// The branches the base picker can offer for `project`.
+    #[must_use]
+    pub fn branches_for(&self, project: domain::ProjectId) -> Option<&client::Branches> {
+        self.branches.get(&project)
+    }
+
+    pub fn open_pr_detail(&mut self, key: String) {
+        self.pr_detail = Some(key);
+        self.pr_tab = pr_detail::Tab::Description;
+        self.mode = CenterMode::PrDetail;
     }
 
     /// A folder's entries. A folder that can no longer be listed (deleted

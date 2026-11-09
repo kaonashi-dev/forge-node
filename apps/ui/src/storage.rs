@@ -773,7 +773,11 @@ mod tests {
         .expect("the daemon's preview");
         assert_eq!(report.moving(), 1);
         assert_eq!(report.skipped(), 1);
-        assert_eq!(report.transcripts(), 3, "an already-moved tree is not moved");
+        assert_eq!(
+            report.transcripts(),
+            3,
+            "an already-moved tree is not moved"
+        );
         assert!(report.dry_run);
     }
 

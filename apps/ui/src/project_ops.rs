@@ -208,6 +208,11 @@ pub fn apply(s: &mut AppState, reply: Reply) {
     };
     match (reply.op, reply.result) {
         (Op::ListBranches(project), result) => {
+            if let Ok(Answer::Branches(branches)) = &result {
+                s.workbench.apply_branches(project, Ok(branches.clone()));
+            } else if let Err(error) = &result {
+                s.workbench.apply_branches(project, Err(error.clone()));
+            }
             crate::branch_picker::apply_branches(s, project, result);
             return;
         }

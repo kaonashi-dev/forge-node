@@ -16,7 +16,7 @@ use serde::Deserialize;
 use crate::app::AppState;
 
 pub const ENDPOINT: &str =
-    "https://github.com/kaonashi-dev/forge-node/releases/latest/download/latest.json";
+    "https://github.com/kaonashi-dev/forge-node/releases/latest/download/latest-rune.json";
 pub const UPDATER_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNCRjAzMEJBQTgwQTRCNDcKUldSSFN3cW91akR3TzhkUVZ5WU5zU1hKNjkxL3lEZTV0NjVKdVNEYnhWTzhFcHVhR3BoT2JEY0wK";
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 pub const LAUNCH_DELAY: Duration = Duration::from_secs(30);

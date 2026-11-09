@@ -161,14 +161,6 @@ pub fn icon(glyph: &Glyph) -> Option<&'static Icon> {
     })
 }
 
-/// A Tauri item whose feature Rune does not have yet. It is built in its
-/// place and left out by `ported`, so porting one is a change to its `Act`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Unported {
-    PreviewPr,
-    OpenPrWithAgent,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opener {
     Zed,
@@ -181,6 +173,8 @@ pub enum Act {
     NewTerminal(WorkspaceId),
     NewAgent(WorkspaceId, AgentProviderId, Option<domain::AgentProfileId>),
     CommitWithJuva(WorkspaceId),
+    PreviewPr(WorkspaceId),
+    OpenPrWithAgent(WorkspaceId),
     NewWorktree(ProjectId),
     RefreshStatus(WorkspaceId),
     RefreshProject(ProjectId),
@@ -215,7 +209,6 @@ pub enum Act {
     },
     RefreshFiles,
     CollapseFolders,
-    Unported(Unported),
     AddProject(Option<ProjectGroupId>),
     NewGroup,
     RenameGroup(ProjectGroupId),
@@ -302,34 +295,24 @@ impl Entry {
     }
 }
 
-/// The filter between Tauri's list and what Rune draws.
-#[must_use]
-pub fn ported(act: &Act) -> bool {
-    !matches!(act, Act::Unported(_))
-}
-
-/// `entries` without unported items, and without the rules and headings
-/// that leaves with nothing to separate or name.
+/// `entries` without rules and headings that name nothing.
 #[must_use]
 pub fn rendered(entries: Vec<Entry>) -> Vec<Entry> {
     let kept: Vec<Entry> = entries
         .into_iter()
-        .filter_map(|entry| match entry {
-            Entry::Item(item) if !ported(&item.act) => None,
+        .map(|entry| match entry {
             Entry::Submenu {
                 label,
                 glyph,
                 entries,
-            } => {
-                let entries = rendered(entries);
-                (!entries.is_empty()).then_some(Entry::Submenu {
-                    label,
-                    glyph,
-                    entries,
-                })
-            }
-            other => Some(other),
+            } => Entry::Submenu {
+                label,
+                glyph,
+                entries: rendered(entries),
+            },
+            other => other,
         })
+        .filter(|entry| !matches!(entry, Entry::Submenu { entries, .. } if entries.is_empty()))
         .collect();
     let mut out: Vec<Entry> = Vec::with_capacity(kept.len());
     for (at, entry) in kept.iter().enumerate() {
@@ -685,12 +668,12 @@ fn checkout_items(s: &AppState, workspace_id: WorkspaceId) -> Vec<Entry> {
         item(
             "Preview PR",
             Glyph::PullRequest,
-            Act::Unported(Unported::PreviewPr),
+            Act::PreviewPr(workspace_id),
         ),
         item(
             "Open PR with agent…",
             Glyph::Agent(None),
-            Act::Unported(Unported::OpenPrWithAgent),
+            Act::OpenPrWithAgent(workspace_id),
         ),
         Entry::Rule,
         Entry::Heading("Workspace"),
@@ -1547,6 +1530,11 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
             s.show_panel(Panel::Git);
             s.draft_commit();
         }
+        Act::PreviewPr(workspace) => s.open_compare(workspace),
+        Act::OpenPrWithAgent(workspace) => {
+            s.focus_checkout(workspace);
+            s.open_pr_compose(workspace);
+        }
         Act::NewWorktree(project) => crate::branch_picker::open(s, project),
         Act::RefreshStatus(workspace) => {
             send(s, "RefreshWorkspaceStatus", |c| {
@@ -1669,7 +1657,6 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
         }
         Act::RefreshFiles => s.workbench.refresh(),
         Act::CollapseFolders => s.workbench.files.tree.collapse_all(),
-        Act::Unported(_) => {}
         Act::AddProject(group) => add_project(group, tx),
         Act::NewGroup => ask(s, Ask::NewGroup, String::new()),
         Act::RenameGroup(group) => {
@@ -2510,9 +2497,13 @@ mod tests {
             [
                 "New Terminal",
                 "—",
+                "Claude Code",
+                "—",
                 "# Juva & Git",
                 "Commit with Juva…",
                 "Review",
+                "Preview PR",
+                "Open PR with agent…",
                 "—",
                 "# Workspace",
                 "Shared files…",
@@ -2827,29 +2818,6 @@ mod tests {
             act_of(&second, "Delete Transcript…"),
             Act::DeleteExternal(1)
         );
-    }
-
-    #[test]
-    fn rendering_drops_what_unported_items_leave_empty() {
-        let unported = || item("x", Glyph::None, Act::Unported(Unported::PreviewPr));
-        let kept = || item("y", Glyph::None, Act::CollapseFolders);
-        let entries = vec![
-            Entry::Rule,
-            Entry::Heading("Empty"),
-            unported(),
-            Entry::Rule,
-            Entry::Rule,
-            Entry::Heading("Kept"),
-            kept(),
-            Entry::Submenu {
-                label: "Gone",
-                glyph: Glyph::None,
-                entries: vec![unported()],
-            },
-            Entry::Rule,
-            unported(),
-        ];
-        assert_eq!(labels(&rendered(entries)), ["# Kept", "y"]);
     }
 
     #[test]

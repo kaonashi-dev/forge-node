@@ -4,12 +4,9 @@
 #   apps/ui/scripts/perf.sh
 #
 # Writes perf-report.json and perf-report.md beside this script. Sections:
-# fixture switch/echo, integrated 125 Hz terminal, 88-row editor, startup/RSS,
-# and the Tauri key-to-delta baseline. The Tauri section uses prebuilt
-# `forge-daemon` and `forge-tauri-latency` binaries when they exist; point
-# PERF_TAURI_ROOT at a checkout that has them, or leave it to record the
-# blocker. It never points the latency tool at the user's live daemon: a
-# temporary socket and data directory are used.
+# fixture switch/echo, integrated 125 Hz terminal, 88-row editor and
+# startup/RSS. It never points anything at the user's live daemon: a temporary
+# socket and data directory are used.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,11 +26,9 @@ cd "$UI_DIR" || exit 2
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/forge-ui-perf.XXXXXX")" || exit 2
 DAEMON_PID=""
-LATENCY_PID=""
 WATCHDOG=""
 cleanup() {
     [ -n "$WATCHDOG" ] && kill "$WATCHDOG" 2>/dev/null
-    [ -n "$LATENCY_PID" ] && kill "$LATENCY_PID" 2>/dev/null
     [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null
     # Only the directory this script made.
     case "$TMP" in
@@ -163,94 +158,6 @@ if [ "${PERF_SKIP_STARTUP:-0}" != "1" ]; then
     fi
 fi
 
-# The Tauri baseline: same machine, isolated daemon, the prebuilt route.
-: >"$TMP/tauri.tsv"
-if [ "${PERF_SKIP_TAURI:-0}" != "1" ]; then
-    echo "perf: Tauri latency baseline"
-    TAURI_ROOT="${PERF_TAURI_ROOT:-$ROOT}"
-    DAEMON="${PERF_DAEMON_BIN:-}"
-    LATENCY="${PERF_TAURI_BIN:-}"
-    if [ -z "$DAEMON" ]; then
-        for profile in debug release; do
-            if [ -x "$TAURI_ROOT/target/$profile/forge-daemon" ]; then
-                DAEMON="$TAURI_ROOT/target/$profile/forge-daemon"
-                break
-            fi
-        done
-    fi
-    if [ -z "$LATENCY" ]; then
-        for profile in debug release; do
-            if [ -x "$TAURI_ROOT/target/$profile/forge-tauri-latency" ]; then
-                LATENCY="$TAURI_ROOT/target/$profile/forge-tauri-latency"
-                break
-            fi
-        done
-    fi
-    if [ -z "$DAEMON" ] || [ -z "$LATENCY" ]; then
-        printf 'blocked\t%s\n' \
-            "no prebuilt forge-daemon/forge-tauri-latency under $TAURI_ROOT/target; \`make latency-tauri\` builds the root Tauri workspace (Rust 1.89). Set PERF_TAURI_ROOT to a checkout that has them." \
-            >"$TMP/tauri.tsv"
-    else
-        HOME_DIR="$TMP/tauri-home"
-        SOCK="$TMP/tauri.sock"
-        mkdir -p "$HOME_DIR"
-        FORGE_SOCKET="$SOCK" FORGE_HOME="$HOME_DIR" "$DAEMON" run \
-            >"$TMP/tauri-daemon.log" 2>&1 &
-        DAEMON_PID=$!
-        for _ in $(seq 1 200); do
-            [ -S "$SOCK" ] && break
-            sleep 0.05
-        done
-        if [ ! -S "$SOCK" ]; then
-            printf 'blocked\t%s\n' "the isolated forge-daemon did not open $SOCK" >"$TMP/tauri.tsv"
-        else
-            FORGE_SOCKET="$SOCK" "$BIN" --probe --socket "$SOCK" \
-                >"$TMP/tauri-probe.json" 2>"$TMP/tauri-probe.err"
-            probe_code=$?
-            if [ "$probe_code" -ne 0 ]; then
-                printf 'blocked\t%s\n' \
-                    "forge-ui --probe could not seed the isolated daemon: $(tail -c 400 "$TMP/tauri-probe.err")" \
-                    >"$TMP/tauri.tsv"
-            else
-                FORGE_SOCKET="$SOCK" FORGE_HOME="$HOME_DIR" "$LATENCY" \
-                    >"$TMP/tauri.out" 2>"$TMP/tauri.err" &
-                LATENCY_PID=$!
-                (
-                    deadline=$(( $(now_ms) + ${PERF_TAURI_TIMEOUT:-180} * 1000 ))
-                    while kill -0 "$LATENCY_PID" 2>/dev/null; do
-                        if [ "$(now_ms)" -ge "$deadline" ]; then
-                            kill -9 "$LATENCY_PID" 2>/dev/null
-                            break
-                        fi
-                        sleep 0.5
-                    done
-                ) &
-                WATCHDOG=$!
-                wait "$LATENCY_PID"
-                latency_code=$?
-                kill "$WATCHDOG" 2>/dev/null
-                WATCHDOG=""
-                LATENCY_PID=""
-                printf '%s\n' "$latency_code" >"$TMP/tauri.code"
-                if [ "$latency_code" -eq 0 ]; then
-                    printf 'measured\t%s\t%s\t%s\n' \
-                        "isolated daemon (protocol-matched), same machine" "$LATENCY" "$DAEMON" \
-                        >"$TMP/tauri.tsv"
-                else
-                    printf 'blocked\t%s\t%s\t%s\n' \
-                        "forge-tauri-latency exited $latency_code: $(tail -c 400 "$TMP/tauri.err")" \
-                        "$LATENCY" "$DAEMON" >"$TMP/tauri.tsv"
-                fi
-            fi
-        fi
-        kill "$DAEMON_PID" 2>/dev/null
-        wait "$DAEMON_PID" 2>/dev/null
-        DAEMON_PID=""
-    fi
-else
-    printf 'skipped\tPERF_SKIP_TAURI=1\n' >"$TMP/tauri.tsv"
-fi
-
 python3 - "$TMP" "$REPORT_JSON" "$REPORT_MD" "$BIN" "$ITERS" "$FRAMES" <<'PY'
 import json
 import os
@@ -355,49 +262,7 @@ if headless:
         "note": "headless has no window or display; this is a first-frame proxy, not display readiness",
     }
 
-tauri_rows = [line.split("\t") for line in read("tauri.tsv").splitlines() if "\t" in line]
-tauri = {
-    "canonical_command": "make latency-tauri",
-    "status": "blocked",
-    "blocker": "the harness did not run",
-    "command": None,
-    "p50_ms": None,
-    "p95_ms": None,
-    "p99_ms": None,
-    "samples": None,
-    "lost": None,
-    "frame_bytes": None,
-    "latency_binary": None,
-    "daemon_binary": None,
-    "note": "the latency tool creates and kills a shell session; this harness only points it at a temporary daemon",
-}
-if tauri_rows:
-    status, note = tauri_rows[0][0], tauri_rows[0][1]
-    if len(tauri_rows[0]) > 2 and tauri_rows[0][2]:
-        tauri["latency_binary"] = tauri_rows[0][2]
-    if len(tauri_rows[0]) > 3 and tauri_rows[0][3]:
-        tauri["daemon_binary"] = tauri_rows[0][3]
-    tauri["status"] = status
-    tauri["blocker"] = None if status == "measured" else note
-    if status == "measured":
-        tauri["command"] = "forge-tauri-latency with an isolated forge-daemon (prebuilt binaries)"
-        tauri["note"] = note
-        stdout = read("tauri.out")
-        match = re.search(r"key-to-delta: p50 ([\d.]+) ms .*? p95 ([\d.]+) ms .*? p99 ([\d.]+) ms", stdout)
-        if match:
-            tauri["p50_ms"], tauri["p95_ms"], tauri["p99_ms"] = (float(v) for v in match.groups())
-        samples = re.search(r"samples: (\d+) \(lost (\d+)\)", stdout)
-        if samples:
-            tauri["samples"], tauri["lost"] = int(samples.group(1)), int(samples.group(2))
-        wire = re.search(r"frame on the wire: mean (\d+) B . max (\d+) B", stdout)
-        if wire:
-            tauri["frame_bytes"] = {"mean": int(wire.group(1)), "max": int(wire.group(2))}
-        tauri["stdout"] = stdout.strip()
-    else:
-        tauri["blocker"] = note
-
 report["startup"] = startup
-report["tauri"] = tauri
 report["harness"] = {
     "binary": binary,
     "iterations": int(iterations),
@@ -481,20 +346,6 @@ if startup.get("headless_proxy"):
     marker = proxy.get("marker") or {}
     first = marker.get("headless_ms") or marker.get("frame_cpu_ms")
     lines.append(f"- Headless proxy: process {proxy['process_ms']} ms, first-frame marker {first} ms (no window/display)")
-lines.append("")
-lines.append("## Tauri baseline")
-lines.append("")
-if tauri["status"] == "measured":
-    lines.append(f"- Command: {tauri['command']} (canonical: `{tauri['canonical_command']}`)")
-    if tauri.get("latency_binary"):
-        lines.append(f"- Binary: `{tauri['latency_binary']}` against `{tauri['daemon_binary']}`")
-    lines.append(f"- key-to-delta p50 / p95 / p99: **{tauri['p50_ms']} / {tauri['p95_ms']} / {tauri['p99_ms']} ms** over {tauri['samples']} samples, {tauri['lost']} lost")
-    if tauri.get("frame_bytes"):
-        lines.append(f"- Frame on the wire: mean {tauri['frame_bytes']['mean']} B, max {tauri['frame_bytes']['max']} B")
-    lines.append(f"- {tauri['note']}")
-else:
-    lines.append(f"- Canonical command: `{tauri['canonical_command']}`")
-    lines.append(f"- **Blocked:** {tauri['blocker']}")
 lines.append("")
 lines.append("## Measured vs proxy")
 lines.append("")
