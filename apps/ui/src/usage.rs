@@ -63,6 +63,60 @@ pub fn money(micros: u64) -> String {
     format!("${grouped}.{cents:02}")
 }
 
+/// The share of billed tokens served from the cache, whole and at most 100.
+#[must_use]
+pub fn cache_percent(tokens: &domain::TokenTotals) -> u64 {
+    let cached = tokens.cache_write + tokens.cache_read;
+    let total = tokens.input + tokens.output + cached;
+    (cached * 100)
+        .checked_div(total)
+        .map_or(0, |percent| percent.min(100))
+}
+
+/// A UTC calendar date (`YYYY-MM-DD`) from days since 1970-01-01.
+fn iso_date(days: i64) -> String {
+    // Hinnant's civil-from-days, so no date crate is needed for a label.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+#[must_use]
+pub fn today_utc() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| (since.as_secs() / 86_400) as i64)
+}
+
+/// One bar per day of the window ending `today`, as `dailyCells`: the daemon
+/// leaves quiet days out, and a missing day is a zero, not a gap to close.
+#[must_use]
+pub fn daily_cells(
+    daily: &[domain::DailyUsage],
+    window_days: u16,
+    today: i64,
+) -> Vec<(String, u64)> {
+    let days = i64::from(window_days.clamp(1, 366));
+    (0..days)
+        .rev()
+        .map(|back| {
+            let date = iso_date(today - back);
+            let tokens = daily
+                .iter()
+                .find(|day| day.date == date)
+                .map_or(0, |day| day.tokens);
+            (date, tokens)
+        })
+        .collect()
+}
+
 pub struct Overview {
     pub tokens: u64,
     pub cost_micros: u64,
@@ -74,23 +128,21 @@ pub struct Overview {
 
 #[must_use]
 pub fn overview(analytics: &UsageAnalytics) -> Overview {
-    let (mut input, mut output, mut write, mut read) = (0u64, 0u64, 0u64, 0u64);
+    let mut sum = domain::TokenTotals::default();
     for provider in &analytics.providers {
-        input += provider.tokens.input;
-        output += provider.tokens.output;
-        write += provider.tokens.cache_write;
-        read += provider.tokens.cache_read;
+        sum.input += provider.tokens.input;
+        sum.output += provider.tokens.output;
+        sum.cache_write += provider.tokens.cache_write;
+        sum.cache_read += provider.tokens.cache_read;
     }
     // Reasoning is already inside output, so it is never added again.
-    let tokens = input + output + write + read;
+    let tokens = sum.input + sum.output + sum.cache_write + sum.cache_read;
     Overview {
         tokens,
         cost_micros: analytics.providers.iter().map(|p| p.cost_micros).sum(),
         unpriced_turns: analytics.providers.iter().map(|p| p.unpriced_turns).sum(),
         active_days: analytics.daily.len(),
-        cache_percent: ((write + read) * 100)
-            .checked_div(tokens)
-            .map_or(0, |percent| percent.min(100)),
+        cache_percent: cache_percent(&sum),
         sessions: analytics.providers.iter().map(|p| p.sessions).sum(),
     }
 }
@@ -215,10 +267,10 @@ pub fn section(s: &AppState, k: &Kit) -> El {
                 format!("of {}", analytics.window_days),
             )),
     );
-    let peak = analytics
-        .daily
+    let cells = daily_cells(&analytics.daily, analytics.window_days, today_utc());
+    let peak = cells
         .iter()
-        .map(|day| day.tokens)
+        .map(|(_, tokens)| *tokens)
         .max()
         .unwrap_or(0)
         .max(1);
@@ -229,9 +281,10 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         .h(CHART_H)
         .gap(2.0)
         .items_end();
-    for day in &analytics.daily {
-        let height = (day.tokens as f32 / peak as f32 * CHART_H).max(1.0);
-        bars = bars.child(el().w(6.0).h(height).radius(1.0).fill(k.c.text_accent));
+    let bar_w = if cells.len() > 45 { 3.0 } else { 6.0 };
+    for (_, tokens) in &cells {
+        let height = (*tokens as f32 / peak as f32 * CHART_H).max(1.0);
+        bars = bars.child(el().w(bar_w).h(height).radius(1.0).fill(k.c.text_accent));
     }
     view = view
         .child(
@@ -313,5 +366,96 @@ mod tests {
         assert_eq!(money(0), "$0.00");
         assert_eq!(money(1_234_567_890), "$1,234.57");
         assert_eq!(money(5_000), "$0.01");
+    }
+
+    fn totals(input: u64, output: u64, write: u64, read: u64) -> domain::TokenTotals {
+        domain::TokenTotals {
+            input,
+            output,
+            cache_write: write,
+            cache_read: read,
+            reasoning: 0,
+        }
+    }
+
+    fn analytics(providers: serde_json::Value, daily: serde_json::Value) -> UsageAnalytics {
+        serde_json::from_value(serde_json::json!({
+            "providers": providers, "daily": daily, "window_days": 30, "scanned": 1,
+            "skipped": 0, "collected_at": "2026-08-30T00:00:00Z"
+        }))
+        .expect("analytics")
+    }
+
+    fn provider(unpriced: u32) -> serde_json::Value {
+        serde_json::json!({
+            "provider_id": "claude",
+            "tokens": { "input": 100, "output": 200, "cache_write": 100, "cache_read": 600,
+                        "reasoning": 50 },
+            "sessions": 4, "turns": 40, "cost_micros": 1_500_000, "unpriced_turns": unpriced,
+            "top_model": "claude-opus-5", "worked_secs": 3600,
+            "first_activity": null, "last_activity": null, "accounts": []
+        })
+    }
+
+    #[test]
+    fn the_overview_counts_as_usage_stats_counts() {
+        let data = analytics(serde_json::json!([provider(0)]), serde_json::json!([]));
+        let summary = overview(&data);
+        assert_eq!(
+            summary.tokens, 1000,
+            "reasoning is inside output, not added again"
+        );
+        assert_eq!(summary.cache_percent, 70);
+        let data = analytics(
+            serde_json::json!([provider(3), provider(4)]),
+            serde_json::json!([
+                { "date": "2026-08-29", "tokens": 10 },
+                { "date": "2026-08-30", "tokens": 20 }
+            ]),
+        );
+        let summary = overview(&data);
+        assert_eq!(summary.unpriced_turns, 7);
+        assert_eq!(summary.active_days, 2, "days with activity, not the window");
+        let empty = overview(&analytics(serde_json::json!([]), serde_json::json!([])));
+        assert_eq!(
+            (
+                empty.tokens,
+                empty.cost_micros,
+                empty.unpriced_turns,
+                empty.active_days,
+                empty.cache_percent
+            ),
+            (0, 0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn the_cache_share_is_whole_capped_and_zero_when_empty() {
+        assert_eq!(cache_percent(&totals(10, 10, 10, 70)), 80);
+        assert_eq!(cache_percent(&totals(0, 0, 80, 20)), 100);
+        assert_eq!(cache_percent(&totals(0, 0, 0, 0)), 0);
+    }
+
+    #[test]
+    fn quiet_days_are_zero_bars_not_missing_ones() {
+        assert_eq!(iso_date(0), "1970-01-01");
+        assert_eq!(iso_date(20_695), "2026-08-30");
+        let day = domain::DailyUsage {
+            date: "2026-08-30".into(),
+            tokens: 100,
+            cost_micros: 250,
+        };
+        let cells = daily_cells(&[day], 3, 20_695);
+        assert_eq!(
+            cells,
+            vec![
+                ("2026-08-28".to_string(), 0),
+                ("2026-08-29".to_string(), 0),
+                ("2026-08-30".to_string(), 100)
+            ]
+        );
+        let none = daily_cells(&[], 5, 20_695);
+        assert_eq!(none.len(), 5);
+        assert!(none.iter().all(|(_, tokens)| *tokens == 0));
     }
 }

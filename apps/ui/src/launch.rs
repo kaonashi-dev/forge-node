@@ -80,6 +80,69 @@ pub fn resolve(
     }
 }
 
+/// The agent last picked beside "Resolve with AI", shared with Tauri.
+pub const RESOLVE_AGENT_KEY: &str = "ui.git.resolve_agent";
+
+/// What can launch an agent: installed providers, their profiles, which
+/// launch keys are shown, and which providers take a first prompt.
+pub struct Launchables<'a, V: Fn(&str) -> bool, P: Fn(&AgentProviderId) -> bool> {
+    pub visible: V,
+    pub installed: &'a [AgentProviderId],
+    pub profiles: &'a [(AgentProfileId, AgentProviderId)],
+    pub takes_prompt: P,
+}
+
+/// The agent to hand a prompt to, as Tauri's `resolverFor`: a still-valid
+/// pick, else the default (refused here if it cannot take a prompt), else the
+/// only prompt-capable agent. Two candidates and no default is a guess this
+/// refuses to make; the error is the sentence to show.
+pub fn resolver<V: Fn(&str) -> bool, P: Fn(&AgentProviderId) -> bool>(
+    preference: &DefaultAgent,
+    picked: Option<&str>,
+    can: &Launchables<'_, V, P>,
+) -> Result<(AgentProviderId, Option<AgentProfileId>), String> {
+    let capable = |provider: &AgentProviderId| {
+        can.installed.contains(provider) && (can.takes_prompt)(provider)
+    };
+    if let Some(key) = picked {
+        if let Some(provider) = can
+            .installed
+            .iter()
+            .find(|provider| provider.as_str() == key && capable(provider) && (can.visible)(key))
+        {
+            return Ok((provider.clone(), None));
+        }
+        if let Some((profile, provider)) = can.profiles.iter().find(|(profile, provider)| {
+            format!("profile:{profile}") == key && capable(provider) && (can.visible)(key)
+        }) {
+            return Ok((provider.clone(), Some(*profile)));
+        }
+    }
+    if let Launch::Agent { provider, profile } =
+        resolve(preference, &can.visible, can.installed, can.profiles)
+    {
+        if (can.takes_prompt)(&provider) {
+            return Ok((provider, profile));
+        }
+        return Err(format!(
+            "{provider} cannot be started with a prompt — pick another agent beside the button \
+             or in Settings → Agents."
+        ));
+    }
+    let candidates: Vec<&AgentProviderId> = can
+        .installed
+        .iter()
+        .filter(|provider| capable(provider) && (can.visible)(provider.as_str()))
+        .collect();
+    match candidates.as_slice() {
+        [only] => Ok(((*only).clone(), None)),
+        [] => Err("No installed agent can be started with a prompt.".into()),
+        _ => Err(
+            "No default agent is set — pick one beside the button or in Settings → Agents.".into(),
+        ),
+    }
+}
+
 /// The `app_state` key that hides an agent from the launch lists.
 #[must_use]
 pub fn visibility_key(key: &str) -> String {
@@ -137,5 +200,127 @@ mod tests {
             ),
             Launch::Ask
         );
+    }
+
+    mod resolver_for {
+        use super::super::*;
+
+        const PROFILE: &str = "6f1b0f52-0a1e-4a41-9d0c-2a2b7f9e1c33";
+
+        fn id(name: &str) -> AgentProviderId {
+            AgentProviderId::new(name)
+        }
+
+        fn run(
+            preference: Option<&str>,
+            picked: Option<&str>,
+            installed: &[&str],
+            prompt: &[&str],
+            profiles: &[(&str, &str)],
+        ) -> Result<(AgentProviderId, Option<AgentProfileId>), String> {
+            let installed: Vec<AgentProviderId> = installed.iter().map(|name| id(name)).collect();
+            let profiles: Vec<(AgentProfileId, AgentProviderId)> = profiles
+                .iter()
+                .map(|(profile, provider)| (profile.parse().expect("uuid"), id(provider)))
+                .collect();
+            let can = Launchables {
+                visible: |_: &str| true,
+                installed: &installed,
+                profiles: &profiles,
+                takes_prompt: |provider: &AgentProviderId| prompt.contains(&provider.as_str()),
+            };
+            resolver(&parse(preference), picked, &can)
+        }
+
+        #[test]
+        fn the_default_agent_takes_the_prompt_or_is_refused_with_a_reason() {
+            assert_eq!(
+                run(Some("provider:claude"), None, &["claude"], &["claude"], &[]),
+                Ok((id("claude"), None))
+            );
+            let refused = run(Some("provider:opencode"), None, &["opencode"], &[], &[]);
+            assert!(refused.unwrap_err().contains("Settings → Agents"));
+        }
+
+        #[test]
+        fn with_no_default_only_a_single_candidate_is_used() {
+            assert_eq!(
+                run(None, None, &["opencode", "claude"], &["claude"], &[]),
+                Ok((id("claude"), None))
+            );
+            let two = run(
+                None,
+                None,
+                &["claude", "cursor"],
+                &["claude", "cursor"],
+                &[],
+            );
+            assert!(two.unwrap_err().contains("No default agent is set"));
+            assert_eq!(
+                run(None, None, &["claude"], &["claude"], &[(PROFILE, "claude")]),
+                Ok((id("claude"), None)),
+                "a profile is not a second agent"
+            );
+            assert!(
+                run(None, None, &[], &["claude"], &[]).is_err(),
+                "never one not installed"
+            );
+        }
+
+        #[test]
+        fn the_default_carries_its_profile_and_wins_over_list_order() {
+            let profile: AgentProfileId = PROFILE.parse().expect("uuid");
+            assert_eq!(
+                run(
+                    Some(&format!("profile:{PROFILE}")),
+                    None,
+                    &["claude"],
+                    &["claude"],
+                    &[(PROFILE, "claude")]
+                ),
+                Ok((id("claude"), Some(profile)))
+            );
+            assert_eq!(
+                run(
+                    Some("provider:cursor"),
+                    None,
+                    &["claude", "cursor"],
+                    &["claude", "cursor"],
+                    &[]
+                ),
+                Ok((id("cursor"), None))
+            );
+            assert_eq!(
+                run(
+                    Some("provider:cursor"),
+                    None,
+                    &["claude"],
+                    &["claude", "cursor"],
+                    &[]
+                ),
+                Ok((id("claude"), None)),
+                "an uninstalled default falls back"
+            );
+        }
+
+        #[test]
+        fn a_pick_wins_while_it_can_still_take_the_prompt() {
+            let both = ["claude", "cursor"];
+            assert_eq!(
+                run(Some("provider:claude"), Some("cursor"), &both, &both, &[]),
+                Ok((id("cursor"), None))
+            );
+            assert_eq!(
+                run(
+                    Some("provider:claude"),
+                    Some("opencode"),
+                    &["claude", "opencode"],
+                    &["claude"],
+                    &[]
+                ),
+                Ok((id("claude"), None)),
+                "a pick that cannot take a prompt falls through"
+            );
+        }
     }
 }

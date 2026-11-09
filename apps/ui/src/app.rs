@@ -515,9 +515,6 @@ impl AppState {
             .collect()
     }
 
-    /// The sessions the tab strip shows: the active session's checkout only,
-    /// as Tauri scopes its strip.
-    #[must_use]
     /// The checkout's strip, as Tauri's `sessionScope`: the checkout the
     /// window was pointed at, else the active session's, else the first.
     pub fn tab_rows(&self) -> Vec<&SessionRow> {
@@ -738,16 +735,19 @@ impl AppState {
             return;
         };
         let prompt = domain::conflict_prompt::conflict_prompt(state);
-        let Some((provider, _)) = self.installed_agents().into_iter().next() else {
-            self.workbench.changes.rebase_error = Some("no agent is installed".into());
-            return;
+        let (provider, profile) = match self.prompt_agent() {
+            Ok(agent) => agent,
+            Err(reason) => {
+                self.workbench.changes.rebase_error = Some(reason);
+                return;
+            }
         };
         let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
         else {
             return;
         };
         if connection
-            .create_agent(workspace, provider, None, Some(prompt), false)
+            .create_agent(workspace, provider, profile, Some(prompt), false)
             .is_ok()
         {
             self.workbench.show(CenterMode::Session);
@@ -811,9 +811,12 @@ impl AppState {
             return;
         }
         self.projects.confirm_remove = None;
+        self.projects.refused = None;
         match &self.connection {
             Some(connection) => {
-                let _ = connection.remove_worktree(workspace);
+                if connection.remove_worktree(workspace).is_ok() {
+                    self.projects.removing = Some(workspace);
+                }
             }
             None => self.worker_not_ready("RemoveWorktree"),
         }
@@ -1297,6 +1300,13 @@ impl AppState {
                 }
                 if label == "ResizeTerminal" {
                     self.terminal.requested = None;
+                }
+                if label == "RemoveWorktree"
+                    && let Some(workspace) = self.projects.removing.take()
+                    && !ok
+                {
+                    self.projects.refused =
+                        Some((workspace, crate::projects::removal_block(&message)));
                 }
                 if label == "CreateCommit" {
                     self.commit.committing = false;
@@ -1964,6 +1974,42 @@ impl AppState {
 
     /// Cmd-Shift-A: the default agent from `ui.default_agent`, a terminal,
     /// or the launch palette when the preference asks or is stale.
+    /// The agent "Resolve with AI" hands its prompt to; see `launch::resolver`.
+    fn prompt_agent(
+        &self,
+    ) -> Result<(domain::AgentProviderId, Option<domain::AgentProfileId>), String> {
+        use crate::launch::{Launchables, RESOLVE_AGENT_KEY, parse, resolver, visibility_key};
+        let Some(store) = &self.store else {
+            return Err("Not connected to the daemon yet.".into());
+        };
+        let installed: Vec<domain::AgentProviderId> = self
+            .installed_agents()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let profiles: Vec<(domain::AgentProfileId, domain::AgentProviderId)> = store
+            .agent_profiles
+            .iter()
+            .map(|profile| (profile.id, profile.provider_id.clone()))
+            .collect();
+        let can = Launchables {
+            visible: |key: &str| store.app_state_value(&visibility_key(key)) != Some("false"),
+            installed: &installed,
+            profiles: &profiles,
+            takes_prompt: |provider: &domain::AgentProviderId| {
+                store.providers.iter().any(|info| {
+                    info.descriptor.id == *provider
+                        && info.descriptor.capabilities.supports_initial_prompt
+                })
+            },
+        };
+        resolver(
+            &parse(store.app_state_value(crate::launch::DEFAULT_AGENT_KEY)),
+            store.app_state_value(RESOLVE_AGENT_KEY),
+            &can,
+        )
+    }
+
     pub fn launch_default(&mut self) {
         use crate::launch::{Launch, parse, resolve, visibility_key};
         let Some(store) = &self.store else {

@@ -16,6 +16,35 @@ pub struct Projects {
     pub branch: TextEdit,
     /// A worktree whose removal waits for a second press.
     pub confirm_remove: Option<WorkspaceId>,
+    /// The removal sent and not answered yet.
+    pub removing: Option<WorkspaceId>,
+    /// Why the daemon kept a worktree, in words for a person.
+    pub refused: Option<(WorkspaceId, Vec<String>)>,
+}
+
+const PRECHECK_REASONS: [(&str, &str); 3] = [
+    (
+        "running_sessions=true",
+        "One or more sessions are still running in it.",
+    ),
+    ("dirty=true", "It has uncommitted changes."),
+    ("merge_or_rebase=true", "A merge or rebase is in progress."),
+];
+
+/// The daemon's removal precheck as sentences, as `describeWorktreeRemovalBlock`:
+/// only the checks that failed, or the daemon's own words when none is known.
+#[must_use]
+pub fn removal_block(reason: &str) -> Vec<String> {
+    let known: Vec<String> = PRECHECK_REASONS
+        .iter()
+        .filter(|(token, _)| reason.contains(token))
+        .map(|(_, sentence)| (*sentence).to_string())
+        .collect();
+    if known.is_empty() {
+        vec![reason.to_string()]
+    } else {
+        known
+    }
 }
 
 /// The open pull request on this checkout's branch, as a suffix.
@@ -311,6 +340,19 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                     } else {
                         k.c.text_faint
                     }),
+                )
+                .children(
+                    s.projects
+                        .refused
+                        .iter()
+                        .filter(|(refused, _)| *refused == id)
+                        .flat_map(|(_, reasons)| reasons.iter())
+                        .map(|reason| {
+                            text(format!("Not removed: {reason}"))
+                                .role("status")
+                                .font(k.ty.text_xsmall)
+                                .color(k.c.warning.fg)
+                        }),
                 ),
         )
         .child(actions)
@@ -490,5 +532,19 @@ mod tests {
         pr.is_draft = false;
         pr.review_decision = None;
         assert_eq!(pr_label(&pr), "#12 · Title");
+    }
+
+    #[test]
+    fn a_refused_removal_says_only_the_checks_that_failed() {
+        assert_eq!(
+            removal_block(
+                "cannot remove: running_sessions=false, dirty=true, merge_or_rebase=false"
+            ),
+            vec!["It has uncommitted changes.".to_string()]
+        );
+        assert_eq!(
+            removal_block("removal is temporarily unavailable"),
+            vec!["removal is temporarily unavailable".to_string()]
+        );
     }
 }
