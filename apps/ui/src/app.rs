@@ -265,7 +265,6 @@ impl AppState {
         self.chosen_workspace = None;
         if self.active == Some(id) {
             self.terminal.focus_terminal = true;
-            self.terminal.interacted = true;
             return;
         }
         self.active = Some(id);
@@ -275,7 +274,6 @@ impl AppState {
             .find(|row| row.id == id)
             .map(|row| row.id_text.clone());
         self.terminal.focus_terminal = true;
-        self.terminal.interacted = true;
         match self.active_row().and_then(|row| row.terminal_id) {
             Some(target) => self.terminal.begin_attach(self.generation, target),
             None => self.terminal.on_disconnect(),
@@ -1546,9 +1544,10 @@ impl AppState {
         }
     }
 
-    /// The resize gate: attach is always safe, `ResizeTerminal` only for a pane
-    /// that has been measured **and** the user has interacted with, and it is
-    /// always followed by an `AttachTerminal` from the worker. Attach state is
+    /// The resize gate: attach is always safe, and the shown pane sizes its PTY
+    /// once it has been measured, as Tauri's does on mount, including a session
+    /// restored at startup that nobody clicked. `ResizeTerminal` is always
+    /// followed by an `AttachTerminal` from the worker. Attach state is
     /// updated here because this is the one UI-thread place that sees the shared
     /// snapshot, the pane measurement and the generation together.
     pub fn sync_terminal(&mut self) {
@@ -1604,9 +1603,6 @@ impl AppState {
         let Some(measured) = measured else {
             return;
         };
-        if !self.terminal.interacted {
-            return;
-        }
         if meta
             .size
             .is_some_and(|size| size.cols == measured.0 && size.rows == measured.1)
@@ -1830,7 +1826,6 @@ impl AppState {
         }
         self.observe_terminal_resync();
         self.last_focus = tx.focused().map(str::to_owned);
-        self.terminal.interacted = true;
         self.terminal.focus_terminal = true;
         if !self.terminal.is_live() {
             if ev.mods.cmd {
@@ -1888,7 +1883,6 @@ impl AppState {
         let Some(grid) = slot.grid.as_ref() else {
             return;
         };
-        self.terminal.interacted = true;
         self.terminal.focus_terminal = true;
         let mut fx = Effects::default();
         input::pointer(
@@ -1910,7 +1904,6 @@ impl AppState {
         let Some(grid) = slot.grid.as_ref() else {
             return false;
         };
-        self.terminal.interacted = true;
         let taken = input::wheel(0, &mut self.terminal, grid, ev, CELL_PT, &mut self.out);
         drop(slot);
         if taken {
@@ -1965,7 +1958,6 @@ impl AppState {
     pub fn terminal_paste(&mut self, text: &str, tx: &mut Tx) {
         self.observe_terminal_resync();
         self.last_focus = tx.focused().map(str::to_owned);
-        self.terminal.interacted = true;
         self.terminal.focus_terminal = true;
         if !self.terminal.is_live() {
             self.refresh_attach_state();
@@ -2445,12 +2437,10 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_session_interacts_with_the_terminal() {
+    fn selecting_a_session_focuses_the_terminal() {
         let mut state = state();
-        assert!(!state.terminal.interacted);
         let second = state.rows[1].id;
         state.select(second);
-        assert!(state.terminal.interacted);
         assert!(state.terminal.focus_terminal);
     }
 
@@ -2471,18 +2461,25 @@ mod tests {
     }
 
     #[test]
-    fn the_resize_gate_does_not_send_anything_without_measurement() {
-        let mut state = state();
-        state.generation = 1;
-        state.status = LinkStatus::Connected;
-        let first = state.rows[0].clone();
-        state
-            .terminal
-            .activate_fixture(1, first.id, first.terminal_id.unwrap(), (80, 24));
-        state.terminal.interacted = false;
-        state.terminal.shared.set_measured(120, 40);
+    fn a_restored_pane_sizes_its_pty_without_a_click() {
+        let shared = SharedTerminal::new();
+        let (mut state, terminal) = live_state_with_grid(&shared);
+        let rx = {
+            let (handle, rx) = ConnectionHandle::test_handle(Arc::new(Metrics::default()));
+            state.connection = Some(handle);
+            rx
+        };
+        shared.set_measured(138, 42);
         state.sync_terminal();
-        assert!(state.terminal.requested.is_none());
+        match rx.try_recv() {
+            Ok(crate::connection::Command::ResizeAndAttach {
+                size, terminal: id, ..
+            }) => {
+                assert_eq!(id, terminal);
+                assert_eq!((size.cols, size.rows), (138, 42));
+            }
+            other => panic!("expected ResizeAndAttach, got {other:?}"),
+        }
     }
 
     fn live_state_with_grid(shared: &Arc<SharedTerminal>) -> (AppState, TerminalId) {
@@ -2508,7 +2505,6 @@ mod tests {
             },
         );
         state.terminal.attach_generation = 1;
-        state.terminal.interacted = true;
         (state, terminal)
     }
 
@@ -2537,7 +2533,6 @@ mod tests {
         let terminal = first.terminal_id.unwrap();
         state.terminal.begin_attach(1, terminal);
         state.terminal.attach_generation = 1;
-        state.terminal.interacted = true;
         (state, rx, terminal)
     }
 
@@ -2738,7 +2733,7 @@ mod tests {
     }
 
     #[test]
-    fn a_measured_interacted_pane_sends_resize_and_attach() {
+    fn a_measured_pane_sends_resize_and_attach() {
         let shared = SharedTerminal::new();
         let (mut state, terminal) = live_state_with_grid(&shared);
         let rx = {

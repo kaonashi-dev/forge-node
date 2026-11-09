@@ -310,7 +310,6 @@ fn init() -> AppState {
             .terminal
             .activate_fixture(1, row.id, row.terminal_id.expect("terminal"), (80, 24));
         state.terminal.focus_terminal = true;
-        state.terminal.interacted = true;
     }
     state
 }
@@ -489,7 +488,6 @@ mod tests {
             .terminal
             .activate_fixture(1, row.id, row.terminal_id.expect("terminal"), (80, 24));
         state.terminal.focus_terminal = true;
-        state.terminal.interacted = true;
         shared.set_measured(80, 24);
         let mut rt = Runtime::new(
             state,
