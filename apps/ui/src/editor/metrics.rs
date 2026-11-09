@@ -14,11 +14,12 @@ use rune::tok::TextStyle;
 
 pub const SANS: &str = "Inter";
 pub const MONO_FAMILIES: &str = "ui-monospace, Inter";
+/// `ui.editor.font_size`'s fallback.
 pub const MONO_SIZE: f32 = 13.0;
 
 #[must_use]
-pub fn mono() -> TextStyle {
-    TextStyle::new(MONO_SIZE, 400.0).mono()
+pub fn mono(size: f32) -> TextStyle {
+    TextStyle::new(size, 400.0).mono()
 }
 
 #[must_use]
@@ -36,9 +37,9 @@ pub struct RowMetrics {
 }
 
 impl RowMetrics {
-    pub fn measure(text: &str, text_system: &mut TextSystem) -> Self {
+    pub fn measure(text: &str, text_system: &mut TextSystem, size: f32) -> Self {
         let run = Run::new(text.to_string());
-        let layout = text_system.run_layout(&run, mono(), 1.0);
+        let layout = text_system.run_layout(&run, mono(size), 1.0);
         let mut positions = Vec::with_capacity(text.chars().count() + 1);
         let mut utf16_len = 0u32;
         for (byte, ch) in text.char_indices() {
@@ -112,6 +113,7 @@ pub struct MetricsCache {
     rows: HashMap<(u32, u64), Rc<RowMetrics>>,
     seen: Vec<(u32, u64)>,
     text_system: TextSystem,
+    size: f32,
     builds: u64,
 }
 
@@ -122,7 +124,17 @@ impl MetricsCache {
             rows: HashMap::new(),
             seen: Vec::new(),
             text_system: text_system(),
+            size: MONO_SIZE,
             builds: 0,
+        }
+    }
+
+    /// Measures at `size` from now on, dropping every row measured at another.
+    pub fn set_size(&mut self, size: f32) {
+        if self.size != size {
+            self.size = size;
+            self.rows.clear();
+            self.seen.clear();
         }
     }
 
@@ -136,7 +148,11 @@ impl MetricsCache {
             self.seen.push(key);
             return Rc::clone(metrics);
         }
-        let metrics = Rc::new(RowMetrics::measure(&row.text(), &mut self.text_system));
+        let metrics = Rc::new(RowMetrics::measure(
+            &row.text(),
+            &mut self.text_system,
+            self.size,
+        ));
         self.builds += 1;
         if row.fingerprint != 0 {
             self.rows.insert(key, Rc::clone(&metrics));
@@ -188,7 +204,7 @@ mod tests {
 
     #[test]
     fn wide_characters_take_more_than_one_cell() {
-        let metrics = RowMetrics::measure("a界b", &mut text_system());
+        let metrics = RowMetrics::measure("a界b", &mut text_system(), MONO_SIZE);
         let narrow = metrics.column_to_x(1) - metrics.column_to_x(0);
         let wide = metrics.column_to_x(2) - metrics.column_to_x(1);
         assert!(wide > narrow * 1.5, "wide {wide} vs narrow {narrow}");
@@ -197,14 +213,14 @@ mod tests {
 
     #[test]
     fn tabs_advance_to_the_next_four_column_stop() {
-        let metrics = RowMetrics::measure("\tX", &mut text_system());
-        let four_spaces = RowMetrics::measure("    X", &mut text_system());
+        let metrics = RowMetrics::measure("\tX", &mut text_system(), MONO_SIZE);
+        let four_spaces = RowMetrics::measure("    X", &mut text_system(), MONO_SIZE);
         assert!((metrics.column_to_x(1) - four_spaces.column_to_x(4)).abs() < 1.0);
     }
 
     #[test]
     fn an_empty_row_has_a_zero_width_caret() {
-        let metrics = RowMetrics::measure("", &mut text_system());
+        let metrics = RowMetrics::measure("", &mut text_system(), MONO_SIZE);
         assert_eq!(metrics.utf16_len, 0);
         assert_eq!(metrics.column_to_x(0), 0.0);
         assert_eq!(metrics.x_to_column(100.0), 0);
@@ -233,5 +249,15 @@ mod tests {
         cache.retain_seen();
         cache.row(&row(1, "a", 1));
         assert_eq!(cache.builds(), 3);
+    }
+
+    #[test]
+    fn a_new_type_size_measures_every_row_again() {
+        let mut cache = MetricsCache::new();
+        let small = cache.row(&row(1, "abcd", 1)).end_x;
+        cache.set_size(20.0);
+        let large = cache.row(&row(1, "abcd", 1)).end_x;
+        assert_eq!(cache.builds(), 2);
+        assert!(large > small * 1.3, "{large} vs {small}");
     }
 }

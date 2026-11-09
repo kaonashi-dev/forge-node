@@ -27,6 +27,14 @@ pub enum Action {
     /// A terminal beside the active one.
     SplitPane,
     TerminalZoom(Zoom),
+    ReopenClosedTab,
+    PreviousCodeView,
+    NextCodeView,
+    GoToDefinition,
+    GoBack,
+    EditorZoomIn,
+    EditorZoomOut,
+    EditorZoomReset,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,7 +53,10 @@ impl Action {
             Action::NextSession
             | Action::PreviousSession
             | Action::FocusTab(_)
-            | Action::CloseSession => "Sessions",
+            | Action::CloseSession
+            | Action::ReopenClosedTab
+            | Action::PreviousCodeView
+            | Action::NextCodeView => "Sessions",
             Action::CommandPalette
             | Action::FilePalette
             | Action::NewShell
@@ -54,9 +65,18 @@ impl Action {
             | Action::Settings
             | Action::FindInFiles => "Global",
             Action::SplitPane | Action::TerminalZoom(_) => "Terminal",
+            Action::GoToDefinition
+            | Action::GoBack
+            | Action::EditorZoomIn
+            | Action::EditorZoomOut
+            | Action::EditorZoomReset => EDITOR,
         }
     }
 }
+
+/// The context whose chords [`editor_action_for`] answers; they outrank the
+/// app's while a line editor holds the keyboard, as Tauri's `CONTEXT_ORDER`.
+pub const EDITOR: &str = "Editor";
 
 /// One row of Settings › Keyboard: what a chord does, and how it is written.
 pub struct Binding {
@@ -66,7 +86,7 @@ pub struct Binding {
 }
 
 /// Every chord `action_for` answers, in the order Settings lists them.
-pub const BINDINGS: [Binding; 25] = [
+pub const BINDINGS: [Binding; 33] = [
     Binding {
         label: "Command palette",
         chord: "⌘K",
@@ -192,6 +212,46 @@ pub const BINDINGS: [Binding; 25] = [
         chord: "⌘0",
         action: Action::TerminalZoom(Zoom::Reset),
     },
+    Binding {
+        label: "Reopen closed tab",
+        chord: "⇧⌘T",
+        action: Action::ReopenClosedTab,
+    },
+    Binding {
+        label: "Previous file",
+        chord: "⌥⌘←",
+        action: Action::PreviousCodeView,
+    },
+    Binding {
+        label: "Next file",
+        chord: "⌥⌘→",
+        action: Action::NextCodeView,
+    },
+    Binding {
+        label: "Go to definition",
+        chord: "⌘B",
+        action: Action::GoToDefinition,
+    },
+    Binding {
+        label: "Go back",
+        chord: "⌃-",
+        action: Action::GoBack,
+    },
+    Binding {
+        label: "Editor: bigger text",
+        chord: "⌘=",
+        action: Action::EditorZoomIn,
+    },
+    Binding {
+        label: "Editor: smaller text",
+        chord: "⌘-",
+        action: Action::EditorZoomOut,
+    },
+    Binding {
+        label: "Editor: default text size",
+        chord: "⌘0",
+        action: Action::EditorZoomReset,
+    },
 ];
 
 /// What Option and a digit type on a US layout. Matched by the character,
@@ -224,6 +284,43 @@ pub fn action_for(event: &KeyEvent) -> Option<Action> {
             Some(Action::FocusTab(digit))
         }
         Key::Command(ch) if !mods.alt && !mods.ctrl => command(ch.to_ascii_lowercase(), mods.shift),
+        Key::Left | Key::Right if mods.cmd && mods.alt && !mods.ctrl && !mods.shift => {
+            Some(if event.key == Key::Left {
+                Action::PreviousCodeView
+            } else {
+                Action::NextCodeView
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The editor's own chords, asked before [`action_for`] while a line editor
+/// holds the keyboard: ⌘B is go to definition there and the sidebar elsewhere.
+#[must_use]
+pub fn editor_action_for(event: &KeyEvent) -> Option<Action> {
+    let mods = event.mods;
+    match &event.key {
+        // VS Code's chord; on macOS `ctrl` is free where zoom is `cmd`.
+        Key::Text(text)
+            if mods.ctrl
+                && !mods.cmd
+                && !mods.alt
+                && !mods.shift
+                && (text == "-" || text == "\u{1f}") =>
+        {
+            Some(Action::GoBack)
+        }
+        Key::Command(ch) if !mods.alt && !mods.ctrl => {
+            match (ch.to_ascii_lowercase(), mods.shift) {
+                ('b', false) => Some(Action::GoToDefinition),
+                // `=` is the unshifted plus; `+` is the keycap people read as ⌘+.
+                ('=' | '+', _) => Some(Action::EditorZoomIn),
+                ('-', false) => Some(Action::EditorZoomOut),
+                ('0', false) => Some(Action::EditorZoomReset),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -235,6 +332,7 @@ fn command(ch: char, shift: bool) -> Option<Action> {
         ('o' | 'p', true) => Action::CommandPalette,
         ('p' | 'o', false) => Action::FilePalette,
         ('t', false) => Action::NewShell,
+        ('t', true) => Action::ReopenClosedTab,
         ('n', true) => Action::NewWorktree,
         ('w', false) => Action::CloseSession,
         ('a', true) => Action::NewAgent,
@@ -384,6 +482,9 @@ mod tests {
         }
         let key = match rest {
             "Tab" => Key::Tab,
+            "←" => Key::Left,
+            "→" => Key::Right,
+            _ if mods.ctrl => Key::Text(rest.to_string()),
             _ if mods.cmd => {
                 let mut chars = rest.chars();
                 let ch = chars.next()?;
@@ -397,9 +498,14 @@ mod tests {
     #[test]
     fn every_listed_chord_is_the_one_that_runs_its_action() {
         for binding in &BINDINGS {
+            let resolve = if binding.action.context() == EDITOR {
+                editor_action_for
+            } else {
+                action_for
+            };
             match parse(binding.chord) {
                 Some(event) => assert_eq!(
-                    action_for(&event),
+                    resolve(&event),
                     Some(binding.action),
                     "{} is {}",
                     binding.label,
@@ -423,5 +529,33 @@ mod tests {
             mods: rune::Mods::default(),
         };
         assert_eq!(action_for(&plain), None);
+    }
+
+    #[test]
+    fn the_editor_lends_b_and_the_zoom_chords_only_in_its_own_context() {
+        assert_eq!(action_for(&chord('b', false)), Some(Action::ToggleSidebar));
+        assert_eq!(
+            editor_action_for(&chord('b', false)),
+            Some(Action::GoToDefinition)
+        );
+        assert_eq!(
+            editor_action_for(&chord('+', true)),
+            Some(Action::EditorZoomIn)
+        );
+        assert_eq!(
+            editor_action_for(&chord('-', true)),
+            None,
+            "⇧⌘- is not a zoom"
+        );
+        assert_eq!(editor_action_for(&chord('k', false)), None);
+        let ctrl_minus = with(
+            Key::Text("-".into()),
+            rune::Mods {
+                ctrl: true,
+                ..rune::Mods::default()
+            },
+        );
+        assert_eq!(editor_action_for(&ctrl_minus), Some(Action::GoBack));
+        assert_eq!(action_for(&ctrl_minus), None);
     }
 }

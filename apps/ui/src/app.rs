@@ -358,6 +358,7 @@ impl AppState {
                 .iter()
                 .map(|(terminal, title)| (*terminal, title.clone())),
         );
+        self.editor_store_changed();
     }
 
     pub fn apply_events(&mut self, events: Vec<UiEvent>, tx: &mut Tx) {
@@ -378,6 +379,9 @@ impl AppState {
             let [_, viewport] = self.editor.scroll.get();
             self.editor.scroll.set([offset, viewport]);
             tx.scroll_to_instant(crate::editor::SCROLL_KEY, 0.0, offset);
+        }
+        if self.editor.reveal.is_some() {
+            self.advance_reveal(tx);
         }
     }
 
@@ -428,7 +432,7 @@ impl AppState {
     }
 
     pub fn editor_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
-        if self.global_key(ev) {
+        if self.editor_chord(ev, tx) || self.global_key(ev) {
             return true;
         }
         if crate::menus::tree_menu_key(ev, tx) {
@@ -514,6 +518,14 @@ impl AppState {
             Action::PreviousSession => self.step_session(-1),
             Action::FindInFiles => self.find_in_files(),
             Action::SplitPane | Action::TerminalZoom(_) => {}
+            Action::ReopenClosedTab => self.reopen_closed_editor(),
+            Action::PreviousCodeView => self.step_code_view(-1),
+            Action::NextCodeView => self.step_code_view(1),
+            Action::GoToDefinition
+            | Action::GoBack
+            | Action::EditorZoomIn
+            | Action::EditorZoomOut
+            | Action::EditorZoomReset => return self.editor_action(action),
         }
         true
     }
@@ -1128,10 +1140,15 @@ impl AppState {
     }
 
     fn sync_editor(&mut self) {
-        if let Some((session, events)) = self.editor.set_session(self.active_line_editor())
+        let shown = self.active_line_editor();
+        let moved = self.editor.session != shown;
+        if let Some((session, events)) = self.editor.set_session(shown)
             && let Some(connection) = &self.connection
         {
             let _ = connection.editor_input(self.generation, session, events);
+        }
+        if moved {
+            self.follow_find();
         }
         if let Some(path) = self.open_path.take() {
             match (&self.connection, self.workspaces.first()) {
@@ -1200,6 +1217,7 @@ impl AppState {
                 self.status_detail = detail;
                 self.editor_surface = editor_surface;
                 self.editor.reset_requests();
+                self.editor.autosave.reset();
                 true
             }
             UiEvent::Disconnected { generation, reason } => {
@@ -1278,6 +1296,10 @@ impl AppState {
                         return true;
                     }
                     protocol::DaemonEvent::PullRequestsUpdated { .. } => return true,
+                    protocol::DaemonEvent::EditorFocusRequested { session_id, .. } => {
+                        self.editor_focus_requested(*session_id);
+                        return true;
+                    }
                     _ => {}
                 }
                 if let protocol::DaemonEvent::JuvaDraftReady {
@@ -1534,6 +1556,9 @@ impl AppState {
                     self.commit.drafting = false;
                     self.commit.error = Some(message.clone());
                 }
+                if label == "SetEditorAutosave" && !ok {
+                    self.editor.autosave.reset();
+                }
                 self.last_command = Some(CommandStatus {
                     label,
                     ok,
@@ -1547,6 +1572,17 @@ impl AppState {
                     return false;
                 }
                 crate::project_ops::apply(self, *reply);
+                true
+            }
+            UiEvent::EditorConflict {
+                generation,
+                session_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_editor_conflict(session_id, result);
                 true
             }
         }
@@ -2167,6 +2203,9 @@ impl AppState {
     }
 
     fn send_close(&mut self, session: SessionId, live: bool) {
+        if self.connection.is_some() {
+            self.remember_closed_editor(session);
+        }
         let Some(connection) = &self.connection else {
             return self.worker_not_ready("CloseSession");
         };

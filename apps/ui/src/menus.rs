@@ -43,6 +43,8 @@ pub enum Target {
     Files(WorkspaceId, FileTarget),
     /// A named group's header in the rail.
     Group(ProjectGroupId),
+    /// The text of a line editor, for `EditorTerminalPane`'s menu.
+    Editor(SessionId),
 }
 
 /// A menu that drops from a button rather than opening at a pointer. The
@@ -225,6 +227,10 @@ pub enum Act {
     ReapplyRule(ProjectId, ShareRuleId),
     MoveRule(ProjectId, ShareRuleId, isize),
     RemoveRule(ProjectId, ShareRuleId),
+    EditorCopy(SessionId),
+    EditorPaste(SessionId),
+    RevealInFiles(String),
+    OpenDiff,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -350,6 +356,7 @@ pub fn items(s: &AppState, target: &Target) -> Vec<Entry> {
         }
         Target::Files(workspace, file) => file_items(s, *workspace, file),
         Target::Group(group) => group_items(*group),
+        Target::Editor(session) => editor_pane_items(s, *session),
     }
 }
 
@@ -536,6 +543,31 @@ fn run_items(s: &AppState, workspace: WorkspaceId) -> Vec<Entry> {
         Act::Actions(project, workspace),
     ));
     out
+}
+
+/// `EditorTerminalPane`'s `menuItems`: the editor owns the selection, so
+/// Copy asks it, and Paste reads the pasteboard here.
+fn editor_pane_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
+    let path = s.store.as_ref().and_then(|store| {
+        store
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(|session| session.editor.as_ref())
+            .map(|editor| editor.path.clone())
+    });
+    vec![
+        item("Copy", Glyph::Copy, Act::EditorCopy(session_id)),
+        item("Paste", Glyph::None, Act::EditorPaste(session_id)),
+        Entry::Rule,
+        item(
+            "Reveal in Files",
+            Glyph::Folder,
+            Act::RevealInFiles(path.clone().unwrap_or_default()),
+        )
+        .enabled(path.is_some()),
+        item("Open Diff", Glyph::GitBranch, Act::OpenDiff),
+    ]
 }
 
 /// `launchItems` over the host's `launchables`: a terminal, then each agent
@@ -1579,6 +1611,10 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
         Act::RemoveRule(project, rule) => {
             s.projects.share_form.removing = Some((project, rule, domain::ShareCleanup::Leave));
         }
+        Act::EditorCopy(session) => s.editor_copy(session),
+        Act::EditorPaste(session) => s.editor_paste(session, tx),
+        Act::RevealInFiles(path) => s.reveal_in_files(path, tx),
+        Act::OpenDiff => s.show_mode(CenterMode::Changes),
     }
 }
 
