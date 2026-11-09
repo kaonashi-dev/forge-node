@@ -229,6 +229,15 @@ The daemon converts at the socket (`daemon::editor_wire`) and broadcasts
 column, no migration, and nothing on the session. Its rows ship behind an `Arc`,
 so a second client costs a refcount and not a copy of the window.
 
+`doc_version` changes on every edit, so it cannot say which rows changed. The
+daemon stamps each row with `fingerprint`, a hash of everything the row paints
+masked to 53 bits so JavaScript reads it exactly. A surface that has already
+built a row with the same line and fingerprint can keep it. Folds are a window
+property too: `hidden_lines` is what every fold in the document removes from the
+scrolled height, including folds outside the window, and `hidden_above` is what
+folds above `first_line` remove. `EditorInputEvent::ToggleFold { line }` folds
+or unfolds the block a gutter marker heads, the same as a click on it in the TUI.
+
 The GUI mounts `EditorView` instead of `EditorTerminalPane`, chosen from
 `HelloAck::editor_surface` — the daemon's word, taken at the handshake, because
 the Code region has to know which pane to build before an editor session exists.

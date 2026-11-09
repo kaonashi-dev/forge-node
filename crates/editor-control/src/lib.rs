@@ -30,7 +30,7 @@ pub use view::{
 
 /// Version of the control wire. The handshake refuses any other value, the way
 /// `protocol::PROTOCOL_VERSION` does for the client wire.
-pub const CONTROL_VERSION: u16 = 7;
+pub const CONTROL_VERSION: u16 = 8;
 
 /// 1-based UTF-16 column of the byte at `byte` in `line`.
 ///

@@ -2352,7 +2352,15 @@ impl App {
         let Some((line, sub)) = self.row_line_sub(row as usize) else {
             return;
         };
-        if sub != 0 || self.fold_state(line).is_none() {
+        if sub == 0 {
+            self.toggle_fold_at(line);
+        }
+    }
+
+    /// Fold or unfold the block `line` heads, as a click on its marker does.
+    /// A line that heads no block does nothing.
+    pub fn toggle_fold_at(&mut self, line: usize) {
+        if self.fold_state(line).is_none() {
             return;
         }
         if !self.folded.remove(&line) {
@@ -2507,6 +2515,22 @@ impl App {
                 _ => self.hidden.push((start, end)),
             }
         }
+    }
+
+    /// Lines hidden inside folds, in the whole document.
+    #[must_use]
+    pub fn hidden_line_count(&self) -> usize {
+        self.hidden.iter().map(|(start, end)| end + 1 - start).sum()
+    }
+
+    /// Lines hidden inside folds strictly above `line`.
+    #[must_use]
+    pub fn hidden_before(&self, line: usize) -> usize {
+        self.hidden
+            .iter()
+            .take_while(|(start, _)| *start < line)
+            .map(|(start, end)| (*end).min(line - 1) + 1 - start)
+            .sum()
     }
 
     /// Whether `line` is inside a folded block, and so takes no rows.
@@ -5564,6 +5588,33 @@ mod tests {
             1,
             "the click folded, it did not move"
         );
+    }
+
+    #[test]
+    fn a_fold_toggled_by_line_counts_what_it_hides() {
+        let mut app = app(
+            "fn f() {\n    one();\n    two();\n}\nfn g() {\n    three();\n}\n",
+            false,
+        );
+        app.resize(40, 10);
+        app.toggle_fold_at(1);
+        assert_eq!(app.hidden_line_count(), 0, "line 2 heads no block");
+
+        app.toggle_fold_at(0);
+        app.toggle_fold_at(4);
+        assert_eq!(app.hidden_line_count(), 3);
+        assert_eq!(app.hidden_before(0), 0);
+        assert_eq!(
+            app.hidden_before(2),
+            1,
+            "a fold the line sits inside counts up to it"
+        );
+        assert_eq!(app.hidden_before(4), 2);
+        assert_eq!(app.hidden_before(7), 3);
+
+        app.toggle_fold_at(0);
+        assert_eq!(app.fold_state(0), Some(false));
+        assert_eq!(app.hidden_line_count(), 1);
     }
 
     /// An edit that stops a line being a header must not leave it hiding rows.

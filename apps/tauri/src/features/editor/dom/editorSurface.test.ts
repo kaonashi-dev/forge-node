@@ -115,6 +115,7 @@ describe("the DOM editor surface", () => {
       mark,
       diagnostic: null,
       fold: null,
+      fingerprint: 0,
     });
     createRoot((dispose) => {
       const [rows, setRows] = createStore<EditorRow[]>([]);

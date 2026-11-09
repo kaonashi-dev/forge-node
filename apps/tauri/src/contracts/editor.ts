@@ -23,4 +23,5 @@ export type EditorInputEvent =
   | { Text: string }
   | { Pointer: { kind: "Down" | "Drag" | "Up"; line: number; column: number; modifiers: number } }
   | { Wheel: { lines: number } }
-  | { Focus: boolean };
+  | { Focus: boolean }
+  | { ToggleFold: { line: number } };

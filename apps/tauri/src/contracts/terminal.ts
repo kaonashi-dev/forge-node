@@ -132,6 +132,11 @@ export type EditorRow = {
    * `null` is a line that starts no block at all.
    */
   fold: number | null;
+  /**
+   * A hash of everything the row paints, below 2^53. A row with the same line
+   * and fingerprint as one already built can be kept; `0` means unknown.
+   */
+  fingerprint: number;
 };
 
 export type EditorPlace = {
@@ -166,6 +171,10 @@ export type EditorFrame = {
   doc_version: number;
   first_line: number;
   total_lines: number;
+  /** Lines hidden by folds anywhere; `total_lines - hidden_lines` is what scrolls. */
+  hidden_lines: number;
+  /** Lines hidden by folds above `first_line`. */
+  hidden_above: number;
   rows: EditorRow[];
   /** The window stopped short of what was asked for. Fewer rows, not none. */
   clipped: boolean;

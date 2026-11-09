@@ -683,3 +683,26 @@ fn find_set(pattern: &str) -> DaemonMessage {
         },
     }
 }
+
+/// A fold toggled from the surface takes its body out of the window, and the
+/// frame says how much of the document's height it removed.
+#[test]
+fn a_fold_toggled_from_the_surface_shrinks_the_scrolled_height() {
+    let host = start(
+        "fn f() {\n    one();\n    two();\n}\nfn g() {}\n",
+        "src/lib.rs",
+    );
+    host.frame();
+    host.input(vec![EditorInput::ToggleFold { line: 0 }]);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        assert!(Instant::now() < deadline, "the fold never closed");
+        let frame = host.frame();
+        if frame.hidden_lines == 2 {
+            assert_eq!(frame.hidden_above, 0);
+            assert_eq!(frame.rows[0].fold, Some(2));
+            assert_eq!(frame.rows[1].line, 3, "the body is not in the window");
+            return;
+        }
+    }
+}

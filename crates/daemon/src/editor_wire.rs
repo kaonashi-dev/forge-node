@@ -25,26 +25,33 @@ pub fn frame_to_domain(frame: ViewFrame) -> EditorFrame {
         doc_version: frame.doc_version,
         first_line: frame.first_line,
         total_lines: frame.total_lines,
+        hidden_lines: frame.hidden_lines,
+        hidden_above: frame.hidden_above,
         clipped: frame.clipped,
         rows: Arc::new(
             frame
                 .rows
                 .into_iter()
-                .map(|row| EditorRow {
-                    line: row.line,
-                    truncated: row.truncated,
-                    mark: row.mark.and_then(mark),
-                    diagnostic: row.diagnostic.and_then(severity),
-                    fold: row.fold,
-                    spans: Arc::new(
-                        row.spans
-                            .into_iter()
-                            .map(|span| EditorSpan {
-                                text: span.text,
-                                scope: scope(span.scope),
-                            })
-                            .collect(),
-                    ),
+                .map(|row| {
+                    let mut row = EditorRow {
+                        line: row.line,
+                        truncated: row.truncated,
+                        mark: row.mark.and_then(mark),
+                        diagnostic: row.diagnostic.and_then(severity),
+                        fold: row.fold,
+                        spans: Arc::new(
+                            row.spans
+                                .into_iter()
+                                .map(|span| EditorSpan {
+                                    text: span.text,
+                                    scope: scope(span.scope),
+                                })
+                                .collect(),
+                        ),
+                        fingerprint: 0,
+                    };
+                    row.fingerprint = row.content_fingerprint();
+                    row
                 })
                 .collect(),
         ),
@@ -115,6 +122,7 @@ pub fn input_to_wire(events: Vec<EditorInputEvent>) -> Vec<EditorInput> {
                 },
                 EditorInputEvent::Wheel { lines } => EditorInput::Wheel { lines },
                 EditorInputEvent::Focus(has) => EditorInput::Focus(has),
+                EditorInputEvent::ToggleFold { line } => EditorInput::ToggleFold { line },
                 _ => return None,
             })
         })
@@ -271,6 +279,8 @@ mod tests {
             doc_version: 11,
             first_line: 5,
             total_lines: 90,
+            hidden_lines: 9,
+            hidden_above: 2,
             clipped: true,
             rows: vec![ViewRow {
                 line: 5,
@@ -300,6 +310,20 @@ mod tests {
         assert_eq!(converted.rows[0].diagnostic, Some(EditorSeverity::Error));
         assert_eq!(converted.rows[0].fold, Some(0), "foldable and open");
         assert!(converted.clipped);
+        assert_eq!((converted.hidden_lines, converted.hidden_above), (9, 2));
+        assert_eq!(
+            converted.rows[0].fingerprint,
+            converted.rows[0].content_fingerprint(),
+            "the daemon stamps every row it forwards"
+        );
+    }
+
+    #[test]
+    fn a_fold_toggle_reaches_the_editor() {
+        assert_eq!(
+            input_to_wire(vec![EditorInputEvent::ToggleFold { line: 41 }]),
+            vec![EditorInput::ToggleFold { line: 41 }]
+        );
     }
 
     #[test]
