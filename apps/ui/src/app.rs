@@ -495,7 +495,7 @@ impl AppState {
                     if let (Some(connection), Some(workspace)) =
                         (&self.connection, self.workbench.workspace)
                     {
-                        let _ = connection.create_agent(workspace, provider);
+                        let _ = connection.create_agent(workspace, provider, None);
                         self.workbench.show(CenterMode::Session);
                     }
                 }
@@ -639,6 +639,29 @@ impl AppState {
                         .is_some_and(|run| &run.action_id == action)
             })
         })
+    }
+
+    /// Hands the stopped operation to the first installed agent, with the
+    /// shared prompt; the daemon launches it like any other agent.
+    pub fn resolve_with_agent(&mut self) {
+        let Some(state) = self.workbench.changes.rebase.as_ref() else {
+            return;
+        };
+        let prompt = domain::conflict_prompt::conflict_prompt(state);
+        let Some((provider, _)) = self.installed_agents().into_iter().next() else {
+            self.workbench.changes.rebase_error = Some("no agent is installed".into());
+            return;
+        };
+        let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
+        else {
+            return;
+        };
+        if connection
+            .create_agent(workspace, provider, Some(prompt))
+            .is_ok()
+        {
+            self.workbench.show(CenterMode::Session);
+        }
     }
 
     pub fn rebase_step(&mut self, step: crate::workbench::RebaseStep) {

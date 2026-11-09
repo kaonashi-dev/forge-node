@@ -342,7 +342,15 @@ fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
                     "rebase-abort",
                     ButtonVariant::Danger,
                     RebaseStep::Abort,
-                )),
+                ))
+                .child(
+                    Button::new("Resolve with AI")
+                        .variant(ButtonVariant::GhostMuted)
+                        .control_size(ControlSize::Small)
+                        .on_press(|s: &mut AppState| s.resolve_with_agent())
+                        .build(k)
+                        .key("rebase-resolve-ai"),
+                ),
         );
     for conflict in &state.conflicts {
         let path = conflict.path.clone();
