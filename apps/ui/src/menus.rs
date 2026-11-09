@@ -6,7 +6,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use domain::{AgentProviderId, ProjectId, SessionId, SessionKind, WorkspaceId, WorkspaceKind};
+use domain::{
+    AgentProviderId, ProjectActionId, ProjectGroupId, ProjectId, SessionId, SessionKind,
+    ShareRuleId, WorkspaceId, WorkspaceKind,
+};
 use protocol::RemoveProjectPolicy;
 use rune::{El, Icon, KeyEvent, PointerPress, TextEdit, Tx, col, el, row, text};
 use rune_kit::{
@@ -38,6 +41,35 @@ pub enum Target {
     /// its Code strip and gives that strip's menu.
     Tab(SessionId),
     Files(WorkspaceId, FileTarget),
+    /// A named group's header in the rail.
+    Group(ProjectGroupId),
+}
+
+/// A menu that drops from a button rather than opening at a pointer. The
+/// button carries `trigger()` as its key, which is what the menu anchors to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ButtonMenu {
+    /// The rail head's "+".
+    RailAdd,
+    /// A checkout's ▶: its project's actions.
+    Run(WorkspaceId),
+    /// A share rule's ⋯.
+    ShareRule(ProjectId, ShareRuleId),
+}
+
+impl ButtonMenu {
+    fn key(&self) -> String {
+        match self {
+            ButtonMenu::RailAdd => "rail-add".into(),
+            ButtonMenu::Run(workspace) => format!("run-{workspace}"),
+            ButtonMenu::ShareRule(_, rule) => format!("share-rule-menu-{rule}"),
+        }
+    }
+
+    #[must_use]
+    pub fn trigger(&self) -> String {
+        format!("{}-trigger", self.key())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +105,11 @@ pub enum Glyph {
     ListChecks,
     Cursor,
     Zed,
+    Globe,
+    Stop,
+    Activity,
+    ChevronUp,
+    ChevronDown,
 }
 
 #[must_use]
@@ -104,6 +141,11 @@ pub fn icon(glyph: &Glyph) -> Option<&'static Icon> {
         Glyph::ListChecks => &forge::REVIEW,
         Glyph::Cursor => &forge::CURSOR,
         Glyph::Zed => &forge::ZED,
+        Glyph::Globe => &forge::GLOBE,
+        Glyph::Stop => &forge::STOP,
+        Glyph::Activity => &forge::ACTIVITY,
+        Glyph::ChevronUp => &forge::CHEVRON_UP,
+        Glyph::ChevronDown => &forge::CHEVRON_DOWN,
         Glyph::None => return None,
     })
 }
@@ -112,10 +154,6 @@ pub fn icon(glyph: &Glyph) -> Option<&'static Icon> {
 /// place and left out by `ported`, so porting one is a change to its `Act`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unported {
-    SharedFiles,
-    Actions,
-    IgnoredWorktrees,
-    MoveToGroup,
     PreviewPr,
     OpenPrWithAgent,
     ContinueInNewSession,
@@ -172,6 +210,21 @@ pub enum Act {
     RefreshFiles,
     CollapseFolders,
     Unported(Unported),
+    AddProject(Option<ProjectGroupId>),
+    NewGroup,
+    RenameGroup(ProjectGroupId),
+    RemoveGroup(ProjectGroupId),
+    MoveToGroup(ProjectId, Option<ProjectGroupId>),
+    MoveCheckout(WorkspaceId, isize),
+    SharedFiles(ProjectId, Option<WorkspaceId>),
+    Actions(ProjectId, WorkspaceId),
+    IgnoredWorktrees(ProjectId),
+    RunAction(WorkspaceId, ProjectActionId),
+    FocusSession(SessionId),
+    OpenUrl(String),
+    ReapplyRule(ProjectId, ShareRuleId),
+    MoveRule(ProjectId, ShareRuleId, isize),
+    RemoveRule(ProjectId, ShareRuleId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -296,7 +349,193 @@ pub fn items(s: &AppState, target: &Target) -> Vec<Entry> {
             }
         }
         Target::Files(workspace, file) => file_items(s, *workspace, file),
+        Target::Group(group) => group_items(*group),
     }
+}
+
+/// `groupMenu`. Removing a group never touches its projects' directories.
+fn group_items(group: ProjectGroupId) -> Vec<Entry> {
+    vec![
+        item(
+            "Add project…",
+            Glyph::FolderOpen,
+            Act::AddProject(Some(group)),
+        ),
+        Entry::Rule,
+        item("Rename group…", Glyph::Edit, Act::RenameGroup(group)),
+        item("Remove group", Glyph::Trash, Act::RemoveGroup(group)).danger(),
+    ]
+}
+
+/// What a button's menu offers.
+#[must_use]
+pub fn button_items(s: &AppState, menu: &ButtonMenu) -> Vec<Entry> {
+    match menu {
+        ButtonMenu::RailAdd => vec![
+            item("Add a project…", Glyph::FolderOpen, Act::AddProject(None)),
+            item("New group…", Glyph::Folder, Act::NewGroup),
+        ],
+        ButtonMenu::Run(workspace) => run_items(s, *workspace),
+        ButtonMenu::ShareRule(project, rule) => vec![
+            item(
+                "Re-apply everywhere",
+                Glyph::Refresh,
+                Act::ReapplyRule(*project, *rule),
+            ),
+            item(
+                "Move up",
+                Glyph::ChevronUp,
+                Act::MoveRule(*project, *rule, -1),
+            ),
+            item(
+                "Move down",
+                Glyph::ChevronDown,
+                Act::MoveRule(*project, *rule, 1),
+            ),
+            item("Remove…", Glyph::Trash, Act::RemoveRule(*project, *rule)).danger(),
+        ],
+    }
+}
+
+/// Tauri's `urlBadge`: `:5173` for a URL with a port, else its host.
+#[must_use]
+pub fn url_badge(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    Some(match authority.rsplit_once(':') {
+        Some((_, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+            format!(":{port}")
+        }
+        _ => authority.to_string(),
+    })
+}
+
+/// The status beside a live action's name, as Tauri's `liveStatus`.
+fn live_status(phase: &crate::processes::Phase) -> String {
+    use crate::processes::Phase;
+    match phase {
+        Phase::Ready(url) => url
+            .as_deref()
+            .and_then(url_badge)
+            .unwrap_or_else(|| "ready".to_string()),
+        Phase::Waiting => "waiting".into(),
+        Phase::Probing => "starting".into(),
+        Phase::TimedOut => "not ready".into(),
+        Phase::PortInUse(port) => format!(":{port} taken"),
+        _ => "running".into(),
+    }
+}
+
+/// Where a live run serves: the URL it printed, else its port on localhost
+/// once it is up.
+fn served_at(session: &domain::Session, phase: &crate::processes::Phase) -> Option<String> {
+    use crate::processes::Phase;
+    if let Phase::Ready(Some(url)) = phase {
+        return Some(url.clone());
+    }
+    let up = matches!(phase, Phase::Ready(_) | Phase::Running | Phase::TimedOut);
+    session
+        .action
+        .as_ref()
+        .and_then(|run| run.port)
+        .filter(|_| up)
+        .map(|port| format!("http://localhost:{port}"))
+}
+
+/// `actionMenuItems`: each action of the checkout's project — an idle one
+/// runs (in its finished session, if it left one), a live one shows its
+/// terminal with its browser, restart and stop beneath — then the editor.
+fn run_items(s: &AppState, workspace: WorkspaceId) -> Vec<Entry> {
+    let Some(store) = &s.store else {
+        return Vec::new();
+    };
+    let Some(project) = store
+        .workspaces
+        .iter()
+        .find(|w| w.id == workspace)
+        .map(|w| w.project_id)
+    else {
+        return Vec::new();
+    };
+    let mut actions: Vec<&domain::ProjectAction> = store
+        .project_actions
+        .iter()
+        .filter(|a| a.project_id == project)
+        .collect();
+    actions.sort_by_key(|a| a.position);
+    let mut out = Vec::new();
+    for action in &actions {
+        let mut runs: Vec<&domain::Session> = store
+            .sessions
+            .iter()
+            .filter(|session| {
+                session.workspace_id == workspace
+                    && session
+                        .action
+                        .as_ref()
+                        .is_some_and(|run| run.action_id == action.id)
+            })
+            .collect();
+        runs.sort_by_key(|run| std::cmp::Reverse(run.created_at));
+        let latest = runs
+            .iter()
+            .find(|session| session.state.is_active())
+            .or(runs.first())
+            .copied();
+        let phase = latest.map(crate::processes::phase_of);
+        match (latest, phase) {
+            (Some(session), Some(phase)) if phase.live() => {
+                let id = session.id;
+                out.push(
+                    item(action.label.clone(), Glyph::Activity, Act::FocusSession(id))
+                        .detail(Some(live_status(&phase))),
+                );
+                if let Some(url) = served_at(session, &phase) {
+                    out.push(item(
+                        format!("Open {url} in the browser"),
+                        Glyph::Globe,
+                        Act::OpenUrl(url),
+                    ));
+                }
+                out.push(item(
+                    format!("Restart {}", action.label),
+                    Glyph::Refresh,
+                    Act::Restart(id),
+                ));
+                out.push(item(
+                    format!("Stop {}", action.label),
+                    Glyph::Stop,
+                    Act::Kill(id),
+                ));
+            }
+            (Some(session), Some(_)) => out.push(item(
+                action.label.clone(),
+                Glyph::Play,
+                Act::Restart(session.id),
+            )),
+            _ => out.push(item(
+                action.label.clone(),
+                Glyph::Play,
+                Act::RunAction(workspace, action.id),
+            )),
+        }
+    }
+    if !out.is_empty() {
+        out.push(Entry::Rule);
+    }
+    out.push(item(
+        if actions.is_empty() {
+            "Set up actions…"
+        } else {
+            "Edit actions…"
+        },
+        Glyph::Edit,
+        Act::Actions(project, workspace),
+    ));
+    out
 }
 
 /// `launchItems` over the host's `launchables`: a terminal, then each agent
@@ -392,7 +631,7 @@ fn checkout_items(s: &AppState, workspace_id: WorkspaceId) -> Vec<Entry> {
         item(
             "Shared files…",
             Glyph::FolderOpen,
-            Act::Unported(Unported::SharedFiles),
+            Act::SharedFiles(workspace.project_id, Some(workspace_id)),
         )
         .enabled(has_project),
         item(
@@ -413,6 +652,27 @@ fn checkout_items(s: &AppState, workspace_id: WorkspaceId) -> Vec<Entry> {
         ),
         item("Rename…", Glyph::Edit, Act::RenameCheckout(workspace_id)),
     ]);
+    let order = &s.projects.rail.order;
+    let up = crate::rail::moved_checkout(&store.workspaces, workspace_id, -1, order).is_some();
+    let down = crate::rail::moved_checkout(&store.workspaces, workspace_id, 1, order).is_some();
+    if up || down {
+        out.push(
+            item(
+                "Move up",
+                Glyph::ChevronUp,
+                Act::MoveCheckout(workspace_id, -1),
+            )
+            .enabled(up),
+        );
+        out.push(
+            item(
+                "Move down",
+                Glyph::ChevronDown,
+                Act::MoveCheckout(workspace_id, 1),
+            )
+            .enabled(down),
+        );
+    }
     if workspace.kind == WorkspaceKind::GitWorktree {
         out.push(
             item(
@@ -482,7 +742,7 @@ fn project_items(s: &AppState, project_id: ProjectId) -> Vec<Entry> {
         items.push(item(
             "Shared files…",
             Glyph::FolderOpen,
-            Act::Unported(Unported::SharedFiles),
+            Act::SharedFiles(project_id, None),
         ));
     }
     let choice = hue_choice(
@@ -501,11 +761,14 @@ fn project_items(s: &AppState, project_id: ProjectId) -> Vec<Entry> {
             .detail((choice == Some(slot)).then(|| "Current".to_string()))
     }));
     items.extend([
-        item("Actions…", Glyph::Play, Act::Unported(Unported::Actions)).enabled(main.is_some()),
+        match main {
+            Some(main) => item("Actions…", Glyph::Play, Act::Actions(project_id, main.id)),
+            None => item("Actions…", Glyph::Play, Act::RefreshProject(project_id)).enabled(false),
+        },
         item(
             "Ignored worktrees…",
             Glyph::Filter,
-            Act::Unported(Unported::IgnoredWorktrees),
+            Act::IgnoredWorktrees(project_id),
         ),
         item(
             "Refresh project",
@@ -531,7 +794,7 @@ fn project_items(s: &AppState, project_id: ProjectId) -> Vec<Entry> {
                     item(
                         format!("Move to {}", g.name),
                         Glyph::FolderOpen,
-                        Act::Unported(Unported::MoveToGroup),
+                        Act::MoveToGroup(project_id, Some(g.id)),
                     )
                 }),
         );
@@ -539,7 +802,7 @@ fn project_items(s: &AppState, project_id: ProjectId) -> Vec<Entry> {
             items.push(item(
                 "Move out of the group",
                 Glyph::FolderOpen,
-                Act::Unported(Unported::MoveToGroup),
+                Act::MoveToGroup(project_id, None),
             ));
         }
     }
@@ -795,6 +1058,8 @@ pub enum Ask {
     RenamePath(WorkspaceId, String),
     Duplicate(WorkspaceId, String),
     MovePath(WorkspaceId, String),
+    NewGroup,
+    RenameGroup(ProjectGroupId),
 }
 
 pub struct Prompt {
@@ -828,6 +1093,7 @@ pub struct Menus {
     pub removal: Option<(ProjectId, RemoveProjectPolicy)>,
     /// The daemon's refusal of the last file tree write.
     pub file_error: Option<String>,
+    pub button: Option<ButtonMenu>,
 }
 
 /// A secondary press on `target`'s row.
@@ -1140,6 +1406,7 @@ fn ask(s: &mut AppState, ask: Ask, value: String) {
 /// Does what an item says; the menu is closed first.
 pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
     s.menus.open = None;
+    s.menus.button = None;
     match act {
         Act::NewTerminal(workspace) => s.shell_in(workspace),
         Act::NewAgent(workspace, provider, profile) => {
@@ -1154,11 +1421,7 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
             s.show_panel(Panel::Git);
             s.draft_commit();
         }
-        Act::NewWorktree(project) => {
-            s.projects.new_worktree = Some(project);
-            s.projects.branch = TextEdit::new("");
-            s.projects.branch.focused = true;
-        }
+        Act::NewWorktree(project) => crate::branch_picker::open(s, project),
         Act::RefreshStatus(workspace) => {
             send(s, "RefreshWorkspaceStatus", |c| {
                 c.refresh_workspace_status(workspace)
@@ -1178,8 +1441,13 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
             ask(s, Ask::RenameCheckout(workspace), label);
         }
         Act::IgnoreFolder(workspace) => ignore_folder(s, workspace),
-        // Arms the row's own Remove, which asks for the second press.
-        Act::RemoveWorktree(workspace) => s.projects.confirm_remove = Some(workspace),
+        Act::RemoveWorktree(workspace) => {
+            s.projects.refused = None;
+            s.projects.removal = Some(crate::projects::Removal {
+                workspace,
+                reason: None,
+            });
+        }
         Act::SetIcon(project) => {
             let current = s
                 .store
@@ -1276,7 +1544,70 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
         Act::RefreshFiles => s.workbench.refresh(),
         Act::CollapseFolders => s.workbench.files.tree.collapse_all(),
         Act::Unported(_) => {}
+        Act::AddProject(group) => add_project(group, tx),
+        Act::NewGroup => ask(s, Ask::NewGroup, String::new()),
+        Act::RenameGroup(group) => {
+            let name = s
+                .store
+                .as_ref()
+                .and_then(|store| store.project_groups.iter().find(|g| g.id == group))
+                .map(|g| g.name.clone())
+                .unwrap_or_default();
+            ask(s, Ask::RenameGroup(group), name);
+        }
+        Act::RemoveGroup(group) => {
+            crate::project_ops::send(s, crate::project_ops::Op::RemoveGroup(group));
+        }
+        Act::MoveToGroup(project, group) => {
+            crate::project_ops::send(s, crate::project_ops::Op::MoveProject(project, group));
+        }
+        Act::MoveCheckout(workspace, by) => crate::projects::move_checkout(s, workspace, by),
+        Act::SharedFiles(project, workspace) => {
+            crate::shares::open_dialog(s, project, workspace);
+        }
+        Act::Actions(project, workspace) => crate::actions_editor::open(s, project, workspace),
+        Act::IgnoredWorktrees(project) => s.projects.ignores = Some(project),
+        Act::RunAction(workspace, action) => s.run_action(workspace, action),
+        Act::FocusSession(session) => s.focus_session(session),
+        Act::OpenUrl(url) => {
+            if let Err(error) = tx.open_url(&url) {
+                eprintln!("[open] {url}: {error:?}");
+            }
+        }
+        Act::ReapplyRule(project, rule) => crate::shares::reapply_everywhere(s, project, rule),
+        Act::MoveRule(project, rule, by) => crate::shares::move_rule(s, project, rule, by),
+        Act::RemoveRule(project, rule) => {
+            s.projects.share_form.removing = Some((project, rule, domain::ShareCleanup::Leave));
+        }
     }
+}
+
+/// Picks a folder and registers it, in `group` when one is named.
+fn add_project(group: Option<ProjectGroupId>, tx: &mut Tx) {
+    tx.open_folder(
+        rune::FileDialogOptions {
+            title: "Add a project".into(),
+            ..rune::FileDialogOptions::default()
+        },
+        move |s: &mut AppState, answer, _tx| {
+            let Ok(Some(path)) = answer else {
+                return;
+            };
+            match group {
+                Some(group) => {
+                    crate::project_ops::send(s, crate::project_ops::Op::AddProjectTo(path, group));
+                }
+                None => s.add_project(path),
+            }
+        },
+    );
+}
+
+/// Replaces a project's ignore rules; the daemon rescans before it acks.
+pub fn set_ignores(s: &mut AppState, project: ProjectId, rules: Vec<domain::WorktreeIgnore>) {
+    send(s, "SetWorktreeIgnores", |c| {
+        c.set_worktree_ignores(project, rules)
+    });
 }
 
 /// Tauri's gesture names the folder that holds the worktree, not the
@@ -1305,9 +1636,7 @@ fn ignore_folder(s: &mut AppState, workspace: WorkspaceId) {
         scope: domain::IgnoreScope::Subtree,
         created_at: domain::Timestamp::now(),
     });
-    send(s, "SetWorktreeIgnores", |c| {
-        c.set_worktree_ignores(project, rules)
-    });
+    set_ignores(s, project, rules);
 }
 
 /// Tauri's `closeViews`: one confirmation when any editor might hold unsaved
@@ -1448,7 +1777,9 @@ pub fn submit_prompt(s: &mut AppState) {
     };
     let problem = match &prompt.ask {
         Ask::RenameCheckout(_) | Ask::SetIcon(_) | Ask::MovePath(..) => None,
-        Ask::NewPath { .. } => value.is_empty().then_some("Enter a name."),
+        Ask::NewPath { .. } | Ask::NewGroup | Ask::RenameGroup(_) => {
+            value.is_empty().then_some("Enter a name.")
+        }
         Ask::RenamePath(..) | Ask::Duplicate(..) => named(&value),
     };
     if let Some(problem) = problem {
@@ -1514,6 +1845,12 @@ pub fn submit_prompt(s: &mut AppState) {
                 }
             }
         }
+        Ask::NewGroup => {
+            crate::project_ops::send(s, crate::project_ops::Op::CreateGroup(value));
+        }
+        Ask::RenameGroup(group) => {
+            crate::project_ops::send(s, crate::project_ops::Op::RenameGroup(group, value));
+        }
         Ask::MovePath(workspace, path) => {
             let from = parent_of(&path).to_string();
             let folder = value.trim_matches('/').to_string();
@@ -1574,6 +1911,13 @@ pub fn command_result(s: &mut AppState, label: &str, ok: bool, message: &str) {
         "CreatePath" | "RenamePath" | "CopyPath" | "DeletePath"
     ) {
         s.menus.file_error = (!ok).then(|| message.to_string());
+    }
+    if label == "FetchRemote"
+        && !ok
+        && let Some(picker) = s.projects.picker.as_mut()
+    {
+        picker.fetching = false;
+        picker.error = Some(format!("Fetch failed: {message}"));
     }
 }
 
@@ -1644,6 +1988,24 @@ pub fn layer(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             let _ = menu.build(k, layer);
         }
     }
+    if let Some(menu) = &s.menus.button {
+        let entries = rendered(button_items(s, menu));
+        if !entries.is_empty() {
+            let mut built = Menu::new(menu.key())
+                .open(true)
+                .min_width(220.0)
+                .on_close(|s: &mut AppState| s.menus.button = None);
+            for entry in entries {
+                built = match entry {
+                    Entry::Item(item) => built.item(kit_item(item)),
+                    Entry::Rule => built.separator(),
+                    Entry::Heading(label) => built.group_label(label),
+                    Entry::Submenu { .. } => built,
+                };
+            }
+            let _ = built.build(k, layer);
+        }
+    }
     prompt_dialog(s, k, layer);
     confirm_dialog(s, k, layer);
     removal_dialog(s, k, layer);
@@ -1661,6 +2023,8 @@ impl Ask {
             Ask::RenamePath(_, path) => format!("Rename {path}"),
             Ask::Duplicate(_, path) => format!("Duplicate {path}"),
             Ask::MovePath(_, path) => format!("Move {path}"),
+            Ask::NewGroup => "New group".into(),
+            Ask::RenameGroup(_) => "Rename group".into(),
         }
     }
 
@@ -1670,6 +2034,7 @@ impl Ask {
             Ask::SetIcon(_) => "Icon (one or two characters)",
             Ask::MovePath(..) => "Destination folder relative to checkout (empty for root)",
             Ask::NewPath { .. } | Ask::RenamePath(..) | Ask::Duplicate(..) => "Name",
+            Ask::NewGroup | Ask::RenameGroup(_) => "Group name",
         }
     }
 
@@ -1685,9 +2050,9 @@ impl Ask {
         match self {
             Ask::SetIcon(_) => "Apply",
             Ask::MovePath(..) => "Move",
-            Ask::NewPath { .. } => "Create",
+            Ask::NewPath { .. } | Ask::NewGroup => "Create",
             Ask::Duplicate(..) => "Duplicate",
-            Ask::RenameCheckout(_) | Ask::RenamePath(..) => "Rename",
+            Ask::RenameCheckout(_) | Ask::RenamePath(..) | Ask::RenameGroup(_) => "Rename",
         }
     }
 }
@@ -1941,21 +2306,25 @@ mod tests {
         );
         assert_eq!(
             labels(&rendered(all.clone())),
-            [
-                "New worktree…",
-                "Refresh project",
-                "Set icon…",
-                "Color ▸",
-                "—",
-                "Copy path",
-                "—",
-                "Remove project…!",
-            ],
-            "the group section had only unported items, and its rule goes with them"
+            labels(&all),
+            "every project item is ported"
         );
         assert_eq!(
             act_of(&all, "Copy path"),
             Act::Copy("/home/dev/forge".into())
+        );
+        assert_eq!(
+            act_of(&all, "Move out of the group"),
+            Act::MoveToGroup(id(PROJECT), None)
+        );
+        assert_eq!(
+            act_of(&all, "Actions…"),
+            Act::Actions(id(PROJECT), id(MAIN)),
+            "actions are read at the main checkout"
+        );
+        assert_eq!(
+            act_of(&all, "Shared files…"),
+            Act::SharedFiles(id(PROJECT), None)
         );
     }
 
@@ -1976,6 +2345,7 @@ mod tests {
                 "Commit with Juva…",
                 "—",
                 "# Workspace",
+                "Shared files…",
                 "New worktree…",
                 "Refresh status",
                 "Copy path",
@@ -1984,6 +2354,8 @@ mod tests {
                 "Open in ▸",
                 "—",
                 "# Project",
+                "Actions…",
+                "Ignored worktrees…",
                 "Refresh project",
                 "Set icon…",
                 "Color ▸",
@@ -2028,11 +2400,14 @@ mod tests {
                 "Refresh status",
                 "Copy path",
                 "Rename…",
+                "Move up",
+                "Move down (off)",
                 "Ignore worktrees in this folder",
                 "Remove worktree!",
                 "—",
                 "Open in ▸",
-            ]
+            ],
+            "a worktree sorts after the main checkout, so it can only move up"
         );
         assert_eq!(
             act_of(&all, "Copy path"),
@@ -2397,9 +2772,13 @@ mod tests {
             menu_items(&rt),
             [
                 "New worktree…",
+                "Shared files…",
+                "Actions…",
+                "Ignored worktrees…",
                 "Refresh project",
                 "Set icon…",
                 "Color",
+                "Move out of the group",
                 "Copy path",
                 "Remove project…"
             ]

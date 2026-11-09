@@ -156,13 +156,6 @@ pub enum Command {
         provider: String,
         profile_id: Option<domain::AgentProfileId>,
     },
-    CreateWorktree {
-        project_id: domain::ProjectId,
-        branch: String,
-    },
-    RemoveWorktree {
-        workspace_id: WorkspaceId,
-    },
     /// The daemon exits; the worker then reconnects and finds nothing.
     StopDaemon {
         kill_sessions: bool,
@@ -216,6 +209,8 @@ pub enum Command {
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
+    /// A project, share, worktree or action request; see `project_ops`.
+    Project(crate::project_ops::Op),
 }
 
 #[derive(Debug)]
@@ -288,6 +283,10 @@ pub enum UiEvent {
         ok: bool,
         message: String,
         took_us: u64,
+    },
+    Project {
+        generation: u64,
+        reply: Box<crate::project_ops::Reply>,
     },
 }
 
@@ -553,16 +552,8 @@ impl ConnectionHandle {
         self.send(Command::AddProject(path))
     }
 
-    pub fn create_worktree(
-        &self,
-        project_id: domain::ProjectId,
-        branch: String,
-    ) -> Result<(), String> {
-        self.send(Command::CreateWorktree { project_id, branch })
-    }
-
-    pub fn remove_worktree(&self, workspace_id: WorkspaceId) -> Result<(), String> {
-        self.send(Command::RemoveWorktree { workspace_id })
+    pub fn project(&self, op: crate::project_ops::Op) -> Result<(), String> {
+        self.send(Command::Project(op))
     }
 
     pub fn refresh_project(&self, project_id: domain::ProjectId) -> Result<(), String> {
@@ -1149,8 +1140,6 @@ fn handle_fixture_command(
         | Command::DraftCommit { .. }
         | Command::Commit { .. }
         | Command::CreateAgent { .. }
-        | Command::CreateWorktree { .. }
-        | Command::RemoveWorktree { .. }
         | Command::StopDaemon { .. }
         | Command::FactoryReset
         | Command::RefreshAgentDetection
@@ -1168,6 +1157,16 @@ fn handle_fixture_command(
         | Command::CopyPath { .. }
         | Command::DeletePath { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
+        Command::Project(op) => {
+            let reply = crate::project_ops::Reply {
+                op,
+                result: Err("the recorded snapshot has no daemon to ask".to_string()),
+            };
+            sink(vec![UiEvent::Project {
+                generation,
+                reply: Box::new(reply),
+            }]);
+        }
     }
 }
 
@@ -2100,24 +2099,6 @@ fn handle_live_command(
             }
             live_result(generation, "AddProject", result, sink, metrics, started);
         }
-        Command::CreateWorktree { project_id, branch } => {
-            metrics.note_socket_op();
-            let result = client
-                .create_worktree(project_id, &branch, None, None)
-                .map(|_| format!("creating worktree {branch}"))
-                .map_err(|error| error.to_string());
-            live_result(generation, "CreateWorktree", result, sink, metrics, started);
-        }
-        Command::RemoveWorktree { workspace_id } => {
-            metrics.note_socket_op();
-            // Never forced from here: a worktree with uncommitted work is the
-            // daemon's to refuse, not this button's to discard.
-            let result = client
-                .remove_worktree(workspace_id, false)
-                .map(|_| "removed worktree".to_string())
-                .map_err(|error| error.to_string());
-            live_result(generation, "RemoveWorktree", result, sink, metrics, started);
-        }
         Command::StopDaemon { kill_sessions } => {
             metrics.note_socket_op();
             let sessions = if kill_sessions {
@@ -2211,6 +2192,16 @@ fn handle_live_command(
             }
         }
         Command::ForceReconnect | Command::Shutdown => {}
+        Command::Project(op) => {
+            metrics.note_socket_op();
+            let reply = crate::project_ops::perform(client, op);
+            metric_command(metrics, started);
+            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+            sink(vec![UiEvent::Project {
+                generation,
+                reply: Box::new(reply),
+            }]);
+        }
     }
 }
 
@@ -2340,8 +2331,6 @@ fn command_label(command: &Command) -> &'static str {
         Command::DraftCommit { .. } => "DraftWithJuva",
         Command::Commit { .. } => "CreateCommit",
         Command::CreateAgent { .. } => "CreateAgentSession",
-        Command::CreateWorktree { .. } => "CreateWorktree",
-        Command::RemoveWorktree { .. } => "RemoveWorktree",
         Command::StopDaemon { .. } => "StopDaemon",
         Command::FactoryReset => "FactoryReset",
         Command::RefreshAgentDetection => "RefreshAgentDetection",
@@ -2361,6 +2350,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",
+        Command::Project(op) => op.label(),
     }
 }
 

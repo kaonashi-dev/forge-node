@@ -551,9 +551,7 @@ impl AppState {
                 .map(|found| found.project_id)
         });
         if let Some(project) = project {
-            self.projects.new_worktree = Some(project);
-            self.projects.branch = rune::TextEdit::new("");
-            self.projects.branch.focused = true;
+            crate::branch_picker::open(self, project);
         }
     }
 
@@ -915,41 +913,6 @@ impl AppState {
         self.show_mode(mode);
     }
 
-    pub fn create_worktree(&mut self) {
-        let Some(project) = self.projects.new_worktree.take() else {
-            return;
-        };
-        let branch = self.projects.branch.text.trim().to_string();
-        if branch.is_empty() {
-            self.projects.new_worktree = Some(project);
-            return;
-        }
-        match &self.connection {
-            Some(connection) => {
-                let _ = connection.create_worktree(project, branch);
-            }
-            None => self.worker_not_ready("CreateWorktree"),
-        }
-    }
-
-    /// The first press arms, the second removes: a worktree is a checkout.
-    pub fn remove_worktree(&mut self, workspace: WorkspaceId) {
-        if self.projects.confirm_remove != Some(workspace) {
-            self.projects.confirm_remove = Some(workspace);
-            return;
-        }
-        self.projects.confirm_remove = None;
-        self.projects.refused = None;
-        match &self.connection {
-            Some(connection) => {
-                if connection.remove_worktree(workspace).is_ok() {
-                    self.projects.removing = Some(workspace);
-                }
-            }
-            None => self.worker_not_ready("RemoveWorktree"),
-        }
-    }
-
     fn pull_request(&self, repository: &str, number: u32) -> Option<&domain::PullRequest> {
         self.store
             .as_ref()?
@@ -1258,6 +1221,7 @@ impl AppState {
                 }
                 self.last_snapshot_us = Some(took_us);
                 self.set_store(*store);
+                crate::projects::seed(self);
                 self.status = LinkStatus::Connected;
                 true
             }
@@ -1265,6 +1229,7 @@ impl AppState {
                 if !self.accept_generation(generation) {
                     return false;
                 }
+                crate::project_ops::observe(self, event.as_ref());
                 if let protocol::DaemonEvent::ClipboardStore { terminal_id, text } = event.as_ref()
                 {
                     // Only a terminal this window shows may set the clipboard;
@@ -1497,13 +1462,6 @@ impl AppState {
                 if label == "DeleteExternalSession" && !ok {
                     self.history.error = Some(message.clone());
                 }
-                if label == "RemoveWorktree"
-                    && let Some(workspace) = self.projects.removing.take()
-                    && !ok
-                {
-                    self.projects.refused =
-                        Some((workspace, crate::projects::removal_block(&message)));
-                }
                 if label == "CreateCommit" {
                     self.commit.committing = false;
                     if ok {
@@ -1539,6 +1497,13 @@ impl AppState {
                     message,
                     took_us,
                 });
+                true
+            }
+            UiEvent::Project { generation, reply } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                crate::project_ops::apply(self, *reply);
                 true
             }
         }

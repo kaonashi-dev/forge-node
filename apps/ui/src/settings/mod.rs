@@ -20,24 +20,25 @@ pub use agents::ProfileForm;
 use crate::app::AppState;
 use crate::glyphs;
 
-/// The pages, in the order the sidebar lists them. Shared files is Tauri's
-/// fourth; it is left out until the share requests are wired here.
+/// The pages, in the order the sidebar lists them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Section {
     #[default]
     General,
     Agents,
     Keyboard,
+    SharedFiles,
     Storage,
     Stats,
     Appearance,
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::General,
         Section::Agents,
         Section::Keyboard,
+        Section::SharedFiles,
         Section::Storage,
         Section::Stats,
         Section::Appearance,
@@ -49,6 +50,7 @@ impl Section {
             Section::General => "General",
             Section::Agents => "Agents",
             Section::Keyboard => "Keyboard",
+            Section::SharedFiles => "Shared files",
             Section::Storage => "Storage",
             Section::Stats => "Stats & usage",
             Section::Appearance => "Appearance",
@@ -63,6 +65,10 @@ impl Section {
             Section::Keyboard => {
                 "Every action and the key it answers to. Escape twice leaves Settings — a \
                  sequence, not a chord."
+            }
+            Section::SharedFiles => {
+                "What a new worktree needs on disk that git does not carry: .env, installed \
+                 dependencies, a local certificate."
             }
             Section::Storage => "Where Forge Node keeps its config, state and managed worktrees.",
             Section::Stats => {
@@ -81,6 +87,7 @@ impl Section {
             Section::General => "general",
             Section::Agents => "agents",
             Section::Keyboard => "keyboard",
+            Section::SharedFiles => "shared-files",
             Section::Storage => "storage",
             Section::Stats => "stats",
             Section::Appearance => "appearance",
@@ -92,6 +99,7 @@ impl Section {
             Section::General => &glyphs::SETTINGS,
             Section::Agents => &glyphs::AGENT,
             Section::Keyboard => &glyphs::KEYBOARD,
+            Section::SharedFiles => &glyphs::SHARED_FILES,
             Section::Storage => &glyphs::FILES,
             Section::Stats => &glyphs::STATS,
             Section::Appearance => &glyphs::APPEARANCE,
@@ -170,6 +178,16 @@ impl Settings {
 }
 
 impl AppState {
+    /// Settings › Shared files is about the window's checkout's project, and
+    /// scans it once when it opens on it.
+    fn open_shared_files(&mut self) {
+        if let Some(project) = crate::shares::current_project(self) {
+            crate::shares::scan(self, project);
+        }
+    }
+}
+
+impl AppState {
     /// Writes a shared preference and keeps the replica in step: the daemon
     /// broadcasts no change to `app_state`, so only a snapshot would.
     pub fn write_pref(&mut self, key: &str, value: &str) {
@@ -207,6 +225,9 @@ impl AppState {
         }
         self.settings.esc.reset();
         self.show_mode(crate::workbench::CenterMode::Settings);
+        if self.settings.section == Section::SharedFiles {
+            self.open_shared_files();
+        }
     }
 
     pub fn close_settings(&mut self) {
@@ -218,6 +239,9 @@ impl AppState {
     pub fn show_section(&mut self, section: Section) {
         self.settings.section = section;
         self.settings.notice = None;
+        if section == Section::SharedFiles {
+            self.open_shared_files();
+        }
     }
 
     /// An Escape that reached the app while Settings is open: the second of
@@ -234,6 +258,7 @@ impl AppState {
             || self.palette.open
             || self.settings.confirm_reset
             || self.settings.field_focused()
+            || self.projects.field_focused()
         {
             return false;
         }
@@ -386,6 +411,7 @@ pub fn page(s: &AppState, k: &Kit) -> El {
         Section::General => general::section(s, k),
         Section::Agents => agents::section(s, k),
         Section::Keyboard => keyboard::section(k),
+        Section::SharedFiles => crate::shares::page(s, k, crate::shares::current_project(s), None),
         Section::Storage => crate::storage::section(s, k),
         Section::Stats => crate::usage::section(s, k),
         Section::Appearance => look::section(s, k),
@@ -576,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sections_follow_tauris_order_without_shared_files() {
+    fn the_sections_follow_tauris_order() {
         let labels: Vec<&str> = Section::ALL.iter().map(|s| s.label()).collect();
         assert_eq!(
             labels,
@@ -584,6 +610,7 @@ mod tests {
                 "General",
                 "Agents",
                 "Keyboard",
+                "Shared files",
                 "Storage",
                 "Stats & usage",
                 "Appearance"
