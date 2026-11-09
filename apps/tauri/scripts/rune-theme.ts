@@ -5,9 +5,12 @@ import { editorPalette } from "../src/theme/editorTheme";
 import { themeVariant, withThemeColor, type ThemeColor } from "../src/theme/themeVariants";
 import {
   ACCENT_SWATCHES,
+  HUE_COUNT,
   LIGHT_BASES,
   palettes,
+  staticTokens,
   THEME_LABELS,
+  toCssVariables,
   type ThemeBaseId,
 } from "../src/theme/tokens";
 
@@ -25,6 +28,63 @@ const VARIANT_CASES: {
   { base: "forge-dark", contrast: 25 },
   { base: "ocean", contrast: 90 },
 ];
+
+// The chrome roles `toCssVariables` derives, by the name Rust reads them under.
+const CHROME: Record<string, string> = {
+  border: "--border-subtle",
+  borderHi: "--border-default",
+  borderStrong: "--border-strong",
+  hover: "--bg-hover",
+  selected: "--bg-selected",
+  pressed: "--bg-pressed",
+  sidebarHover: "--forge-sidebar-hi",
+  textStrong: "--fg-strong",
+  fgDefault: "--fg-default",
+  fgMuted: "--fg-muted",
+  fgSubtle: "--fg-subtle",
+  focusRing: "--ring",
+  accentText: "--accent-text",
+  accentFg: "--accent-fg",
+  accentSoft: "--accent-soft",
+  accentHover: "--accent-solid-hover",
+  dangerText: "--danger-text",
+  dangerFg: "--danger-fg",
+  dangerSoft: "--danger-soft",
+  successText: "--success-text",
+  successFg: "--success-fg",
+  warningText: "--warning-text",
+  warningFg: "--warning-fg",
+  infoText: "--info-text",
+  infoFg: "--info-fg",
+  needsYouText: "--attention-text",
+  needsYouFg: "--attention-fg",
+  needsYouTint: "--forge-needs-you-tint",
+  diffAddedBg: "--forge-diff-added-bg",
+  diffRemovedBg: "--forge-diff-removed-bg",
+  gitAdded: "--git-added-text",
+  gitModified: "--git-modified-text",
+  gitDeleted: "--git-deleted-text",
+  gitUntracked: "--git-untracked-text",
+  gitConflict: "--git-conflict-text",
+  gitIgnored: "--git-ignored-text",
+  tab: "--finish-tab-bg",
+  stripRule: "--finish-strip-rule",
+};
+
+function chrome(id: ThemeBaseId) {
+  const variables = { ...staticTokens(), ...toCssVariables(palettes[id]) };
+  const read = (name: string): string => {
+    const value = variables[name] ?? "";
+    const forward = /^var\((--[\w-]+)\)$/.exec(value);
+    return forward ? read(forward[1]) : value;
+  };
+  return {
+    ...Object.fromEntries(Object.entries(CHROME).map(([role, name]) => [role, read(name)])),
+    selectTint: Number.parseInt(read("--finish-select-tint"), 10),
+    hueTint: Number.parseInt(read("--hue-tint"), 10),
+    hues: Array.from({ length: HUE_COUNT }, (_, slot) => read(`--hue-${slot}`)),
+  };
+}
 
 function variants() {
   return VARIANT_CASES.map(({ base, color, contrast }) => {
@@ -49,6 +109,7 @@ export function runeThemes(): string {
         light: LIGHT_BASES.has(id),
         palette: palettes[id],
         editor: editorPalette(id),
+        chrome: chrome(id),
       },
     ]),
   );
