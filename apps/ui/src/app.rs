@@ -987,12 +987,16 @@ impl AppState {
     fn sync_workbench(&mut self) {
         // The sidebar's panels follow the window's checkout as the strip does.
         self.sync_workbench_workspace();
+        if self.palette.asked_in.is_some() && self.palette.asked_in != self.workbench.scope() {
+            self.palette.forget_files();
+        }
         self.sync_usage();
         self.sync_storage();
         self.commit.follow(self.workbench.workspace);
         if let Some(query) = self.palette.take_search() {
             self.sync_workbench_workspace();
             if let (Some(connection), Some(scope)) = (&self.connection, self.workbench.scope()) {
+                self.palette.asked_in = Some(scope);
                 let _ = connection.read(
                     self.generation,
                     scope,
@@ -1273,14 +1277,19 @@ impl AppState {
             }
             UiEvent::Search {
                 generation,
+                scope,
                 query,
                 result,
             } => {
                 if !self.accept_generation(generation) {
                     return false;
                 }
-                if let Ok(paths) = result {
-                    self.palette.apply_search(&query, paths);
+                if self.workbench.scope() != Some(scope) {
+                    return false;
+                }
+                match result {
+                    Ok(paths) => self.palette.apply_search(&query, paths),
+                    Err(_) => self.palette.fail_search(&query),
                 }
                 true
             }

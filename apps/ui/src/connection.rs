@@ -204,6 +204,7 @@ pub enum UiEvent {
     },
     Search {
         generation: u64,
+        scope: crate::workbench::Scope,
         query: String,
         result: Result<Vec<String>, String>,
     },
@@ -1459,6 +1460,7 @@ fn handle_live_command(
                 },
                 crate::workbench::Read::Search(query) => UiEvent::Search {
                     generation,
+                    scope,
                     result: client
                         .search_files(
                             workspace_id,

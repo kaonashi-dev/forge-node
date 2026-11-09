@@ -51,6 +51,9 @@ pub struct Palette {
     /// The query `files` answers, so a late answer to an older query is dropped.
     files_for: String,
     asked: Option<String>,
+    /// The checkout the last search was asked in; another one's answer is
+    /// never listed under it.
+    pub asked_in: Option<crate::workbench::Scope>,
 }
 
 impl Default for Palette {
@@ -66,6 +69,7 @@ impl Default for Palette {
             actions: Vec::new(),
             files_for: String::new(),
             asked: None,
+            asked_in: None,
         }
     }
 }
@@ -207,7 +211,11 @@ impl Palette {
                 .filter(|entry| subsequence(entry.label(), query))
                 .collect()
         };
-        if !query.is_empty() && self.files_for == query && !self.launch {
+        // The last answer stays while the next is in flight, as Tauri's
+        // `nameSearchState` holds it, so typing one more letter does not
+        // empty the list and refill it.
+        let held = self.files_for == query || self.asked.as_deref() == Some(query);
+        if !query.is_empty() && held && !self.launch {
             out.extend(self.files.iter().cloned().map(Entry::File));
         }
         out
@@ -224,6 +232,25 @@ impl Palette {
         }
         self.asked = Some(query.clone());
         Some(query)
+    }
+
+    /// A failed search settles the query it was asked for, with nothing
+    /// listed; a failure for a query since replaced is dropped.
+    pub fn fail_search(&mut self, query: &str) {
+        if query != self.query() {
+            return;
+        }
+        self.files_for = query.to_string();
+        self.files.clear();
+    }
+
+    /// Drops the held answer: the checkout it was asked in is no longer
+    /// the window's.
+    pub fn forget_files(&mut self) {
+        self.files.clear();
+        self.files_for.clear();
+        self.asked = None;
+        self.asked_in = None;
     }
 
     pub fn apply_search(&mut self, query: &str, paths: Vec<String>) {
@@ -288,6 +315,56 @@ mod tests {
         );
         palette.apply_search("main", vec!["src/main.rs".into()]);
         assert_eq!(palette.entries(), vec![Entry::File("src/main.rs".into())]);
+    }
+
+    #[test]
+    fn the_last_answer_is_held_while_the_next_is_in_flight() {
+        let mut palette = Palette::default();
+        palette.show(true);
+        typed(&mut palette, "mai");
+        assert_eq!(palette.take_search(), Some("mai".into()));
+        palette.apply_search("mai", vec!["src/main.rs".into()]);
+        typed(&mut palette, "main");
+        assert_eq!(palette.take_search(), Some("main".into()));
+        assert!(
+            palette.searching(),
+            "busy until the asked query is answered"
+        );
+        assert_eq!(
+            palette.entries(),
+            vec![Entry::File("src/main.rs".into())],
+            "the previous answer stays while the next is asked"
+        );
+        palette.apply_search("main", vec!["src/main.rs".into(), "main.c".into()]);
+        assert!(!palette.searching());
+        assert_eq!(palette.entries().len(), 2, "replaced when the reply lands");
+        typed(&mut palette, "");
+        assert!(
+            palette.entries().is_empty(),
+            "a cleared query lists nothing"
+        );
+    }
+
+    #[test]
+    fn a_failure_settles_only_its_own_query() {
+        let mut palette = Palette::default();
+        palette.show(true);
+        typed(&mut palette, "main");
+        assert_eq!(palette.take_search(), Some("main".into()));
+        palette.fail_search("mai");
+        assert!(
+            palette.searching(),
+            "a failure for a replaced query is dropped"
+        );
+        palette.fail_search("main");
+        assert!(!palette.searching(), "its own failure settles it");
+        assert!(palette.entries().is_empty());
+        palette.apply_search("main", vec!["a.rs".into()]);
+        palette.forget_files();
+        assert!(
+            palette.entries().is_empty(),
+            "another checkout's answer is dropped"
+        );
     }
 
     #[test]
