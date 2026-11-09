@@ -94,6 +94,9 @@ pub struct AppState {
     pub open_path: Option<String>,
     /// An opened editor whose session has not reached the replica yet.
     pub select_when_listed: Option<SessionId>,
+    /// Text a shown terminal asked to put on the clipboard, written by the
+    /// next `apply_events`, which holds the `Tx`.
+    pub pending_copy: Option<String>,
     pub fixture_titles: HashMap<TerminalId, String>,
     pub out: Outbox,
     pub last_input: Option<(usize, String)>,
@@ -134,6 +137,7 @@ impl AppState {
             editor_reveal: None,
             open_path: None,
             select_when_listed: None,
+            pending_copy: None,
             fixture_titles: HashMap::new(),
             out: Outbox::default(),
             last_input: None,
@@ -260,6 +264,9 @@ impl AppState {
             tx.instant();
             self.sync_terminal();
         }
+        if let Some(text) = self.pending_copy.take() {
+            tx.copy(text);
+        }
         if let Some(offset) = self.editor_reveal.take() {
             let [_, viewport] = self.editor.scroll.get();
             self.editor.scroll.set([offset, viewport]);
@@ -276,6 +283,29 @@ impl AppState {
                     && self.editor_surface == protocol::EditorSurface::Dom
             })
             .map(|row| row.id)
+    }
+
+    /// Whether `terminal` is the active session's, including the PTY under a
+    /// line editor, which the session rows deliberately leave out.
+    #[must_use]
+    pub fn shows_terminal(&self, terminal: TerminalId) -> bool {
+        let Some(active) = self.active else {
+            return false;
+        };
+        self.store
+            .as_ref()
+            .and_then(|store| store.sessions.iter().find(|session| session.id == active))
+            .and_then(|session| session.terminal_id)
+            == Some(terminal)
+    }
+
+    pub fn editor_ime(&mut self, ev: &Ime) -> bool {
+        if self.active_line_editor().is_none() {
+            return false;
+        }
+        self.editor.ime(ev);
+        self.flush_editor();
+        true
     }
 
     #[must_use]
@@ -394,6 +424,21 @@ impl AppState {
             }
             UiEvent::Daemon { generation, event } => {
                 if !self.accept_generation(generation) {
+                    return false;
+                }
+                if let protocol::DaemonEvent::ClipboardStore { terminal_id, text } = event.as_ref()
+                {
+                    // Only a terminal this window shows may set the clipboard;
+                    // anything else running in a PTY is not the person's choice.
+                    if self.shows_terminal(*terminal_id) {
+                        eprintln!("[clipboard] {} bytes from the active session", text.len());
+                        self.pending_copy = Some(text.clone());
+                    } else {
+                        eprintln!(
+                            "[clipboard] refused {} bytes from a session not shown",
+                            text.len()
+                        );
+                    }
                     return false;
                 }
                 if let protocol::DaemonEvent::EditorFrame { session_id, frame } = *event {
@@ -1112,6 +1157,23 @@ mod tests {
             fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
                 .expect("fixture snapshot decodes");
         AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new())
+    }
+
+    #[test]
+    fn only_the_active_sessions_terminal_may_set_the_clipboard() {
+        let state = state();
+        let active = state.active.expect("an active session");
+        let store = state.store.as_ref().expect("store");
+        let terminal_of = |pick: &dyn Fn(&domain::Session) -> bool| {
+            store
+                .sessions
+                .iter()
+                .find(|session| pick(session) && session.terminal_id.is_some())
+                .and_then(|session| session.terminal_id)
+                .expect("a session with a terminal")
+        };
+        assert!(state.shows_terminal(terminal_of(&|session| session.id == active)));
+        assert!(!state.shows_terminal(terminal_of(&|session| session.id != active)));
     }
 
     #[test]

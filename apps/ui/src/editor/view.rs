@@ -223,8 +223,34 @@ fn row_view(
             caret = caret.opacity(0.6);
         }
         view = view.child(caret);
+        if index == 0 && !ui.preedit.is_empty() {
+            view = view.child(preedit_view(
+                &ui.preedit,
+                text_x + measured.column_to_x(place.column),
+                palette,
+            ));
+        }
     }
     view
+}
+
+/// The composition, over the text at the caret: marked text the editor has
+/// not seen, underlined the way every input method shows it.
+fn preedit_view(preedit: &str, x: f32, palette: EditorPalette) -> El {
+    let underline = Span::new(0, preedit.len()).underline(palette.caret);
+    el().key("editor-preedit")
+        .absolute(x, 0.0)
+        .h(ROW_H)
+        .items_center()
+        .fill(palette.background)
+        .instant_changes()
+        .child(
+            rich(preedit.to_string(), vec![underline])
+                .font(metrics::mono())
+                .color(palette.foreground)
+                .selectable(false)
+                .inert(),
+        )
 }
 
 /// `[x0, x1)` pieces of `ranges` on `line`, in row-local text coordinates.

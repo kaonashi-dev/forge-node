@@ -16,7 +16,7 @@ use domain::{
     EditorFrame, EditorInputEvent, EditorKey, EditorPlace, MAX_EDITOR_INPUT_EVENTS, SessionId,
     editor_modifiers,
 };
-use rune::{Key, KeyEvent};
+use rune::{Ime, Key, KeyEvent};
 
 use metrics::MetricsCache;
 
@@ -32,6 +32,8 @@ pub const OVERSCAN: u32 = 16;
 const MAX_WINDOW: u32 = 512;
 /// Bounds what a stalled worker can make this side hold.
 const MAX_PENDING: usize = 1024;
+/// Longest composition drawn; an input method never needs more on one line.
+const PREEDIT_MAX_CHARS: usize = 256;
 
 pub struct EditorUi {
     pub session: Option<SessionId>,
@@ -41,6 +43,9 @@ pub struct EditorUi {
     pub scroll: Rc<Cell<[f32; 2]>>,
     pub metrics: RefCell<MetricsCache>,
     pub row_builds: Cell<u64>,
+    /// The input method's composition, drawn at the caret. Never sent: it is
+    /// not an edit until the input method commits it.
+    pub preedit: String,
     requested: Option<(SessionId, u32, u32)>,
     pending: Vec<EditorInputEvent>,
     last_caret: Option<EditorPlace>,
@@ -61,6 +66,7 @@ impl Default for EditorUi {
             scroll: Rc::new(Cell::new([0.0, 0.0])),
             metrics: RefCell::new(MetricsCache::new()),
             row_builds: Cell::new(0),
+            preedit: String::new(),
             requested: None,
             pending: Vec::new(),
             last_caret: None,
@@ -78,6 +84,7 @@ impl EditorUi {
         self.frame = None;
         self.requested = None;
         self.pending.clear();
+        self.preedit.clear();
         self.last_caret = None;
         self.scroll.set([0.0, self.scroll.get()[1]]);
     }
@@ -178,6 +185,24 @@ impl EditorUi {
         Some((document_line(frame, first_visual), count))
     }
 
+    /// Takes an input method event: a composition is drawn, a commit is sent
+    /// as committed text, the way a paste is.
+    pub fn ime(&mut self, event: &Ime) {
+        match event {
+            Ime::Preedit(text, _) => {
+                self.preedit = text.chars().take(PREEDIT_MAX_CHARS).collect();
+            }
+            Ime::Commit(text) => {
+                self.preedit.clear();
+                let clean: String = text.chars().filter(|ch| !ch.is_control()).collect();
+                if !clean.is_empty() {
+                    self.queue(EditorInputEvent::Text(clean));
+                }
+            }
+            Ime::Enabled | Ime::Disabled => {}
+        }
+    }
+
     /// Turns a key into editor input; `false` leaves it for the app.
     pub fn key(&mut self, event: &KeyEvent) -> bool {
         let Some(event) = key_input(event) else {
@@ -251,9 +276,9 @@ fn key_input(event: &KeyEvent) -> Option<EditorInputEvent> {
             });
         }
         Key::Command(ch) => {
-            return Some(EditorInputEvent::Key {
-                key: EditorKey::Char(*ch),
-                modifiers: modifiers | editor_modifiers::META,
+            return command_chord(*ch, event.mods).map(|ch| EditorInputEvent::Key {
+                key: EditorKey::Char(ch),
+                modifiers: editor_modifiers::CONTROL,
             });
         }
         Key::Left => EditorKey::Left,
@@ -274,6 +299,29 @@ fn key_input(event: &KeyEvent) -> Option<EditorInputEvent> {
         _ => return None,
     };
     Some(EditorInputEvent::Key { key, modifiers })
+}
+
+/// The editor's key table is Ctrl-based, so a macOS ⌘ chord is sent as the
+/// Ctrl key that does the same thing: the table Tauri's editor uses
+/// (`editorChords.ts`). An unclaimed chord stays the app's, and ⌘V is left
+/// to the native paste event.
+fn command_chord(ch: char, mods: rune::Mods) -> Option<char> {
+    let ch = ch.to_ascii_lowercase();
+    if ch == '/' || (ch == '?' && mods.shift) {
+        return (!mods.alt).then_some('_');
+    }
+    match (mods.alt, mods.shift, ch) {
+        (true, true, _) => None,
+        (true, false, 'f') => Some('r'),
+        (true, false, 'l') => Some('g'),
+        (true, false, _) => None,
+        (false, true, 'g') => Some('b'),
+        (false, true, 'z') => Some('y'),
+        (false, true, _) => None,
+        (false, false, 'g') => Some('n'),
+        (false, false, 's' | 'c' | 'x' | 'f' | 'a' | 'z') => Some(ch),
+        _ => None,
+    }
 }
 
 fn modifier_bits(mods: rune::Mods) -> u8 {
@@ -433,6 +481,13 @@ pub(crate) mod tests {
             key: Key::Command('s'),
             mods: rune::Mods { cmd: true, ..plain },
         }));
+        assert!(
+            !ui.key(&KeyEvent {
+                key: Key::Command('v'),
+                mods: rune::Mods { cmd: true, ..plain },
+            }),
+            "⌘V is the native paste"
+        );
         let (to, events) = ui.take_requests().input.unwrap();
         assert_eq!(to, session);
         assert_eq!(
@@ -449,10 +504,43 @@ pub(crate) mod tests {
                 EditorInputEvent::Text("ñé".into()),
                 EditorInputEvent::Key {
                     key: EditorKey::Char('s'),
-                    modifiers: editor_modifiers::META
+                    modifiers: editor_modifiers::CONTROL
                 },
             ]
         );
         assert_eq!(ui.take_requests().input, None);
+    }
+
+    #[test]
+    fn command_chords_follow_the_tauri_table() {
+        let cmd = rune::Mods {
+            cmd: true,
+            ..rune::Mods::default()
+        };
+        let shift = rune::Mods { shift: true, ..cmd };
+        let alt = rune::Mods { alt: true, ..cmd };
+        assert_eq!(command_chord('c', cmd), Some('c'));
+        assert_eq!(command_chord('g', cmd), Some('n'), "⌘G is find-next");
+        assert_eq!(command_chord('Z', shift), Some('y'));
+        assert_eq!(command_chord('f', alt), Some('r'));
+        assert_eq!(command_chord('/', cmd), Some('_'));
+        assert_eq!(command_chord('n', cmd), None, "the app's new shell");
+        assert_eq!(command_chord('v', cmd), None);
+    }
+
+    #[test]
+    fn a_composition_is_drawn_and_only_its_commit_is_sent() {
+        let (mut ui, session) = surface(0.0);
+        ui.ime(&Ime::Preedit("に".into(), None));
+        ui.ime(&Ime::Preedit("にほ".into(), None));
+        assert_eq!(ui.preedit, "にほ");
+        assert_eq!(ui.take_requests().input, None);
+        ui.ime(&Ime::Commit("日本\n".into()));
+        assert!(ui.preedit.is_empty());
+        assert_eq!(
+            ui.take_requests().input,
+            Some((session, vec![EditorInputEvent::Text("日本".into())])),
+            "a control character in a commit is not text"
+        );
     }
 }

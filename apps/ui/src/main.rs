@@ -245,6 +245,9 @@ fn window_focus(s: &mut AppState, focused: bool, tx: &mut rune::Tx) {
 }
 
 fn ime(s: &mut AppState, ev: &rune::Ime, tx: &mut rune::Tx) -> bool {
+    if s.editor_ime(ev) {
+        return true;
+    }
     let taken = s.terminal_ime(ev, tx);
     if taken {
         eprintln!("[ime] {ev:?}");
@@ -363,6 +366,41 @@ mod tests {
         rt.poll = Some(app::poll);
         rt.frame(0.0);
         rt
+    }
+
+    #[test]
+    fn a_line_editor_draws_its_rows_and_the_composition_at_the_caret() {
+        let mut rt = runtime();
+        rt.update(|s, _| {
+            s.editor_surface = protocol::EditorSurface::Dom;
+            let id = s.rows[0].id;
+            s.rows[0].kind = domain::SessionKind::Editor;
+            s.rows[0].terminal_id = None;
+            s.active = Some(id);
+            s.editor.set_session(Some(id));
+            s.editor.scroll.set([0.0, 400.0]);
+            let lines = [(0, "fn main() {"), (1, "}")];
+            let _ = s
+                .editor
+                .apply_frame(id, editor::tests::frame(0, &lines, 2, (0, 0)));
+            s.editor.preedit = "にほ".into();
+        });
+        rt.frame(0.1);
+        rt.frame(0.2);
+        let rect = |key: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|element| !element.exiting && element.key.as_deref() == Some(key))
+                .map(|element| element.rect)
+        };
+        assert!(rect("row:0").is_some() && rect("row:1").is_some());
+        let caret = rect("caret").expect("the caret");
+        let preedit = rect("editor-preedit").expect("the composition");
+        assert!(
+            (preedit[0] - caret[0]).abs() < 1.0,
+            "{preedit:?} vs {caret:?}"
+        );
+        assert!((preedit[1] - (caret[1] - 1.0)).abs() < 1.0);
     }
 
     #[test]
