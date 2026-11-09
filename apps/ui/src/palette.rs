@@ -108,15 +108,6 @@ fn commands() -> Vec<Entry> {
     entries
 }
 
-/// Whether every character of `query` appears in `label`, in order, ignoring case.
-fn subsequence(label: &str, query: &str) -> bool {
-    let mut chars = label.chars().flat_map(char::to_lowercase);
-    query
-        .chars()
-        .flat_map(char::to_lowercase)
-        .all(|wanted| chars.any(|have| have == wanted))
-}
-
 impl Palette {
     pub fn show(&mut self, files_only: bool) {
         self.show_with(files_only, "", Vec::new());
@@ -179,15 +170,16 @@ impl Palette {
         self.edit.text.trim()
     }
 
-    /// What is listed for the current query: matching commands, then the
-    /// files the daemon returned for exactly this query.
+    /// What is listed for the current query: matching commands, best first
+    /// by `fuzzy::rank`, then the files the daemon ranked for this query.
     #[must_use]
     pub fn entries(&self) -> Vec<Entry> {
         let query = self.query();
         let mut out: Vec<Entry> = if self.files_only {
             Vec::new()
         } else {
-            self.agents
+            let commands: Vec<Entry> = self
+                .agents
                 .iter()
                 .map(|(id, name)| Entry::Command {
                     label: format!("New {name}"),
@@ -208,7 +200,12 @@ impl Palette {
                             }
                         )
                 })
-                .filter(|entry| subsequence(entry.label(), query))
+                .collect();
+            let order = crate::fuzzy::rank(commands.iter().map(Entry::label), query);
+            let mut commands: Vec<Option<Entry>> = commands.into_iter().map(Some).collect();
+            order
+                .into_iter()
+                .filter_map(|index| commands[index].take())
                 .collect()
         };
         // The last answer stays while the next is in flight, as Tauri's
@@ -298,6 +295,15 @@ mod tests {
             .map(|e| e.label().to_string())
             .collect();
         assert_eq!(labels, vec!["Projects".to_string()]);
+    }
+
+    #[test]
+    fn commands_are_ranked_best_first() {
+        let mut palette = Palette::default();
+        palette.show(false);
+        typed(&mut palette, "nt");
+        let first = palette.entries().first().map(|e| e.label().to_string());
+        assert_eq!(first.as_deref(), Some("New Terminal"), "a word start wins");
     }
 
     #[test]

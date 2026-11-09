@@ -5,6 +5,7 @@ mod chrome;
 mod commit;
 mod connection;
 mod editor;
+mod fuzzy;
 mod glyphs;
 mod keymap;
 mod launch;
