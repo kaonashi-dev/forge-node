@@ -40,12 +40,8 @@ harness/features.json.tmp
 harness/progress/
 harness/specs/*/
 
-# Tauri frontend build output and dependencies
-apps/tauri/node_modules
-apps/tauri/dist
-apps/tauri/src-tauri/target
-apps/tauri/src-tauri/gen
+# Rune client build output (its own workspace)
+apps/ui/target
 
-# Reusable file workbench build output
-apps/tauri/packages/file-workbench/dist
-apps/tauri/packages/file-workbench/node_modules
+# Review bundles built by scripts/rune-app
+/dist/rune

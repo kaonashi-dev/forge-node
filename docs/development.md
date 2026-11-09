@@ -2,246 +2,129 @@
 
 ## Prerequisites
 
-- Rust 1.89 (pinned in `rust-toolchain.toml`; `rustup show` installs it).
+- macOS or Linux. The daemon uses Unix sockets, PTYs and signals; Windows is
+  not supported.
+- Rust: the root workspace is pinned to 1.89.0; `apps/ui` is pinned separately
+  to 1.99.1 (Rune needs edition 2024). `rustup` reads each toolchain file.
 - `git` and a C toolchain (bundled SQLite compiles from source).
-- [Bun](https://bun.sh) **latest**, at least 1.4.3 for `bun check` ([`.bun-version`](../.bun-version)
-  tracks `latest`; `apps/tauri` `engines` holds the floor). Runs the frontend gate. No other JS runtime is needed.
-- macOS or Linux. The code uses Unix sockets, PTYs and signals directly;
-  Windows is not a target.
-- On macOS, `xcrun --show-sdk-path` can point at an SDK newer than the
-  installed `ld` (a leftover MacOSX27 SDK names `arm64e.x1`; CLT 26.x's
-  linker does not). `scripts/dev`, `scripts/package-macos` and the Makefile
-  export a linker-compatible `SDKROOT` via `scripts/macos-sdk`. A bare
-  `cargo` invocation needs the same: `export SDKROOT="$(scripts/macos-sdk)"`.
-- For prompt icons in the terminal canvas, install
-  [JetBrainsMono Nerd Font](https://github.com/ryanoasis/nerd-fonts) (Mono).
-  The app ships plain JetBrains Mono and prefers the Nerd Font face when the
-  OS has it; see [theming.md](./theming.md#fonts).
+- A linker-compatible macOS SDK: `scripts/macos-sdk` picks one this `ld` can
+  parse (the highest `xcrun` SDK can name an architecture the installed linker
+  does not know). `scripts/dev` exports it; bare `cargo` on macOS needs
+  `SDKROOT="$(scripts/macos-sdk)"`.
+- No database service and no Node/Bun runtime.
 
-## Commands
+## Gate
 
 ```sh
-scripts/dev check                # the canonical gate (default for bare `scripts/dev`):
-                                 #   cargo fmt --all -- --check
-                                 #   cargo clippy --workspace --all-targets -- -D warnings
-                                 #   cargo test --workspace
-cargo build --workspace
-cargo test  --workspace
-cargo test -p <crate>            # one crate
-cargo deny check                 # license/advisory policy (deny.toml); install with
-                                 # `cargo install cargo-deny --locked`
+scripts/dev check          # root fmt + clippy + test, then apps/ui on 1.99.1
+./init.sh                  # toolchain check, then the same gate
+./init.sh --fast           # skips the cargo block
 ```
 
-CI (`.github/workflows/ci.yml`) runs `scripts/dev check` on `macos-latest` and
-the frontend's `bun run verify` in a parallel job; Linux is not in the matrix
-while no Linux artifact is published. `cargo deny check` is not part of
-`scripts/dev check`, so run it locally after touching dependencies (and before
-distributing; ADR-002).
+`scripts/dev check --root-only` skips the Rune client. CI runs the full gate on
+macOS. `cargo fmt --all` at the root does not cover `apps/ui`; `scripts/dev ui
+check` does. `cargo deny check` is a separate policy check, not part of the
+gate; `cargo-deny` is not installed by the pinned toolchain.
 
-Packaging lives in `scripts/package-macos` and `scripts/package-linux`, outside
-`scripts/dev` and ordinary PR CI. The tag-triggered macOS release workflow runs
-`scripts/package-macos`; see `--help` for local signing/notarization and
-runtime-dependency contracts.
-
-For moving a build to another machine, `scripts/dist` wraps those packagers
-into one transferable tarball per platform with an embedded `install.sh`:
-`scripts/dist build` produces `dist/release/forge-<ver>-<os>-<arch>.tar.gz`,
-and on the target machine `tar xzf` + the bundled `./install.sh` installs it
-(quarantine stripped, architecture checked, dropped into `/Applications`).
-`scripts/dist ship <user@host>` builds, copies over scp and prints the remote
-one-liner. The receiving machine needs only `tar` — no checkout, no Rust.
-
-For the development Mac, `make install-local` builds the release archive,
-closes the running GUI, installs it into `/Applications` (or `~/Applications`
-when needed), and relaunches it. The daemon stays up so live sessions survive;
-do not use this as a daemon restart after a protocol change.
-
-Useful exact invocations:
+Common focused commands:
 
 ```sh
-cargo test -p client --lib ipc::tests::connect_request_and_event_round_trip -- --exact
 cargo test -p daemon --test integration end_to_end_shell_session -- --exact
-cargo test -p daemon                                        # integration.rs and every scenario_*.rs
-cargo test -p daemon --test integration installed_agent_tuis_render_and_accept_input -- --exact --ignored
-cargo test -p daemon --test integration key_byte_to_grid_delta_p95_is_under_33ms -- --exact --ignored
-cargo test -p daemon --test integration macos_vim_htop_color_and_alt_screen_smoke -- --exact --ignored
 cargo test -p terminal-core --test golden plain_text -- --exact
+cargo test -p client --lib ipc::tests::connect_request_and_event_round_trip -- --exact
+scripts/dev ui check
 ```
 
-## Build scope and timings
+Golden snapshots live in `crates/terminal-core/tests/snapshots/`; accepting a
+new one needs `cargo-insta` installed separately.
 
-Use `make build-daemon` or `make build-daemon-release` when only the daemon
-is needed. `make build-release` builds the release daemon and delegates the
-frontend and GUI build to the Tauri CLI. `make build-rust-release` remains the
-explicit full-workspace release build, including diagnostic binaries and the
-fixture exporter.
-
-`make test` runs the Rust workspace suite once plus the frontend tests and
-typechecks. `make test-tauri` checks only the frontend and its Rust host;
-`make test-frontend` avoids Rust compilation entirely.
-
-The packagers select `forge-daemon`, `forge-editor`, `forgectl` and
-`forge-tauri`, in one Cargo invocation per architecture. This lets Cargo share
-dependency features and schedule their graphs together. The frontend must finish first because
-`forge-tauri/custom-protocol` embeds its output. Universal macOS packages still
-need a separate native build for each architecture.
-
-CI keeps frontend checks parallel to the cached Rust workspace job. The
-workspace's Clippy `--all-targets` and test steps already cover the Tauri
-library and diagnostic binaries, so the frontend job needs neither native
-compilation nor Tauri system-library installation.
-
-For a build-time investigation, add `--timings` to the Cargo command being
-measured and open `target/cargo-timings/cargo-timing.html`. For example, after
-building the frontend with the current Bun:
+## Running
 
 ```sh
-cargo build --release --locked -p daemon -p forge-tauri \
-  --bin forge-daemon --bin forge-tauri \
-  --features forge-tauri/custom-protocol --timings
+scripts/dev daemon                 # isolated daemon in the foreground
+scripts/dev daemon info            # the scratch socket/home/worktrees paths
+scripts/dev ui run                 # Rune client on recorded fixture data
+scripts/dev ui run --daemon        # connect to FORGE_SOCKET or the daily socket
+scripts/dev ui --help              # every flag (--snap/--tree/--script/--bench)
 ```
 
-Compare the same command, target, source changes and cache state. An initial
-build after changing package selection may compile a new combination of
-dependency features; its time is not comparable to a warm no-change build.
-Release LTO and codegen settings remain defined in the root `Cargo.toml`.
+`scripts/dev daemon` isolates itself: a fresh `$FORGE_DEV_DIR` gets
+`FORGE_SOCKET` and `FORGE_HOME`, so it never contends with the daily daemon or
+wipes its tabs, and its worktrees stay under `$FORGE_DEV_DIR/worktrees`. A
+second daemon against the **same** lock exits successfully, so exit code 0 does
+not prove a new daemon started. To inspect the daily daemon, run
+`forge-daemon info` without those variables.
 
-## Running the daemon by hand
+`scripts/dev ui` honours `CARGO_TARGET_DIR`; never point it at the root
+`target/`. Rune's dependency build is large, so a shared target directory is
+worth it when you build several checkouts.
 
-```sh
-scripts/dev daemon               # isolated runtime under $FORGE_DEV_DIR (fresh mktemp)
-scripts/dev daemon info          # fresh scratch paths unless FORGE_DEV_DIR is reused
-cargo run -p daemon --bin forge-daemon -- info   # daily per-user paths (no FORGE_HOME)
-forge-daemon run                 # acquire the singleton lock, bind, serve (default)
-forge-daemon dump --json         # not wired — prints a notice and exits 0
-forge-daemon stats               # GetStats against a running daemon; does not start one
-forge-daemon migrate-home --dry-run          # what a legacy upgrade would do
-forge-daemon migrate-home [--move-worktrees] # copy config, DB and runs; reconnect
+### Editor
+
+`scripts/dev ui run --open PATH` opens `PATH` in an editor session. It is
+painted as lines when the daemon runs with `[editor] surface = "dom"`; with the
+default `cells` it is a terminal. Name this checkout's build so the daemon and
+editor control versions match:
+
+```toml
+[editor]
+surface = "dom"
+executable = "/path/to/forge-node/target/debug/forge-editor"
 ```
 
-The Tauri app connects to the per-user daemon or starts the adjacent
-`target/debug/forge-daemon`, adds the current directory if the store has no
-project, and creates or reuses a live shell. To join a foreground
-`scripts/dev daemon`, apply the export line it prints before launching the GUI.
+## Tests
 
-`scripts/dev daemon` **isolates**: a fresh `mktemp` directory gets `FORGE_SOCKET`
-and `FORGE_HOME` unless `FORGE_DEV_DIR` is already set, so its worktrees land in
-`$FORGE_DEV_DIR/worktrees` and the daily singleton (the one the GUI talks to) is
-untouched. The table below is what that daily daemon uses.
+- `crates/daemon/tests/integration.rs` starts its own daemon with an in-memory
+  DB and a temporary socket. It needs writable `/tmp`, a real shell/PTY and
+  real `git`; do not start a developer daemon for it.
+- `git-service` integration tests return early when `git` is absent, so a green
+  package test does not prove Git integration ran. Daemon E2E tests fail
+  instead.
+- Workspace tests are not fully hermetic: shell-environment coverage invokes
+  the user's login shell, and daemon startup may run `--version` for installed
+  agent CLIs.
+- Ignored Phase 0 smokes exercise the real local agents (claude, opencode,
+  cursor), `vim`/`htop` and latency. They are macOS reference checks, not a
+  substitute for the deferred Wayland/X11 validation.
+- The Rune client's pure tests live beside their modules; headless checks use
+  `scripts/dev ui run --fixture --snap/--tree/--script`. `apps/ui/README.md`
+  lists the scripts.
 
-Each helper invocation creates a new scratch directory unless `FORGE_DEV_DIR`
-is reused. Set it to the first run's printed directory before asking
-`scripts/dev daemon info` about that run.
+## Bundles
 
-`FORGE_HOME` moves the hidden config/state root as a whole; it must be absolute
-or start with `~/`. When it is set, each daemon needs its own `FORGE_SOCKET`
-too — the singleton lock follows the socket, not the home — which is exactly
-what `scripts/dev daemon` sets. A GUI launched from Finder does not inherit
-either variable from your shell; launch it from a terminal (or use `launchctl
-setenv`) if you need a non-default `FORGE_HOME`. To move only the worktrees,
-set `[worktrees] root` in `config.toml` instead: that has no such limitation.
+- `scripts/rune-app` builds `dist/rune/Forge Node Rune.app`: this checkout's
+  client, daemon and editor, with its own data directory
+  (`~/.forge-node-rune`). It never shares the everyday daemon's database.
+- `scripts/package-macos` builds the release `dist/macos/Forge Node.app`
+  (host arch, `--universal`, `--zip`, `--updater`), signs and notarizes when
+  `FORGE_CODESIGN_IDENTITY` / `FORGE_NOTARY_PROFILE` are set, and emits the
+  minisign-signed updater tarball. `scripts/package-linux` builds `.deb` /
+  AppImage.
+- `scripts/dist` adds cross-machine transfer (`build`, `ship`, `install`,
+  `local`). It is a manual helper; release CI invokes `scripts/package-macos`
+  directly.
+- `scripts/release-manifest` writes `latest-rune.json`, the updater feed.
 
-The daemon is a singleton **per set of paths** via an advisory `flock` on
-`daemon.lock`. A second `run` against the same lock exits **0** while the first
-holds it, so exit code 0 does not prove a new daemon started — check the log.
+## Where to change what
 
-Paths (macOS shown; Linux uses `$XDG_RUNTIME_DIR` for the socket, and the same
-hidden `~/.forge-node` plus visible `~/forge-node` as macOS for everything
-else):
+| Need | Where |
+|------|-------|
+| Domain types, IDs, session state machine | `crates/domain` → [domain.md](./domain.md) |
+| Wire requests/events/framing | `crates/protocol` → [protocol.md](./protocol.md) |
+| PTY/engine/delta pipeline | `crates/daemon/src/terminal.rs`, `crates/terminal-core` → [terminal.md](./terminal.md) |
+| Client replica and command methods | `crates/client` |
+| Agent providers, detection, launch | `crates/agents` → [agents.md](./agents.md) |
+| Git operations and diffs | `crates/git-service` |
+| File reads/writes/search, definitions | `crates/fs-service` → [editor.md](./editor.md) |
+| Editor engine and control wire | `crates/editor-*` → [editor.md](./editor.md) |
+| SQLite schema and migrations | `crates/persistence` → [persistence.md](./persistence.md) |
+| Rune shell, views, keymap, theme | `apps/ui/src` → [ui.md](./ui.md), [theming.md](./theming.md) |
+| Release packaging and updater | `scripts/package-macos`, `scripts/rune-app`, `apps/ui/src/updates.rs` |
+| Cost rules | [performance.md](./performance.md) |
 
-| What | Path |
-|------|------|
-| socket / lock | `$TMPDIR/forge/daemon.sock`, `daemon.lock` (full path < 100 bytes, else `/tmp/forge-$UID/`) |
-| home | `~/.forge-node` (hidden; `$FORGE_HOME`) |
-| database | `~/.forge-node/app.db` |
-| worktrees | `~/forge-node/worktrees/<repo-slug>-<id6>/<slug>` |
-| runs | `~/.forge-node/runs/<run-id>/<attempt>.md` |
-| agent plugins | `~/.forge-node/agent-plugins/` |
-| logs | `~/.forge-node/logs/daemon.<date>.log` (daily, last 5) |
-| config | `~/.forge-node/config.toml` |
+## macOS capture and diagnostics
 
-An existing install keeps today's platform layout — `~/Library/Application
-Support/Forge` on macOS — until the user runs `forge-daemon migrate-home` (from
-the CLI or Settings → Storage). `forge-daemon info` says which layout is in
-effect.
-
-`config.toml` is optional; a missing file uses defaults; changes need a
-restart (no hot reload). See [`config.example.toml`](./config.example.toml).
-`RUST_LOG` overrides `daemon.log_level`.
-
-## Where things are
-
-| Want to change… | Look in |
-|-----------------|---------|
-| a domain type or state-machine rule | `crates/domain` → [domain.md](./domain.md) |
-| a request/response/event | `crates/protocol` + the handler in `crates/daemon/src/core.rs` → [protocol.md](./protocol.md) |
-| terminal rendering data, input mapping, delta/seq rules | `crates/terminal-core`, `crates/terminal-input`, `crates/daemon/src/terminal.rs`, `crates/client/src/store.rs` → [terminal.md](./terminal.md) |
-| a provider, detection, launch args | `crates/agents` only → [agents.md](./agents.md) |
-| git behavior, worktree safety | `crates/git-service`, `core.rs` workspace handlers → [worktrees.md](./worktrees.md) |
-| workspace files (list/read/write/search) | `crates/fs-service` → [protocol.md](./protocol.md) |
-| pull requests / `gh` | `crates/git-service/src/github.rs`, `crates/daemon/src/pull_requests.rs` |
-| Juva drafts | `crates/daemon/src/juva.rs` |
-| idle policy | `crates/daemon/src/idle.rs` |
-| the schema | `crates/persistence/src/migrations.rs` (append only) → [persistence.md](./persistence.md) |
-| paths, config, logging, singleton | `crates/daemon/src/{paths,config,logging,lockfile}.rs` |
-| Tauri frontend layout, panels, terminal | `apps/tauri/src` → [frontend-architecture.md](./frontend-architecture.md) |
-| Tauri listener lifecycle and cross-feature workflows | `apps/tauri/src/app/{lifecycle,integrations}/` → [frontend-architecture.md](./frontend-architecture.md#lifecycle) |
-| Tauri host command dispatch | `apps/tauri/src-tauri/src/runtime/bridge.rs`; `apps/tauri/src-tauri/src/runtime/workbench/` for the separate workbench worker |
-| the editor | `crates/editor-core` (document model), `crates/editor-control` (control wire), `crates/editor-cli` (binary) → [editor.md](./editor.md) |
-| theme tokens | `apps/tauri/src/theme/tokens.ts` → [theming.md](./theming.md) |
-| cost rungs | [performance.md](./performance.md) |
-
-Dependency direction is one-way and enforced by `Cargo.toml`:
-`forge-tauri → {client, domain}`, `client → {protocol, terminal-input, domain}`,
-`daemon → {agents, client, editor-control, fs-service, git-service, persistence,
-protocol, terminal-core, terminal-input, domain}`, `fs-service → git-service`,
-`editor-cli → {editor-core, editor-control}`, `forgectl → client → protocol →
-domain` (its tests boot a daemon; the binary does not), and
-`test-support → {domain, terminal-core}`; every other crate depends on
-`domain` alone or on nothing. The host depends on neither `protocol` nor
-`terminal-core` directly.
-
-## Testing notes
-
-- Do not keep a hand-maintained workspace test total here; `scripts/dev check`
-  is the source of truth as coverage changes.
-- `terminal-core` uses `insta` golden snapshots in
-  `crates/terminal-core/tests/snapshots/`; accept changes with
-  `cargo insta review` (requires `cargo install cargo-insta`).
-- `crates/daemon/tests/integration.rs` starts its **own** daemon with an
-  in-memory DB and a temp socket — do not run a developer daemon for it. It
-  needs a writable `/tmp`, a real shell/PTY and real `git`, and fails
-  (not skips) without them.
-- `git-service` integration tests **return early when `git` is absent**, so a
-  green package run does not prove Git coverage ran.
-- Tests are not fully hermetic: shell-environment tests invoke the user's
-  login shell, and daemon startup probes whichever agent CLIs are installed
-  (`claude --version`, …).
-- The ignored Phase 0 reference smokes above are intentionally local: they need
-  installed/authenticated agent TUIs, `vim`, `htop`, a real PTY, and macOS.
-  Linux Wayland/X11 runtime validation is deferred and is not covered by a
-  Docker/headless substitute.
-- Terminal unit tests use `test-support::FakePtyBackend`; `fake_agent`
-  provides fake provider executables; `temp_repo` creates throwaway Git repos.
-
-## Conventions
-
-- Commit subjects and bodies, and pull-request titles and descriptions, follow
-  [commits.md](./commits.md). Agents use the same rules via
-  [`.agents/commits.md`](../.agents/commits.md).
-- `rustfmt` defaults and `clippy -D warnings` are mandatory (the gate).
-  TypeScript in `apps/tauri` uses the same idea: `oxlint` (correctness),
-  `oxfmt`, and `tsc --noEmit`. Do not add `any`.
-- Protocol and domain enums are `#[non_exhaustive]`: add a wildcard arm in
-  cross-crate matches.
-- Mutations normally return `Response::Ack`; session creation returns
-  `SessionCreated { session_id, terminal_id }`. State changes are broadcast.
-- Never hold the daemon core lock across `.await`; lock order
-  `inner → registry`.
-- Persisted enum tags are stable strings — renaming a variant is a migration.
-- Keep `AGENTS.md` as the short list of invariants for contributors and
-  AI agents. Working notes belong in local `plan/`, not in `docs/`.
-- Comments carry a constraint the types cannot (rejected alternative, unit,
-  lock/IO exception, budget). They do not restate the next line, narrate
-  history, or copy a plan doc. One sentence is the default; essays live in
-  `docs/` or an ADR. Full rule: `AGENTS.md` § *Comments And Code*.
+`scripts/dev ui run --snap PATH` writes a PNG of the rendered window;
+`--tree PATH` writes the AccessKit tree; `--script FILE` drives keys, text,
+drops and menu items on a virtual clock. Use an isolated `scripts/dev daemon`
+for live checks; never the user's daily daemon or `/Applications`.

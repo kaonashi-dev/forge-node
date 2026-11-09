@@ -4,7 +4,8 @@
 # Usage:
 #   scripts/dev daemon      # build + run the daemon in the foreground (verbose logs)
 #                           # isolated socket/db/config per run; the daily daemon is untouched
-#   scripts/dev check       # fmt-check + clippy + test the whole workspace
+#   scripts/dev check       # fmt-check + clippy + test the workspace and apps/ui
+#   scripts/dev check --root-only  # skip apps/ui
 #   scripts/dev dump        # unwired placeholder (forge-daemon dump --json)
 #   scripts/dev ui check    # fmt-check + clippy + test the Rune client (apps/ui, Rust 1.99)
 #   scripts/dev ui run ...  # run the Rune client; arguments go to forge-ui
@@ -45,6 +46,13 @@ case "$cmd" in
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
+    if [ "${2:-}" != "--root-only" ]; then
+      RUSTUP_TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' apps/ui/rust-toolchain.toml)"
+      export RUSTUP_TOOLCHAIN
+      cargo fmt --manifest-path apps/ui/Cargo.toml --all -- --check
+      cargo clippy --manifest-path apps/ui/Cargo.toml --all-targets -- -D warnings
+      cargo test --manifest-path apps/ui/Cargo.toml
+    fi
     ;;
   ui)
     # apps/ui is its own workspace on its own toolchain; rustup reads

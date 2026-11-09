@@ -22,10 +22,9 @@ and verify them. Do not stop at a plan or a findings list.
 | Cost rungs | `docs/performance.md` — **required** before delta, render, core lock, or process work |
 | ADR numbers in code | `docs/decisions.md` |
 | Commands / "where to change X" | `docs/development.md`, `scripts/dev` |
-| GUI | Tauri 2 + **Solid** (not React). Bun latest (>=1.4.3), TypeScript 7. Tokens: `apps/tauri/src/theme/tokens.ts` |
+| GUI | Native Rune client (`apps/ui`, Rust 1.99.1). Theme: `apps/ui/src/theme/themes.json` + `roles.rs` |
 
 `Cargo.toml`, crate `//!` docs, `scripts/dev`, and current source beat `plan/`.
-Historical `apps/tauri/PARITY.md` / `PROGRESS.md` are not the gate.
 
 ## Hard limits
 
@@ -34,7 +33,6 @@ Historical `apps/tauri/PARITY.md` / `PROGRESS.md` are not the gate.
 - No destructive operations. Public behaviour stays unless a defect is demonstrated.
 - No massive refactors, speculative layers, or aesthetic-only edits.
 - Do not `unwrap`/`expect` on recoverable daemon paths. Keep required lock/`#[allow]` comments.
-- Bun APIs stay in `apps/tauri/scripts`, never in WebView `src/`.
 
 ## Procedure
 
@@ -50,8 +48,8 @@ Read `CONTEXT.md` and `docs/architecture.md`. Split work by **owned paths** (no 
 |-------|------|
 | Docs / AGENTS / agent-nav | `AGENTS.md`, `CONTEXT.md`, `docs/**`, `.agents/**`, crate `lib.rs` headers, `scripts/dev`, `Makefile` |
 | Daemon runtime | `crates/daemon/src/**`, `crates/terminal-core/**` |
-| Crate seams | `domain`, `protocol`, `client`, `git-service`, `fs-service`, `persistence`, `terminal-input`, `apps/tauri/src-tauri/Cargo.toml` |
-| Solid frontend | `apps/tauri/src/**` (Solid: `createSignal` / `createMemo` / `createEffect` / `onCleanup`) |
+| Crate seams | `domain`, `protocol`, `client`, `git-service`, `fs-service`, `persistence`, `terminal-input`, `apps/ui/Cargo.toml` |
+| Rune client | `apps/ui/src/**` (UI-thread rules, `client::Client` worker, `memo` keys) |
 | Comments | module `//!` / file headers only — no repo-wide comment sweep |
 
 Launch **explore** subagents for independent slices. Each prompt must include: owned paths, hard limits, this hunt list, and: write findings to an absolute path under `plan/architecture-review/` and **return only that path**.
@@ -81,9 +79,9 @@ Do not treat this as a closed checklist. It is where previous passes found real 
 - Process spawn without `.process_group(0)` + kill **negative** pgid; unbounded `wait()`; `read_to_end` / `into_reader` without `.take(cap)`.
 - Path jail: lexical `starts_with` on a **missing** nested path under a symlink prefix (`fs-service::resolve_inside`).
 
-**Frontend (Solid)**
+**Rune client**
 
-- `createEffect` load loops: empty success (`items.length > 0`) or uncleared error treated as "not loaded".
+- A stale answer applied under a newer request identity, or an error treated as "not loaded".
 - Per-frame style/layout work that is derivable from store/metrics.
 - Host `kind: String` (and similar) that silently defaults.
 
@@ -94,7 +92,7 @@ Do not treat this as a closed checklist. It is where previous passes found real 
 - Built-ins are whatever `crates/agents/src/builtins.rs` lists (currently three: `claude`, `opencode`, `cursor`). Count from code.
 - `PROTOCOL_VERSION` in `docs/protocol.md` must match `protocol::PROTOCOL_VERSION`.
 - Workspace members in `Cargo.toml` must appear in the crate map (`docs/architecture.md`, `README.md`).
-- Toolchain leftovers after a runtime change (`pnpm` vs Bun in `tauri.conf.json`, docs, CI).
+- Toolchain leftovers after a runtime change (a removed runtime still named in docs, CI or scripts).
 - Broken links to unpublished `plan/` files from normative `docs/`.
 - Crate `//!` longer than a 2–6 line map, or citing `§7.5` as current truth.
 
@@ -103,7 +101,7 @@ Do not treat this as a closed checklist. It is where previous passes found real 
 Targeted tests per batch. Then:
 
 - `scripts/dev check` (fmt, clippy `-D warnings`, `cargo test --workspace`)
-- If `apps/tauri` changed: `bun run --cwd apps/tauri check`
+- If `apps/ui` changed: `scripts/dev ui check`
 
 Do not claim a test ran if you only read the code. Tests passing do **not** prove cost rungs.
 

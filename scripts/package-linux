@@ -10,29 +10,26 @@
 #   scripts/package-linux appimage   # dist/linux/ForgeNode-<ver>-<arch>.AppImage
 #   scripts/package-linux all        # both (default)
 #
-# The Solid frontend is not a packaged file: `tauri-build` embeds the Vite
-# output (apps/tauri/dist, the `frontendDist` of src-tauri/tauri.conf.json)
-# into the host binary, so `bun run build` has to run *before* cargo does.
+# The Rune client links its renderer statically; there is no frontend bundle
+# and no Bun step. The launcher starts `forge-daemon` beside it.
 #
 # ---------------------------------------------------------------------------
 # RUNTIME DEPENDENCIES
 # ---------------------------------------------------------------------------
-# Tauri renders through WebKitGTK, which is what the .deb depends on. They are
-# declared in the control file and documented here for AppImage users, who get
-# no dependency resolution at all:
+# Rune renders through wgpu, which needs a Vulkan (or GL) driver and the
+# usual windowing libraries. They are declared in the control file and
+# documented here for AppImage users, who get no dependency resolution at all:
 #
-#   libwebkit2gtk-4.1-0         the WebView itself
-#   libgtk-3-0                  the window and menu bar around it
-#   libayatana-appindicator3-1  tray/indicator support Tauri links against
-#   librsvg2-2                  SVG rendering inside the WebView
+#   libvulkan1                  wgpu's Vulkan backend
+#   libxkbcommon0, libx11-6, libxcb1  windsurf/winits window and input
 #   libfontconfig1, libfreetype6  font enumeration and rasterisation
 #   fonts-dejavu-core           a monospace fallback behind the bundled font
 #   git                         Forge Node shells out to the git CLI (ADR-008)
 #
 # SQLite is bundled into the binary (rusqlite `bundled`), so there is no
 # libsqlite3 dependency. Verify the real list on your build host with:
-#   ldd target/release/forge-tauri | awk '{print $1}' | sort
-#   dpkg-shlibdeps -O target/release/forge-tauri target/release/forge-daemon
+#   ldd target/release/forge-ui | awk '{print $1}' | sort
+#   dpkg-shlibdeps -O target/release/forge-ui target/release/forge-daemon
 #
 # Knobs:
 #   FORGE_VERSION      default: [workspace.package] version from Cargo.toml
@@ -41,7 +38,6 @@
 #                      refuses a directory without an icon), optional for .deb.
 #   FORGE_MAINTAINER   default: "ForgeNode contributors <forge@example.invalid>"
 #   FORGE_OUT_DIR      default: <repo>/dist/linux
-#   FORGE_SKIP_FRONTEND_INSTALL  set to 1 to reuse an existing apps/tauri/node_modules
 #   APPIMAGETOOL       path to appimagetool if it is not on PATH
 
 set -euo pipefail
@@ -110,44 +106,46 @@ case "$(uname -m)" in
   *)       die "unsupported machine architecture: $(uname -m)" ;;
 esac
 
-gui_crate="forge-tauri"
-gui_bin="forge-tauri"
+gui_bin="forge-ui"
+launcher="forge-node"
+ui_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' apps/ui/rust-toolchain.toml)"
+[ -n "$ui_toolchain" ] || die "apps/ui/rust-toolchain.toml names no toolchain"
 gui_depends="\
- libwebkit2gtk-4.1-0,
- libgtk-3-0,
- libayatana-appindicator3-1,
- librsvg2-2,"
+ libvulkan1,
+ libxkbcommon0,
+ libx11-6,
+ libxcb1,"
 
 # ------------------------------------------------------------------ build ---
-
-# shellcheck source=require-bun
-. "$repo_root/scripts/require-bun"
-forge_require_bun
-
-if [ "${FORGE_SKIP_FRONTEND_INSTALL:-${FORGE_SKIP_PNPM_INSTALL:-0}}" != "1" ]; then
-  note "installing frontend dependencies"
-  (cd "$repo_root/apps/tauri" && bun install --frozen-lockfile)
-fi
-note "building the Solid frontend"
-(cd "$repo_root/apps/tauri" && bun run build)
 
 note "building release binaries${target:+ for $target}"
 # forge-editor ships too: the daemon spawns it for an Editor session, and
 # `[editor] executable` defaults to a PATH lookup that a packaged install
 # cannot satisfy from a dev checkout's target/debug.
-cargo build --release --locked "${cargo_target_args[@]}" -p "$gui_crate" -p daemon -p editor-cli -p forge-ctl \
-  --bin "$gui_bin" --bin forge-daemon --bin forge-editor --bin forgectl --features "$gui_crate/custom-protocol"
+cargo build --release --locked "${cargo_target_args[@]}" -p daemon -p editor-cli -p forge-ctl \
+  --bin forge-daemon --bin forge-editor --bin forgectl
+RUSTUP_TOOLCHAIN="$ui_toolchain" CARGO_TARGET_DIR="${FORGE_UI_TARGET_DIR:-$repo_root/apps/ui/target}" \
+  cargo build --release --locked --manifest-path apps/ui/Cargo.toml "${cargo_target_args[@]}"
 
-for bin in "$gui_bin" forge-daemon forge-editor forgectl; do
-  [ -x "$bin_dir/$bin" ] || die "expected binary not found: $bin_dir/$bin"
+ui_bin_dir="${FORGE_UI_TARGET_DIR:-$repo_root/apps/ui/target}${target:+/$target}/release"
+for bin in "$bin_dir/forge-daemon" "$bin_dir/forge-editor" "$bin_dir/forgectl" "$ui_bin_dir/$gui_bin"; do
+  [ -x "$bin" ] || die "expected binary not found: $bin"
 done
 
+write_launcher() {
+  local dest="$1"
+  cat >"$dest" <<'LAUNCHER'
+#!/bin/bash
+here="$(cd "$(dirname "$0")" && pwd)"
+exec "$here/forge-ui" --spawn-daemon --daemon-bin "$here/forge-daemon" "$@"
+LAUNCHER
+  chmod 755 "$dest"
+}
 mkdir -p "$out_dir"
 
-# The GUI locates the runtime as a sibling of its own executable
-# (`apps/tauri/src-tauri/src/daemon/locator.rs`), so every layout below MUST
-# keep the two binaries in the same directory. /usr/bin for the .deb,
-# AppDir/usr/bin for the AppImage.
+# The launcher starts the runtime as a sibling of its own executable, so every
+# layout below MUST keep the binaries in the same directory. /usr/bin for the
+# .deb, AppDir/usr/bin for the AppImage.
 
 desktop_entry() {
   cat <<DESKTOP
@@ -156,7 +154,7 @@ Type=Application
 Name=Forge Node
 GenericName=Agent Terminal
 Comment=Terminals and coding agents across Git repositories and worktrees
-Exec=${gui_bin}
+Exec=${launcher}
 Icon=forge
 Terminal=false
 Categories=Development;Utility;TerminalEmulator;
@@ -182,7 +180,8 @@ build_deb() {
            "$stage/usr/share/applications" \
            "$stage/usr/share/doc/forge"
 
-  install -m 755 "$bin_dir/$gui_bin"     "$stage/usr/bin/$gui_bin"
+  install -m 755 "$ui_bin_dir/$gui_bin"  "$stage/usr/bin/$gui_bin"
+  write_launcher "$stage/usr/bin/$launcher"
   install -m 755 "$bin_dir/forge-daemon" "$stage/usr/bin/forge-daemon"
   install -m 755 "$bin_dir/forge-editor" "$stage/usr/bin/forge-editor"
   install -m 755 "$bin_dir/forgectl" "$stage/usr/bin/forgectl"
@@ -243,7 +242,8 @@ build_appimage() {
   mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" \
            "$appdir/usr/share/icons/hicolor/256x256/apps"
 
-  install -m 755 "$bin_dir/$gui_bin"     "$appdir/usr/bin/$gui_bin"
+  install -m 755 "$ui_bin_dir/$gui_bin"  "$appdir/usr/bin/$gui_bin"
+  write_launcher "$appdir/usr/bin/$launcher"
   install -m 755 "$bin_dir/forge-daemon" "$appdir/usr/bin/forge-daemon"
   install -m 755 "$bin_dir/forge-editor" "$appdir/usr/bin/forge-editor"
   install -m 755 "$bin_dir/forgectl" "$appdir/usr/bin/forgectl"
@@ -260,7 +260,7 @@ build_appimage() {
 set -euo pipefail
 here="\$(dirname "\$(readlink -f "\$0")")"
 export PATH="\$here/usr/bin:\${PATH:-}"
-exec "\$here/usr/bin/${gui_bin}" "\$@"
+exec "\$here/usr/bin/${launcher}" "\$@"
 APPRUN
   chmod 755 "$appdir/AppRun"
 

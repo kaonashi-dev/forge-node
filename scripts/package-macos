@@ -2,8 +2,8 @@
 #
 # Build a distributable `Forge Node.app` bundle for macOS.
 #
-# The GUI is the Tauri app in `apps/tauri` (Rust host crate `forge-tauri`); the
-# runtime is the Rust `forge-daemon`.
+# The GUI is the Rune client in `apps/ui` (`forge-ui`); the runtime is the Rust
+# `forge-daemon`.
 #
 # Outside `scripts/dev check`; the tag-triggered macOS release workflow invokes it.
 # For a local bundle:
@@ -14,23 +14,18 @@
 #   scripts/package-macos --dry-run       # preflight only: no build, no sign, no zip
 #   scripts/package-macos --updater       # also emit the signed in-app-update artifact
 #
-# Layout produced (the GUI locates the runtime with the `forge-daemon` sibling
-# of its own executable — `apps/tauri/src-tauri/src/daemon/locator.rs` — so the
-# two binaries MUST stay siblings inside Contents/MacOS):
+# Layout produced (the GUI starts the `forge-daemon` sibling of its own
+# executable, so the two binaries MUST stay siblings inside Contents/MacOS):
 #
 #   Forge Node.app/Contents/Info.plist
 #   Forge Node.app/Contents/PkgInfo
-#   Forge Node.app/Contents/MacOS/Forge          <- CFBundleExecutable (no spaces)
-#   Forge Node.app/Contents/MacOS/forge-daemon   <- runtime, spawned by the GUI
+#   Forge Node.app/Contents/MacOS/Forge          <- CFBundleExecutable launcher (no spaces)
+#   Forge Node.app/Contents/MacOS/forge-ui       <- Rune client
+#   Forge Node.app/Contents/MacOS/forge-daemon   <- runtime, started by the launcher
 #   Forge Node.app/Contents/MacOS/forge-editor   <- integrated editor, spawned
 #                                                   by the daemon under a PTY
 #   Forge Node.app/Contents/MacOS/forgectl       <- orchestration client
 #   Forge Node.app/Contents/Resources/forge.icns <- repo icon by default; FORGE_ICNS overrides
-#
-# The Solid frontend is not a bundle resource: `tauri-build` embeds the Vite
-# output (`apps/tauri/dist`, the `frontendDist` of src-tauri/tauri.conf.json)
-# into the host binary at compile time. So `bun run build` must run BEFORE cargo,
-# once — the assets are architecture-independent.
 #
 # Optional signing / notarization — all parameterised by environment variables,
 # no credentials are stored or invented here. Both steps are skipped silently
@@ -48,13 +43,14 @@
 #                             unsigned submissions.
 #
 # Other knobs:
-#   FORGE_BUNDLE_ID   default dev.forgenode.forge.tauri (must match tauri.conf.json
-#                     `identifier`: the updater swaps a bundle by identity)
+#   FORGE_BUNDLE_ID   default dev.forgenode.forge
 #   FORGE_VERSION     default: [workspace.package] version from Cargo.toml
 #   FORGE_ICNS        path to an .icns file to embed as Contents/Resources.
 #                     Defaults to assets/icon/forge.icns.
 #   FORGE_OUT_DIR     default: <repo>/dist/macos
-#   FORGE_SKIP_FRONTEND_INSTALL  set to 1 to reuse an existing apps/tauri/node_modules
+#   FORGE_UI_TARGET_DIR  cargo target for apps/ui (default: apps/ui/target)
+#   FORGE_UPDATER_KEY / FORGE_UPDATER_KEY_PATH
+#                     minisign secret key for --updater (the existing Forge key)
 
 set -euo pipefail
 
@@ -113,19 +109,17 @@ require_cmd cargo
 require_cmd rustup
 require_cmd plutil "part of the Xcode Command Line Tools: xcode-select --install"
 
-bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge.tauri}"
+bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge}"
 out_dir="${FORGE_OUT_DIR:-$repo_root/dist/macos}"
 app="$out_dir/Forge Node.app"
+ui_app="$repo_root/apps/ui"
+ui_target="${FORGE_UI_TARGET_DIR:-$ui_app/target}"
 
-tauri_app="$repo_root/apps/tauri"
-[ -f "$tauri_app/package.json" ] \
-  || die "no Tauri app at $tauri_app — the GUI lives in apps/tauri"
-
-# Cargo package/binary name vs. the names users see. CFBundleExecutable stays
-# "Forge" (no spaces — Activity Monitor / force-quit). CFBundleDisplayName and
-# the .app folder are "Forge Node".
-gui_crate="forge-tauri"
-gui_bin="forge-tauri"
+# Cargo package/binary name vs. the names users see. CFBundleExecutable is a
+# launcher named "Forge" (no spaces — Activity Monitor / force-quit) that
+# starts forge-daemon beside it. CFBundleDisplayName and the .app folder are
+# "Forge Node".
+gui_bin="forge-ui"
 gui_name="Forge"
 display_name="Forge Node"
 daemon_name="forge-daemon"
@@ -135,9 +129,9 @@ daemon_name="forge-daemon"
 editor_name="forge-editor"
 ctl_name="forgectl"
 
-# WKWebView (Tauri's renderer) and the workspace's own floor. It is both the
-# Info.plist minimum and what we promise installers.
-macos_min="11.0"
+# Rune's Metal backend needs macOS 13; that is both the Info.plist minimum and
+# what we promise installers.
+macos_min="13.0"
 
 # [workspace.package] version, unless overridden.
 version="${FORGE_VERSION:-$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version *=/{gsub(/[",]/,"",$3); print $3; exit}' Cargo.toml)}"
@@ -234,13 +228,13 @@ if [ "$dry_run" -eq 1 ]; then
   printf '    SDKROOT        %s\n' "$SDKROOT"
   printf '    slices         %s\n' "${slices[*]}"
   for slice in "${slices[@]}"; do
-    printf '    %-14s cargo build --release --locked --target %s -p daemon -p %s --bin %s --bin %s --features %s/custom-protocol\n' \
-      "$slice" "$(rust_target_for "$slice")" "$gui_crate" "$daemon_name" "$gui_bin" "$gui_crate"
+    printf '    %-14s cargo build --release --locked --target %s -p daemon -p editor-cli -p forge-ctl\n' \
+      "$slice" "$(rust_target_for "$slice")"
+    printf '    %-14s RUSTUP_TOOLCHAIN=%s cargo build --release --locked --manifest-path apps/ui/Cargo.toml\n' \
+      "$slice" "$(sed -n 's/^channel = "\(.*\)"/\1/p' "$ui_app/rust-toolchain.toml")"
   done
-  printf '    bun            %s (from .bun-version)\n' "$(tr -d '[:space:]' < "$repo_root/.bun-version")"
-  printf '    frontend       bun run build in %s -> dist (embedded by tauri-build)\n' "$tauri_app"
-  printf '    gui            %s -> Contents/MacOS/%s\n' \
-    "$gui_bin" "$gui_name"
+  printf '    gui            %s -> Contents/MacOS/%s (+ launcher %s)\n' \
+    "$gui_bin" "$gui_bin" "$gui_name"
   printf '    daemon         %s -> Contents/MacOS/%s\n' \
     "$daemon_name" "$daemon_name"
   printf '    editor         %s -> Contents/MacOS/%s\n' \
@@ -257,40 +251,34 @@ fi
 
 # ------------------------------------------------------------------ build ---
 
-# The frontend is architecture-independent and is compiled INTO the host binary
-# by tauri-build, so it must exist before the first cargo build and only needs
-# building once.
-# PATH bun can be a canary; pin to the concrete build .bun-version names (or
-# the release `latest` resolves to) before bun install / build.
-# shellcheck source=require-bun
-. "$repo_root/scripts/require-bun"
-forge_require_bun
-
-if [ "${FORGE_SKIP_FRONTEND_INSTALL:-${FORGE_SKIP_PNPM_INSTALL:-0}}" != "1" ]; then
-  note "installing frontend dependencies (bun install --frozen-lockfile)"
-  ( cd "$tauri_app" && bun install --frozen-lockfile )
-fi
-
-note "building the Solid frontend (bun run build)"
-( cd "$tauri_app" && bun run build ) || die "bun run build failed — the Tauri host cannot embed a frontend that did not compile"
-[ -d "$tauri_app/dist" ] \
-  || die "bun run build produced no $tauri_app/dist — check frontendDist in src-tauri/tauri.conf.json"
+ui_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' "$ui_app/rust-toolchain.toml")"
+[ -n "$ui_toolchain" ] || die "apps/ui/rust-toolchain.toml names no toolchain"
 
 for slice in "${slices[@]}"; do
   rust_target="$(rust_target_for "$slice")"
   require_target "$rust_target"
+  rustup target list --installed --toolchain "$ui_toolchain" 2>/dev/null | grep -qx "$rust_target" \
+    || die "rust target '$rust_target' is not installed for $ui_toolchain — run: rustup target add --toolchain $ui_toolchain $rust_target"
 
-  note "building $daemon_name, $editor_name, $ctl_name and $gui_bin (release) for $rust_target"
-  # One graph shares dependency features; custom-protocol embeds the frontend.
+  note "building $daemon_name, $editor_name and $ctl_name (release) for $rust_target"
   cargo build --release --locked --target "$rust_target" \
-    -p daemon -p editor-cli -p forge-ctl -p "$gui_crate" \
-    --bin "$daemon_name" --bin "$editor_name" --bin "$ctl_name" --bin "$gui_bin" \
-    --features "$gui_crate/custom-protocol" \
+    -p daemon -p editor-cli -p forge-ctl \
+    --bin "$daemon_name" --bin "$editor_name" --bin "$ctl_name" \
     || {
       extra=""
       [ "$universal" -eq 1 ] \
         && extra="; build without --universal for a $host_slice-only bundle"
       die "cargo build failed for $rust_target (SDKROOT=${SDKROOT:-<unset>})$extra"
+    }
+
+  note "building $gui_bin (release) for $rust_target"
+  RUSTUP_TOOLCHAIN="$ui_toolchain" CARGO_TARGET_DIR="$ui_target" \
+    cargo build --release --locked --manifest-path "$ui_app/Cargo.toml" --target "$rust_target" \
+    || {
+      extra=""
+      [ "$universal" -eq 1 ] \
+        && extra="; build without --universal for a $host_slice-only bundle"
+      die "Rune cargo build failed for $rust_target (SDKROOT=${SDKROOT:-<unset>})$extra"
     }
 done
 
@@ -332,51 +320,38 @@ daemon_sources=()
 editor_sources=()
 ctl_sources=()
 for slice in "${slices[@]}"; do
-  gui_src="target/$(rust_target_for "$slice")/release/$gui_bin"
+  rust_target="$(rust_target_for "$slice")"
+  gui_src="$ui_target/$rust_target/release/$gui_bin"
   [ -f "$gui_src" ] || die "missing $gui_src — the release build produced no $gui_bin for $slice"
   gui_sources+=("$gui_src")
 
-  daemon_src="target/$(rust_target_for "$slice")/release/$daemon_name"
+  daemon_src="target/$rust_target/release/$daemon_name"
   [ -f "$daemon_src" ] || die "missing $daemon_src — the release build produced no $daemon_name for $slice"
   daemon_sources+=("$daemon_src")
 
-  editor_src="target/$(rust_target_for "$slice")/release/$editor_name"
+  editor_src="target/$rust_target/release/$editor_name"
   [ -f "$editor_src" ] || die "missing $editor_src — the release build produced no $editor_name for $slice"
   editor_sources+=("$editor_src")
 
-  ctl_src="target/$(rust_target_for "$slice")/release/$ctl_name"
+  ctl_src="target/$rust_target/release/$ctl_name"
   [ -f "$ctl_src" ] || die "missing $ctl_src — the release build produced no $ctl_name for $slice"
   ctl_sources+=("$ctl_src")
 done
 
-# The frontend is embedded, not a bundle resource, so nothing downstream can
-# notice it is missing: a dev-mode binary assembles, signs, notarizes and ships
-# exactly like a good one and then opens a white window. Assert that the asset
-# `bun run build` just emitted is really inside the Mach-O.
-require_embedded_frontend() {
-  local binary="$1" entry
-  entry="$(sed -n 's/.*src="\/assets\/\(index-[A-Za-z0-9_-]*\.js\)".*/\1/p' "$tauri_app/dist/index.html" | head -1)"
-  [ -n "$entry" ] \
-    || die "cannot find the entry script in $tauri_app/dist/index.html — did bun run build change its output?"
-  # grep reads the Mach-O directly: piping `strings` into `grep -q` trips
-  # `set -o pipefail`, because the early exit SIGPIPEs the producer on a match.
-  LC_ALL=C grep -aqF -- "$entry" "$binary" \
-    || die "$(basename "$binary") does not embed $entry — this is a dev-mode build \
-(tauri only embeds frontendDist when the 'custom-protocol' feature is on) and it \
-would open a white window pointed at devUrl"
-}
-
-for gui_src in "${gui_sources[@]}"; do
-  require_embedded_frontend "$gui_src"
-done
-
-merge_or_copy "$app/Contents/MacOS/$gui_name" "${gui_sources[@]}"
+merge_or_copy "$app/Contents/MacOS/$gui_bin" "${gui_sources[@]}"
 merge_or_copy "$app/Contents/MacOS/$daemon_name" "${daemon_sources[@]}"
 merge_or_copy "$app/Contents/MacOS/$editor_name" "${editor_sources[@]}"
 merge_or_copy "$app/Contents/MacOS/$ctl_name" "${ctl_sources[@]}"
 
+cat >"$app/Contents/MacOS/$gui_name" <<'LAUNCHER'
+#!/bin/bash
+here="$(cd "$(dirname "$0")" && pwd)"
+exec "$here/forge-ui" --spawn-daemon --daemon-bin "$here/forge-daemon" "$@"
+LAUNCHER
+chmod 755 "$app/Contents/MacOS/$gui_name"
+
 require_cmd lipo "part of the Xcode Command Line Tools"
-require_slices "$app/Contents/MacOS/$gui_name" "${slices[@]}"
+require_slices "$app/Contents/MacOS/$gui_bin" "${slices[@]}"
 require_slices "$app/Contents/MacOS/$daemon_name" "${slices[@]}"
 require_slices "$app/Contents/MacOS/$editor_name" "${slices[@]}"
 require_slices "$app/Contents/MacOS/$ctl_name" "${slices[@]}"
@@ -404,7 +379,7 @@ if [ -n "${FORGE_CODESIGN_IDENTITY:-}" ]; then
   codesign "${sign_args[@]}" "$app/Contents/MacOS/$daemon_name"
   codesign "${sign_args[@]}" "$app/Contents/MacOS/$editor_name"
   codesign "${sign_args[@]}" "$app/Contents/MacOS/$ctl_name"
-  codesign "${sign_args[@]}" "$app/Contents/MacOS/$gui_name"
+  codesign "${sign_args[@]}" "$app/Contents/MacOS/$gui_bin"
   codesign "${sign_args[@]}" "$app"
   codesign --verify --deep --strict --verbose=2 "$app"
 else
@@ -448,14 +423,21 @@ fi
 
 # --------------------------------------------------------------- updater ----
 
-# What `tauri-plugin-updater` downloads and swaps in: a gzipped tar whose single
+# What the Rune updater downloads and swaps in: a gzipped tar whose single
 # top-level entry is the .app, plus its detached minisign signature. Built after
 # notarization so the archived bundle carries the stapled ticket — an unstapled
 # replacement fails Gatekeeper on the machine that installs it.
 if [ "$make_updater" -eq 1 ]; then
-  key="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/forge-updater.key}"
-  [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] || [ -f "$key" ] \
-    || die "no updater signing key: set TAURI_SIGNING_PRIVATE_KEY, or generate one with 'bun run tauri signer generate -w $key'"
+  require_cmd minisign "brew install minisign"
+  key="${FORGE_UPDATER_KEY_PATH:-$HOME/.tauri/forge-updater.key}"
+  temporary_key=""
+  if [ -n "${FORGE_UPDATER_KEY:-}" ]; then
+    temporary_key="$(mktemp)"
+    printf '%s\n' "$FORGE_UPDATER_KEY" >"$temporary_key"
+    key="$temporary_key"
+    trap 'rm -f "$temporary_key"' EXIT
+  fi
+  [ -f "$key" ] || die "no updater signing key: set FORGE_UPDATER_KEY_PATH or FORGE_UPDATER_KEY"
 
   if [ "$universal" -eq 1 ]; then
     updater_arch="universal"
@@ -476,17 +458,14 @@ if [ "$make_updater" -eq 1 ]; then
   COPYFILE_DISABLE=1 tar -czf "$tarball" -C "$out_dir" "$(basename "$app")"
 
   note "signing the updater artifact"
-  if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-    (cd "$tauri_app" && bun run tauri signer sign "$tarball")
-  else
-    (cd "$tauri_app" && bun run tauri signer sign --private-key-path "$key" "$tarball")
-  fi
-  [ -f "$tarball.sig" ] || die "tauri signer produced no $tarball.sig"
+  minisign -S -W -s "$key" -m "$tarball" -x "$tarball.sig" \
+    -t "Forge Node ${version} (protocol $(awk '/pub const PROTOCOL_VERSION/{gsub(/[^0-9]/,"",$NF); print $NF; exit}' crates/protocol/src/lib.rs))"
+  [ -f "$tarball.sig" ] || die "minisign produced no $tarball.sig"
 fi
 
 # ---------------------------------------------------------------- summary ---
 
-note "done: $app ($(lipo -archs "$app/Contents/MacOS/$gui_name"))"
+note "done: $app ($(lipo -archs "$app/Contents/MacOS/$gui_bin"))"
 if [ -f "$zip_path" ]; then
   note "archive: $zip_path"
 fi

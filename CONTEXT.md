@@ -1,9 +1,8 @@
 # Context
 
 Forge Node is a two-process desktop workbench. `forge-daemon` owns PTYs, the
-only VT engine, sessions, Git, and SQLite. `forge-tauri` (Tauri 2 + **Solid**,
-not React) is a passive replica of a cell grid. Closing the window kills
-nothing.
+only VT engine, sessions, Git, and SQLite. `forge-ui` (the native Rune client)
+is a passive replica of a cell grid. Closing the window kills nothing.
 
 ## Vocabulary
 
@@ -21,8 +20,7 @@ Orchestration: [`docs/orchestration.md`](docs/orchestration.md).
 | ADR numbers cited in code (`ADR-002` …) | [`docs/decisions.md`](docs/decisions.md) |
 | Cost rungs (per cell / delta / frame / request) | [`docs/performance.md`](docs/performance.md) |
 | Commands and "where to change X" | [`docs/development.md`](docs/development.md) |
-| GUI layout, tokens, keymap | [`docs/ui.md`](docs/ui.md) |
-| Frontend ownership and dependency rules | [`docs/frontend-architecture.md`](docs/frontend-architecture.md) |
+| GUI layout, module ownership, tokens, keymap | [`docs/ui.md`](docs/ui.md) |
 | Repeatable architecture/quality review | `/forge-clean-code` (`.agents/skills/forge-clean-code`) |
 | Wire protocol | [`docs/protocol.md`](docs/protocol.md) |
 | Providers | [`docs/agents.md`](docs/agents.md) |
@@ -31,4 +29,3 @@ Orchestration: [`docs/orchestration.md`](docs/orchestration.md).
 ## Not sources of truth
 
 - Local `plan/` working notes (gitignored). They can contradict the code.
-- `apps/tauri/PARITY.md` and `PROGRESS.md` — historical phase registers.

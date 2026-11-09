@@ -124,7 +124,7 @@ itself and still runs its approved copy.
 ```toml
 [[action]]
 label = "dev"
-command = "bun run dev -- --port {port}"
+command = "npm run dev -- --port {port}"
 kind = "dev"            # dev | test | lint | build | custom
 pinned = true
 port = { base = 5173, per_worktree = true }

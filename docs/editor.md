@@ -15,8 +15,8 @@ Three crates build the editor:
 The integrated editor uses the same engine through a private control channel.
 `[editor] surface = "cells"` paints its PTY output; the experimental `"dom"`
 surface paints bounded view frames from a headless editor. Neither puts a
-document engine in the WebView. `apps/tauri/packages/file-workbench` owns the
-file explorer. Markdown, SVG and raster previews have a separate read-only
+document engine in the window. The Rune client owns the file explorer and the
+editor chrome. Markdown, SVG and raster previews have a separate read-only
 surface; editing text opens a `forge-editor` session.
 
 ## Run it
@@ -316,8 +316,8 @@ Linux) step `ui.editor.font_size` while Code is up; they never reach the TUI
 as keys. The same chords zoom terminals and agents (`ui.terminal.zoom`) only
 while a session is on screen — the two sizes do not move together.
 
-**On a Mac the platform chords reach the editor.** `editorChords.ts` maps ⌘S/C/X,
-⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys. ⌘G is
+**On a Mac the platform chords reach the editor.** `editor/actions.rs` maps
+⌘S/C/X, ⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys. ⌘G is
 find-next and not "go to line" — a Mac user pressing it after a search wants the
 next match — so go-to-line is ⌥⌘L. Both surfaces recognize Alt-/ by the `/`
 character or the physical Slash key, because Option can produce `÷` on macOS,
@@ -753,8 +753,8 @@ cells.
   `no match`, a save refusal — which is exactly the status row a person looking
   away from the canvas cannot see. A conflict is announced over it, because the
   daemon is what saw the revision mismatch and the editor was only told a reason.
-- `editorAria.ts` holds the rules and is tested on its own; `editorPane.test.ts`
-  asserts the pane is wired to them and that it never reads `viewport.rows`.
+- `editor/aria.rs` holds the rules and is tested on its own; the editor pane is
+  wired to them and never reads `viewport.rows`.
 
 What this does **not** claim: VoiceOver does not read every ANSI cell, and the
 mirror is not a document a reader can navigate by character or by word. What it
@@ -791,9 +791,9 @@ broadcasts `ClipboardStore`. Over that cap nothing leaves: a copy too large for
 the terminal is kept in the register alone and the status row says which limit
 it hit. The renderer writes the escape inside the frame's DEC 2026 synchronized
 update, which is where the PTY test finds it
-(`a_drag_and_ctrl_c_leave_an_osc_52_inside_the_synchronized_update`). The Tauri
-host writes the system clipboard itself — one writer thread, never the thread
-that carries keystrokes — and only for a terminal the
+(`a_drag_and_ctrl_c_leave_an_osc_52_inside_the_synchronized_update`). The Rune
+host writes the system clipboard itself — off the thread that carries
+keystrokes — and only for a terminal the
 window is showing — the focused one or an open editor pane — because OSC 52 lets
 whatever runs in a PTY set the clipboard, and a background agent replacing it
 would be a real hazard. OSC 52's *read* is never answered, by the engine or by

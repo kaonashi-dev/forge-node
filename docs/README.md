@@ -22,9 +22,8 @@ must match the code.
 | [actions.md](./actions.md) | project actions: one-click tasks, single instance, ports, readiness, dependencies, `.forge/actions.toml` trust |
 | [worktrees.md](./worktrees.md) | project discovery, managed worktree placement/slugs, create/remove safety rules |
 | [persistence.md](./persistence.md) | SQLite schema, migration rules, startup reconciliation |
-| [ui.md](./ui.md) | the window layout, theme tokens, terminal rendering and the keyboard map |
-| [frontend-architecture.md](./frontend-architecture.md) | frontend folder ownership, dependency rules, state/lifecycle owners and "where to change X" |
-| [theming.md](./theming.md) | palettes, tokens, fonts |
+| [ui.md](./ui.md) | the Rune client: module ownership, dependency rules, the window layout, terminal rendering and the keyboard map |
+| [theming.md](./theming.md) | palettes, theme roles, fonts |
 | [performance.md](./performance.md) | the cost model — what runs per cell, per delta, per frame; the memory, CPU, process and lock rules and the defects behind them |
 | [development.md](./development.md) | prerequisites, commands, running the daemon, testing notes |
 | [commits.md](./commits.md) | commit subject/body and pull-request title/description |
@@ -33,8 +32,8 @@ must match the code.
 ## Ten-second mental model
 
 ```
-forge-tauri (GUI)  ──UDS + MessagePack──►  forge-daemon  ◄── forgectl
-  Tauri + SolidJS                           owns PTYs, the only VT engine,   runs, tasks,
+forge-ui (GUI)  ──UDS + MessagePack──►  forge-daemon  ◄── forgectl
+  Rune, native Rust                         owns PTYs, the only VT engine,   runs, tasks,
   renders cells from a replica              sessions, git, SQLite            reports
 ```
 

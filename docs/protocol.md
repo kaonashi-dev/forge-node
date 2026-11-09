@@ -30,37 +30,33 @@ a Unix domain socket (ADR-004). The GUI-side implementation is
 - The daemon raises each accepted socket's send buffer to 1 MiB; the macOS
   default of 8 KiB split a whole-grid delta into about 25 writes.
 
-## Tauri workbench envelope
+## GUI-local operation identity
 
-The WebView's `send_workbench_command` is a separate host API, not an addition
-to the daemon wire. It rejects when the worker is absent, closed or its bounded
-queue is full. Accepted means enqueued, not completed.
+The Rune client's worker commands are not additions to the daemon wire. They
+reject when the worker is absent or its bounded queue is full. Accepted means
+enqueued, not completed.
 
-- `create_path`, `rename_path`, `delete_path`, `copy_path` carry `operation_id` and finish on
-  `workbench:path_result { operation_id, workspace, kind, from, to, success,
-  error, uncertain }`. Structured daemon refusals are definitive; transport
-  failures are uncertain. Listing failures never complete mutations.
-- `load_file_directory` carries `{ workspace, path, request_id, generation }`.
-  `workbench:directory` echoes these plus `{ entries, truncated }`;
-  `workbench:directory_failed` echoes them plus `message`.
-- `load_file_tree` carries `{ workspace, request_id }`; its success echoes those
-  plus `tree`, and failure echoes them plus `error`. The request identity rejects
-  previous workspace/connection reads; invalidation during a read owes a follow-up.
-- `watch_files` carries a generation echoed by `workbench:watch_ready` and
-  `workbench:watch_failed`, so an old ACK cannot arm new interests.
+- Path mutations carry an operation id and finish on a `Project` reply.
+  Structured daemon refusals are definitive; transport failures are uncertain.
+  Listing failures never complete mutations.
+- Directory and file reads carry a workspace, path, request id and generation.
+  The request identity rejects previous workspace/connection reads;
+  invalidation during a read owes a follow-up.
+- `WatchFiles` carries a connection generation and a ticket echoed by
+  `Watched`, so an old ACK cannot arm new interests.
+- `FileChanged` invalidates the tree; the client re-reads only what it shows.
 
 These identifiers belong to the UI interaction/connection lifecycle. Daemon
 request/reply IDs still correlate the actual filesystem operation. Unknown
 write outcomes are reconciled by reading affected paths, never by replaying a
 mutation automatically.
 
-## Tauri targeted paste
+## Terminal paste target
 
-The host's `runtime:connected` payload and cached `connect` answer include a
-`connection_generation`, incremented for every successful host connection even
-when the daemon instance and PTY identities survive. `send_runtime_command`
-accepts `paste_target { session_id, terminal_id, connection_generation, text }`.
-It rejects a disconnected/stale generation at enqueue; the runtime also drops
+Every connection carries a generation, incremented for every successful client
+connection even when the daemon instance and PTY identities survive. The
+terminal reference paste carries `{ session_id, terminal_id, generation, text }`.
+It rejects a disconnected/stale generation at enqueue; the worker also drops
 queued references from an older generation before execution. It refuses a
 changed attachment, mismatched session-to-terminal mapping or ended session,
 then uses that terminal replica's modes with `encode_paste`. No Enter is appended.
