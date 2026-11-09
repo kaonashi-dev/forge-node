@@ -61,9 +61,21 @@ pub struct Workbench {
     reads: Vec<Read>,
 }
 
+/// One changed path as git reported it, with its patch already parsed.
+pub struct ChangedFile {
+    pub path: String,
+    pub status: domain::DiffStatus,
+    pub additions: u32,
+    pub deletions: u32,
+    diffs: Vec<rune_kit::diff::FileDiff>,
+}
+
 #[derive(Default)]
 pub struct Changes {
     pub state: DiffState,
+    pub files: Vec<ChangedFile>,
+    /// The file whose patch `state` shows.
+    pub selected: Option<usize>,
     /// Read on every load, never remembered: staging a path is what takes it
     /// off the list, and only git knows.
     pub rebase: Option<domain::RebaseState>,
@@ -224,16 +236,40 @@ impl Workbench {
                     .filter(|file| file.patch.is_empty())
                     .map(|file| file.path.clone())
                     .collect();
-                let mut patch = String::new();
-                for file in &diff.files {
-                    patch.push_str(&file.patch);
-                    if !patch.ends_with('\n') && !patch.is_empty() {
-                        patch.push('\n');
-                    }
-                }
-                changes.state.set_files(rune_kit::diff::parse(&patch));
+                let kept = changes
+                    .selected
+                    .and_then(|index| changes.files.get(index))
+                    .map(|file| file.path.clone());
+                changes.files = diff
+                    .files
+                    .into_iter()
+                    .map(|file| ChangedFile {
+                        diffs: rune_kit::diff::parse(&file.patch),
+                        path: file.path,
+                        status: file.status,
+                        additions: file.additions,
+                        deletions: file.deletions,
+                    })
+                    .collect();
+                let again = kept.and_then(|path| changes.files.iter().position(|f| f.path == path));
+                self.select_change(again.unwrap_or(0));
             }
             Err(error) => changes.error = Some(error),
+        }
+    }
+
+    /// Shows one changed file's patch, as Tauri opens one file at a time.
+    pub fn select_change(&mut self, index: usize) {
+        let changes = &mut self.changes;
+        match changes.files.get(index) {
+            Some(file) => {
+                changes.selected = Some(index);
+                changes.state.set_files(file.diffs.clone());
+            }
+            None => {
+                changes.selected = None;
+                changes.state.set_files(Vec::new());
+            }
         }
     }
 
@@ -502,7 +538,18 @@ mod tests {
                 truncated: false,
             }),
         );
-        assert_eq!(bench.changes.state.files().len(), 1);
+        assert_eq!(bench.changes.files.len(), 2);
+        assert_eq!(bench.changes.selected, Some(0));
+        assert_eq!(
+            bench.changes.state.files().len(),
+            1,
+            "one file's patch at a time"
+        );
+        bench.select_change(1);
+        assert!(
+            bench.changes.state.files().is_empty(),
+            "a binary file has no patch"
+        );
         assert_eq!(bench.changes.without_patch, vec!["logo.png".to_string()]);
         assert_eq!(bench.changes.file_count, 2);
     }

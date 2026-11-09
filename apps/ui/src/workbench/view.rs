@@ -69,43 +69,31 @@ fn notice(k: &Kit, key: &'static str, message: String) -> El {
         .child(text(message).font(k.ty.small).color(k.c.text_muted))
 }
 
+/// A diff status as one letter, as Tauri's `statusLetter`.
+fn status_letter(status: domain::DiffStatus) -> &'static str {
+    match status {
+        domain::DiffStatus::Added => "A",
+        domain::DiffStatus::Modified => "M",
+        domain::DiffStatus::Deleted => "D",
+        domain::DiffStatus::Conflicted => "U",
+        _ => "?",
+    }
+}
+
+/// A diff status in words for the row's accessible name, as Tauri's `statusWord`.
+fn status_word(status: domain::DiffStatus) -> &'static str {
+    match status {
+        domain::DiffStatus::Added => "added",
+        domain::DiffStatus::Modified => "modified",
+        domain::DiffStatus::Deleted => "deleted",
+        domain::DiffStatus::Conflicted => "unresolved conflict",
+        _ => "changed",
+    }
+}
+
 pub fn changes(s: &AppState, k: &Kit) -> El {
     let changes = &s.workbench.changes;
-    let mut detail = match &changes.branch {
-        Some(branch) => format!("{branch} · {} files", changes.file_count),
-        None => format!("{} files", changes.file_count),
-    };
-    if changes.truncated {
-        detail.push_str(" · list cut at the daemon's budget");
-    }
-    if !changes.without_patch.is_empty() {
-        detail.push_str(&format!(
-            " · no patch for {}",
-            changes.without_patch.join(", ")
-        ));
-    }
-    let body = if s.workbench.workspace.is_none() {
-        notice(k, "changes-empty", "No workspace for this session.".into())
-    } else if let Some(error) = &changes.error {
-        notice(
-            k,
-            "changes-error",
-            format!("Could not read the diff: {error}"),
-        )
-    } else if !changes.loaded {
-        notice(k, "changes-loading", "Reading the working tree…".into())
-    } else if changes.file_count == 0 {
-        notice(k, "changes-clean", "No uncommitted changes.".into())
-    } else {
-        DiffView::new(
-            |s: &AppState| &s.workbench.changes.state,
-            |s: &mut AppState| &mut s.workbench.changes.state,
-        )
-        .build(s, k)
-        .key("changes-diff")
-        .grow(1.0)
-        .min_h(0.0)
-    };
+    let mut detail = changes.branch.clone().unwrap_or_default();
     let project = s.store.as_ref().and_then(|store| {
         let workspace = s.workbench.workspace?;
         store
@@ -115,11 +103,13 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
             .map(|found| found.project_id)
     });
     if let Some(note) = project.and_then(|id| s.sync.fetched.get(&id)) {
-        detail.push_str(" · ");
+        if !detail.is_empty() {
+            detail.push_str(" · ");
+        }
         detail.push_str(note);
     }
     let fetching = project.is_some_and(|id| s.sync.fetching.contains(&id));
-    let mut header = bar(k, "Changes".into(), detail).child(
+    let mut header = bar(k, "Git".into(), detail).child(
         Button::new(if fetching { "Fetching…" } else { "Fetch" })
             .variant(ButtonVariant::GhostMuted)
             .control_size(ControlSize::Small)
@@ -127,11 +117,9 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
             .build(k)
             .key("changes-fetch"),
     );
-    // A pull request carries commits, so it is offered on a clean tree only;
-    // with changes, the next step is the commit.
-    if changes.loaded && changes.file_count == 0 && changes.error.is_none() {
+    if changes.loaded && changes.error.is_none() {
         header = header.child(
-            Button::new("Open PR…")
+            Button::new("Preview PR")
                 .variant(ButtonVariant::Outline)
                 .control_size(ControlSize::Small)
                 .on_press(|s: &mut AppState| s.open_pr_dialog())
@@ -139,16 +127,126 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
                 .key("changes-open-pr"),
         );
     }
-    if changes.loaded && changes.file_count > 0 {
-        header = header.child(
-            Button::new("Commit…")
-                .variant(ButtonVariant::Outline)
-                .control_size(ControlSize::Small)
-                .on_press(|s: &mut AppState| s.start_commit())
-                .build(k)
-                .key("changes-commit"),
+
+    let mut list = col().key("changed-files").w_full().gap(1.0).padding(6.0);
+    if s.workbench.workspace.is_none() {
+        list = list.child(
+            text("No workspace for this session.")
+                .font(k.ty.small)
+                .color(k.c.text_faint),
+        );
+    } else if let Some(error) = &changes.error {
+        list = list.child(
+            text(format!("Could not read the diff: {error}"))
+                .font(k.ty.small)
+                .color(k.c.text_faint),
+        );
+    } else if !changes.loaded {
+        list = list.child(
+            text("Reading the working tree…")
+                .font(k.ty.small)
+                .color(k.c.text_faint),
+        );
+    } else if changes.files.is_empty() {
+        list = list.child(
+            text("Nothing uncommitted.")
+                .key("changes-clean")
+                .font(k.ty.small)
+                .color(k.c.text_faint),
         );
     }
+    for (index, file) in changes.files.iter().enumerate() {
+        let selected = changes.selected == Some(index);
+        list = list.child(
+            row()
+                .key(format!("changed-{}", file.path))
+                .role("button")
+                .label(format!(
+                    "{}, {}, {} added, {} removed",
+                    file.path,
+                    status_word(file.status),
+                    file.additions,
+                    file.deletions
+                ))
+                .w_full()
+                .h(26.0)
+                .px(8.0)
+                .gap(8.0)
+                .radius(5.0)
+                .items_center()
+                .fill(if selected {
+                    k.c.surface_hover
+                } else {
+                    rune::Color::TRANSPARENT
+                })
+                .on_press(move |s: &mut AppState| s.workbench.select_change(index))
+                .child(
+                    text(status_letter(file.status))
+                        .font(k.ty.mono)
+                        .color(k.c.text_muted)
+                        .w(12.0),
+                )
+                .child(
+                    text(file.path.clone())
+                        .font(k.ty.small)
+                        .color(k.c.text_base)
+                        .grow(1.0)
+                        .truncate(),
+                )
+                .child(
+                    text(format!("+{}", file.additions))
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.success.fg),
+                )
+                .child(
+                    text(format!("−{}", file.deletions))
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.danger.fg),
+                ),
+        );
+    }
+    if changes.truncated {
+        list = list.child(
+            text("Some files were over budget and are not listed.")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint),
+        );
+    }
+    let mut rail = col()
+        .key("changes-rail")
+        .w(TREE_W + 40.0)
+        .h_full()
+        .min_h(0.0)
+        .child(
+            col()
+                .key("changes-list-scroll")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(list),
+        );
+    if changes.loaded && changes.error.is_none() {
+        rail = rail.child(crate::commit::commit_box(s, k, changes.files.len()));
+    }
+    let patch = match changes.selected.and_then(|index| changes.files.get(index)) {
+        Some(_) if changes.state.files().is_empty() => notice(
+            k,
+            "changes-no-patch",
+            "No patch to show: a binary file, or one over the budget.".into(),
+        ),
+        Some(_) => DiffView::new(
+            |s: &AppState| &s.workbench.changes.state,
+            |s: &mut AppState| &mut s.workbench.changes.state,
+        )
+        .build(s, k)
+        .key("changes-diff")
+        .grow(1.0)
+        .min_h(0.0),
+        None => el().grow(1.0),
+    };
     let mut view = col()
         .key("changes")
         .w_full()
@@ -158,7 +256,16 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
     if let Some(state) = &changes.rebase {
         view = view.child(stopped(state, changes.rebase_error.as_deref(), k));
     }
-    view.child(body)
+    view.child(
+        row()
+            .key("changes-body")
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .child(rail)
+            .child(el().w(1.0).h_full().fill(k.c.border_weak))
+            .child(patch),
+    )
 }
 
 pub fn files(s: &AppState, k: &Kit) -> El {

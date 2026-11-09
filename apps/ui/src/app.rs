@@ -93,7 +93,7 @@ pub struct AppState {
     pub workbench: Workbench,
     pub palette: crate::palette::Palette,
     pub projects: crate::projects::Projects,
-    pub commit: crate::commit::CommitDialog,
+    pub commit: crate::commit::CommitBox,
     pub sync: crate::sync::Sync,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
@@ -161,7 +161,7 @@ impl AppState {
             workbench: Workbench::default(),
             palette: crate::palette::Palette::default(),
             projects: crate::projects::Projects::default(),
-            commit: crate::commit::CommitDialog::default(),
+            commit: crate::commit::CommitBox::default(),
             sync: crate::sync::Sync::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
@@ -553,11 +553,14 @@ impl AppState {
 
     /// Opens the commit dialog for the workspace Changes shows, and asks Juva
     /// for a draft.
-    pub fn start_commit(&mut self) {
+    /// Asks Juva for a message, only when the person asks, as in Tauri.
+    pub fn draft_commit(&mut self) {
         let Some(workspace) = self.workbench.workspace else {
             return;
         };
-        self.commit.open(workspace);
+        self.commit.follow(Some(workspace));
+        self.commit.drafting = true;
+        self.commit.error = None;
         match &self.connection {
             Some(connection) => {
                 let _ = connection.draft_commit(workspace);
@@ -567,6 +570,7 @@ impl AppState {
     }
 
     pub fn create_commit(&mut self) {
+        self.commit.follow(self.workbench.workspace);
         let (Some(workspace), Some(message)) = (self.commit.workspace, self.commit.ready_message())
         else {
             return;
@@ -604,8 +608,9 @@ impl AppState {
     }
 
     pub fn open_pr_dialog(&mut self) {
+        let dirty = !self.workbench.changes.files.is_empty();
         if let Some((_, workspace, branch)) = self.workbench_project() {
-            self.sync.open_pr(workspace, branch.as_deref());
+            self.sync.open_pr(workspace, branch.as_deref(), dirty);
         }
     }
 
@@ -613,7 +618,7 @@ impl AppState {
         let Some(pr) = self.sync.pr.as_mut() else {
             return;
         };
-        let Some((title, body)) = pr.ready() else {
+        let Some((title, body, commit)) = pr.ready() else {
             return;
         };
         pr.opening = true;
@@ -621,7 +626,7 @@ impl AppState {
         let workspace = pr.workspace;
         match &self.connection {
             Some(connection) => {
-                let _ = connection.open_pull_request(workspace, title, body);
+                let _ = connection.open_pull_request(workspace, title, body, commit);
             }
             None => self.worker_not_ready("CreatePullRequest"),
         }
@@ -810,6 +815,7 @@ impl AppState {
     }
 
     fn sync_workbench(&mut self) {
+        self.commit.follow(self.workbench.workspace);
         if let Some(query) = self.palette.take_search() {
             self.sync_workbench_workspace();
             if let (Some(connection), Some(workspace)) =
@@ -1122,7 +1128,8 @@ impl AppState {
                 if label == "CreateCommit" {
                     self.commit.committing = false;
                     if ok {
-                        self.commit.close();
+                        self.commit.message = rune::TextEdit::new("");
+                        self.commit.committed = true;
                         self.workbench.refresh();
                     } else {
                         self.commit.error = Some(message.clone());

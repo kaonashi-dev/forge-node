@@ -23,6 +23,9 @@ pub struct PrDialog {
     pub workspace: WorkspaceId,
     pub title: TextEdit,
     pub body: TextEdit,
+    /// The message for the commit of everything uncommitted; `None` on a
+    /// clean tree, where the branch is pushed as it is.
+    pub commit: Option<TextEdit>,
     pub opening: bool,
     /// `Ok(url)` or the daemon's error, once `PullRequestOpened` arrives.
     pub outcome: Option<Result<String, String>>,
@@ -51,13 +54,14 @@ impl Sync {
         self.fetched.insert(project, note);
     }
 
-    pub fn open_pr(&mut self, workspace: WorkspaceId, branch: Option<&str>) {
+    pub fn open_pr(&mut self, workspace: WorkspaceId, branch: Option<&str>, dirty: bool) {
         let mut title = TextEdit::new(branch.unwrap_or_default().replace(['-', '_', '/'], " "));
         title.focused = true;
         self.pr = Some(PrDialog {
             workspace,
             title,
             body: TextEdit::new(""),
+            commit: dirty.then(|| TextEdit::new("")),
             opening: false,
             outcome: None,
         });
@@ -86,13 +90,20 @@ impl Sync {
 }
 
 impl PrDialog {
-    /// Title and body to send, or `None` while there is no title or a request
-    /// is already in flight.
+    /// Title, body and commit message to send, or `None` while a field that
+    /// is needed is empty or a request is already in flight.
     #[must_use]
-    pub fn ready(&self) -> Option<(String, String)> {
+    pub fn ready(&self) -> Option<(String, String, Option<String>)> {
         let title = self.title.text.trim();
-        (!title.is_empty() && !self.opening)
-            .then(|| (title.to_string(), self.body.text.trim().to_string()))
+        if title.is_empty() || self.opening {
+            return None;
+        }
+        let commit = match &self.commit {
+            Some(edit) if edit.text.trim().is_empty() => return None,
+            Some(edit) => Some(edit.text.trim().to_string()),
+            None => None,
+        };
+        Some((title.to_string(), self.body.text.trim().to_string(), commit))
     }
 }
 
@@ -158,10 +169,31 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                         .key("pr-body")
                         .h(140.0),
                 );
+            if let Some(commit) = &pr.commit {
+                body = body.child(
+                    rune_kit::TextInput::new(commit)
+                        .label("Commit message")
+                        .placeholder("What this change does")
+                        .on_edit(|s: &mut AppState| {
+                            match s.sync.pr.as_mut().and_then(|pr| pr.commit.as_mut()) {
+                                Some(edit) => edit,
+                                None => &mut s.scratch_edit,
+                            }
+                        })
+                        .build(k)
+                        .key("pr-commit"),
+                );
+            }
             let note = match outcome {
                 Some(Err(error)) => format!("The daemon refused: {error}"),
                 _ if pr.opening => "Pushing and opening…".to_string(),
-                _ => "Pushes this branch, then opens a pull request.".to_string(),
+                _ => {
+                    if pr.commit.is_some() {
+                        "Commits everything uncommitted, pushes the branch, then opens a pull request.".to_string()
+                    } else {
+                        "Pushes this branch, then opens a pull request.".to_string()
+                    }
+                }
             };
             body = body.child(
                 row()
@@ -176,11 +208,15 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                             .grow(1.0),
                     )
                     .child(
-                        Button::new("Push and open")
-                            .variant(ButtonVariant::Contrast)
-                            .on_press(|s: &mut AppState| s.create_pull_request())
-                            .build(k)
-                            .key("pr-go"),
+                        Button::new(if pr.commit.is_some() {
+                            "Commit, push & open PR"
+                        } else {
+                            "Push & open PR"
+                        })
+                        .variant(ButtonVariant::Contrast)
+                        .on_press(|s: &mut AppState| s.create_pull_request())
+                        .build(k)
+                        .key("pr-go"),
                     ),
             );
         }
@@ -222,7 +258,12 @@ mod tests {
     fn a_pr_outcome_lands_only_in_its_own_dialog() {
         let mut sync = Sync::default();
         let workspace = WorkspaceId::new();
-        sync.open_pr(workspace, Some("feature/rune-sync"));
+        sync.open_pr(workspace, Some("feature/rune-sync"), true);
+        assert_eq!(
+            sync.pr.as_ref().expect("dialog").ready(),
+            None,
+            "a dirty tree needs a message"
+        );
         let dialog = sync.pr.as_ref().expect("dialog");
         assert_eq!(dialog.title.text, "feature rune sync");
         sync.pr_opened(WorkspaceId::new(), Some("https://x/1".into()), None);

@@ -120,6 +120,8 @@ pub enum Command {
         workspace_id: WorkspaceId,
         title: String,
         body: String,
+        /// Commit everything uncommitted with this message first.
+        commit: Option<String>,
     },
     RefreshPullRequests,
     DraftCommit {
@@ -374,11 +376,13 @@ impl ConnectionHandle {
         workspace_id: WorkspaceId,
         title: String,
         body: String,
+        commit: Option<String>,
     ) -> Result<(), String> {
         self.send(Command::OpenPullRequest {
             workspace_id,
             title,
             body,
+            commit,
         })
     }
 
@@ -1512,12 +1516,23 @@ fn handle_live_command(
             workspace_id,
             title,
             body,
+            commit,
         } => {
             metrics.note_socket_op();
-            let result = client
-                .create_pull_request(workspace_id, &title, &body, None)
-                .map(|()| "pushing".to_string())
-                .map_err(|error| error.to_string());
+            let result = match commit {
+                Some(message) => client.commit_and_open_pull_request(
+                    workspace_id,
+                    domain::CommitPlan {
+                        branch: None,
+                        message,
+                    },
+                    &title,
+                    &body,
+                ),
+                None => client.create_pull_request(workspace_id, &title, &body, None),
+            }
+            .map(|()| "pushing".to_string())
+            .map_err(|error| error.to_string());
             live_result(
                 generation,
                 "CreatePullRequest",

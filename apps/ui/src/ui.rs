@@ -75,7 +75,6 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         palette(s, &k, &mut overlays);
     }
     crate::projects::dialogs(s, &k, &mut overlays);
-    crate::commit::dialog(s, &k, &mut overlays);
     crate::sync::dialog(s, &k, &mut overlays);
     rename_dialog(s, &k, &mut overlays);
     close_dialog(s, &k, &mut overlays);
@@ -305,7 +304,8 @@ fn center(s: &AppState, k: &Kit) -> El {
     col()
         .key("center")
         .w_full()
-        .h_full()
+        // What the tab strip leaves, not the column's whole height.
+        .grow(1.0)
         .min_h(0.0)
         .fill(k.c.bg_base)
         .child(body)
