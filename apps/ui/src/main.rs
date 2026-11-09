@@ -8,6 +8,7 @@ mod palette;
 mod prefs;
 mod probe;
 mod projects;
+mod sync;
 mod terminal;
 mod theme;
 mod ui;

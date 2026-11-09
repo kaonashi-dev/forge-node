@@ -18,6 +18,22 @@ pub struct Projects {
     pub confirm_remove: Option<WorkspaceId>,
 }
 
+/// The open pull request on this checkout's branch, as a suffix.
+fn pr_note(s: &AppState, workspace: &Workspace) -> String {
+    let Some(store) = &s.store else {
+        return String::new();
+    };
+    crate::sync::pull_request_for(
+        &store.pull_requests.pull_requests,
+        workspace.project_id,
+        workspace.branch.as_deref(),
+    )
+    .map_or_else(String::new, |pr| {
+        let draft = if pr.is_draft { " (draft)" } else { "" };
+        format!(" · PR #{}{draft}: {}", pr.number, pr.title)
+    })
+}
+
 /// One line of what the daemon measured, or that it has not.
 #[must_use]
 pub fn status_line(workspace: &Workspace) -> String {
@@ -142,6 +158,14 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         .color(k.c.text_base)
                         .grow(1.0),
                 )
+                .child(
+                    Button::new("Refresh PRs")
+                        .variant(ButtonVariant::GhostMuted)
+                        .control_size(ControlSize::Small)
+                        .on_press(|s: &mut AppState| s.refresh_pull_requests())
+                        .build(k)
+                        .key("refresh-prs"),
+                )
                 .child(add),
         )
         .child(
@@ -233,13 +257,17 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                         .truncate(),
                 )
                 .child(
-                    text(format!("{kind} · {}", status_line(workspace)))
-                        .font(k.ty.text_xsmall)
-                        .color(if workspace.status.dirty {
-                            k.c.warning.fg
-                        } else {
-                            k.c.text_faint
-                        }),
+                    text(format!(
+                        "{kind} · {}{}",
+                        status_line(workspace),
+                        pr_note(s, workspace)
+                    ))
+                    .font(k.ty.text_xsmall)
+                    .color(if workspace.status.dirty {
+                        k.c.warning.fg
+                    } else {
+                        k.c.text_faint
+                    }),
                 ),
         )
         .child(actions)

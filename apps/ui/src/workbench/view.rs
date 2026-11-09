@@ -106,7 +106,39 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
         .grow(1.0)
         .min_h(0.0)
     };
-    let mut header = bar(k, "Changes".into(), detail);
+    let project = s.store.as_ref().and_then(|store| {
+        let workspace = s.workbench.workspace?;
+        store
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .map(|found| found.project_id)
+    });
+    if let Some(note) = project.and_then(|id| s.sync.fetched.get(&id)) {
+        detail.push_str(" · ");
+        detail.push_str(note);
+    }
+    let fetching = project.is_some_and(|id| s.sync.fetching.contains(&id));
+    let mut header = bar(k, "Changes".into(), detail).child(
+        Button::new(if fetching { "Fetching…" } else { "Fetch" })
+            .variant(ButtonVariant::GhostMuted)
+            .control_size(ControlSize::Small)
+            .on_press(|s: &mut AppState| s.fetch())
+            .build(k)
+            .key("changes-fetch"),
+    );
+    // A pull request carries commits, so it is offered on a clean tree only;
+    // with changes, the next step is the commit.
+    if changes.loaded && changes.file_count == 0 && changes.error.is_none() {
+        header = header.child(
+            Button::new("Open PR…")
+                .variant(ButtonVariant::Outline)
+                .control_size(ControlSize::Small)
+                .on_press(|s: &mut AppState| s.open_pr_dialog())
+                .build(k)
+                .key("changes-open-pr"),
+        );
+    }
     if changes.loaded && changes.file_count > 0 {
         header = header.child(
             Button::new("Commit…")

@@ -93,6 +93,9 @@ pub struct AppState {
     pub palette: crate::palette::Palette,
     pub projects: crate::projects::Projects,
     pub commit: crate::commit::CommitDialog,
+    pub sync: crate::sync::Sync,
+    /// What a text field edits while its dialog is closing; never shown.
+    pub scratch_edit: rune::TextEdit,
     /// A workspace picked in Projects; Changes and Files show it instead of
     /// the active session's until a session is selected.
     pub chosen_workspace: Option<WorkspaceId>,
@@ -148,6 +151,8 @@ impl AppState {
             palette: crate::palette::Palette::default(),
             projects: crate::projects::Projects::default(),
             commit: crate::commit::CommitDialog::default(),
+            sync: crate::sync::Sync::default(),
+            scratch_edit: rune::TextEdit::new(""),
             chosen_workspace: None,
             theme_base: None,
             editor_reveal: None,
@@ -517,6 +522,58 @@ impl AppState {
         }
     }
 
+    /// The project the workspace Changes shows belongs to.
+    fn workbench_project(&self) -> Option<(domain::ProjectId, WorkspaceId, Option<String>)> {
+        let workspace = self.workbench.workspace?;
+        self.store
+            .as_ref()?
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .map(|found| (found.project_id, found.id, found.branch.clone()))
+    }
+
+    pub fn fetch(&mut self) {
+        let Some((project, _, _)) = self.workbench_project() else {
+            return;
+        };
+        if let Some(connection) = &self.connection
+            && connection.fetch(project).is_ok()
+        {
+            self.sync.fetch_started(project);
+        }
+    }
+
+    pub fn open_pr_dialog(&mut self) {
+        if let Some((_, workspace, branch)) = self.workbench_project() {
+            self.sync.open_pr(workspace, branch.as_deref());
+        }
+    }
+
+    pub fn create_pull_request(&mut self) {
+        let Some(pr) = self.sync.pr.as_mut() else {
+            return;
+        };
+        let Some((title, body)) = pr.ready() else {
+            return;
+        };
+        pr.opening = true;
+        pr.outcome = None;
+        let workspace = pr.workspace;
+        match &self.connection {
+            Some(connection) => {
+                let _ = connection.open_pull_request(workspace, title, body);
+            }
+            None => self.worker_not_ready("CreatePullRequest"),
+        }
+    }
+
+    pub fn refresh_pull_requests(&mut self) {
+        if let Some(connection) = &self.connection {
+            let _ = connection.refresh_pull_requests();
+        }
+    }
+
     pub fn add_project(&mut self, path: std::path::PathBuf) {
         match &self.connection {
             Some(connection) => {
@@ -751,6 +808,30 @@ impl AppState {
                     }
                     return true;
                 }
+                match event.as_ref() {
+                    protocol::DaemonEvent::RemoteRefsUpdated {
+                        project_id,
+                        remote,
+                        updated,
+                        error,
+                    } => {
+                        self.sync
+                            .fetch_done(*project_id, remote, *updated, error.as_deref());
+                        self.workbench.refresh();
+                        return true;
+                    }
+                    protocol::DaemonEvent::PullRequestOpened {
+                        workspace_id,
+                        url,
+                        error,
+                    } => {
+                        self.sync
+                            .pr_opened(*workspace_id, url.clone(), error.clone());
+                        return true;
+                    }
+                    protocol::DaemonEvent::PullRequestsUpdated { .. } => return true,
+                    _ => {}
+                }
                 if let protocol::DaemonEvent::JuvaDraftReady {
                     workspace_id,
                     draft,
@@ -886,6 +967,19 @@ impl AppState {
                         self.workbench.refresh();
                     } else {
                         self.commit.error = Some(message.clone());
+                    }
+                }
+                if label == "CreatePullRequest"
+                    && !ok
+                    && let Some(workspace) = self.sync.pr.as_ref().map(|pr| pr.workspace)
+                {
+                    self.sync.pr_opened(workspace, None, Some(message.clone()));
+                }
+                if label == "FetchRemote" && !ok {
+                    for project in std::mem::take(&mut self.sync.fetching) {
+                        self.sync
+                            .fetched
+                            .insert(project, format!("fetch refused: {message}"));
                     }
                 }
                 if label == "DraftWithJuva" && !ok {

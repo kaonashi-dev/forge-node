@@ -99,6 +99,15 @@ pub enum Command {
     },
     SavePrefs(crate::prefs::Prefs),
     AddProject(std::path::PathBuf),
+    Fetch {
+        project_id: domain::ProjectId,
+    },
+    OpenPullRequest {
+        workspace_id: WorkspaceId,
+        title: String,
+        body: String,
+    },
+    RefreshPullRequests,
     DraftCommit {
         workspace_id: WorkspaceId,
     },
@@ -334,6 +343,27 @@ impl ConnectionHandle {
             workspace_id,
             message,
         })
+    }
+
+    pub fn fetch(&self, project_id: domain::ProjectId) -> Result<(), String> {
+        self.send(Command::Fetch { project_id })
+    }
+
+    pub fn open_pull_request(
+        &self,
+        workspace_id: WorkspaceId,
+        title: String,
+        body: String,
+    ) -> Result<(), String> {
+        self.send(Command::OpenPullRequest {
+            workspace_id,
+            title,
+            body,
+        })
+    }
+
+    pub fn refresh_pull_requests(&self) -> Result<(), String> {
+        self.send(Command::RefreshPullRequests)
     }
 
     pub fn add_project(&self, path: std::path::PathBuf) -> Result<(), String> {
@@ -810,6 +840,9 @@ fn handle_fixture_command(
         | Command::Read { .. }
         | Command::SavePrefs(_)
         | Command::AddProject(_)
+        | Command::Fetch { .. }
+        | Command::OpenPullRequest { .. }
+        | Command::RefreshPullRequests
         | Command::DraftCommit { .. }
         | Command::Commit { .. }
         | Command::CreateAgent { .. }
@@ -1403,6 +1436,49 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             live_result(generation, "CreateCommit", result, sink, metrics, started);
         }
+        // The three below ack when the work starts; the outcome is an event.
+        Command::Fetch { project_id } => {
+            metrics.note_socket_op();
+            let result = client
+                .fetch_remote(project_id, None)
+                .map(|()| "fetching".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "FetchRemote", result, sink, metrics, started);
+        }
+        Command::OpenPullRequest {
+            workspace_id,
+            title,
+            body,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_pull_request(workspace_id, &title, &body, None)
+                .map(|()| "pushing".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreatePullRequest",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::RefreshPullRequests => {
+            metrics.note_socket_op();
+            let result = client
+                .refresh_pull_requests()
+                .map(|()| "refreshing".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RefreshPullRequests",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
         Command::AddProject(path) => {
             metrics.note_socket_op();
             let result = client
@@ -1580,6 +1656,9 @@ fn command_label(command: &Command) -> &'static str {
         Command::Read { .. } => "WorkspaceRead",
         Command::SavePrefs(_) => "SavePrefs",
         Command::AddProject(_) => "AddProject",
+        Command::Fetch { .. } => "FetchRemote",
+        Command::OpenPullRequest { .. } => "CreatePullRequest",
+        Command::RefreshPullRequests => "RefreshPullRequests",
         Command::DraftCommit { .. } => "DraftWithJuva",
         Command::Commit { .. } => "CreateCommit",
         Command::CreateAgent { .. } => "CreateAgentSession",
