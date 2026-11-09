@@ -494,7 +494,7 @@ mod tests {
     fn the_changes_view_parses_every_patch_and_names_what_has_none() {
         let (mut bench, workspace) = bench();
         bench.show(CenterMode::Changes);
-        assert_eq!(bench.take_reads(), vec![Read::Diff]);
+        assert_eq!(bench.take_reads(), vec![Read::Diff, Read::Rebase]);
         let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
         let file = |path: &str, patch: &str| DiffFile {
             path: path.into(),
