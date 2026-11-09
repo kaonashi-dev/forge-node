@@ -1128,14 +1128,14 @@ fn resync_live(
         let slot = terminal.lock();
         (slot.session_id, slot.size)
     };
-    let Some(session) = session else {
+    let Some(_session) = session else {
         return Ok(());
     };
     metrics.note_socket_op();
     let snapshot = client
         .attach_terminal(terminal_id, size.unwrap_or_default())
         .map_err(|error| error.to_string())?;
-    terminal.publish_snapshot(generation, session, terminal_id, &snapshot);
+    terminal.resync(generation, terminal_id, &snapshot);
     Ok(())
 }
 

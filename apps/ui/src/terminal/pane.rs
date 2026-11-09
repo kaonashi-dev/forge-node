@@ -3,8 +3,10 @@ use std::sync::Arc;
 
 use client::{CellGrid, RowDamage};
 use domain::{Cursor, Row, SessionId, TerminalId};
+use rune::KeyEvent;
 
 use crate::terminal::SharedTerminal;
+use crate::terminal::attach::{Attachment, HeldInput};
 use crate::terminal::fixture;
 use crate::terminal::selection::Selection;
 
@@ -106,7 +108,9 @@ pub struct TerminalUi {
     pub cursor_on: bool,
     pub interacted: bool,
     pub focus_terminal: bool,
+    pub attach: Attachment,
     pub attach_generation: u64,
+    seen_resync: u64,
     pub requested: Option<((u16, u16), std::time::Instant)>,
     fixture: Option<FixtureCache>,
 }
@@ -135,7 +139,9 @@ impl TerminalUi {
             cursor_on: true,
             interacted: false,
             focus_terminal: false,
+            attach: Attachment::default(),
             attach_generation: 0,
+            seen_resync: 0,
             requested: None,
             fixture: None,
         };
@@ -150,6 +156,73 @@ impl TerminalUi {
 
     pub fn is_fixture(&self) -> bool {
         self.fixture.is_some()
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.attach.is_live()
+    }
+
+    /// The worker/UI attachment target for this pane. A new target or generation
+    /// clears the queue; the same target keeps it while a resync is pending.
+    pub fn begin_attach(&mut self, generation: u64, terminal: TerminalId) {
+        self.attach.begin(generation, terminal);
+    }
+
+    pub fn note_snapshot(
+        &mut self,
+        generation: u64,
+        terminal: TerminalId,
+        size: (u16, u16),
+    ) -> bool {
+        self.attach.on_snapshot(generation, terminal, size)
+    }
+
+    /// A `TerminalResync` moved the grid under the pane: hold new keys until a
+    /// compositor measurement *after* the resync confirms the replacement grid.
+    pub fn observe_resync(&mut self, epoch: u64, measure_epoch: u64) -> bool {
+        if epoch == self.seen_resync {
+            return false;
+        }
+        self.seen_resync = epoch;
+        self.attach.resync(measure_epoch);
+        true
+    }
+
+    /// A compositor measurement counts only if it rendered after the resync.
+    pub fn note_measured_if_fresh(&mut self) -> bool {
+        let Some(size) = self.shared.measured() else {
+            return false;
+        };
+        self.attach.on_measured(self.shared.measure_epoch(), size)
+    }
+
+    pub fn on_disconnect(&mut self) {
+        self.attach.fail();
+        self.attach_generation = u64::MAX;
+    }
+
+    pub fn on_generation(&mut self, generation: u64) {
+        self.attach.new_generation(generation);
+        self.attach_generation = u64::MAX;
+    }
+
+    #[must_use]
+    pub fn hold_key(&mut self, ev: &KeyEvent) -> bool {
+        self.attach.hold_key(ev)
+    }
+
+    #[must_use]
+    pub fn hold_paste(&mut self, text: &str) -> bool {
+        self.attach.hold_paste(text)
+    }
+
+    pub fn take_held(&mut self) -> Vec<HeldInput> {
+        self.attach.take_held()
+    }
+
+    #[must_use]
+    pub fn attach_notice(&self) -> Option<String> {
+        self.attach.notice()
     }
 
     #[must_use]
@@ -224,6 +297,7 @@ impl TerminalUi {
     }
 
     pub fn detach(&mut self, generation: u64, session: Option<SessionId>) {
+        self.attach.fail();
         self.shared.clear(generation, session);
         self.mirror_version = u64::MAX;
         self.mirror.clear();

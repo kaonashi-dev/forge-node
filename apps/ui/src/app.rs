@@ -85,6 +85,7 @@ pub struct AppState {
     pub fixture_titles: HashMap<TerminalId, String>,
     pub out: Outbox,
     pub last_input: Option<(usize, String)>,
+    pub last_focus: Option<String>,
     pub rename_counter: u64,
     pub mirror_at: f64,
     pub switch_started: Cell<Option<Instant>>,
@@ -119,6 +120,7 @@ impl AppState {
             fixture_titles: HashMap::new(),
             out: Outbox::default(),
             last_input: None,
+            last_focus: None,
             rename_counter: 0,
             mirror_at: -1.0,
             switch_started: Cell::new(None),
@@ -157,6 +159,10 @@ impl AppState {
             .map(|row| row.id_text.clone());
         self.terminal.focus_terminal = true;
         self.terminal.interacted = true;
+        match self.active_row().and_then(|row| row.terminal_id) {
+            Some(target) => self.terminal.begin_attach(self.generation, target),
+            None => self.terminal.on_disconnect(),
+        }
         self.switch_started.set(Some(Instant::now()));
     }
 
@@ -259,7 +265,7 @@ impl AppState {
                     LinkStatus::Reconnecting
                 };
                 self.status_detail = detail;
-                self.terminal.attach_generation = u64::MAX;
+                self.terminal.on_generation(generation);
                 true
             }
             UiEvent::Connected { generation, detail } => {
@@ -276,7 +282,7 @@ impl AppState {
                 }
                 self.status = LinkStatus::Reconnecting;
                 self.status_detail = reason;
-                self.terminal.attach_generation = u64::MAX;
+                self.terminal.on_disconnect();
                 true
             }
             UiEvent::Snapshot {
@@ -353,8 +359,14 @@ impl AppState {
 
     /// The resize gate: attach is always safe, `ResizeTerminal` only for a pane
     /// that has been measured **and** the user has interacted with, and it is
-    /// always followed by an `AttachTerminal` from the worker.
+    /// always followed by an `AttachTerminal` from the worker. Attach state is
+    /// updated here because this is the one UI-thread place that sees the shared
+    /// snapshot, the pane measurement and the generation together.
     pub fn sync_terminal(&mut self) {
+        self.terminal.observe_resync(
+            self.terminal.shared.resync_epoch(),
+            self.terminal.shared.measure_epoch(),
+        );
         let target = self.active_row().and_then(|row| row.terminal_id);
         let meta = self.terminal.shared.meta();
         let measured = self.terminal.shared.measured();
@@ -362,7 +374,7 @@ impl AppState {
         if !connected {
             return;
         }
-        if target.is_none() {
+        let Some(target) = target else {
             if meta.terminal_id.is_some() || meta.session_id != self.active {
                 self.terminal.detach(self.generation, self.active);
                 if self.terminal.is_fixture() {
@@ -373,8 +385,12 @@ impl AppState {
                 }
             }
             return;
+        };
+        if self.terminal.attach.terminal() != Some(target)
+            || self.terminal.attach.generation() != self.generation
+        {
+            self.terminal.begin_attach(self.generation, target);
         }
-        let target = target.unwrap();
         let size = measured.unwrap_or((80, 24));
         let stale = meta.generation != self.generation
             || meta.terminal_id != Some(target)
@@ -390,8 +406,12 @@ impl AppState {
                 self.terminal.attach_generation = self.generation;
                 self.terminal.requested = None;
             }
+        }
+        self.refresh_attach_state();
+        if !self.terminal.is_live() {
             return;
         }
+        let meta = self.terminal.shared.meta();
         let Some(measured) = measured else {
             return;
         };
@@ -436,6 +456,61 @@ impl AppState {
                 self.terminal.requested = Some((measured, Instant::now()));
             }
         }
+    }
+
+    /// Promote Attaching to Live only when both the published snapshot and the
+    /// measured pane exist, then release held input in order through the same
+    /// encoder live input uses. This is idempotent: an already-live pane only
+    /// refreshes its measured size.
+    fn refresh_attach_state(&mut self) {
+        let Some(target) = self.active_row().and_then(|row| row.terminal_id) else {
+            return;
+        };
+        let meta = self.terminal.shared.meta();
+        let measured = self.terminal.shared.measured();
+        if meta.generation == self.generation && meta.terminal_id == Some(target) && meta.has_grid {
+            let size = meta
+                .size
+                .map(|size| (size.cols, size.rows))
+                .or(measured)
+                .unwrap_or((80, 24));
+            self.terminal.note_snapshot(self.generation, target, size);
+        }
+        self.terminal.note_measured_if_fresh();
+        if self.terminal.is_live() {
+            self.flush_held_input();
+        }
+    }
+
+    fn flush_held_input(&mut self) {
+        let held = self.terminal.take_held();
+        if held.is_empty() {
+            return;
+        }
+        let shared = Arc::clone(&self.terminal.shared);
+        let slot = shared.lock();
+        let Some(grid) = slot.grid.as_ref() else {
+            eprintln!("[hold] dropped {} gesture(s): no grid", held.len());
+            return;
+        };
+        let (mut gestures, mut bytes) = (0usize, 0u64);
+        for event in held {
+            let before = self.out.sent_bytes;
+            match event {
+                crate::terminal::attach::HeldInput::Key(ev) => {
+                    let mut fx = Effects::default();
+                    input::key(0, &mut self.terminal, grid, &ev, &mut self.out, &mut fx);
+                }
+                crate::terminal::attach::HeldInput::Paste(text) => {
+                    input::paste_text(0, &mut self.terminal, grid, &text, &mut self.out);
+                }
+            }
+            gestures += 1;
+            bytes = bytes.saturating_add(self.out.sent_bytes.saturating_sub(before));
+        }
+        drop(slot);
+        eprintln!("[hold] released {gestures} gesture(s), {bytes} bytes after attach");
+        self.flush_outbox();
     }
 
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
@@ -514,11 +589,11 @@ impl AppState {
                 input::render_bytes(&bytes),
                 labels.join(", ")
             );
-            self.last_input = Some((bytes.len(), summary.clone()));
             if !ready {
-                eprintln!("[input] held: no grid for {terminal_id} yet ({summary})");
+                eprintln!("[input] refused: no live grid for {terminal_id} ({summary})");
                 continue;
             }
+            self.last_input = Some((bytes.len(), summary.clone()));
             eprintln!("[input] {summary}");
             let Some(connection) = &self.connection else {
                 continue;
@@ -536,13 +611,44 @@ impl AppState {
     }
 
     pub fn terminal_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        self.observe_terminal_resync();
+        self.last_focus = tx.focused().map(str::to_owned);
+        self.terminal.interacted = true;
+        self.terminal.focus_terminal = true;
+        if !self.terminal.is_live() {
+            if ev.mods.cmd {
+                if ev.is_command('v') {
+                    tx.request_paste();
+                    return true;
+                }
+                return false;
+            }
+            self.refresh_attach_state();
+            if !self.terminal.is_live() {
+                if self.terminal.hold_key(ev) {
+                    eprintln!(
+                        "[hold] held {:?}{} ({}) — {} bytes, {} gestures",
+                        ev.key,
+                        input::mod_suffix(ev.mods),
+                        self.terminal.attach.state_name(),
+                        self.terminal.attach.held_bytes(),
+                        self.terminal.attach.held_len()
+                    );
+                } else {
+                    eprintln!(
+                        "[hold] refused {:?}: 64 KiB hold buffer full ({} refused)",
+                        ev.key,
+                        self.terminal.attach.refused()
+                    );
+                }
+                return true;
+            }
+        }
         let shared = Arc::clone(&self.terminal.shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return false;
         };
-        self.terminal.interacted = true;
-        self.terminal.focus_terminal = true;
         let mut fx = Effects::default();
         let taken = input::key(0, &mut self.terminal, grid, ev, &mut self.out, &mut fx);
         drop(slot);
@@ -550,6 +656,13 @@ impl AppState {
             self.apply_effects(fx, tx);
         }
         taken
+    }
+
+    fn observe_terminal_resync(&mut self) {
+        self.terminal.observe_resync(
+            self.terminal.shared.resync_epoch(),
+            self.terminal.shared.measure_epoch(),
+        );
     }
 
     pub fn terminal_pointer(&mut self, pointer: Pointer, tx: &mut Tx) {
@@ -619,13 +732,34 @@ impl AppState {
     }
 
     pub fn terminal_paste(&mut self, text: &str, tx: &mut Tx) {
+        self.observe_terminal_resync();
+        self.last_focus = tx.focused().map(str::to_owned);
+        self.terminal.interacted = true;
+        self.terminal.focus_terminal = true;
+        if !self.terminal.is_live() {
+            self.refresh_attach_state();
+            if !self.terminal.is_live() {
+                if self.terminal.hold_paste(text) {
+                    eprintln!(
+                        "[hold] held paste {} bytes ({} held total)",
+                        text.len(),
+                        self.terminal.attach.held_bytes()
+                    );
+                } else {
+                    eprintln!(
+                        "[hold] refused paste {} bytes: 64 KiB hold buffer full ({} refused)",
+                        text.len(),
+                        self.terminal.attach.refused()
+                    );
+                }
+                return;
+            }
+        }
         let shared = Arc::clone(&self.terminal.shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
             return;
         };
-        self.terminal.interacted = true;
-        self.terminal.focus_terminal = true;
         input::paste_text(0, &mut self.terminal, grid, text, &mut self.out);
         drop(slot);
         self.flush_outbox();
@@ -633,6 +767,33 @@ impl AppState {
     }
 
     pub fn terminal_ime(&mut self, ev: &Ime, tx: &mut Tx) -> bool {
+        self.observe_terminal_resync();
+        if !self.terminal.is_live() {
+            match ev {
+                Ime::Commit(text) => {
+                    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+                    if self.terminal.hold_paste(&clean) {
+                        eprintln!(
+                            "[hold] held IME commit {} bytes ({} held total)",
+                            clean.len(),
+                            self.terminal.attach.held_bytes()
+                        );
+                    } else {
+                        eprintln!(
+                            "[hold] refused IME commit: 64 KiB hold buffer full ({} refused)",
+                            self.terminal.attach.refused()
+                        );
+                    }
+                    return true;
+                }
+                Ime::Preedit(text, _) => {
+                    self.terminal.preedit = text.chars().take(input::PREEDIT_MAX_CHARS).collect();
+                    self.terminal.request_frame();
+                    return true;
+                }
+                Ime::Enabled | Ime::Disabled => return true,
+            }
+        }
         let shared = Arc::clone(&self.terminal.shared);
         let slot = shared.lock();
         let Some(grid) = slot.grid.as_ref() else {
@@ -955,6 +1116,230 @@ mod tests {
         (state, terminal)
     }
 
+    fn text(text: &str) -> KeyEvent {
+        KeyEvent {
+            key: rune::Key::Text(text.to_string()),
+            mods: rune::Mods::default(),
+        }
+    }
+
+    fn attaching_state(
+        shared: &Arc<SharedTerminal>,
+    ) -> (
+        AppState,
+        flume::Receiver<crate::connection::Command>,
+        TerminalId,
+    ) {
+        let metrics = Arc::new(Metrics::default());
+        let mut state = state();
+        state.terminal = crate::terminal::pane::TerminalUi::new(Arc::clone(shared), false);
+        state.generation = 1;
+        state.status = LinkStatus::Connected;
+        let (handle, rx) = ConnectionHandle::test_handle(metrics);
+        state.connection = Some(handle);
+        let first = state.rows[0].clone();
+        let terminal = first.terminal_id.unwrap();
+        state.terminal.begin_attach(1, terminal);
+        state.terminal.attach_generation = 1;
+        state.terminal.interacted = true;
+        (state, rx, terminal)
+    }
+
+    #[test]
+    fn input_before_snapshot_is_held_then_sent_once() {
+        let shared = SharedTerminal::new();
+        let (mut state, rx, terminal) = attaching_state(&shared);
+        let mut tx = Tx::default();
+        assert!(state.terminal_key(&text("a"), &mut tx));
+        assert_eq!(state.terminal.attach.held_len(), 1);
+        assert_eq!(state.terminal.attach.held_bytes(), 17);
+        assert!(
+            matches!(rx.try_recv(), Err(flume::TryRecvError::Empty)),
+            "no socket write before the snapshot"
+        );
+
+        let first = state.rows[0].clone();
+        shared.publish_grid(
+            1,
+            first.id,
+            terminal,
+            crate::terminal::fixture::grid(80, 24, crate::terminal::fixture::ModeSet::Plain, true),
+            domain::PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        );
+        shared.set_measured(80, 24);
+        state.sync_terminal();
+        assert!(state.terminal.is_live());
+        assert_eq!(state.terminal.attach.held_len(), 0);
+        match rx.try_recv() {
+            Ok(crate::connection::Command::Input {
+                generation,
+                terminal: id,
+                bytes,
+            }) => {
+                assert_eq!(generation, 1);
+                assert_eq!(id, terminal);
+                assert_eq!(bytes, b"a");
+            }
+            other => panic!("expected one Input, got {other:?}"),
+        }
+        assert!(matches!(rx.try_recv(), Err(flume::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn held_input_is_released_on_the_first_fresh_measure_after_resync() {
+        let shared = SharedTerminal::new();
+        let (mut state, rx, terminal) = attaching_state(&shared);
+        let first = state.rows[0].clone();
+        shared.publish_grid(
+            1,
+            first.id,
+            terminal,
+            crate::terminal::fixture::grid(80, 24, crate::terminal::fixture::ModeSet::Plain, true),
+            domain::PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        );
+        shared.set_measured(80, 24);
+        state.sync_terminal();
+        assert!(state.terminal.is_live());
+        let _ = rx.try_recv();
+
+        let snapshot = crate::terminal::fixture::snapshot(
+            80,
+            24,
+            crate::terminal::fixture::ModeSet::Plain,
+            true,
+        );
+        shared.resync(1, terminal, &snapshot);
+        state.sync_terminal();
+        assert!(
+            !state.terminal.is_live(),
+            "resync waits for a fresh measure"
+        );
+        let mut tx = Tx::default();
+        assert!(state.terminal_key(&text("x"), &mut tx));
+        assert_eq!(state.terminal.attach.held_len(), 1);
+        assert!(matches!(rx.try_recv(), Err(flume::TryRecvError::Empty)));
+
+        shared.set_measured(80, 24);
+        state.sync_terminal();
+        assert!(state.terminal.is_live());
+        match rx.try_recv() {
+            Ok(crate::connection::Command::Input { bytes, .. }) => assert_eq!(bytes, b"x"),
+            other => panic!("expected resync release Input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn disconnect_drops_held_input_and_never_replays_it() {
+        let shared = SharedTerminal::new();
+        let (mut state, rx, _terminal) = attaching_state(&shared);
+        let mut tx = Tx::default();
+        assert!(state.terminal_key(&text("lost"), &mut tx));
+        assert_eq!(state.terminal.attach.held_len(), 1);
+        state.apply_events(
+            vec![UiEvent::Disconnected {
+                generation: 1,
+                reason: "test disconnect".to_string(),
+            }],
+            &mut tx,
+        );
+        assert_eq!(state.terminal.attach.held_len(), 0);
+        assert_eq!(state.terminal.attach.held_bytes(), 0);
+        assert!(!state.terminal.is_live());
+        assert!(matches!(rx.try_recv(), Err(flume::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn a_terminal_switch_drops_held_input() {
+        let shared = SharedTerminal::new();
+        let (mut state, _rx, _terminal) = attaching_state(&shared);
+        let mut tx = Tx::default();
+        assert!(state.terminal_key(&text("old"), &mut tx));
+        assert_eq!(state.terminal.attach.held_len(), 1);
+        state.select(state.rows[1].id);
+        assert_eq!(state.terminal.attach.held_len(), 0);
+    }
+
+    #[test]
+    fn after_reconnect_new_input_works() {
+        let shared = SharedTerminal::new();
+        let (mut state, rx, terminal) = attaching_state(&shared);
+        let mut tx = Tx::default();
+        assert!(state.terminal_key(&text("old"), &mut tx));
+        assert_eq!(state.terminal.attach.held_len(), 1);
+
+        state.apply_events(
+            vec![
+                UiEvent::Connecting {
+                    generation: 2,
+                    detail: "reconnect".to_string(),
+                },
+                UiEvent::Connected {
+                    generation: 2,
+                    detail: "connected".to_string(),
+                },
+            ],
+            &mut tx,
+        );
+        assert_eq!(state.terminal.attach.held_len(), 0);
+
+        let first = state.rows[0].clone();
+        shared.publish_grid(
+            2,
+            first.id,
+            terminal,
+            crate::terminal::fixture::grid(80, 24, crate::terminal::fixture::ModeSet::Plain, true),
+            domain::PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        );
+        shared.set_measured(80, 24);
+        state.sync_terminal();
+        assert!(state.terminal.is_live());
+
+        let mut commands = Vec::new();
+        while let Ok(command) = rx.try_recv() {
+            commands.push(command);
+        }
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                crate::connection::Command::Activate { generation: 2, .. }
+            )),
+            "the new generation re-attaches: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(
+                command,
+                crate::connection::Command::Input { bytes, .. } if bytes == b"old"
+            )),
+            "old held input must never be replayed: {commands:?}"
+        );
+
+        assert!(state.terminal_key(&text("n"), &mut tx));
+        match rx.try_recv() {
+            Ok(crate::connection::Command::Input {
+                generation, bytes, ..
+            }) => {
+                assert_eq!(generation, 2);
+                assert_eq!(bytes, b"n");
+            }
+            other => panic!("expected new-generation Input, got {other:?}"),
+        }
+    }
+
     #[test]
     fn a_measured_interacted_pane_sends_resize_and_attach() {
         let shared = SharedTerminal::new();
@@ -998,6 +1383,9 @@ mod tests {
         state
             .terminal
             .activate_fixture(1, first.id, first.terminal_id.unwrap(), (80, 24));
+        state.terminal.shared.set_measured(80, 24);
+        state.sync_terminal();
+        assert!(state.terminal.is_live());
         state.terminal.selection = Some(crate::terminal::selection::Selection::new(
             (1, {
                 let slot = state.terminal.shared.lock();

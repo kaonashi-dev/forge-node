@@ -223,7 +223,7 @@ pub fn key(
     true
 }
 
-fn mod_suffix(m: Mods) -> String {
+pub(crate) fn mod_suffix(m: Mods) -> String {
     let mut s = String::new();
     for (on, name) in [(m.ctrl, "ctrl"), (m.alt, "alt"), (m.shift, "shift")] {
         if on {

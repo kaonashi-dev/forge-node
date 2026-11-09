@@ -31,7 +31,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .min_h(0.0)
         .child(tabbar(s, cx, &k))
         .child(center(s, &k));
-    let root = SplitView::new(main)
+    let shell = SplitView::new(main)
         .sidebar(
             &s.sidebar,
             |s: &mut AppState| &mut s.sidebar,
@@ -51,7 +51,20 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .in_header(),
         )
         .reduced_motion(cx.is_reduced_motion())
-        .build(&k)
+        .build(&k);
+    // A focusable ancestor is the only public way to move focus on a sidebar
+    // press in this Rune pin (`Runtime::set_focus` is crate-private). Sidebar
+    // rows are select-only, so the press walks up to this proxy; the proxy's
+    // key handler is the same terminal route as `AppSpec::on_key`.
+    let root = col()
+        .key("terminal-focus-proxy")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .focusable(true)
+        .no_focus_ring()
+        .on_key(|s: &mut AppState, ev, tx| s.terminal_key(ev, tx))
+        .child(shell)
         .on_paste(|s: &mut AppState, text: &str, tx: &mut rune::Tx| {
             s.terminal_paste(text, tx);
         });
@@ -127,6 +140,7 @@ fn tabbar(s: &AppState, cx: &mut Cx<AppState>, k: &Kit) -> El {
 
 fn sidebar(s: &AppState, k: &Kit) -> El {
     let header = SidebarRow::new("New shell")
+        .select_only()
         .icon(&PLUS)
         .height(32.0)
         .detail("⌘N")
@@ -158,6 +172,7 @@ fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) -> El 
     let selected = s.active == Some(session.id);
     let id = session.id;
     let mut item = SidebarRow::new(session.title.as_str())
+        .select_only()
         .height(46.0)
         .avatar(avatar(index, k))
         .subtitle(format!("{} · {}", session.workspace, session.detail).as_str())
@@ -236,7 +251,7 @@ fn status_row(s: &AppState, k: &Kit) -> El {
 fn center(s: &AppState, k: &Kit) -> El {
     let has_terminal = s.active_row().and_then(|row| row.terminal_id).is_some();
     let body = if has_terminal {
-        terminal_pane(s)
+        terminal_surface(s, k)
     } else {
         placeholder(s, k)
     };
@@ -249,7 +264,57 @@ fn center(s: &AppState, k: &Kit) -> El {
         .child(body)
 }
 
-fn terminal_pane(s: &AppState) -> El {
+fn terminal_surface(s: &AppState, k: &Kit) -> El {
+    let title = s
+        .active_row()
+        .map(|row| row.title.clone())
+        .unwrap_or_else(|| "Terminal".to_string());
+    let active = s.terminal.focus_terminal;
+    let color = if active {
+        k.c.success.icon
+    } else {
+        k.c.warning.icon
+    };
+    let header = row()
+        .key("terminal-focus-indicator")
+        .role("status")
+        .label("Keyboard input: terminal")
+        .description(if active {
+            "Terminal has keyboard input"
+        } else {
+            "Click the terminal pane to focus it"
+        })
+        .w_full()
+        .h(24.0)
+        .px(8.0)
+        .gap(6.0)
+        .center_y()
+        .fill(k.c.bg_deep)
+        .child(el().size(6.0, 6.0).radius(3.0).fill(color))
+        .child(
+            text(format!("Terminal · {title}"))
+                .font(k.ty.small_medium)
+                .color(k.c.text_muted),
+        )
+        .child(
+            text(if active {
+                "keyboard active"
+            } else {
+                "click to focus"
+            })
+            .font(k.ty.text_xsmall)
+            .color(k.c.text_faint),
+        );
+    col()
+        .key("terminal-surface")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(header)
+        .child(terminal_pane(s, k))
+}
+
+fn terminal_pane(s: &AppState, k: &Kit) -> El {
     let title = s
         .active_row()
         .map(|row| row.title.clone())
@@ -258,7 +323,7 @@ fn terminal_pane(s: &AppState) -> El {
     let mut pane = col()
         .key("terminal-pane")
         .w_full()
-        .h_full()
+        .grow(1.0)
         .min_h(0.0)
         .role("log")
         .label(format!("Terminal · {title}"))
@@ -294,6 +359,22 @@ fn terminal_pane(s: &AppState) -> El {
             s.terminal_secondary(p.x, p.y, tx);
         })
         .child(effect(MARK_BASE).absolute(0.0, 0.0).w_full().h_full());
+    if let Some(notice) = s.terminal.attach_notice() {
+        pane = pane.child(
+            row()
+                .key("terminal-hold-notice")
+                .role("status")
+                .label(notice.clone())
+                .absolute(8.0, 8.0)
+                .px(8.0)
+                .h(22.0)
+                .radius(4.0)
+                .fill(k.c.bg_deep)
+                .border(1.0, k.c.warning.border)
+                .center_y()
+                .child(text(notice).font(k.ty.small).color(k.c.warning.fg)),
+        );
+    }
     if s.terminal.focus_terminal {
         let (x, y) = (
             cursor.col as f32 * CELL_PT.0,
