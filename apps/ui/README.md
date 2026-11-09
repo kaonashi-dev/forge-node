@@ -6,6 +6,23 @@ parity. The Tauri app is still the one that ships.
 It is its own Cargo workspace on Rust 1.99.1 (`rust-toolchain.toml`), because Rune needs
 edition 2024 and the root workspace stays on 1.89.0. `scripts/dev check` does not build it.
 
+## Parity
+
+Done: the rail (projects, checkouts, sessions, add project, new/remove worktree, action
+chips), terminal and agent sessions, the tab strip and sidebar views, the GPU terminal,
+the daemon editor surface, a read-only file tree with markdown and code previews, quick
+open, the Git panel (diff, commit, Juva draft, fetch, stopped rebase), opening and
+reviewing pull requests, History, Processes, the palette, and Settings › Theme, Storage
+and Stats.
+
+Pending, in order: settings split into sections (General, Agents, Keyboard, Shared files,
+Appearance controls), theme colours across the whole chrome, file-type and the remaining
+Forge icons, context menus (project, checkout, session, file tree, tabs), file tree
+writes and content search, the editor find panel and go to definition, terminal splits
+and links, handoff/child/send-context, project management (groups, icons, remove,
+rename, branch picker), shares and worktree ignores, branch compare and code review,
+native menus and the updater. Tauri is removed once this list is empty.
+
 ## Commands
 
 ```sh
