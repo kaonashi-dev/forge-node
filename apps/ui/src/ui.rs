@@ -312,17 +312,13 @@ fn center(s: &AppState, k: &Kit) -> El {
 }
 
 fn terminal_surface(s: &AppState, k: &Kit) -> El {
-    let title = s
-        .active_row()
-        .map(|row| row.title.clone())
-        .unwrap_or_else(|| "Terminal".to_string());
     let active = s.terminal.focus_terminal;
     let color = if active {
         k.c.success.icon
     } else {
         k.c.warning.icon
     };
-    let header = row()
+    let focus = row()
         .key("terminal-focus-indicator")
         .role("status")
         .label("Keyboard input: terminal")
@@ -331,18 +327,9 @@ fn terminal_surface(s: &AppState, k: &Kit) -> El {
         } else {
             "Click the terminal pane to focus it"
         })
-        .w_full()
-        .h(24.0)
-        .px(8.0)
         .gap(6.0)
         .center_y()
-        .fill(k.c.bg_deep)
         .child(el().size(6.0, 6.0).radius(3.0).fill(color))
-        .child(
-            text(format!("Terminal · {title}"))
-                .font(k.ty.small_medium)
-                .color(k.c.text_muted),
-        )
         .child(
             text(if active {
                 "keyboard active"
@@ -352,6 +339,17 @@ fn terminal_surface(s: &AppState, k: &Kit) -> El {
             .font(k.ty.text_xsmall)
             .color(k.c.text_faint),
         );
+    let header = row()
+        .key("session-header")
+        .w_full()
+        .h(28.0)
+        .px(10.0)
+        .gap(10.0)
+        .center_y()
+        .fill(k.c.bg_deep)
+        .child(session_crumbs(s, k))
+        .children(provider_chip(s, k))
+        .child(focus);
     col()
         .key("terminal-surface")
         .w_full()
@@ -359,6 +357,102 @@ fn terminal_surface(s: &AppState, k: &Kit) -> El {
         .min_h(0.0)
         .child(header)
         .child(terminal_pane(s, k))
+}
+
+/// Tauri's `SessionHeader` crumbs: project / checkout / session.
+fn session_crumbs(s: &AppState, k: &Kit) -> El {
+    let mut crumbs = row()
+        .key("session-crumbs")
+        .role("navigation")
+        .label("Session location")
+        .gap(6.0)
+        .grow(1.0)
+        .min_w(0.0)
+        .center_y();
+    let session = s.active.and_then(|id| {
+        s.store
+            .as_ref()?
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+    });
+    let store = s.store.as_ref();
+    let workspace = session.and_then(|session| {
+        store?
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == session.workspace_id)
+    });
+    let project = workspace.and_then(|workspace| {
+        store?
+            .projects
+            .iter()
+            .find(|project| project.id == workspace.project_id)
+    });
+    let sep = || {
+        text("/")
+            .font(k.ty.small)
+            .color(k.c.text_faint)
+            .a11y_hidden()
+    };
+    if let Some(project) = project {
+        crumbs = crumbs
+            .child(
+                text(project.name.clone())
+                    .font(k.ty.small)
+                    .color(k.c.text_muted)
+                    .truncate(),
+            )
+            .child(sep());
+    }
+    if let Some(workspace) = workspace {
+        let place = workspace
+            .display_name
+            .clone()
+            .or_else(|| workspace.branch.clone())
+            .unwrap_or_else(|| workspace.path.display().to_string());
+        crumbs = crumbs
+            .child(text(place).font(k.ty.mono).color(k.c.text_muted).truncate())
+            .child(sep());
+    }
+    let title = s
+        .active_row()
+        .map_or_else(|| "Terminal".to_string(), |row| row.title.clone());
+    crumbs.child(
+        text(title)
+            .role("heading")
+            .font(k.ty.small_medium)
+            .color(k.c.text_base)
+            .truncate(),
+    )
+}
+
+/// The agent's provider by its display name, for an agent session.
+fn provider_chip(s: &AppState, k: &Kit) -> Option<El> {
+    let store = s.store.as_ref()?;
+    let provider = store
+        .sessions
+        .iter()
+        .find(|session| Some(session.id) == s.active)?
+        .agent_provider_id
+        .as_ref()?;
+    let name = store
+        .providers
+        .iter()
+        .find(|info| &info.descriptor.id == provider)
+        .map_or_else(
+            || provider.to_string(),
+            |info| info.descriptor.display_name.clone(),
+        );
+    Some(
+        row()
+            .key("session-chip")
+            .px(8.0)
+            .py(2.0)
+            .radius(10.0)
+            .fill(k.c.surface_hover)
+            .child(text(name).font(k.ty.text_xsmall).color(k.c.text_muted)),
+    )
 }
 
 fn terminal_pane(s: &AppState, k: &Kit) -> El {
