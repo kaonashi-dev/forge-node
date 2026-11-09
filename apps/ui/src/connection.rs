@@ -1829,35 +1829,12 @@ fn resync_live(
     Ok(())
 }
 
+/// The first read after connecting. It adds no project and starts no
+/// shell: an empty daemon shows the empty centre (New terminal, Add a
+/// project) as Tauri's does, and a launch from Finder has `/` for its
+/// working directory, which is no one's project.
 fn bootstrap(client: &Client, metrics: &Metrics) -> Result<(Store, u64), String> {
-    let started = Instant::now();
-    let mut store = load_snapshot(client, metrics)?.0;
-    if store
-        .sessions
-        .iter()
-        .any(|session| session.terminal_id.is_some())
-    {
-        return Ok((store, started.elapsed().as_micros() as u64));
-    }
-    if store.workspaces.is_empty() {
-        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-        metrics.note_socket_op();
-        client
-            .add_project(&cwd)
-            .map_err(|error| format!("AddProject {}: {error}", cwd.display()))?;
-        store = load_snapshot(client, metrics)?.0;
-    }
-    let workspace = store
-        .workspaces
-        .first()
-        .map(|workspace| workspace.id)
-        .ok_or_else(|| "daemon has no workspace after AddProject".to_string())?;
-    metrics.note_socket_op();
-    client
-        .create_shell_session(workspace)
-        .map_err(|error| format!("CreateShellSession: {error}"))?;
-    let store = load_snapshot(client, metrics)?.0;
-    Ok((store, started.elapsed().as_micros() as u64))
+    load_snapshot(client, metrics)
 }
 
 fn load_snapshot(client: &Client, metrics: &Metrics) -> Result<(Store, u64), String> {
