@@ -62,8 +62,9 @@ fn icon_button(
 fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
     let active = s.active == Some(session.id) && s.workbench.mode == CenterMode::Session;
     let id = session.id;
+    let roles = crate::theme::roles(k);
     let tint = match session.status {
-        Some(SessionStatus::Attention) => k.c.warning.icon,
+        Some(SessionStatus::Attention) => roles.needs_you.text,
         Some(SessionStatus::Busy) => k.c.icon_accent,
         None if active => k.c.icon_base,
         None => k.c.icon_muted,
@@ -108,7 +109,7 @@ fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
                 .shrink(),
         );
     if active {
-        chip = chip.fill(k.c.surface_hover).child(
+        chip = chip.fill(roles.tab).child(
             row()
                 .key(format!("close-{}", session.id_text))
                 .role("button")
@@ -137,7 +138,7 @@ fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
                 .h(2.0)
                 .radius(1.0)
                 .fill(if active {
-                    k.c.text_accent
+                    roles.hue(None)
                 } else {
                     rune::Color::TRANSPARENT
                 }),

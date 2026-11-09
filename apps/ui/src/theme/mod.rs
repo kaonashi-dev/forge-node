@@ -4,13 +4,19 @@
 //! stored in `ui.theme_base`, as Tauri stores it) is derived, by `custom`.
 
 pub mod custom;
+// Settings › Appearance places the preview; until then only its tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod preview;
+pub mod roles;
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
 
 pub use custom::Palette;
+pub use roles::Roles;
 
 const THEMES_JSON: &str = include_str!("themes.json");
 /// Where the choice lives in the daemon's `app_state`, shared with Tauri.
@@ -39,6 +45,7 @@ pub struct Theme {
     pub light: bool,
     pub palette: Palette,
     pub editor: EditorColors,
+    pub chrome: roles::ChromeColors,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,6 +215,7 @@ pub fn theme(base: &str) -> Option<Arc<Theme>> {
         label: parsed.name.clone(),
         light: parsed.mode == "light",
         editor: custom::editor_colors(&parsed.palette),
+        chrome: roles::chrome_colors(&parsed.palette),
         palette: parsed.palette,
     });
     if cache.len() >= CACHE_LIMIT {
@@ -223,38 +231,89 @@ pub fn default_base(dark: bool) -> &'static str {
     if dark { "calm-dark" } else { "calm-light" }
 }
 
-/// The chrome's kit for `base`, derived by `rune-kit` from the palette's
-/// ground, text and accent; `fallback_dark` decides when the base is unknown.
-pub fn kit(base: &str, fallback_dark: bool) -> rune_kit::Kit {
-    thread_local! {
-        static KITS: std::cell::RefCell<HashMap<String, rune_kit::Kit>> =
-            std::cell::RefCell::new(HashMap::new());
-    }
-    KITS.with(|kits| {
-        if let Some(kit) = kits.borrow().get(base) {
-            return kit.clone();
+struct Resolved {
+    kit: rune_kit::Kit,
+    roles: Arc<Roles>,
+    tokens: Fingerprint,
+}
+
+/// Tokens every base and every contrast level moves. Views ask per row, and
+/// hashing the whole token set cost more than the rows (the switch bench).
+type Fingerprint = [rune::Color; 10];
+
+fn fingerprint(kit: &rune_kit::Kit) -> Fingerprint {
+    let c = &kit.c;
+    [
+        c.page,
+        c.bg_base,
+        c.bg_accent,
+        c.text_base,
+        c.text_muted,
+        c.text_faint,
+        c.border_muted,
+        c.layer_02,
+        c.layer_03,
+        c.danger.icon,
+    ]
+}
+
+thread_local! {
+    static RESOLVED: std::cell::RefCell<HashMap<String, Rc<Resolved>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+fn cached(base: &str) -> Option<Rc<Resolved>> {
+    RESOLVED.with(|resolved| {
+        if let Some(found) = resolved.borrow().get(base) {
+            return Some(Rc::clone(found));
         }
-        let parse = |value: &str| rune::color::hex(value);
-        let kit = match theme(base) {
-            Some(found) => match (
-                parse(&found.palette.bg),
-                parse(&found.palette.text),
-                parse(&found.palette.accent),
-            ) {
-                (Some(bg), Some(fg), Some(accent)) => {
-                    rune_kit::Kit::from_palette(rune_kit::PaletteSeed { bg, fg, accent })
-                }
-                _ => rune_kit::Kit::neutral(!found.light),
-            },
-            None => rune_kit::Kit::neutral(fallback_dark),
-        };
-        let mut kits = kits.borrow_mut();
-        if kits.len() >= CACHE_LIMIT {
-            kits.clear();
+        let found = theme(base)?;
+        let roles = Arc::new(Roles::new(&found));
+        let kit = roles.kit();
+        let entry = Rc::new(Resolved {
+            tokens: fingerprint(&kit),
+            kit,
+            roles,
+        });
+        let mut resolved = resolved.borrow_mut();
+        if resolved.len() >= CACHE_LIMIT {
+            resolved.clear();
         }
-        kits.insert(base.to_string(), kit.clone());
-        kit
+        resolved.insert(base.to_string(), Rc::clone(&entry));
+        Some(entry)
     })
+}
+
+fn resolve(base: &str, fallback_dark: bool) -> Rc<Resolved> {
+    cached(base)
+        .or_else(|| cached(default_base(fallback_dark)))
+        .expect("the default bases are built in and tested")
+}
+
+/// The chrome's kit for `base`: rune-kit's tokens carrying Tauri's roles. An
+/// unknown base paints as the default one for `fallback_dark`.
+pub fn kit(base: &str, fallback_dark: bool) -> rune_kit::Kit {
+    resolve(base, fallback_dark).kit.clone()
+}
+
+/// Every chrome role for `base`, for what rune-kit has no token for: project
+/// hues, needs-you, git status, the strip and the active tab.
+pub fn roles_for(base: &str, fallback_dark: bool) -> Arc<Roles> {
+    Arc::clone(&resolve(base, fallback_dark).roles)
+}
+
+/// The roles `k` was built from, so a view holding only the kit reads the
+/// same theme; a kit `kit` did not build gets the default base's.
+pub fn roles(k: &rune_kit::Kit) -> Arc<Roles> {
+    let tokens = fingerprint(k);
+    let known = RESOLVED.with(|resolved| {
+        resolved
+            .borrow()
+            .values()
+            .find(|found| found.tokens == tokens)
+            .map(|found| Arc::clone(&found.roles))
+    });
+    known.unwrap_or_else(|| roles_for(default_base(k.dark), k.dark))
 }
 
 #[cfg(test)]

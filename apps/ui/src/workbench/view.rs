@@ -130,7 +130,7 @@ fn changed_rows(s: &AppState, k: &Kit) -> El {
                     text(status_letter(file.status))
                         .font(k.ty.mono)
                         .color(if file.status == domain::DiffStatus::Conflicted {
-                            k.c.warning.fg
+                            crate::theme::roles(k).git.conflict
                         } else {
                             k.c.text_muted
                         })
@@ -148,12 +148,12 @@ fn changed_rows(s: &AppState, k: &Kit) -> El {
                 .child(
                     text(format!("+{}", file.additions))
                         .font(k.ty.text_xsmall)
-                        .color(k.c.success.fg),
+                        .color(crate::theme::roles(k).git.added),
                 )
                 .child(
                     text(format!("−{}", file.deletions))
                         .font(k.ty.text_xsmall)
-                        .color(k.c.danger.fg),
+                        .color(crate::theme::roles(k).git.deleted),
                 ),
         );
     }
