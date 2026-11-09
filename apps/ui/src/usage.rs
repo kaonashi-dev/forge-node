@@ -164,6 +164,68 @@ pub fn resets_in(at: Option<&domain::Timestamp>, now: &domain::Timestamp) -> Opt
     (secs > 0).then(|| format!("resets in {}", worked_label(secs)))
 }
 
+/// How long a window lasts, from the label the provider gave it, as Tauri's
+/// `windowDurationSecs`. Only a label it recognizes gets a pace mark: seven
+/// invented days for an unknown window would measure nothing.
+#[must_use]
+pub fn window_duration_secs(label: &str) -> Option<f64> {
+    let normalized = label.trim().to_ascii_lowercase();
+    let number = |suffix: char| {
+        normalized
+            .strip_suffix(suffix)
+            .filter(|digits| !digits.is_empty() && !digits.starts_with('.'))
+            .and_then(|digits| digits.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value >= 0.0)
+    };
+    if let Some(hours) = number('h') {
+        return Some(hours * 3600.0);
+    }
+    if let Some(days) = number('d') {
+        return Some(days * 86_400.0);
+    }
+    match normalized.as_str() {
+        "day" | "daily" => Some(86_400.0),
+        "week" | "weekly" => Some(7.0 * 86_400.0),
+        "month" | "monthly" => Some(30.0 * 86_400.0),
+        _ => None,
+    }
+}
+
+/// How far through its window a meter is, as a whole percent, or `None`
+/// when the window's start cannot be read (`elapsedPercent`).
+#[must_use]
+pub fn elapsed_percent(
+    resets_at: Option<&domain::Timestamp>,
+    window: &str,
+    now: &domain::Timestamp,
+) -> Option<u8> {
+    let duration = window_duration_secs(window)?;
+    let left = (resets_at?.0 - now.0).as_seconds_f64();
+    let elapsed = (duration - left) / duration;
+    Some((elapsed.clamp(0.0, 1.0) * 100.0).round() as u8)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pace {
+    Under,
+    On,
+    Ahead,
+}
+
+/// Spending faster, even with, or slower than the window elapses, with five
+/// points of tolerance (`paceOf`).
+#[must_use]
+pub fn pace_of(used: u8, elapsed: Option<u8>) -> Option<Pace> {
+    let (used, elapsed) = (i16::from(used), i16::from(elapsed?));
+    Some(if used >= elapsed + 5 {
+        Pace::Ahead
+    } else if used <= elapsed - 5 {
+        Pace::Under
+    } else {
+        Pace::On
+    })
+}
+
 fn token_total(tokens: &domain::TokenTotals) -> u64 {
     tokens.input + tokens.output + tokens.cache_write + tokens.cache_read
 }
@@ -240,14 +302,51 @@ fn limits(usage: &[ProviderUsage], k: &Kit) -> El {
                 k.c.text_accent
             };
             let reset = resets_in(window.resets_at.as_ref(), &now).unwrap_or_default();
+            let elapsed = elapsed_percent(window.resets_at.as_ref(), &window.window, &now);
+            let pace = pace_of(used, elapsed);
+            let mut detail = format!("{} {}: {used}% used", reading.provider_id, window.window);
+            if let Some(elapsed) = elapsed {
+                detail.push_str(&format!(", {elapsed}% of the window elapsed"));
+            }
+            if let Some(pace) = pace {
+                detail.push_str(match pace {
+                    Pace::Ahead => ", ahead of pace",
+                    Pace::On => ", on pace",
+                    Pace::Under => ", under pace",
+                });
+            }
+            let mut track = row()
+                .grow(1.0)
+                .h(6.0)
+                .radius(3.0)
+                .fill(k.c.surface_hover)
+                .child(
+                    el().h_full()
+                        .w_frac(f32::from(used) / 100.0)
+                        .radius(3.0)
+                        .fill(fill),
+                );
+            if let Some(elapsed) = elapsed {
+                // Where even spending would be now, as `.stats-meter-elapsed`.
+                track = track.child(
+                    row()
+                        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                        .a11y_hidden()
+                        .child(el().w_frac(f32::from(elapsed) / 100.0))
+                        .child(el().w(1.0).h_full().fill(k.c.text_muted)),
+                );
+            }
+            let dot = match pace {
+                Some(Pace::Ahead) => k.c.warning.icon,
+                Some(Pace::Under) => k.c.success.icon,
+                Some(Pace::On) => k.c.text_faint,
+                None => rune::Color::TRANSPARENT,
+            };
             view = view.child(
                 row()
                     .key(format!("limit-{}-{}", reading.provider_id, window.window))
                     .role("meter")
-                    .label(format!(
-                        "{} {}: {used}% used",
-                        reading.provider_id, window.window
-                    ))
+                    .label(detail)
                     .gap(8.0)
                     .items_center()
                     .child(
@@ -257,25 +356,14 @@ fn limits(usage: &[ProviderUsage], k: &Kit) -> El {
                             .w(140.0)
                             .truncate(),
                     )
-                    .child(
-                        row()
-                            .grow(1.0)
-                            .h(6.0)
-                            .radius(3.0)
-                            .fill(k.c.surface_hover)
-                            .child(
-                                el().h_full()
-                                    .w_frac(f32::from(used) / 100.0)
-                                    .radius(3.0)
-                                    .fill(fill),
-                            ),
-                    )
+                    .child(track)
                     .child(
                         text(format!("{used}%"))
                             .font(k.ty.small)
                             .color(k.c.text_base)
                             .w(40.0),
                     )
+                    .child(el().size(6.0, 6.0).radius(3.0).fill(dot).a11y_hidden())
                     .child(
                         text(reset)
                             .font(k.ty.text_xsmall)
@@ -580,5 +668,27 @@ mod tests {
         assert_eq!(worked_label(90), "1m");
         assert_eq!(worked_label(3600 * 4 + 60 * 20), "4h 20m");
         assert_eq!(worked_label(86_400 * 35 + 3600 * 4), "35d 4h");
+    }
+
+    #[test]
+    fn a_meter_paces_against_the_window_it_names() {
+        assert_eq!(window_duration_secs("5h"), Some(5.0 * 3600.0));
+        assert_eq!(window_duration_secs(" Week "), Some(7.0 * 86_400.0));
+        assert_eq!(window_duration_secs("month"), Some(30.0 * 86_400.0));
+        assert_eq!(window_duration_secs("2.5d"), Some(2.5 * 86_400.0));
+        assert_eq!(window_duration_secs("whenever"), None);
+        assert_eq!(window_duration_secs("h"), None);
+        let at = |stamp: &str| -> domain::Timestamp {
+            serde_json::from_value(serde_json::json!(stamp)).expect("a timestamp")
+        };
+        let now = at("2026-10-05T12:00:00Z");
+        let reset = at("2026-10-05T15:00:00Z");
+        assert_eq!(elapsed_percent(Some(&reset), "5h", &now), Some(40));
+        assert_eq!(elapsed_percent(None, "5h", &now), None);
+        assert_eq!(elapsed_percent(Some(&reset), "whenever", &now), None);
+        assert_eq!(pace_of(60, Some(40)), Some(Pace::Ahead));
+        assert_eq!(pace_of(41, Some(40)), Some(Pace::On));
+        assert_eq!(pace_of(20, Some(40)), Some(Pace::Under));
+        assert_eq!(pace_of(20, None), None);
     }
 }
