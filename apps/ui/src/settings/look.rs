@@ -221,12 +221,28 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         ))
         .child(setting_row(k, "Line spacing", None, spacing));
 
-    col()
+    let preview = crate::theme::preview::preview(k, &crate::theme::roles(k));
+    let main = col()
+        .key("appearance-main")
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(24.0)
+        .child(crate::appearance::section(s, k))
+        .child(layout);
+    let side = col()
+        .key("appearance-side")
+        .w(APPEARANCE_SIDE_WIDTH)
+        .gap(24.0)
+        .child(preview)
+        .child(type_size)
+        .child(editor);
+    row()
         .key("appearance-page")
         .w_full()
         .gap(24.0)
-        .child(crate::appearance::section(s, k))
-        .child(layout)
-        .child(type_size)
-        .child(editor)
+        .items_start()
+        .child(main)
+        .child(side)
 }
+
+const APPEARANCE_SIDE_WIDTH: f32 = 400.0;

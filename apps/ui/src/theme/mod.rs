@@ -4,8 +4,6 @@
 //! stored in `ui.theme_base`, as Tauri stores it) is derived, by `custom`.
 
 pub mod custom;
-// Settings › Appearance places the preview; until then only its tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub mod preview;
 pub mod roles;
 

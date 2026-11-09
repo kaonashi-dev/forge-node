@@ -104,7 +104,13 @@ pub fn preview(k: &Kit, roles: &Roles) -> El {
                 .grow(1.0),
         )
         .children((0..HUE_COUNT).map(|slot| {
-            avatar(k, roles, Some(slot), char::from(b'A' + slot as u8)).key(format!("hue-{slot}"))
+            avatar(
+                k,
+                roles,
+                Some(slot),
+                &char::from(b'A' + slot as u8).to_string(),
+            )
+            .key(format!("hue-{slot}"))
         }));
     col()
         .key("theme-preview")
@@ -122,7 +128,7 @@ pub fn preview(k: &Kit, roles: &Roles) -> El {
 }
 
 /// `.project-avatar.hued`: a letter in the project's hue on a wash of it.
-pub fn avatar(k: &Kit, roles: &Roles, hue: Option<usize>, letter: char) -> El {
+pub fn avatar(k: &Kit, roles: &Roles, hue: Option<usize>, mark: &str) -> El {
     let ink = roles.hue(hue);
     row()
         .size(AVATAR, AVATAR)
@@ -131,7 +137,7 @@ pub fn avatar(k: &Kit, roles: &Roles, hue: Option<usize>, letter: char) -> El {
         .fill(ink.alpha(roles.hue_tint))
         .border(1.0, ink.alpha(HUE_EDGE))
         .child(
-            text(letter.to_string())
+            text(mark.to_string())
                 .font(TextStyle {
                     size: 10.0,
                     weight: 600.0,

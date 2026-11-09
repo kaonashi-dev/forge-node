@@ -155,7 +155,11 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .key("projects")
             .child(text("No replica yet.").font(k.ty.small));
     };
+    let hues = crate::menus::parse_hues(store.app_state_value(crate::menus::PROJECT_HUES_KEY));
+    let roles = crate::theme::roles(k);
     for project in &store.projects {
+        let hue = hues.get(&project.id.to_string()).copied();
+        let mark = project_mark(project);
         let workspaces = checkouts_of(&store.workspaces, project.id);
         let project_id = project.id;
         let mut block = col()
@@ -171,6 +175,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     .on_secondary_press(move |s: &mut AppState, point, _| {
                         crate::menus::open(s, crate::menus::Target::Project(project_id), point);
                     })
+                    .child(crate::theme::preview::avatar(k, &roles, hue, &mark))
                     .child(
                         text(project.name.clone())
                             .font(k.ty.small_medium)
@@ -441,6 +446,19 @@ pub fn dialogs(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .child(field)
         .child(row().pt(12.0).child(create))
         .build(k, layer);
+}
+
+/// Tauri's avatar text: the icon the user set, else the name's first letter.
+fn project_mark(project: &domain::Project) -> String {
+    match project.icon.as_deref().map(str::trim) {
+        Some(icon) if !icon.is_empty() => icon.chars().take(2).collect(),
+        _ => project
+            .name
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().collect())
+            .unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]
