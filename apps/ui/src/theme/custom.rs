@@ -581,4 +581,250 @@ mod tests {
             "a word is not a colour"
         );
     }
+
+    fn fixture() -> serde_json::Value {
+        serde_json::json!({ "name": "My theme", "mode": "dark", "palette": base("neutral") })
+    }
+
+    fn with(mut value: serde_json::Value, path: &[&str], field: serde_json::Value) -> String {
+        let mut at = &mut value;
+        for key in &path[..path.len() - 1] {
+            at = &mut at[*key];
+        }
+        at[path[path.len() - 1]] = field;
+        value.to_string()
+    }
+
+    fn rejects(source: &str, needle: &str) {
+        let error = parse(source).expect_err(source);
+        assert!(error.contains(needle), "{error:?} should name {needle}");
+    }
+
+    #[test]
+    fn import_accepts_light_and_trims_names_as_custom_theme_ts() {
+        let parsed = parse(&with(
+            with(fixture(), &["name"], " Day ".into())
+                .parse()
+                .expect("json"),
+            &["mode"],
+            "light".into(),
+        ))
+        .expect("valid");
+        assert_eq!(parsed.name, "Day");
+        assert_eq!(parsed.mode, "light");
+        assert_eq!(parsed.palette, base("neutral"));
+    }
+
+    #[test]
+    fn import_rejects_malformed_documents_and_injection() {
+        for source in ["{", "null", "[]", "{}"] {
+            assert!(parse(source).is_err(), "{source}");
+        }
+        for bg in [
+            serde_json::Value::Null,
+            "red".into(),
+            "#fff".into(),
+            "url(https://example.com)".into(),
+            123.into(),
+        ] {
+            rejects(&with(fixture(), &["palette", "bg"], bg), "palette.bg");
+        }
+        for ansi in [
+            serde_json::json!([]),
+            serde_json::json!(vec!["#ffffff"; 17]),
+            serde_json::json!(vec!["bad"; 16]),
+        ] {
+            rejects(&with(fixture(), &["palette", "ansi"], ansi), "palette.ansi");
+        }
+    }
+
+    #[test]
+    fn import_rejects_oversized_input_before_parsing() {
+        rejects(&" ".repeat(MAX_THEME_BYTES + 1), "16 KB");
+        rejects(&"é".repeat(MAX_THEME_BYTES), "16 KB");
+    }
+
+    #[test]
+    fn import_rejects_unsupported_modes_empty_names_and_bad_contrast() {
+        rejects(&with(fixture(), &["mode"], "system".into()), "Mode");
+        rejects(&with(fixture(), &["name"], " ".into()), "name");
+        for contrast in [
+            serde_json::json!(-1),
+            serde_json::json!(101),
+            serde_json::json!(60.5),
+            serde_json::json!("60"),
+            serde_json::Value::Null,
+        ] {
+            let adjustments =
+                serde_json::json!({ "palette": base("neutral"), "contrast": contrast });
+            rejects(&with(fixture(), &["adjustments"], adjustments), "contrast");
+        }
+        let empty = serde_json::json!({ "palette": {}, "contrast": 60 });
+        rejects(&with(fixture(), &["adjustments"], empty), "palette.bg");
+    }
+
+    #[test]
+    fn a_finish_is_carried_derived_or_refused_as_custom_theme_ts() {
+        let theme = |palette: serde_json::Value| {
+            serde_json::json!({ "name": "Ink", "mode": "dark", "palette": palette }).to_string()
+        };
+        let calm = base("calm-dark");
+        let calm_json = serde_json::to_value(&calm).expect("json");
+        assert_eq!(
+            parse(&theme(calm_json.clone()))
+                .expect("calm")
+                .palette
+                .finish,
+            calm.finish
+        );
+        let forge = serde_json::to_value(base("forge-dark")).expect("json");
+        assert_eq!(parse(&theme(forge)).expect("forge").palette.finish, None);
+        let mut no_hover = calm_json.clone();
+        no_hover["finish"] = serde_json::json!({ "tab": "#1c1c1f", "rule": "#1f1f22" });
+        assert_eq!(
+            parse(&theme(no_hover))
+                .expect("hover is optional")
+                .palette
+                .finish,
+            Some(Finish {
+                tab: "#1c1c1f".into(),
+                rule: "#1f1f22".into(),
+                hover: None
+            })
+        );
+        for finish in [
+            serde_json::json!("#1c1c1f"),
+            serde_json::json!({ "tab": "#1c1c1f" }),
+            serde_json::json!({ "tab": "url(x)", "rule": "#1f1f22" }),
+            serde_json::json!({ "tab": "#1c1c1f", "rule": "#1f1f22", "hover": "red" }),
+        ] {
+            let mut palette = calm_json.clone();
+            palette["finish"] = finish;
+            rejects(&theme(palette), "finish");
+        }
+    }
+
+    #[test]
+    fn colors_are_complete_hex_or_nothing() {
+        assert_eq!(normalize_color(" #AABBCC ").as_deref(), Some("#aabbcc"));
+        for value in ["#abc", "red", "#12345g", "url(test)", "#12345678"] {
+            assert_eq!(normalize_color(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn a_new_ground_moves_the_surfaces_and_keeps_the_hues() {
+        let source = base("gruvbox-hard");
+        let edited = with_color(&source, ThemeColor::Bg, "#383838").expect("valid");
+        assert_eq!(edited.bg, "#383838");
+        assert_eq!(edited.editor, edited.bg);
+        assert_eq!(edited.term_bg, edited.bg);
+        assert_eq!(edited.surface, "#42403f");
+        assert_eq!(edited.ansi[0], edited.bg);
+        assert_eq!(edited.ansi[1..], source.ansi[1..]);
+        assert_eq!(source, base("gruvbox-hard"), "the base is not mutated");
+        for value in ["#ffffff", "#000000"] {
+            let surface = with_color(&source, ThemeColor::Bg, value)
+                .expect("valid")
+                .surface;
+            assert!(normalize_color(&surface).is_some(), "{surface}");
+        }
+    }
+
+    #[test]
+    fn a_new_foreground_carries_terminal_text_and_pinned_rows() {
+        let source = base("gruvbox-hard");
+        let edited = with_color(&source, ThemeColor::Text, "#D5C4A1").expect("valid");
+        assert_eq!(edited.text, "#d5c4a1");
+        assert_eq!(edited.term_fg, edited.text);
+        assert_eq!(edited.ansi[15], edited.text);
+        assert_eq!(edited.ansi[7], source.ansi[7]);
+        for (id, text) in [("calm-dark", "#f0e6d2"), ("calm-light", "#20183a")] {
+            let palette = base(id);
+            let edited = with_color(&palette, ThemeColor::Text, text).expect("valid");
+            assert_ne!(edited.fg_default, palette.fg_default, "{id}");
+            let ratio = |p: &Palette| contrast(c(p.fg_default.as_deref().unwrap_or("")), c(&p.bg));
+            assert!((ratio(&edited) - ratio(&palette)).abs() < 2.0, "{id}");
+            let same = with_color(&palette, ThemeColor::Text, &palette.text).expect("valid");
+            assert_eq!(same.fg_default, palette.fg_default, "{id}");
+        }
+    }
+
+    #[test]
+    fn contrast_scales_secondary_text_and_leaves_chosen_colours() {
+        for id in ["gruvbox-hard", "gruvbox-light"] {
+            let palette = base(id);
+            let variants: Vec<Palette> = [0, DEFAULT_CONTRAST, 100]
+                .iter()
+                .map(|level| with_contrast(&palette, *level))
+                .collect();
+            let ratios: Vec<f64> = variants
+                .iter()
+                .map(|p| contrast(c(&p.muted), c(&p.bg)))
+                .collect();
+            assert!(
+                ratios[0] < ratios[1] && ratios[1] < ratios[2],
+                "{id}: {ratios:?}"
+            );
+            for variant in &variants {
+                assert_eq!(
+                    (&variant.bg, &variant.text, &variant.accent, &variant.ansi),
+                    (&palette.bg, &palette.text, &palette.accent, &palette.ansi),
+                    "{id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn adjustments_round_trip_and_sixty_restores_the_exact_colours() {
+        let color =
+            with_color(&base("gruvbox-hard"), ThemeColor::Accent, "#83a598").expect("valid");
+        let saved = parse(&variant("Gruvbox", color.clone(), 93).to_json()).expect("saved");
+        assert_eq!(saved.contrast(), 93);
+        let restored = variant(&saved.name, saved.origin().clone(), DEFAULT_CONTRAST);
+        assert_eq!(restored.palette, color);
+        assert_eq!(restored.name, "Gruvbox");
+        assert_eq!(variant("x", base("gruvbox-hard"), 120).contrast(), 100);
+        let white = with_color(&base("gruvbox-hard"), ThemeColor::Bg, "#ffffff").expect("valid");
+        assert_eq!(variant("x", white, 60).mode, "light");
+    }
+
+    #[test]
+    fn mix_and_contrast_agree_with_mix_ts() {
+        assert_eq!(mix(0x0011_2233, 0x00aa_bbcc, 0), 0x0011_2233);
+        assert_eq!(mix(0x0011_2233, 0x00aa_bbcc, 255), 0x00aa_bbcc);
+        let grey = mix(0x0020_2020, 0x00f0_f0f0, pct(37.0));
+        assert!(grey >> 16 == (grey >> 8) & 0xff && grey & 0xff == (grey >> 8) & 0xff);
+        assert_eq!((pct(6.0), pct(7.0), pct(14.0)), (15, 18, 36));
+        assert!((contrast(0, 0x00ff_ffff) - 21.0).abs() < 1e-9);
+        assert!((contrast(0x00ff_ffff, 0) - 21.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn every_base_reads_its_syntax_and_terminal_colours() {
+        for id in super::super::bases() {
+            let theme = super::super::theme(id).expect("listed");
+            let ground = c(&theme.editor.background);
+            let scopes = &theme.editor.scopes;
+            for (name, color) in [
+                ("comment", &scopes.comment),
+                ("keyword", &scopes.keyword),
+                ("string", &scopes.string),
+                ("number", &scopes.number),
+                ("type", &scopes.ty),
+                ("function", &scopes.function),
+                ("property", &scopes.property),
+                ("constant", &scopes.constant),
+            ] {
+                let ratio = contrast(c(color), ground);
+                assert!(ratio >= SCOPE_FLOOR - 1e-9, "{id} {name} {ratio:.2}");
+            }
+            let term = c(&theme.palette.term_bg);
+            assert!(
+                contrast(c(&theme.palette.term_fg), term) >= 4.5,
+                "{id} termFg"
+            );
+        }
+    }
 }
