@@ -50,6 +50,28 @@ pub struct Scope {
     pub visit: u64,
 }
 
+/// What a checkout's status said last: the oid HEAD names and whether the
+/// tree is dirty, as Tauri's `checkoutWatch` remembers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckoutMark {
+    pub head: Option<String>,
+    pub dirty: bool,
+}
+
+/// Whether git moved under a checkout between two marks. An unmeasured
+/// status (`head: None`) says nothing, and neither does the first look,
+/// where there is nothing old to throw away. A `git pull` keeps the branch
+/// name and rewrites HEAD, which is why the oid is what is compared.
+#[must_use]
+pub fn checkout_moved(before: Option<&CheckoutMark>, after: Option<&CheckoutMark>) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) if after.head.is_some() => {
+            before.head != after.head || before.dirty != after.dirty
+        }
+        _ => false,
+    }
+}
+
 /// What the sidebar shows, as Tauri's sidebar views. The centre keeps the
 /// session, a diff picked from Git, or Settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -207,6 +229,17 @@ impl Workbench {
         self.files.error = None;
         self.queue(Read::File(path.to_string()));
         self.mode = CenterMode::Files;
+    }
+
+    /// Git moved under the checkout: re-read what Git shows now, or forget
+    /// it so the next look reads again. The file tree is left as opened.
+    pub fn checkout_moved(&mut self) {
+        if self.panel == Panel::Git || self.mode == CenterMode::Changes {
+            self.queue(Read::Diff);
+            self.queue(Read::Rebase);
+        } else {
+            self.changes.loaded = false;
+        }
     }
 
     pub fn show_panel(&mut self, panel: Panel) {
@@ -686,5 +719,45 @@ mod tests {
         );
         let roots: Vec<&str> = bench.files.tree.children(None).collect();
         assert_eq!(roots, vec!["fresh"]);
+    }
+
+    #[test]
+    fn a_checkout_moves_on_a_new_head_or_a_dirtiness_flip_only() {
+        let mark = |head: Option<&str>, dirty| CheckoutMark {
+            head: head.map(str::to_string),
+            dirty,
+        };
+        let seen = mark(Some("abc123"), false);
+        assert!(
+            !checkout_moved(Some(&seen), Some(&mark(None, false))),
+            "unmeasured"
+        );
+        assert!(!checkout_moved(Some(&seen), None), "no answer");
+        assert!(!checkout_moved(None, Some(&seen)), "the first look");
+        let dirty = mark(Some("abc123"), true);
+        assert!(!checkout_moved(Some(&dirty), Some(&dirty)), "unchanged");
+        assert!(checkout_moved(
+            Some(&seen),
+            Some(&mark(Some("def456"), false))
+        ));
+        assert!(checkout_moved(Some(&seen), Some(&dirty)));
+    }
+
+    #[test]
+    fn a_moved_checkout_rereads_git_only_where_it_shows() {
+        let (mut bench, _) = bench();
+        bench.show_panel(Panel::Git);
+        bench.take_reads();
+        bench.checkout_moved();
+        assert_eq!(bench.take_reads(), vec![Read::Diff, Read::Rebase]);
+        bench.changes.loaded = true;
+        bench.show_panel(Panel::Projects);
+        bench.checkout_moved();
+        assert_eq!(
+            bench.take_reads(),
+            Vec::new(),
+            "nothing read for a hidden panel"
+        );
+        assert!(!bench.changes.loaded, "but the next look reads again");
     }
 }

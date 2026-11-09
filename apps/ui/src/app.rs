@@ -134,6 +134,8 @@ pub struct AppState {
     pub review: Option<crate::pr_review::ReviewDialog>,
     pub usage: crate::usage::Usage,
     pub storage: crate::storage::Storage,
+    /// Each checkout's last status mark, so Git re-reads when it moves.
+    pub checkout_marks: HashMap<WorkspaceId, crate::workbench::CheckoutMark>,
     pub theme_editor: crate::appearance::ThemeEditor,
     pub sync: crate::sync::Sync,
     /// What a text field edits while its dialog is closing; never shown.
@@ -205,6 +207,7 @@ impl AppState {
             review: None,
             usage: crate::usage::Usage::default(),
             storage: crate::storage::Storage::default(),
+            checkout_marks: HashMap::new(),
             theme_editor: crate::appearance::ThemeEditor::default(),
             sync: crate::sync::Sync::default(),
             scratch_edit: rune::TextEdit::new(""),
@@ -972,6 +975,40 @@ impl AppState {
         }
     }
 
+    /// Re-reads Git when the window's checkout moved, as Tauri's
+    /// `checkoutWatch`. Marks are kept per checkout, so switching away and
+    /// back is not a move, while a change made meanwhile is.
+    fn watch_checkout(&mut self) {
+        let Some(workspace) = self.workbench.workspace else {
+            return;
+        };
+        let Some(status) = self.store.as_ref().and_then(|store| {
+            store
+                .workspaces
+                .iter()
+                .find(|candidate| candidate.id == workspace)
+                .map(|found| &found.status)
+        }) else {
+            return;
+        };
+        // Compared in place: this runs on every poll, and a mark is built
+        // only when the checkout's status changed.
+        let same = self.checkout_marks.get(&workspace).is_some_and(|mark| {
+            mark.dirty == status.dirty && mark.head.as_deref() == status.head.as_deref()
+        });
+        if same {
+            return;
+        }
+        let after = crate::workbench::CheckoutMark {
+            head: status.head.clone(),
+            dirty: status.dirty,
+        };
+        let before = self.checkout_marks.insert(workspace, after.clone());
+        if crate::workbench::checkout_moved(before.as_ref(), Some(&after)) {
+            self.workbench.checkout_moved();
+        }
+    }
+
     fn sync_storage(&mut self) {
         let storage = &mut self.storage;
         if self.workbench.mode != CenterMode::Settings || storage.asked == Some(self.generation) {
@@ -987,6 +1024,7 @@ impl AppState {
     fn sync_workbench(&mut self) {
         // The sidebar's panels follow the window's checkout as the strip does.
         self.sync_workbench_workspace();
+        self.watch_checkout();
         if self.palette.asked_in.is_some() && self.palette.asked_in != self.workbench.scope() {
             self.palette.forget_files();
         }
