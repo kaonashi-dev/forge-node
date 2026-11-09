@@ -53,7 +53,7 @@
   a default agent, and view supported providers' allowance meters and token
   analytics.
 - **Sessions that cooperate.** Hand off context, spawn child sessions across
-  providers, and coordinate runs and tasks through `forgectl`.
+  providers, and coordinate runs and tasks through `forgectl` or its MCP server.
 
 ## Screenshots
 

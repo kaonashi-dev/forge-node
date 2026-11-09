@@ -196,7 +196,7 @@ pub enum DaemonEvent {
         /// Failure message when `url` is `None`.
         error: Option<String>,
     },
-    /// An agent submitted a pull-request draft with `forgectl pr draft`.
+    /// An agent submitted a pull-request draft with `pr_draft` (MCP or `forgectl pr draft`).
     ///
     /// A read with its own event, like [`Self::JuvaDraftReady`]: nothing is
     /// stored, and a client that missed it asks the agent again.

@@ -135,8 +135,8 @@ starts a Forge session with a prompt, but there is no `parent_session_id`.
 
 - Not Claude's rename/send or provider-native “subagent” APIs — those stay
   inside one CLI.
-- Not MCP yet — the CLI is the agent-facing surface; MCP can wrap the same
-  requests later.
+- Not a second surface — `forgectl mcp` serves the same commands as MCP
+  tools, and Forge registers it in writable Claude and OpenCode launches.
 - Not ACP peer routing — ACP (when wired) remains one client session per
   agent process.
 

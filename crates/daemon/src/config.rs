@@ -391,6 +391,9 @@ pub struct OrchestrationConfig {
     pub agent_may_integrate: String,
     /// Reserved: accepted, not read yet.
     pub keep_closed_runs_days: u32,
+    /// Register `forgectl mcp` in each writable Claude or OpenCode launch, and
+    /// word their prompts as MCP tools. Read-only launches never get it.
+    pub mcp: bool,
 }
 
 impl Default for OrchestrationConfig {
@@ -404,6 +407,7 @@ impl Default for OrchestrationConfig {
             stall_after_secs: domain::orchestration::DEFAULT_STALL_AFTER_SECS,
             agent_may_integrate: "pr".to_owned(),
             keep_closed_runs_days: 30,
+            mcp: true,
         }
     }
 }

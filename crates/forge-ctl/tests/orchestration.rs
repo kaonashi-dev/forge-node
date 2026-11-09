@@ -718,7 +718,7 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
     assert_eq!(responses.len(), 8);
     assert_eq!(
         responses[1]["result"]["tools"].as_array().unwrap().len(),
-        21
+        56
     );
     assert_eq!(responses[2]["result"]["structuredContent"]["ok"], true);
     for response in &responses[2..] {
@@ -1738,7 +1738,7 @@ fn scenario_pointer_broadcast_and_cli_events() {
     // says "2 new messages", not the one-message line.
     let twice = poll("second pointer", || {
         let text = transcript(&ctl, &watched_session);
-        text.contains("run: forgectl inbox").then_some(text)
+        text.contains("read your inbox").then_some(text)
     });
     assert!(!twice.contains("SECOND_IDLE_SECRET"), "{twice}");
     notes.line("pointer_typed_again_after_inbox_wait_ended");

@@ -834,7 +834,14 @@ fn create_run(
         let workspace = workspace_id.ok_or_else(|| {
             ProtocolError::precondition_failed("an agent controller needs an integration workspace")
         })?;
-        let prompt = controller_prompt(daemon, run_id, &objective, branch_base.as_deref(), false);
+        let prompt = controller_prompt(
+            daemon,
+            run_id,
+            &objective,
+            branch_base.as_deref(),
+            false,
+            &provider_id,
+        );
         set_spawn_env(vec![
             ("FORGE_RUN_ID".into(), run_id.to_string()),
             ("FORGECTL_JSON".into(), "1".into()),
@@ -1302,6 +1309,8 @@ fn start_attempt(
         })
         .collect();
     let path = daemon.workspace_path(workspace)?;
+    let read_only = task.mode == WorkMode::ReadOnly;
+    let surface = daemon.tool_surface(&daemon.lock(), &provider_id, read_only);
     let prompt = compose_worker_prompt(&WorkerPromptInput {
         run_id: run.id,
         task_id: task.id,
@@ -1318,8 +1327,8 @@ fn start_attempt(
         dependencies: &dep_refs,
         feedback: task.feedback.as_deref(),
         previous_report: previous_summary(daemon, task.id).as_deref(),
+        surface,
     });
-    let read_only = task.mode == WorkMode::ReadOnly;
     set_spawn_env(vec![
         ("FORGE_RUN_ID".into(), run.id.to_string()),
         ("FORGE_TASK_ID".into(), task.id.to_string()),
@@ -2163,7 +2172,14 @@ fn resume_run(
     let workspace = workspace.ok_or_else(|| {
         ProtocolError::precondition_failed("resume needs the integration workspace")
     })?;
-    let prompt = controller_prompt(daemon, run_id, &objective, base.as_deref(), true);
+    let prompt = controller_prompt(
+        daemon,
+        run_id,
+        &objective,
+        base.as_deref(),
+        true,
+        &provider_id,
+    );
     set_spawn_env(vec![
         ("FORGE_RUN_ID".into(), run_id.to_string()),
         ("FORGECTL_JSON".into(), "1".into()),
@@ -2763,8 +2779,10 @@ fn controller_prompt(
     objective: &str,
     base: Option<&str>,
     resume: bool,
+    provider_id: &AgentProviderId,
 ) -> String {
     let inner = daemon.lock();
+    let surface = daemon.tool_surface(&inner, provider_id, false);
     let run = inner.ledger.runs.get(&run_id);
     let brief = run.map(|run| run.brief.clone()).unwrap_or_default();
     let brief_version = run.map(|run| run.brief_version).unwrap_or(0);
@@ -2842,6 +2860,7 @@ fn controller_prompt(
         questions: &question_refs,
         board_keys: &key_refs,
         resume,
+        surface,
     })
 }
 

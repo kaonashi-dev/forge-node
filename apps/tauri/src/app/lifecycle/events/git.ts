@@ -135,7 +135,7 @@ export function bindGitEvents(): Promise<UnlistenFn[]> {
       setLoading("juva", false);
       setGitStore("juvaError", payload.error);
     }),
-    // `forgectl pr draft` from an agent; the compose tab is where it is edited.
+    // `pr_draft` from an agent; the compose tab is where it is edited.
     listen<ReceivedDraft>("runtime:pr_draft", ({ payload }) => {
       receiveDraft(payload);
       if (forCurrent(payload.workspace)) openComposeForWorkspace(payload.workspace);

@@ -4,7 +4,7 @@
 //! what the answer is for, and it is what decides who opens the pull request:
 //!
 //! - [`TaskMode::Draft`] — the agent only writes the text and hands it back
-//!   with `forgectl pr draft`. Forge Node shows it for editing, then commits
+//!   with the `pr_draft` MCP tool or `forgectl pr draft`. Forge Node shows it for editing, then commits
 //!   everything once (on a new branch when the checkout is on its default),
 //!   pushes and calls `gh pr create` itself. The agent never touches the
 //!   working tree.
@@ -90,8 +90,9 @@ const DRAFT_HANDOVER: &str = "Do not edit files, commit, push or open the pull \
     All the changes go into one commit, so the commit message describes them all, \
     in this repository's commit style. The branch is used only when this checkout \
     is on its default branch; name it the way this repository names branches.\n\n\
-    Hand the result over with this command, quoting each value for the shell, and \
-    stop:\n\n\
+    Hand the result over with the forge MCP tool `pr_draft` (title, branch, commit, \
+    commit_body, body: the pull request body in Markdown), and stop. Without that \
+    tool, run this command instead, quoting each value for the shell:\n\n\
     ```sh\n\
     forgectl pr draft --title '<title>' --branch '<new-branch>' --commit '<commit subject>' [--commit-body '<commit body>'] <<'EOF'\n\
     <pull request body in Markdown>\n\
@@ -177,7 +178,7 @@ pub fn builtin_tasks() -> Vec<PrTask> {
 /// daemon before the draft is broadcast to every client.
 pub const MAX_DRAFT_FIELD_BYTES: usize = 64 * 1024;
 
-/// The text a [`TaskMode::Draft`] agent hands back through `forgectl pr draft`.
+/// The text a [`TaskMode::Draft`] agent hands back through `pr_draft` or `forgectl pr draft`.
 ///
 /// Runtime-only: it is broadcast once and never stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,7 +293,8 @@ mod tests {
     #[test]
     fn every_draft_task_hands_its_text_to_forgectl() {
         for task in builtin_tasks() {
-            let hands_over = task.body.contains("forgectl pr draft");
+            let hands_over =
+                task.body.contains("`pr_draft`") && task.body.contains("forgectl pr draft");
             assert_eq!(hands_over, task.mode == TaskMode::Draft, "{}", task.id);
         }
     }

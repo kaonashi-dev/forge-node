@@ -60,7 +60,8 @@ describe("prTasks", () => {
 
   it("has every draft task hand its text to forgectl, and only those", () => {
     for (const task of builtinTasks()) {
-      expect(task.body.includes("forgectl pr draft")).toBe(task.mode === "Draft");
+      const handsOver = task.body.includes("`pr_draft`") && task.body.includes("forgectl pr draft");
+      expect(handsOver).toBe(task.mode === "Draft");
     }
   });
 });

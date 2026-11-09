@@ -39,6 +39,7 @@ const DEFAULT_WAIT: Duration = Duration::from_secs(600);
 const REVIEW_WAIT: Duration = Duration::from_secs(3600);
 /// Attention items `waiting` and `stalled` appear when a clock crosses a threshold, and no event announces that.
 const ATTENTION_RECHECK: Duration = Duration::from_secs(5);
+const MAX_CLOSE_BODY: usize = 64 * 1024;
 
 #[derive(Parser)]
 #[command(
@@ -206,6 +207,8 @@ enum RunCmd {
         pr: bool,
         #[arg(long)]
         title: Option<String>,
+        #[arg(long, conflicts_with = "body_file")]
+        body: Option<String>,
         #[arg(long)]
         body_file: Option<PathBuf>,
         #[arg(long)]
@@ -334,6 +337,9 @@ enum PrCmd {
         commit: String,
         #[arg(long)]
         commit_body: Option<String>,
+        /// The body itself, instead of stdin.
+        #[arg(long, conflicts_with = "body_file")]
+        body: Option<String>,
         /// Read the body from this file instead of stdin.
         #[arg(long)]
         body_file: Option<PathBuf>,
@@ -466,13 +472,7 @@ impl App {
                 self.print_ok(flatten(&response));
                 Ok(())
             }
-            Command::Pr(PrCmd::Draft {
-                title,
-                branch,
-                commit,
-                commit_body,
-                body_file,
-            }) => self.pr_draft(client, title, branch, commit, commit_body, body_file),
+            Command::Pr(cmd) => self.pr_draft(client, cmd),
             Command::Run(cmd) => self.run_cmd(client, cmd),
             Command::Task(cmd) => self.task_cmd(client, cmd),
             Command::Context => self.context_cmd(client),
@@ -638,6 +638,7 @@ impl App {
                 run,
                 pr,
                 title,
+                body,
                 body_file,
                 draft,
                 base,
@@ -655,10 +656,18 @@ impl App {
                 };
                 let pull_request = if pr {
                     let title = title.unwrap_or_else(|| "Forge run".into());
-                    let body = body_file
-                        .map(|path| read_capped_text(&path, 64 * 1024))
-                        .transpose()?
-                        .unwrap_or_default();
+                    let body = match (body, body_file) {
+                        (Some(body), _) if body.len() > MAX_CLOSE_BODY => {
+                            return Err(usage_code(
+                                self,
+                                &format!("the body exceeds {MAX_CLOSE_BODY} bytes"),
+                                &["forgectl", "run", "close", "--help"],
+                            ))
+                        }
+                        (Some(body), _) => body,
+                        (None, Some(path)) => read_capped_text(&path, MAX_CLOSE_BODY)?,
+                        (None, None) => String::new(),
+                    };
                     Some(protocol::CloseRunPullRequest {
                         title,
                         body,
@@ -1108,21 +1117,29 @@ impl App {
         Ok(())
     }
 
-    fn pr_draft(
-        &self,
-        client: &Client,
-        title: String,
-        branch: String,
-        commit: String,
-        commit_body: Option<String>,
-        body_file: Option<PathBuf>,
-    ) -> Result<(), u8> {
+    fn pr_draft(&self, client: &Client, cmd: PrCmd) -> Result<(), u8> {
+        let PrCmd::Draft {
+            title,
+            branch,
+            commit,
+            commit_body,
+            body,
+            body_file,
+        } = cmd;
         let help = ["forgectl", "pr", "draft", "--help"];
         let session_id =
             env_session().ok_or_else(|| usage_code(self, "FORGE_SESSION_ID is not set", &help))?;
-        let body = match body_file {
-            Some(path) => read_capped_text(&path, domain::MAX_DRAFT_FIELD_BYTES)?,
-            None => read_capped_stdin(domain::MAX_DRAFT_FIELD_BYTES)
+        let body = match (body, body_file) {
+            (Some(body), _) if body.len() > domain::MAX_DRAFT_FIELD_BYTES => {
+                return Err(usage_code(
+                    self,
+                    &format!("the body exceeds {} bytes", domain::MAX_DRAFT_FIELD_BYTES),
+                    &help,
+                ))
+            }
+            (Some(body), _) => body,
+            (None, Some(path)) => read_capped_text(&path, domain::MAX_DRAFT_FIELD_BYTES)?,
+            (None, None) => read_capped_stdin(domain::MAX_DRAFT_FIELD_BYTES)
                 .map_err(|message| usage_code(self, &message, &help))?,
         };
         let commit_message = match commit_body.as_deref().map(str::trim) {

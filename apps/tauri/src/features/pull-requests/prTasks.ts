@@ -29,7 +29,7 @@ Write it the way this team does. Read what the repository says — CONTRIBUTING,
 
 All the changes go into one commit, so the commit message describes them all, in this repository's commit style. The branch is used only when this checkout is on its default branch; name it the way this repository names branches.
 
-Hand the result over with this command, quoting each value for the shell, and stop:
+Hand the result over with the forge MCP tool \`pr_draft\` (title, branch, commit, commit_body, body: the pull request body in Markdown), and stop. Without that tool, run this command instead, quoting each value for the shell:
 
 \`\`\`sh
 forgectl pr draft --title '<title>' --branch '<new-branch>' --commit '<commit subject>' [--commit-body '<commit body>'] <<'EOF'
