@@ -92,6 +92,7 @@ pub struct AppState {
     pub workbench: Workbench,
     pub palette: crate::palette::Palette,
     pub projects: crate::projects::Projects,
+    pub commit: crate::commit::CommitDialog,
     /// A workspace picked in Projects; Changes and Files show it instead of
     /// the active session's until a session is selected.
     pub chosen_workspace: Option<WorkspaceId>,
@@ -146,6 +147,7 @@ impl AppState {
             workbench: Workbench::default(),
             palette: crate::palette::Palette::default(),
             projects: crate::projects::Projects::default(),
+            commit: crate::commit::CommitDialog::default(),
             chosen_workspace: None,
             theme_base: None,
             editor_reveal: None,
@@ -485,6 +487,36 @@ impl AppState {
         }
     }
 
+    /// Opens the commit dialog for the workspace Changes shows, and asks Juva
+    /// for a draft.
+    pub fn start_commit(&mut self) {
+        let Some(workspace) = self.workbench.workspace else {
+            return;
+        };
+        self.commit.open(workspace);
+        match &self.connection {
+            Some(connection) => {
+                let _ = connection.draft_commit(workspace);
+            }
+            None => self.worker_not_ready("DraftWithJuva"),
+        }
+    }
+
+    pub fn create_commit(&mut self) {
+        let (Some(workspace), Some(message)) = (self.commit.workspace, self.commit.ready_message())
+        else {
+            return;
+        };
+        self.commit.committing = true;
+        self.commit.error = None;
+        match &self.connection {
+            Some(connection) => {
+                let _ = connection.commit(workspace, message);
+            }
+            None => self.worker_not_ready("CreateCommit"),
+        }
+    }
+
     pub fn add_project(&mut self, path: std::path::PathBuf) {
         match &self.connection {
             Some(connection) => {
@@ -719,6 +751,15 @@ impl AppState {
                     }
                     return true;
                 }
+                if let protocol::DaemonEvent::JuvaDraftReady {
+                    workspace_id,
+                    draft,
+                    fell_back,
+                } = event.as_ref()
+                {
+                    self.commit.apply_draft(*workspace_id, draft, *fell_back);
+                    return true;
+                }
                 let reset = matches!(event.as_ref(), protocol::DaemonEvent::FactoryReset);
                 if let Some(store) = &mut self.store {
                     let _ = store.apply_event(&event);
@@ -837,6 +878,19 @@ impl AppState {
                 }
                 if label == "ResizeTerminal" {
                     self.terminal.requested = None;
+                }
+                if label == "CreateCommit" {
+                    self.commit.committing = false;
+                    if ok {
+                        self.commit.close();
+                        self.workbench.refresh();
+                    } else {
+                        self.commit.error = Some(message.clone());
+                    }
+                }
+                if label == "DraftWithJuva" && !ok {
+                    self.commit.drafting = false;
+                    self.commit.error = Some(message.clone());
                 }
                 self.last_command = Some(CommandStatus {
                     label,

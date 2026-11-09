@@ -80,6 +80,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         palette(s, &k, &mut overlays);
     }
     crate::projects::dialogs(s, &k, &mut overlays);
+    crate::commit::dialog(s, &k, &mut overlays);
     let root = rune_kit::root(root, overlays);
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));

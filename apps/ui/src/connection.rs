@@ -99,6 +99,13 @@ pub enum Command {
     },
     SavePrefs(crate::prefs::Prefs),
     AddProject(std::path::PathBuf),
+    DraftCommit {
+        workspace_id: WorkspaceId,
+    },
+    Commit {
+        workspace_id: WorkspaceId,
+        message: String,
+    },
     CreateAgent {
         workspace_id: WorkspaceId,
         provider_id: domain::AgentProviderId,
@@ -315,6 +322,17 @@ impl ConnectionHandle {
         self.send(Command::CreateAgent {
             workspace_id,
             provider_id,
+        })
+    }
+
+    pub fn draft_commit(&self, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::DraftCommit { workspace_id })
+    }
+
+    pub fn commit(&self, workspace_id: WorkspaceId, message: String) -> Result<(), String> {
+        self.send(Command::Commit {
+            workspace_id,
+            message,
         })
     }
 
@@ -792,6 +810,8 @@ fn handle_fixture_command(
         | Command::Read { .. }
         | Command::SavePrefs(_)
         | Command::AddProject(_)
+        | Command::DraftCommit { .. }
+        | Command::Commit { .. }
         | Command::CreateAgent { .. }
         | Command::CreateWorktree { .. }
         | Command::RemoveWorktree { .. } => {}
@@ -1363,6 +1383,26 @@ fn handle_live_command(
                 started,
             );
         }
+        Command::DraftCommit { workspace_id } => {
+            metrics.note_socket_op();
+            // The draft arrives later as `JuvaDraftReady`; this only starts it.
+            let result = client
+                .draft_with_juva(workspace_id, domain::JuvaKind::CommitMessage)
+                .map(|()| "drafting".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "DraftWithJuva", result, sink, metrics, started);
+        }
+        Command::Commit {
+            workspace_id,
+            message,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_commit(workspace_id, &message)
+                .map(|()| "committed".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "CreateCommit", result, sink, metrics, started);
+        }
         Command::AddProject(path) => {
             metrics.note_socket_op();
             let result = client
@@ -1540,6 +1580,8 @@ fn command_label(command: &Command) -> &'static str {
         Command::Read { .. } => "WorkspaceRead",
         Command::SavePrefs(_) => "SavePrefs",
         Command::AddProject(_) => "AddProject",
+        Command::DraftCommit { .. } => "DraftWithJuva",
+        Command::Commit { .. } => "CreateCommit",
         Command::CreateAgent { .. } => "CreateAgentSession",
         Command::CreateWorktree { .. } => "CreateWorktree",
         Command::RemoveWorktree { .. } => "RemoveWorktree",

@@ -106,12 +106,23 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
         .grow(1.0)
         .min_h(0.0)
     };
+    let mut header = bar(k, "Changes".into(), detail);
+    if changes.loaded && changes.file_count > 0 {
+        header = header.child(
+            Button::new("Commit…")
+                .variant(ButtonVariant::Outline)
+                .control_size(ControlSize::Small)
+                .on_press(|s: &mut AppState| s.start_commit())
+                .build(k)
+                .key("changes-commit"),
+        );
+    }
     col()
         .key("changes")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(bar(k, "Changes".into(), detail))
+        .child(header)
         .child(body)
 }
 
