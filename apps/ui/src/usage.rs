@@ -117,6 +117,57 @@ pub fn daily_cells(
         .collect()
 }
 
+/// `part` of `total` as a whole percent, as Tauri's `percentLabel`: a real
+/// sliver reads `<1%` rather than `0%`.
+#[must_use]
+pub fn percent_label(part: u64, total: u64) -> String {
+    if total == 0 || part == 0 {
+        return "0%".into();
+    }
+    let percent = part as f64 * 100.0 / total as f64;
+    if percent < 1.0 {
+        "<1%".into()
+    } else {
+        format!("{}%", percent.round() as u64)
+    }
+}
+
+/// `35d 4h`, `4h 20m`, `12m`, as Tauri's `workedLabel`; `—` for nothing.
+#[must_use]
+pub fn worked_label(secs: i64) -> String {
+    if secs <= 0 {
+        return "—".into();
+    }
+    let (days, hours, minutes) = (secs / 86_400, secs % 86_400 / 3600, secs % 3600 / 60);
+    if days > 0 {
+        return if hours > 0 {
+            format!("{days}d {hours}h")
+        } else {
+            format!("{days}d")
+        };
+    }
+    if hours > 0 {
+        return if minutes > 0 {
+            format!("{hours}h {minutes}m")
+        } else {
+            format!("{hours}h")
+        };
+    }
+    format!("{}m", minutes.max(1))
+}
+
+/// `resets in 3h 12m`, or `None` when the provider gave no reset or it has
+/// passed, as Tauri's `resetsIn`.
+#[must_use]
+pub fn resets_in(at: Option<&domain::Timestamp>, now: &domain::Timestamp) -> Option<String> {
+    let secs = (at?.0 - now.0).whole_seconds();
+    (secs > 0).then(|| format!("resets in {}", worked_label(secs)))
+}
+
+fn token_total(tokens: &domain::TokenTotals) -> u64 {
+    tokens.input + tokens.output + tokens.cache_write + tokens.cache_read
+}
+
 pub struct Overview {
     pub tokens: u64,
     pub cost_micros: u64,
@@ -176,21 +227,60 @@ fn limits(usage: &[ProviderUsage], k: &Kit) -> El {
                 .color(k.c.text_faint),
         );
     }
+    let now = domain::Timestamp::now();
     for reading in usage {
         for window in &reading.windows {
+            let used = window.used_percent.min(100);
+            // Tauri's meter: amber from three quarters, red from nine tenths.
+            let fill = if used >= 90 {
+                k.c.danger.icon
+            } else if used >= 75 {
+                k.c.warning.icon
+            } else {
+                k.c.text_accent
+            };
+            let reset = resets_in(window.resets_at.as_ref(), &now).unwrap_or_default();
             view = view.child(
                 row()
+                    .key(format!("limit-{}-{}", reading.provider_id, window.window))
+                    .role("meter")
+                    .label(format!(
+                        "{} {}: {used}% used",
+                        reading.provider_id, window.window
+                    ))
                     .gap(8.0)
+                    .items_center()
                     .child(
                         text(format!("{} · {}", reading.provider_id, window.window))
                             .font(k.ty.small)
                             .color(k.c.text_muted)
-                            .grow(1.0),
+                            .w(140.0)
+                            .truncate(),
                     )
                     .child(
-                        text(format!("{}% used", window.used_percent))
+                        row()
+                            .grow(1.0)
+                            .h(6.0)
+                            .radius(3.0)
+                            .fill(k.c.surface_hover)
+                            .child(
+                                el().h_full()
+                                    .w_frac(f32::from(used) / 100.0)
+                                    .radius(3.0)
+                                    .fill(fill),
+                            ),
+                    )
+                    .child(
+                        text(format!("{used}%"))
                             .font(k.ty.small)
-                            .color(k.c.text_base),
+                            .color(k.c.text_base)
+                            .w(40.0),
+                    )
+                    .child(
+                        text(reset)
+                            .font(k.ty.text_xsmall)
+                            .color(k.c.text_faint)
+                            .w(120.0),
                     ),
             );
         }
@@ -305,11 +395,13 @@ pub fn section(s: &AppState, k: &Kit) -> El {
                 .color(k.c.text_faint),
         );
     }
+    let all_tokens: u64 = analytics
+        .providers
+        .iter()
+        .map(|provider| token_total(&provider.tokens))
+        .sum();
     for provider in &analytics.providers {
-        let tokens = provider.tokens.input
-            + provider.tokens.output
-            + provider.tokens.cache_write
-            + provider.tokens.cache_read;
+        let tokens = token_total(&provider.tokens);
         providers = providers.child(
             row()
                 .gap(12.0)
@@ -318,6 +410,11 @@ pub fn section(s: &AppState, k: &Kit) -> El {
                         .font(k.ty.small)
                         .color(k.c.text_base)
                         .grow(1.0),
+                )
+                .child(
+                    text(percent_label(tokens, all_tokens))
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint),
                 )
                 .child(
                     text(compact_tokens(tokens))
@@ -457,5 +554,31 @@ mod tests {
         let none = daily_cells(&[], 5, 20_695);
         assert_eq!(none.len(), 5);
         assert!(none.iter().all(|(_, tokens)| *tokens == 0));
+    }
+
+    #[test]
+    fn limits_and_shares_are_worded_as_usage_stats_words_them() {
+        assert_eq!(percent_label(2, 1000), "<1%");
+        assert_eq!(percent_label(0, 1000), "0%");
+        assert_eq!(percent_label(5, 0), "0%");
+        assert_eq!(percent_label(996, 1000), "100%");
+        let at = |stamp: &str| -> domain::Timestamp {
+            serde_json::from_value(serde_json::json!(stamp)).expect("a timestamp")
+        };
+        let now = at("2026-10-05T12:00:00Z");
+        assert_eq!(
+            resets_in(Some(&at("2026-10-05T15:12:00Z")), &now).as_deref(),
+            Some("resets in 3h 12m")
+        );
+        assert_eq!(
+            resets_in(Some(&at("2026-10-05T11:00:00Z")), &now),
+            None,
+            "already reset"
+        );
+        assert_eq!(resets_in(None, &now), None);
+        assert_eq!(worked_label(0), "—");
+        assert_eq!(worked_label(90), "1m");
+        assert_eq!(worked_label(3600 * 4 + 60 * 20), "4h 20m");
+        assert_eq!(worked_label(86_400 * 35 + 3600 * 4), "35d 4h");
     }
 }
