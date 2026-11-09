@@ -998,7 +998,11 @@ impl AppState {
     }
 
     fn sync_editor(&mut self) {
-        self.editor.set_session(self.active_line_editor());
+        if let Some((session, events)) = self.editor.set_session(self.active_line_editor())
+            && let Some(connection) = &self.connection
+        {
+            let _ = connection.editor_input(self.generation, session, events);
+        }
         if let Some(path) = self.open_path.take() {
             match (&self.connection, self.workspaces.first()) {
                 (Some(connection), Some(workspace)) if self.status == LinkStatus::Connected => {

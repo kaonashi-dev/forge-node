@@ -85,19 +85,29 @@ impl Default for EditorUi {
 
 impl EditorUi {
     /// Points the surface at `session`, dropping everything about the previous one.
-    pub fn set_session(&mut self, session: Option<SessionId>) {
+    /// Points the editor at `session`. Input queued for the one it leaves is
+    /// handed back with that session, to be sent there rather than dropped,
+    /// as Tauri's editor flushes its batch to the original surface.
+    pub fn set_session(
+        &mut self,
+        session: Option<SessionId>,
+    ) -> Option<(SessionId, Vec<EditorInputEvent>)> {
         if self.session == session {
-            return;
+            return None;
         }
+        let left = self
+            .session
+            .filter(|_| !self.pending.is_empty())
+            .map(|old| (old, std::mem::take(&mut self.pending)));
         self.session = session;
         self.frame = None;
         self.requested = None;
-        self.pending.clear();
         self.preedit.clear();
         self.a11y_text = Rc::from("");
         self.a11y_rows.clear();
         self.last_caret = None;
         self.scroll.set([0.0, self.scroll.get()[1]]);
+        left
     }
 
     /// Forgets the last window request, so the next poll asks again (after a
@@ -301,6 +311,9 @@ pub fn document_line(frame: &EditorFrame, visual: u32) -> u32 {
 
 fn key_input(event: &KeyEvent) -> Option<EditorInputEvent> {
     let modifiers = modifier_bits(event.mods);
+    if let Some(comment) = alt_slash(event) {
+        return Some(comment);
+    }
     let key = match &event.key {
         Key::Text(value) if event.mods.ctrl || event.mods.alt || event.mods.cmd => {
             let mut chars = value.chars();
@@ -350,6 +363,23 @@ fn key_input(event: &KeyEvent) -> Option<EditorInputEvent> {
 /// Ctrl key that does the same thing: the table Tauri's editor uses
 /// (`editorChords.ts`). An unclaimed chord stays the app's, and ⌘V is left
 /// to the native paste event.
+/// Option-/ is the comment command, sent as the PTY-safe Ctrl-_ that ⌘/ is;
+/// Option turns `/` into `÷` on a US layout, so that counts too, but not
+/// Option-Shift-/ (`¿`), and not with ⌘ or Ctrl held.
+fn alt_slash(event: &KeyEvent) -> Option<EditorInputEvent> {
+    let mods = event.mods;
+    if !mods.alt || mods.cmd || mods.ctrl || mods.logo {
+        return None;
+    }
+    let Key::Text(value) = &event.key else {
+        return None;
+    };
+    (value == "/" || (!mods.shift && value == "÷")).then_some(EditorInputEvent::Key {
+        key: EditorKey::Char('_'),
+        modifiers: editor_modifiers::CONTROL,
+    })
+}
+
 fn command_chord(ch: char, mods: rune::Mods) -> Option<char> {
     let ch = ch.to_ascii_lowercase();
     if ch == '/' || (ch == '?' && mods.shift) {
@@ -554,6 +584,53 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(ui.take_requests().input, None);
+    }
+
+    #[test]
+    fn option_slash_is_the_comment_chord_even_as_a_division_sign() {
+        let alt = rune::Mods {
+            alt: true,
+            ..rune::Mods::default()
+        };
+        let key = |text: &str, mods| {
+            key_input(&KeyEvent {
+                key: Key::Text(text.into()),
+                mods,
+            })
+        };
+        let comment = Some(EditorInputEvent::Key {
+            key: EditorKey::Char('_'),
+            modifiers: editor_modifiers::CONTROL,
+        });
+        assert_eq!(key("/", alt), comment);
+        assert_eq!(key("÷", alt), comment);
+        assert_eq!(key("/", rune::Mods { shift: true, ..alt }), comment);
+        assert_ne!(key("¿", rune::Mods { shift: true, ..alt }), comment);
+        assert_ne!(key("/", rune::Mods { ctrl: true, ..alt }), comment);
+        assert_ne!(
+            key("/", rune::Mods::default()),
+            comment,
+            "a plain slash is text"
+        );
+    }
+
+    #[test]
+    fn input_queued_for_a_session_left_is_handed_back_for_it() {
+        let mut ui = EditorUi::default();
+        let (first, second) = (SessionId::new(), SessionId::new());
+        assert_eq!(ui.set_session(Some(first)), None);
+        assert!(ui.key(&KeyEvent {
+            key: Key::Text("a".into()),
+            mods: rune::Mods::default(),
+        }));
+        let left = ui.set_session(Some(second)).expect("the queued key");
+        assert_eq!(left.0, first, "sent to the session it was typed in");
+        assert_eq!(left.1.len(), 1);
+        assert_eq!(
+            ui.set_session(None),
+            None,
+            "nothing queued, nothing handed back"
+        );
     }
 
     #[test]
