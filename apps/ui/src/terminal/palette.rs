@@ -122,4 +122,29 @@ mod theme_tests {
             Palette::forge_dark().bg
         );
     }
+
+    #[test]
+    fn indexed_colours_follow_xterm_as_cell_grid_palette_does() {
+        let palette = Palette::for_base("calm-dark");
+        let at = |index: u8| palette.resolve(Color::Indexed(index), 0);
+        assert_ne!(
+            palette.fg, palette.bg,
+            "INVERSE needs the two defaults apart"
+        );
+        assert_eq!(palette.resolve(Color::Default, palette.bg), palette.bg);
+        assert_eq!(
+            at(0),
+            palette.ansi[0],
+            "the named sixteen come from the theme"
+        );
+        assert_eq!(at(15), palette.ansi[15]);
+        assert_eq!(at(16), rgb(0, 0, 0));
+        assert_eq!(at(231), rgb(0xff, 0xff, 0xff));
+        assert_eq!(at(196), rgb(0xff, 0, 0));
+        assert_eq!(at(46), rgb(0, 0xff, 0));
+        assert_eq!(at(21), rgb(0, 0, 0xff));
+        assert_eq!(at(232), rgb(8, 8, 8), "the grey ramp");
+        assert_eq!(at(255), rgb(0xee, 0xee, 0xee));
+        assert_eq!(palette.resolve(Color::Rgb(1, 2, 3), 0), rgb(1, 2, 3));
+    }
 }

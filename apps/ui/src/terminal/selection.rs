@@ -151,3 +151,86 @@ pub fn copy_text(viewport: &Viewport<'_>, sel: &Selection) -> Result<String, Cop
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal::fixture::titled_grid;
+
+    const CELL: (f32, f32) = (8.0, 18.0);
+
+    #[test]
+    fn a_range_reads_the_same_either_way_round() {
+        let grid = titled_grid(10, 4, "");
+        let viewport = Viewport {
+            grid: &grid,
+            scroll: 0,
+        };
+        let up = Selection {
+            anchor: (1, 2),
+            head: (3, 0),
+            granularity: Granularity::Cell,
+        };
+        let down = Selection {
+            anchor: (3, 0),
+            head: (1, 2),
+            granularity: Granularity::Cell,
+        };
+        assert_eq!(up.range(&viewport), ((3, 0), (1, 2)));
+        assert_eq!(up.range(&viewport), down.range(&viewport));
+    }
+
+    #[test]
+    fn spans_run_through_lines_and_clamp_as_columns_on_does() {
+        let range = ((2, 0), (4, 2));
+        assert_eq!(
+            span_on(range, 0, 10),
+            Some((2, 10)),
+            "to the end of the line"
+        );
+        assert_eq!(span_on(range, 1, 10), Some((0, 10)));
+        assert_eq!(span_on(range, 2, 10), Some((0, 5)));
+        assert_eq!(span_on(range, -1, 10), None);
+        assert_eq!(span_on(range, 3, 10), None);
+        assert_eq!(span_on(range, 2, 3), Some((0, 3)), "clamped to the row");
+        assert_eq!(
+            span_on(((5, 1), (5, 1)), 1, 10),
+            Some((5, 6)),
+            "the one cell a drag never left"
+        );
+    }
+
+    #[test]
+    fn a_word_keeps_a_path_whole_and_stops_at_shell_space() {
+        let grid = titled_grid(40, 4, "cd ~/dev/forge-node && ls");
+        let viewport = Viewport {
+            grid: &grid,
+            scroll: 0,
+        };
+        let top = viewport.top_abs();
+        let word = |col: u16| {
+            let ((from, _), (to, _)) =
+                Selection::new((col, top), Granularity::Word).range(&viewport);
+            (from, to)
+        };
+        assert_eq!(word(8), (3, 18), "~/dev/forge-node");
+        assert_eq!(word(0), (0, 1), "cd");
+        assert_eq!(word(2), (2, 2), "a separator selects itself");
+    }
+
+    #[test]
+    fn a_point_off_the_pane_clamps_to_the_line_ends() {
+        let grid = titled_grid(80, 4, "");
+        let viewport = Viewport {
+            grid: &grid,
+            scroll: 0,
+        };
+        assert_eq!(viewport.cell_at(9999.0, 0.0, CELL).0, 79);
+        assert_eq!(viewport.cell_at(-40.0, 0.0, CELL).0, 0);
+        assert_eq!(
+            viewport.cell_at(0.0, 36.0, CELL).1,
+            viewport.top_abs() + 2,
+            "lines count from the grid, so scrolling keeps them"
+        );
+    }
+}

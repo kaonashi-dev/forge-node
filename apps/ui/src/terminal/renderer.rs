@@ -705,9 +705,7 @@ impl Compositor<AppState> for Terminal {
             &mut |pass: &mut wgpu::RenderPass<'_>, s: &EffectSite<'_>| {
                 if s.mark == MARK_BASE {
                     let r = s.instance.rect;
-                    let cols = ((r[2] / cell_w).floor() as i64).max(0) as u16;
-                    let rows = ((r[3] / cell_h).floor() as i64).max(0) as u16;
-                    if cols > 0 && rows > 0 {
+                    if let Some((cols, rows)) = grid_cells(r[2], r[3], cell_w, cell_h) {
                         shared.set_measured(cols, rows);
                     }
                 }
@@ -789,4 +787,40 @@ impl Drop for Terminal {
 #[allow(dead_code)]
 fn _cursor_shape(cursor: Cursor) -> CursorShape {
     cursor.shape
+}
+
+/// Whole cells a pane of `width` × `height` holds, as Tauri's `gridSize`
+/// floors them. A pane with no whole cell keeps the last measure (`None`)
+/// rather than Tauri's 1 × 1: resizing the PTY to one cell would reflow it.
+#[must_use]
+pub fn grid_cells(width: f32, height: f32, cell_w: f32, cell_h: f32) -> Option<(u16, u16)> {
+    let whole = |length: f32, cell: f32| {
+        if cell > 0.0 {
+            (length / cell).floor().clamp(0.0, f32::from(u16::MAX)) as u16
+        } else {
+            0
+        }
+    };
+    let (cols, rows) = (whole(width, cell_w), whole(height, cell_h));
+    (cols > 0 && rows > 0).then_some((cols, rows))
+}
+
+#[cfg(test)]
+mod grid_tests {
+    #[test]
+    fn a_pane_floors_to_whole_cells_as_grid_size_does() {
+        assert_eq!(super::grid_cells(80.0, 180.0, 8.0, 18.0), Some((10, 10)));
+        assert_eq!(super::grid_cells(87.9, 197.0, 8.0, 18.0), Some((10, 10)));
+        assert_eq!(
+            super::grid_cells(0.0, 0.0, 8.0, 18.0),
+            None,
+            "keeps the last measure"
+        );
+        assert_eq!(super::grid_cells(-40.0, 100.0, 8.0, 18.0), None);
+        assert_eq!(
+            super::grid_cells(80.0, 180.0, 0.0, 18.0),
+            None,
+            "no cell, no grid"
+        );
+    }
 }
