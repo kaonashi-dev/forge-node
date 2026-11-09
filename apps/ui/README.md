@@ -12,7 +12,8 @@ Done: the rail (groups, folds, keyboard walk, "Needs you", projects, checkouts a
 order, sessions, add project, new worktree from a branch picker, remove worktree with the
 daemon's refusal and a force, action chips and the ▶ action menu), the actions editor,
 shared files (Settings and per checkout), ignored worktrees, terminal and agent sessions,
-the tab strip and sidebar views, the GPU terminal, the daemon editor surface, a live file
+the tab strip and sidebar views, the GPU terminal (split column, ⌘-links, click to move
+the cursor, zoom, bell attention, file drops), the daemon editor surface, a live file
 tree (watched folders, git decorations, filter, following the active editor) with
 Markdown, CSV, image and code previews, project search (⇧⌘F), quick open with recent
 files, the Git panel (diff, commit, Juva draft, fetch, stopped rebase), opening and

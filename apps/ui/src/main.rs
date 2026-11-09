@@ -410,6 +410,7 @@ fn run_app(
         .init(init)
         .on_ime(ime)
         .on_focus(window_focus)
+        .on_modifiers(|s: &mut AppState, mods, tx| s.terminal_modifiers(mods, tx))
         .compositor(compositor)
         .chrome(Chrome {
             full_size_content: true,

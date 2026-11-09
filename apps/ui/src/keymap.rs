@@ -24,6 +24,16 @@ pub enum Action {
     /// The strip's Nth tab, 1-based.
     FocusTab(usize),
     FindInFiles,
+    /// A terminal beside the active one.
+    SplitPane,
+    TerminalZoom(Zoom),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Zoom {
+    In,
+    Out,
+    Reset,
 }
 
 impl Action {
@@ -43,6 +53,7 @@ impl Action {
             | Action::NewAgent
             | Action::Settings
             | Action::FindInFiles => "Global",
+            Action::SplitPane | Action::TerminalZoom(_) => "Terminal",
         }
     }
 }
@@ -55,7 +66,7 @@ pub struct Binding {
 }
 
 /// Every chord `action_for` answers, in the order Settings lists them.
-pub const BINDINGS: [Binding; 21] = [
+pub const BINDINGS: [Binding; 25] = [
     Binding {
         label: "Command palette",
         chord: "⌘K",
@@ -161,6 +172,26 @@ pub const BINDINGS: [Binding; 21] = [
         chord: "⇧⌘F",
         action: Action::FindInFiles,
     },
+    Binding {
+        label: "Split pane",
+        chord: "⌘D",
+        action: Action::SplitPane,
+    },
+    Binding {
+        label: "Terminal: Zoom In",
+        chord: "⌘=",
+        action: Action::TerminalZoom(Zoom::In),
+    },
+    Binding {
+        label: "Terminal: Zoom Out",
+        chord: "⌘-",
+        action: Action::TerminalZoom(Zoom::Out),
+    },
+    Binding {
+        label: "Terminal: Actual Size",
+        chord: "⌘0",
+        action: Action::TerminalZoom(Zoom::Reset),
+    },
 ];
 
 /// What Option and a digit type on a US layout. Matched by the character,
@@ -219,6 +250,11 @@ fn command(ch: char, shift: bool) -> Option<Action> {
         (']' | '}', true) => Action::NextSession,
         ('[' | '{', true) => Action::PreviousSession,
         ('f', true) => Action::FindInFiles,
+        ('d', false) => Action::SplitPane,
+        // `=` is the unshifted plus; `+` covers the keycap and a numpad plus.
+        ('=' | '+', _) => Action::TerminalZoom(Zoom::In),
+        ('-', false) => Action::TerminalZoom(Zoom::Out),
+        ('0', false) => Action::TerminalZoom(Zoom::Reset),
         _ => return None,
     })
 }
@@ -279,6 +315,18 @@ mod tests {
         assert_eq!(action_for(&chord('}', true)), Some(Action::NextSession));
         assert_eq!(action_for(&chord('[', true)), Some(Action::PreviousSession));
         assert_eq!(action_for(&chord('F', true)), Some(Action::FindInFiles));
+        assert_eq!(action_for(&chord('d', false)), Some(Action::SplitPane));
+        for plus in [chord('=', false), chord('=', true), chord('+', true)] {
+            assert_eq!(action_for(&plus), Some(Action::TerminalZoom(Zoom::In)));
+        }
+        assert_eq!(
+            action_for(&chord('-', false)),
+            Some(Action::TerminalZoom(Zoom::Out))
+        );
+        assert_eq!(
+            action_for(&chord('0', false)),
+            Some(Action::TerminalZoom(Zoom::Reset))
+        );
     }
 
     #[test]
