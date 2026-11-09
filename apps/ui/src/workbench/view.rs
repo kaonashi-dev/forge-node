@@ -4,38 +4,14 @@ use rune::{El, GrowthSpec, ScrollSpec, col, el, rich, row, text};
 use rune_kit::diff::DiffView;
 use rune_kit::syntax::SyntaxTheme;
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, FileNode, Kit, Markdown, SegmentedControl, Tree, TreeItem,
-    TreeStyle,
+    Button, ButtonVariant, ControlSize, FileNode, Kit, Markdown, Tree, TreeItem, TreeStyle,
 };
 
-use super::{CenterMode, Preview};
+use super::Preview;
 use crate::app::AppState;
 
-const MODES: [(&str, CenterMode); 6] = [
-    ("Session", CenterMode::Session),
-    ("Projects", CenterMode::Projects),
-    ("Changes", CenterMode::Changes),
-    ("Files", CenterMode::Files),
-    ("Pull Requests", CenterMode::PullRequests),
-    ("Settings", CenterMode::Settings),
-];
 const TREE_W: f32 = 280.0;
 const CODE_ROW_H: f32 = 18.0;
-
-pub fn mode_switch(s: &AppState, k: &Kit) -> El {
-    let labels: Vec<&str> = MODES.iter().map(|(label, _)| *label).collect();
-    let selected = MODES.iter().position(|(_, mode)| *mode == s.workbench.mode);
-    SegmentedControl::new(&labels, selected)
-        .label("Centre view")
-        .fit()
-        .on_pick(|s: &mut AppState, index: usize, _tx| {
-            if let Some((_, mode)) = MODES.get(index) {
-                s.show_mode(*mode);
-            }
-        })
-        .build(k)
-        .key("centre-mode")
-}
 
 fn bar(k: &Kit, title: String, detail: String) -> El {
     let refresh = Button::new("Refresh")
@@ -534,33 +510,23 @@ fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
 
 pub fn settings(s: &AppState, k: &Kit) -> El {
     let rule = || el().h(1.0).w_full().fill(k.c.border_weak);
-    col()
-        .key("settings")
-        .w_full()
-        .h_full()
-        .min_h(0.0)
-        .child(bar(
-            k,
-            "Settings".into(),
-            "Appearance · Storage · Stats & usage".into(),
-        ))
-        .child(
-            col()
-                .key("settings-body")
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                .padding(20.0)
-                .gap(16.0)
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                .child(crate::appearance::section(s, k))
-                .child(rule())
-                .child(crate::storage::section(s, k))
-                .child(rule())
-                .child(crate::usage::section(s, k)),
-        )
+    col().key("settings").w_full().h_full().min_h(0.0).child(
+        col()
+            .key("settings-body")
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .padding(20.0)
+            .gap(16.0)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .child(crate::appearance::section(s, k))
+            .child(rule())
+            .child(crate::storage::section(s, k))
+            .child(rule())
+            .child(crate::usage::section(s, k)),
+    )
 }
 
 #[cfg(test)]

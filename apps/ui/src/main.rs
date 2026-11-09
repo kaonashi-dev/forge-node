@@ -1,9 +1,11 @@
 mod app;
 mod appearance;
 mod bench;
+mod chrome;
 mod commit;
 mod connection;
 mod editor;
+mod glyphs;
 mod keymap;
 mod launch;
 mod palette;

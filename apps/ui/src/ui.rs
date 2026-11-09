@@ -5,10 +5,7 @@
 use std::time::Instant;
 
 use rune::{Cx, El, Icon, col, effect, el, row, text};
-use rune_kit::shell::{
-    Sidebar, SidebarRow, SidebarToggle, SplitView, TabItem, TabItemStatus, TabOrientation,
-    TabStrip, Toolbar,
-};
+use rune_kit::shell::{Sidebar, SidebarRow, SidebarToggle, SplitView, Toolbar};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 
 use crate::app::{AppState, CommandStatus, LinkStatus, SessionRow, SessionStatus};
@@ -31,7 +28,6 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(tabbar(s, cx, &k))
         .child(center(s, &k));
     let shell = SplitView::new(main)
         .sidebar(
@@ -89,84 +85,52 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     root
 }
 
+/// Tauri's card strip: the checkout's tabs, then its actions; the band the
+/// window drags by.
 fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
-    let create = Button::new("New terminal")
-        .variant(ButtonVariant::Ghost)
-        .control_size(ControlSize::Regular)
-        .on_press(|s: &mut AppState| s.request_create())
-        .build(k)
-        .key("new-session");
-    let rename = Button::new("Rename")
-        .variant(ButtonVariant::Ghost)
-        .control_size(ControlSize::Regular)
-        .on_press(|s: &mut AppState| s.request_rename())
-        .build(k)
-        .key("rename-session");
-    let refresh = Button::new("Refresh")
-        .variant(ButtonVariant::GhostMuted)
-        .control_size(ControlSize::Regular)
-        .on_press(|s: &mut AppState| s.request_refresh())
-        .build(k)
-        .key("refresh-snapshot");
-    let reconnect = Button::new("Reconnect")
-        .variant(ButtonVariant::GhostMuted)
-        .control_size(ControlSize::Regular)
-        .on_press(|s: &mut AppState| s.request_reconnect())
-        .build(k)
-        .key("force-reconnect");
-    let mut bar = Toolbar::new()
-        .title("Forge Node")
-        .trailing(crate::workbench::view::mode_switch(s, k));
+    let mut bar = Toolbar::new().leading(crate::chrome::strip(s, k));
     // Refresh and Reconnect are probes of the client, not things a person does.
     if s.debug {
-        bar = bar.trailing(refresh).trailing(reconnect);
+        let probe = |label: &'static str, key: &'static str, press: fn(&mut AppState)| {
+            Button::new(label)
+                .variant(ButtonVariant::GhostMuted)
+                .control_size(ControlSize::Small)
+                .on_press(press)
+                .build(k)
+                .key(key)
+        };
+        bar = bar
+            .trailing(probe(
+                "Refresh",
+                "refresh-snapshot",
+                AppState::request_refresh,
+            ))
+            .trailing(probe(
+                "Reconnect",
+                "force-reconnect",
+                AppState::request_reconnect,
+            ));
     }
-    bar.trailing(rename).trailing(create)
-}
-
-fn tabbar(s: &AppState, cx: &mut Cx<AppState>, k: &Kit) -> El {
-    let tabs = s.tab_rows();
-    let items = tabs.iter().map(|session| {
-        TabItem::new(session.id_text.as_str(), session.title.as_str())
-            .status(tab_status(session.status))
-            .closable(true)
-    });
-    let strip = TabStrip::new("session-tabs", TabOrientation::Horizontal)
-        .tabs(items)
-        .active(s.active_text.as_deref())
-        .viewport_width(cx.layout_size("session-tabs").map(|size| size[0]))
-        .drag_state(&s.tabs, |s: &mut AppState| &mut s.tabs)
-        .label("Sessions")
-        .on_select(|s: &mut AppState, id: &str, _| {
-            if let Ok(id) = id.parse::<domain::SessionId>() {
-                s.select(id);
-            }
-        })
-        .on_close(|s: &mut AppState, id: &str, _| {
-            if let Ok(id) = id.parse::<domain::SessionId>() {
-                s.request_close(id);
-            }
-        })
-        .build(k);
-    row()
-        .key("tabbar")
-        .w_full()
-        .h(44.0)
-        .px(8.0)
-        .center_y()
-        .fill(k.c.bg_deep)
-        .child(strip)
+    let [create, jump] = crate::chrome::actions(k);
+    bar.trailing(create).trailing(jump)
 }
 
 fn sidebar(s: &AppState, k: &Kit) -> El {
-    let header = SidebarRow::new("New terminal")
-        .select_only()
-        .icon(&PLUS)
-        .height(32.0)
-        .detail("⌘T")
-        .on_select(|s: &mut AppState, _| s.request_create())
-        .build(k)
-        .key("sidebar-new-session");
+    let header = col()
+        .key("sidebar-header")
+        .w_full()
+        .gap(8.0)
+        .child(crate::chrome::views(s, k))
+        .child(
+            SidebarRow::new("New terminal")
+                .select_only()
+                .icon(&PLUS)
+                .height(32.0)
+                .detail("⌘T")
+                .on_select(|s: &mut AppState, _| s.request_create())
+                .build(k)
+                .key("sidebar-new-session"),
+        );
     let body = Sidebar::new()
         .label("Sessions")
         .inset(0.0)
@@ -239,20 +203,7 @@ fn empty_row(k: &Kit) -> El {
 
 fn status_row(s: &AppState, k: &Kit) -> El {
     if !s.debug {
-        // Tauri's footer speaks only when the daemon is not there.
-        let message = match s.status {
-            LinkStatus::Connected => return el().key("connection-status").h(0.0),
-            LinkStatus::Connecting => "Connecting to the daemon…",
-            LinkStatus::Reconnecting => "Daemon disconnected",
-        };
-        return row()
-            .key("connection-status")
-            .role("status")
-            .w_full()
-            .h(30.0)
-            .px(8.0)
-            .center_y()
-            .child(text(message).font(k.ty.small).color(k.c.text_muted));
+        return crate::chrome::footer(s, k);
     }
     let color = match s.status {
         LinkStatus::Connected => k.c.success.icon,
@@ -352,7 +303,7 @@ fn terminal_surface(s: &AppState, k: &Kit) -> El {
         .fill(k.c.bg_deep)
         .child(session_crumbs(s, k))
         .children(provider_chip(s, k))
-        .child(focus);
+        .children(s.debug.then_some(focus));
     col()
         .key("terminal-surface")
         .w_full()
@@ -708,14 +659,6 @@ fn command_line(command: Option<&CommandStatus>, k: &Kit) -> El {
                 .color(color)
                 .truncate(),
         )
-}
-
-fn tab_status(status: Option<SessionStatus>) -> Option<TabItemStatus> {
-    match status {
-        Some(SessionStatus::Busy) => Some(TabItemStatus::Busy),
-        Some(SessionStatus::Attention) => Some(TabItemStatus::Attention),
-        None => None,
-    }
 }
 
 fn row_status(status: SessionStatus) -> rune_kit::shell::RowStatus {

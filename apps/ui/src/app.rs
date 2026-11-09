@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use client::Store;
 use domain::{ActivityState, SessionId, SessionKind, TerminalId, WorkspaceId};
 use rune::{Ime, KeyEvent, Tx};
-use rune_kit::shell::{PaneState, TabDragState};
+use rune_kit::shell::PaneState;
 
 use crate::connection::{ConnectionHandle, Metrics, UiEvent};
 use crate::editor::EditorUi;
@@ -106,7 +106,6 @@ pub struct CommandStatus {
 
 pub struct AppState {
     pub sidebar: PaneState,
-    pub tabs: TabDragState,
     pub store: Option<Store>,
     pub rows: Vec<SessionRow>,
     pub workspaces: Vec<WorkspaceChoice>,
@@ -178,7 +177,6 @@ impl AppState {
         metrics.note_ui_thread();
         let mut state = Self {
             sidebar: PaneState::new(276.0).range(180.0, 480.0),
-            tabs: TabDragState::new(),
             store: None,
             rows: Vec::new(),
             workspaces: Vec::new(),
