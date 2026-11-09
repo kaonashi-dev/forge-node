@@ -140,11 +140,23 @@ fn run_headless(options: cli::Options) -> anyhow::Result<()> {
         }
         flush_save(&mut app, &mut control)?;
         flush_lookups(&mut app, &mut control)?;
+        write_clipboard(&mut app, &mut std::io::stdout())?;
         publish_state(&mut app, &mut control, &mut last_state)?;
         if incoming.is_empty() || published.elapsed() >= FRAME {
             publish_frame(&mut app, &mut control, buffer_id, &mut last_frame)?;
             published = std::time::Instant::now();
         }
+    }
+    Ok(())
+}
+
+/// A copy leaves through the PTY as an OSC 52, the way the TUI's does: the
+/// daemon already turns one into `ClipboardStore` for the GUI showing this
+/// session, so the headless host needs no clipboard message of its own.
+fn write_clipboard(app: &mut App, out: &mut impl std::io::Write) -> std::io::Result<()> {
+    if let Some(escape) = app.take_clipboard_escape() {
+        out.write_all(escape.as_bytes())?;
+        out.flush()?;
     }
     Ok(())
 }
