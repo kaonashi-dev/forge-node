@@ -447,13 +447,13 @@ fn encode_extras(
     let cur = grid.cursor;
     let (cc, cl) = (cur.col as usize, cur.line as usize);
     if scroll == 0 && cur.visible && cur.shape != CursorShape::Hidden && cursor_on {
-        let (x, y) = (cc as f32 * cw, cl as f32 * ch);
-        let line = (2.0_f32 * scale).max(1.0);
-        out[rows] = match cur.shape {
-            CursorShape::Underline => solid(x, y + ch - line, cw, line, CURSOR),
-            CursorShape::Beam => solid(x, y, line, ch, CURSOR),
-            _ => solid(x, y, cw, ch, CURSOR),
-        };
+        let wide = grid
+            .visible
+            .get(cl)
+            .and_then(|row| row.cells.get(cc))
+            .is_some_and(|cell| cell.flags.contains(domain::CellFlags::WIDE_CHAR));
+        let [x, y, w, h] = caret_rect(cc, cl, wide, (cw, ch), cur.shape, scale);
+        out[rows] = solid(x, y, w, h, CURSOR);
     }
     if !preedit.is_empty() && scroll == 0 {
         let (bg, rest) = out[rows + 1..].split_at_mut(PREEDIT_MAX_CHARS);
@@ -492,6 +492,29 @@ fn encode_extras(
             col += span;
             k += 1;
         }
+    }
+}
+
+/// The caret's rectangle in device pixels, as Tauri's `caretRect`: a beam
+/// or underline is one logical pixel snapped onto the device grid, so a
+/// fractional cell width never blurs it; a block covers a wide cell whole;
+/// an underline stays inside its cell.
+#[must_use]
+pub fn caret_rect(
+    col: usize,
+    line: usize,
+    wide: bool,
+    (cw, ch): (f32, f32),
+    shape: CursorShape,
+    scale: f32,
+) -> [f32; 4] {
+    let stroke = scale.round().max(1.0);
+    let x = (col as f32 * cw).round();
+    let y = line as f32 * ch;
+    match shape {
+        CursorShape::Beam => [x, y, stroke, ch],
+        CursorShape::Underline => [x, (y + ch - stroke).round(), cw, stroke],
+        _ => [col as f32 * cw, y, if wide { cw * 2.0 } else { cw }, ch],
     }
 }
 
@@ -807,6 +830,40 @@ pub fn grid_cells(width: f32, height: f32, cell_w: f32, cell_h: f32) -> Option<(
 
 #[cfg(test)]
 mod grid_tests {
+    #[test]
+    fn the_caret_is_snapped_and_sized_as_caret_rect_says() {
+        use domain::CursorShape;
+        let cell = (7.8_f32, 16.0_f32);
+        let beam = |col, scale: f32| {
+            super::caret_rect(
+                col,
+                0,
+                false,
+                (cell.0 * scale, cell.1 * scale),
+                CursorShape::Beam,
+                scale,
+            )
+        };
+        assert_eq!(beam(0, 1.0)[2], 1.0, "one device pixel at scale 1");
+        assert_eq!(beam(0, 2.0)[2], 2.0, "two at scale 2");
+        let x = beam(1, 2.0)[0];
+        assert_eq!(x, (7.8_f32 * 2.0).round(), "snapped onto the device grid");
+        assert_eq!(x.fract(), 0.0);
+        let narrow = super::caret_rect(0, 0, false, cell, CursorShape::Block, 1.0);
+        let wide = super::caret_rect(0, 0, true, cell, CursorShape::Block, 1.0);
+        assert_eq!(narrow[2], cell.0);
+        assert_eq!(wide[2], cell.0 * 2.0, "a block covers a wide cell");
+        assert_eq!(wide[3], cell.1);
+        let device = (cell.0 * 2.0, cell.1 * 2.0);
+        let under = super::caret_rect(3, 2, false, device, CursorShape::Underline, 2.0);
+        let (top, bottom) = (2.0 * device.1, 3.0 * device.1);
+        assert!(
+            under[1] >= top && under[1] + under[3] <= bottom,
+            "inside its cell"
+        );
+        assert_eq!(under[3], 2.0);
+    }
+
     #[test]
     fn a_pane_floors_to_whole_cells_as_grid_size_does() {
         assert_eq!(super::grid_cells(80.0, 180.0, 8.0, 18.0), Some((10, 10)));
