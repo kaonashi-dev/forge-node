@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# Build `Forge Node Rune.app`: the Rune client (apps/ui) with this checkout's
+# forge-daemon and forge-editor beside it, to open from Finder or `open` and
+# review the client as it is now. A development bundle: not signed, not
+# notarized, not an installer. scripts/package-macos still builds what ships.
+#
+#   scripts/rune-app          # build dist/rune/Forge Node Rune.app
+#   scripts/rune-app --open   # build, then open it
+#
+# The app keeps its own data in ~/.forge-node-rune (FORGE_RUNE_HOME overrides)
+# and starts its own daemon there, so it never shares the everyday daemon's
+# database: this branch's daemon could migrate it past what the installed app
+# reads. Add projects from inside the app the first time.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+open_after=0
+case "${1:-}" in
+  --open) open_after=1 ;;
+  "") ;;
+  -h|--help) sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) printf 'rune-app: unknown argument %s\n' "$1" >&2; exit 2 ;;
+esac
+
+[ "$(uname -s)" = "Darwin" ] || { printf 'rune-app: macOS only\n' >&2; exit 1; }
+
+export SDKROOT="${SDKROOT:-$("$root/scripts/macos-sdk")}"
+
+printf '==> forge-daemon and forge-editor (release)\n'
+# The repository's own target/: CARGO_TARGET_DIR is apps/ui's (scripts/dev ui).
+env -u CARGO_TARGET_DIR cargo build --release -p daemon --bin forge-daemon -p editor-cli --bin forge-editor
+
+printf '==> forge-ui (release)\n'
+"$root/scripts/dev" ui build
+ui_target="${CARGO_TARGET_DIR:-$root/apps/ui/target}"
+
+app="$root/dist/rune/Forge Node Rune.app"
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp "$ui_target/release/forge-ui" "$app/Contents/MacOS/forge-ui"
+cp "$root/target/release/forge-daemon" "$root/target/release/forge-editor" "$app/Contents/MacOS/"
+[ -f "$root/assets/icon/forge.icns" ] && cp "$root/assets/icon/forge.icns" "$app/Contents/Resources/forge.icns"
+
+cat > "$app/Contents/MacOS/ForgeNodeRune" <<'LAUNCHER'
+#!/bin/bash
+# Its own home and socket, so it never meets the everyday daemon or its data.
+here="$(cd "$(dirname "$0")" && pwd)"
+export FORGE_HOME="${FORGE_RUNE_HOME:-$HOME/.forge-node-rune}"
+export FORGE_SOCKET="$FORGE_HOME/daemon.sock"
+mkdir -p "$FORGE_HOME"
+# The daemon looks for forge-editor on the login PATH first, where an
+# installed Forge Node's older editor may be; point it at this bundle's.
+if [ ! -f "$FORGE_HOME/config.toml" ]; then
+  printf '[editor]\nsurface = "dom"\nexecutable = "%s/forge-editor"\n' "$here" > "$FORGE_HOME/config.toml"
+fi
+exec "$here/forge-ui" --socket "$FORGE_SOCKET" --spawn-daemon --daemon-bin "$here/forge-daemon"
+LAUNCHER
+chmod +x "$app/Contents/MacOS/ForgeNodeRune"
+
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
+cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Forge Node Rune</string>
+  <key>CFBundleDisplayName</key><string>Forge Node Rune</string>
+  <key>CFBundleIdentifier</key><string>dev.forgenode.rune.preview</string>
+  <key>CFBundleExecutable</key><string>ForgeNodeRune</string>
+  <key>CFBundleIconFile</key><string>forge</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${version:-0.0.0}</string>
+  <key>CFBundleVersion</key><string>${version:-0.0.0}</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+plutil -lint "$app/Contents/Info.plist" >/dev/null
+
+printf '==> %s\n' "$app"
+if [ "$open_after" -eq 1 ]; then
+  open "$app"
+fi

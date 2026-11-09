@@ -39,7 +39,7 @@ endif
         test test-rust test-frontend test-tauri check check-fast \
         codegen tokens fixtures fmt clippy clean clean-rust clean-ui clean-tauri \
         package package-linux dist install-local info \
-        build-rune build-rune-debug run-rune check-rune
+        build-rune build-rune-debug run-rune check-rune app-rune open-rune
 
 help: ## Show this help
 	@printf 'Forge make targets (macOS=%s)\n\n' "$(UNAME_S)"
@@ -56,7 +56,8 @@ help: ## Show this help
 	@printf '  make install-local         # rebuild, replace /Applications app, relaunch\n'
 	@printf '\nRune client (apps/ui, own toolchain):\n'
 	@printf '  make build-rune            # release forge-ui\n'
-	@printf '  make run-rune              # build and run against the daily daemon\n'
+	@printf '  make open-rune             # build Forge Node Rune.app and open it (own data)\n'
+	@printf '  make run-rune              # build and run with recorded fixture data\n'
 	@printf '  make check-rune            # fmt + clippy + tests for apps/ui\n'
 	@printf '\nGate:\n'
 	@printf '  make check                 # fmt + clippy + rust + vitest + tsc\n'
@@ -131,7 +132,13 @@ build-rune-debug: ## Debug build of the Rune client
 	cd "$(ROOT)" && RUSTUP_TOOLCHAIN="$$(sed -n 's/^channel = "\(.*\)"/\1/p' apps/ui/rust-toolchain.toml)" \
 		cargo build --manifest-path apps/ui/Cargo.toml
 
-run-rune: ## Build and run the Rune client (release)
+app-rune: ## Build dist/rune/Forge Node Rune.app with its own daemon and data
+	"$(ROOT)/scripts/rune-app"
+
+open-rune: ## Build Forge Node Rune.app and open it
+	"$(ROOT)/scripts/rune-app" --open
+
+run-rune: ## Run the Rune client on recorded fixture data (no daemon)
 	"$(ROOT)/scripts/dev" ui run
 
 check-rune: ## Rune gate: fmt + clippy + tests for apps/ui
