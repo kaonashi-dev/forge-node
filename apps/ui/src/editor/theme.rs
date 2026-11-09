@@ -59,11 +59,19 @@ pub fn for_base(base: &str, dark: bool) -> EditorPalette {
             }
         }
     };
-    let rev = theme::bases()
-        .iter()
-        .position(|b| b == id)
-        .map_or(0, |i| i as u64 + 1);
+    let rev = theme::bases().iter().position(|b| b == id).map_or_else(
+        || {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            id.hash(&mut hasher);
+            hasher.finish() | 1 << 63
+        },
+        |i| i as u64 + 1,
+    );
     let palette = EditorPalette::from_colors(&colors.editor, rev);
+    if cache.len() >= theme::CACHE_LIMIT {
+        cache.clear();
+    }
     cache.insert(base.to_string(), palette);
     palette
 }

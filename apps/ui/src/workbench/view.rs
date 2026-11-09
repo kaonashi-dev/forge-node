@@ -521,38 +521,7 @@ fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
 }
 
 pub fn settings(s: &AppState, k: &Kit) -> El {
-    let chosen = s.theme_pref.as_deref();
-    let option = |label: String, value: &str, selected: bool| {
-        let id = value.to_string();
-        Button::new(label)
-            .variant(if selected {
-                ButtonVariant::Outline
-            } else {
-                ButtonVariant::Ghost
-            })
-            .control_size(ControlSize::Regular)
-            .on_press(move |s: &mut AppState| s.choose_theme(id.clone()))
-            .build(k)
-            .key(format!("theme-{value}"))
-    };
-    let mut list = col()
-        .key("theme-options")
-        .gap(4.0)
-        .role("radiogroup")
-        .label("Theme")
-        .child(option(
-            "Match system".into(),
-            crate::theme::SYSTEM,
-            chosen == Some(crate::theme::SYSTEM),
-        ));
-    let painted = s.theme_base(k.dark).to_string();
-    for base in crate::theme::bases() {
-        let Some(theme) = crate::theme::theme(base) else {
-            continue;
-        };
-        let selected = chosen != Some(crate::theme::SYSTEM) && painted == *base;
-        list = list.child(option(theme.label.clone(), base, selected));
-    }
+    let rule = || el().h(1.0).w_full().fill(k.c.border_weak);
     col()
         .key("settings")
         .w_full()
@@ -561,7 +530,7 @@ pub fn settings(s: &AppState, k: &Kit) -> El {
         .child(bar(
             k,
             "Settings".into(),
-            "Appearance · Stats & usage".into(),
+            "Appearance · Storage · Stats & usage".into(),
         ))
         .child(
             col()
@@ -570,13 +539,14 @@ pub fn settings(s: &AppState, k: &Kit) -> El {
                 .grow(1.0)
                 .min_h(0.0)
                 .padding(20.0)
-                .gap(12.0)
+                .gap(16.0)
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
-                .child(text("Theme").font(k.ty.body_medium).color(k.c.text_base))
-                .child(list)
-                .child(el().h(1.0).w_full().fill(k.c.border_weak))
+                .child(crate::appearance::section(s, k))
+                .child(rule())
+                .child(crate::storage::section(s, k))
+                .child(rule())
                 .child(crate::usage::section(s, k)),
         )
 }

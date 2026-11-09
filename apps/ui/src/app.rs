@@ -96,6 +96,8 @@ pub struct AppState {
     pub commit: crate::commit::CommitBox,
     pub review: Option<crate::pr_review::ReviewDialog>,
     pub usage: crate::usage::Usage,
+    pub storage: crate::storage::Storage,
+    pub theme_editor: crate::appearance::ThemeEditor,
     pub sync: crate::sync::Sync,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
@@ -166,6 +168,8 @@ impl AppState {
             commit: crate::commit::CommitBox::default(),
             review: None,
             usage: crate::usage::Usage::default(),
+            storage: crate::storage::Storage::default(),
+            theme_editor: crate::appearance::ThemeEditor::default(),
             sync: crate::sync::Sync::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
@@ -849,14 +853,6 @@ impl AppState {
         }
     }
 
-    /// Picks a base, or `"system"`, and saves it where Tauri keeps it.
-    pub fn choose_theme(&mut self, value: String) {
-        if let Some(connection) = &self.connection {
-            let _ = connection.set_app_state(crate::theme::THEME_KEY, &value);
-        }
-        self.theme_pref = Some(value);
-    }
-
     /// The base to paint with: the saved one, the system's pair for
     /// `"system"`, and calm-dark when nothing is saved, as in Tauri.
     #[must_use]
@@ -907,8 +903,21 @@ impl AppState {
         }
     }
 
+    fn sync_storage(&mut self) {
+        let storage = &mut self.storage;
+        if self.workbench.mode != CenterMode::Settings || storage.asked == Some(self.generation) {
+            return;
+        }
+        if let Some(connection) = &self.connection
+            && connection.paths(self.generation).is_ok()
+        {
+            storage.asked = Some(self.generation);
+        }
+    }
+
     fn sync_workbench(&mut self) {
         self.sync_usage();
+        self.sync_storage();
         self.commit.follow(self.workbench.workspace);
         if let Some(query) = self.palette.take_search() {
             self.sync_workbench_workspace();
@@ -1158,6 +1167,19 @@ impl AppState {
                 }
                 self.workbench
                     .apply_file(workspace_id, result.map(|file| *file));
+                true
+            }
+            UiEvent::Paths { generation, result } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                match result {
+                    Ok(paths) => {
+                        self.storage.error = None;
+                        self.storage.paths = Some(*paths);
+                    }
+                    Err(error) => self.storage.error = Some(error),
+                }
                 true
             }
             UiEvent::Usage {

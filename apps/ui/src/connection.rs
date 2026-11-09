@@ -107,6 +107,9 @@ pub enum Command {
         generation: u64,
         window_days: u16,
     },
+    Paths {
+        generation: u64,
+    },
     KillSession(SessionId),
     CloseSession(SessionId),
     RebaseStep {
@@ -208,6 +211,10 @@ pub enum UiEvent {
         generation: u64,
         window_days: u16,
         result: Result<Box<domain::UsageAnalytics>, String>,
+    },
+    Paths {
+        generation: u64,
+        result: Result<Box<(protocol::ForgePaths, std::path::PathBuf)>, String>,
     },
     Rebase {
         generation: u64,
@@ -438,6 +445,10 @@ impl ConnectionHandle {
             generation,
             window_days,
         })
+    }
+
+    pub fn paths(&self, generation: u64) -> Result<(), String> {
+        self.send(Command::Paths { generation })
     }
 
     pub fn add_project(&self, path: std::path::PathBuf) -> Result<(), String> {
@@ -912,6 +923,7 @@ fn handle_fixture_command(
         | Command::SetAppState { .. }
         | Command::AddProject(_)
         | Command::Usage { .. }
+        | Command::Paths { .. }
         | Command::KillSession(_)
         | Command::CloseSession(_)
         | Command::RebaseStep { .. }
@@ -1677,6 +1689,19 @@ fn handle_live_command(
                 result,
             }]);
         }
+        Command::Paths {
+            generation: command_generation,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .paths()
+                .map(Box::new)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Paths { generation, result }]);
+        }
         Command::AddProject(path) => {
             metrics.note_socket_op();
             let result = client
@@ -1854,6 +1879,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::SetAppState { .. } => "SetAppState",
         Command::AddProject(_) => "AddProject",
         Command::Usage { .. } => "GetUsageAnalytics",
+        Command::Paths { .. } => "GetPaths",
         Command::KillSession(_) => "KillSession",
         Command::CloseSession(_) => "CloseSession",
         Command::RebaseStep { .. } => "RebaseStep",

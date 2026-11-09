@@ -1,48 +1,75 @@
 //! Colours from `apps/tauri/src/theme/tokens.ts`, the one source, resolved by
 //! `bun run theme:rune` into `themes.json`. A Tauri test fails when the two
-//! drift, so nothing here mixes, lifts or invents a colour.
+//! drift. A built-in base is read, never derived; only a custom theme (JSON
+//! stored in `ui.theme_base`, as Tauri stores it) is derived, by `custom`.
+
+pub mod custom;
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
+
+pub use custom::Palette;
 
 const THEMES_JSON: &str = include_str!("themes.json");
 /// Where the choice lives in the daemon's `app_state`, shared with Tauri.
 pub const THEME_KEY: &str = "ui.theme_base";
+/// The last custom theme, kept so choosing a base does not lose it.
+pub const CUSTOM_KEY: &str = "ui.custom_theme";
 /// The stored value that follows the system's light or dark.
 pub const SYSTEM: &str = "system";
 /// What a person who never chose sees, as in Tauri.
 pub const DEFAULT_BASE: &str = "calm-dark";
+/// Previews of a custom theme are distinct keys; past this many, caches restart.
+pub const CACHE_LIMIT: usize = 24;
 
 #[derive(Deserialize)]
 struct ThemeFile {
     bases: Vec<String>,
     themes: HashMap<String, Theme>,
+    accents: Accents,
+    #[cfg(test)]
+    variants: Vec<VariantCase>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Theme {
     pub label: String,
     pub light: bool,
-    pub palette: TermColors,
+    pub palette: Palette,
     pub editor: EditorColors,
 }
 
-/// The palette's ground, text and accent for the chrome, and the terminal's
-/// ground, text and sixteen named colours.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TermColors {
-    pub bg: String,
-    pub text: String,
-    pub accent: String,
-    pub term_bg: String,
-    pub term_fg: String,
-    pub ansi: Vec<String>,
+pub struct Swatch {
+    pub name: String,
+    pub color: String,
 }
 
 #[derive(Debug, Deserialize)]
+struct Accents {
+    dark: Vec<Swatch>,
+    light: Vec<Swatch>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Deserialize)]
+pub struct VariantColor {
+    pub key: String,
+    pub value: String,
+}
+
+#[cfg(test)]
+#[derive(Debug, Deserialize)]
+pub struct VariantCase {
+    pub base: String,
+    pub color: Option<VariantColor>,
+    pub contrast: u8,
+    pub expected: custom::CustomTheme,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorColors {
     pub background: String,
@@ -61,7 +88,7 @@ pub struct EditorColors {
     pub scopes: Scopes,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Scopes {
     pub comment: String,
@@ -86,13 +113,108 @@ fn file() -> &'static ThemeFile {
     })
 }
 
+fn built_in() -> &'static HashMap<String, Arc<Theme>> {
+    static THEMES: OnceLock<HashMap<String, Arc<Theme>>> = OnceLock::new();
+    THEMES.get_or_init(|| {
+        let raw: ThemeFile =
+            serde_json::from_str(THEMES_JSON).expect("themes.json is generated and tested");
+        raw.themes
+            .into_iter()
+            .map(|(id, theme)| (id, Arc::new(theme)))
+            .collect()
+    })
+}
+
 /// The bases a person can pick, in `tokens.ts` order.
 pub fn bases() -> &'static [String] {
     &file().bases
 }
 
-pub fn theme(base: &str) -> Option<&'static Theme> {
-    file().themes.get(base)
+/// Tauri's accent swatches for a light or dark theme.
+pub fn accents(light: bool) -> &'static [Swatch] {
+    if light {
+        &file().accents.light
+    } else {
+        &file().accents.dark
+    }
+}
+
+#[cfg(test)]
+pub fn variant_fixture() -> Vec<custom_fixture::Case> {
+    custom_fixture::cases(&file().variants)
+}
+
+#[cfg(test)]
+mod custom_fixture {
+    use super::custom::{CustomTheme, ThemeColor};
+
+    pub struct Case {
+        pub label: String,
+        pub base: String,
+        pub name: String,
+        pub color: Option<(ThemeColor, String)>,
+        pub contrast: u8,
+        pub expected: CustomTheme,
+    }
+
+    pub fn cases(raw: &[super::VariantCase]) -> Vec<Case> {
+        raw.iter()
+            .map(|case| Case {
+                label: format!(
+                    "{} {:?} {}",
+                    case.base,
+                    case.color.as_ref().map(|c| (&c.key, &c.value)),
+                    case.contrast
+                ),
+                base: case.base.clone(),
+                name: case.expected.name.clone(),
+                color: case.color.as_ref().map(|color| {
+                    let key = match color.key.as_str() {
+                        "accent" => ThemeColor::Accent,
+                        "bg" => ThemeColor::Bg,
+                        _ => ThemeColor::Text,
+                    };
+                    (key, color.value.clone())
+                }),
+                contrast: case.contrast,
+                expected: case.expected.clone(),
+            })
+            .collect()
+    }
+}
+
+/// Whether a stored preference is a custom theme rather than a base id.
+#[must_use]
+pub fn is_custom(value: &str) -> bool {
+    value.starts_with('{')
+}
+
+/// A base by id, or a custom theme by its JSON; `None` for anything unknown
+/// or invalid, so the caller falls back rather than painting nothing.
+pub fn theme(base: &str) -> Option<Arc<Theme>> {
+    if !is_custom(base) {
+        return built_in().get(base).cloned();
+    }
+    static CUSTOM: OnceLock<Mutex<HashMap<String, Arc<Theme>>>> = OnceLock::new();
+    let cache = CUSTOM.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(found) = cache.get(base) {
+        return Some(Arc::clone(found));
+    }
+    let parsed = custom::parse(base).ok()?;
+    let theme = Arc::new(Theme {
+        label: parsed.name.clone(),
+        light: parsed.mode == "light",
+        editor: custom::editor_colors(&parsed.palette),
+        palette: parsed.palette,
+    });
+    if cache.len() >= CACHE_LIMIT {
+        cache.clear();
+    }
+    cache.insert(base.to_string(), Arc::clone(&theme));
+    Some(theme)
 }
 
 /// The base shown when none is chosen: the calm pair, following the system.
@@ -126,7 +248,11 @@ pub fn kit(base: &str, fallback_dark: bool) -> rune_kit::Kit {
             },
             None => rune_kit::Kit::neutral(fallback_dark),
         };
-        kits.borrow_mut().insert(base.to_string(), kit.clone());
+        let mut kits = kits.borrow_mut();
+        if kits.len() >= CACHE_LIMIT {
+            kits.clear();
+        }
+        kits.insert(base.to_string(), kit.clone());
         kit
     })
 }
@@ -144,5 +270,16 @@ mod tests {
         }
         assert!(!theme(default_base(true)).expect("calm-dark").light);
         assert!(theme(default_base(false)).expect("calm-light").light);
+        assert_eq!(accents(false).len(), accents(true).len());
+    }
+
+    #[test]
+    fn a_custom_theme_resolves_like_a_base() {
+        let source = theme("gruvbox").expect("gruvbox").palette.clone();
+        let json = custom::variant("Mine", source, 70).to_json();
+        let found = theme(&json).expect("a valid custom theme resolves");
+        assert_eq!(found.label, "Mine");
+        assert!(!found.light);
+        assert!(theme("{not json").is_none());
     }
 }

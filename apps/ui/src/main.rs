@@ -1,4 +1,5 @@
 mod app;
+mod appearance;
 mod bench;
 mod commit;
 mod connection;
@@ -10,6 +11,7 @@ mod pr_review;
 mod probe;
 mod projects;
 mod session_label;
+mod storage;
 mod sync;
 mod terminal;
 mod theme;

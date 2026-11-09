@@ -44,9 +44,10 @@ impl Palette {
     /// is unknown or its entry does not parse.
     pub fn for_base(base: &str) -> Self {
         let mut palette = Self::forge_dark();
-        let Some(colors) = crate::theme::theme(base).map(|theme| &theme.palette) else {
+        let Some(theme) = crate::theme::theme(base) else {
             return palette;
         };
+        let colors = &theme.palette;
         let named: Option<Vec<u32>> = colors.ansi.iter().take(16).map(|c| parse_hex(c)).collect();
         if let (Some(fg), Some(bg), Some(named)) = (
             parse_hex(&colors.term_fg),
