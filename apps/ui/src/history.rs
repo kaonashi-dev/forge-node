@@ -23,10 +23,23 @@ const SCOPES: [(Scope, &str); 3] = [
     (Scope::Everywhere, "All"),
 ];
 
+/// A run whose transcript is about to be deleted, held while the person
+/// confirms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingDelete {
+    pub session_id: String,
+    pub provider: String,
+    pub profile_id: Option<domain::AgentProfileId>,
+    pub title: String,
+}
+
 #[derive(Default)]
 pub struct History {
     pub scope: Scope,
     pub query: TextEdit,
+    pub confirm_delete: Option<PendingDelete>,
+    /// Why the daemon refused the last delete, said in the panel.
+    pub error: Option<String>,
     /// Store positions, newest first, with each run's lowered search text;
     /// built when the store changes so a keystroke only filters.
     pub index: Vec<(usize, String)>,
@@ -101,6 +114,40 @@ impl AppState {
             .iter()
             .any(|(id, _)| id.as_str() == session.provider);
         (!installed).then(|| format!("{} is not installed", session.provider))
+    }
+
+    /// Asks before deleting a run's transcript: it cannot be undone.
+    pub fn request_delete(&mut self, at: usize) {
+        let Some(session) = self
+            .store
+            .as_ref()
+            .and_then(|store| store.external_agents.get(at))
+        else {
+            return;
+        };
+        self.history.error = None;
+        self.history.confirm_delete = Some(PendingDelete {
+            session_id: session.session_id.clone(),
+            provider: session.provider.clone(),
+            profile_id: session.profile_id,
+            title: session.title.clone(),
+        });
+    }
+
+    pub fn confirm_delete(&mut self) {
+        let Some(pending) = self.history.confirm_delete.take() else {
+            return;
+        };
+        match &self.connection {
+            Some(connection) => {
+                let _ = connection.delete_transcript(
+                    pending.session_id,
+                    pending.provider,
+                    pending.profile_id,
+                );
+            }
+            None => self.history.error = Some("Not connected to the daemon.".into()),
+        }
     }
 
     pub fn resume_run(&mut self, at: usize) {
@@ -264,7 +311,20 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     .truncate(),
             );
         }
-        list = list.child(card.child(row().child(resume.build(k).key(format!("resume-{at}")))));
+        let delete = Button::new("Delete…")
+            .variant(ButtonVariant::GhostMuted)
+            .control_size(ControlSize::Small)
+            .on_press(move |s: &mut AppState| s.request_delete(at))
+            .build(k)
+            .key(format!("delete-{at}"));
+        list = list.child(
+            card.child(
+                row()
+                    .gap(4.0)
+                    .child(resume.build(k).key(format!("resume-{at}")))
+                    .child(delete),
+            ),
+        );
     }
     col()
         .key("history")
@@ -275,6 +335,14 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .child(text("History").font(k.ty.small_medium).color(k.c.text_base))
         .child(scopes)
         .child(filter)
+        .children(history.error.as_ref().map(|error| {
+            text(format!("Could not delete the transcript: {error}"))
+                .key("history-error")
+                .role("alert")
+                .font(k.ty.text_xsmall)
+                .color(k.c.warning.fg)
+                .wrap()
+        }))
         .child(
             col()
                 .key("history-scroll")
@@ -286,6 +354,63 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 })
                 .child(list),
         )
+}
+
+/// The confirmation names what is *not* lost: someone reading "delete" in a
+/// tool that manages worktrees has every reason to fear for the checkout.
+pub fn delete_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
+    let Some(pending) = &s.history.confirm_delete else {
+        return;
+    };
+    let cancel = Button::new("Cancel")
+        .variant(ButtonVariant::Ghost)
+        .on_press(|s: &mut AppState| s.history.confirm_delete = None)
+        .build(k)
+        .key("delete-cancel");
+    let delete = Button::new("Delete")
+        .variant(ButtonVariant::Danger)
+        .on_press(|s: &mut AppState| s.confirm_delete())
+        .build(k)
+        .key("delete-confirm");
+    rune_kit::Dialog::new(
+        "delete-transcript",
+        format!("Delete \"{}\"?", pending.title),
+    )
+    .open(true)
+    .fit()
+    .width(440.0)
+    .on_close(|s: &mut AppState| s.history.confirm_delete = None)
+    .child(
+        col()
+            .w_full()
+            .px(24.0)
+            .pb(4.0)
+            .gap(14.0)
+            .child(
+                text(delete_description(&pending.provider))
+                    .key("delete-description")
+                    .font(k.ty.small)
+                    .color(k.c.text_muted)
+                    .w_full()
+                    .wrap(),
+            )
+            .child(
+                row()
+                    .gap(8.0)
+                    .child(rune::el().grow(1.0))
+                    .child(cancel)
+                    .child(delete),
+            ),
+    )
+    .build(k, layer);
+}
+
+#[must_use]
+pub fn delete_description(provider: &str) -> String {
+    format!(
+        "Removes {provider}'s transcript for this run from disk. The conversation cannot be \
+         resumed or read afterwards. Your code and branches are untouched."
+    )
 }
 
 #[cfg(test)]
@@ -377,6 +502,45 @@ mod tests {
         assert!(
             shown(&sessions, &index, Scope::Checkout, None, None, "").is_empty(),
             "no checkout, nothing scoped to one"
+        );
+    }
+
+    #[test]
+    fn deleting_a_transcript_asks_first_and_names_what_is_kept() {
+        let store = crate::connection::fixture_store(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"),
+        )
+        .expect("fixture snapshot decodes");
+        let mut state = AppState::for_bench(
+            store,
+            std::sync::Arc::new(crate::connection::Metrics::default()),
+            crate::terminal::SharedTerminal::new(),
+        );
+        let project = ProjectId::new();
+        state
+            .store
+            .as_mut()
+            .expect("store")
+            .external_agents
+            .push(run("Fix the parser", project, None, "2026-10-01T00:00:00Z"));
+        let at = state.store.as_ref().expect("store").external_agents.len() - 1;
+        state.request_delete(at);
+        let pending = state
+            .history
+            .confirm_delete
+            .clone()
+            .expect("asks before deleting");
+        assert_eq!(pending.title, "Fix the parser");
+        assert_eq!(pending.provider, "claude");
+        state.history.confirm_delete = None;
+        assert!(
+            state.history.confirm_delete.is_none(),
+            "cancel keeps the transcript"
+        );
+        let words = delete_description("claude");
+        assert!(
+            words.contains("cannot be resumed")
+                && words.contains("code and branches are untouched")
         );
     }
 }

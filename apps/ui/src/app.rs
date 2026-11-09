@@ -1412,6 +1412,9 @@ impl AppState {
                 if label == "ResizeTerminal" {
                     self.terminal.requested = None;
                 }
+                if label == "DeleteExternalSession" && !ok {
+                    self.history.error = Some(message.clone());
+                }
                 if label == "RemoveWorktree"
                     && let Some(workspace) = self.projects.removing.take()
                     && !ok

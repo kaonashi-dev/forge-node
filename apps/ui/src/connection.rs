@@ -149,6 +149,13 @@ pub enum Command {
         resume: Option<String>,
     },
     RestartSession(SessionId),
+    /// Deletes a recorded run's transcript from disk, then re-reads the
+    /// snapshot: history reaches the client only on a snapshot.
+    DeleteTranscript {
+        session_id: String,
+        provider: String,
+        profile_id: Option<domain::AgentProfileId>,
+    },
     CreateWorktree {
         project_id: domain::ProjectId,
         branch: String,
@@ -400,6 +407,19 @@ impl ConnectionHandle {
             initial_prompt: None,
             read_only: false,
             resume: Some(resume),
+        })
+    }
+
+    pub fn delete_transcript(
+        &self,
+        session_id: String,
+        provider: String,
+        profile_id: Option<domain::AgentProfileId>,
+    ) -> Result<(), String> {
+        self.send(Command::DeleteTranscript {
+            session_id,
+            provider,
+            profile_id,
         })
     }
 
@@ -954,6 +974,7 @@ fn handle_fixture_command(
         | Command::Paths { .. }
         | Command::KillSession(_)
         | Command::RestartSession(_)
+        | Command::DeleteTranscript { .. }
         | Command::CloseSession(_)
         | Command::RebaseStep { .. }
         | Command::RunAction { .. }
@@ -1688,6 +1709,30 @@ fn handle_live_command(
             }]);
             live_result(generation, label, result, sink, metrics, started);
         }
+        Command::DeleteTranscript {
+            session_id,
+            provider,
+            profile_id,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .delete_external_session(session_id, provider, profile_id)
+                .map(|()| "deleted transcript".to_string())
+                .map_err(|error| error.to_string());
+            if result.is_ok()
+                && let Ok((store, took_us)) = load_snapshot(client, metrics)
+            {
+                emit_snapshot(generation, &store, took_us, sink, metrics);
+            }
+            live_result(
+                generation,
+                "DeleteExternalSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
         Command::RestartSession(session_id) => {
             metrics.note_socket_op();
             let result = client
@@ -1900,6 +1945,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::Paths { .. } => "GetPaths",
         Command::KillSession(_) => "KillSession",
         Command::RestartSession(_) => "RestartSession",
+        Command::DeleteTranscript { .. } => "DeleteExternalSession",
         Command::CloseSession(_) => "CloseSession",
         Command::RebaseStep { .. } => "RebaseStep",
         Command::RunAction { .. } => "RunAction",
