@@ -91,10 +91,10 @@ impl Section {
         match self {
             Section::General => &glyphs::SETTINGS,
             Section::Agents => &glyphs::AGENT,
-            Section::Keyboard => &rune_kit::glyphs::KEYBOARD,
-            Section::Storage => &rune_kit::glyphs::FOLDER,
-            Section::Stats => &glyphs::ACTIVITY,
-            Section::Appearance => &rune_kit::glyphs::SPARKLE,
+            Section::Keyboard => &glyphs::KEYBOARD,
+            Section::Storage => &glyphs::FILES,
+            Section::Stats => &glyphs::STATS,
+            Section::Appearance => &glyphs::APPEARANCE,
         }
     }
 }
