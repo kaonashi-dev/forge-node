@@ -1,0 +1,230 @@
+{
+  "editor": {
+    "blocked": null,
+    "caret_frame_ms": {
+      "max": 2.3,
+      "p50": 0.755,
+      "p95": 1.018
+    },
+    "caret_rows_rebuilt": 0,
+    "caret_view_ms": {
+      "max": 0.399,
+      "p50": 0.135,
+      "p95": 0.193
+    },
+    "display_measured": false,
+    "folds": 6,
+    "key_to_paint_cpu_ms": {
+      "max": 1.03,
+      "p50": 0.826,
+      "p95": 0.87
+    },
+    "key_to_paint_rows_rebuilt": 0,
+    "mount_ms": 15.65,
+    "mount_rows_built": 88,
+    "mount_view_ms": 0.337,
+    "notes": [
+      "key_to_paint_cpu_ms is a CPU proxy: key handler, one state update and one 125 Hz frame; display and vsync are not measured",
+      "caret-only frames change doc_version and the caret, never a row fingerprint",
+      "rows_rebuilt counts text-row memo builds (EditorUi::row_builds)"
+    ],
+    "rate_hz": 125.0,
+    "rows": 88,
+    "socket_ops": 0,
+    "ui_socket_ops": 0,
+    "visible_rows": 88
+  },
+  "fixture": {
+    "echo_ms": {
+      "max": 0.643,
+      "p50": 0.524,
+      "p95": 0.608
+    },
+    "iterations": 500,
+    "sessions": 12,
+    "socket_ops": 0,
+    "switch_ms": {
+      "max": 0.665,
+      "p50": 0.55,
+      "p95": 0.601
+    },
+    "ui_socket_ops": 0,
+    "view_ms": {
+      "max": 0.18,
+      "p50": 0.112,
+      "p95": 0.124
+    }
+  },
+  "machine": {
+    "arch": "aarch64",
+    "os": "macos",
+    "profile": "release",
+    "rune": "938ba14f09bb3381946b3486ef8aa36363a3e8b2",
+    "rust": "1.99.1-aarch64-apple-darwin",
+    "unix_ms": 1794242866048
+  },
+  "schema": 1,
+  "terminal_125": {
+    "blocked": null,
+    "build_allocations": 20,
+    "build_ms": {
+      "max": 5.75,
+      "p50": 0.51,
+      "p95": 0.912
+    },
+    "cols": 128,
+    "delta_apply_ms": {
+      "max": 0.016,
+      "p50": 0.003,
+      "p95": 0.006
+    },
+    "deltas_applied": 300,
+    "draw_calls": 300,
+    "encode_allocations": 0,
+    "encode_ms": {
+      "max": 2.086,
+      "p50": 0.137,
+      "p95": 0.239
+    },
+    "feed": "rich full scroll (every row rebuilt every frame)",
+    "frame_cpu_ms": {
+      "max": 7.087,
+      "p50": 1.632,
+      "p95": 2.743
+    },
+    "frames": 300,
+    "glyph_misses": 0,
+    "gpu": "Apple M2 (Metal)",
+    "gpu_init_ms": 23.023,
+    "host_frame_ms": {
+      "max": 7.158,
+      "p50": 1.665,
+      "p95": 2.791
+    },
+    "instances_per_draw": 38002,
+    "notes": [
+      "one synthetic delta per frame through SharedTerminal::apply_delta, the path the fixture worker uses",
+      "the shell view is not rebuilt per delta; the compositor draws the pane",
+      "build/encode are the compositor's CPU clocks; GPU time is not included",
+      "frames are paced to 125 Hz; paced_loop_interval_ms includes the sleep and macOS timer overshoot, not display cadence"
+    ],
+    "paced_loop_interval_ms": {
+      "max": 14.666,
+      "p50": 9.499,
+      "p95": 10.007
+    },
+    "rate_hz": 125.0,
+    "rows": 49,
+    "rows_uploaded": 14700,
+    "socket_ops": 0,
+    "total_cpu_ms": {
+      "max": 7.092,
+      "p50": 1.636,
+      "p95": 2.747
+    },
+    "ui_socket_ops": 0,
+    "update_ms": {
+      "max": 6.267,
+      "p50": 0.912,
+      "p95": 1.546
+    },
+    "view_commits": 0,
+    "view_ms": null
+  },
+  "startup": {
+    "definition": "cold = first launch after the build; warm = the next two, median; launch to the first Drawn frame; RSS 0/1/2 s measured from that first frame, spawn at exec",
+    "cold": {
+      "label": "cold",
+      "status": "ok",
+      "launch_to_first_frame_ms": 247.0,
+      "rss_mib": {
+        "spawn": 1.75,
+        "0s": 115.88,
+        "1s": 116.36,
+        "2s": 116.36
+      },
+      "marker": {
+        "encode_ms": 7.621375,
+        "pid": 20878,
+        "refresh_hz": 60.0000024000001,
+        "seq": 0,
+        "update_ms": 6.305041
+      }
+    },
+    "warm": [
+      {
+        "label": "warm1",
+        "status": "ok",
+        "launch_to_first_frame_ms": 182.0,
+        "rss_mib": {
+          "spawn": 0.19,
+          "0s": 116.8,
+          "1s": 117.12,
+          "2s": 117.12
+        },
+        "marker": {
+          "encode_ms": 5.158792,
+          "pid": 20925,
+          "refresh_hz": 60.0000024000001,
+          "seq": 0,
+          "update_ms": 4.826416
+        }
+      },
+      {
+        "label": "warm2",
+        "status": "ok",
+        "launch_to_first_frame_ms": 181.0,
+        "rss_mib": {
+          "spawn": 0.19,
+          "0s": 116.09,
+          "1s": 117.75,
+          "2s": 117.92
+        },
+        "marker": {
+          "encode_ms": 5.415957999999999,
+          "pid": 20970,
+          "refresh_hz": 60.0000024000001,
+          "seq": 0,
+          "update_ms": 4.829417
+        }
+      }
+    ],
+    "warm_median": {
+      "launch_to_first_frame_ms": 181.5,
+      "rss_mib": {
+        "spawn": 0.19,
+        "0s": 116.445,
+        "1s": 117.435,
+        "2s": 117.52000000000001
+      }
+    },
+    "headless_proxy": null,
+    "blocked": null
+  },
+  "tauri": {
+    "canonical_command": "make latency-tauri",
+    "status": "measured",
+    "blocker": null,
+    "command": "forge-tauri-latency with an isolated forge-daemon (prebuilt binaries)",
+    "p50_ms": 9.1,
+    "p95_ms": 9.9,
+    "p99_ms": 10.0,
+    "samples": 120,
+    "lost": 0,
+    "frame_bytes": {
+      "mean": 572,
+      "max": 1623
+    },
+    "latency_binary": "/Users/kaonashi/dev/forge-node/target/debug/forge-tauri-latency",
+    "daemon_binary": "/Users/kaonashi/dev/forge-node/target/debug/forge-daemon",
+    "note": "isolated daemon (protocol-matched), same machine",
+    "stdout": "samples: 120 (lost 0)\nkey-to-delta: p50 9.1 ms \u00b7 p95 9.9 ms \u00b7 p99 10.0 ms \u00b7 budget 50 ms\nframe on the wire: mean 572 B \u00b7 max 1623 B\nfull repaint: 1767 B for 100\u00d732 cells"
+  },
+  "harness": {
+    "binary": "/Users/kaonashi/dev/forge-node-rune-target/release/forge-ui",
+    "iterations": 500,
+    "frames": 300,
+    "wrapper": "apps/ui/scripts/perf.sh",
+    "note": "terminal and editor samples are CPU clocks on a headless GPU; display vsync is not measured"
+  }
+}
