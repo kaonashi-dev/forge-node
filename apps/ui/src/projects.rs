@@ -466,4 +466,29 @@ mod tests {
             .find(|element| element.key.as_deref() == Some(chip.as_str()));
         assert!(found.is_some(), "the pinned action is on its checkout");
     }
+
+    #[test]
+    fn a_pull_request_is_labelled_as_workspace_card_labels_it() {
+        let mut pr: domain::PullRequest = serde_json::from_value(serde_json::json!({
+            "project_id": null, "repository": "o/r", "host": "github.com", "number": 12,
+            "title": "Title", "body": "", "body_truncated": false, "url": "https://x/12",
+            "author": "a", "base_ref": "main", "head_ref": "b", "is_draft": false,
+            "review_decision": "Approved", "labels": [], "assignees": [],
+            "review_requests": [], "additions": 1, "deletions": 0, "changed_files": 1,
+            "comment_count": 0, "created_at": "2026-11-09T00:00:00Z",
+            "updated_at": "2026-11-09T00:00:00Z",
+            "relations": { "assigned": false, "review_requested": false, "authored": true }
+        }))
+        .expect("a pull request");
+        assert_eq!(pr_label(&pr), "#12 · approved · Title");
+        pr.is_draft = true;
+        assert_eq!(
+            pr_label(&pr),
+            "#12 · draft · Title",
+            "draft wins over the decision"
+        );
+        pr.is_draft = false;
+        pr.review_decision = None;
+        assert_eq!(pr_label(&pr), "#12 · Title");
+    }
 }

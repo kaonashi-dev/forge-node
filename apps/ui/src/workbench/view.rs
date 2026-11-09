@@ -395,18 +395,30 @@ fn preview_view(preview: &Preview, k: &Kit) -> El {
 }
 
 /// A rebase, merge or cherry-pick that git stopped, and its unmerged paths.
+/// The sequencer operation as a sentence names it, as Tauri's `operationName`:
+/// unknown is a rebase, the only one older daemons reported.
+fn operation_name(operation: Option<domain::SequencerOp>) -> String {
+    match operation {
+        None | Some(domain::SequencerOp::Rebase) => "Rebase".into(),
+        Some(domain::SequencerOp::Merge) => "Merge".into(),
+        Some(domain::SequencerOp::CherryPick) => "Cherry-pick".into(),
+        Some(domain::SequencerOp::Revert) => "Revert".into(),
+        Some(other) => format!("{other:?}"),
+    }
+}
+
+/// `step 3 of 7`, as `rebaseSteps` says it: a step past the end is the last
+/// one, and an unknown or empty replay says nothing.
+fn step_label(step: Option<u32>, total: Option<u32>) -> Option<String> {
+    let (step, total) = (step?, total?);
+    (total > 0).then(|| format!("step {} of {total}", step.clamp(1, total)))
+}
+
 fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
     use crate::workbench::RebaseStep;
-    let what = match state.operation {
-        Some(domain::SequencerOp::Rebase) => "Rebase",
-        Some(domain::SequencerOp::Merge) => "Merge",
-        Some(domain::SequencerOp::CherryPick) => "Cherry-pick",
-        Some(domain::SequencerOp::Revert) => "Revert",
-        _ => "Operation",
-    };
-    let mut title = format!("{what} stopped");
-    if let (Some(step), Some(total)) = (state.step, state.total) {
-        title.push_str(&format!(" at {step} of {total}"));
+    let mut title = format!("{} stopped", operation_name(state.operation));
+    if let Some(step) = step_label(state.step, state.total) {
+        title.push_str(&format!(", {step}"));
     }
     if let Some(onto) = &state.onto {
         title.push_str(&format!(" onto {onto}"));
@@ -631,5 +643,38 @@ mod tests {
                 .into_iter()
                 .any(|e| e.key.as_deref() == Some("preview-lines"))
         );
+    }
+
+    #[test]
+    fn git_words_follow_git_view() {
+        use super::{operation_name, status_letter, status_word, step_label};
+        use domain::{DiffStatus, SequencerOp};
+        assert_eq!(
+            [
+                DiffStatus::Added,
+                DiffStatus::Modified,
+                DiffStatus::Deleted,
+                DiffStatus::Conflicted
+            ]
+            .map(status_letter),
+            ["A", "M", "D", "U"]
+        );
+        assert_eq!(status_word(DiffStatus::Conflicted), "unresolved conflict");
+        assert_eq!(status_word(DiffStatus::Modified), "modified");
+        assert_eq!(step_label(Some(3), Some(7)).as_deref(), Some("step 3 of 7"));
+        assert_eq!(
+            step_label(Some(50), Some(100)).as_deref(),
+            Some("step 50 of 100")
+        );
+        assert_eq!(
+            step_label(Some(9), Some(4)).as_deref(),
+            Some("step 4 of 4"),
+            "clamped"
+        );
+        assert_eq!(step_label(None, None), None);
+        assert_eq!(step_label(Some(1), Some(0)), None);
+        assert_eq!(operation_name(Some(SequencerOp::CherryPick)), "Cherry-pick");
+        assert_eq!(operation_name(Some(SequencerOp::Merge)), "Merge");
+        assert_eq!(operation_name(None), "Rebase");
     }
 }

@@ -59,6 +59,38 @@ pub struct SessionRow {
     pub running: bool,
 }
 
+#[must_use]
+pub fn strip_workspace(
+    chosen: Option<WorkspaceId>,
+    active: Option<WorkspaceId>,
+    first: Option<WorkspaceId>,
+) -> Option<WorkspaceId> {
+    chosen.or(active).or(first)
+}
+
+/// A checkout's tabs: its sessions with a terminal, and its editors (which
+/// Rune shows as tabs, unlike Tauri's Code strip). No checkout is no tabs,
+/// never every session.
+#[must_use]
+pub fn rows_in_strip(rows: &[SessionRow], workspace: Option<WorkspaceId>) -> Vec<&SessionRow> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter(|row| {
+            row.workspace_id == workspace
+                && (row.terminal_id.is_some() || row.kind == SessionKind::Editor)
+        })
+        .collect()
+}
+
+/// ⌘W closes a session only while its terminal is what the centre shows: a
+/// session is not recoverable, so a view over it never reaches for it.
+#[must_use]
+pub fn closes_session(mode: CenterMode) -> bool {
+    mode == CenterMode::Session
+}
+
 #[derive(Clone, Debug)]
 pub struct WorkspaceChoice {
     pub id: WorkspaceId,
@@ -419,7 +451,9 @@ impl AppState {
             Action::FilePalette => self.palette.show(true),
             Action::NewShell => self.request_create(),
             Action::CloseSession => {
-                if let Some(active) = self.active {
+                if let Some(active) = self.active
+                    && closes_session(self.workbench.mode)
+                {
                     self.request_close(active);
                 }
             }
@@ -484,14 +518,15 @@ impl AppState {
     /// The sessions the tab strip shows: the active session's checkout only,
     /// as Tauri scopes its strip.
     #[must_use]
+    /// The checkout's strip, as Tauri's `sessionScope`: the checkout the
+    /// window was pointed at, else the active session's, else the first.
     pub fn tab_rows(&self) -> Vec<&SessionRow> {
-        let Some(workspace) = self.active_row().map(|row| row.workspace_id) else {
-            return self.rows.iter().collect();
-        };
-        self.rows
-            .iter()
-            .filter(|row| row.workspace_id == workspace)
-            .collect()
+        let workspace = strip_workspace(
+            self.chosen_workspace,
+            self.active_row().map(|row| row.workspace_id),
+            self.workspaces.first().map(|choice| choice.id),
+        );
+        rows_in_strip(&self.rows, workspace)
     }
 
     fn step_session(&mut self, delta: isize) {
@@ -2490,5 +2525,69 @@ mod tests {
             &mut tx,
         );
         assert!(state.terminal.selection.is_some());
+    }
+
+    fn strip_row(
+        workspace: domain::WorkspaceId,
+        kind: SessionKind,
+        live: bool,
+    ) -> super::SessionRow {
+        let id = domain::SessionId::new();
+        super::SessionRow {
+            id,
+            kind,
+            terminal_id: live.then(domain::TerminalId::new),
+            id_text: id.to_string(),
+            title: String::new(),
+            workspace_id: workspace,
+            workspace: String::new(),
+            detail: String::new(),
+            status: None,
+            running: live,
+        }
+    }
+
+    #[test]
+    fn the_strip_shows_one_checkout_as_session_scope_does() {
+        use super::{rows_in_strip, strip_workspace};
+        let (a, b) = (domain::WorkspaceId::new(), domain::WorkspaceId::new());
+        let rows = vec![
+            strip_row(a, SessionKind::Shell, true),
+            strip_row(b, SessionKind::Shell, true),
+            strip_row(a, SessionKind::Agent, false),
+            strip_row(a, SessionKind::Editor, false),
+        ];
+        let ids = |workspace| {
+            rows_in_strip(&rows, workspace)
+                .iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(Some(a)),
+            vec![rows[0].id, rows[3].id],
+            "another worktree's sessions and a session without a terminal stay out"
+        );
+        assert!(
+            ids(None).is_empty(),
+            "no checkout is no tabs, never all of them"
+        );
+        assert_eq!(strip_workspace(Some(b), Some(a), Some(a)), Some(b));
+        assert_eq!(strip_workspace(None, Some(a), Some(b)), Some(a));
+        assert_eq!(strip_workspace(None, None, Some(b)), Some(b));
+    }
+
+    #[test]
+    fn close_reaches_a_session_only_while_its_terminal_is_shown() {
+        assert!(super::closes_session(CenterMode::Session));
+        for mode in [
+            CenterMode::Settings,
+            CenterMode::Changes,
+            CenterMode::Files,
+            CenterMode::PullRequests,
+            CenterMode::Projects,
+        ] {
+            assert!(!super::closes_session(mode), "{mode:?}");
+        }
     }
 }
