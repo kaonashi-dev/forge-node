@@ -5,6 +5,7 @@ mod chrome;
 mod commit;
 mod connection;
 mod editor;
+mod file_icons;
 mod fuzzy;
 mod glyphs;
 mod history;

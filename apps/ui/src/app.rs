@@ -61,6 +61,8 @@ pub struct SessionRow {
     pub running: bool,
     /// How a session that stopped ended, in Tauri's words.
     pub ended: Option<String>,
+    /// An editor's file mark, resolved when the store changes.
+    pub file: Option<crate::file_icons::FileIcon>,
 }
 
 #[must_use]
@@ -299,6 +301,10 @@ impl AppState {
                     running: session.state.is_active(),
                     ended: (!session.state.is_active())
                         .then(|| crate::session_label::state_label(&session.state)),
+                    file: session
+                        .editor
+                        .as_ref()
+                        .map(|editor| crate::file_icons::for_path(&editor.path)),
                 }
             })
             .collect();
@@ -2781,6 +2787,7 @@ mod tests {
             status: None,
             running: live,
             ended: None,
+            file: None,
         }
     }
 

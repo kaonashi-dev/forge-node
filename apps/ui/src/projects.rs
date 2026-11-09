@@ -350,9 +350,9 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                         .child(
                             rune::icon(
                                 if workspace.kind == WorkspaceKind::Main {
-                                    &crate::glyphs::FILES
-                                } else {
                                     &crate::glyphs::GIT
+                                } else {
+                                    &crate::glyphs::WORKTREE
                                 },
                                 13.0,
                             )

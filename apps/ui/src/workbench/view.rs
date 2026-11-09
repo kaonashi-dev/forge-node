@@ -9,6 +9,7 @@ use rune_kit::{
 
 use super::{CenterMode, Preview};
 use crate::app::AppState;
+use crate::file_icons::FileIcon;
 
 const CODE_ROW_H: f32 = 18.0;
 
@@ -321,13 +322,26 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
             .font(k.ty.small)
             .color(k.c.text_faint);
     }
+    let light = !k.dark;
     Tree::new(
         |s: &AppState| &s.workbench.files.tree,
         |s: &mut AppState| &mut s.workbench.files.tree,
         FileNode::label,
     )
-    .row(|node: &FileNode<()>, r| TreeItem::file(node, r))
-    .style(TreeStyle::from_kit(k).chevron_only_folders(true))
+    .row(move |node: &FileNode<FileIcon>, r| {
+        let mark = match (node.data, r.expanded) {
+            (Some(file), _) => Some(file.icon(light)),
+            (None, Some(true)) => Some(&crate::glyphs::FOLDER_OPEN),
+            (None, Some(false)) => Some(&crate::glyphs::FILES),
+            (None, None) => None,
+        };
+        let item = TreeItem::new(node.name.clone());
+        match mark {
+            Some(mark) => item.icon(mark),
+            None => item,
+        }
+    })
+    .style(TreeStyle::from_kit(k))
     .name("Files")
     .on_select(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))
     .on_open(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))

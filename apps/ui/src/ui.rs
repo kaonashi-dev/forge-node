@@ -147,14 +147,15 @@ fn sidebar(s: &AppState, k: &Kit) -> El {
 pub fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) -> El {
     let selected = s.active == Some(session.id) && s.workbench.mode == CenterMode::Session;
     let id = session.id;
-    let glyph = crate::glyphs::for_session(session.kind, session.provider.as_deref());
+    let glyph = crate::glyphs::for_row(session, selected, !k.dark);
     let mut item = SidebarRow::new(session.title.as_str())
         .select_only()
         .height(30.0)
-        .avatar(icon(glyph, 14.0).color(if selected {
-            k.c.icon_base
-        } else {
-            k.c.icon_muted
+        .avatar(icon(glyph, 14.0).color(match session.status {
+            _ if selected => k.c.icon_base,
+            Some(SessionStatus::Attention) => k.c.warning.icon,
+            Some(SessionStatus::Busy) => k.c.icon_accent,
+            None => k.c.icon_muted,
         }))
         .selected(selected)
         .on_select(move |s: &mut AppState, _| {
@@ -661,11 +662,14 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     for (index, entry) in entries.iter().enumerate().take(30) {
         let selected = index == s.palette.selected;
         let chosen = entry.clone();
-        let kind = match entry {
+        let (kind, mark) = match entry {
             crate::palette::Entry::Command { command, .. } => {
-                crate::palette::chord(command).unwrap_or_default()
+                (crate::palette::chord(command).unwrap_or_default(), None)
             }
-            crate::palette::Entry::File(_) => "file",
+            crate::palette::Entry::File(path) => (
+                "file",
+                Some(crate::file_icons::for_path(path).icon(!k.dark)),
+            ),
         };
         list = list.child(
             row()
@@ -684,6 +688,7 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                     rune::Color::TRANSPARENT
                 })
                 .on_press(move |s: &mut AppState| s.run_palette(chosen.clone()))
+                .children(mark.map(|mark| icon(mark, 14.0)))
                 .child(
                     text(entry.label().to_string())
                         .font(k.ty.small)

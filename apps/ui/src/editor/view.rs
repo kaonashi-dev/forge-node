@@ -9,7 +9,8 @@ use domain::{
     EditorRow, EditorScope, EditorSeverity,
 };
 use rune::{
-    Align, Color, Cursor, Drag, El, Phase, ScrollSpec, Span, Tx, col, el, memo, rich, row, text,
+    Align, Color, Cursor, Drag, El, Phase, ScrollSpec, Span, Tx, col, el, icon, memo, rich, row,
+    text,
 };
 use rune_kit::Kit;
 
@@ -346,16 +347,17 @@ fn gutter_view(line_row: &EditorRow, active: bool, palette: EditorPalette) -> El
             .radius(3.0)
             .fill(severity_color(diagnostic, palette));
         let chevron = match fold {
-            Some(0) => text("▾")
-                .font(metrics::mono())
-                .color(palette.fold)
-                .w(12.0)
-                .align(Align::Center),
-            Some(_) => text("▸")
-                .font(metrics::mono())
-                .color(palette.fold)
-                .w(12.0)
-                .align(Align::Center),
+            Some(hidden) => el().w(12.0).center().child(
+                icon(
+                    if hidden == 0 {
+                        &crate::glyphs::CHEVRON_DOWN
+                    } else {
+                        &crate::glyphs::CHEVRON_RIGHT
+                    },
+                    12.0,
+                )
+                .color(palette.fold),
+            ),
             None => el().w(12.0),
         };
         row()
