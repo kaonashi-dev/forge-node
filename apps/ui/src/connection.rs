@@ -163,6 +163,18 @@ pub enum Command {
     RemoveWorktree {
         workspace_id: WorkspaceId,
     },
+    /// The daemon exits; the worker then reconnects and finds nothing.
+    StopDaemon {
+        kill_sessions: bool,
+    },
+    FactoryReset,
+    RefreshAgentDetection,
+    SetProviderExecutable {
+        provider_id: domain::AgentProviderId,
+        path: Option<std::path::PathBuf>,
+    },
+    SaveAgentProfile(Box<domain::AgentProfile>),
+    RemoveAgentProfile(domain::AgentProfileId),
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
@@ -520,6 +532,35 @@ impl ConnectionHandle {
             key: key.to_string(),
             value: value.to_string(),
         })
+    }
+
+    pub fn stop_daemon(&self, kill_sessions: bool) -> Result<(), String> {
+        self.send(Command::StopDaemon { kill_sessions })
+    }
+
+    pub fn factory_reset(&self) -> Result<(), String> {
+        self.send(Command::FactoryReset)
+    }
+
+    pub fn refresh_agent_detection(&self) -> Result<(), String> {
+        self.send(Command::RefreshAgentDetection)
+    }
+
+    /// `None` clears the override.
+    pub fn set_provider_executable(
+        &self,
+        provider_id: domain::AgentProviderId,
+        path: Option<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        self.send(Command::SetProviderExecutable { provider_id, path })
+    }
+
+    pub fn save_agent_profile(&self, profile: domain::AgentProfile) -> Result<(), String> {
+        self.send(Command::SaveAgentProfile(Box::new(profile)))
+    }
+
+    pub fn remove_agent_profile(&self, profile_id: domain::AgentProfileId) -> Result<(), String> {
+        self.send(Command::RemoveAgentProfile(profile_id))
     }
 
     pub fn refresh_snapshot(&self) -> Result<(), String> {
@@ -985,7 +1026,13 @@ fn handle_fixture_command(
         | Command::Commit { .. }
         | Command::CreateAgent { .. }
         | Command::CreateWorktree { .. }
-        | Command::RemoveWorktree { .. } => {}
+        | Command::RemoveWorktree { .. }
+        | Command::StopDaemon { .. }
+        | Command::FactoryReset
+        | Command::RefreshAgentDetection
+        | Command::SetProviderExecutable { .. }
+        | Command::SaveAgentProfile(_)
+        | Command::RemoveAgentProfile(_) => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
     }
 }
@@ -1821,6 +1868,87 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             live_result(generation, "RemoveWorktree", result, sink, metrics, started);
         }
+        Command::StopDaemon { kill_sessions } => {
+            metrics.note_socket_op();
+            let sessions = if kill_sessions {
+                client::StopSessions::Kill
+            } else {
+                client::StopSessions::Keep
+            };
+            let result = client
+                .stop_daemon(sessions)
+                .map(|()| "stopping the daemon".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "StopDaemon", result, sink, metrics, started);
+        }
+        Command::FactoryReset => {
+            metrics.note_socket_op();
+            let result = client
+                .factory_reset()
+                .map(|()| "reset".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "FactoryReset", result, sink, metrics, started);
+        }
+        Command::RefreshAgentDetection => {
+            metrics.note_socket_op();
+            let result = client
+                .refresh_detection(None)
+                .map(|()| "rescanning".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RefreshAgentDetection",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SetProviderExecutable { provider_id, path } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_provider_executable(&provider_id, path)
+                .map(|()| format!("{provider_id} command saved"))
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetProviderExecutable",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SaveAgentProfile(profile) => {
+            metrics.note_socket_op();
+            let result = client
+                .save_agent_profile(*profile)
+                .map(|()| "profile saved".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SaveAgentProfile",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::RemoveAgentProfile(profile_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .remove_agent_profile(profile_id)
+                .map(|()| "profile removed".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RemoveAgentProfile",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
         Command::SetAppState { key, value } => {
             metrics.note_socket_op();
             if let Err(error) = client.set_app_state(&key, &value) {
@@ -1964,6 +2092,12 @@ fn command_label(command: &Command) -> &'static str {
         Command::CreateAgent { .. } => "CreateAgentSession",
         Command::CreateWorktree { .. } => "CreateWorktree",
         Command::RemoveWorktree { .. } => "RemoveWorktree",
+        Command::StopDaemon { .. } => "StopDaemon",
+        Command::FactoryReset => "FactoryReset",
+        Command::RefreshAgentDetection => "RefreshAgentDetection",
+        Command::SetProviderExecutable { .. } => "SetProviderExecutable",
+        Command::SaveAgentProfile(_) => "SaveAgentProfile",
+        Command::RemoveAgentProfile(_) => "RemoveAgentProfile",
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",
