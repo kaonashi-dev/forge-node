@@ -394,8 +394,12 @@ fn run_app(
         let handle = handle.clone();
         Arc::new(move || handle.wake())
     };
+    let images = rune::ImageCache::new(Arc::clone(&wake));
     let connection = connection::spawn(Arc::clone(&boot), sink, wake);
-    handle.update(move |state, _| state.connection = Some(connection));
+    handle.update(move |state, _| {
+        state.connection = Some(connection);
+        state.images = Some(images);
+    });
     let compositor = terminal::renderer::Terminal::new(Arc::clone(&boot.terminal), stats);
     let app = app
         .init(init)

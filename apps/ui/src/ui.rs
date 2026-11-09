@@ -246,6 +246,8 @@ fn center(s: &AppState, k: &Kit) -> El {
         crate::workbench::view::changes(s, k)
     } else if s.workbench.mode == CenterMode::Files {
         crate::workbench::view::preview(s, k)
+    } else if s.workbench.mode == CenterMode::Search {
+        crate::workbench::search_view::view(s, k)
     } else if s.workbench.mode == CenterMode::Settings {
         crate::settings::page(s, k)
     } else if !in_checkout {

@@ -23,6 +23,7 @@ pub enum Action {
     PreviousSession,
     /// The strip's Nth tab, 1-based.
     FocusTab(usize),
+    FindInFiles,
 }
 
 impl Action {
@@ -40,7 +41,8 @@ impl Action {
             | Action::NewShell
             | Action::NewWorktree
             | Action::NewAgent
-            | Action::Settings => "Global",
+            | Action::Settings
+            | Action::FindInFiles => "Global",
         }
     }
 }
@@ -53,7 +55,7 @@ pub struct Binding {
 }
 
 /// Every chord `action_for` answers, in the order Settings lists them.
-pub const BINDINGS: [Binding; 20] = [
+pub const BINDINGS: [Binding; 21] = [
     Binding {
         label: "Command palette",
         chord: "⌘K",
@@ -154,6 +156,11 @@ pub const BINDINGS: [Binding; 20] = [
         chord: "⌥1…9",
         action: Action::FocusTab(1),
     },
+    Binding {
+        label: "Find in files",
+        chord: "⇧⌘F",
+        action: Action::FindInFiles,
+    },
 ];
 
 /// What Option and a digit type on a US layout. Matched by the character,
@@ -211,6 +218,7 @@ fn command(ch: char, shift: bool) -> Option<Action> {
         // A shifted bracket arrives as either glyph, depending on the layout.
         (']' | '}', true) => Action::NextSession,
         ('[' | '{', true) => Action::PreviousSession,
+        ('f', true) => Action::FindInFiles,
         _ => return None,
     })
 }
@@ -270,6 +278,7 @@ mod tests {
         );
         assert_eq!(action_for(&chord('}', true)), Some(Action::NextSession));
         assert_eq!(action_for(&chord('[', true)), Some(Action::PreviousSession));
+        assert_eq!(action_for(&chord('F', true)), Some(Action::FindInFiles));
     }
 
     #[test]

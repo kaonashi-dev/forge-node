@@ -4,14 +4,28 @@ use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, rich, row, text};
 use rune_kit::diff::DiffView;
 use rune_kit::syntax::SyntaxTheme;
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, FileNode, Kit, Markdown, Tree, TreeItem, TreeStyle,
+    Button, ButtonVariant, ControlSize, FileNode, Kit, Markdown, TextInput, Tree, TreeItem,
+    TreeStyle,
 };
 
-use super::{CenterMode, Preview};
+use super::decorations::Tone;
+use super::{CenterMode, Preview, PreviewKind};
 use crate::app::AppState;
 use crate::file_icons::FileIcon;
 
 const CODE_ROW_H: f32 = 18.0;
+const CSV_ROW_H: f32 = 24.0;
+const CSV_COLUMN_W: f32 = 160.0;
+
+fn tone_color(k: &Kit, tone: Tone) -> rune::Color {
+    let git = crate::theme::roles(k).git;
+    match tone {
+        Tone::Added => git.added,
+        Tone::Modified => git.modified,
+        Tone::Deleted => git.deleted,
+        Tone::Conflict => git.conflict,
+    }
+}
 
 fn bar(k: &Kit, title: String, detail: String) -> El {
     let refresh = Button::new("Refresh")
@@ -136,6 +150,7 @@ fn changed_rows(s: &AppState, k: &Kit) -> El {
                         })
                         .w(12.0),
                 )
+                .child(icon(file.icon.icon(!k.dark), 14.0))
                 .child(text(name).font(k.ty.small).color(k.c.text_base))
                 .child(
                     text(dir)
@@ -323,6 +338,11 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
             .color(k.c.text_faint);
     }
     let light = !k.dark;
+    let decorations = std::rc::Rc::clone(&s.workbench.changes.decorations);
+    let tones = [Tone::Added, Tone::Modified, Tone::Deleted, Tone::Conflict]
+        .map(|tone| tone_color(k, tone));
+    let tint = move |tone: Tone| tones[tone as usize];
+    let query = s.workbench.files.filter_query().to_string();
     let tree = Tree::new(
         |s: &AppState| &s.workbench.files.tree,
         |s: &mut AppState| &mut s.workbench.files.tree,
@@ -335,11 +355,19 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
             (None, Some(false)) => Some(&crate::glyphs::FILES),
             (None, None) => None,
         };
-        let item = TreeItem::new(node.name.clone());
-        let item = match mark {
-            Some(mark) => item.icon(mark),
-            None => item,
-        };
+        let mut item = TreeItem::new(node.name.clone()).highlight(query.clone());
+        if let Some(mark) = mark {
+            item = item.icon(mark);
+        }
+        if node.dir {
+            if let Some(count) = decorations.folder(&node.path) {
+                item = item
+                    .badge(count.to_string())
+                    .label_color(tint(Tone::Modified));
+            }
+        } else if let Some(mark) = decorations.file(&node.path) {
+            item = item.badge(mark.letter).label_color(tint(mark.tone));
+        }
         if node.path.is_empty() {
             item
         } else {
@@ -356,12 +384,22 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
     .w_full()
     .grow(1.0)
     .min_h(0.0);
+    let filter = TextInput::new(&s.workbench.files.filter)
+        .placeholder("Filter files…")
+        .label("Filter files")
+        .leading_icon(k.glyph.search)
+        .clear_button()
+        .on_edit(|s: &mut AppState| &mut s.workbench.files.filter)
+        .on_change(|s: &mut AppState, _| s.workbench.filter_changed())
+        .build(k)
+        .key("files-filter");
     col()
         .key("files-panel")
         .w_full()
         .h_full()
         .min_h(0.0)
         .gap(4.0)
+        .child(filter)
         .children(s.menus.file_error.as_ref().map(|error| {
             text(error.clone())
                 .key("files-error-notice")
@@ -369,10 +407,18 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
                 .font(k.ty.text_xsmall)
                 .color(k.c.warning.fg)
         }))
+        .children(s.workbench.files.watch_notice.as_ref().map(|notice| {
+            text(notice.clone())
+                .key("files-watch-notice")
+                .role("status")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+        }))
         .child(tree)
 }
 
-/// A rendered file in the centre: Markdown, or text when it is not.
+/// A rendered file in the centre: Markdown, a CSV table or an image, with
+/// its source a toggle away; text when it is none of those.
 pub fn preview(s: &AppState, k: &Kit) -> El {
     let bench = &s.workbench;
     let body = match (&bench.files.preview, &bench.files.error) {
@@ -380,21 +426,164 @@ pub fn preview(s: &AppState, k: &Kit) -> El {
         (Some(preview), None) => preview_view(preview, k),
         (None, None) => notice(k, "files-hint", "Reading…".into()),
     };
-    let title = bench
-        .files
-        .preview
-        .as_ref()
-        .map_or_else(|| "Preview".to_string(), |preview| preview.path.clone());
+    let shown = bench.files.preview.as_ref();
+    let title = shown.map_or_else(|| "Preview".to_string(), |preview| preview.path.clone());
+    let with_source = shown.filter(|preview| preview.kind.is_some_and(PreviewKind::has_source));
+    let detail = match with_source {
+        Some(preview) if preview.source => "source · read only",
+        _ => "rendered · read only",
+    };
+    let mut head = bar(k, title, detail.into());
+    if let Some(preview) = with_source {
+        head = head
+            .child(
+                Button::new(if preview.source { "Rendered" } else { "Source" })
+                    .variant(ButtonVariant::GhostMuted)
+                    .control_size(ControlSize::Small)
+                    .on_press(|s: &mut AppState| s.workbench.toggle_source())
+                    .build(k)
+                    .key("preview-source-switch"),
+            )
+            .child(
+                Button::new("Edit")
+                    .variant(ButtonVariant::Outline)
+                    .control_size(ControlSize::Small)
+                    .on_press(|s: &mut AppState| s.edit_previewed())
+                    .build(k)
+                    .key("preview-edit"),
+            );
+    }
     col()
         .key("files")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(bar(k, title, "rendered · read only".into()))
+        .child(head)
         .child(body)
 }
 
+fn image_view(image: Option<&Result<rune::Image, String>>, k: &Kit) -> El {
+    let image = match image {
+        None => return notice(k, "preview-image-reading", "Reading…".into()),
+        Some(Err(error)) => {
+            return notice(k, "preview-image-error", format!("Could not show: {error}"));
+        }
+        Some(Ok(image)) => image,
+    };
+    if let Some(error) = image.error() {
+        return notice(
+            k,
+            "preview-image-error",
+            format!("Could not decode: {}", error.0),
+        );
+    }
+    let Some([width, height]) = image.size().filter(|_| image.is_ready()) else {
+        return notice(k, "preview-image-decoding", "Decoding…".into());
+    };
+    col()
+        .key("preview-image")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .padding(20.0)
+        .items_center()
+        .justify_center()
+        .child(
+            el().key("preview-image-pixels")
+                .aspect_fit(width as f32 / height.max(1) as f32)
+                .max_w(width as f32)
+                .max_h(height as f32)
+                .pixels_fit(image.pixels(), rune::SurfaceFit::Fit),
+        )
+        .child(
+            text(format!("{width} × {height}"))
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .pt(8.0),
+        )
+}
+
+fn csv_view(k: &Kit, table: &super::csv::CsvTable) -> El {
+    if table.rows.is_empty() {
+        return notice(k, "preview-csv-empty", "An empty table.".into());
+    }
+    let width = table.width.max(1) as f32 * CSV_COLUMN_W;
+    let mono = k.ty.small;
+    let border = k.c.border_weak;
+    let header_fill = k.c.surface_weak;
+    let base = k.c.text_base;
+    let mut view = col()
+        .key("preview-csv")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .scroll_xy()
+        .child(
+            col()
+                .key("preview-csv-rows")
+                .w(width)
+                .growth(GrowthSpec::default())
+                .virtual_rows(
+                    table.rows.len(),
+                    CSV_ROW_H,
+                    |_s: &AppState, index| format!("r{index}").into(),
+                    move |s: &AppState, index| {
+                        let Some(row_cells) = s
+                            .workbench
+                            .files
+                            .preview
+                            .as_ref()
+                            .and_then(|preview| preview.table.as_ref())
+                            .and_then(|table| table.rows.get(index))
+                        else {
+                            return el();
+                        };
+                        let mut line = row()
+                            .h(CSV_ROW_H)
+                            .border_sides([0.0, 0.0, 1.0, 0.0], border)
+                            .items_center();
+                        if index == 0 {
+                            line = line.fill(header_fill);
+                        }
+                        for cell in row_cells {
+                            line = line.child(
+                                text(cell.replace('\n', " "))
+                                    .font(mono)
+                                    .color(base)
+                                    .w(CSV_COLUMN_W)
+                                    .px(8.0)
+                                    .truncate(),
+                            );
+                        }
+                        line
+                    },
+                ),
+        );
+    if table.truncated {
+        view = view.child(
+            text("Only the first rows and columns are shown.")
+                .key("preview-csv-cut")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .padding(8.0),
+        );
+    }
+    view
+}
+
 fn preview_view(preview: &Preview, k: &Kit) -> El {
+    match preview.kind {
+        Some(PreviewKind::Image) => return image_view(preview.image.as_ref(), k),
+        Some(PreviewKind::Svg) if !preview.source => {
+            return image_view(preview.image.as_ref(), k);
+        }
+        Some(PreviewKind::Csv) if !preview.source && !preview.too_large && !preview.binary => {
+            if let Some(table) = &preview.table {
+                return csv_view(k, table);
+            }
+        }
+        _ => {}
+    }
     if preview.too_large {
         return notice(
             k,
@@ -417,7 +606,7 @@ fn preview_view(preview: &Preview, k: &Kit) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         });
-    if preview.is_markdown() {
+    if preview.is_markdown() && !preview.source {
         return scroller.child(
             col()
                 .padding(20.0)
@@ -672,6 +861,7 @@ mod tests {
             "the first line is mounted"
         );
         rt.update(|s, _| {
+            s.workbench.preview("README.md");
             let workspace = s.workbench.workspace.expect("a workspace");
             let scope = s.workbench.scope().expect("a scope");
             s.workbench.apply_file(
@@ -685,10 +875,78 @@ mod tests {
             );
         });
         rt.frame(0.3);
+        let keys = |rt: &Runtime<AppState>| -> Vec<String> {
+            rt.elements().into_iter().filter_map(|e| e.key).collect()
+        };
+        assert!(!keys(&rt).iter().any(|key| key == "preview-lines"));
+        assert!(keys(&rt).iter().any(|key| key == "preview-source-switch"));
+        rt.update(|s, _| s.workbench.toggle_source());
+        rt.frame(0.4);
         assert!(
-            !rt.elements()
-                .into_iter()
-                .any(|e| e.key.as_deref() == Some("preview-lines"))
+            keys(&rt).iter().any(|key| key == "preview-lines"),
+            "the source is its lines"
+        );
+    }
+
+    #[test]
+    fn a_csv_table_and_an_image_render() {
+        use base64::Engine as _;
+        let store =
+            fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
+                .expect("fixture snapshot decodes");
+        let mut state =
+            AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
+        state.images = Some(rune::ImageCache::new(Arc::new(|| {})));
+        let mut rt = Runtime::new(
+            state,
+            crate::ui::view,
+            (1180.0, 760.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.update(|s, _| {
+            s.show_panel(crate::workbench::Panel::Files);
+            s.workbench.preview("data.csv");
+            let workspace = s.workbench.workspace.expect("a workspace");
+            let scope = s.workbench.scope().expect("a scope");
+            s.workbench.apply_file(
+                scope,
+                Ok(file("data.csv", "name,size\na,1\nb,2\n", "", workspace)),
+            );
+        });
+        rt.frame(0.1);
+        rt.frame(0.2);
+        let keys: Vec<String> = rt.elements().into_iter().filter_map(|e| e.key).collect();
+        assert!(keys.iter().any(|key| key == "preview-csv"));
+        assert!(keys.iter().any(|key| key == "r2"), "every row is mounted");
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
+            .expect("a png");
+        rt.update(move |s, _| {
+            s.workbench.preview("logo.png");
+            let scope = s.workbench.scope().expect("a scope");
+            s.apply_image(scope, "logo.png", Ok(("image/png".into(), Arc::from(png))));
+            if let Some(Some(Ok(image))) = s
+                .workbench
+                .files
+                .preview
+                .as_ref()
+                .map(|preview| preview.image.as_ref())
+            {
+                image.wait().expect("decodes");
+            }
+        });
+        rt.frame(0.3);
+        let keys: Vec<String> = rt.elements().into_iter().filter_map(|e| e.key).collect();
+        assert!(
+            keys.iter().any(|key| key == "preview-image-pixels"),
+            "{keys:?}"
+        );
+        assert!(
+            !keys.iter().any(|key| key == "preview-source-switch"),
+            "a raster has no source"
         );
     }
 

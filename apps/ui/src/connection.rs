@@ -216,7 +216,24 @@ pub enum Command {
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
+    /// Replaces this connection's watched folders; an empty list stops watching.
+    WatchFiles {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        directories: Vec<String>,
+        ticket: u64,
+    },
+    /// Opens `path` in an editor with the caret on `line` (1-based).
+    OpenEditorAt {
+        workspace_id: WorkspaceId,
+        path: String,
+        line: u32,
+    },
 }
+
+/// The largest image the daemon's `ReadImage` sends (`fs_service::MAX_IMAGE_BYTES`),
+/// checked on the base64 text before decoding allocates.
+const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum UiEvent {
@@ -288,6 +305,24 @@ pub enum UiEvent {
         ok: bool,
         message: String,
         took_us: u64,
+    },
+    /// An image's bytes and media type, decoded from base64 on the worker.
+    Image {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        path: String,
+        result: Result<(String, Arc<[u8]>), String>,
+    },
+    ContentSearch {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        query: String,
+        result: Result<Box<domain::SearchResults>, String>,
+    },
+    Watched {
+        generation: u64,
+        ticket: u64,
+        result: Result<(), String>,
     },
 }
 
@@ -380,6 +415,33 @@ impl ConnectionHandle {
 
     pub fn open_editor(&self, workspace_id: WorkspaceId, path: String) -> Result<(), String> {
         self.send(Command::OpenEditor { workspace_id, path })
+    }
+
+    pub fn open_editor_at(
+        &self,
+        workspace_id: WorkspaceId,
+        path: String,
+        line: u32,
+    ) -> Result<(), String> {
+        self.send(Command::OpenEditorAt {
+            workspace_id,
+            path,
+            line,
+        })
+    }
+
+    pub fn watch_files(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+        watch: crate::workbench::WatchSet,
+    ) -> Result<(), String> {
+        self.send(Command::WatchFiles {
+            generation,
+            workspace_id,
+            directories: watch.directories,
+            ticket: watch.ticket,
+        })
     }
 
     pub fn editor_view(
@@ -1166,7 +1228,9 @@ fn handle_fixture_command(
         | Command::CreatePath { .. }
         | Command::RenamePath { .. }
         | Command::CopyPath { .. }
-        | Command::DeletePath { .. } => {}
+        | Command::DeletePath { .. }
+        | Command::WatchFiles { .. }
+        | Command::OpenEditorAt { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
     }
 }
@@ -1718,6 +1782,29 @@ fn handle_live_command(
                         .map(Box::new)
                         .map_err(|error| error.to_string()),
                 },
+                crate::workbench::Read::Image(path) => UiEvent::Image {
+                    generation,
+                    scope,
+                    result: client
+                        .read_image(workspace_id, path.clone())
+                        .map_err(|error| error.to_string())
+                        .and_then(decode_image),
+                    path,
+                },
+                crate::workbench::Read::Content(query) => UiEvent::ContentSearch {
+                    generation,
+                    scope,
+                    result: client
+                        .search_files(
+                            workspace_id,
+                            query.clone(),
+                            domain::SearchKind::Content,
+                            None,
+                        )
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                    query,
+                },
             };
             sink(vec![event]);
         }
@@ -2211,7 +2298,66 @@ fn handle_live_command(
             }
         }
         Command::ForceReconnect | Command::Shutdown => {}
+        Command::WatchFiles {
+            generation: command_generation,
+            workspace_id,
+            directories,
+            ticket,
+        } => {
+            // A watch belongs to the connection it was asked on; the next
+            // one starts with nothing watched and asks again.
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .watch_files(workspace_id, directories)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Watched {
+                generation,
+                ticket,
+                result,
+            }]);
+        }
+        Command::OpenEditorAt {
+            workspace_id,
+            path,
+            line,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_editor_session(workspace_id, &path, Some(line), false, false)
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("opened {path}:{line} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateEditorSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
     }
+}
+
+/// The base64 the daemon sends, as bytes for the image decoder. The length
+/// is checked on the text, before decoding allocates.
+fn decode_image(image: domain::ImageContents) -> Result<(String, Arc<[u8]>), String> {
+    use base64::Engine as _;
+    if image.data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err("The image is larger than a preview reads.".into());
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(image.data.as_bytes())
+        .map(|bytes| (image.mime, Arc::from(bytes)))
+        .map_err(|error| format!("The daemon sent an unreadable image: {error}"))
 }
 
 fn live_result(
@@ -2361,6 +2507,8 @@ fn command_label(command: &Command) -> &'static str {
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",
+        Command::WatchFiles { .. } => "WatchFiles",
+        Command::OpenEditorAt { .. } => "CreateEditorSession",
     }
 }
 
