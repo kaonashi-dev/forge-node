@@ -6,7 +6,7 @@
 - The canonical test gate needs `git`, and builds need a C toolchain for bundled SQLite. There is no external database service.
 - Use `Cargo.toml`, crate-level module docs, `scripts/dev`, and current source as truth. Working plans and historical checkpoints live in a local `plan/` (not published); they can contradict later implementation and are never the gate.
 - `docs/performance.md` is the cost model, and it is not optional reading before touching the delta path, the Tauri render path, the core lock, or anything that spawns a process. This repository has rungs a normal request handler does not: per cell (~10 000 per frame), per delta (≤125/s **per attached terminal**), per frame (the whole window). Work priced for a request handler is ruinous three rungs down.
-- Start at `CONTEXT.md` for vocabulary and the doc map. `docs/architecture.md` is the system map; `docs/decisions.md` is the ADR-number index. Tauri + Solid is the GUI; it connects or starts the daemon and renders a passive `CellGrid`. `forge-daemon dump` is an unwired no-op; `forge-daemon stats` is a live `GetStats` read against a running daemon and does not start one.
+- Start at `CONTEXT.md` for vocabulary and the doc map. `docs/architecture.md` is the system map; `docs/decisions.md` is the ADR-number index. Tauri + Solid is the GUI; it connects or starts the daemon and renders a passive `CellGrid`. `apps/ui` (`forge-ui`) is the Rune client being built beside it. It is its own Cargo workspace on Rust 1.99.1 with the same boundaries, it is not part of the root workspace or `scripts/dev check`, and Tauri is still what ships. `forge-daemon dump` is an unwired no-op; `forge-daemon stats` is a live `GetStats` read against a running daemon and does not start one.
 
 ## Commits And Pull Requests
 
@@ -16,6 +16,7 @@
 
 - The canonical gate is `scripts/dev check` (also the default for bare `scripts/dev`): `cargo fmt --all -- --check`, then `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo test --workspace`. CI runs the same gate on macOS.
 - Build everything with `cargo build --workspace`; run one package with `cargo test -p <package>`.
+- The Rune client has its own gate and runner: `scripts/dev ui check` (fmt, clippy `-D warnings`, tests) and `scripts/dev ui run [--daemon | --bench | --help]`. They honour `CARGO_TARGET_DIR`; never point it at the root `target/`.
 - Exact unit-test example: `cargo test -p client --lib ipc::tests::connect_request_and_event_round_trip -- --exact`.
 - Exact daemon E2E example: `cargo test -p daemon --test integration end_to_end_shell_session -- --exact`; run every daemon test (that file and the `scenario_*.rs` binaries) with `cargo test -p daemon`.
 - Exact terminal golden example: `cargo test -p terminal-core --test golden plain_text -- --exact`. Snapshots live in `crates/terminal-core/tests/snapshots/`; `cargo insta review` requires a separately installed `cargo-insta`.

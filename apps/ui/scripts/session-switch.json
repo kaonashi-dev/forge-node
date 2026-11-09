@@ -1,0 +1,12 @@
+[
+  { "t": 0.1, "type": "mark", "name": "start" },
+  { "t": 0.4, "key": "session-row-2" },
+  { "t": 0.8, "key": "terminal-pane" },
+  { "t": 1.0, "type": "type", "text": "echo rune integration", "every": 0.005 },
+  { "t": 1.3, "type": "key", "name": "Enter" },
+  { "t": 1.8, "key": "session-row-5" },
+  { "t": 2.2, "key": "terminal-pane" },
+  { "t": 2.4, "type": "type", "text": "ls -la", "every": 0.005 },
+  { "t": 2.7, "type": "key", "name": "Enter" },
+  { "t": 3.2, "type": "mark", "name": "end" }
+]

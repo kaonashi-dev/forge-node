@@ -1,0 +1,377 @@
+mod app;
+mod bench;
+mod connection;
+mod probe;
+mod terminal;
+mod ui;
+
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use client::Store;
+use rune::{App, AppSpec, Chrome, Key};
+
+use app::AppState;
+use connection::{Boot, Metrics, Mode};
+use terminal::{SharedTerminal, stats::Stats};
+
+static BOOT: OnceLock<Arc<Boot>> = OnceLock::new();
+static INITIAL: OnceLock<Option<Store>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    Run,
+    Bench(usize),
+    Probe,
+}
+
+struct Options {
+    fixture: bool,
+    fixture_path: PathBuf,
+    reconnect: Option<Duration>,
+    spawn_daemon: bool,
+    socket: Option<PathBuf>,
+    daemon_bin: Option<PathBuf>,
+    action: Action,
+    rest: Vec<String>,
+}
+
+impl Options {
+    fn parse() -> Result<Options, String> {
+        let mut options = Options {
+            fixture: true,
+            fixture_path: bench::fixture_path(),
+            reconnect: Some(Duration::from_millis(2500)),
+            spawn_daemon: false,
+            socket: std::env::var_os("FORGE_SOCKET").map(PathBuf::from),
+            daemon_bin: std::env::var_os("FORGE_DAEMON_BIN").map(PathBuf::from),
+            action: Action::Run,
+            rest: Vec::new(),
+        };
+        let mut args = std::env::args().skip(1).peekable();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--daemon" | "--live" => options.fixture = false,
+                "--fixture" => {
+                    options.fixture = true;
+                    if let Some(path) = args.next_if(|next| !next.starts_with("--")) {
+                        options.fixture_path = PathBuf::from(path);
+                    }
+                }
+                "--spawn-daemon" => options.spawn_daemon = true,
+                "--no-reconnect" => options.reconnect = None,
+                "--fixture-reconnect-ms" => {
+                    let value = args.next().ok_or("--fixture-reconnect-ms needs a value")?;
+                    let ms: u64 = value
+                        .parse()
+                        .map_err(|_| format!("invalid --fixture-reconnect-ms {value}"))?;
+                    options.reconnect = Some(Duration::from_millis(ms));
+                }
+                "--socket" => {
+                    let value = args.next().ok_or("--socket needs a path")?;
+                    options.socket = Some(PathBuf::from(value));
+                    options.fixture = false;
+                }
+                "--daemon-bin" => {
+                    let value = args.next().ok_or("--daemon-bin needs a path")?;
+                    options.daemon_bin = Some(PathBuf::from(value));
+                }
+                "--bench" => {
+                    let value = args.next_if(|next| !next.starts_with("--"));
+                    let iterations = value
+                        .map(|value| {
+                            value
+                                .parse()
+                                .map_err(|_| format!("invalid --bench {value}"))
+                        })
+                        .transpose()?
+                        .unwrap_or(500);
+                    options.action = Action::Bench(iterations);
+                }
+                "--probe" => options.action = Action::Probe,
+                "--help" | "-h" => {
+                    print_help();
+                    std::process::exit(0);
+                }
+                value if value.starts_with("--fixture=") => {
+                    options.fixture = true;
+                    options.fixture_path = PathBuf::from(&value["--fixture=".len()..]);
+                }
+                other => options.rest.push(other.to_string()),
+            }
+        }
+        Ok(options)
+    }
+}
+
+#[global_allocator]
+static ALLOC: terminal::alloc::Counting = terminal::alloc::Counting;
+
+fn main() {
+    terminal::shaping::prewarm_fallbacks();
+    if let Err(error) = run() {
+        eprintln!("forge-ui: {error}");
+        std::process::exit(2);
+    }
+}
+
+fn run() -> Result<(), String> {
+    let options = Options::parse()?;
+    let metrics = Arc::new(Metrics::default());
+    metrics.note_ui_thread();
+
+    if options.action == Action::Probe {
+        if options.fixture {
+            return Err("--probe measures a real daemon; pass --daemon".to_string());
+        }
+        let socket = resolve_socket(options.socket)?;
+        let report = probe::run(&socket, connection::CLIENT_VERSION)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
+
+    if options.fixture {
+        let store = connection::fixture_store(&options.fixture_path)?;
+        if let Action::Bench(iterations) = options.action {
+            let report = bench::run(store, iterations);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
+            );
+            return Ok(());
+        }
+        let mode = Mode::Fixture {
+            snapshot: Arc::new(store.clone()),
+            reconnect_after: options.reconnect,
+        };
+        let boot = Arc::new(Boot {
+            mode,
+            metrics: Arc::clone(&metrics),
+            terminal: SharedTerminal::new(),
+        });
+        run_app(boot, Some(store), true, options.rest);
+        return Ok(());
+    }
+
+    if matches!(options.action, Action::Bench(_)) {
+        return Err("--bench is fixture-only; omit --daemon".to_string());
+    }
+    let socket = resolve_socket(options.socket)?;
+    let mode = Mode::Live {
+        socket,
+        daemon: options.daemon_bin,
+        spawn: options.spawn_daemon,
+    };
+    let boot = Arc::new(Boot {
+        mode,
+        metrics: Arc::clone(&metrics),
+        terminal: SharedTerminal::new(),
+    });
+    run_app(boot, None, false, options.rest);
+    Ok(())
+}
+
+fn resolve_socket(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    client::resolve_socket(&client::SocketQuery::from_env()).map_err(|error| error.to_string())
+}
+
+fn init() -> AppState {
+    let boot = BOOT.get().expect("boot state installed before App::new");
+    let initial = INITIAL.get().and_then(Option::clone);
+    let fixture = matches!(boot.mode, Mode::Fixture { .. });
+    let mut state = AppState::new(
+        Arc::clone(&boot.metrics),
+        Arc::clone(&boot.terminal),
+        fixture,
+        initial,
+    );
+    if fixture && state.active_row().and_then(|row| row.terminal_id).is_some() {
+        state.generation = 1;
+        state.status = app::LinkStatus::Connected;
+        let row = state.active_row().cloned().expect("active row");
+        state
+            .terminal
+            .activate_fixture(1, row.id, row.terminal_id.expect("terminal"), (80, 24));
+        state.terminal.focus_terminal = true;
+        state.terminal.interacted = true;
+    }
+    state
+}
+
+fn app_key(s: &mut AppState, ev: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
+    if ev.mods.cmd {
+        match &ev.key {
+            Key::Command('n') => {
+                s.request_create();
+                return true;
+            }
+            Key::Command('r') if ev.mods.shift => {
+                s.request_reconnect();
+                return true;
+            }
+            Key::Command('r') => {
+                s.request_refresh();
+                return true;
+            }
+            _ => {}
+        }
+    }
+    s.terminal_key(ev, tx)
+}
+
+fn window_focus(s: &mut AppState, focused: bool, tx: &mut rune::Tx) {
+    s.terminal_window_focus(focused, tx);
+}
+
+fn ime(s: &mut AppState, ev: &rune::Ime, tx: &mut rune::Tx) -> bool {
+    let taken = s.terminal_ime(ev, tx);
+    if taken {
+        eprintln!("[ime] {ev:?}");
+    }
+    taken
+}
+
+fn run_app(boot: Arc<Boot>, initial: Option<Store>, fixture: bool, rest: Vec<String>) {
+    let stats = Arc::new(std::sync::Mutex::new(Stats::with_capacity(1 << 16)));
+    let _ = BOOT.set(Arc::clone(&boot));
+    let _ = INITIAL.set(initial);
+    let spec = AppSpec {
+        poll: Some(app::poll),
+        on_key: Some(app_key),
+        ..AppSpec::new(
+            if fixture {
+                "Forge Node · Rune (fixture)"
+            } else {
+                "Forge Node · Rune"
+            },
+            (1180.0, 760.0),
+            || unreachable!(),
+            ui::view,
+        )
+    };
+    let app = App::new(spec);
+    let handle = app.handle();
+    let sink: connection::EventSink = {
+        let handle = handle.clone();
+        Arc::new(move |events| {
+            let handle = handle.clone();
+            handle.update(move |state, tx| state.apply_events(events, tx));
+        })
+    };
+    let wake: connection::WakeSink = {
+        let handle = handle.clone();
+        Arc::new(move || handle.wake())
+    };
+    let connection = connection::spawn(Arc::clone(&boot), sink, wake);
+    handle.update(move |state, _| state.connection = Some(connection));
+    let compositor = terminal::renderer::Terminal::new(Arc::clone(&boot.terminal), stats);
+    app.init(init)
+        .on_ime(ime)
+        .on_focus(window_focus)
+        .compositor(compositor)
+        .chrome(Chrome {
+            full_size_content: true,
+            traffic_lights: Some((16.0, 25.0)),
+            drag_regions: true,
+        })
+        .args(rest)
+        .run();
+}
+
+fn print_help() {
+    println!(
+        "\
+forge-ui — the Rune client, built beside the Tauri app
+
+Usage: forge-ui [OPTIONS]
+
+Options:
+  --fixture [PATH]          run from a recorded snapshot (default fixtures/snapshot.json)
+  --daemon                  connect to a real forge-daemon (default socket rules)
+  --socket PATH             daemon socket; implies --daemon
+  --spawn-daemon            start FORGE_DAEMON_BIN when the socket is absent
+  --daemon-bin PATH         forge-daemon binary for --spawn-daemon
+  --fixture-reconnect-ms N  simulate a fixture disconnect after N ms (default 2500)
+  --no-reconnect            keep the fixture connection up
+  --probe                   connect, snapshot, add a project and attach a terminal
+  --bench [N]               headless session-switch + terminal-echo benchmark
+  -h, --help                this help
+
+Rune's own --snap/--tree/--script/--trace flags pass through.
+
+Examples:
+  forge-ui
+  forge-ui --daemon --socket /tmp/forge-ui/daemon.sock
+  forge-ui --fixture --bench 300
+  forge-ui --fixture --script scripts/session-switch.json --tree /tmp/tree.json --at 4
+  forge-ui --fixture --snap /tmp/forge-ui.png --at 1"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::fixture_store;
+    use rune::render::KIND_EFFECT;
+    use rune::{Env, Runtime};
+
+    fn runtime() -> Runtime<AppState> {
+        let store = fixture_store(&bench::fixture_path()).expect("fixture snapshot decodes");
+        let metrics = Arc::new(Metrics::default());
+        metrics.note_ui_thread();
+        let shared = SharedTerminal::new();
+        let mut state = AppState::for_bench(store, metrics, Arc::clone(&shared));
+        let row = state.active_row().cloned().expect("active row");
+        state
+            .terminal
+            .activate_fixture(1, row.id, row.terminal_id.expect("terminal"), (80, 24));
+        state.terminal.focus_terminal = true;
+        state.terminal.interacted = true;
+        let mut rt = Runtime::new(
+            state,
+            ui::view,
+            (1180.0, 760.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.poll = Some(app::poll);
+        rt.frame(0.0);
+        rt
+    }
+
+    #[test]
+    fn one_terminal_pane_is_one_effect_slot() {
+        let rt = runtime();
+        let slots = rt
+            .instances
+            .iter()
+            .filter(|instance| instance.params[1] == KIND_EFFECT)
+            .count();
+        assert_eq!(slots, 1, "one terminal pane means one effect slot");
+    }
+
+    #[test]
+    fn the_terminal_cursor_owns_the_input_method() {
+        let rt = runtime();
+        let cursor = rt.state.terminal.cursor().expect("terminal grid");
+        let (rect, _) = rt
+            .presented("terminal-pane")
+            .expect("terminal pane is drawn");
+        let expected = [
+            rect[0] + cursor.col as f32 * terminal::renderer::CELL_PT.0,
+            rect[1] + cursor.line as f32 * terminal::renderer::CELL_PT.1,
+            terminal::renderer::CELL_PT.0,
+            terminal::renderer::CELL_PT.1,
+        ];
+        assert_eq!(rt.ime_area, Some(expected));
+    }
+}
