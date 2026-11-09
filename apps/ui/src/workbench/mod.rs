@@ -30,6 +30,8 @@ pub enum Read {
     Diff,
     Directory(String),
     File(String),
+    /// Paths ranked against a palette query.
+    Search(String),
 }
 
 /// A child id that marks a folder whose listing has not arrived, so the tree

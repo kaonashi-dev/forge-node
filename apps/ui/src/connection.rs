@@ -149,6 +149,11 @@ pub enum UiEvent {
         workspace_id: WorkspaceId,
         result: Result<Box<domain::FileContents>, String>,
     },
+    Search {
+        generation: u64,
+        query: String,
+        result: Result<Vec<String>, String>,
+    },
     CommandResult {
         generation: u64,
         label: &'static str,
@@ -1266,6 +1271,19 @@ fn handle_live_command(
                         .list_directory(workspace_id, path.clone())
                         .map_err(|error| error.to_string()),
                     path,
+                },
+                crate::workbench::Read::Search(query) => UiEvent::Search {
+                    generation,
+                    result: client
+                        .search_files(
+                            workspace_id,
+                            query.clone(),
+                            domain::SearchKind::Name,
+                            Some(crate::palette::FILE_LIMIT),
+                        )
+                        .map(|results| results.matches.into_iter().map(|hit| hit.path).collect())
+                        .map_err(|error| error.to_string()),
+                    query,
                 },
                 crate::workbench::Read::File(path) => UiEvent::File {
                     generation,

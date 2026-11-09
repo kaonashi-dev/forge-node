@@ -75,6 +75,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .on_paste(|s: &mut AppState, text: &str, tx: &mut rune::Tx| {
             s.paste(text, tx);
         });
+    let mut overlays = Vec::new();
+    if s.palette.open {
+        palette(s, &k, &mut overlays);
+    }
+    let root = rune_kit::root(root, overlays);
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
     if let Some(switch) = s.switch_started.take() {
@@ -572,4 +577,85 @@ fn row_status(status: SessionStatus) -> rune_kit::shell::RowStatus {
         SessionStatus::Busy => rune_kit::shell::RowStatus::Busy,
         SessionStatus::Attention => rune_kit::shell::RowStatus::Attention,
     }
+}
+
+fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
+    let entries = s.palette.entries();
+    let field = rune_kit::TextInput::new(&s.palette.edit)
+        .placeholder(if s.palette.files_only {
+            "Go to file"
+        } else {
+            "Type a command or a file name"
+        })
+        .label("Command palette")
+        .on_edit(|s: &mut AppState| &mut s.palette.edit)
+        .on_change(|s: &mut AppState, _| s.palette.selected = 0)
+        .on_key(|s: &mut AppState, ev, _| s.palette_key(ev))
+        .build(k)
+        .key("palette-input");
+    let mut list = col()
+        .key("palette-list")
+        .gap(2.0)
+        .role("listbox")
+        .label("Results");
+    for (index, entry) in entries.iter().enumerate().take(30) {
+        let selected = index == s.palette.selected;
+        let chosen = entry.clone();
+        let kind = match entry {
+            crate::palette::Entry::Command { .. } => "",
+            crate::palette::Entry::File(_) => "file",
+        };
+        list = list.child(
+            row()
+                .key(format!("palette-{index}"))
+                .role("option")
+                .label(entry.label().to_string())
+                .w_full()
+                .h(30.0)
+                .px(10.0)
+                .gap(8.0)
+                .items_center()
+                .radius(6.0)
+                .fill(if selected {
+                    k.c.surface_hover
+                } else {
+                    rune::Color::TRANSPARENT
+                })
+                .on_press(move |s: &mut AppState| s.run_palette(chosen.clone()))
+                .child(
+                    text(entry.label().to_string())
+                        .font(k.ty.small)
+                        .color(k.c.text_base)
+                        .grow(1.0)
+                        .truncate(),
+                )
+                .child(text(kind).font(k.ty.text_xsmall).color(k.c.text_faint)),
+        );
+    }
+    if entries.is_empty() {
+        list = list.child(
+            text(if s.palette.query().is_empty() {
+                "Type to search files"
+            } else {
+                "Nothing matches"
+            })
+            .font(k.ty.small)
+            .color(k.c.text_faint),
+        );
+    }
+    rune_kit::Dialog::new(
+        "palette",
+        if s.palette.files_only {
+            "Go to file"
+        } else {
+            "Command palette"
+        },
+    )
+    .open(true)
+    .click_outside(true)
+    .width(560.0)
+    .on_close(|s: &mut AppState| s.palette.close())
+    .child(field)
+    .child(list)
+    .build(k, layer);
 }

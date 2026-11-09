@@ -2,6 +2,8 @@ mod app;
 mod bench;
 mod connection;
 mod editor;
+mod keymap;
+mod palette;
 mod prefs;
 mod probe;
 mod terminal;
@@ -220,6 +222,9 @@ fn init() -> AppState {
 }
 
 fn app_key(s: &mut AppState, ev: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
+    if s.global_key(ev) {
+        return true;
+    }
     if ev.mods.cmd {
         match &ev.key {
             Key::Command('n') => {

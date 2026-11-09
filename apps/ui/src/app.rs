@@ -90,6 +90,7 @@ pub struct AppState {
     pub editor_surface: protocol::EditorSurface,
     pub editor: EditorUi,
     pub workbench: Workbench,
+    pub palette: crate::palette::Palette,
     /// The chosen `tokens.ts` base; `None` follows the system's light or dark.
     pub theme_base: Option<String>,
     /// A scroll offset that brings a moved caret into view, applied once.
@@ -139,6 +140,7 @@ impl AppState {
             editor_surface: protocol::EditorSurface::Cells,
             editor: EditorUi::default(),
             workbench: Workbench::default(),
+            palette: crate::palette::Palette::default(),
             theme_base: None,
             editor_reveal: None,
             open_path: None,
@@ -327,6 +329,9 @@ impl AppState {
     }
 
     pub fn editor_key(&mut self, ev: &KeyEvent, _tx: &mut Tx) -> bool {
+        if self.global_key(ev) {
+            return true;
+        }
         if self.active_line_editor().is_none() || !self.session_shown() || !self.editor.key(ev) {
             return false;
         }
@@ -363,6 +368,77 @@ impl AppState {
         }
     }
 
+    /// An app chord, taken before any surface sees the key.
+    pub fn global_key(&mut self, ev: &KeyEvent) -> bool {
+        use crate::keymap::Action;
+        let Some(action) = crate::keymap::action_for(ev) else {
+            return false;
+        };
+        match action {
+            Action::CommandPalette => self.palette.show(false),
+            Action::FilePalette => self.palette.show(true),
+            Action::NewShell => self.request_create(),
+            Action::Settings => self.show_mode(CenterMode::Settings),
+            Action::NextSession => self.step_session(1),
+            Action::PreviousSession => self.step_session(-1),
+        }
+        true
+    }
+
+    fn step_session(&mut self, delta: isize) {
+        let count = self.rows.len();
+        if count == 0 {
+            return;
+        }
+        let at = self
+            .active
+            .and_then(|id| self.rows.iter().position(|row| row.id == id))
+            .unwrap_or(0);
+        let next = (at as isize + delta).rem_euclid(count as isize) as usize;
+        let id = self.rows[next].id;
+        self.workbench.show(CenterMode::Session);
+        self.select(id);
+    }
+
+    /// Keys inside the palette's field: move, run or close.
+    pub fn palette_key(&mut self, ev: &KeyEvent) -> bool {
+        match ev.key {
+            rune::Key::Up => self.palette.move_selection(-1),
+            rune::Key::Down => self.palette.move_selection(1),
+            rune::Key::Escape => self.palette.close(),
+            rune::Key::Enter => {
+                if let Some(entry) = self.palette.chosen() {
+                    self.run_palette(entry);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn run_palette(&mut self, entry: crate::palette::Entry) {
+        use crate::palette::{Command, Entry};
+        self.palette.close();
+        match entry {
+            Entry::Command { command, .. } => match command {
+                Command::NewShell => self.request_create(),
+                Command::RefreshSnapshot => self.request_refresh(),
+                Command::Reconnect => self.request_reconnect(),
+                Command::Show(mode) => self.show_mode(mode),
+                Command::Theme(base) => self.choose_theme(base),
+            },
+            Entry::File(path) => {
+                self.sync_workbench_workspace();
+                if let (Some(connection), Some(workspace)) =
+                    (&self.connection, self.workbench.workspace)
+                    && connection.open_editor(workspace, path).is_ok()
+                {
+                    self.workbench.show(CenterMode::Session);
+                }
+            }
+        }
+    }
+
     /// Picks a theme base, `None` to follow the system, and saves the choice.
     pub fn choose_theme(&mut self, base: Option<String>) {
         self.theme_base = base;
@@ -393,6 +469,18 @@ impl AppState {
     }
 
     fn sync_workbench(&mut self) {
+        if let Some(query) = self.palette.take_search() {
+            self.sync_workbench_workspace();
+            if let (Some(connection), Some(workspace)) =
+                (&self.connection, self.workbench.workspace)
+            {
+                let _ = connection.read(
+                    self.generation,
+                    workspace,
+                    crate::workbench::Read::Search(query),
+                );
+            }
+        }
         if self.workbench.mode == CenterMode::Session {
             return;
         }
@@ -596,6 +684,19 @@ impl AppState {
                 }
                 self.workbench
                     .apply_file(workspace_id, result.map(|file| *file));
+                true
+            }
+            UiEvent::Search {
+                generation,
+                query,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                if let Ok(paths) = result {
+                    self.palette.apply_search(&query, paths);
+                }
                 true
             }
             UiEvent::Prefs(prefs) => {
@@ -898,6 +999,9 @@ impl AppState {
     }
 
     pub fn terminal_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        if self.global_key(ev) {
+            return true;
+        }
         if !self.session_shown() {
             return false;
         }
