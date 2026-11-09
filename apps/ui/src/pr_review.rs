@@ -348,4 +348,57 @@ mod tests {
         );
         assert_eq!(review_workspace(&all, None, Some(main.id)), None);
     }
+
+    #[test]
+    fn only_installed_prompt_taking_agents_with_a_review_mode_are_offered() {
+        use crate::test_support::provider;
+        let providers = vec![
+            provider("claude", true, true, true),
+            provider("opencode", true, true, false),
+            provider("cursor", true, false, true),
+            provider("gone", false, true, true),
+        ];
+        let offered: Vec<String> = review_agents(&providers)
+            .into_iter()
+            .map(|(id, _)| id.to_string())
+            .collect();
+        assert_eq!(offered, vec!["claude"]);
+    }
+
+    #[test]
+    fn an_empty_custom_recipe_has_no_prompt_and_a_recipe_names_the_pull_request() {
+        let pr: PullRequest = serde_json::from_value(serde_json::json!({
+            "project_id": null, "repository": "o/r", "host": "github.com", "number": 12,
+            "title": "Title", "body": "", "body_truncated": false, "url": "https://x/12",
+            "author": "a", "base_ref": "main", "head_ref": "b", "is_draft": false,
+            "review_decision": null, "labels": [], "assignees": [], "review_requests": [],
+            "additions": 1, "deletions": 0, "changed_files": 1, "comment_count": 0,
+            "created_at": "2026-11-09T00:00:00Z", "updated_at": "2026-11-09T00:00:00Z",
+            "relations": { "assigned": false, "review_requested": false, "authored": false }
+        }))
+        .expect("a pull request");
+        let agents = vec![(AgentProviderId::new("claude"), "Claude".to_string())];
+        let mut dialog = ReviewDialog::new(&pr, &agents);
+        assert_eq!(
+            dialog.agent,
+            Some(AgentProviderId::new("claude")),
+            "the first agent"
+        );
+        let prompt = dialog.prompt(&pr).expect("a built-in recipe has a prompt");
+        assert!(prompt.contains("12") && prompt.contains("o/r"), "{prompt}");
+        dialog.recipe = domain::pr_review::CUSTOM_RECIPE.to_string();
+        assert_eq!(
+            dialog.prompt(&pr),
+            None,
+            "an empty custom recipe cannot start"
+        );
+        dialog.custom = TextEdit::new("Look at the error paths.");
+        let custom = dialog.prompt(&pr).expect("a custom recipe with words");
+        assert!(custom.contains("Look at the error paths."));
+        assert_eq!(
+            ReviewDialog::new(&pr, &[]).agent,
+            None,
+            "no agent, nothing chosen"
+        );
+    }
 }

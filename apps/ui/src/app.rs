@@ -47,6 +47,8 @@ pub enum SessionStatus {
 pub struct SessionRow {
     pub id: SessionId,
     pub kind: SessionKind,
+    /// Started by an agent provider; what `tabOrder` groups after shells.
+    pub agent: bool,
     /// `None` for an editor the daemon presents as lines, whose PTY carries
     /// no screen this side should paint.
     pub terminal_id: Option<TerminalId>,
@@ -70,18 +72,22 @@ pub fn strip_workspace(
 
 /// A checkout's tabs: its sessions with a terminal, and its editors (which
 /// Rune shows as tabs, unlike Tauri's Code strip). No checkout is no tabs,
-/// never every session.
+/// never every session. Shells lead and the rest follow, each group in
+/// creation order, as Tauri's `tabOrder`; an editor is not a shell.
 #[must_use]
 pub fn rows_in_strip(rows: &[SessionRow], workspace: Option<WorkspaceId>) -> Vec<&SessionRow> {
     let Some(workspace) = workspace else {
         return Vec::new();
     };
-    rows.iter()
+    let (mut shells, rest): (Vec<&SessionRow>, Vec<&SessionRow>) = rows
+        .iter()
         .filter(|row| {
             row.workspace_id == workspace
                 && (row.terminal_id.is_some() || row.kind == SessionKind::Editor)
         })
-        .collect()
+        .partition(|row| !row.agent && row.kind != SessionKind::Editor);
+    shells.extend(rest);
+    shells
 }
 
 /// ⌘W closes a session only while its terminal is what the centre shows: a
@@ -262,15 +268,18 @@ impl AppState {
     }
 
     fn set_store(&mut self, store: Store) {
-        self.rows = store
-            .sessions
-            .iter()
+        let mut sessions: Vec<&domain::Session> = store.sessions.iter().collect();
+        // Creation order, as Tauri's `byCreatedAt`; the sort is stable.
+        sessions.sort_by_key(|session| session.created_at);
+        self.rows = sessions
+            .into_iter()
             .map(|session| {
                 let lines = session.kind == SessionKind::Editor
                     && self.editor_surface == protocol::EditorSurface::Dom;
                 SessionRow {
                     id: session.id,
                     kind: session.kind,
+                    agent: session.agent_provider_id.is_some(),
                     terminal_id: session.terminal_id.filter(|_| !lines),
                     id_text: session.id.to_string(),
                     workspace_id: session.workspace_id,
@@ -486,6 +495,8 @@ impl AppState {
     }
 
     /// Providers the daemon found installed, for the palette's agent entries.
+    /// Installed agents the person has not hidden in Settings › Agents, as
+    /// Tauri's launch lists offer them.
     fn installed_agents(&self) -> Vec<(domain::AgentProviderId, String)> {
         let Some(store) = &self.store else {
             return Vec::new();
@@ -497,7 +508,9 @@ impl AppState {
                 matches!(
                     info.detection.status,
                     domain::DetectionStatus::Installed { .. }
-                )
+                ) && store
+                    .app_state_value(&crate::launch::visibility_key(info.descriptor.id.as_str()))
+                    != Some("false")
             })
             .map(|info| {
                 (
@@ -2601,6 +2614,7 @@ mod tests {
         super::SessionRow {
             id,
             kind,
+            agent: kind == SessionKind::Agent,
             terminal_id: live.then(domain::TerminalId::new),
             id_text: id.to_string(),
             title: String::new(),
@@ -2639,6 +2653,52 @@ mod tests {
         assert_eq!(strip_workspace(Some(b), Some(a), Some(a)), Some(b));
         assert_eq!(strip_workspace(None, Some(a), Some(b)), Some(a));
         assert_eq!(strip_workspace(None, None, Some(b)), Some(b));
+    }
+
+    #[test]
+    fn a_hidden_or_missing_agent_is_not_offered() {
+        use crate::test_support::provider;
+        let mut state = state();
+        let store = state.store.as_mut().expect("store");
+        store.providers = vec![
+            provider("claude", true, true, true),
+            provider("cursor", true, true, false),
+            provider("opencode", false, true, false),
+        ];
+        store
+            .app_state
+            .push((crate::launch::visibility_key("cursor"), "false".into()));
+        let offered: Vec<String> = state
+            .installed_agents()
+            .into_iter()
+            .map(|(id, _)| id.to_string())
+            .collect();
+        assert_eq!(
+            offered,
+            vec!["claude"],
+            "cursor is hidden in Settings › Agents and opencode is not installed"
+        );
+    }
+
+    #[test]
+    fn shells_lead_the_strip_and_an_editor_is_not_one() {
+        let a = domain::WorkspaceId::new();
+        let rows = vec![
+            strip_row(a, SessionKind::Agent, true),
+            strip_row(a, SessionKind::Shell, true),
+            strip_row(a, SessionKind::Editor, true),
+            strip_row(a, SessionKind::Shell, true),
+            strip_row(a, SessionKind::Agent, true),
+        ];
+        let order: Vec<_> = super::rows_in_strip(&rows, Some(a))
+            .iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(
+            order,
+            vec![rows[1].id, rows[3].id, rows[0].id, rows[2].id, rows[4].id],
+            "shells first, then the rest in creation order; a new agent goes last"
+        );
     }
 
     #[test]
