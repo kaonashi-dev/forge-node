@@ -98,6 +98,14 @@ pub enum Command {
         read: crate::workbench::Read,
     },
     SavePrefs(crate::prefs::Prefs),
+    AddProject(std::path::PathBuf),
+    CreateWorktree {
+        project_id: domain::ProjectId,
+        branch: String,
+    },
+    RemoveWorktree {
+        workspace_id: WorkspaceId,
+    },
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
@@ -293,6 +301,22 @@ impl ConnectionHandle {
             workspace_id,
             read,
         })
+    }
+
+    pub fn add_project(&self, path: std::path::PathBuf) -> Result<(), String> {
+        self.send(Command::AddProject(path))
+    }
+
+    pub fn create_worktree(
+        &self,
+        project_id: domain::ProjectId,
+        branch: String,
+    ) -> Result<(), String> {
+        self.send(Command::CreateWorktree { project_id, branch })
+    }
+
+    pub fn remove_worktree(&self, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::RemoveWorktree { workspace_id })
     }
 
     pub fn save_prefs(&self, prefs: crate::prefs::Prefs) -> Result<(), String> {
@@ -751,7 +775,10 @@ fn handle_fixture_command(
         | Command::EditorView { .. }
         | Command::EditorInput { .. }
         | Command::Read { .. }
-        | Command::SavePrefs(_) => {}
+        | Command::SavePrefs(_)
+        | Command::AddProject(_)
+        | Command::CreateWorktree { .. }
+        | Command::RemoveWorktree { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
     }
 }
@@ -1296,6 +1323,32 @@ fn handle_live_command(
             };
             sink(vec![event]);
         }
+        Command::AddProject(path) => {
+            metrics.note_socket_op();
+            let result = client
+                .add_project(&path)
+                .map(|()| format!("added {}", path.display()))
+                .map_err(|error| error.to_string());
+            live_result(generation, "AddProject", result, sink, metrics, started);
+        }
+        Command::CreateWorktree { project_id, branch } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_worktree(project_id, &branch, None, None)
+                .map(|_| format!("creating worktree {branch}"))
+                .map_err(|error| error.to_string());
+            live_result(generation, "CreateWorktree", result, sink, metrics, started);
+        }
+        Command::RemoveWorktree { workspace_id } => {
+            metrics.note_socket_op();
+            // Never forced from here: a worktree with uncommitted work is the
+            // daemon's to refuse, not this button's to discard.
+            let result = client
+                .remove_worktree(workspace_id, false)
+                .map(|_| "removed worktree".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "RemoveWorktree", result, sink, metrics, started);
+        }
         Command::SavePrefs(prefs) => {
             if let Some(path) = crate::prefs::path()
                 && let Err(error) = crate::prefs::save_to(&path, &prefs)
@@ -1446,6 +1499,9 @@ fn command_label(command: &Command) -> &'static str {
         Command::EditorInput { .. } => "SendEditorInput",
         Command::Read { .. } => "WorkspaceRead",
         Command::SavePrefs(_) => "SavePrefs",
+        Command::AddProject(_) => "AddProject",
+        Command::CreateWorktree { .. } => "CreateWorktree",
+        Command::RemoveWorktree { .. } => "RemoveWorktree",
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",

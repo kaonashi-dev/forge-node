@@ -11,8 +11,9 @@ use rune_kit::{
 use super::{CenterMode, Preview};
 use crate::app::AppState;
 
-const MODES: [(&str, CenterMode); 4] = [
+const MODES: [(&str, CenterMode); 5] = [
     ("Session", CenterMode::Session),
+    ("Projects", CenterMode::Projects),
     ("Changes", CenterMode::Changes),
     ("Files", CenterMode::Files),
     ("Settings", CenterMode::Settings),

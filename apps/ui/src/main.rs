@@ -6,6 +6,7 @@ mod keymap;
 mod palette;
 mod prefs;
 mod probe;
+mod projects;
 mod terminal;
 mod theme;
 mod ui;

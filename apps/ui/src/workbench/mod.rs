@@ -19,6 +19,7 @@ use rune_kit::{FileNode, TreeModel, natural_cmp};
 pub enum CenterMode {
     #[default]
     Session,
+    Projects,
     Changes,
     Files,
     Settings,
@@ -132,7 +133,7 @@ impl Workbench {
                     self.queue(Read::File(path));
                 }
             }
-            CenterMode::Session | CenterMode::Settings => {}
+            CenterMode::Session | CenterMode::Projects | CenterMode::Settings => {}
         }
     }
 

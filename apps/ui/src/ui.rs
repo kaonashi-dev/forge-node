@@ -79,6 +79,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     if s.palette.open {
         palette(s, &k, &mut overlays);
     }
+    crate::projects::dialogs(s, &k, &mut overlays);
     let root = rune_kit::root(root, overlays);
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
@@ -263,7 +264,9 @@ fn status_row(s: &AppState, k: &Kit) -> El {
 
 fn center(s: &AppState, k: &Kit) -> El {
     let has_terminal = s.active_row().and_then(|row| row.terminal_id).is_some();
-    let body = if s.workbench.mode == CenterMode::Changes {
+    let body = if s.workbench.mode == CenterMode::Projects {
+        crate::projects::view(s, k)
+    } else if s.workbench.mode == CenterMode::Changes {
         crate::workbench::view::changes(s, k)
     } else if s.workbench.mode == CenterMode::Files {
         crate::workbench::view::files(s, k)

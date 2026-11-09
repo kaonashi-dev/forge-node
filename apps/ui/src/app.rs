@@ -91,6 +91,10 @@ pub struct AppState {
     pub editor: EditorUi,
     pub workbench: Workbench,
     pub palette: crate::palette::Palette,
+    pub projects: crate::projects::Projects,
+    /// A workspace picked in Projects; Changes and Files show it instead of
+    /// the active session's until a session is selected.
+    pub chosen_workspace: Option<WorkspaceId>,
     /// The chosen `tokens.ts` base; `None` follows the system's light or dark.
     pub theme_base: Option<String>,
     /// A scroll offset that brings a moved caret into view, applied once.
@@ -141,6 +145,8 @@ impl AppState {
             editor: EditorUi::default(),
             workbench: Workbench::default(),
             palette: crate::palette::Palette::default(),
+            projects: crate::projects::Projects::default(),
+            chosen_workspace: None,
             theme_base: None,
             editor_reveal: None,
             open_path: None,
@@ -175,6 +181,7 @@ impl AppState {
     }
 
     pub fn select(&mut self, id: SessionId) {
+        self.chosen_workspace = None;
         if self.active == Some(id) {
             self.terminal.focus_terminal = true;
             self.terminal.interacted = true;
@@ -439,6 +446,63 @@ impl AppState {
         }
     }
 
+    pub fn add_project(&mut self, path: std::path::PathBuf) {
+        match &self.connection {
+            Some(connection) => {
+                let _ = connection.add_project(path);
+            }
+            None => self.worker_not_ready("AddProject"),
+        }
+    }
+
+    pub fn shell_in(&mut self, workspace: WorkspaceId) {
+        match &self.connection {
+            Some(connection) => {
+                let _ = connection.create_shell_session(workspace);
+                self.workbench.show(CenterMode::Session);
+            }
+            None => self.worker_not_ready("CreateShellSession"),
+        }
+    }
+
+    /// Shows Changes or Files for `workspace` rather than the active session's.
+    pub fn inspect(&mut self, workspace: WorkspaceId, mode: CenterMode) {
+        self.chosen_workspace = Some(workspace);
+        self.show_mode(mode);
+    }
+
+    pub fn create_worktree(&mut self) {
+        let Some(project) = self.projects.new_worktree.take() else {
+            return;
+        };
+        let branch = self.projects.branch.text.trim().to_string();
+        if branch.is_empty() {
+            self.projects.new_worktree = Some(project);
+            return;
+        }
+        match &self.connection {
+            Some(connection) => {
+                let _ = connection.create_worktree(project, branch);
+            }
+            None => self.worker_not_ready("CreateWorktree"),
+        }
+    }
+
+    /// The first press arms, the second removes: a worktree is a checkout.
+    pub fn remove_worktree(&mut self, workspace: WorkspaceId) {
+        if self.projects.confirm_remove != Some(workspace) {
+            self.projects.confirm_remove = Some(workspace);
+            return;
+        }
+        self.projects.confirm_remove = None;
+        match &self.connection {
+            Some(connection) => {
+                let _ = connection.remove_worktree(workspace);
+            }
+            None => self.worker_not_ready("RemoveWorktree"),
+        }
+    }
+
     /// Picks a theme base, `None` to follow the system, and saves the choice.
     pub fn choose_theme(&mut self, base: Option<String>) {
         self.theme_base = base;
@@ -464,7 +528,10 @@ impl AppState {
                 .find(|session| session.id == active)
                 .map(|session| session.workspace_id)
         });
-        let workspace = from_session.or_else(|| self.workspaces.first().map(|choice| choice.id));
+        let workspace = self
+            .chosen_workspace
+            .or(from_session)
+            .or_else(|| self.workspaces.first().map(|choice| choice.id));
         self.workbench.set_workspace(workspace);
     }
 
