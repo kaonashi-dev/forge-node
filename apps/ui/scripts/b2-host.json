@@ -1,0 +1,6 @@
+[
+  { "t": 0.4, "menu": "about" },
+  { "t": 1.0, "key": "about-close" },
+  { "t": 1.4, "menu": "check_for_update" },
+  { "t": 2.0, "key": "general-update-check" }
+]

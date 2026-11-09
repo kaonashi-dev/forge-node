@@ -56,6 +56,91 @@ pub const LINE_HEIGHTS: [(f64, &str); 4] = [
     (1.8, "Loose"),
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChromeMetrics {
+    pub row: f32,
+    pub tree_row: f32,
+    pub tab: f32,
+    pub frame: f32,
+    pub pad: f32,
+    pub sidebar_pad: [f32; 2],
+}
+
+impl ChromeMetrics {
+    /// Tauri's compact ladder, or the cozy one, with Trim pulling the frame
+    /// and paddings in rather than changing a row's height.
+    #[must_use]
+    pub fn of(density: Density, trim: bool) -> Self {
+        match density {
+            Density::Compact => Self {
+                row: 26.0,
+                tree_row: 28.0,
+                tab: 30.0,
+                frame: 8.0,
+                pad: 10.0,
+                sidebar_pad: [18.0, 10.0],
+            },
+            Density::Cozy => Self {
+                row: 30.0,
+                tree_row: 34.0,
+                tab: 32.0,
+                frame: 8.0,
+                pad: 12.0,
+                sidebar_pad: [18.0, 10.0],
+            },
+        }
+        .trimmed(trim)
+    }
+
+    fn trimmed(mut self, trim: bool) -> Self {
+        if trim {
+            self.row -= 2.0;
+            self.tab -= 2.0;
+            self.frame = 4.0;
+            self.pad -= 2.0;
+            self.sidebar_pad = [12.0, 6.0];
+        }
+        self
+    }
+}
+
+/// Lay the four visual preferences over the kit: density changes the radii,
+/// Trim flattens them, Reduce Motion lands every spring at once, and Glass
+/// makes the chrome wash translucent in a dark theme (light themes ignore it).
+pub fn apply_kit(
+    kit: &mut rune_kit::Kit,
+    density: Density,
+    reduce_motion: bool,
+    glass: bool,
+    trim: bool,
+) {
+    let density_radius = if density == Density::Cozy { 1.0 } else { 0.0 };
+    let trim_scale = if trim { 0.75 } else { 1.0 };
+    let radius = kit.radius;
+    let scale = |value: f32| ((value + density_radius) * trim_scale).max(0.0);
+    kit.radius = rune_kit::Radius {
+        xs: scale(radius.xs),
+        sm: scale(radius.sm),
+        md: scale(radius.md),
+        lg: scale(radius.lg),
+        xl: scale(radius.xl),
+    };
+    if reduce_motion {
+        kit.motion = rune_kit::Motion {
+            control: rune::Spring::NONE,
+            overlay: rune::Spring::NONE,
+            disclosure: rune::Spring::NONE,
+        };
+    }
+    if glass && kit.dark {
+        kit.c.bg_deep = kit.c.bg_deep.alpha(0.92);
+        kit.c.layer_01 = kit.c.layer_01.alpha(0.86);
+        kit.c.layer_02 = kit.c.layer_02.alpha(0.90);
+        kit.c.surface_base = kit.c.surface_base.alpha(0.88);
+        kit.c.surface_raised = kit.c.surface_raised.alpha(0.90);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Density {
     #[default]

@@ -6,18 +6,41 @@ use std::time::Instant;
 
 use rune::{Cx, El, col, effect, el, icon, row, text};
 use rune_kit::shell::{SidebarRow, SidebarToggle, SplitView, Toolbar};
-use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
+use rune_kit::{Button, ButtonVariant, ControlSize, Kit, Loader};
 
 use crate::app::{AppState, CommandStatus, LinkStatus, SessionRow, SessionStatus};
 use crate::terminal::input::{Pointer, Press};
 use crate::terminal::renderer::MARK_BASE;
 use crate::workbench::CenterMode;
 
+/// A spinner while work is running, or a still ellipsis when ui.reduce_motion
+/// (or the system setting) says not to animate.
+#[must_use]
+pub fn busy(s: &AppState, k: &Kit) -> El {
+    if s.reduce_motion() {
+        text("…")
+            .role("progressbar")
+            .label("Loading")
+            .font(k.ty.small)
+            .color(k.c.icon_muted)
+    } else {
+        Loader::new().size(14.0).color(k.c.icon_muted).build(k)
+    }
+}
+
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     s.metrics.note_ui_thread();
     let started = Instant::now();
     let mut k = crate::theme::kit(s.theme_base(cx.system_dark()), cx.system_dark());
     k.ty = crate::settings::prefs::scale_type(k.ty, s.chrome_font_size());
+    crate::settings::prefs::apply_kit(
+        &mut k,
+        s.density(),
+        s.reduce_motion(),
+        s.glass(),
+        s.trimmed(),
+    );
+    let metrics = s.chrome_metrics();
     let main = col()
         .key("main-pane")
         .w_full()
@@ -32,9 +55,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         )
         .toolbar(toolbar(s, &k))
         .titlebar_inset(cx.titlebar_inset())
-        .frame_inset(8.0)
+        .frame_inset(metrics.frame)
         .toolbar_in_panel()
-        .sidebar_padding(18.0, 10.0)
+        .sidebar_padding(metrics.sidebar_pad[0], metrics.sidebar_pad[1])
         .sidebar_toggle(
             SidebarToggle::new()
                 .size(ControlSize::Large)
@@ -73,6 +96,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::history::delete_dialog(s, &k, &mut overlays);
     crate::settings::dialogs(s, &k, &mut overlays);
     crate::menus::layer(s, &k, &mut overlays);
+    crate::native_menus::dialog(s, &k, &mut overlays);
     let root = rune_kit::root(root, overlays);
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
@@ -87,6 +111,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
 /// window drags by.
 fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
     let mut bar = Toolbar::new().leading(crate::chrome::strip(s, k));
+    if s.glass() && k.dark {
+        bar = bar.material(rune::SystemMaterial::Glass);
+    }
     // Refresh and Reconnect are probes of the client, not things a person does.
     if s.debug {
         let probe = |label: &'static str, key: &'static str, press: fn(&mut AppState)| {
@@ -170,12 +197,13 @@ pub fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) ->
     let selected = s.active == Some(session.id) && s.workbench.mode == CenterMode::Session;
     let id = session.id;
     let glyph = crate::glyphs::for_row(session, selected, !k.dark);
+    let roles = crate::theme::roles(k);
     let mut item = SidebarRow::new(session.title.as_str())
         .select_only()
-        .height(30.0)
+        .height(s.chrome_metrics().row)
         .avatar(icon(glyph, 14.0).color(match session.status {
             _ if selected => k.c.icon_base,
-            Some(SessionStatus::Attention) => k.c.warning.icon,
+            Some(SessionStatus::Attention) => roles.needs_you.solid,
             Some(SessionStatus::Busy) => k.c.icon_accent,
             None => k.c.icon_muted,
         }))
@@ -189,7 +217,12 @@ pub fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) ->
             s.request_rename();
         });
     if let Some(status) = session.status {
-        item = item.status(row_status(status));
+        item = item.status(match status {
+            SessionStatus::Attention => rune_kit::shell::RowStatus::Other(
+                el().size(7.0, 7.0).radius(3.5).fill(roles.needs_you.solid),
+            ),
+            SessionStatus::Busy => rune_kit::shell::RowStatus::Busy,
+        });
     }
     if let Some(ended) = &session.ended {
         item = item.detail(ended.as_str());
@@ -809,13 +842,6 @@ fn command_line(command: Option<&CommandStatus>, k: &Kit) -> El {
         )
 }
 
-fn row_status(status: SessionStatus) -> rune_kit::shell::RowStatus {
-    match status {
-        SessionStatus::Busy => rune_kit::shell::RowStatus::Busy,
-        SessionStatus::Attention => rune_kit::shell::RowStatus::Attention,
-    }
-}
-
 fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let entries = s.palette.entries();
     let field = rune_kit::TextInput::new(&s.palette.edit)
@@ -872,14 +898,20 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         );
     }
     if entries.is_empty() {
+        let mut empty = row().gap(8.0).items_center();
+        if s.palette.searching() {
+            empty = empty.child(busy(s, k));
+        }
         list = list.child(
-            text(if s.palette.searching() {
-                "Searching files…"
-            } else {
-                "Nothing matches."
-            })
-            .font(k.ty.small)
-            .color(k.c.text_faint),
+            empty.child(
+                text(if s.palette.searching() {
+                    "Searching files…"
+                } else {
+                    "Nothing matches."
+                })
+                .font(k.ty.small)
+                .color(k.c.text_faint),
+            ),
         );
     }
     rune_kit::Dialog::new(

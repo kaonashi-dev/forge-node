@@ -564,29 +564,20 @@ fn profile_rows(s: &AppState, k: &Kit) -> El {
     let Some(store) = &s.store else {
         return el();
     };
-    let first = store
-        .providers
-        .first()
-        .map(|info| info.descriptor.id.clone());
-    let mut new = small("New profile", ButtonVariant::Outline)
-        .disabled(first.is_none() || s.settings.profile.is_some());
-    if let Some(provider) = first {
-        new = new.on_press(move |s: &mut AppState| {
-            s.settings.profile = Some(ProfileForm::new(provider.clone()));
-        });
-    }
+    let new = small("New profile ▾", ButtonVariant::Outline)
+        .disabled(store.providers.is_empty() || s.settings.profile.is_some())
+        .on_press(|s: &mut AppState| {
+            s.menus.button = Some(crate::menus::ButtonMenu::NewProfile);
+        })
+        .build(k)
+        .key(crate::menus::ButtonMenu::NewProfile.trigger());
     let mut view = group(
         k,
         "agents-profiles",
         "Launch profiles",
         Some("A custom executable, account or arguments. Profiles appear in the + menu."),
     )
-    .child(
-        row()
-            .w_full()
-            .child(el().grow(1.0))
-            .child(new.build(k).key("profile-new")),
-    );
+    .child(row().w_full().child(el().grow(1.0)).child(new));
     if store.agent_profiles.is_empty() {
         view = view.child(
             text("No profiles yet.")

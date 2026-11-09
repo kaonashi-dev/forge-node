@@ -385,6 +385,8 @@ pub struct Metrics {
     pub reconnects: AtomicU64,
     pub stale_events: AtomicU64,
     pub terminal_deltas: AtomicU64,
+    /// Recent terminal frame CPU, p95, in microseconds; 0 until measured.
+    pub frame_p95_us: AtomicU64,
     pub last_snapshot_us: Mutex<Option<u64>>,
     pub last_command_us: Mutex<Option<u64>>,
     pub last_socket_thread: Mutex<Option<String>>,
@@ -418,6 +420,18 @@ impl Metrics {
 
     pub fn command_us(&self) -> Option<u64> {
         self.last_command_us.lock().ok().and_then(|value| *value)
+    }
+
+    pub fn note_frame_p95(&self, us: u64) {
+        self.frame_p95_us.store(us, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn frame_p95(&self) -> Option<f64> {
+        match self.frame_p95_us.load(Ordering::Relaxed) {
+            0 => None,
+            us => Some(us as f64 / 1000.0),
+        }
     }
 
     pub fn socket_thread(&self) -> String {

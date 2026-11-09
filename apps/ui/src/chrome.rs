@@ -10,8 +10,6 @@ use crate::app::{AppState, LinkStatus, SessionRow, SessionStatus};
 use crate::glyphs;
 use crate::workbench::{CenterMode, Panel};
 
-/// Tauri's `tabH`: the chip inside the strip's band.
-const TAB_H: f32 = 30.0;
 /// A tab never grows past this, as `.session-tab-wrap { max-width: 280px }`.
 const TAB_MAX_W: f32 = 240.0;
 
@@ -70,6 +68,7 @@ fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
         None => k.c.icon_muted,
     };
     let waiting = session.status == Some(SessionStatus::Attention);
+    let tab_h = s.chrome_metrics().tab;
     let mut chip = row()
         .key(format!("t-{}", session.id_text))
         .role("tab")
@@ -79,7 +78,7 @@ fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
             session.title.clone()
         })
         .checked(active)
-        .h(TAB_H)
+        .h(tab_h)
         .max_w(TAB_MAX_W)
         .pl(10.0)
         .pr(if active { 4.0 } else { 10.0 })
@@ -170,6 +169,7 @@ pub fn strip(s: &AppState, k: &Kit) -> El {
             );
     }
     let tabs = s.tab_rows();
+    let roles = crate::theme::roles(k);
     let mut strip = row()
         .key("session-tabs")
         .role("tablist")
@@ -180,7 +180,14 @@ pub fn strip(s: &AppState, k: &Kit) -> El {
         .center_y()
         .min_w(0.0)
         .shrink()
-        .scroll_x();
+        .fill(roles.strip)
+        .scroll_x()
+        .child(
+            el().pin(Some(0.0), None, Some(0.0), Some(0.0))
+                .h(1.0)
+                .fill(roles.strip_rule)
+                .a11y_hidden(),
+        );
     if tabs.is_empty() {
         return strip.child(
             text("No sessions")
@@ -235,7 +242,7 @@ pub fn views(s: &AppState, k: &Kit) -> El {
                 .label(label.to_string())
                 .checked(shown)
                 .grow(1.0)
-                .h(32.0)
+                .h(s.chrome_metrics().tab)
                 .radius(6.0)
                 .center()
                 .fill(if shown {

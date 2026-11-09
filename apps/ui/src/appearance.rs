@@ -86,6 +86,17 @@ impl AppState {
         self.theme_editor.status = None;
     }
 
+    /// The contrast as a drag moves, painted without a daemon write; releasing
+    /// commits it, so a gesture is one `app_state` row rather than one per pixel.
+    pub fn preview_contrast(&mut self, contrast: u8, dark: bool) {
+        let Some(active) = self.active_theme(dark) else {
+            return;
+        };
+        let edited = custom::variant(&active.name, active.origin().clone(), contrast);
+        self.theme_pref = Some(edited.to_json());
+        self.theme_editor.filled_for = None;
+    }
+
     /// One edit of the active theme: a colour, or the contrast, or both.
     pub fn edit_theme(&mut self, color: Option<(ThemeColor, &str)>, contrast: u8, dark: bool) {
         let Some(active) = self.active_theme(dark) else {
@@ -529,6 +540,57 @@ fn controls(s: &AppState, k: &Kit, active: Option<&CustomTheme>, contrast: u8) -
             .build(k)
             .key(key.to_string())
     };
+    let level = f32::from(contrast) / 100.0;
+    let slider = el()
+        .key("theme-contrast-slider")
+        .role("slider")
+        .label(format!("Contrast {contrast}"))
+        .range_value(f64::from(contrast), 0.0, 100.0)
+        .w(180.0)
+        .h(20.0)
+        .focusable(true)
+        .on_drag(move |s: &mut AppState, drag: &mut rune::Drag, tx| {
+            let width = drag.w.max(1.0);
+            let next = ((drag.x / width).clamp(0.0, 1.0) * 100.0).round() as u8;
+            if drag.phase == rune::Phase::Up {
+                s.edit_theme(None, next, dark);
+                return;
+            }
+            s.preview_contrast(next, dark);
+            tx.instant();
+        })
+        .on_key(move |s: &mut AppState, ev, _| match ev.key {
+            rune::Key::Left | rune::Key::Down => {
+                s.edit_theme(None, contrast.saturating_sub(1), dark);
+                true
+            }
+            rune::Key::Right | rune::Key::Up => {
+                s.edit_theme(None, contrast.saturating_add(1).min(100), dark);
+                true
+            }
+            _ => false,
+        })
+        .child(
+            el().absolute(0.0, 7.0)
+                .w_full()
+                .h(6.0)
+                .radius(3.0)
+                .fill(k.c.layer_03),
+        )
+        .child(
+            el().absolute(0.0, 7.0)
+                .w(180.0 * level)
+                .h(6.0)
+                .radius(3.0)
+                .fill(k.c.bg_accent),
+        )
+        .child(
+            el().absolute(180.0 * level - 6.0, 4.0)
+                .size(12.0, 12.0)
+                .radius(6.0)
+                .fill(k.c.text_strong)
+                .border(1.0, k.c.border_strong),
+        );
     rows = rows.child(
         row()
             .key("theme-contrast")
@@ -542,11 +604,7 @@ fn controls(s: &AppState, k: &Kit, active: Option<&CustomTheme>, contrast: u8) -
                     .color(k.c.text_muted)
                     .w(110.0),
             )
-            .child(step(
-                "−",
-                "theme-contrast-down",
-                contrast.saturating_sub(CONTRAST_STEP),
-            ))
+            .child(slider)
             .child(
                 text(contrast.to_string())
                     .font(k.ty.small_medium)
@@ -554,14 +612,19 @@ fn controls(s: &AppState, k: &Kit, active: Option<&CustomTheme>, contrast: u8) -
                     .w(32.0),
             )
             .child(step(
+                "−",
+                "theme-contrast-down",
+                contrast.saturating_sub(CONTRAST_STEP),
+            ))
+            .child(step(
                 "+",
                 "theme-contrast-up",
                 contrast.saturating_add(CONTRAST_STEP).min(100),
             ))
             .child(
                 text(
-                    "Contrast adjusts panel separation and secondary text. Choose the original \
-                     theme to reset your changes.",
+                    "Drag for fine contrast. Arrow keys move one step; the buttons move five. \
+                     Choose the original theme to reset your changes.",
                 )
                 .font(k.ty.text_xsmall)
                 .color(k.c.text_faint)

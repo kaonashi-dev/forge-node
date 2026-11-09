@@ -14,6 +14,7 @@ mod history;
 mod keymap;
 mod launch;
 mod menus;
+mod native_menus;
 mod palette;
 mod pr_review;
 mod probe;
@@ -31,6 +32,7 @@ mod terminal;
 mod test_support;
 mod theme;
 mod ui;
+mod updates;
 mod usage;
 mod workbench;
 
@@ -307,6 +309,7 @@ fn init() -> AppState {
         initial,
     );
     state.open_path = OPEN.get().cloned().flatten();
+    state.updates.fixture = fixture;
     if fixture && state.active_row().and_then(|row| row.terminal_id).is_some() {
         state.generation = 1;
         state.status = app::LinkStatus::Connected;
@@ -386,8 +389,11 @@ fn run_app(
             ui::view,
         )
     };
-    let app = App::new(spec);
+    let app = native_menus::install(App::new(spec));
     let handle = app.handle();
+    native_menus::install_handle(handle.clone());
+    updates::install_handle(handle.clone());
+    updates::start_schedule(handle.clone(), fixture);
     let sink: connection::EventSink = {
         let handle = handle.clone();
         Arc::new(move |events| {
@@ -405,7 +411,11 @@ fn run_app(
         state.connection = Some(connection);
         state.images = Some(images);
     });
-    let compositor = terminal::renderer::Terminal::new(Arc::clone(&boot.terminal), stats);
+    let compositor = terminal::renderer::Terminal::new(
+        Arc::clone(&boot.terminal),
+        stats,
+        Some(Arc::clone(&boot.metrics)),
+    );
     let app = app
         .init(init)
         .on_ime(ime)

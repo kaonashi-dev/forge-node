@@ -146,6 +146,9 @@ pub struct AppState {
     pub settings: crate::settings::Settings,
     pub sync: crate::sync::Sync,
     pub menus: crate::menus::Menus,
+    pub updates: crate::updates::Updates,
+    pub about: bool,
+    pub native_menu: Option<crate::native_menus::MenuSignature>,
     pub split: crate::terminal::split::Split,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
@@ -225,6 +228,9 @@ impl AppState {
             settings: crate::settings::Settings::default(),
             sync: crate::sync::Sync::default(),
             menus: crate::menus::Menus::default(),
+            updates: crate::updates::Updates::default(),
+            about: false,
+            native_menu: None,
             split: crate::terminal::split::Split::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
@@ -1754,6 +1760,7 @@ impl AppState {
         self.close_due();
         let mut changed = self.settings.esc.expire(Instant::now());
         changed |= self.poll_files(tx);
+        crate::native_menus::refresh(self);
         if clock - self.mirror_at >= 0.125 {
             for idx in 0..self.pane_count() {
                 let pane = self.pane_mut(idx);
