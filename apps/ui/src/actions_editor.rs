@@ -1,4 +1,4 @@
-//! A project's actions, as Tauri's `ActionsDialog` and `actionDraft`: what is
+//! A project's actions, as the original client's `ActionsDialog` and `actionDraft`: what is
 //! saved, what the checkout's files suggest, and what `.forge/actions.toml`
 //! offers. Nothing reaches the daemon until Save sends the whole set; a
 //! repository's file is only ever imported as an approved copy.

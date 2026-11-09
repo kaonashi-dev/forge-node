@@ -1,4 +1,4 @@
-//! Shared files, as Tauri's `SharedFiles`: a project's share rules, what the
+//! Shared files, as the original client's `SharedFiles`: a project's share rules, what the
 //! scan proposes, and their state in each checkout. Shown as Settings ›
 //! Shared files and as a dialog from a project or checkout menu. Every edit
 //! of the set is one `SetProjectShares`; only removal has its own request.
@@ -106,7 +106,7 @@ fn class_label(class: ShareClass) -> &'static str {
     }
 }
 
-/// Tauri's `size`: bytes as a person reads them.
+/// the original client's `size`: bytes as a person reads them.
 #[must_use]
 pub fn size(bytes: Option<u64>) -> String {
     let Some(bytes) = bytes else {
@@ -173,7 +173,7 @@ pub fn summary(
     (applied, checkouts.len(), worst)
 }
 
-/// A path typed or picked for a new rule, as Tauri's `add` checks it.
+/// A path typed or picked for a new rule, as the original client's `add` checks it.
 pub fn clean_path(raw: &str, rules: &[ShareRule]) -> Result<String, &'static str> {
     let clean = raw.trim().trim_start_matches('/').trim_end_matches('/');
     if clean.is_empty() {

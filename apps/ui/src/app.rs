@@ -59,7 +59,7 @@ pub struct SessionRow {
     pub workspace_id: WorkspaceId,
     pub status: Option<SessionStatus>,
     pub running: bool,
-    /// How a session that stopped ended, in Tauri's words.
+    /// How a session that stopped ended, in the original client's words.
     pub ended: Option<String>,
     /// An editor's file mark, resolved when the store changes.
     pub file: Option<crate::file_icons::FileIcon>,
@@ -75,9 +75,9 @@ pub fn strip_workspace(
 }
 
 /// A checkout's tabs: its sessions with a terminal, and its editors (which
-/// Rune shows as tabs, unlike Tauri's Code strip). No checkout is no tabs,
+/// Rune shows as tabs, unlike the original client's Code strip). No checkout is no tabs,
 /// never every session. Shells lead and the rest follow, each group in
-/// creation order, as Tauri's `tabOrder`; an editor is not a shell.
+/// creation order, as the original client's `tabOrder`; an editor is not a shell.
 #[must_use]
 pub fn rows_in_strip(rows: &[SessionRow], workspace: Option<WorkspaceId>) -> Vec<&SessionRow> {
     let Some(workspace) = workspace else {
@@ -177,7 +177,7 @@ pub struct AppState {
     /// A workspace picked in Projects; Changes and Files show it instead of
     /// the active session's until a session is selected.
     pub chosen_workspace: Option<WorkspaceId>,
-    /// `ui.theme_base` from the daemon, shared with Tauri: a `tokens.ts`
+    /// `ui.theme_base` from the daemon, shared with the original client: a the equivalent
     /// base, `"system"`, or unset.
     pub theme_pref: Option<String>,
     /// A scroll offset that brings a moved caret into view, applied once.
@@ -323,7 +323,7 @@ impl AppState {
 
     fn set_store(&mut self, store: Store) {
         let mut sessions: Vec<&domain::Session> = store.sessions.iter().collect();
-        // Creation order, as Tauri's `byCreatedAt`; the sort is stable.
+        // Creation order, as the original client's `byCreatedAt`; the sort is stable.
         sessions.sort_by_key(|session| session.created_at);
         self.rows = sessions
             .into_iter()
@@ -590,7 +590,7 @@ impl AppState {
         true
     }
 
-    /// A view's chord, as Tauri's `toggle_*` actions: it shows the view, or
+    /// A view's chord, as the original client's `toggle_*` actions: it shows the view, or
     /// hides the sidebar when that view is already what it shows.
     pub fn toggle_panel(&mut self, panel: Panel) {
         if self.sidebar.is_open() && self.workbench.panel == panel {
@@ -615,7 +615,7 @@ impl AppState {
         self.show_panel(next);
     }
 
-    /// The strip's Nth tab (1-based), as Option-N in Tauri.
+    /// The strip's Nth tab (1-based), as Option-N in the original client.
     pub fn focus_tab(&mut self, n: usize) {
         let Some(id) = self.tab_rows().get(n.wrapping_sub(1)).map(|row| row.id) else {
             return;
@@ -934,7 +934,7 @@ impl AppState {
     }
 
     /// Rebind one action, or unbind it with `None`, and store the result. A
-    /// conflict is reported but not refused: Tauri lets the newer binding win
+    /// conflict is reported but not refused: the original client lets the newer binding win
     /// and says which one it shadowed.
     pub fn rebind_key(&mut self, action: Action, chord: Option<rune::Chord>) {
         let label = chord.map(|chord| chord.label());
@@ -977,7 +977,7 @@ impl AppState {
 
     /// Providers the daemon found installed, for the palette's agent entries.
     /// Installed agents the person has not hidden in Settings › Agents, as
-    /// Tauri's launch lists offer them.
+    /// the original client's launch lists offer them.
     pub(crate) fn installed_agents(&self) -> Vec<crate::agent_ops::Choice> {
         let Some(store) = &self.store else {
             return Vec::new();
@@ -985,7 +985,7 @@ impl AppState {
         crate::agent_ops::choices(store, false)
     }
 
-    /// The checkout's strip, as Tauri's `sessionScope`: the checkout the
+    /// The checkout's strip, as the original client's `sessionScope`: the checkout the
     /// window was pointed at, else the active session's, else the first. A
     /// stored order is applied within the shell/agent grouping.
     pub fn tab_rows(&self) -> Vec<&SessionRow> {
@@ -1080,7 +1080,7 @@ impl AppState {
 
     /// Opens the commit dialog for the workspace Changes shows, and asks Juva
     /// for a draft.
-    /// Asks Juva for a message, only when the person asks, as in Tauri.
+    /// Asks Juva for a message, only when the person asks, as in the original client.
     pub fn draft_commit(&mut self) {
         let Some(workspace) = self.workbench.workspace else {
             return;
@@ -1291,7 +1291,7 @@ impl AppState {
         }
     }
 
-    /// Points the window at a checkout, as a rail card does in Tauri: its
+    /// Points the window at a checkout, as a rail card does in the original client: its
     /// tabs, Git and Files follow, and its first session is selected.
     pub fn focus_checkout(&mut self, workspace: WorkspaceId) {
         if let Some(id) = self
@@ -1444,7 +1444,7 @@ impl AppState {
     }
 
     /// The base to paint with: the saved one, the system's pair for
-    /// `"system"`, and calm-dark when nothing is saved, as in Tauri.
+    /// `"system"`, and calm-dark when nothing is saved, as in the original client.
     #[must_use]
     pub fn theme_base(&self, system_dark: bool) -> &str {
         match self.theme_pref.as_deref() {
@@ -1504,7 +1504,7 @@ impl AppState {
         }
     }
 
-    /// Re-reads Git when the window's checkout moved, as Tauri's
+    /// Re-reads Git when the window's checkout moved, as the original client's
     /// `checkoutWatch`. Marks are kept per checkout, so switching away and
     /// back is not a move, while a change made meanwhile is.
     fn watch_checkout(&mut self) {
@@ -2240,7 +2240,7 @@ impl AppState {
     }
 
     /// The resize gate: attach is always safe, and the shown pane sizes its PTY
-    /// once it has been measured, as Tauri's does on mount, including a session
+    /// once it has been measured, as the original client's does on mount, including a session
     /// restored at startup that nobody clicked. `ResizeTerminal` is always
     /// followed by an `AttachTerminal` from the worker. Attach state is
     /// updated here because this is the one UI-thread place that sees the shared
@@ -2807,7 +2807,7 @@ impl AppState {
     }
 
     /// Closes a session: at once when it is no longer running, after a
-    /// confirmation when it is, as Tauri's `closeSessionFromUi` does.
+    /// confirmation when it is, as the original client's `closeSessionFromUi` does.
     pub fn request_close(&mut self, session: SessionId) {
         let live = self.store.as_ref().is_some_and(|store| {
             store
@@ -3028,7 +3028,7 @@ pub fn poll(state: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
     state.poll(clock, tx)
 }
 
-/// The tab's marker, after Tauri's `sessionWork`: waiting for the person
+/// The tab's marker, after the original client's `sessionWork`: waiting for the person
 /// outranks everything; an editor or a shell is never busy, since only an
 /// agent's hooks report a turn; and a keystroke into an idle agent is a
 /// guard the daemon raises, not a turn.
@@ -3123,7 +3123,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_order_is_stored_under_tauris_key() {
+    fn a_tab_order_is_stored_under_the_original_client_key() {
         let mut state = state();
         let workspace = state.workspaces[0].id;
         state.tabs.set_order(workspace, vec![state.rows[0].id]);

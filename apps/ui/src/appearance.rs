@@ -1,7 +1,7 @@
-//! Settings › Theme, as Tauri's `ThemeSettings`: a base, the system's pair,
+//! Settings › Theme, as the original client's `ThemeSettings`: a base, the system's pair,
 //! or a custom theme stored as JSON in the same `ui.theme_base` key, so a
 //! theme edited in either client paints in both. Each edit saves at once;
-//! choosing the original base is the reset, as Tauri says.
+//! choosing the original base is the reset, as the original client says.
 
 use rune::{El, FileDialogOptions, TextEdit, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
@@ -39,7 +39,7 @@ fn color_of(palette: &custom::Palette, key: ThemeColor) -> &str {
 
 impl AppState {
     /// The theme being painted, as a custom theme so it can be edited: a base
-    /// becomes one named after it, as Tauri's `active()`.
+    /// becomes one named after it, as the original client's `active()`.
     #[must_use]
     pub fn active_theme(&self, dark: bool) -> Option<CustomTheme> {
         let preference = self.theme_base(dark);
@@ -73,7 +73,7 @@ impl AppState {
     }
 
     /// Picks a base, `"system"` or a custom theme's JSON, and saves it where
-    /// Tauri keeps it; a custom one is also kept as the last custom theme.
+    /// the original client keeps it; a custom one is also kept as the last custom theme.
     pub fn choose_theme(&mut self, value: String) {
         if let Some(connection) = &self.connection {
             let _ = connection.set_app_state(THEME_KEY, &value);

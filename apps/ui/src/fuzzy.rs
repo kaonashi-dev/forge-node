@@ -1,4 +1,4 @@
-//! The palette's subsequence ranking, as Tauri's `shared/search/fuzzy.ts`:
+//! The palette's subsequence ranking, as this client:
 //! a match at a word start or in a run scores higher, which is what puts
 //! "New Terminal" ahead of "Agent Settings" for `nt`. File paths are ranked by
 //! the daemon (`SearchFiles`), not here.

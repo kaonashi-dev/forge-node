@@ -1,6 +1,6 @@
 //! Find in the open file. The editor owns the query, the search and the
 //! marks; the panel sends what was typed (`EditorFind`) and draws the
-//! `EditorState.find` the editor reports back, as Tauri's `FindPanel.tsx`.
+//! `EditorState.find` the editor reports back, as this client.
 //!
 //! The field keeps its own text while typing, because the state that echoes a
 //! keystroke arrives after the next one.
@@ -42,7 +42,7 @@ pub enum Flag {
     Regex,
 }
 
-/// Tauri's three toggles: what the button says, and what it is called.
+/// the original client's three toggles: what the button says, and what it is called.
 pub const TOGGLES: [(Flag, &str, &str); 3] = [
     (Flag::Case, "Aa", "Match case"),
     (Flag::Word, "ab", "Match whole word"),
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn the_counter_reads_as_tauris() {
+    fn the_counter_reads_as_the_original_client() {
         assert_eq!(counter(&found(12, 3, false), "x"), "3 of 12");
         assert_eq!(counter(&found(12, 0, false), "x"), "12 results");
         assert_eq!(counter(&found(5000, 0, true), "x"), "5000+ results");

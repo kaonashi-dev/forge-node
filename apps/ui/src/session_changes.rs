@@ -1,4 +1,4 @@
-//! One session's changes since its own baseline, as Tauri's
+//! One session's changes since its own baseline, as the original client's
 //! `SessionChangesPanel`: a read the person asks for, never a subscription.
 
 use domain::{BaseOrigin, SessionChanges, SessionId, Timestamp, WorkspaceId};

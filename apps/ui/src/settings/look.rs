@@ -1,5 +1,5 @@
-//! Settings › Appearance: the theme, then Tauri's density, motion, finish,
-//! type size and editor rows (`SettingsRoute.tsx` `Appearance`).
+//! Settings › Appearance: the theme, then the original client's density, motion, finish,
+//! type size and editor rows (the equivalent `Appearance`).
 
 use rune::{El, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, SegmentedControl, Switch};

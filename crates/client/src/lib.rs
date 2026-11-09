@@ -2,7 +2,7 @@
 //!
 //! Blocking `std` Unix sockets and one reader thread — not tokio. The GUI
 //! never links a VT engine; [`CellGrid`] applies snapshots and row deltas.
-//! Wire types are re-exported so `forge-tauri` does not depend on `protocol`.
+//! Wire types are re-exported so `forge-ui` does not depend on `protocol`.
 
 mod clamp;
 mod damage;

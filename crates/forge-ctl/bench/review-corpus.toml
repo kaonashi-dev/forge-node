@@ -44,7 +44,7 @@ note = "`git status -z` without --no-renames emits a second path per rename, whi
 [[case]]
 id = "retarget-only-active-workspace"
 commit = "6b64619f83cee0bb5f20ef791d21adac96f78c17"
-path = "apps/tauri/src/navigation/viewsStore.ts"
+path = "apps/ui/src/palette.rs"
 line = 257
 note = "A moved file only retargeted the pending line reveal when its workspace was the active one."
 
@@ -58,14 +58,14 @@ note = "`expect` on a poisoned lock panics the PTY thread instead of recovering.
 [[case]]
 id = "content-search-case"
 commit = "0527d850d95945301e1905e3be2469344ba13064"
-path = "apps/tauri/src/features/files/search/fileContentSearch.ts"
+path = "apps/ui/src/workbench/search.rs"
 line = 46
 note = "Content search matched case-sensitively while the query was folded."
 
 [[case]]
 id = "starting-forever"
 commit = "8eed1e5a40650348de4db5c06a8a45679fb1747a"
-path = "apps/tauri/src/features/sessions/work.ts"
+path = "apps/ui/src/app.rs"
 line = 36
 note = "A session whose first turn never reported stayed `starting` forever."
 

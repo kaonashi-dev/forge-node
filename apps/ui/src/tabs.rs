@@ -1,5 +1,5 @@
 //! Session tab order and the Ctrl-Tab ring. Strip order is what a drag
-//! decides and is persisted under Tauri's `ui.tab_order`; the ring is focus
+//! decides and is persisted under the original client's `ui.tab_order`; the ring is focus
 //! order, kept separately so a Ctrl-Tab returns where you just were.
 //!
 //! The functions that decide an order or an index are pure so the strip, the
@@ -12,7 +12,7 @@ use domain::{SessionId, WorkspaceId};
 
 use crate::app::SessionRow;
 
-/// Tauri's key for the per-checkout strip order.
+/// the original client's key for the per-checkout strip order.
 pub const TAB_ORDER_KEY: &str = "ui.tab_order";
 /// How long Control stays down before the list appears; a tap commits at once.
 pub const SHOW_DELAY: Duration = Duration::from_millis(180);
@@ -109,7 +109,7 @@ pub fn step_index(index: usize, length: usize, delta: isize) -> usize {
     (index as isize + delta).rem_euclid(length as isize) as usize
 }
 
-/// Read `ui.tab_order`: a map of checkout id to session ids, as Tauri writes it.
+/// Read `ui.tab_order`: a map of checkout id to session ids, as the original client writes it.
 #[must_use]
 pub fn parse_order(raw: Option<&str>) -> BTreeMap<String, Vec<SessionId>> {
     let Some(raw) = raw else {
@@ -151,7 +151,7 @@ fn grouped(rows: Vec<&SessionRow>) -> Vec<&SessionRow> {
 
 /// Apply a stored order over the strip's fallback order. A tab the store has
 /// never seen keeps its creation order after the remembered ones, and an id
-/// that no longer exists is ignored. Shells still lead, as Tauri groups them.
+/// that no longer exists is ignored. Shells still lead, as the original client groups them.
 #[must_use]
 pub fn applied<'a>(base: &[&'a SessionRow], order: &[SessionId]) -> Vec<&'a SessionRow> {
     if order.is_empty() {
@@ -305,7 +305,7 @@ impl Tabs {
         }
     }
 
-    /// Persisted order with checkouts that are gone removed, as Tauri prunes.
+    /// Persisted order with checkouts that are gone removed, as the original client prunes.
     #[must_use]
     pub fn serialized(&self, live_workspaces: &HashSet<String>) -> String {
         let pruned: BTreeMap<String, Vec<SessionId>> = self

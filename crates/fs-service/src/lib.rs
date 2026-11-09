@@ -2449,8 +2449,8 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
     #[test]
     fn name_search_is_fuzzy() {
         let tmp = git_repo();
-        fs::create_dir_all(tmp.path().join("apps/tauri/src")).unwrap();
-        fs::write(tmp.path().join("apps/tauri/src/app_shell.rs"), "").unwrap();
+        fs::create_dir_all(tmp.path().join("web/src")).unwrap();
+        fs::write(tmp.path().join("web/src/app_shell.rs"), "").unwrap();
         let r = search_files(tmp.path(), "appshell", SearchKind::Name, 50).unwrap();
         assert_eq!(r.matches.len(), 1);
         assert!(r.matches[0].path.ends_with("app_shell.rs"));

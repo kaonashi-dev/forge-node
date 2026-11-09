@@ -1,4 +1,4 @@
-//! Which language mark a file wears, by name alone, as Tauri's `langIcons.ts`:
+//! Which language mark a file wears, by name alone, as this client:
 //! the tree is painted from a listing of names, and reading a file to learn
 //! what it is would cost a round trip per row. A name that says nothing gets
 //! the plain sheet rather than a guess.
@@ -356,7 +356,7 @@ fn ends_with(name: &str, suffix: &str) -> bool {
 
 /// The mark for one file, from a name or a whole path. Whole name first, then
 /// the prefixes and the compound suffixes, then the extension:
-/// `next.config.js` is Next and not JavaScript, and `app.test.ts` is a test
+/// `next.config.js` is Next and not JavaScript, and the equivalent is a test
 /// and not TypeScript, and only the longer rule can say so.
 #[must_use]
 pub fn for_path(path: &str) -> FileIcon {

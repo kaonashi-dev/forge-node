@@ -429,7 +429,7 @@ fi
 # replacement fails Gatekeeper on the machine that installs it.
 if [ "$make_updater" -eq 1 ]; then
   require_cmd minisign "brew install minisign"
-  key="${FORGE_UPDATER_KEY_PATH:-$HOME/.tauri/forge-updater.key}"
+  key="${FORGE_UPDATER_KEY_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/forge-node/updater.key}"
   temporary_key=""
   if [ -n "${FORGE_UPDATER_KEY:-}" ]; then
     temporary_key="$(mktemp)"

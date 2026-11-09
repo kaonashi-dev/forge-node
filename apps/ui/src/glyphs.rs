@@ -1,4 +1,4 @@
-//! Tauri's own glyphs (`theme/icons/glyphs.tsx`, `uiGlyphs.tsx`): one 16 pt
+//! the original client's own glyphs (the equivalent, the equivalent): one 16 pt
 //! grid, a 1.5 round stroke in the current colour, so both clients draw the
 //! same marks.
 
@@ -12,7 +12,7 @@ macro_rules! stroke {
     };
 }
 
-/// Each glyph is `NAME "id" "region" "rest"`. The region is the part Tauri's
+/// Each glyph is `NAME "id" "region" "rest"`. The region is the part the original client's
 /// `.glyph-region` fills at 20% when the glyph names the chosen thing, so a
 /// chosen view never rests on colour alone; [`chosen`] draws it that way.
 macro_rules! glyphs {
@@ -215,9 +215,9 @@ pub fn chosen(icon: &'static Icon) -> &'static Icon {
         .map_or(icon, |(_, chosen)| chosen)
 }
 
-/// A logotype drawn from Tauri's `public/icons/*.svg`, filled in the current
+/// A logotype drawn from the original client's `public/icons/*.svg`, filled in the current
 /// colour, so a provider never carries a hue that would rank it above another
-/// (Tauri's `BrandIcon`).
+/// (the original client's `BrandIcon`).
 macro_rules! brand {
     ($(#[$meta:meta])* $name:ident, $id:literal, $view:literal, $path:literal) => {
         $(#[$meta])*
@@ -284,7 +284,7 @@ pub fn for_session(kind: domain::SessionKind, provider: Option<&str>) -> &'stati
     }
 }
 
-/// What a session's tab and row show, after Tauri's `sessionGlyphFace`: the
+/// What a session's tab and row show, after the original client's `sessionGlyphFace`: the
 /// session the person is in keeps its identity, one that stopped to ask is a
 /// bell, a busy one a loader, and a finished agent a check. An editor's
 /// identity is its file's mark.
@@ -308,7 +308,7 @@ pub fn for_row(row: &SessionRow, active: bool, light: bool) -> &'static Icon {
 mod tests {
     use super::*;
 
-    /// The glyph Tauri's `ICONS` registry (`forgeIcons.ts`) names, by that name.
+    /// The glyph the original client's `ICONS` registry (the equivalent) names, by that name.
     fn named(name: &str) -> Option<&'static Icon> {
         Some(match name {
             "git-branch" => &GIT,
@@ -374,7 +374,7 @@ mod tests {
         })
     }
 
-    /// `forgeIcons.ts`'s `ForgeIconName`, every name the shell may ask for.
+    /// the equivalent's `ForgeIconName`, every name the shell may ask for.
     const REGISTRY: [&str; 59] = [
         "git-branch",
         "git-pull-request",

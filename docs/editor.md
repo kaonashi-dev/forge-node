@@ -628,7 +628,7 @@ family in its directory, then that family anywhere, then the rest, before the
 result cap is applied. This improves locality, not type resolution.
 
 TypeScript and JavaScript editors also search installed declaration files
-(`.d.ts`, `.d.mts`, `.d.cts`) in packages imported by the current file. This covers
+(declaration files) in packages imported by the current file. This covers
 NestJS services calling dependency methods such as
 `this.queue.upsertJobScheduler`: the candidate is that method's declaration on
 BullMQ's `Queue` class, even though `node_modules` is ignored by Git and hidden
@@ -692,7 +692,7 @@ local binding. ADR-013.
 | SCIP (`[definitions] scip`) | indexed, authoritative at a caret | no | A prebuilt `index.scip` at the checkout root, read with `metadata()` first and capped at 256 MiB. It answers only for a file no newer than the index, and never for unsaved edits. |
 | Syntax index (`[definitions] syntax`) | syntactic, authoritative when it found a declaration and no budget cut | yes | Tree-sitter for Rust, TypeScript/TSX, JavaScript, Python and Go with Forge's own `tags.scm` and `locals.scm`. Grep first, then parse only the files that mention the name, closest first, within 256 files and 16 MiB; definitions are cached per file by length and mtime. A binding in scope at the caret wins outright. |
 | Universal Ctags (`[definitions] ctags`) | indexed, never authoritative | no | Installed by the person (GPL, never bundled); the probe refuses macOS's BSD `ctags`. One `ctags --output-format=json` run over the files `git grep -l` named. |
-| Grep heuristic | heuristic | always last | The heuristic below, plus installed `.d.ts` declarations for TypeScript. |
+| Grep heuristic | heuristic | always last | The heuristic below, plus installed declaration files. |
 
 The syntax index lives in the daemon, not in `forge-editor`; the passage on
 tree-sitter below is about the editor's own highlighting. Adding a language to

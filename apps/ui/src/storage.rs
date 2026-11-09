@@ -1,8 +1,8 @@
-//! Settings › Storage, as Tauri's `StorageSection`: where the daemon keeps
+//! Settings › Storage, as the original client's `StorageSection`: where the daemon keeps
 //! its config, state and managed worktrees. The paths are the daemon's own
 //! resolution (`GetPaths`), immutable per daemon, so one read per connection.
 //! Moving data out of a legacy layout stops and restarts the daemon, which
-//! only Tauri's host does today; here it is named, not offered.
+//! only the original client's host does today; here it is named, not offered.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

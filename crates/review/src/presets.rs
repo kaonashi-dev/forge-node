@@ -65,7 +65,7 @@ fn preset(
 }
 
 /// The same four choices, names and details as the pull-request review recipes
-/// (`apps/tauri/src/features/pull-requests/prReview.ts`); the wording differs
+/// (`apps/ui/src/pr_review.rs`); the wording differs
 /// because the answer here is the structured JSON the prompt already specifies.
 #[must_use]
 pub fn builtins() -> Vec<Preset> {

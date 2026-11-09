@@ -11,7 +11,7 @@
 #   scripts/package-linux all        # both (default)
 #
 # The Rune client links its renderer statically; there is no frontend bundle
-# and no Bun step. The launcher starts `forge-daemon` beside it.
+# and no frontend build step. The launcher starts `forge-daemon` beside it.
 #
 # ---------------------------------------------------------------------------
 # RUNTIME DEPENDENCIES

@@ -40,7 +40,7 @@ fn parse_hex(value: &str) -> Option<u32> {
 }
 
 impl Palette {
-    /// The terminal colours of a `tokens.ts` base, or forge-dark when the base
+    /// The terminal colours of a the equivalent base, or forge-dark when the base
     /// is unknown or its entry does not parse.
     pub fn for_base(base: &str) -> Self {
         let mut palette = Self::forge_dark();
@@ -62,7 +62,7 @@ impl Palette {
         palette
     }
 
-    /// The 16 named colors and default fg/bg come from `forge-dark` in `apps/tauri/src/theme/tokens.ts`; 16..=255 is the xterm cube and ramp.
+    /// The 16 named colors and default fg/bg come from `forge-dark` in the equivalent; 16..=255 is the xterm cube and ramp.
     pub fn forge_dark() -> Self {
         let mut ansi = [0u32; 256];
         ansi[..16].copy_from_slice(&FORGE_DARK);
@@ -113,7 +113,7 @@ mod theme_tests {
     #[test]
     fn a_base_brings_its_own_terminal_colours() {
         let calm = Palette::for_base("calm-dark");
-        assert_eq!(calm.bg, rgb(0x11, 0x11, 0x12), "tokens.ts calm-dark termBg");
+        assert_eq!(calm.bg, rgb(0x11, 0x11, 0x12), "calm-dark termBg");
         assert_eq!(calm.fg, rgb(0xc9, 0xc9, 0xcf));
         let light = Palette::for_base("calm-light");
         assert_ne!(light.bg, calm.bg);

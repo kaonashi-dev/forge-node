@@ -1,4 +1,4 @@
-//! Files opened lately, per checkout, in the `app_state` key Tauri writes, so
+//! Files opened lately, per checkout, in the `app_state` key the original client writes, so
 //! the two clients share one list. What ⌘P shows before anything is typed.
 
 use std::collections::BTreeMap;

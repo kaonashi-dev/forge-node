@@ -165,7 +165,7 @@ impl Entry {
     }
 }
 
-/// The chord that runs a command, shown beside it as Tauri's palette does.
+/// The chord that runs a command, shown beside it as the original client's palette does.
 /// This is the shipped fallback; a running app asks its keymap first.
 #[must_use]
 pub fn chord(command: &Command) -> Option<&'static str> {

@@ -5,7 +5,7 @@
 //! The only job is turning the text into rows that carry their own line
 //! numbers, because a diff without them is unusable for talking about a change.
 
-/// Tauri's `ui.diff.split`: the layout both the working-tree diff and the
+/// the original client's `ui.diff.split`: the layout both the working-tree diff and the
 /// branch compare read, so one choice holds across the two.
 pub const DIFF_SPLIT_KEY: &str = "ui.diff.split";
 
@@ -127,7 +127,7 @@ pub fn rows(patch: &str) -> Vec<Row> {
     rows
 }
 
-/// The two columns of a split view, paired per hunk as Tauri's `splitRows`:
+/// The two columns of a split view, paired per hunk as the original client's `splitRows`:
 /// a run of removed lines followed by a run of added lines is paired
 /// positionally, an unequal run leaves the shorter side as fillers.
 #[must_use]

@@ -448,7 +448,7 @@ fn run_app(
 fn print_help() {
     println!(
         "\
-forge-ui — the Rune client, built beside the Tauri app
+forge-ui — the native Rune client of Forge Node
 
 Usage: forge-ui [OPTIONS]
 

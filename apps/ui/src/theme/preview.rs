@@ -1,4 +1,4 @@
-//! Tauri's `ThemePreview`: a terminal under the theme, its sixteen ANSI
+//! the original client's `ThemePreview`: a terminal under the theme, its sixteen ANSI
 //! slots, and the nine project hues as the rail draws them.
 
 use rune::{El, TextStyle, col, el, row, text};

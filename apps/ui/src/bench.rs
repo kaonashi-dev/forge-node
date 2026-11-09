@@ -1,6 +1,6 @@
 //! Headless measurements: the fixture session switch and echo, the integrated
 //! 125 Hz terminal stream and the 88-row editor. `scripts/perf.sh` adds
-//! startup/RSS and the Tauri baseline, and writes the combined report.
+//! startup/RSS, and writes the combined report.
 //!
 //! The terminal stream applies one synthetic delta per frame through
 //! `SharedTerminal` (the path the fixture worker uses) and draws with the real

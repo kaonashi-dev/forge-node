@@ -1,5 +1,5 @@
-//! The rail as data, as Tauri's `tree.ts`, `railFolds.ts` and
-//! `workspaceOrder.ts`: group → project → checkout → session, the folds and
+//! The rail as data, as this client, the equivalent and
+//! the equivalent: group → project → checkout → session, the folds and
 //! checkout order kept in `app_state`, the flat row list the keyboard walks,
 //! and the sessions waiting on the person.
 
@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use domain::{ProjectGroupId, ProjectId, Session, SessionId, Workspace, WorkspaceId};
 
-/// Shared with Tauri: a JSON array of folded row ids.
+/// Shared with the original client: a JSON array of folded row ids.
 pub const FOLDS_KEY: &str = "ui.sidebar.collapsed";
-/// Shared with Tauri: `{ project id: [checkout id, …] }`.
+/// Shared with the original client: `{ project id: [checkout id, …] }`.
 pub const ORDER_KEY: &str = "ui.sidebar.workspace_order";
 
 #[derive(Default)]
@@ -269,7 +269,7 @@ pub fn needs_you(sessions: &[Session]) -> Vec<&Session> {
     out
 }
 
-/// Tauri's `shortDuration` of how long a session has waited.
+/// the original client's `shortDuration` of how long a session has waited.
 #[must_use]
 pub fn waited(session: &Session, now: &domain::Timestamp) -> String {
     let secs = (now.0 - session.last_activity_at.0).whole_seconds().max(0);

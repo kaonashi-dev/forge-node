@@ -1,5 +1,5 @@
-//! How a session is named and its state said, as Tauri's `sessionTitle`,
-//! `promptPath` and `sessionStateLabel` (`contracts/runtime.ts`) do.
+//! How a session is named and its state said, as the original client's `sessionTitle`,
+//! `promptPath` and `sessionStateLabel` (the equivalent) do.
 
 use domain::{Session, SessionKind, SessionState};
 
@@ -14,7 +14,7 @@ fn is_agent(session: &Session) -> bool {
 
 fn fallback_kind(session: &Session) -> String {
     if session.kind == SessionKind::Editor {
-        // Tauri shows editors in its Code tab, never among session tabs; here
+        // the original client shows editors in its Code tab, never among session tabs; here
         // they are tabs, so the file's name tells them apart.
         return session
             .editor
@@ -125,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn states_are_said_in_tauris_words() {
+    fn states_are_said_in_the_original_client_words() {
         assert_eq!(state_label(&SessionState::Running), "running");
         assert_eq!(
             state_label(&SessionState::Exited {

@@ -1,4 +1,4 @@
-//! The macOS menu bar, in Tauri's order. Every item with a chord synthesizes
+//! The macOS menu bar, in the original client's order. Every item with a chord synthesizes
 //! that chord and runs the app's own key path, so a menu pick and the keyboard
 //! can never drift into two implementations. Edit and Window come from Rune's
 //! standard menus, which AppKit already owns.
@@ -309,7 +309,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_builds_every_item_tauri_lists() {
+    fn the_menu_builds_every_item_the_original_client_lists() {
         assert_eq!(
             items(&MenuSignature::default()).len(),
             26,

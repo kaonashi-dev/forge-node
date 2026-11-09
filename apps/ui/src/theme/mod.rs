@@ -1,7 +1,6 @@
-//! Colours from `apps/tauri/src/theme/tokens.ts`, the one source, resolved by
-//! `bun run theme:rune` into `themes.json`. A Tauri test fails when the two
-//! drift. A built-in base is read, never derived; only a custom theme (JSON
-//! stored in `ui.theme_base`, as Tauri stores it) is derived, by `custom`.
+//! Colours from `themes.json`, the one source. A built-in base is read, never
+//! derived; only a custom theme (JSON stored in `ui.theme_base`) is derived, by
+//! `custom`.
 
 pub mod custom;
 pub mod preview;
@@ -17,13 +16,13 @@ pub use custom::Palette;
 pub use roles::Roles;
 
 const THEMES_JSON: &str = include_str!("themes.json");
-/// Where the choice lives in the daemon's `app_state`, shared with Tauri.
+/// Where the choice lives in the daemon's `app_state`, shared with the original client.
 pub const THEME_KEY: &str = "ui.theme_base";
 /// The last custom theme, kept so choosing a base does not lose it.
 pub const CUSTOM_KEY: &str = "ui.custom_theme";
 /// The stored value that follows the system's light or dark.
 pub const SYSTEM: &str = "system";
-/// What a person who never chose sees, as in Tauri.
+/// What a person who never chose sees, as in the original client.
 pub const DEFAULT_BASE: &str = "calm-dark";
 /// Previews of a custom theme are distinct keys; past this many, caches restart.
 pub const CACHE_LIMIT: usize = 24;
@@ -130,12 +129,12 @@ fn built_in() -> &'static HashMap<String, Arc<Theme>> {
     })
 }
 
-/// The bases a person can pick, in `tokens.ts` order.
+/// The bases a person can pick, in the equivalent order.
 pub fn bases() -> &'static [String] {
     &file().bases
 }
 
-/// Tauri's accent swatches for a light or dark theme.
+/// the original client's accent swatches for a light or dark theme.
 pub fn accents(light: bool) -> &'static [Swatch] {
     if light {
         &file().accents.light
@@ -288,7 +287,7 @@ fn resolve(base: &str, fallback_dark: bool) -> Rc<Resolved> {
         .expect("the default bases are built in and tested")
 }
 
-/// The chrome's kit for `base`: rune-kit's tokens carrying Tauri's roles. An
+/// The chrome's kit for `base`: rune-kit's tokens carrying the original client's roles. An
 /// unknown base paints as the default one for `fallback_dark`.
 pub fn kit(base: &str, fallback_dark: bool) -> rune_kit::Kit {
     resolve(base, fallback_dark).kit.clone()

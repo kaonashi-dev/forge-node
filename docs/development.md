@@ -11,7 +11,7 @@
   parse (the highest `xcrun` SDK can name an architecture the installed linker
   does not know). `scripts/dev` exports it; bare `cargo` on macOS needs
   `SDKROOT="$(scripts/macos-sdk)"`.
-- No database service and no Node/Bun runtime.
+- No database service and no JavaScript runtime.
 
 ## Gate
 

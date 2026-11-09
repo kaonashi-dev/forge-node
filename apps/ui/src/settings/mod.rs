@@ -1,6 +1,5 @@
-//! Settings as Tauri lays it out (`features/settings/sections.ts`,
-//! `SettingsLayout.tsx`): while it is open the sidebar lists the sections,
-//! and the centre shows one of them under a page header.
+//! Settings as sections: while it is open the sidebar lists them, and the
+//! centre shows one under a page header.
 
 mod agents;
 mod general;
@@ -107,7 +106,7 @@ impl Section {
     }
 }
 
-/// How long the second Escape may follow the first, as Tauri's `ESC_AGAIN_MS`.
+/// How long the second Escape may follow the first, as the original client's `ESC_AGAIN_MS`.
 pub const ESC_AGAIN: Duration = Duration::from_millis(1_200);
 
 /// Two Escapes leave Settings. A sequence rather than a chord, so a dialog
@@ -325,7 +324,7 @@ impl AppState {
     }
 }
 
-/// The sidebar while Settings is open, as Tauri's `SettingsNav`.
+/// The sidebar while Settings is open, as the original client's `SettingsNav`.
 pub fn nav(s: &AppState, k: &Kit) -> El {
     let armed = s.settings.esc.armed();
     let back = SidebarRow::new(if armed {
@@ -375,7 +374,7 @@ pub fn nav(s: &AppState, k: &Kit) -> El {
     list
 }
 
-/// One labelled group of a page, as Tauri's `Group`.
+/// One labelled group of a page, as the original client's `Group`.
 pub(crate) fn group(k: &Kit, key: &str, title: &str, description: Option<&str>) -> El {
     let mut head = col().gap(2.0).child(
         text(title.to_string())
@@ -401,7 +400,7 @@ pub(crate) fn group(k: &Kit, key: &str, title: &str, description: Option<&str>) 
 }
 
 /// A label and its explanation on the left, the control on the right, as
-/// Tauri's `Row`.
+/// the original client's `Row`.
 pub(crate) fn setting_row(k: &Kit, label: &str, description: Option<&str>, control: El) -> El {
     let mut words = col().gap(2.0).grow(1.0).min_w(0.0).child(
         text(label.to_string())
@@ -634,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sections_follow_tauris_order() {
+    fn the_sections_follow_the_original_client_order() {
         let labels: Vec<&str> = Section::ALL.iter().map(|s| s.label()).collect();
         assert_eq!(
             labels,

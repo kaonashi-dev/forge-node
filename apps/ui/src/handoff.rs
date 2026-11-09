@@ -2,7 +2,7 @@
 //!
 //! A session transcript is mostly a coding conversation, so the capture is
 //! quoted inside a fence longer than any backtick run it contains. The wording
-//! otherwise follows Tauri's `handoffPrompt.ts`: the checkout wins over the
+//! otherwise follows this client: the checkout wins over the
 //! capture, and the capture is reference data rather than instructions.
 
 /// One session's label and where it ran, as the prompt names them.

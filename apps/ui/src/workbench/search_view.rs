@@ -1,4 +1,4 @@
-//! The centre's project search, as Tauri's `ProjectSearchView`: a query
+//! The centre's project search, as the original client's `ProjectSearchView`: a query
 //! field, then each file's hits with their context. A line opens the file at
 //! that line.
 

@@ -44,13 +44,13 @@ A comment-free implementation is the default. Add a comment only when removing i
 - File and module headers are optional. Keep one only when ownership or a boundary is not evident from the file name and code; use one or two sentences, not an architecture summary.
 - Public `///` / JSDoc is for the *caller*: contract, error, units, non-obvious ordering. Private `//` is for the *next editor*: the trap. Do not paste the same paragraph in both.
 - A name beats a comment. Extract a function, a type, or a constant (`RESIZE_DEBOUNCE_MS`) rather than explaining a magic block. Ambiguous pronouns (`this`, `the whole point`) without a referent are a defect — name the thing.
-- Tests comment the surprising assertion or the fixture's trap (Solid `createComputed` vs `createEffect`, `navigator.platform` under vitest), not arrange/act/assert.
+- Tests comment the surprising assertion or the fixture's trap (a memo keyed on the wrong revision, a window-less path), not arrange/act/assert.
 - Required comments stay required, and stay short, in the same file: every core-lock exception, every `#[allow]`, every recoverable-`unwrap` absence in daemon paths.
 - Before adding or retaining a comment, ask what a reader would get wrong without it. If there is no concrete answer, delete it. Preserve safety contracts, license notices and tooling directives; zero comments is a default, not a deletion quota.
 
 Rust: `rustfmt` defaults and `clippy -D warnings` are the gate. Match `#[non_exhaustive]` with a wildcard arm from other crates. Do not `unwrap()` / `expect()` on a recoverable daemon path. `#[must_use]` on pure getters that are easy to ignore.
 
-The Rune client is Rust; there is no TypeScript, Bun or WebView layer. Theme values come from `apps/ui/src/theme/themes.json` through `roles.rs`, never a hex in a view. A helper with a right and a wrong answer lives in its own module so a test can import it without the window.
+The Rune client is Rust; there is no WebView layer. Theme values come from `apps/ui/src/theme/themes.json` through `roles.rs`, never a hex in a view. A helper with a right and a wrong answer lives in its own module so a test can import it without the window.
 
 When touching existing code, remove nearby redundant or stale comments instead of adding another explanation. Keep comment-only cleanups free of behavior changes.
 

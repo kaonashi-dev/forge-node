@@ -1,5 +1,5 @@
 //! The `ui.*` preferences Settings › Appearance writes, read and written
-//! exactly as Tauri's `state/preferences.ts` does, so the two clients share
+//! exactly as this client does, so the two clients share
 //! one `app_state` row per key.
 
 pub const DENSITY_KEY: &str = "ui.density";
@@ -20,7 +20,7 @@ pub struct Range {
     pub fallback: f64,
 }
 
-/// The chrome's `sm` rung in points; 13 is Tauri's `metrics.textSM`.
+/// The chrome's `sm` rung in points; 13 is the original client's `metrics.textSM`.
 pub const UI_FONT_SIZE: Range = Range {
     min: 12.0,
     max: 16.0,
@@ -40,7 +40,7 @@ pub const TERMINAL_ZOOM: Range = Range {
     step: 0.1,
     fallback: 1.0,
 };
-/// Wider than the four named spacings, because Tauri clamps a stored value
+/// Wider than the four named spacings, because the original client clamps a stored value
 /// to this range rather than to the choices.
 pub const EDITOR_LINE_HEIGHT: Range = Range {
     min: 1.1,
@@ -67,7 +67,7 @@ pub struct ChromeMetrics {
 }
 
 impl ChromeMetrics {
-    /// Tauri's compact ladder, or the cozy one, with Trim pulling the frame
+    /// the original client's compact ladder, or the cozy one, with Trim pulling the frame
     /// and paddings in rather than changing a row's height.
     #[must_use]
     pub fn of(density: Density, trim: bool) -> Self {
@@ -176,7 +176,7 @@ impl Density {
         }
     }
 
-    /// Tauri's `DENSITY_NOTES`: the tree row is 28 pt compact, six more cozy.
+    /// the original client's `DENSITY_NOTES`: the tree row is 28 pt compact, six more cozy.
     #[must_use]
     pub fn note(self) -> &'static str {
         match self {
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn flags_and_densities_read_as_tauri_writes_them() {
+    fn flags_and_densities_read_as_the_original_client_writes_them() {
         assert!(read_flag(Some("true"), false));
         assert!(!read_flag(Some("yes"), true));
         assert!(read_flag(None, true));

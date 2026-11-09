@@ -68,7 +68,7 @@ it at one shared directory if you build several checkouts, never at the root `ta
 ```sh
 scripts/dev ui run --bench all     # fixture switch/echo + 125 Hz terminal + editor JSON
 scripts/dev ui run --bench all --bench-report /tmp/perf.json
-apps/ui/scripts/perf.sh             # everything: adds startup/RSS and the Tauri baseline
+apps/ui/scripts/perf.sh             # everything: adds startup/RSS
 ```
 
 `--bench all` runs the session-switch/echo fixture, the integrated 125 Hz terminal stream
@@ -78,11 +78,8 @@ terminal-125` and `--bench editor` run one section; `--bench-iterations` and `--
 size them.
 
 `scripts/perf.sh` writes `scripts/perf-report.json` and `scripts/perf-report.md`. It also
-measures `forge-ui` startup to the first drawn frame and RSS at 0/1/2 s after that frame, and
-runs the Tauri `forge-tauri-latency` route against a temporary daemon. The Tauri section needs
-prebuilt `forge-daemon` and `forge-tauri-latency` binaries; point `PERF_TAURI_ROOT` at a
-checkout that has them (`make latency-tauri` builds them in the root workspace). It never
-points the latency tool at the user's live daemon.
+measures `forge-ui` startup to the first drawn frame and RSS at 0/1/2 s after that frame.
+It never points anything at the user's live daemon.
 
 The terminal build/encode clocks come from the compositor's own `Stats`; they are CPU time,
 not GPU time. Editor key-to-paint is a CPU proxy (key handler through one 125 Hz frame) unless

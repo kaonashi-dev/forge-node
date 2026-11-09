@@ -27,7 +27,7 @@ pub struct Choice {
     pub profile: Option<AgentProfileId>,
 }
 
-/// What the launch pickers offer, in Tauri's order: each provider and the
+/// What the launch pickers offer, in the original client's order: each provider and the
 /// profiles under it. Only rows that can start, and only prompt-taking rows
 /// when the launch has to carry a first prompt.
 #[must_use]
@@ -113,7 +113,7 @@ pub const ROLES: [(SessionRole, &str); 6] = [
     (SessionRole::Tester, "Tester"),
 ];
 
-/// Tauri's `SendContextDialog` offers the four roles a context hand-off needs.
+/// the original client's `SendContextDialog` offers the four roles a context hand-off needs.
 pub const CONTEXT_ROLES: [(SessionRole, &str); 4] = [
     (SessionRole::Generic, "Generic"),
     (SessionRole::Planner, "Planner"),

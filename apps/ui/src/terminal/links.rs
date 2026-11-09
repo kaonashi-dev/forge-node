@@ -1,6 +1,6 @@
-//! What a ⌘-hover or ⌘-click on one line of output can open, as Tauri's
-//! `terminal/links.ts`, `references/urlref.ts`, `pathref.ts` and
-//! `screenLinks.ts`. Computed for the touched line only, never per frame.
+//! What a ⌘-hover or ⌘-click on one line of output can open, as the original client's
+//! the equivalent, the equivalent, the equivalent and
+//! the equivalent. Computed for the touched line only, never per frame.
 
 use crate::terminal::pane::Viewport;
 

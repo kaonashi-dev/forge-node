@@ -11,9 +11,9 @@ use crate::terminal::selection::{CopyError, Granularity, Selection, copy_text};
 pub const PREEDIT_MAX_CHARS: usize = 64;
 pub const MAX_PASTE_BYTES: usize = 1 << 20;
 const MAX_WHEEL_REPORTS: i64 = 10;
-/// Arrow presses one click may send, as the Tauri host's `MAX_CURSOR_STEPS`.
+/// Arrow presses one click may send, as the the original client host's `MAX_CURSOR_STEPS`.
 const MAX_CURSOR_STEPS: usize = 4096;
-/// Points a click may wander and still be a click, as Tauri's `CursorClick`.
+/// Points a click may wander and still be a click, as the original client's `CursorClick`.
 pub const CLICK_SLOP: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,7 +187,7 @@ pub fn key(
         // ⌘← and ⌘→ have no meaning here; sent bare they would move the
         // cursor as an unmodified arrow does.
         Key::Left | Key::Right if ev.mods.cmd => return false,
-        // ⌘↑ and ⌘↓ scroll a page, as Tauri's `scroll_up`/`scroll_down`;
+        // ⌘↑ and ⌘↓ scroll a page, as the original client's `scroll_up`/`scroll_down`;
         // sent bare they would be ↑ and recall the shell's last command.
         Key::PageUp | Key::PageDown | Key::Home | Key::End | Key::Up | Key::Down
             if mods.shift
@@ -305,7 +305,7 @@ pub fn wheel(
     true
 }
 
-/// Seconds between edge steps, and the most lines one step moves, as Tauri's
+/// Seconds between edge steps, and the most lines one step moves, as the original client's
 /// `SCROLL_INTERVAL_MS` and `MAX_SCROLL_LINES`.
 pub const EDGE_STEP_SECS: f64 = 0.050;
 const MAX_EDGE_LINES: i64 = 4;
@@ -324,7 +324,7 @@ fn drag_cell(viewport: &Viewport<'_>, x: f32, y: f32, cell: (f32, f32)) -> (u16,
     viewport.cell_at(x, y, cell)
 }
 
-/// Lines a drag held at an edge scrolls by, as Tauri's `scrollStep`:
+/// Lines a drag held at an edge scrolls by, as the original client's `scrollStep`:
 /// positive goes into history. None for a click that never moved, an
 /// alternate or mouse-reporting screen, or past either end of the history.
 #[must_use]
@@ -657,7 +657,7 @@ pub fn ime(idx: usize, ui: &mut TerminalUi, ev: &Ime, out: &mut Outbox) -> bool 
 }
 
 /// The arrow presses that walk the cursor to (`row`, `col`) on the live
-/// screen, as the Tauri host's `encode_cursor_move`. Only along one logical
+/// screen, as the the original client host's `encode_cursor_move`. Only along one logical
 /// line: a hard line break between them is a different prompt line, and a
 /// shell would recall history rather than move.
 #[must_use]

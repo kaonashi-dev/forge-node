@@ -1,5 +1,5 @@
 //! A custom theme stored as JSON in `ui.theme_base`, read and edited as
-//! Tauri's `customTheme.ts`, `themeVariants.ts` and `editorTheme.ts` do. The
+//! this client, the equivalent and the equivalent do. The
 //! built-in bases never pass through here: their colours come resolved in
 //! `themes.json`, and `editor_colors_match_every_built_in_base` holds this
 //! derivation to that file.
@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn variants_match_the_fixture_tauri_emits() {
+    fn variants_match_the_fixture_the_original_client_emits() {
         for case in super::super::variant_fixture() {
             let source = base(&case.base);
             let palette = match case.color {

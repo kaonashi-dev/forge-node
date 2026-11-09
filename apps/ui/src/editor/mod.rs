@@ -27,7 +27,7 @@ use rune::{Ime, Key, KeyEvent};
 
 use metrics::MetricsCache;
 
-/// The row at the default size and spacing: `round(13 × 1.35)`, as Tauri's
+/// The row at the default size and spacing: `round(13 × 1.35)`, as the original client's
 /// `measureCell` rounds it.
 pub const ROW_H: f32 = 18.0;
 /// The gutter at the default size; its line numbers grow with the type.
@@ -121,7 +121,7 @@ impl Default for EditorUi {
 impl EditorUi {
     /// Points the editor at `session`. Input queued for the one it leaves is
     /// handed back with that session, to be sent there rather than dropped,
-    /// as Tauri's editor flushes its batch to the original surface.
+    /// as the original client's editor flushes its batch to the original surface.
     pub fn set_session(
         &mut self,
         session: Option<SessionId>,
@@ -430,8 +430,8 @@ fn key_input(event: &KeyEvent) -> Option<EditorInputEvent> {
 }
 
 /// The editor's key table is Ctrl-based, so a macOS ⌘ chord is sent as the
-/// Ctrl key that does the same thing: the table Tauri's editor uses
-/// (`editorChords.ts`). An unclaimed chord stays the app's, and ⌘V is left
+/// Ctrl key that does the same thing: the table the original client's editor uses
+/// (the equivalent). An unclaimed chord stays the app's, and ⌘V is left
 /// to the native paste event.
 /// Option-/ is the comment command, sent as the PTY-safe Ctrl-_ that ⌘/ is;
 /// Option turns `/` into `÷` on a US layout, so that counts too, but not
@@ -731,7 +731,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn command_chords_follow_the_tauri_table() {
+    fn command_chords_follow_the_the_original_client_table() {
         let cmd = rune::Mods {
             cmd: true,
             ..rune::Mods::default()

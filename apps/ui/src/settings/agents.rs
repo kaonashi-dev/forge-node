@@ -1,4 +1,4 @@
-//! Settings › Agents, as Tauri's `Agents` and `AgentProfiles`: what ⌘⇧A
+//! Settings › Agents, as the original client's `Agents` and `AgentProfiles`: what ⌘⇧A
 //! starts, each provider's command and visibility, and launch profiles.
 
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use crate::app::AppState;
 use crate::launch::{self, DEFAULT_AGENT_KEY, DefaultAgent};
 
 /// Command-line text into the arguments a launch passes one by one, as
-/// Tauri's `parseArgs`: whitespace separates, quotes group, a backslash
+/// the original client's `parseArgs`: whitespace separates, quotes group, a backslash
 /// escapes outside single quotes. No shell runs them.
 pub fn parse_args(source: &str) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
@@ -88,7 +88,7 @@ fn quote_arg(arg: &str) -> String {
     quoted
 }
 
-/// The inverse of `parse_args`, one line per flag, as Tauri's `formatArgs`.
+/// The inverse of `parse_args`, one line per flag, as the original client's `formatArgs`.
 #[must_use]
 pub fn format_args(args: &[String]) -> String {
     let mut lines: Vec<String> = Vec::new();
@@ -109,7 +109,7 @@ pub fn format_args(args: &[String]) -> String {
     lines.join("\n")
 }
 
-/// Splits a flag an older editor saved with its value inside, as Tauri's
+/// Splits a flag an older editor saved with its value inside, as the original client's
 /// `normalizeArgs`; `--prompt=say hello` stays one argument.
 #[must_use]
 pub fn normalize_args(args: &[String]) -> Vec<String> {
@@ -256,7 +256,7 @@ impl AppState {
     }
 
     /// The default agent as it stands; one pointing at a hidden agent reads
-    /// as Ask, as Tauri's `defaultAgentFrom`.
+    /// as Ask, as the original client's `defaultAgentFrom`.
     #[must_use]
     pub fn default_agent(&self) -> DefaultAgent {
         let agent = launch::parse(self.pref(DEFAULT_AGENT_KEY));

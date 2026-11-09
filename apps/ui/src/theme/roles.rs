@@ -1,4 +1,4 @@
-//! The chrome's colour roles, as `toCssVariables` derives them in Tauri: read
+//! The chrome's colour roles, as `toCssVariables` derives them in the original client: read
 //! from `themes.json` for a base, derived by `chrome_colors` for a custom
 //! theme, and laid over rune-kit's tokens by `Roles::kit`.
 
@@ -297,7 +297,7 @@ pub struct GitColors {
     pub ignored: Color,
 }
 
-/// The resolved theme as Rune colours: every role Tauri's chrome paints with.
+/// The resolved theme as Rune colours: every role the original client's chrome paints with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Roles {
     pub light: bool,
@@ -437,7 +437,7 @@ impl Roles {
         self.hues[slot.filter(|&slot| slot < HUE_COUNT).unwrap_or(DEFAULT_HUE)]
     }
 
-    /// rune-kit's tokens with Tauri's roles laid over them: what rune-kit
+    /// rune-kit's tokens with the original client's roles laid over them: what rune-kit
     /// derives from bg/fg/accent alone is a different theme in every base.
     #[must_use]
     pub fn kit(&self) -> Kit {

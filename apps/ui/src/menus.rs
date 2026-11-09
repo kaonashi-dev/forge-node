@@ -1,4 +1,4 @@
-//! Context menus, in Tauri's order: what a row offers is built here as data
+//! Context menus, in the original client's order: what a row offers is built here as data
 //! (`items`), so a test can read it without drawing, and drawn by
 //! `rune_kit::Menu` in the overlay layer. Every effect is a daemon request,
 //! the clipboard, or a desktop launch; nothing here touches a checkout.
@@ -22,9 +22,9 @@ use crate::workbench::{CenterMode, Panel};
 /// The file tree's element key: the Menu key and Shift+F10 reach the tree's
 /// own menu only while it is what holds focus.
 pub const FILES_TREE: &str = "files-tree-view";
-/// Shared with Tauri's `projectColors.ts`: `{ project id: hue slot }`.
+/// Shared with this client: `{ project id: hue slot }`.
 pub const PROJECT_HUES_KEY: &str = "ui.project_hues";
-/// Tauri's `HUE_NAMES`, in slot order.
+/// the original client's `HUE_NAMES`, in slot order.
 pub const HUE_NAMES: [&str; 9] = [
     "Teal", "Blue", "Green", "Orchid", "Rose", "Lime", "Sky", "Gold", "Violet",
 ];
@@ -37,7 +37,7 @@ pub enum Target {
     Checkout(WorkspaceId),
     /// A session's row in the rail.
     Session(SessionId),
-    /// A tab in the strip: a session's, or an editor's, which Tauri keeps in
+    /// A tab in the strip: a session's, or an editor's, which the original client keeps in
     /// its Code strip and gives that strip's menu.
     Tab(SessionId),
     Files(WorkspaceId, FileTarget),
@@ -86,7 +86,7 @@ pub enum FileTarget {
     Directory(String),
 }
 
-/// What an item looks like, by Tauri's icon name; `icon` draws it.
+/// What an item looks like, by the original client's icon name; `icon` draws it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Glyph {
     None,
@@ -332,7 +332,7 @@ pub fn rendered(entries: Vec<Entry>) -> Vec<Entry> {
     out
 }
 
-/// Every item Tauri lists for `target`, ported or not.
+/// Every item the original client lists for `target`, ported or not.
 #[must_use]
 pub fn items(s: &AppState, target: &Target) -> Vec<Entry> {
     match target {
@@ -416,7 +416,7 @@ pub fn button_items(s: &AppState, menu: &ButtonMenu) -> Vec<Entry> {
     }
 }
 
-/// Tauri's `urlBadge`: `:5173` for a URL with a port, else its host.
+/// the original client's `urlBadge`: `:5173` for a URL with a port, else its host.
 #[must_use]
 pub fn url_badge(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
@@ -432,7 +432,7 @@ pub fn url_badge(url: &str) -> Option<String> {
     })
 }
 
-/// The status beside a live action's name, as Tauri's `liveStatus`.
+/// The status beside a live action's name, as the original client's `liveStatus`.
 fn live_status(phase: &crate::processes::Phase) -> String {
     use crate::processes::Phase;
     match phase {
@@ -1159,7 +1159,7 @@ pub struct OpenMenu {
     pub sub: Option<usize>,
 }
 
-/// A name or path asked for by a menu item, with Tauri's `requestTextInput` copy.
+/// A name or path asked for by a menu item, with the original client's `requestTextInput` copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ask {
     RenameCheckout(WorkspaceId),
@@ -1274,7 +1274,7 @@ pub fn tree_menu_key(ev: &KeyEvent, tx: &Tx) -> bool {
     menu && tx.focused() == Some(FILES_TREE)
 }
 
-/// The project-to-slot map as Tauri's `parseProjectHues` keeps it: anything
+/// The project-to-slot map as the original client's `parseProjectHues` keeps it: anything
 /// that is not a slot is dropped.
 #[must_use]
 pub fn parse_hues(raw: Option<&str>) -> BTreeMap<String, usize> {
@@ -1332,7 +1332,7 @@ pub fn under(parent: &str, name: &str) -> String {
 
 const COPY_LIMIT: u32 = 100;
 
-/// Tauri's `duplicateFileName`: `notes.md` → `notes copy.md` → `notes copy 2.md`;
+/// the original client's `duplicateFileName`: `notes.md` → `notes copy.md` → `notes copy 2.md`;
 /// a copy's copy counts on rather than stacking. A leading dot is the name.
 #[must_use]
 pub fn duplicate_name(name: &str, taken: impl Fn(&str) -> bool) -> Option<String> {
@@ -1363,7 +1363,7 @@ pub fn duplicate_name(name: &str, taken: impl Fn(&str) -> bool) -> Option<String
         .find(|candidate| !taken(candidate))
 }
 
-/// Tauri's `shellReference`: the absolute path, single-quoted for a shell.
+/// the original client's `shellReference`: the absolute path, single-quoted for a shell.
 pub fn shell_reference(root: &str, path: &str) -> Result<String, &'static str> {
     const REFUSED: &str = "This path cannot be inserted as a terminal reference.";
     let control = |text: &str| text.chars().any(|c| c.is_control());
@@ -1420,7 +1420,7 @@ fn plural(count: usize, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
-/// Tauri's `describeProjectRemoval`.
+/// the original client's `describeProjectRemoval`.
 #[must_use]
 pub fn describe_removal(policy: RemoveProjectPolicy, footprint: Footprint) -> Vec<String> {
     let mut lines = vec!["Forge Node stops tracking the project.".to_string()];
@@ -1738,7 +1738,7 @@ pub fn set_ignores(s: &mut AppState, project: ProjectId, rules: Vec<domain::Work
     });
 }
 
-/// Tauri's gesture names the folder that holds the worktree, not the
+/// the original client's gesture names the folder that holds the worktree, not the
 /// worktree: the next agent run gets a different directory there.
 fn ignore_folder(s: &mut AppState, workspace: WorkspaceId) {
     let Some(store) = &s.store else {
@@ -1767,7 +1767,7 @@ fn ignore_folder(s: &mut AppState, workspace: WorkspaceId) {
     set_ignores(s, project, rules);
 }
 
-/// Tauri's `closeViews`: one confirmation when any editor might hold unsaved
+/// the original client's `closeViews`: one confirmation when any editor might hold unsaved
 /// work, and an unknown state counts as unsaved.
 fn close_editors(s: &mut AppState, sessions: Vec<SessionId>) {
     if sessions.is_empty() {
@@ -1848,7 +1848,7 @@ fn insert_reference(s: &mut AppState, workspace: WorkspaceId, path: &str, tx: &m
     }
 }
 
-/// Tauri's `open.rs`: a CLI on `PATH`, else the app bundle; Finder opens the
+/// the original client's `open.rs`: a CLI on `PATH`, else the app bundle; Finder opens the
 /// folder. Located and reaped on its own thread.
 fn open_in(app: Opener, path: PathBuf) {
     if app == Opener::Finder {
@@ -2060,7 +2060,7 @@ pub fn remove_project(s: &mut AppState) {
     send(s, "RemoveProject", |c| c.remove_project(project, policy));
 }
 
-/// A refused file write is said in the Files panel, as Tauri's `operationError`.
+/// A refused file write is said in the Files panel, as the original client's `operationError`.
 pub fn command_result(s: &mut AppState, label: &str, ok: bool, message: &str) {
     if matches!(
         label,
@@ -2305,7 +2305,7 @@ fn confirm_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
-/// Tauri's `RemoveProjectDialog`: the policy is chosen before the request,
+/// the original client's `RemoveProjectDialog`: the policy is chosen before the request,
 /// and the one the daemon would refuse is disabled with the reason.
 fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let (Some((project, policy)), Some(store)) = (s.menus.removal, &s.store) else {
@@ -2438,7 +2438,7 @@ mod tests {
     const RUNE_SHELL: &str = "31";
 
     #[test]
-    fn a_project_with_several_checkouts_lists_tauris_items_in_order() {
+    fn a_project_with_several_checkouts_lists_the_original_client_items_in_order() {
         let s = state(store());
         let all = items(&s, &Target::Project(id(PROJECT)));
         assert_eq!(
@@ -2587,7 +2587,7 @@ mod tests {
         assert_eq!(
             act_of(entries, "Zed"),
             Act::OpenIn(Opener::Zed, "/home/dev/forge".into()),
-            "Tauri opens the project's root, not the checkout"
+            "the original client opens the project's root, not the checkout"
         );
     }
 
@@ -2821,7 +2821,7 @@ mod tests {
     }
 
     #[test]
-    fn project_hues_keep_tauris_map_and_its_default() {
+    fn project_hues_keep_the_original_client_map_and_its_default() {
         let raw = Some(r#"{"a": 2, "b": 12, "c": "x", "d": 8}"#);
         assert_eq!(
             parse_hues(raw),
@@ -2863,7 +2863,7 @@ mod tests {
     }
 
     #[test]
-    fn a_copy_is_named_as_tauri_names_it() {
+    fn a_copy_is_named_as_the_original_client_names_it() {
         let none = |_: &str| false;
         assert_eq!(
             duplicate_name("notes.md", none).as_deref(),

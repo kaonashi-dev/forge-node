@@ -1,6 +1,6 @@
 //! `ui.editor.autosave` is a preference of this window, and the editor process
 //! is what acts on it: each live editor session is told once per change, as
-//! Tauri's `createEditorAutosaveSync`.
+//! the original client's `createEditorAutosaveSync`.
 
 use std::collections::HashMap;
 

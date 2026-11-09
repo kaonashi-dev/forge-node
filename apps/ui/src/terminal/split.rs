@@ -1,4 +1,4 @@
-//! The split column, as Tauri's `SplitShell` / `DetachSplit` / `ParkSplit`:
+//! The split column, as the original client's `SplitShell` / `DetachSplit` / `ParkSplit`:
 //! one extra terminal beside the active one, with its own replica, input gate
 //! and measurement. There is one extra column, not a tree of them.
 
@@ -11,7 +11,7 @@ use crate::app::{AppState, LinkStatus};
 use crate::terminal::input::Outbox;
 use crate::terminal::pane::TerminalUi;
 
-/// Shared with Tauri's `CENTER_SPLIT_RATIO_KEY`: the primary column's fraction.
+/// Shared with the original client's `CENTER_SPLIT_RATIO_KEY`: the primary column's fraction.
 pub const RATIO_KEY: &str = "ui.center_split.ratio";
 pub const RATIO_MIN: f32 = 0.2;
 pub const RATIO_MAX: f32 = 0.8;
@@ -172,7 +172,7 @@ impl AppState {
     }
 
     /// A tab for the session the split column shows focuses that column
-    /// instead of moving it into the primary one, as Tauri's `focusSession`.
+    /// instead of moving it into the primary one, as the original client's `focusSession`.
     pub fn select_split(&mut self, id: SessionId) -> bool {
         if self
             .split
@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ratio_is_clamped_as_tauri_clamps_it() {
+    fn the_ratio_is_clamped_as_the_original_client_clamps_it() {
         assert_eq!(clamp_ratio(0.05), RATIO_MIN);
         assert_eq!(clamp_ratio(0.95), RATIO_MAX);
         assert_eq!(clamp_ratio(f32::NAN), RATIO_FALLBACK);

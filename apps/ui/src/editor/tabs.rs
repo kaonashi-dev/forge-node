@@ -1,5 +1,5 @@
 //! The Code strip's bookkeeping: the files closed in each checkout, for ⇧⌘T,
-//! and the step between editors for ⌥⌘←/→, as Tauri's `viewsStore`.
+//! and the step between editors for ⌥⌘←/→, as the original client's `viewsStore`.
 
 use std::collections::HashMap;
 
