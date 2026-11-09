@@ -130,6 +130,10 @@ impl AppState {
 
     /// ⌘ went down or up with the pointer still: underline or drop the link.
     pub fn terminal_modifiers(&mut self, mods: rune::Mods, tx: &mut Tx) {
+        if !mods.ctrl && self.tabs.gesture.is_some() {
+            self.commit_tab_switcher();
+            tx.instant();
+        }
         let mut changed = false;
         for idx in 0..self.pane_count() {
             let link = match self.pane(idx).hover {

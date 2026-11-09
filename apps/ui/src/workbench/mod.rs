@@ -137,6 +137,9 @@ pub enum Read {
     Image(String),
     /// Paths ranked against a palette query.
     Search(String),
+    /// Declaration candidates for a typed symbol, from `SearchFiles` kind
+    /// `Definition`; the daemon validates the word and never sees a regex.
+    Definition(String),
     /// Lines that contain the needle, for project search.
     Content(String),
     /// Whether a rebase, merge or cherry-pick is stopped, read from git.

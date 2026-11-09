@@ -8,7 +8,7 @@ use rune::{KeyEvent, Tx};
 
 use super::{SCROLL_KEY, conflict, find, tabs};
 use crate::app::AppState;
-use crate::keymap::{self, Action};
+use crate::keymap::Action;
 use crate::settings::prefs;
 use crate::workbench::{CenterMode, Panel};
 
@@ -41,7 +41,7 @@ impl AppState {
         if !inside || self.active_line_editor().is_none() || !self.session_shown() {
             return false;
         }
-        let Some(action) = keymap::editor_action_for(ev) else {
+        let Some(action) = self.keymap.editor_action(ev) else {
             return false;
         };
         let handled = self.editor_action(action);
@@ -184,7 +184,7 @@ impl AppState {
     /// the editor's context, so ⌘= still sizes the text from there.
     pub fn find_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
         let Some(command) = find::key_command(ev) else {
-            let Some(action) = keymap::editor_action_for(ev) else {
+            let Some(action) = self.keymap.editor_action(ev) else {
                 return false;
             };
             let handled = self.editor_action(action);

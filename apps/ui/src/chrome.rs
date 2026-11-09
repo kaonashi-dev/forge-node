@@ -91,6 +91,13 @@ fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
             s.select(id);
             s.request_rename();
         })
+        .on_layout(move |s: &mut AppState, rect| s.tabs.note_rect(id, rect))
+        .on_drag(move |s: &mut AppState, drag, _| match drag.phase {
+            rune::Phase::Down => s.begin_tab_drag(id),
+            rune::Phase::Move => s.drag_tab_to(drag.window_point()[0]),
+            _ if drag.cancelled() => s.tabs.cancel_drag(),
+            _ => s.drop_tab(),
+        })
         .child(icon(glyphs::for_row(session, active, !k.dark), 14.0).color(tint))
         .child(
             text(session.title.clone())
@@ -127,11 +134,11 @@ fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
     // The strip's bottom edge carries the active tab's line, as `.tab-indicator::after`.
     col()
         .key(format!("tab-{}", session.id_text))
+        .h_full()
+        .justify_center()
         .on_secondary_press(move |s: &mut AppState, point, _| {
             crate::menus::open(s, crate::menus::Target::Tab(id), point);
         })
-        .h_full()
-        .justify_center()
         .child(chip)
         .child(
             el().pin(Some(10.0), None, Some(10.0), Some(0.0))
@@ -143,6 +150,31 @@ fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
                     rune::Color::TRANSPARENT
                 }),
         )
+}
+
+/// The line under the gap a dragged tab would drop into, in window points so
+/// it does not have to know where the strip starts.
+#[must_use]
+pub fn drop_marker(s: &AppState, k: &Kit) -> Option<El> {
+    let drag = s.tabs.drag.as_ref()?;
+    let rows = s.tab_rows();
+    let ids: Vec<domain::SessionId> = rows.iter().map(|row| row.id).collect();
+    let (x, y, h) = if let Some(id) = ids.get(drag.gap) {
+        let (_, rect) = s.tabs.rects.iter().find(|(candidate, _)| candidate == id)?;
+        (rect[0] - 1.0, rect[1], rect[3])
+    } else {
+        let id = ids.last()?;
+        let (_, rect) = s.tabs.rects.iter().find(|(candidate, _)| candidate == id)?;
+        (rect[0] + rect[2] - 1.0, rect[1], rect[3])
+    };
+    Some(
+        el().key("tab-drop-marker")
+            .absolute(x, y)
+            .size(2.0, h)
+            .radius(1.0)
+            .a11y_hidden()
+            .fill(k.c.border_focus),
+    )
 }
 
 /// The strip's leading part: the checkout's tabs, or Settings' crumbs.
@@ -212,7 +244,7 @@ pub fn actions(k: &Kit) -> [El; 2] {
             "jump-to",
             "Jump to… (⌘K)",
             &glyphs::SEARCH,
-            |s: &mut AppState| s.palette.show(false),
+            |s: &mut AppState| s.open_palette(crate::palette::Scope::Everything),
         ),
     ]
 }
@@ -305,4 +337,70 @@ pub fn footer(s: &AppState, k: &Kit) -> El {
             }
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rune::{Env, Runtime};
+
+    use super::*;
+    use crate::connection::{Metrics, fixture_store};
+    use crate::terminal::SharedTerminal;
+
+    fn runtime() -> Runtime<AppState> {
+        let store = fixture_store(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"),
+        )
+        .expect("fixture");
+        let mut state =
+            AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
+        state.generation = 1;
+        let mut rt = Runtime::new(
+            state,
+            crate::ui::view,
+            (1180.0, 760.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.poll = Some(crate::app::poll);
+        rt.frame(0.0);
+        rt.frame(0.1);
+        rt
+    }
+
+    #[test]
+    fn dragging_a_tab_moves_it_and_leaves_the_active_session_alone() {
+        let mut rt = runtime();
+        let before: Vec<crate::app::SessionRow> =
+            rt.state.tab_rows().into_iter().cloned().collect();
+        if before.len() < 2 {
+            return;
+        }
+        let active = rt.state.active;
+        let first = before[0].id_text.clone();
+        let second = before[1].id_text.clone();
+        let from = rt.find(&format!("t-{second}")).expect("the second tab");
+        let to = rt.find(&format!("t-{first}")).expect("the first tab");
+        rt.pointer_down(from.0, from.1);
+        rt.frame(0.2);
+        for step in 1..=6 {
+            let x = from.0 + (to.0 - from.0) * step as f32 / 6.0;
+            rt.pointer_move(x, from.1);
+            rt.frame(0.2 + step as f64 / 60.0);
+        }
+        rt.pointer_up(to.0 - 4.0, to.1);
+        rt.frame(0.4);
+        let after: Vec<String> = rt
+            .state
+            .tab_rows()
+            .into_iter()
+            .map(|row| row.id_text.clone())
+            .collect();
+        assert_eq!(after[0], second, "the dragged tab took the first slot");
+        assert_eq!(rt.state.active, active, "reordering never selects a tab");
+    }
 }

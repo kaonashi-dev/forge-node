@@ -14,6 +14,7 @@ use rune_kit::shell::PaneState;
 
 use crate::connection::{ConnectionHandle, Metrics, UiEvent};
 use crate::editor::EditorUi;
+use crate::keymap::{self, Action, Keymap};
 use crate::terminal::SharedTerminal;
 use crate::terminal::input::{self, Effects, Outbox, Pointer, Press};
 use crate::terminal::pane::TerminalUi;
@@ -147,6 +148,9 @@ pub struct AppState {
     pub sync: crate::sync::Sync,
     pub menus: crate::menus::Menus,
     pub split: crate::terminal::split::Split,
+    pub tabs: crate::tabs::Tabs,
+    pub keymap: Keymap,
+    pub toasts: crate::toasts::Toasts,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
     /// A live session whose close waits for a person to confirm it.
@@ -226,6 +230,9 @@ impl AppState {
             sync: crate::sync::Sync::default(),
             menus: crate::menus::Menus::default(),
             split: crate::terminal::split::Split::default(),
+            tabs: crate::tabs::Tabs::default(),
+            keymap: Keymap::default(),
+            toasts: crate::toasts::Toasts::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
             pending_close: std::collections::HashSet::new(),
@@ -272,6 +279,7 @@ impl AppState {
         }
         self.split.focused = false;
         if self.active == Some(id) {
+            self.tabs.touch(id);
             self.terminal.focus_terminal = true;
             return;
         }
@@ -281,6 +289,7 @@ impl AppState {
             .iter()
             .find(|row| row.id == id)
             .map(|row| row.id_text.clone());
+        self.tabs.touch(id);
         self.terminal.focus_terminal = true;
         match self.active_row().and_then(|row| row.terminal_id) {
             Some(target) => self.terminal.begin_attach(self.generation, target),
@@ -349,6 +358,19 @@ impl AppState {
         self.theme_pref = store
             .app_state_value(crate::theme::THEME_KEY)
             .map(str::to_string);
+        self.keymap
+            .seed_from(store.app_state_value(crate::keymap::KEYMAP_KEY));
+        self.tabs
+            .seed(store.app_state_value(crate::tabs::TAB_ORDER_KEY));
+        let live_workspaces: std::collections::HashSet<String> = store
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.to_string())
+            .collect();
+        self.tabs.retain(&self.rows, &live_workspaces);
+        if let Some(active) = self.active {
+            self.tabs.touch(active);
+        }
         self.history.index = crate::history::index(&store.external_agents);
         self.processes =
             crate::processes::group(&store.sessions, &store.workspaces, &store.projects);
@@ -358,6 +380,9 @@ impl AppState {
                 .iter()
                 .map(|(terminal, title)| (*terminal, title.clone())),
         );
+        if self.palette.open {
+            self.refresh_palette_context();
+        }
         self.editor_store_changed();
     }
 
@@ -470,29 +495,26 @@ impl AppState {
 
     /// An app chord, taken before any surface sees the key.
     pub fn global_key(&mut self, ev: &KeyEvent) -> bool {
-        use crate::keymap::Action;
+        if self.tabs.gesture.is_some() && ev.key == rune::Key::Escape {
+            self.cancel_tab_switcher();
+            return true;
+        }
         if self.settings_escape(ev, Instant::now()) {
             return true;
         }
-        let Some(action) = crate::keymap::action_for(ev) else {
+        let Some(action) = self.keymap.app_action(ev) else {
             return false;
         };
         if let Some(taken) = self.terminal_action(action) {
             return taken;
         }
         match action {
-            Action::CommandPalette => {
-                let agents = self.installed_agents();
-                let actions = self.palette_actions();
-                self.palette.show_with(false, "", agents);
-                self.palette.set_actions(actions);
+            Action::CommandPalette => self.open_palette(crate::palette::Scope::Everything),
+            Action::CommandPaletteCommands => {
+                self.open_palette(crate::palette::Scope::Commands);
             }
-            Action::FilePalette => {
-                self.sync_workbench_workspace();
-                let recent = self.recent_files();
-                self.palette.show(true);
-                self.palette.set_recent(recent);
-            }
+            Action::GoToPalette => self.open_palette(crate::palette::Scope::Places),
+            Action::FilePalette => self.open_palette(crate::palette::Scope::Files),
             Action::NewShell => self.request_create(),
             Action::CloseSession => {
                 if let Some(active) = self.active
@@ -516,11 +538,18 @@ impl AppState {
             }
             Action::NextSession => self.step_session(1),
             Action::PreviousSession => self.step_session(-1),
+            Action::SwitchTabNext => self.step_tab_switcher(1),
+            Action::SwitchTabPrevious => self.step_tab_switcher(-1),
             Action::FindInFiles => self.find_in_files(),
-            Action::SplitPane | Action::TerminalZoom(_) => {}
+            Action::SplitPane => {}
+            Action::TerminalZoom(_) => {}
             Action::ReopenClosedTab => self.reopen_closed_editor(),
             Action::PreviousCodeView => self.step_code_view(-1),
             Action::NextCodeView => self.step_code_view(1),
+            Action::CloseOtherViews => crate::menus::close_other_views(self),
+            Action::CloseViewsToRight => crate::menus::close_views_to_right(self),
+            Action::MoveTabLeft => self.move_tab(-1),
+            Action::MoveTabRight => self.move_tab(1),
             Action::GoToDefinition
             | Action::GoBack
             | Action::EditorZoomIn
@@ -592,6 +621,326 @@ impl AppState {
             .collect()
     }
 
+    /// Opens the palette on `scope`, with the context the scope will list.
+    pub fn open_palette(&mut self, scope: crate::palette::Scope) {
+        self.sync_workbench_workspace();
+        let agents = self.installed_agents();
+        let actions = self.palette_actions();
+        let recent = self.recent_files();
+        let places = self.place_entries();
+        let hints = self.palette_hints();
+        self.palette.show(scope);
+        self.palette.set_agents(agents);
+        self.palette.set_actions(actions);
+        self.palette.set_recent(recent);
+        self.palette.set_places(places);
+        self.palette.set_hints(hints);
+    }
+
+    /// Keeps a palette that is already open in step with the replica.
+    fn refresh_palette_context(&mut self) {
+        let agents = self.installed_agents();
+        let actions = self.palette_actions();
+        let places = self.place_entries();
+        let hints = self.palette_hints();
+        self.palette.set_agents(agents);
+        self.palette.set_actions(actions);
+        self.palette.set_places(places);
+        self.palette.set_hints(hints);
+    }
+
+    /// Sessions and checkouts `@` lists. A session already on screen is not
+    /// somewhere to go; waiting sessions lead, then running ones.
+    fn place_entries(&self) -> Vec<crate::palette::Entry> {
+        use crate::palette::Entry;
+        let mut waiting = Vec::new();
+        let mut running = Vec::new();
+        let mut stopped = Vec::new();
+        for row in self
+            .rows
+            .iter()
+            .filter(|row| row.terminal_id.is_some() || row.kind == SessionKind::Editor)
+            .filter(|row| Some(row.id) != self.active)
+        {
+            let note = self
+                .store
+                .as_ref()
+                .and_then(|store| {
+                    let workspace = store
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.id == row.workspace_id)?;
+                    let project = store
+                        .projects
+                        .iter()
+                        .find(|project| project.id == workspace.project_id)
+                        .map(|project| project.name.clone());
+                    project
+                        .or_else(|| workspace.branch.clone())
+                        .or_else(|| workspace.display_name.clone())
+                        .or_else(|| Some(workspace.path.display().to_string()))
+                })
+                .unwrap_or_default();
+            let note = match (&row.ended, note.is_empty()) {
+                (Some(ended), true) => ended.clone(),
+                (Some(ended), false) => format!("{note} · {ended}"),
+                (None, _) => note,
+            };
+            let entry = Entry::Session {
+                id: row.id,
+                label: row.title.clone(),
+                note,
+                agent: row.provider.clone(),
+                kind: row.kind,
+                waiting: row.status == Some(SessionStatus::Attention),
+            };
+            if row.status == Some(SessionStatus::Attention) {
+                waiting.push(entry);
+            } else if row.running {
+                running.push(entry);
+            } else {
+                stopped.push(entry);
+            }
+        }
+        let mut out = waiting;
+        out.extend(running);
+        out.extend(stopped);
+        if let Some(store) = &self.store {
+            for workspace in &store.workspaces {
+                let project = store
+                    .projects
+                    .iter()
+                    .find(|project| project.id == workspace.project_id)
+                    .map(|project| project.name.clone());
+                out.push(Entry::Checkout {
+                    id: workspace.id,
+                    label: workspace
+                        .branch
+                        .clone()
+                        .or_else(|| workspace.display_name.clone())
+                        .unwrap_or_else(|| workspace.path.display().to_string()),
+                    note: project.unwrap_or_default(),
+                });
+            }
+        }
+        out
+    }
+
+    fn palette_hints(&self) -> Vec<(crate::palette::Command, String)> {
+        use crate::palette::Command;
+        let mut hints = Vec::new();
+        let mut add = |command: Command, action: Action| {
+            if let Some(label) = self.keymap.chord_label(action) {
+                hints.push((command, label));
+            }
+        };
+        add(Command::NewShell, Action::NewShell);
+        add(Command::NewWorktree, Action::NewWorktree);
+        for (provider, _) in self.installed_agents() {
+            add(Command::NewAgent(provider), Action::NewAgent);
+        }
+        add(
+            Command::Panel(Panel::Projects),
+            Action::TogglePanel(Panel::Projects),
+        );
+        add(
+            Command::Panel(Panel::Files),
+            Action::TogglePanel(Panel::Files),
+        );
+        add(
+            Command::Panel(Panel::History),
+            Action::TogglePanel(Panel::History),
+        );
+        add(
+            Command::Panel(Panel::PullRequests),
+            Action::TogglePanel(Panel::PullRequests),
+        );
+        add(Command::Panel(Panel::Git), Action::TogglePanel(Panel::Git));
+        add(
+            Command::Panel(Panel::Processes),
+            Action::TogglePanel(Panel::Processes),
+        );
+        add(Command::ToggleSidebar, Action::ToggleSidebar);
+        add(Command::Show(CenterMode::Settings), Action::Settings);
+        add(Command::FindInFiles, Action::FindInFiles);
+        add(Command::SplitPane, Action::SplitPane);
+        hints
+    }
+
+    /// Ctrl-Tab: start the MRU ring, or step the one already open. A quick tap
+    /// never reveals the card; releasing Control commits it either way.
+    fn step_tab_switcher(&mut self, delta: isize) {
+        if self.tabs.gesture.is_some() {
+            self.tabs.step_gesture(delta);
+            return;
+        }
+        let local: Vec<SessionId> = self.tab_rows().iter().map(|row| row.id).collect();
+        let live: Vec<SessionId> = self
+            .rows
+            .iter()
+            .filter(|row| row.terminal_id.is_some() && row.kind != SessionKind::Editor)
+            .map(|row| row.id)
+            .collect();
+        let (targets, foreign_at) =
+            crate::tabs::switcher_ids(self.tabs.mru(), &local, self.active, &live);
+        if targets.len() < 2 {
+            return;
+        }
+        let index = crate::tabs::initial_index(targets.len(), delta);
+        self.tabs.start_gesture(targets, foreign_at, index);
+    }
+
+    /// Control came up: show the highlighted tab. Escape and a window blur
+    /// cancel instead, which leaves the active session exactly where it was.
+    pub fn commit_tab_switcher(&mut self) {
+        let Some(id) = self.tabs.commit_gesture() else {
+            return;
+        };
+        if self.rows.iter().any(|row| row.id == id) {
+            self.select(id);
+            self.show_mode(CenterMode::Session);
+        }
+        self.switch_started.set(Some(Instant::now()));
+    }
+
+    pub fn cancel_tab_switcher(&mut self) {
+        self.tabs.cancel_gesture();
+    }
+
+    /// The active tab one place left or right, never across the shell/agent
+    /// split. Reordering does not change which tab is active.
+    pub fn move_tab(&mut self, delta: isize) {
+        if let Some(active) = self.active {
+            self.move_tab_by(active, delta);
+        }
+    }
+
+    pub fn move_tab_by(&mut self, id: SessionId, delta: isize) {
+        let tabs = self.tab_rows();
+        let ids: Vec<SessionId> = tabs.iter().map(|row| row.id).collect();
+        let Some(from) = ids.iter().position(|candidate| *candidate == id) else {
+            return;
+        };
+        let Some(to) = from.checked_add_signed(delta) else {
+            return;
+        };
+        let (Some(left), Some(right)) = (tabs.get(from), tabs.get(to)) else {
+            return;
+        };
+        if crate::tabs::is_shell(left) != crate::tabs::is_shell(right) {
+            return;
+        }
+        let mut order = ids;
+        order.swap(from, to);
+        let workspace = left.workspace_id;
+        self.tabs.set_order(workspace, order);
+        self.persist_tab_order(workspace);
+        if let Some(active) = self.active {
+            self.tabs.touch(active);
+        }
+    }
+
+    fn persist_tab_order(&mut self, _workspace: WorkspaceId) {
+        let live: std::collections::HashSet<String> = self
+            .workspaces
+            .iter()
+            .map(|choice| choice.id.to_string())
+            .collect();
+        let value = self.tabs.serialized(&live);
+        if let Err(error) = self.write_pref_checked(crate::tabs::TAB_ORDER_KEY, &value) {
+            self.toasts.danger("Tab order was not saved", error);
+        }
+    }
+
+    /// Drops a dragged tab into the gap the pointer chose and stores that order.
+    pub fn drop_tab(&mut self) {
+        let Some(order) = self.tabs.dropped() else {
+            self.tabs.cancel_drag();
+            return;
+        };
+        let workspace = strip_workspace(
+            self.chosen_workspace,
+            self.active_row().map(|row| row.workspace_id),
+            self.workspaces.first().map(|choice| choice.id),
+        );
+        let Some(workspace) = workspace else {
+            self.tabs.cancel_drag();
+            return;
+        };
+        self.tabs.set_order(workspace, order);
+        self.tabs.cancel_drag();
+        self.persist_tab_order(workspace);
+        if let Some(active) = self.active {
+            self.tabs.touch(active);
+        }
+    }
+
+    /// A tab press that may become a drag: remember the strip it came from.
+    pub fn begin_tab_drag(&mut self, id: SessionId) {
+        let ids: Vec<SessionId> = self.tab_rows().iter().map(|row| row.id).collect();
+        let Some(gap) = ids.iter().position(|candidate| *candidate == id) else {
+            return;
+        };
+        self.tabs.begin_drag(id, gap, ids);
+    }
+
+    /// The pointer moved during a tab drag: the gap under it, never past the
+    /// shell/agent split.
+    pub fn drag_tab_to(&mut self, x: f32) {
+        let Some(id) = self.tabs.drag.as_ref().map(|drag| drag.id) else {
+            return;
+        };
+        let base = self.tab_rows();
+        let ids: Vec<SessionId> = base.iter().map(|row| row.id).collect();
+        let gap = crate::tabs::gap_at(&self.tabs.rects, &ids, x);
+        let gap = crate::tabs::clamp_gap(&base, id, gap);
+        if let Some(drag) = &mut self.tabs.drag {
+            drag.gap = gap;
+        }
+    }
+
+    /// Rebind one action, or unbind it with `None`, and store the result. A
+    /// conflict is reported but not refused: Tauri lets the newer binding win
+    /// and says which one it shadowed.
+    pub fn rebind_key(&mut self, action: Action, chord: Option<rune::Chord>) {
+        let label = chord.map(|chord| chord.label());
+        self.keymap.set(action, chord);
+        self.save_keymap();
+        let mut conflicted = false;
+        for conflict in self.keymap.conflicts() {
+            if conflict.actions.contains(&action) {
+                conflicted = true;
+                self.toasts.neutral(
+                    format!("{} is already in use", conflict.label()),
+                    Some(format!(
+                        "{} · {}",
+                        conflict.context,
+                        conflict.action_labels()
+                    )),
+                );
+            }
+        }
+        if !conflicted && let Some(label) = label {
+            self.toasts.success(
+                "Shortcut saved",
+                Some(format!("{} · {label}", action.label())),
+            );
+        }
+    }
+
+    pub fn reset_key(&mut self, action: Action) {
+        self.settings.keyboard.error = None;
+        self.keymap.reset(action);
+        self.save_keymap();
+    }
+
+    fn save_keymap(&mut self) {
+        let value = self.keymap.to_json();
+        if let Err(error) = self.write_pref_checked(keymap::KEYMAP_KEY, &value) {
+            self.toasts.danger("Keymap was not saved", error);
+        }
+    }
+
     /// Providers the daemon found installed, for the palette's agent entries.
     /// Installed agents the person has not hidden in Settings › Agents, as
     /// Tauri's launch lists offer them.
@@ -620,14 +969,19 @@ impl AppState {
     }
 
     /// The checkout's strip, as Tauri's `sessionScope`: the checkout the
-    /// window was pointed at, else the active session's, else the first.
+    /// window was pointed at, else the active session's, else the first. A
+    /// stored order is applied within the shell/agent grouping.
     pub fn tab_rows(&self) -> Vec<&SessionRow> {
         let workspace = strip_workspace(
             self.chosen_workspace,
             self.active_row().map(|row| row.workspace_id),
             self.workspaces.first().map(|choice| choice.id),
         );
-        rows_in_strip(&self.rows, workspace)
+        let base = rows_in_strip(&self.rows, workspace);
+        match workspace.and_then(|workspace| self.tabs.order_for(workspace)) {
+            Some(order) => crate::tabs::applied(&base, order),
+            None => base,
+        }
     }
 
     fn step_session(&mut self, delta: isize) {
@@ -676,6 +1030,11 @@ impl AppState {
                 Command::NewWorktree => self.new_worktree_here(),
                 Command::Theme(base) => self.choose_theme(base),
                 Command::FindInFiles => self.find_in_files(),
+                Command::SplitPane => {
+                    self.show_mode(CenterMode::Session);
+                    self.split_pane();
+                }
+                Command::JoinPanes => self.join_panes(),
                 Command::RunAction(action) => {
                     self.sync_workbench_workspace();
                     if let Some(workspace) = self.workbench.workspace {
@@ -693,6 +1052,12 @@ impl AppState {
                 }
             },
             Entry::File(path) => self.open_file(&path, None),
+            Entry::Session { id, .. } => self.focus_session(id),
+            Entry::Checkout { id, .. } => {
+                self.focus_checkout(id);
+                self.inspect(id, CenterMode::Changes);
+            }
+            Entry::Symbol(hit) => self.open_file(&hit.path, Some(hit.line.max(1))),
         }
     }
 
@@ -1124,15 +1489,17 @@ impl AppState {
         self.sync_usage();
         self.sync_storage();
         self.commit.follow(self.workbench.workspace);
-        if let Some(query) = self.palette.take_search() {
+        if let Some(search) = self.palette.take_search() {
             self.sync_workbench_workspace();
             if let (Some(connection), Some(scope)) = (&self.connection, self.workbench.scope()) {
                 self.palette.asked_in = Some(scope);
-                let _ = connection.read(
-                    self.generation,
-                    scope,
-                    crate::workbench::Read::Search(query),
-                );
+                let read = match search {
+                    crate::palette::Search::Files(query) => crate::workbench::Read::Search(query),
+                    crate::palette::Search::Symbols(query) => {
+                        crate::workbench::Read::Definition(query)
+                    }
+                };
+                let _ = connection.read(self.generation, scope, read);
             }
         }
         // The sidebar's panels read while a session holds the centre.
@@ -1226,6 +1593,7 @@ impl AppState {
                 }
                 self.status = LinkStatus::Reconnecting;
                 self.status_detail = reason;
+                self.tabs.cancel_gesture();
                 self.terminal.on_disconnect();
                 true
             }
@@ -1438,6 +1806,22 @@ impl AppState {
                 }
                 true
             }
+            UiEvent::PreferenceFailed {
+                generation,
+                key,
+                error,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                let title = if key == keymap::KEYMAP_KEY {
+                    "Keymap not saved"
+                } else {
+                    "Preference not saved"
+                };
+                self.toasts.danger(title, error);
+                true
+            }
             UiEvent::Usage {
                 generation,
                 window_days,
@@ -1473,8 +1857,68 @@ impl AppState {
                     return false;
                 }
                 match result {
-                    Ok(paths) => self.palette.apply_search(&query, paths),
-                    Err(_) => self.palette.fail_search(&query),
+                    Ok(paths) => {
+                        let palette_scope = self.palette.scope();
+                        if matches!(
+                            palette_scope,
+                            crate::palette::Scope::Everything | crate::palette::Scope::Files
+                        ) {
+                            self.palette.apply_search(palette_scope, &query, paths);
+                        }
+                    }
+                    Err(error) => {
+                        self.palette.fail_search(self.palette.scope(), &query);
+                        if self
+                            .palette
+                            .note_error(format!("File search failed: {error}"))
+                        {
+                            self.toasts.danger("File search failed", error);
+                        }
+                    }
+                }
+                true
+            }
+            UiEvent::Symbols {
+                generation,
+                scope,
+                query,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                if self.workbench.scope() != Some(scope) {
+                    return false;
+                }
+                match result {
+                    Ok(results) => {
+                        let hits = results
+                            .matches
+                            .into_iter()
+                            .map(|hit| crate::palette::SymbolHit {
+                                path: hit.path,
+                                line: hit.line,
+                                text: hit.text,
+                            })
+                            .collect();
+                        if self.palette.scope() == crate::palette::Scope::Symbols {
+                            self.palette.apply_symbols(
+                                crate::palette::Scope::Symbols,
+                                &query,
+                                hits,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        self.palette
+                            .fail_search(crate::palette::Scope::Symbols, &query);
+                        if self
+                            .palette
+                            .note_error(format!("Declaration search failed: {error}"))
+                        {
+                            self.toasts.danger("Declaration search failed", error);
+                        }
+                    }
                 }
                 true
             }
@@ -1558,6 +2002,10 @@ impl AppState {
                 }
                 if label == "SetEditorAutosave" && !ok {
                     self.editor.autosave.reset();
+                }
+                if !ok {
+                    self.toasts
+                        .danger(format!("{label} failed"), message.clone());
                 }
                 self.last_command = Some(CommandStatus {
                     label,
@@ -1752,7 +2200,9 @@ impl AppState {
         self.sync_editor();
         self.sync_workbench();
         self.close_due();
-        let mut changed = self.settings.esc.expire(Instant::now());
+        let mut changed = self.tabs.reveal(Instant::now());
+        changed |= self.toasts.expire(Instant::now());
+        changed |= self.settings.esc.expire(Instant::now());
         changed |= self.poll_files(tx);
         if clock - self.mirror_at >= 0.125 {
             for idx in 0..self.pane_count() {
@@ -1842,12 +2292,7 @@ impl AppState {
                 request.from_line,
                 request.count,
             ) {
-                self.last_command = Some(CommandStatus {
-                    label: "FetchScrollback",
-                    ok: false,
-                    message: error,
-                    took_us: 0,
-                });
+                self.command_failed("FetchScrollback", error);
             }
         }
         let mut answered = false;
@@ -1871,12 +2316,7 @@ impl AppState {
                 continue;
             };
             if let Err(error) = connection.input(self.generation, terminal_id, bytes) {
-                self.last_command = Some(CommandStatus {
-                    label: "WriteTerminalInput",
-                    ok: false,
-                    message: error,
-                    took_us: 0,
-                });
+                self.command_failed("WriteTerminalInput", error);
             }
             answered |= self
                 .store
@@ -2111,6 +2551,9 @@ impl AppState {
     }
 
     pub fn terminal_window_focus(&mut self, focused: bool, tx: &mut Tx) {
+        if !focused {
+            self.tabs.cancel_gesture();
+        }
         let idx = self.focused_pane();
         let shared = Arc::clone(&self.pane(idx).shared);
         let slot = shared.lock();
@@ -2146,23 +2589,13 @@ impl AppState {
             })
             .or_else(|| self.workspaces.first().map(|workspace| workspace.id));
         let Some(workspace_id) = workspace else {
-            self.last_command = Some(CommandStatus {
-                label: "CreateShellSession",
-                ok: false,
-                message: "no workspace in the snapshot".to_string(),
-                took_us: 0,
-            });
+            self.command_failed("CreateShellSession", "no workspace in the snapshot");
             return;
         };
         match &self.connection {
             Some(connection) => {
                 if let Err(error) = connection.create_shell_session(workspace_id) {
-                    self.last_command = Some(CommandStatus {
-                        label: "CreateShellSession",
-                        ok: false,
-                        message: error,
-                        took_us: 0,
-                    });
+                    self.command_failed("CreateShellSession", error);
                 }
             }
             None => self.worker_not_ready("CreateShellSession"),
@@ -2348,20 +2781,14 @@ impl AppState {
 
     /// The palette scoped to what can be launched: a terminal or an agent.
     pub fn open_launch_palette(&mut self) {
-        let agents = self.installed_agents();
-        self.palette.show_launch(agents);
+        self.open_palette(crate::palette::Scope::Launch);
     }
 
     pub fn request_refresh(&mut self) {
         if let Some(connection) = &self.connection
             && let Err(error) = connection.refresh_snapshot()
         {
-            self.last_command = Some(CommandStatus {
-                label: "GetSnapshot",
-                ok: false,
-                message: error,
-                took_us: 0,
-            });
+            self.command_failed("GetSnapshot", error);
         }
     }
 
@@ -2369,22 +2796,27 @@ impl AppState {
         if let Some(connection) = &self.connection
             && let Err(error) = connection.force_reconnect()
         {
-            self.last_command = Some(CommandStatus {
-                label: "Reconnect",
-                ok: false,
-                message: error,
-                took_us: 0,
-            });
+            self.command_failed("Reconnect", error);
         }
     }
 
-    fn worker_not_ready(&mut self, label: &'static str) {
+    /// Records a refused command and leaves a toast: the debug row is only
+    /// visible with `FORGE_UI_DEBUG`, and a failed gesture otherwise looked
+    /// like a shortcut that did nothing.
+    pub fn command_failed(&mut self, label: &'static str, message: impl Into<String>) {
+        let message = message.into();
+        self.toasts
+            .danger(format!("{label} failed"), message.clone());
         self.last_command = Some(CommandStatus {
             label,
             ok: false,
-            message: "client worker is still starting".to_string(),
+            message,
             took_us: 0,
         });
+    }
+
+    fn worker_not_ready(&mut self, label: &'static str) {
+        self.command_failed(label, "client worker is still starting");
     }
 }
 
@@ -2428,6 +2860,75 @@ mod tests {
             fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
                 .expect("fixture snapshot decodes");
         AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new())
+    }
+
+    #[test]
+    fn cmd_k_opens_the_combined_palette_with_native_modifiers() {
+        let mut state = state();
+        let event = KeyEvent {
+            key: rune::Key::Command('k'),
+            mods: rune::Mods {
+                cmd: true,
+                logo: true,
+                ..rune::Mods::default()
+            },
+        };
+        assert!(state.global_key(&event));
+        assert!(state.palette.open);
+        assert_eq!(state.palette.scope(), crate::palette::Scope::Everything);
+    }
+
+    #[test]
+    fn ctrl_tab_holds_the_switcher_and_control_up_commits_it() {
+        let mut state = state();
+        let ctrl = rune::Mods {
+            ctrl: true,
+            ..rune::Mods::default()
+        };
+        let tab = KeyEvent {
+            key: rune::Key::Tab,
+            mods: ctrl,
+        };
+        state.global_key(&tab);
+        state.global_key(&tab);
+        assert!(state.tabs.shown_gesture().is_some());
+        state.terminal_modifiers(rune::Mods::default(), &mut rune::Tx::default());
+        assert!(state.tabs.gesture.is_none());
+        assert!(state.active.is_some(), "the committed tab stays active");
+    }
+
+    #[test]
+    fn a_closed_strip_order_keeps_the_active_session_and_sorts_by_remembered_ids() {
+        let mut state = state();
+        let workspace = state.workspaces[0].id;
+        let ids: Vec<SessionId> = state.tab_rows().iter().map(|row| row.id).collect();
+        if ids.len() < 2 {
+            return;
+        }
+        let active = state.active.expect("an active session");
+        let mut moved = ids.clone();
+        moved.swap(0, 1);
+        state.tabs.set_order(workspace, moved.clone());
+        let after: Vec<SessionId> = state.tab_rows().iter().map(|row| row.id).collect();
+        assert_eq!(after, moved);
+        assert_eq!(
+            state.active,
+            Some(active),
+            "reordering leaves the active tab"
+        );
+    }
+
+    #[test]
+    fn a_tab_order_is_stored_under_tauris_key() {
+        let mut state = state();
+        let workspace = state.workspaces[0].id;
+        state.tabs.set_order(workspace, vec![state.rows[0].id]);
+        state.persist_tab_order(workspace);
+        let stored = crate::tabs::parse_order(state.pref(crate::tabs::TAB_ORDER_KEY));
+        assert_eq!(
+            stored.get(&workspace.to_string()),
+            Some(&vec![state.rows[0].id])
+        );
     }
 
     #[test]

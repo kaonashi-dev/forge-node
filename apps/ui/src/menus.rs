@@ -16,7 +16,7 @@ use rune_kit::{
     Button, ButtonVariant, Dialog, Kit, Menu, MenuEntry, MenuItem, RadioGroup, RadioItem, TextInput,
 };
 
-use crate::app::{AppState, CommandStatus};
+use crate::app::AppState;
 use crate::workbench::{CenterMode, Panel};
 
 /// The file tree's element key: the Menu key and Shift+F10 reach the tree's
@@ -112,6 +112,8 @@ pub enum Glyph {
     Activity,
     ChevronUp,
     ChevronDown,
+    ChevronLeft,
+    ChevronRight,
 }
 
 #[must_use]
@@ -148,6 +150,8 @@ pub fn icon(glyph: &Glyph) -> Option<&'static Icon> {
         Glyph::Activity => &forge::ACTIVITY,
         Glyph::ChevronUp => &forge::CHEVRON_UP,
         Glyph::ChevronDown => &forge::CHEVRON_DOWN,
+        Glyph::ChevronLeft => &forge::CHEVRON_LEFT,
+        Glyph::ChevronRight => &forge::CHEVRON_RIGHT,
         Glyph::None => return None,
     })
 }
@@ -223,6 +227,7 @@ pub enum Act {
     IgnoredWorktrees(ProjectId),
     RunAction(WorkspaceId, ProjectActionId),
     FocusSession(SessionId),
+    MoveTab(SessionId, isize),
     OpenUrl(String),
     ReapplyRule(ProjectId, ShareRuleId),
     MoveRule(ProjectId, ShareRuleId, isize),
@@ -348,11 +353,13 @@ pub fn items(s: &AppState, target: &Target) -> Vec<Entry> {
                 .rows
                 .iter()
                 .any(|row| row.id == *session && row.kind == SessionKind::Editor);
-            if editor {
+            let mut items = if editor {
                 editor_tab_items(s, *session)
             } else {
                 session_items(s, *session)
-            }
+            };
+            items.extend(tab_move_items(s, *session));
+            items
         }
         Target::Files(workspace, file) => file_items(s, *workspace, file),
         Target::Group(group) => group_items(*group),
@@ -950,6 +957,40 @@ fn editor_tab_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
     ]
 }
 
+/// Moving a tab is a strip gesture a keyboard or a menu can also make. A tab
+/// never crosses the shell/agent split, so an end tab disables its direction.
+fn tab_move_items(s: &AppState, session: SessionId) -> Vec<Entry> {
+    let tabs = s.tab_rows();
+    let at = tabs.iter().position(|row| row.id == session);
+    let can = |delta: isize| {
+        let Some(at) = at else {
+            return false;
+        };
+        let Some(to) = at.checked_add_signed(delta) else {
+            return false;
+        };
+        matches!(
+            (tabs.get(at), tabs.get(to)),
+            (Some(left), Some(right)) if crate::tabs::is_shell(left) == crate::tabs::is_shell(right)
+        )
+    };
+    vec![
+        Entry::Rule,
+        item(
+            "Move Tab Left",
+            Glyph::ChevronLeft,
+            Act::MoveTab(session, -1),
+        )
+        .enabled(can(-1)),
+        item(
+            "Move Tab Right",
+            Glyph::ChevronRight,
+            Act::MoveTab(session, 1),
+        )
+        .enabled(can(1)),
+    ]
+}
+
 /// `FileTreePanel`'s `menuItems`.
 fn file_items(s: &AppState, workspace: WorkspaceId, target: &FileTarget) -> Vec<Entry> {
     let root = s.store.as_ref().and_then(|store| {
@@ -1414,12 +1455,7 @@ fn send(
     match result {
         Ok(()) => true,
         Err(message) => {
-            s.last_command = Some(CommandStatus {
-                label,
-                ok: false,
-                message,
-                took_us: 0,
-            });
+            s.command_failed(label, message);
             false
         }
     }
@@ -1601,6 +1637,7 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
         Act::IgnoredWorktrees(project) => s.projects.ignores = Some(project),
         Act::RunAction(workspace, action) => s.run_action(workspace, action),
         Act::FocusSession(session) => s.focus_session(session),
+        Act::MoveTab(session, by) => s.move_tab_by(session, by),
         Act::OpenUrl(url) => {
             if let Err(error) = tx.open_url(&url) {
                 eprintln!("[open] {url}: {error:?}");
@@ -1702,6 +1739,34 @@ fn close_editors(s: &mut AppState, sessions: Vec<SessionId>) {
             s.close_now(session);
         }
     }
+}
+
+fn editor_ids(s: &AppState) -> Vec<SessionId> {
+    s.tab_rows()
+        .into_iter()
+        .filter(|row| row.kind == SessionKind::Editor)
+        .map(|row| row.id)
+        .collect()
+}
+
+/// ⇧⌘W: every open editor but the active one.
+pub fn close_other_views(s: &mut AppState) {
+    let active = s.active_line_editor().or(s.active);
+    let others = editor_ids(s)
+        .into_iter()
+        .filter(|id| Some(*id) != active)
+        .collect();
+    close_editors(s, others);
+}
+
+/// ⌥⌘W: every editor after the active one in the strip.
+pub fn close_views_to_right(s: &mut AppState) {
+    let editors = editor_ids(s);
+    let at = s.active_line_editor().or(s.active);
+    let Some(at) = at.and_then(|active| editors.iter().position(|id| *id == active)) else {
+        return;
+    };
+    close_editors(s, editors[at + 1..].to_vec());
 }
 
 fn insert_reference(s: &mut AppState, workspace: WorkspaceId, path: &str, tx: &mut Tx) {
@@ -2485,8 +2550,16 @@ mod tests {
         );
         assert_eq!(
             labels(&rendered(items(&s, &Target::Tab(id("1003"))))),
-            ["Rename…", "—", "Restart", "Close!"],
-            "a shell's tab has the session's menu"
+            [
+                "Rename…",
+                "—",
+                "Restart",
+                "Close!",
+                "—",
+                "Move Tab Left",
+                "Move Tab Right"
+            ],
+            "a shell's tab has the session's menu plus tab moves"
         );
     }
 
@@ -2509,7 +2582,10 @@ mod tests {
                 "Close Others",
                 "Close to the Right",
                 "—",
-                "Close All!"
+                "Close All!",
+                "—",
+                "Move Tab Left",
+                "Move Tab Right"
             ]
         );
         assert_eq!(
