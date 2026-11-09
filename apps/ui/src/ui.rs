@@ -97,6 +97,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     close_dialog(s, &k, &mut overlays);
     crate::history::delete_dialog(s, &k, &mut overlays);
     crate::settings::dialogs(s, &k, &mut overlays);
+    crate::storage::dialogs(s, &k, &mut overlays);
     crate::menus::layer(s, &k, &mut overlays);
     crate::native_menus::dialog(s, &k, &mut overlays);
     tab_switcher(s, &k, &mut overlays);

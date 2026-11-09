@@ -1807,9 +1807,21 @@ impl AppState {
                     Ok(paths) => {
                         self.storage.error = None;
                         self.storage.paths = Some(*paths);
+                        self.maybe_preview_migration();
                     }
                     Err(error) => self.storage.error = Some(error),
                 }
+                true
+            }
+            UiEvent::StorageMigration {
+                generation,
+                action,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_migration(action, result);
                 true
             }
             UiEvent::PreferenceFailed {

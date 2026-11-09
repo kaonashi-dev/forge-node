@@ -280,6 +280,11 @@ pub enum Command {
     },
     /// A project, share, worktree or action request; see `project_ops`.
     Project(crate::project_ops::Op),
+    /// `forge-daemon migrate-home`, on the worker because it stops the daemon.
+    MigrateStorage {
+        generation: u64,
+        action: crate::storage::MigrationAction,
+    },
     /// A new shell attached into the split column's replica.
     SplitShell {
         generation: u64,
@@ -464,6 +469,11 @@ pub enum UiEvent {
         generation: u64,
         workspace_id: WorkspaceId,
         result: Result<Box<(domain::ReviewRun, Vec<domain::Finding>)>, String>,
+    },
+    StorageMigration {
+        generation: u64,
+        action: crate::storage::MigrationAction,
+        result: Result<crate::storage::MigrationReport, String>,
     },
 }
 
@@ -905,6 +915,14 @@ impl ConnectionHandle {
 
     pub fn paths(&self, generation: u64) -> Result<(), String> {
         self.send(Command::Paths { generation })
+    }
+
+    pub fn migrate_storage(
+        &self,
+        generation: u64,
+        action: crate::storage::MigrationAction,
+    ) -> Result<(), String> {
+        self.send(Command::MigrateStorage { generation, action })
     }
 
     pub fn add_project(&self, path: std::path::PathBuf) -> Result<(), String> {
@@ -1837,6 +1855,18 @@ fn handle_fixture_command(
                 reply: Box::new(reply),
             }]);
         }
+        Command::MigrateStorage {
+            generation: command_generation,
+            action,
+        } => {
+            if command_generation == generation {
+                sink(vec![UiEvent::StorageMigration {
+                    generation,
+                    action,
+                    result: Err("the recorded snapshot has no daemon executable".into()),
+                }]);
+            }
+        }
         Command::SplitShell {
             workspace_id, size, ..
         } => {
@@ -2257,6 +2287,24 @@ fn run_live(ctx: LiveCtx<'_>) -> Result<(), String> {
                 }
                 Command::ForceReconnect => {
                     return Err("reconnect requested".to_string());
+                }
+                Command::MigrateStorage {
+                    generation: command_generation,
+                    action,
+                } => {
+                    if command_generation != generation {
+                        return Err("the connection changed before the migration".to_string());
+                    }
+                    let result =
+                        crate::storage::migrate_home(daemon, &link.client, action, metrics);
+                    sink(vec![UiEvent::StorageMigration {
+                        generation,
+                        action,
+                        result,
+                    }]);
+                    if action.stops_daemon() {
+                        return Err("reconnect after moving the Forge home".to_string());
+                    }
                 }
                 command => handle_live_command(
                     generation,
@@ -3567,6 +3615,7 @@ fn handle_live_command(
                 reply: Box::new(reply),
             }]);
         }
+        Command::MigrateStorage { .. } => {}
     }
 }
 
@@ -3749,6 +3798,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::EditorConflict { .. } => "GetEditorConflict",
         Command::ReloadEditorBuffer(_) => "ReloadEditorBuffer",
         Command::OverwriteEditorBuffer(_) => "OverwriteEditorBuffer",
+        Command::MigrateStorage { action, .. } => action.label(),
     }
 }
 
