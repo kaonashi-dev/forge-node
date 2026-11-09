@@ -17,6 +17,7 @@ pub enum Command {
     Show(CenterMode),
     /// `None` follows the system.
     Theme(Option<String>),
+    NewAgent(domain::AgentProviderId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +43,8 @@ pub struct Palette {
     pub edit: TextEdit,
     pub selected: usize,
     files: Vec<String>,
+    /// Installed agent providers when the palette opened: (id, name).
+    agents: Vec<(domain::AgentProviderId, String)>,
     /// The query `files` answers, so a late answer to an older query is dropped.
     files_for: String,
     asked: Option<String>,
@@ -55,6 +58,7 @@ impl Default for Palette {
             edit: TextEdit::new(""),
             selected: 0,
             files: Vec::new(),
+            agents: Vec::new(),
             files_for: String::new(),
             asked: None,
         }
@@ -107,9 +111,20 @@ fn subsequence(label: &str, query: &str) -> bool {
 
 impl Palette {
     pub fn show(&mut self, files_only: bool) {
+        self.show_with(files_only, "", Vec::new());
+    }
+
+    /// Opens with `query` typed and the agents a person may start.
+    pub fn show_with(
+        &mut self,
+        files_only: bool,
+        query: &str,
+        agents: Vec<(domain::AgentProviderId, String)>,
+    ) {
+        self.agents = agents;
         self.open = true;
         self.files_only = files_only;
-        self.edit = TextEdit::new("");
+        self.edit = TextEdit::new(query);
         self.edit.focused = true;
         self.selected = 0;
         self.files.clear();
@@ -135,8 +150,13 @@ impl Palette {
         let mut out: Vec<Entry> = if self.files_only {
             Vec::new()
         } else {
-            commands()
-                .into_iter()
+            self.agents
+                .iter()
+                .map(|(id, name)| Entry::Command {
+                    label: format!("New agent: {name}"),
+                    command: Command::NewAgent(id.clone()),
+                })
+                .chain(commands())
                 .filter(|entry| subsequence(entry.label(), query))
                 .collect()
         };
@@ -232,5 +252,19 @@ mod tests {
         assert_eq!(palette.selected, count - 1);
         palette.move_selection(1);
         assert_eq!(palette.selected, 0);
+    }
+
+    #[test]
+    fn installed_agents_are_offered_first() {
+        let mut palette = Palette::default();
+        let claude = domain::AgentProviderId::new("claude");
+        palette.show_with(false, "agent", vec![(claude.clone(), "Claude Code".into())]);
+        assert_eq!(
+            palette.chosen(),
+            Some(Entry::Command {
+                label: "New agent: Claude Code".into(),
+                command: Command::NewAgent(claude),
+            })
+        );
     }
 }

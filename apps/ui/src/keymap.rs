@@ -9,6 +9,7 @@ pub enum Action {
     CommandPalette,
     FilePalette,
     NewShell,
+    NewAgent,
     Settings,
     NextSession,
     PreviousSession,
@@ -27,6 +28,7 @@ pub fn action_for(event: &KeyEvent) -> Option<Action> {
         ('k', false) => Action::CommandPalette,
         ('p', false) => Action::FilePalette,
         ('t', false) => Action::NewShell,
+        ('a', true) => Action::NewAgent,
         (',', false) => Action::Settings,
         // A shifted bracket arrives as either glyph, depending on the layout.
         (']' | '}', true) => Action::NextSession,
@@ -55,6 +57,7 @@ mod tests {
         assert_eq!(action_for(&chord('k', false)), Some(Action::CommandPalette));
         assert_eq!(action_for(&chord('p', false)), Some(Action::FilePalette));
         assert_eq!(action_for(&chord('t', false)), Some(Action::NewShell));
+        assert_eq!(action_for(&chord('a', true)), Some(Action::NewAgent));
         assert_eq!(action_for(&chord(',', false)), Some(Action::Settings));
         assert_eq!(action_for(&chord('}', true)), Some(Action::NextSession));
         assert_eq!(action_for(&chord('[', true)), Some(Action::PreviousSession));

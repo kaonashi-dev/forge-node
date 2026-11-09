@@ -99,6 +99,10 @@ pub enum Command {
     },
     SavePrefs(crate::prefs::Prefs),
     AddProject(std::path::PathBuf),
+    CreateAgent {
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+    },
     CreateWorktree {
         project_id: domain::ProjectId,
         branch: String,
@@ -135,7 +139,7 @@ pub enum UiEvent {
         generation: u64,
         event: Box<DaemonEvent>,
     },
-    EditorOpened {
+    SessionOpened {
         generation: u64,
         session_id: SessionId,
     },
@@ -300,6 +304,17 @@ impl ConnectionHandle {
             generation,
             workspace_id,
             read,
+        })
+    }
+
+    pub fn create_agent(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+    ) -> Result<(), String> {
+        self.send(Command::CreateAgent {
+            workspace_id,
+            provider_id,
         })
     }
 
@@ -777,6 +792,7 @@ fn handle_fixture_command(
         | Command::Read { .. }
         | Command::SavePrefs(_)
         | Command::AddProject(_)
+        | Command::CreateAgent { .. }
         | Command::CreateWorktree { .. }
         | Command::RemoveWorktree { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
@@ -1228,7 +1244,7 @@ fn handle_live_command(
             let result = client
                 .create_editor_session(workspace_id, &path, None, false, false)
                 .map(|(session_id, _)| {
-                    sink(vec![UiEvent::EditorOpened {
+                    sink(vec![UiEvent::SessionOpened {
                         generation,
                         session_id,
                     }]);
@@ -1322,6 +1338,30 @@ fn handle_live_command(
                 },
             };
             sink(vec![event]);
+        }
+        Command::CreateAgent {
+            workspace_id,
+            provider_id,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_agent_session(workspace_id, provider_id.clone(), None, None, None)
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("started {provider_id} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateAgentSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
         }
         Command::AddProject(path) => {
             metrics.note_socket_op();
@@ -1500,6 +1540,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::Read { .. } => "WorkspaceRead",
         Command::SavePrefs(_) => "SavePrefs",
         Command::AddProject(_) => "AddProject",
+        Command::CreateAgent { .. } => "CreateAgentSession",
         Command::CreateWorktree { .. } => "CreateWorktree",
         Command::RemoveWorktree { .. } => "RemoveWorktree",
         Command::RefreshSnapshot => "GetSnapshot",

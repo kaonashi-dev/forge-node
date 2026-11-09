@@ -382,14 +382,44 @@ impl AppState {
             return false;
         };
         match action {
-            Action::CommandPalette => self.palette.show(false),
+            Action::CommandPalette => {
+                let agents = self.installed_agents();
+                self.palette.show_with(false, "", agents);
+            }
             Action::FilePalette => self.palette.show(true),
             Action::NewShell => self.request_create(),
+            Action::NewAgent => {
+                let agents = self.installed_agents();
+                self.palette.show_with(false, "New agent", agents);
+            }
             Action::Settings => self.show_mode(CenterMode::Settings),
             Action::NextSession => self.step_session(1),
             Action::PreviousSession => self.step_session(-1),
         }
         true
+    }
+
+    /// Providers the daemon found installed, for the palette's agent entries.
+    fn installed_agents(&self) -> Vec<(domain::AgentProviderId, String)> {
+        let Some(store) = &self.store else {
+            return Vec::new();
+        };
+        store
+            .providers
+            .iter()
+            .filter(|info| {
+                matches!(
+                    info.detection.status,
+                    domain::DetectionStatus::Installed { .. }
+                )
+            })
+            .map(|info| {
+                (
+                    info.descriptor.id.clone(),
+                    info.descriptor.display_name.clone(),
+                )
+            })
+            .collect()
     }
 
     fn step_session(&mut self, delta: isize) {
@@ -433,6 +463,15 @@ impl AppState {
                 Command::Reconnect => self.request_reconnect(),
                 Command::Show(mode) => self.show_mode(mode),
                 Command::Theme(base) => self.choose_theme(base),
+                Command::NewAgent(provider) => {
+                    self.sync_workbench_workspace();
+                    if let (Some(connection), Some(workspace)) =
+                        (&self.connection, self.workbench.workspace)
+                    {
+                        let _ = connection.create_agent(workspace, provider);
+                        self.workbench.show(CenterMode::Session);
+                    }
+                }
             },
             Entry::File(path) => {
                 self.sync_workbench_workspace();
@@ -770,7 +809,7 @@ impl AppState {
                 self.theme_base = prefs.theme_base;
                 true
             }
-            UiEvent::EditorOpened {
+            UiEvent::SessionOpened {
                 generation,
                 session_id,
             } => {
