@@ -1,5 +1,6 @@
 //! The integrated shell: `SplitView` + `Sidebar` + `Toolbar`, a session tab
-//! strip, and one terminal pane in the center drawn by the terminal compositor.
+//! strip, and the active session in the center: a terminal drawn by the
+//! terminal compositor, or an editor drawn from the daemon's windows of lines.
 
 use std::time::Instant;
 
@@ -53,7 +54,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .reduced_motion(cx.is_reduced_motion())
         .build(&k)
         .on_paste(|s: &mut AppState, text: &str, tx: &mut rune::Tx| {
-            s.terminal_paste(text, tx);
+            s.paste(text, tx);
         });
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
@@ -235,7 +236,9 @@ fn status_row(s: &AppState, k: &Kit) -> El {
 
 fn center(s: &AppState, k: &Kit) -> El {
     let has_terminal = s.active_row().and_then(|row| row.terminal_id).is_some();
-    let body = if has_terminal {
+    let body = if s.active_line_editor().is_some() {
+        crate::editor::view::pane(s, k)
+    } else if has_terminal {
         terminal_pane(s)
     } else {
         placeholder(s, k)

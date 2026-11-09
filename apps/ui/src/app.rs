@@ -13,6 +13,7 @@ use rune::{Ime, KeyEvent, Tx};
 use rune_kit::shell::{PaneState, TabDragState};
 
 use crate::connection::{ConnectionHandle, Metrics, UiEvent};
+use crate::editor::EditorUi;
 use crate::terminal::SharedTerminal;
 use crate::terminal::input::{self, Effects, Outbox, Pointer, Press};
 use crate::terminal::pane::TerminalUi;
@@ -44,6 +45,9 @@ pub enum SessionStatus {
 #[derive(Clone, Debug)]
 pub struct SessionRow {
     pub id: SessionId,
+    pub kind: SessionKind,
+    /// `None` for an editor the daemon presents as lines, whose PTY carries
+    /// no screen this side should paint.
     pub terminal_id: Option<TerminalId>,
     pub id_text: String,
     pub title: String,
@@ -82,6 +86,14 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub connection: Option<ConnectionHandle>,
     pub terminal: TerminalUi,
+    pub editor_surface: protocol::EditorSurface,
+    pub editor: EditorUi,
+    /// A scroll offset that brings a moved caret into view, applied once.
+    pub editor_reveal: Option<f32>,
+    /// A file to open in the first workspace once the replica is loaded.
+    pub open_path: Option<String>,
+    /// An opened editor whose session has not reached the replica yet.
+    pub select_when_listed: Option<SessionId>,
     pub fixture_titles: HashMap<TerminalId, String>,
     pub out: Outbox,
     pub last_input: Option<(usize, String)>,
@@ -116,6 +128,11 @@ impl AppState {
             metrics,
             connection: None,
             terminal: TerminalUi::new(shared, fixture),
+            editor_surface: protocol::EditorSurface::Cells,
+            editor: EditorUi::default(),
+            editor_reveal: None,
+            open_path: None,
+            select_when_listed: None,
             fixture_titles: HashMap::new(),
             out: Outbox::default(),
             last_input: None,
@@ -171,11 +188,19 @@ impl AppState {
                     .find(|workspace| workspace.id == session.workspace_id)
                     .map(|workspace| workspace.label())
                     .unwrap_or_else(|| "unknown workspace".to_string());
+                let lines = session.kind == SessionKind::Editor
+                    && self.editor_surface == protocol::EditorSurface::Dom;
                 SessionRow {
                     id: session.id,
-                    terminal_id: session.terminal_id,
+                    kind: session.kind,
+                    terminal_id: session.terminal_id.filter(|_| !lines),
                     id_text: session.id.to_string(),
-                    title: session.title.resolve("untitled").to_string(),
+                    title: session
+                        .title
+                        .resolve(session.editor.as_ref().map_or("untitled", |editor| {
+                            editor.path.rsplit('/').next().unwrap_or(&editor.path)
+                        }))
+                        .to_string(),
                     workspace,
                     detail: format!(
                         "{} · {}",
@@ -229,6 +254,69 @@ impl AppState {
             tx.instant();
             self.sync_terminal();
         }
+        if let Some(offset) = self.editor_reveal.take() {
+            let [_, viewport] = self.editor.scroll.get();
+            self.editor.scroll.set([offset, viewport]);
+            tx.scroll_to_instant(crate::editor::SCROLL_KEY, 0.0, offset);
+        }
+    }
+
+    /// The active session, when it is an editor this side paints as lines.
+    #[must_use]
+    pub fn active_line_editor(&self) -> Option<SessionId> {
+        self.active_row()
+            .filter(|row| {
+                row.kind == SessionKind::Editor
+                    && self.editor_surface == protocol::EditorSurface::Dom
+            })
+            .map(|row| row.id)
+    }
+
+    #[must_use]
+    pub fn active_editor_state(&self) -> Option<&domain::EditorState> {
+        let active = self.active?;
+        self.store
+            .as_ref()?
+            .sessions
+            .iter()
+            .find(|session| session.id == active)?
+            .editor
+            .as_ref()
+    }
+
+    pub fn editor_key(&mut self, ev: &KeyEvent, _tx: &mut Tx) -> bool {
+        if self.active_line_editor().is_none() || !self.editor.key(ev) {
+            return false;
+        }
+        // Sent now rather than on the next poll: a key waits for no frame.
+        self.flush_editor();
+        true
+    }
+
+    fn sync_editor(&mut self) {
+        self.editor.set_session(self.active_line_editor());
+        if let Some(path) = self.open_path.take() {
+            match (&self.connection, self.workspaces.first()) {
+                (Some(connection), Some(workspace)) if self.status == LinkStatus::Connected => {
+                    let _ = connection.open_editor(workspace.id, path.clone());
+                }
+                _ => self.open_path = Some(path),
+            }
+        }
+        self.flush_editor();
+    }
+
+    fn flush_editor(&mut self) {
+        let out = self.editor.take_requests();
+        let Some(connection) = &self.connection else {
+            return;
+        };
+        if let Some((session, first_line, line_count)) = out.view {
+            let _ = connection.editor_view(self.generation, session, first_line, line_count);
+        }
+        if let Some((session, events)) = out.input {
+            let _ = connection.editor_input(self.generation, session, events);
+        }
     }
 
     fn accept_generation(&mut self, generation: u64) -> bool {
@@ -262,12 +350,18 @@ impl AppState {
                 self.terminal.attach_generation = u64::MAX;
                 true
             }
-            UiEvent::Connected { generation, detail } => {
+            UiEvent::Connected {
+                generation,
+                detail,
+                editor_surface,
+            } => {
                 if !self.accept_generation(generation) {
                     return false;
                 }
                 self.status = LinkStatus::Connected;
                 self.status_detail = detail;
+                self.editor_surface = editor_surface;
+                self.editor.reset_requests();
                 true
             }
             UiEvent::Disconnected { generation, reason } => {
@@ -295,6 +389,12 @@ impl AppState {
             UiEvent::Daemon { generation, event } => {
                 if !self.accept_generation(generation) {
                     return false;
+                }
+                if let protocol::DaemonEvent::EditorFrame { session_id, frame } = *event {
+                    if let Some(offset) = self.editor.apply_frame(session_id, frame) {
+                        self.editor_reveal = Some(offset);
+                    }
+                    return true;
                 }
                 let reset = matches!(event.as_ref(), protocol::DaemonEvent::FactoryReset);
                 if let Some(store) = &mut self.store {
@@ -325,7 +425,29 @@ impl AppState {
                 if rebuild && let Some(store) = self.store.take() {
                     self.set_store(store);
                 }
+                if let Some(id) = self.select_when_listed
+                    && self.rows.iter().any(|row| row.id == id)
+                {
+                    self.select_when_listed = None;
+                    self.select(id);
+                }
                 rebuild
+            }
+            UiEvent::EditorOpened {
+                generation,
+                session_id,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                // The daemon answers an already-open path with the session
+                // that holds it, so this selects it whether or not it is new.
+                if self.rows.iter().any(|row| row.id == session_id) {
+                    self.select(session_id);
+                } else {
+                    self.select_when_listed = Some(session_id);
+                }
+                true
             }
             UiEvent::CommandResult {
                 generation,
@@ -441,6 +563,7 @@ impl AppState {
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.metrics.note_ui_thread();
         self.sync_terminal();
+        self.sync_editor();
         let mut changed = false;
         if clock - self.mirror_at >= 0.125 {
             let version = self.terminal.shared.grid_epoch();
@@ -616,6 +739,17 @@ impl AppState {
         );
         drop(slot);
         self.apply_effects(fx, tx);
+    }
+
+    /// A paste goes to whichever surface the active session shows.
+    pub fn paste(&mut self, text: &str, tx: &mut Tx) {
+        if self.active_line_editor().is_some() {
+            self.editor
+                .queue(domain::EditorInputEvent::Text(text.to_string()));
+            self.flush_editor();
+        } else {
+            self.terminal_paste(text, tx);
+        }
     }
 
     pub fn terminal_paste(&mut self, text: &str, tx: &mut Tx) {
@@ -833,6 +967,7 @@ mod tests {
                 UiEvent::Connected {
                     generation: 1,
                     detail: "one".to_string(),
+                    editor_surface: protocol::EditorSurface::Cells,
                 },
             ],
             &mut tx,

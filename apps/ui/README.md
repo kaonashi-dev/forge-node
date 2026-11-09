@@ -17,6 +17,21 @@ scripts/dev ui run --bench            # headless session-switch + echo timings (
 scripts/dev ui run --help             # every flag, including Rune's --snap/--tree/--script
 ```
 
+### Editor
+
+`scripts/dev ui run --open PATH` opens `PATH` (relative to the first workspace) in an
+editor session. It is painted as lines only when the daemon runs with
+`[editor] surface = "dom"`; with the default `cells` it is a terminal like any other.
+`scripts/dev daemon` finds `forge-editor` on the login shell's `PATH` before the one it
+was built with, which is the installed app's. Name this checkout's build so the control
+versions match:
+
+```toml
+[editor]
+surface = "dom"
+executable = "/path/to/forge-node/target/debug/forge-editor"
+```
+
 `scripts/dev ui` honours `CARGO_TARGET_DIR`. Rune's dependency build is large, so point
 it at one shared directory if you build several checkouts, never at the root `target/`.
 

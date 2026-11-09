@@ -1,6 +1,7 @@
 mod app;
 mod bench;
 mod connection;
+mod editor;
 mod probe;
 mod terminal;
 mod ui;
@@ -18,6 +19,7 @@ use terminal::{SharedTerminal, stats::Stats};
 
 static BOOT: OnceLock<Arc<Boot>> = OnceLock::new();
 static INITIAL: OnceLock<Option<Store>> = OnceLock::new();
+static OPEN: OnceLock<Option<String>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
@@ -34,6 +36,7 @@ struct Options {
     socket: Option<PathBuf>,
     daemon_bin: Option<PathBuf>,
     action: Action,
+    open: Option<String>,
     rest: Vec<String>,
 }
 
@@ -47,6 +50,7 @@ impl Options {
             socket: std::env::var_os("FORGE_SOCKET").map(PathBuf::from),
             daemon_bin: std::env::var_os("FORGE_DAEMON_BIN").map(PathBuf::from),
             action: Action::Run,
+            open: None,
             rest: Vec::new(),
         };
         let mut args = std::env::args().skip(1).peekable();
@@ -90,6 +94,11 @@ impl Options {
                     options.action = Action::Bench(iterations);
                 }
                 "--probe" => options.action = Action::Probe,
+                "--open" => {
+                    let value = args.next().ok_or("--open needs a path")?;
+                    options.open = Some(value);
+                    options.fixture = false;
+                }
                 "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -160,6 +169,7 @@ fn run() -> Result<(), String> {
     if matches!(options.action, Action::Bench(_)) {
         return Err("--bench is fixture-only; omit --daemon".to_string());
     }
+    let _ = OPEN.set(options.open);
     let socket = resolve_socket(options.socket)?;
     let mode = Mode::Live {
         socket,
@@ -192,6 +202,7 @@ fn init() -> AppState {
         fixture,
         initial,
     );
+    state.open_path = OPEN.get().cloned().flatten();
     if fixture && state.active_row().and_then(|row| row.terminal_id).is_some() {
         state.generation = 1;
         state.status = app::LinkStatus::Connected;
@@ -223,6 +234,9 @@ fn app_key(s: &mut AppState, ev: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
             _ => {}
         }
     }
+    if s.active_line_editor().is_some() {
+        return s.editor_key(ev, tx);
+    }
     s.terminal_key(ev, tx)
 }
 
@@ -245,6 +259,7 @@ fn run_app(boot: Arc<Boot>, initial: Option<Store>, fixture: bool, rest: Vec<Str
     let spec = AppSpec {
         poll: Some(app::poll),
         on_key: Some(app_key),
+        families: (editor::metrics::SANS, editor::metrics::MONO_FAMILIES),
         ..AppSpec::new(
             if fixture {
                 "Forge Node · Rune (fixture)"
@@ -301,6 +316,7 @@ Options:
   --fixture-reconnect-ms N  simulate a fixture disconnect after N ms (default 2500)
   --no-reconnect            keep the fixture connection up
   --probe                   connect, snapshot, add a project and attach a terminal
+  --open PATH               open PATH (relative to the first workspace) in an editor; implies --daemon
   --bench [N]               headless session-switch + terminal-echo benchmark
   -h, --help                this help
 

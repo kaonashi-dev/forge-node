@@ -77,6 +77,21 @@ pub enum Command {
         session_id: SessionId,
         title: String,
     },
+    OpenEditor {
+        workspace_id: WorkspaceId,
+        path: String,
+    },
+    EditorView {
+        generation: u64,
+        session_id: SessionId,
+        first_line: u32,
+        line_count: u32,
+    },
+    EditorInput {
+        generation: u64,
+        session_id: SessionId,
+        events: Vec<domain::EditorInputEvent>,
+    },
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
@@ -91,6 +106,7 @@ pub enum UiEvent {
     Connected {
         generation: u64,
         detail: String,
+        editor_surface: protocol::EditorSurface,
     },
     Disconnected {
         generation: u64,
@@ -104,6 +120,10 @@ pub enum UiEvent {
     Daemon {
         generation: u64,
         event: Box<DaemonEvent>,
+    },
+    EditorOpened {
+        generation: u64,
+        session_id: SessionId,
     },
     CommandResult {
         generation: u64,
@@ -199,6 +219,38 @@ impl ConnectionHandle {
 
     pub fn rename_session(&self, session_id: SessionId, title: String) -> Result<(), String> {
         self.send(Command::RenameSession { session_id, title })
+    }
+
+    pub fn open_editor(&self, workspace_id: WorkspaceId, path: String) -> Result<(), String> {
+        self.send(Command::OpenEditor { workspace_id, path })
+    }
+
+    pub fn editor_view(
+        &self,
+        generation: u64,
+        session_id: SessionId,
+        first_line: u32,
+        line_count: u32,
+    ) -> Result<(), String> {
+        self.send(Command::EditorView {
+            generation,
+            session_id,
+            first_line,
+            line_count,
+        })
+    }
+
+    pub fn editor_input(
+        &self,
+        generation: u64,
+        session_id: SessionId,
+        events: Vec<domain::EditorInputEvent>,
+    ) -> Result<(), String> {
+        self.send(Command::EditorInput {
+            generation,
+            session_id,
+            events,
+        })
     }
 
     pub fn refresh_snapshot(&self) -> Result<(), String> {
@@ -422,6 +474,7 @@ fn run_fixture(ctx: FixtureCtx<'_>) -> Result<(), String> {
     sink(vec![UiEvent::Connected {
         generation,
         detail: format!("fixture daemon, protocol {}", protocol::PROTOCOL_VERSION),
+        editor_surface: protocol::EditorSurface::Cells,
     }]);
 
     let mut link = FixtureLink {
@@ -642,6 +695,7 @@ fn handle_fixture_command(
             );
             fixture_result(generation, label, result, sink, metrics, started);
         }
+        Command::OpenEditor { .. } | Command::EditorView { .. } | Command::EditorInput { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
     }
 }
@@ -785,6 +839,7 @@ fn run_live(ctx: LiveCtx<'_>) -> Result<(), String> {
             info.protocol_version,
             short_id_str(&info.instance_id)
         ),
+        editor_surface: info.editor_surface,
     }]);
 
     let (store, took_us) = bootstrap(&link.client, metrics)?;
@@ -1085,6 +1140,56 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             live_result(generation, "RenameSession", result, sink, metrics, started);
         }
+        Command::OpenEditor { workspace_id, path } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_editor_session(workspace_id, &path, None, false, false)
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::EditorOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("opened {path} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateEditorSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::EditorView {
+            generation: command_generation,
+            session_id,
+            first_line,
+            line_count,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            if let Err(error) = client.set_editor_view(session_id, first_line, line_count) {
+                eprintln!("forge-ui: SetEditorView: {error}");
+            }
+        }
+        Command::EditorInput {
+            generation: command_generation,
+            session_id,
+            events,
+        } => {
+            // Input from an older connection is dropped, never replayed: the
+            // editor it was typed against may have moved on.
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            if let Err(error) = client.send_editor_input(session_id, events) {
+                eprintln!("forge-ui: SendEditorInput: {error}");
+            }
+        }
         Command::RefreshSnapshot => {
             if let Ok((store, took_us)) = load_snapshot(client, metrics) {
                 emit_snapshot(generation, &store, took_us, sink, metrics);
@@ -1223,6 +1328,9 @@ fn command_label(command: &Command) -> &'static str {
         Command::FetchScrollback { .. } => "FetchScrollback",
         Command::CreateShellSession { .. } => "CreateShellSession",
         Command::RenameSession { .. } => "RenameSession",
+        Command::OpenEditor { .. } => "CreateEditorSession",
+        Command::EditorView { .. } => "SetEditorView",
+        Command::EditorInput { .. } => "SendEditorInput",
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",
