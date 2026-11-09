@@ -94,6 +94,7 @@ pub struct AppState {
     pub palette: crate::palette::Palette,
     pub projects: crate::projects::Projects,
     pub commit: crate::commit::CommitBox,
+    pub review: Option<crate::pr_review::ReviewDialog>,
     pub sync: crate::sync::Sync,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
@@ -162,6 +163,7 @@ impl AppState {
             palette: crate::palette::Palette::default(),
             projects: crate::projects::Projects::default(),
             commit: crate::commit::CommitBox::default(),
+            review: None,
             sync: crate::sync::Sync::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
@@ -416,6 +418,14 @@ impl AppState {
                 }
             }
             Action::NewAgent => self.launch_default(),
+            Action::PullRequests => {
+                let next = if self.workbench.mode == CenterMode::PullRequests {
+                    CenterMode::Session
+                } else {
+                    CenterMode::PullRequests
+                };
+                self.show_mode(next);
+            }
             Action::Settings => {
                 let next = if self.workbench.mode == CenterMode::Settings {
                     CenterMode::Session
@@ -529,7 +539,7 @@ impl AppState {
                     if let (Some(connection), Some(workspace)) =
                         (&self.connection, self.workbench.workspace)
                     {
-                        let _ = connection.create_agent(workspace, provider, None, None);
+                        let _ = connection.create_agent(workspace, provider, None, None, false);
                         self.workbench.show(CenterMode::Session);
                     }
                 }
@@ -696,7 +706,7 @@ impl AppState {
             return;
         };
         if connection
-            .create_agent(workspace, provider, None, Some(prompt))
+            .create_agent(workspace, provider, None, Some(prompt), false)
             .is_ok()
         {
             self.workbench.show(CenterMode::Session);
@@ -765,6 +775,75 @@ impl AppState {
                 let _ = connection.remove_worktree(workspace);
             }
             None => self.worker_not_ready("RemoveWorktree"),
+        }
+    }
+
+    fn pull_request(&self, repository: &str, number: u32) -> Option<&domain::PullRequest> {
+        self.store
+            .as_ref()?
+            .pull_requests
+            .pull_requests
+            .iter()
+            .find(|pr| pr.repository == repository && pr.number == number)
+    }
+
+    pub fn open_review(&mut self, repository: &str, number: u32) {
+        let agents = self
+            .store
+            .as_ref()
+            .map(|store| crate::pr_review::review_agents(&store.providers))
+            .unwrap_or_default();
+        if let Some(pr) = self.pull_request(repository, number) {
+            self.review = Some(crate::pr_review::ReviewDialog::new(pr, &agents));
+        }
+    }
+
+    /// Launches the review: read-only, in the checkout `review_workspace`
+    /// picks, with the recipe's prompt.
+    pub fn start_review(&mut self) {
+        let Some(review) = &self.review else {
+            return;
+        };
+        let Some(pr) = self
+            .pull_request(&review.repository, review.number)
+            .cloned()
+        else {
+            return;
+        };
+        let problem = if review.agent.is_none() {
+            Some("Pick an agent with a review mode.")
+        } else if review.prompt(&pr).is_none() {
+            Some("Write what the review should look for.")
+        } else {
+            None
+        };
+        if let Some(problem) = problem {
+            if let Some(review) = self.review.as_mut() {
+                review.error = Some(problem.to_string());
+            }
+            return;
+        }
+        let workspace = self.store.as_ref().and_then(|store| {
+            crate::pr_review::review_workspace(
+                &store.workspaces,
+                pr.project_id,
+                self.workbench.workspace,
+            )
+        });
+        let (Some(workspace), Some(connection)) = (workspace, &self.connection) else {
+            if let Some(review) = self.review.as_mut() {
+                review.error = Some("No checkout of this repository is open here.".into());
+            }
+            return;
+        };
+        let review = self.review.take().expect("checked above");
+        let prompt = review.prompt(&pr);
+        if let Some(agent) = review.agent
+            && connection
+                .create_agent(workspace, agent, None, prompt, true)
+                .is_ok()
+        {
+            self.workbench.show(CenterMode::Session);
         }
     }
 
@@ -1811,7 +1890,7 @@ impl AppState {
                 if let (Some(connection), Some(workspace)) =
                     (&self.connection, self.workbench.workspace)
                     && connection
-                        .create_agent(workspace, provider, profile, None)
+                        .create_agent(workspace, provider, profile, None, false)
                         .is_ok()
                 {
                     self.workbench.show(CenterMode::Session);

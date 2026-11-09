@@ -76,6 +76,7 @@ fn commands() -> Vec<Entry> {
         ("Projects", Command::Show(CenterMode::Projects)),
         ("Git", Command::Show(CenterMode::Changes)),
         ("Files", Command::Show(CenterMode::Files)),
+        ("Pull Requests", Command::Show(CenterMode::PullRequests)),
         ("Settings", Command::Show(CenterMode::Settings)),
         ("Theme: Match System", Command::Theme("system".into())),
     ];

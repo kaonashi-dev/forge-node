@@ -77,6 +77,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::projects::dialogs(s, &k, &mut overlays);
     crate::sync::dialog(s, &k, &mut overlays);
     rename_dialog(s, &k, &mut overlays);
+    crate::pr_review::dialog(s, &k, &mut overlays);
     close_dialog(s, &k, &mut overlays);
     let root = rune_kit::root(root, overlays);
     s.view_ms
@@ -292,6 +293,8 @@ fn center(s: &AppState, k: &Kit) -> El {
         crate::workbench::view::changes(s, k)
     } else if s.workbench.mode == CenterMode::Files {
         crate::workbench::view::files(s, k)
+    } else if s.workbench.mode == CenterMode::PullRequests {
+        crate::pr_review::view(s, k)
     } else if s.workbench.mode == CenterMode::Settings {
         crate::workbench::view::settings(s, k)
     } else if s.active_line_editor().is_some() {

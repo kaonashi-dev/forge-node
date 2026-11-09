@@ -11,11 +11,12 @@ use rune_kit::{
 use super::{CenterMode, Preview};
 use crate::app::AppState;
 
-const MODES: [(&str, CenterMode); 5] = [
+const MODES: [(&str, CenterMode); 6] = [
     ("Session", CenterMode::Session),
     ("Projects", CenterMode::Projects),
     ("Changes", CenterMode::Changes),
     ("Files", CenterMode::Files),
+    ("Pull Requests", CenterMode::PullRequests),
     ("Settings", CenterMode::Settings),
 ];
 const TREE_W: f32 = 280.0;

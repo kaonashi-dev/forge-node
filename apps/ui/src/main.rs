@@ -6,6 +6,7 @@ mod editor;
 mod keymap;
 mod launch;
 mod palette;
+mod pr_review;
 mod probe;
 mod projects;
 mod session_label;

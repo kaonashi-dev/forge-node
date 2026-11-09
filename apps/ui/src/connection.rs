@@ -136,6 +136,8 @@ pub enum Command {
         provider_id: domain::AgentProviderId,
         profile_id: Option<domain::AgentProfileId>,
         initial_prompt: Option<String>,
+        /// In the provider's own review mode: a launch that may not write.
+        read_only: bool,
     },
     CreateWorktree {
         project_id: domain::ProjectId,
@@ -350,12 +352,14 @@ impl ConnectionHandle {
         provider_id: domain::AgentProviderId,
         profile_id: Option<domain::AgentProfileId>,
         initial_prompt: Option<String>,
+        read_only: bool,
     ) -> Result<(), String> {
         self.send(Command::CreateAgent {
             workspace_id,
             provider_id,
             profile_id,
             initial_prompt,
+            read_only,
         })
     }
 
@@ -1460,15 +1464,21 @@ fn handle_live_command(
             provider_id,
             profile_id,
             initial_prompt,
+            read_only,
         } => {
             metrics.note_socket_op();
+            // A provider with no review mode is refused by the daemon, never
+            // downgraded to a launch that could write.
             let result = client
-                .create_agent_session(
+                .create_agent_session_with_role(
                     workspace_id,
                     provider_id.clone(),
                     profile_id,
                     None,
+                    domain::SessionRole::Generic,
+                    None,
                     initial_prompt,
+                    read_only,
                 )
                 .map(|(session_id, _)| {
                     sink(vec![UiEvent::SessionOpened {

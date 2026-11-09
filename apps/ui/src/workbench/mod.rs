@@ -22,6 +22,7 @@ pub enum CenterMode {
     Projects,
     Changes,
     Files,
+    PullRequests,
     Settings,
 }
 
@@ -163,7 +164,10 @@ impl Workbench {
                     self.queue(Read::File(path));
                 }
             }
-            CenterMode::Session | CenterMode::Projects | CenterMode::Settings => {}
+            CenterMode::Session
+            | CenterMode::Projects
+            | CenterMode::PullRequests
+            | CenterMode::Settings => {}
         }
     }
 
