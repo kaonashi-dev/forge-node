@@ -182,6 +182,8 @@ pub struct AppState {
     pub switch_started: Cell<Option<Instant>>,
     pub switch_ms: Cell<Option<f64>>,
     pub view_ms: Cell<Option<f64>>,
+    /// Decodes preview images on its own thread; `None` without a window.
+    pub images: Option<rune::ImageCache>,
 }
 
 impl AppState {
@@ -242,6 +244,7 @@ impl AppState {
             switch_started: Cell::new(None),
             switch_ms: Cell::new(None),
             view_ms: Cell::new(None),
+            images: None,
         };
         if let Some(store) = initial {
             state.set_store(store);
@@ -448,17 +451,7 @@ impl AppState {
         {
             return;
         }
-        if crate::workbench::opens_rendered(path) {
-            self.workbench.preview(path);
-            return;
-        }
-        let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
-        else {
-            return;
-        };
-        if connection.open_editor(workspace, path.to_string()).is_ok() {
-            self.workbench.show(CenterMode::Session);
-        }
+        self.open_file(path, None);
     }
 
     /// An app chord, taken before any surface sees the key.
@@ -477,7 +470,12 @@ impl AppState {
                 self.palette.show_with(false, "", agents);
                 self.palette.set_actions(actions);
             }
-            Action::FilePalette => self.palette.show(true),
+            Action::FilePalette => {
+                self.sync_workbench_workspace();
+                let recent = self.recent_files();
+                self.palette.show(true);
+                self.palette.set_recent(recent);
+            }
             Action::NewShell => self.request_create(),
             Action::CloseSession => {
                 if let Some(active) = self.active
@@ -501,6 +499,7 @@ impl AppState {
             }
             Action::NextSession => self.step_session(1),
             Action::PreviousSession => self.step_session(-1),
+            Action::FindInFiles => self.find_in_files(),
         }
         true
     }
@@ -652,6 +651,7 @@ impl AppState {
                 Command::ToggleSidebar => self.sidebar.toggle(),
                 Command::NewWorktree => self.new_worktree_here(),
                 Command::Theme(base) => self.choose_theme(base),
+                Command::FindInFiles => self.find_in_files(),
                 Command::RunAction(action) => {
                     self.sync_workbench_workspace();
                     if let Some(workspace) = self.workbench.workspace {
@@ -668,15 +668,7 @@ impl AppState {
                     }
                 }
             },
-            Entry::File(path) => {
-                self.sync_workbench_workspace();
-                if let (Some(connection), Some(workspace)) =
-                    (&self.connection, self.workbench.workspace)
-                    && connection.open_editor(workspace, path).is_ok()
-                {
-                    self.workbench.show(CenterMode::Session);
-                }
-            }
+            Entry::File(path) => self.open_file(&path, None),
         }
     }
 
@@ -1046,7 +1038,7 @@ impl AppState {
     }
 
     /// The workspace the active session runs in, or the first one.
-    fn sync_workbench_workspace(&mut self) {
+    pub(crate) fn sync_workbench_workspace(&mut self) {
         let store = self.store.as_ref();
         let from_session = self.active.and_then(|active| {
             store?
@@ -1155,13 +1147,7 @@ impl AppState {
             }
         }
         // The sidebar's panels read while a session holds the centre.
-        let reads = self.workbench.take_reads();
-        let (Some(connection), Some(scope)) = (&self.connection, self.workbench.scope()) else {
-            return;
-        };
-        for read in reads {
-            let _ = connection.read(self.generation, scope, read);
-        }
+        self.send_file_reads(Instant::now());
     }
 
     fn sync_editor(&mut self) {
@@ -1280,6 +1266,11 @@ impl AppState {
                     }
                     return false;
                 }
+                if let protocol::DaemonEvent::FileChanged { workspace_id, path } = event.as_ref() {
+                    self.workbench
+                        .file_changed(*workspace_id, path, Instant::now());
+                    return self.workbench.mode == CenterMode::Search;
+                }
                 if let protocol::DaemonEvent::EditorFrame { session_id, frame } = *event {
                     if let Some(offset) = self.editor.apply_frame(session_id, frame) {
                         self.editor_reveal = Some(offset);
@@ -1393,6 +1384,43 @@ impl AppState {
                     return false;
                 }
                 self.workbench.apply_file(scope, result.map(|file| *file));
+                true
+            }
+            UiEvent::Image {
+                generation,
+                scope,
+                path,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_image(scope, &path, result);
+                true
+            }
+            UiEvent::ContentSearch {
+                generation,
+                scope,
+                query,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.workbench
+                    .search
+                    .apply(scope, &query, result.map(|results| *results));
+                true
+            }
+            UiEvent::Watched {
+                generation,
+                ticket,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.workbench.apply_watch(ticket, result);
                 true
             }
             UiEvent::Paths { generation, result } => {
@@ -1705,6 +1733,7 @@ impl AppState {
         self.sync_workbench();
         self.close_due();
         let mut changed = self.settings.esc.expire(Instant::now());
+        changed |= self.poll_files(tx);
         if clock - self.mirror_at >= 0.125 {
             let version = self.terminal.shared.grid_epoch();
             let dims = {

@@ -21,6 +21,7 @@ pub enum Command {
     NewAgent(domain::AgentProviderId),
     RunAction(domain::ProjectActionId),
     Settings(crate::settings::Section),
+    FindInFiles,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +43,7 @@ pub fn chord(command: &Command) -> Option<&'static str> {
         Command::Panel(Panel::Git) => "⇧⌘G",
         Command::ToggleSidebar => "⌘B",
         Command::Show(CenterMode::Settings) => "⌘,",
+        Command::FindInFiles => "⇧⌘F",
         _ => return None,
     })
 }
@@ -69,6 +71,8 @@ pub struct Palette {
     agents: Vec<(domain::AgentProviderId, String)>,
     /// The active workspace's approved actions when the palette opened.
     actions: Vec<(domain::ProjectActionId, String)>,
+    /// What ⌘P lists before anything is typed, set when it opens.
+    recent: Vec<String>,
     /// The query `files` answers, so a late answer to an older query is dropped.
     files_for: String,
     asked: Option<String>,
@@ -86,6 +90,7 @@ impl Default for Palette {
             edit: TextEdit::new(""),
             selected: 0,
             files: Vec::new(),
+            recent: Vec::new(),
             agents: Vec::new(),
             actions: Vec::new(),
             files_for: String::new(),
@@ -101,6 +106,7 @@ fn commands() -> Vec<Entry> {
         ("New Worktree", Command::NewWorktree),
         ("Projects", Command::Panel(Panel::Projects)),
         ("Files", Command::Panel(Panel::Files)),
+        ("Find in Files", Command::FindInFiles),
         ("History", Command::Panel(Panel::History)),
         ("Pull Requests", Command::Panel(Panel::PullRequests)),
         ("Git", Command::Panel(Panel::Git)),
@@ -161,8 +167,14 @@ impl Palette {
         self.edit.focused = true;
         self.selected = 0;
         self.files.clear();
+        self.recent.clear();
         self.files_for.clear();
         self.asked = None;
+    }
+
+    /// Files opened lately, listed while ⌘P's query is empty.
+    pub fn set_recent(&mut self, recent: Vec<String>) {
+        self.recent = recent;
     }
 
     pub fn show_launch(&mut self, agents: Vec<(domain::AgentProviderId, String)>) {
@@ -247,6 +259,9 @@ impl Palette {
         let held = self.files_for == query || self.asked.as_deref() == Some(query);
         if !query.is_empty() && held && !self.launch {
             out.extend(self.files.iter().cloned().map(Entry::File));
+        }
+        if query.is_empty() && self.files_only {
+            out.extend(self.recent.iter().cloned().map(Entry::File));
         }
         out
     }
@@ -403,6 +418,33 @@ mod tests {
         assert!(
             palette.entries().is_empty(),
             "another checkout's answer is dropped"
+        );
+    }
+
+    #[test]
+    fn an_empty_file_query_lists_recent_files_until_something_is_typed() {
+        let mut palette = Palette::default();
+        palette.show(true);
+        palette.set_recent(vec!["src/lib.rs".into(), "README.md".into()]);
+        assert_eq!(
+            palette.entries(),
+            vec![
+                Entry::File("src/lib.rs".into()),
+                Entry::File("README.md".into())
+            ]
+        );
+        typed(&mut palette, "zz");
+        assert!(
+            palette.entries().is_empty(),
+            "typing asks the daemon instead"
+        );
+        palette.show(false);
+        assert!(
+            palette
+                .entries()
+                .iter()
+                .all(|entry| matches!(entry, Entry::Command { .. })),
+            "the command palette opens on commands"
         );
     }
 
