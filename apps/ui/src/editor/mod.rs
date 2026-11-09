@@ -5,6 +5,7 @@
 //! are forwarded, never applied here, so the two can never disagree about what
 //! a key did.
 
+pub mod aria;
 pub mod metrics;
 pub mod theme;
 pub mod view;
@@ -34,6 +35,9 @@ const MAX_WINDOW: u32 = 512;
 const MAX_PENDING: usize = 1024;
 /// Longest composition drawn; an input method never needs more on one line.
 const PREEDIT_MAX_CHARS: usize = 256;
+/// The window's text as a screen reader's value, cut on a char boundary: a
+/// mounted window is a few screens, and a reader is not a file viewer.
+const A11Y_TEXT_MAX_BYTES: usize = 16 * 1024;
 
 pub struct EditorUi {
     pub session: Option<SessionId>,
@@ -46,6 +50,9 @@ pub struct EditorUi {
     /// The input method's composition, drawn at the caret. Never sent: it is
     /// not an edit until the input method commits it.
     pub preedit: String,
+    /// The window's rows as one string, rebuilt only when a row changes.
+    pub a11y_text: Rc<str>,
+    a11y_rows: Vec<(u32, u64)>,
     requested: Option<(SessionId, u32, u32)>,
     pending: Vec<EditorInputEvent>,
     last_caret: Option<EditorPlace>,
@@ -67,6 +74,8 @@ impl Default for EditorUi {
             metrics: RefCell::new(MetricsCache::new()),
             row_builds: Cell::new(0),
             preedit: String::new(),
+            a11y_text: Rc::from(""),
+            a11y_rows: Vec::new(),
             requested: None,
             pending: Vec::new(),
             last_caret: None,
@@ -85,6 +94,8 @@ impl EditorUi {
         self.requested = None;
         self.pending.clear();
         self.preedit.clear();
+        self.a11y_text = Rc::from("");
+        self.a11y_rows.clear();
         self.last_caret = None;
         self.scroll.set([0.0, self.scroll.get()[1]]);
     }
@@ -112,8 +123,42 @@ impl EditorUi {
         }
         let moved = self.last_caret != Some(frame.caret);
         self.last_caret = Some(frame.caret);
+        self.refresh_a11y_text(&frame);
         self.frame = Some(frame);
         if moved { self.reveal_caret() } else { None }
+    }
+
+    fn refresh_a11y_text(&mut self, frame: &EditorFrame) {
+        let same = self.a11y_rows.len() == frame.rows.len()
+            && self
+                .a11y_rows
+                .iter()
+                .zip(frame.rows.iter())
+                .all(|(held, row)| *held == (row.line, row.fingerprint) && row.fingerprint != 0);
+        if same {
+            return;
+        }
+        self.a11y_rows = frame
+            .rows
+            .iter()
+            .map(|row| (row.line, row.fingerprint))
+            .collect();
+        let mut text = String::new();
+        for row in frame.rows.iter() {
+            for span in row.spans.iter() {
+                text.push_str(&span.text);
+            }
+            text.push('\n');
+            if text.len() >= A11Y_TEXT_MAX_BYTES {
+                let mut end = A11Y_TEXT_MAX_BYTES;
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                text.truncate(end);
+                break;
+            }
+        }
+        self.a11y_text = Rc::from(text);
     }
 
     /// The offset that shows the caret's row, or `None` when it is already
@@ -542,5 +587,25 @@ pub(crate) mod tests {
             Some((session, vec![EditorInputEvent::Text("日本".into())])),
             "a control character in a commit is not text"
         );
+    }
+
+    #[test]
+    fn the_readable_text_follows_the_rows_and_not_the_caret() {
+        let (mut ui, session) = surface(5.0 * ROW_H);
+        let mut shown = frame(0, &[(0, "fn a() {"), (1, "}")], 2, (0, 0));
+        ui.apply_frame(session, shown.clone());
+        assert_eq!(&*ui.a11y_text, "fn a() {\n}\n");
+        let before = Rc::clone(&ui.a11y_text);
+        shown.caret.column = 3;
+        shown.doc_version = 2;
+        ui.apply_frame(session, shown);
+        assert!(
+            Rc::ptr_eq(&before, &ui.a11y_text),
+            "a caret move rebuilds nothing"
+        );
+        let mut edited = frame(0, &[(0, "fn b() {"), (1, "}")], 2, (0, 0));
+        edited.doc_version = 3;
+        ui.apply_frame(session, edited);
+        assert!(ui.a11y_text.starts_with("fn b"));
     }
 }

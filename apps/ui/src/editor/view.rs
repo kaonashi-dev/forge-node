@@ -13,6 +13,7 @@ use rune::{
 };
 use rune_kit::Kit;
 
+use super::aria;
 use super::metrics::{self, RowMetrics};
 use super::theme::{self, EditorPalette};
 use super::{
@@ -28,6 +29,9 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
     let ui = &s.editor;
     let editor = s.active_editor_state();
     let path = editor.map_or("editor", |state| state.path.as_str());
+    let aria = aria::editor_aria(editor);
+    let announcement = aria::editor_announcement(editor);
+    // The label already names the file; the header would say it twice.
     let header = row()
         .key("editor-header")
         .w_full()
@@ -35,6 +39,7 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
         .items_center()
         .px(12.0)
         .gap(10.0)
+        .a11y_hidden()
         .child(
             text(path.to_string())
                 .font(k.ty.small_medium)
@@ -70,6 +75,7 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
         .h(STATUS_H)
         .items_center()
         .px(12.0)
+        .gap(16.0)
         .fill(palette.active_line)
         .child(
             text(match caret {
@@ -77,12 +83,31 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
                 None => String::new(),
             })
             .font(k.ty.text_xsmall)
-            .color(palette.gutter_foreground),
+            .color(palette.gutter_foreground)
+            .a11y_hidden(),
+        )
+        // The editor's answer to the last gesture, which a person not looking
+        // at the status row would otherwise never hear.
+        .child(
+            text(announcement)
+                .key("editor-announce")
+                .role("status")
+                .font(k.ty.text_xsmall)
+                .color(if editor.is_some_and(|state| state.conflict) {
+                    palette.git_deleted
+                } else {
+                    palette.gutter_foreground
+                }),
         );
     col()
         .key("editor-pane")
-        .role("textbox")
+        // Rune gives text-field roles only to its own text inputs, so the
+        // surface is a document; the caret is told through the description.
+        .role("document")
         .label(format!("Editor · {path}"))
+        .description(format!("{} {}", aria.line, aria.status))
+        .a11y_value(ui.a11y_text.to_string())
+        .read_only(aria.read_only)
         .w_full()
         .h_full()
         .min_h(0.0)
@@ -132,7 +157,9 @@ fn scroller(ui: &EditorUi, frame: &EditorFrame, palette: EditorPalette) -> El {
             stick_bottom: false,
         })
         .on_scroll_offset(move |at| scroll.set([at.offset[1], at.viewport[1]]))
-        .child(content.cursor(Cursor::Text))
+        // Rows, gutters and spans are paint: the pane's value already carries
+        // the text, and hundreds of nodes per window would bury it.
+        .child(content.cursor(Cursor::Text).a11y_hidden())
 }
 
 fn row_view(
