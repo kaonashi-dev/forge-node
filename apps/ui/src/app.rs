@@ -142,6 +142,7 @@ pub struct AppState {
     /// Each checkout's last status mark, so Git re-reads when it moves.
     pub checkout_marks: HashMap<WorkspaceId, crate::workbench::CheckoutMark>,
     pub theme_editor: crate::appearance::ThemeEditor,
+    pub settings: crate::settings::Settings,
     pub sync: crate::sync::Sync,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
@@ -216,6 +217,7 @@ impl AppState {
             processes: Vec::new(),
             checkout_marks: HashMap::new(),
             theme_editor: crate::appearance::ThemeEditor::default(),
+            settings: crate::settings::Settings::default(),
             sync: crate::sync::Sync::default(),
             scratch_edit: rune::TextEdit::new(""),
             confirm_close: None,
@@ -453,6 +455,9 @@ impl AppState {
     /// An app chord, taken before any surface sees the key.
     pub fn global_key(&mut self, ev: &KeyEvent) -> bool {
         use crate::keymap::Action;
+        if self.settings_escape(ev, Instant::now()) {
+            return true;
+        }
         let Some(action) = crate::keymap::action_for(ev) else {
             return false;
         };
@@ -479,12 +484,11 @@ impl AppState {
             Action::CycleViews => self.cycle_views(),
             Action::FocusTab(n) => self.focus_tab(n),
             Action::Settings => {
-                let next = if self.workbench.mode == CenterMode::Settings {
-                    CenterMode::Session
+                if self.workbench.mode == CenterMode::Settings {
+                    self.close_settings();
                 } else {
-                    CenterMode::Settings
-                };
-                self.show_mode(next);
+                    self.open_settings(None);
+                }
             }
             Action::NextSession => self.step_session(1),
             Action::PreviousSession => self.step_session(-1),
@@ -632,7 +636,9 @@ impl AppState {
         match entry {
             Entry::Command { command, .. } => match command {
                 Command::NewShell => self.request_create(),
+                Command::Show(CenterMode::Settings) => self.open_settings(None),
                 Command::Show(mode) => self.show_mode(mode),
+                Command::Settings(section) => self.open_settings(Some(section)),
                 Command::Panel(panel) => self.show_panel(panel),
                 Command::ToggleSidebar => self.sidebar.toggle(),
                 Command::NewWorktree => self.new_worktree_here(),
@@ -1052,6 +1058,7 @@ impl AppState {
     fn sync_usage(&mut self) {
         let usage = &mut self.usage;
         if self.workbench.mode != CenterMode::Settings
+            || self.settings.section != crate::settings::Section::Stats
             || usage.analytics.is_some()
             || usage.pending == Some(usage.window_days)
         {
@@ -1100,7 +1107,14 @@ impl AppState {
 
     fn sync_storage(&mut self) {
         let storage = &mut self.storage;
-        if self.workbench.mode != CenterMode::Settings || storage.asked == Some(self.generation) {
+        let shows_paths = matches!(
+            self.settings.section,
+            crate::settings::Section::General | crate::settings::Section::Storage
+        );
+        if self.workbench.mode != CenterMode::Settings
+            || !shows_paths
+            || storage.asked == Some(self.generation)
+        {
             return;
         }
         if let Some(connection) = &self.connection
@@ -1297,6 +1311,11 @@ impl AppState {
                     return true;
                 }
                 let reset = matches!(event.as_ref(), protocol::DaemonEvent::FactoryReset);
+                let agents = matches!(
+                    event.as_ref(),
+                    protocol::DaemonEvent::AgentProfilesChanged { .. }
+                        | protocol::DaemonEvent::AgentDetectionChanged { .. }
+                );
                 if let Some(store) = &mut self.store {
                     let _ = store.apply_event(&event);
                 }
@@ -1331,7 +1350,7 @@ impl AppState {
                     self.select_when_listed = None;
                     self.select(id);
                 }
-                rebuild
+                rebuild || agents
             }
             UiEvent::Diff {
                 generation,
@@ -1499,6 +1518,7 @@ impl AppState {
                             .insert(project, format!("fetch refused: {message}"));
                     }
                 }
+                self.settings_result(label, ok, &message);
                 if label == "DraftWithJuva" && !ok {
                     self.commit.drafting = false;
                     self.commit.error = Some(message.clone());
@@ -1676,7 +1696,7 @@ impl AppState {
         self.sync_editor();
         self.sync_workbench();
         self.close_due();
-        let mut changed = false;
+        let mut changed = self.settings.esc.expire(Instant::now());
         if clock - self.mirror_at >= 0.125 {
             let version = self.terminal.shared.grid_epoch();
             let dims = {

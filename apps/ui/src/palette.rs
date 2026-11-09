@@ -20,6 +20,7 @@ pub enum Command {
     Theme(String),
     NewAgent(domain::AgentProviderId),
     RunAction(domain::ProjectActionId),
+    Settings(crate::settings::Section),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,10 +109,18 @@ fn commands() -> Vec<Entry> {
         ("Settings", Command::Show(CenterMode::Settings)),
         ("Theme: Match System", Command::Theme("system".into())),
     ];
-    let mut themes: Vec<(String, Command)> = Vec::new();
+    let mut named: Vec<(String, Command)> = crate::settings::Section::ALL
+        .iter()
+        .map(|section| {
+            (
+                format!("Settings: {}", section.label()),
+                Command::Settings(*section),
+            )
+        })
+        .collect();
     for base in crate::theme::bases() {
         if let Some(theme) = crate::theme::theme(base) {
-            themes.push((
+            named.push((
                 format!("Theme: {}", theme.label),
                 Command::Theme(base.clone()),
             ));
@@ -125,7 +134,7 @@ fn commands() -> Vec<Entry> {
         })
         .collect();
     entries.extend(
-        themes
+        named
             .into_iter()
             .map(|(label, command)| Entry::Command { label, command }),
     );

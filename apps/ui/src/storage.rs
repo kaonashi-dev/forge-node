@@ -112,15 +112,7 @@ fn group(k: &Kit, key: &str, title: &str, description: &str) -> El {
 }
 
 pub fn section(s: &AppState, k: &Kit) -> El {
-    let mut view = col()
-        .key("storage")
-        .gap(14.0)
-        .child(text("Storage").font(k.ty.body_medium).color(k.c.text_base))
-        .child(
-            text("Where Forge Node keeps its config, state and managed worktrees.")
-                .font(k.ty.small)
-                .color(k.c.text_faint),
-        );
+    let mut view = col().key("storage").gap(14.0);
     let Some((paths, worktrees_root)) = &s.storage.paths else {
         let note = s.storage.error.clone().unwrap_or_else(|| {
             if s.connection.is_some() {

@@ -16,6 +16,7 @@ mod probe;
 mod processes;
 mod projects;
 mod session_label;
+mod settings;
 mod storage;
 mod sync;
 mod terminal;

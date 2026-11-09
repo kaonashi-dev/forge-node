@@ -25,6 +25,137 @@ pub enum Action {
     FocusTab(usize),
 }
 
+impl Action {
+    /// Where the chord belongs, for Settings › Keyboard's Context column.
+    #[must_use]
+    pub fn context(self) -> &'static str {
+        match self {
+            Action::TogglePanel(_) | Action::CycleViews | Action::ToggleSidebar => "Sidebar",
+            Action::NextSession
+            | Action::PreviousSession
+            | Action::FocusTab(_)
+            | Action::CloseSession => "Sessions",
+            Action::CommandPalette
+            | Action::FilePalette
+            | Action::NewShell
+            | Action::NewWorktree
+            | Action::NewAgent
+            | Action::Settings => "Global",
+        }
+    }
+}
+
+/// One row of Settings › Keyboard: what a chord does, and how it is written.
+pub struct Binding {
+    pub label: &'static str,
+    pub chord: &'static str,
+    pub action: Action,
+}
+
+/// Every chord `action_for` answers, in the order Settings lists them.
+pub const BINDINGS: [Binding; 20] = [
+    Binding {
+        label: "Command palette",
+        chord: "⌘K",
+        action: Action::CommandPalette,
+    },
+    Binding {
+        label: "Go to…",
+        chord: "⇧⌘P",
+        action: Action::CommandPalette,
+    },
+    Binding {
+        label: "Open file",
+        chord: "⌘P",
+        action: Action::FilePalette,
+    },
+    Binding {
+        label: "New terminal",
+        chord: "⌘T",
+        action: Action::NewShell,
+    },
+    Binding {
+        label: "New agent",
+        chord: "⇧⌘A",
+        action: Action::NewAgent,
+    },
+    Binding {
+        label: "New worktree",
+        chord: "⇧⌘N",
+        action: Action::NewWorktree,
+    },
+    Binding {
+        label: "Close session",
+        chord: "⌘W",
+        action: Action::CloseSession,
+    },
+    Binding {
+        label: "Settings",
+        chord: "⌘,",
+        action: Action::Settings,
+    },
+    Binding {
+        label: "Toggle sidebar",
+        chord: "⌘B",
+        action: Action::ToggleSidebar,
+    },
+    Binding {
+        label: "Projects",
+        chord: "⌘1",
+        action: Action::TogglePanel(Panel::Projects),
+    },
+    Binding {
+        label: "Files",
+        chord: "⌘2",
+        action: Action::TogglePanel(Panel::Files),
+    },
+    Binding {
+        label: "Next sidebar view",
+        chord: "⌘3",
+        action: Action::CycleViews,
+    },
+    Binding {
+        label: "History",
+        chord: "⇧⌘E",
+        action: Action::TogglePanel(Panel::History),
+    },
+    Binding {
+        label: "Pull requests",
+        chord: "⇧⌘R",
+        action: Action::TogglePanel(Panel::PullRequests),
+    },
+    Binding {
+        label: "Git",
+        chord: "⇧⌘G",
+        action: Action::TogglePanel(Panel::Git),
+    },
+    Binding {
+        label: "Next session",
+        chord: "⇧⌘]",
+        action: Action::NextSession,
+    },
+    Binding {
+        label: "Previous session",
+        chord: "⇧⌘[",
+        action: Action::PreviousSession,
+    },
+    Binding {
+        label: "Next session",
+        chord: "⌃Tab",
+        action: Action::NextSession,
+    },
+    Binding {
+        label: "Previous session",
+        chord: "⌃⇧Tab",
+        action: Action::PreviousSession,
+    },
+    Binding {
+        label: "Session tab 1–9",
+        chord: "⌥1…9",
+        action: Action::FocusTab(1),
+    },
+];
+
 /// What Option and a digit type on a US layout. Matched by the character,
 /// not the key, because Rune reports characters: a layout where Option-2 is
 /// `@` (Spanish, among others) keeps typing `@` instead of losing it to a
@@ -177,6 +308,49 @@ mod tests {
             "a layout's Option-2 @ is still typed"
         );
         assert_eq!(action_for(&with(Key::Text("#".into()), alt)), None);
+    }
+
+    /// A `BINDINGS` chord as the event it names; the digit range is not one.
+    fn parse(chord: &str) -> Option<KeyEvent> {
+        let mut mods = rune::Mods::default();
+        let mut rest = chord;
+        loop {
+            let mut chars = rest.chars();
+            match chars.next()? {
+                '⌘' => mods.cmd = true,
+                '⇧' => mods.shift = true,
+                '⌃' => mods.ctrl = true,
+                '⌥' => mods.alt = true,
+                _ => break,
+            }
+            rest = chars.as_str();
+        }
+        let key = match rest {
+            "Tab" => Key::Tab,
+            _ if mods.cmd => {
+                let mut chars = rest.chars();
+                let ch = chars.next()?;
+                chars.next().is_none().then_some(Key::Command(ch))?
+            }
+            _ => return None,
+        };
+        Some(KeyEvent { key, mods })
+    }
+
+    #[test]
+    fn every_listed_chord_is_the_one_that_runs_its_action() {
+        for binding in &BINDINGS {
+            match parse(binding.chord) {
+                Some(event) => assert_eq!(
+                    action_for(&event),
+                    Some(binding.action),
+                    "{} is {}",
+                    binding.label,
+                    binding.chord
+                ),
+                None => assert_eq!(binding.action, Action::FocusTab(1)),
+            }
+        }
     }
 
     #[test]
