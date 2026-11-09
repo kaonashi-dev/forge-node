@@ -46,6 +46,27 @@ pub fn parse(value: Option<&str>) -> DefaultAgent {
     DefaultAgent::Ask
 }
 
+/// The stored form `parse` reads back.
+#[must_use]
+pub fn value(agent: &DefaultAgent) -> String {
+    match agent {
+        DefaultAgent::Ask => "ask".into(),
+        DefaultAgent::Shell => "shell".into(),
+        DefaultAgent::Provider(id) => format!("provider:{id}"),
+        DefaultAgent::Profile(id) => format!("profile:{id}"),
+    }
+}
+
+/// The launch key `visibility_key` hides, for a provider or a profile.
+#[must_use]
+pub fn launch_key(agent: &DefaultAgent) -> Option<String> {
+    match agent {
+        DefaultAgent::Provider(id) => Some(id.clone()),
+        DefaultAgent::Profile(id) => Some(format!("profile:{id}")),
+        DefaultAgent::Ask | DefaultAgent::Shell => None,
+    }
+}
+
 /// Resolves the preference against what can launch. A preference that points
 /// at something hidden, uninstalled or deleted is stale and asks, rather than
 /// making the chord do nothing.
@@ -152,6 +173,23 @@ pub fn visibility_key(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_choice_round_trips_through_its_stored_form() {
+        let profile = AgentProfileId::new().to_string();
+        for agent in [
+            DefaultAgent::Ask,
+            DefaultAgent::Shell,
+            DefaultAgent::Provider("claude".into()),
+            DefaultAgent::Profile(profile.clone()),
+        ] {
+            assert_eq!(parse(Some(&value(&agent))), agent);
+        }
+        assert_eq!(
+            launch_key(&DefaultAgent::Profile(profile.clone())),
+            Some(format!("profile:{profile}"))
+        );
+    }
 
     #[test]
     fn the_preference_reads_as_tauri_writes_it() {

@@ -1,0 +1,5 @@
+[
+  { "t": 0.5, "type": "key", "name": ",", "cmd": true },
+  { "t": 1.0, "key": "settings-nav-agents" },
+  { "t": 1.6, "type": "key", "name": "Escape" }
+]

@@ -391,23 +391,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         })
         .build(k)
         .key("usage-window");
-    let mut view = col()
-        .key("usage")
-        .gap(12.0)
-        .child(
-            text("Stats & usage")
-                .font(k.ty.body_medium)
-                .color(k.c.text_base),
-        )
-        .child(
-            text(
-                "Token analytics counted off agent transcripts on disk — separate from \
-                 subscription meters, which are the provider's word on allowance.",
-            )
-            .font(k.ty.small)
-            .color(k.c.text_faint),
-        )
-        .child(windows);
+    let mut view = col().key("usage").gap(12.0).child(windows);
     let Some(analytics) = &usage.analytics else {
         let note = usage
             .error

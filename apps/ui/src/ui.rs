@@ -16,7 +16,8 @@ use crate::workbench::CenterMode;
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     s.metrics.note_ui_thread();
     let started = Instant::now();
-    let k = crate::theme::kit(s.theme_base(cx.system_dark()), cx.system_dark());
+    let mut k = crate::theme::kit(s.theme_base(cx.system_dark()), cx.system_dark());
+    k.ty = crate::settings::prefs::scale_type(k.ty, s.chrome_font_size());
     let main = col()
         .key("main-pane")
         .w_full()
@@ -42,7 +43,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
                 .gap(4.0)
                 .in_header(),
         )
-        .reduced_motion(cx.is_reduced_motion())
+        .reduced_motion(cx.is_reduced_motion() || s.reduce_motion())
         .build(&k);
     // A focusable ancestor is the only public way to move focus on a sidebar
     // press in this Rune pin (`Runtime::set_focus` is crate-private). Sidebar
@@ -70,6 +71,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::pr_review::dialog(s, &k, &mut overlays);
     close_dialog(s, &k, &mut overlays);
     crate::history::delete_dialog(s, &k, &mut overlays);
+    crate::settings::dialogs(s, &k, &mut overlays);
     let root = rune_kit::root(root, overlays);
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
@@ -114,6 +116,25 @@ fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
 /// view scrolls itself, so Git can keep its commit box in reach.
 fn sidebar(s: &AppState, k: &Kit) -> El {
     use crate::workbench::Panel;
+    if s.workbench.mode == CenterMode::Settings {
+        return col()
+            .key("sidebar")
+            .role("complementary")
+            .label("Sidebar")
+            .w_full()
+            .h_full()
+            .min_h(0.0)
+            .gap(10.0)
+            .child(
+                col()
+                    .key("sidebar-panel")
+                    .w_full()
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .child(crate::settings::nav(s, k)),
+            )
+            .child(status_row(s, k));
+    }
     let panel = match s.workbench.panel {
         Panel::Projects => crate::projects::view(s, k),
         Panel::Files => crate::workbench::view::files_panel(s, k),
@@ -220,7 +241,7 @@ fn center(s: &AppState, k: &Kit) -> El {
     } else if s.workbench.mode == CenterMode::Files {
         crate::workbench::view::preview(s, k)
     } else if s.workbench.mode == CenterMode::Settings {
-        crate::workbench::view::settings(s, k)
+        crate::settings::page(s, k)
     } else if !in_checkout {
         empty_center(s, k)
     } else if s.active_line_editor().is_some() {

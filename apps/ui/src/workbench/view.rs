@@ -573,27 +573,6 @@ fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
     panel
 }
 
-pub fn settings(s: &AppState, k: &Kit) -> El {
-    let rule = || el().h(1.0).w_full().fill(k.c.border_weak);
-    col().key("settings").w_full().h_full().min_h(0.0).child(
-        col()
-            .key("settings-body")
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .padding(20.0)
-            .gap(16.0)
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .child(crate::appearance::section(s, k))
-            .child(rule())
-            .child(crate::storage::section(s, k))
-            .child(rule())
-            .child(crate::usage::section(s, k)),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;

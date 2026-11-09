@@ -163,7 +163,7 @@ pub fn strip(s: &AppState, k: &Kit) -> El {
                     .a11y_hidden(),
             )
             .child(
-                text("Appearance · Storage · Usage")
+                text(s.settings.section.label())
                     .role("heading")
                     .font(k.ty.small_medium)
                     .color(k.c.text_base),
@@ -296,12 +296,11 @@ pub fn footer(s: &AppState, k: &Kit) -> El {
             &glyphs::SETTINGS
         },
         |s: &mut AppState| {
-            let next = if s.workbench.mode == CenterMode::Settings {
-                CenterMode::Session
+            if s.workbench.mode == CenterMode::Settings {
+                s.close_settings();
             } else {
-                CenterMode::Settings
-            };
-            s.show_mode(next);
+                s.open_settings(None);
+            }
         },
     ))
 }
