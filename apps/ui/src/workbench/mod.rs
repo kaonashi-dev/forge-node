@@ -33,6 +33,16 @@ pub enum Read {
     File(String),
     /// Paths ranked against a palette query.
     Search(String),
+    /// Whether a rebase, merge or cherry-pick is stopped, read from git.
+    Rebase,
+}
+
+/// A step on a stopped operation; each answers with the state git is in now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RebaseStep {
+    Resolve(Vec<String>),
+    Continue,
+    Abort,
 }
 
 /// A child id that marks a folder whose listing has not arrived, so the tree
@@ -54,6 +64,10 @@ pub struct Workbench {
 #[derive(Default)]
 pub struct Changes {
     pub state: DiffState,
+    /// Read on every load, never remembered: staging a path is what takes it
+    /// off the list, and only git knows.
+    pub rebase: Option<domain::RebaseState>,
+    pub rebase_error: Option<String>,
     pub branch: Option<String>,
     pub file_count: usize,
     /// Paths git reported with no patch to draw: binary, or over the budget.
@@ -116,12 +130,16 @@ impl Workbench {
         self.mode = mode;
         if mode == CenterMode::Changes && !self.changes.loaded {
             self.queue(Read::Diff);
+            self.queue(Read::Rebase);
         }
     }
 
     pub fn refresh(&mut self) {
         match self.mode {
-            CenterMode::Changes => self.queue(Read::Diff),
+            CenterMode::Changes => {
+                self.queue(Read::Diff);
+                self.queue(Read::Rebase);
+            }
             CenterMode::Files => {
                 let open = self
                     .files
@@ -181,6 +199,23 @@ impl Workbench {
             }
         }
         std::mem::take(&mut self.reads)
+    }
+
+    pub fn apply_rebase(
+        &mut self,
+        workspace: WorkspaceId,
+        state: Result<domain::RebaseState, String>,
+    ) {
+        if self.workspace != Some(workspace) {
+            return;
+        }
+        match state {
+            Ok(state) => {
+                self.changes.rebase_error = None;
+                self.changes.rebase = state.operation.is_some().then_some(state);
+            }
+            Err(error) => self.changes.rebase_error = Some(error),
+        }
     }
 
     pub fn apply_diff(&mut self, workspace: WorkspaceId, diff: Result<WorkspaceDiff, String>) {

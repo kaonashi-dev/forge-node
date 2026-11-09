@@ -641,6 +641,14 @@ impl AppState {
         })
     }
 
+    pub fn rebase_step(&mut self, step: crate::workbench::RebaseStep) {
+        let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
+        else {
+            return;
+        };
+        let _ = connection.rebase_step(workspace, step);
+    }
+
     pub fn add_project(&mut self, path: std::path::PathBuf) {
         match &self.connection {
             Some(connection) => {
@@ -991,6 +999,23 @@ impl AppState {
                 }
                 if let Ok(paths) = result {
                     self.palette.apply_search(&query, paths);
+                }
+                true
+            }
+            UiEvent::Rebase {
+                generation,
+                workspace_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                let finished = self.workbench.changes.rebase.is_some()
+                    && result.as_ref().is_ok_and(|state| state.operation.is_none());
+                self.workbench
+                    .apply_rebase(workspace_id, result.map(|state| *state));
+                if finished {
+                    self.workbench.refresh();
                 }
                 true
             }

@@ -149,13 +149,16 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
                 .key("changes-commit"),
         );
     }
-    col()
+    let mut view = col()
         .key("changes")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(header)
-        .child(body)
+        .child(header);
+    if let Some(state) = &changes.rebase {
+        view = view.child(stopped(state, changes.rebase_error.as_deref(), k));
+    }
+    view.child(body)
 }
 
 pub fn files(s: &AppState, k: &Kit) -> El {
@@ -276,6 +279,124 @@ fn preview_view(preview: &Preview, k: &Kit) -> El {
                 },
             ),
     )
+}
+
+/// A rebase, merge or cherry-pick that git stopped, and its unmerged paths.
+fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
+    use crate::workbench::RebaseStep;
+    let what = match state.operation {
+        Some(domain::SequencerOp::Rebase) => "Rebase",
+        Some(domain::SequencerOp::Merge) => "Merge",
+        Some(domain::SequencerOp::CherryPick) => "Cherry-pick",
+        Some(domain::SequencerOp::Revert) => "Revert",
+        _ => "Operation",
+    };
+    let mut title = format!("{what} stopped");
+    if let (Some(step), Some(total)) = (state.step, state.total) {
+        title.push_str(&format!(" at {step} of {total}"));
+    }
+    if let Some(onto) = &state.onto {
+        title.push_str(&format!(" onto {onto}"));
+    }
+    let count = state.conflicts.len();
+    title.push_str(&match count {
+        0 => " · no conflicts left".to_string(),
+        1 => " · 1 conflict".to_string(),
+        n => format!(" · {n} conflicts"),
+    });
+    let button = |label: &'static str, key: &'static str, variant, step: RebaseStep| {
+        Button::new(label)
+            .variant(variant)
+            .control_size(ControlSize::Small)
+            .on_press(move |s: &mut AppState| s.rebase_step(step.clone()))
+            .build(k)
+            .key(key)
+    };
+    let mut panel = col()
+        .key("rebase-panel")
+        .role("region")
+        .label(title.clone())
+        .w_full()
+        .gap(6.0)
+        .px(12.0)
+        .py(8.0)
+        .fill(k.c.warning.bg)
+        .child(
+            row()
+                .gap(8.0)
+                .items_center()
+                .child(
+                    text(title)
+                        .font(k.ty.small_medium)
+                        .color(k.c.warning.fg)
+                        .grow(1.0),
+                )
+                .child(button(
+                    "Continue",
+                    "rebase-continue",
+                    ButtonVariant::Outline,
+                    RebaseStep::Continue,
+                ))
+                .child(button(
+                    "Abort",
+                    "rebase-abort",
+                    ButtonVariant::Danger,
+                    RebaseStep::Abort,
+                )),
+        );
+    for conflict in &state.conflicts {
+        let path = conflict.path.clone();
+        panel = panel.child(
+            row()
+                .key(format!("conflict-{}", conflict.path))
+                .gap(8.0)
+                .items_center()
+                .child(
+                    text(conflict.code.clone())
+                        .font(k.ty.mono)
+                        .color(k.c.warning.fg)
+                        .w(28.0),
+                )
+                .child(
+                    text(conflict.path.clone())
+                        .font(k.ty.small)
+                        .color(k.c.text_base)
+                        .grow(1.0),
+                )
+                .child(
+                    text(conflict.label())
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint),
+                )
+                .child(
+                    Button::new("Mark resolved")
+                        .variant(ButtonVariant::GhostMuted)
+                        .control_size(ControlSize::Small)
+                        .on_press(move |s: &mut AppState| {
+                            s.rebase_step(RebaseStep::Resolve(vec![path.clone()]));
+                        })
+                        .build(k)
+                        .key(format!("resolve-{}", conflict.path)),
+                ),
+        );
+    }
+    if state.truncated {
+        panel = panel.child(
+            text("More unmerged paths than are listed.")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint),
+        );
+    }
+    if let Some(error) = error {
+        panel = panel.child(
+            text(format!("git refused: {error}"))
+                .key("rebase-error")
+                .role("status")
+                .font(k.ty.text_xsmall)
+                .color(k.c.warning.fg),
+        );
+    }
+    panel
 }
 
 pub fn settings(s: &AppState, k: &Kit) -> El {

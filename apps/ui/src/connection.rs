@@ -99,6 +99,10 @@ pub enum Command {
     },
     SavePrefs(crate::prefs::Prefs),
     AddProject(std::path::PathBuf),
+    RebaseStep {
+        workspace_id: WorkspaceId,
+        step: crate::workbench::RebaseStep,
+    },
     RunAction {
         workspace_id: WorkspaceId,
         action_id: domain::ProjectActionId,
@@ -185,6 +189,11 @@ pub enum UiEvent {
         generation: u64,
         query: String,
         result: Result<Vec<String>, String>,
+    },
+    Rebase {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<Box<domain::RebaseState>, String>,
     },
     CommandResult {
         generation: u64,
@@ -379,6 +388,14 @@ impl ConnectionHandle {
             workspace_id,
             action_id,
         })
+    }
+
+    pub fn rebase_step(
+        &self,
+        workspace_id: WorkspaceId,
+        step: crate::workbench::RebaseStep,
+    ) -> Result<(), String> {
+        self.send(Command::RebaseStep { workspace_id, step })
     }
 
     pub fn add_project(&self, path: std::path::PathBuf) -> Result<(), String> {
@@ -855,6 +872,7 @@ fn handle_fixture_command(
         | Command::Read { .. }
         | Command::SavePrefs(_)
         | Command::AddProject(_)
+        | Command::RebaseStep { .. }
         | Command::RunAction { .. }
         | Command::Fetch { .. }
         | Command::OpenPullRequest { .. }
@@ -1397,6 +1415,14 @@ fn handle_live_command(
                         .map_err(|error| error.to_string()),
                     query,
                 },
+                crate::workbench::Read::Rebase => UiEvent::Rebase {
+                    generation,
+                    workspace_id,
+                    result: client
+                        .rebase_state(workspace_id)
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                },
                 crate::workbench::Read::File(path) => UiEvent::File {
                     generation,
                     workspace_id,
@@ -1520,6 +1546,35 @@ fn handle_live_command(
                 })
                 .map_err(|error| error.to_string());
             live_result(generation, "RunAction", result, sink, metrics, started);
+        }
+        Command::RebaseStep { workspace_id, step } => {
+            use crate::workbench::RebaseStep;
+            metrics.note_socket_op();
+            let label = match step {
+                RebaseStep::Resolve(_) => "MarkConflictResolved",
+                RebaseStep::Continue => "ContinueRebase",
+                RebaseStep::Abort => "AbortRebase",
+            };
+            // Each step answers with the state git is in now (abort reads it
+            // again), so the panel never keeps a count of its own.
+            let state = match step {
+                RebaseStep::Resolve(paths) => client.mark_conflict_resolved(workspace_id, paths),
+                RebaseStep::Continue => client.continue_rebase(workspace_id),
+                RebaseStep::Abort => client
+                    .abort_rebase(workspace_id)
+                    .and_then(|()| client.rebase_state(workspace_id)),
+            }
+            .map_err(|error| error.to_string());
+            let result = state
+                .as_ref()
+                .map(|_| "done".to_string())
+                .map_err(Clone::clone);
+            sink(vec![UiEvent::Rebase {
+                generation,
+                workspace_id,
+                result: state.map(Box::new),
+            }]);
+            live_result(generation, label, result, sink, metrics, started);
         }
         Command::AddProject(path) => {
             metrics.note_socket_op();
@@ -1698,6 +1753,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::Read { .. } => "WorkspaceRead",
         Command::SavePrefs(_) => "SavePrefs",
         Command::AddProject(_) => "AddProject",
+        Command::RebaseStep { .. } => "RebaseStep",
         Command::RunAction { .. } => "RunAction",
         Command::Fetch { .. } => "FetchRemote",
         Command::OpenPullRequest { .. } => "CreatePullRequest",
