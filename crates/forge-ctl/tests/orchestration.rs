@@ -718,7 +718,7 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
     assert_eq!(responses.len(), 8);
     assert_eq!(
         responses[1]["result"]["tools"].as_array().unwrap().len(),
-        21
+        56
     );
     assert_eq!(responses[2]["result"]["structuredContent"]["ok"], true);
     for response in &responses[2..] {
