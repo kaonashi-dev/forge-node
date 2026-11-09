@@ -57,6 +57,15 @@ pub fn run(store: Store, iterations: usize) -> Report {
     );
     runtime.poll = Some(crate::app::poll);
     runtime.frame(0.0);
+    for step in 0..20 {
+        let key = format!("session-row-{}", step % sessions);
+        let (x, y) = runtime
+            .find(&key)
+            .unwrap_or_else(|| panic!("warmup row {key} is not laid out"));
+        runtime.pointer_down(x, y);
+        runtime.pointer_up(x, y);
+        runtime.frame(1.0 / 60.0);
+    }
 
     let mut switch = Vec::with_capacity(iterations);
     let mut view = Vec::with_capacity(iterations);
@@ -76,7 +85,7 @@ pub fn run(store: Store, iterations: usize) -> Report {
         }
     }
 
-    let mut echo = bench_echo(store, iterations.min(200), &metrics);
+    let mut echo = bench_echo(store, iterations.min(60), &metrics);
 
     Report {
         iterations,
@@ -118,6 +127,7 @@ fn bench_echo(store: Store, iterations: usize, metrics: &Arc<Metrics>) -> Vec<f6
         .activate_fixture(1, row.id, terminal_id, (80, 24));
     state.terminal.focus_terminal = true;
     state.connection = Some(handle);
+    shared.set_measured(80, 24);
     let mut runtime = Runtime::new(
         state,
         ui::view,
@@ -129,11 +139,15 @@ fn bench_echo(store: Store, iterations: usize, metrics: &Arc<Metrics>) -> Vec<f6
     );
     runtime.poll = Some(crate::app::poll);
     runtime.frame(0.0);
+    let _ = echo_once(&mut runtime, &shared, "abcdefghijklmnopqrstuvwxyz");
+    let notify = shared.subscribe();
 
+    let mut expected = String::new();
     let mut samples = Vec::with_capacity(iterations);
     for step in 0..iterations {
-        let started = Instant::now();
         let text = format!("{}", (b'a' + (step % 26) as u8) as char);
+        expected.push_str(&text);
+        let started = Instant::now();
         runtime.update(|state, tx| {
             state.terminal_key(
                 &rune::KeyEvent {
@@ -144,28 +158,77 @@ fn bench_echo(store: Store, iterations: usize, metrics: &Arc<Metrics>) -> Vec<f6
             );
         });
         let deadline = Instant::now() + Duration::from_secs(2);
-        let mut echoed = false;
-        while Instant::now() < deadline {
-            {
+        loop {
+            let line_matches = {
                 let slot = shared.lock();
-                if let Some(grid) = slot.grid.as_ref()
-                    && let Some(last) = grid.visible.last()
-                {
-                    let line: String = last.cells.iter().map(|cell| cell.text.as_str()).collect();
-                    if line.contains("fixture>") {
-                        echoed = true;
-                    }
-                }
-            }
-            if echoed {
+                slot.grid.as_ref().is_some_and(|grid| {
+                    grid.visible.last().is_some_and(|last| {
+                        let line: String =
+                            last.cells.iter().map(|cell| cell.text.as_str()).collect();
+                        line.trim_end().ends_with(&format!("fixture> {expected}"))
+                    })
+                })
+            };
+            if line_matches {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(1));
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                panic!("fixture did not echo {expected:?} within 2 s");
+            }
+            match notify.recv_timeout(left) {
+                Ok(_) => {}
+                Err(flume::RecvTimeoutError::Timeout) => {
+                    panic!("fixture did not echo {expected:?} within 2 s")
+                }
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    panic!("fixture notifier disconnected")
+                }
+            }
         }
         runtime.frame(1.0 / 60.0);
         samples.push(started.elapsed().as_secs_f64() * 1000.0);
     }
     samples
+}
+
+fn echo_once(runtime: &mut Runtime<AppState>, shared: &SharedTerminal, text: &str) -> bool {
+    runtime.update(|state, tx| {
+        state.terminal_key(
+            &rune::KeyEvent {
+                key: rune::Key::Text(text.to_string()),
+                mods: rune::Mods::default(),
+            },
+            tx,
+        );
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        let echoed = {
+            let slot = shared.lock();
+            slot.grid.as_ref().is_some_and(|grid| {
+                grid.visible.last().is_some_and(|last| {
+                    let line: String = last.cells.iter().map(|cell| cell.text.as_str()).collect();
+                    line.trim_end().ends_with(&format!("fixture> {text}"))
+                })
+            })
+        };
+        if echoed {
+            runtime.update(|state, tx| {
+                state.terminal_key(
+                    &rune::KeyEvent {
+                        key: rune::Key::Enter,
+                        mods: rune::Mods::default(),
+                    },
+                    tx,
+                );
+            });
+            runtime.frame(1.0 / 60.0);
+            return true;
+        }
+        std::thread::yield_now();
+    }
+    false
 }
 
 fn percentile(samples: &mut [f64], p: usize) -> f64 {

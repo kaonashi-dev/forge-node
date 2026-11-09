@@ -350,6 +350,7 @@ mod tests {
             .activate_fixture(1, row.id, row.terminal_id.expect("terminal"), (80, 24));
         state.terminal.focus_terminal = true;
         state.terminal.interacted = true;
+        shared.set_measured(80, 24);
         let mut rt = Runtime::new(
             state,
             ui::view,
@@ -373,6 +374,50 @@ mod tests {
             .filter(|instance| instance.params[1] == KIND_EFFECT)
             .count();
         assert_eq!(slots, 1, "one terminal pane means one effect slot");
+    }
+
+    #[test]
+    fn a_sidebar_click_moves_keyboard_input_to_the_terminal() {
+        let mut rt = runtime();
+        let (x, y) = rt.find("session-row-2").expect("session row is laid out");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Text("z".to_string()),
+            mods: rune::Mods::default(),
+        });
+        rt.frame(1.0 / 60.0);
+        assert_eq!(
+            rt.state.last_focus.as_deref(),
+            Some("terminal-focus-proxy"),
+            "the row is select-only; the press focuses the terminal proxy"
+        );
+        let (_, summary) = rt.state.last_input.as_ref().expect("bytes were sent");
+        assert!(
+            summary.contains("\"z\""),
+            "typed byte reached the terminal: {summary}"
+        );
+    }
+
+    #[test]
+    fn a_tab_click_then_typing_still_reaches_the_terminal() {
+        let mut rt = runtime();
+        let id = rt.state.rows[2].id_text.clone();
+        let (x, y) = rt.find(&format!("t-{id}")).expect("tab is laid out");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Text("q".to_string()),
+            mods: rune::Mods::default(),
+        });
+        rt.frame(1.0 / 60.0);
+        let (_, summary) = rt.state.last_input.as_ref().expect("bytes were sent");
+        assert!(
+            summary.contains("\"q\""),
+            "typed byte reached the terminal: {summary}"
+        );
     }
 
     #[test]

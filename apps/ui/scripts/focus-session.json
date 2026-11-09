@@ -1,0 +1,4 @@
+[
+  { "t": 0.5, "key": "session-row-2" },
+  { "t": 1.2, "type": "type", "text": "focus-proxy", "every": 0.01 }
+]

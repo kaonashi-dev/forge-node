@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use client::{CellGrid, DeltaOutcome, RowDamage};
@@ -7,6 +7,7 @@ use domain::{PtySize, ScrollbackRows, SessionId, TerminalDelta, TerminalId, Term
 
 pub mod alloc;
 pub mod atlas;
+pub mod attach;
 pub mod fixture;
 pub mod input;
 pub mod palette;
@@ -34,9 +35,13 @@ pub struct Slot {
 pub struct SharedTerminal {
     slot: Mutex<Slot>,
     measured: Mutex<Option<(u16, u16)>>,
+    measure_epoch: AtomicU64,
     grid_epoch: AtomicU64,
+    resync_epoch: AtomicU64,
     render_epoch: AtomicU64,
     rendered_epoch: AtomicU64,
+    notify_enabled: AtomicBool,
+    notifier: Mutex<Option<flume::Sender<u64>>>,
 }
 
 pub struct Meta {
@@ -60,9 +65,13 @@ impl SharedTerminal {
                 version: 0,
             }),
             measured: Mutex::new(None),
+            measure_epoch: AtomicU64::new(0),
             grid_epoch: AtomicU64::new(0),
+            resync_epoch: AtomicU64::new(0),
             render_epoch: AtomicU64::new(0),
             rendered_epoch: AtomicU64::new(0),
+            notify_enabled: AtomicBool::new(false),
+            notifier: Mutex::new(None),
         })
     }
 
@@ -113,6 +122,7 @@ impl SharedTerminal {
         let version = slot.version;
         drop(slot);
         self.grid_epoch.store(version, Ordering::Release);
+        self.notify(version);
         self.render_epoch.fetch_add(1, Ordering::Release);
     }
 
@@ -128,6 +138,7 @@ impl SharedTerminal {
         let version = slot.version;
         drop(slot);
         self.grid_epoch.store(version, Ordering::Release);
+        self.notify(version);
         self.render_epoch.fetch_add(1, Ordering::Release);
     }
 
@@ -152,6 +163,7 @@ impl SharedTerminal {
             slot.version = slot.version.saturating_add(1);
             let version = slot.version;
             self.grid_epoch.store(version, Ordering::Release);
+            self.notify(version);
             self.render_epoch.fetch_add(1, Ordering::Release);
         }
         outcome
@@ -172,6 +184,8 @@ impl SharedTerminal {
         let version = slot.version;
         drop(slot);
         self.grid_epoch.store(version, Ordering::Release);
+        self.notify(version);
+        self.resync_epoch.fetch_add(1, Ordering::Release);
         self.render_epoch.fetch_add(1, Ordering::Release);
     }
 
@@ -193,12 +207,43 @@ impl SharedTerminal {
         let version = slot.version;
         drop(slot);
         self.grid_epoch.store(version, Ordering::Release);
+        self.notify(version);
         self.render_epoch.fetch_add(1, Ordering::Release);
         true
     }
 
+    /// A benchmark-only wake for the headless echo measurement. Production
+    /// never installs a notifier; the compositor is woken through Rune instead.
+    pub fn subscribe(&self) -> flume::Receiver<u64> {
+        self.notify_enabled.store(true, Ordering::Release);
+        let (tx, rx) = flume::bounded(1);
+        *self
+            .notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tx);
+        rx
+    }
+
+    fn notify(&self, version: u64) {
+        if !self.notify_enabled.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(tx) = self
+            .notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            let _ = tx.try_send(version);
+        }
+    }
+
     pub fn grid_epoch(&self) -> u64 {
         self.grid_epoch.load(Ordering::Acquire)
+    }
+
+    pub fn resync_epoch(&self) -> u64 {
+        self.resync_epoch.load(Ordering::Acquire)
     }
 
     pub fn request_redraw(&self) {
@@ -228,11 +273,16 @@ impl SharedTerminal {
             .measured
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *measured == Some((cols, rows)) {
-            return false;
-        }
+        let changed = *measured != Some((cols, rows));
         *measured = Some((cols, rows));
-        true
+        self.measure_epoch.fetch_add(1, Ordering::Release);
+        changed
+    }
+
+    /// Advances on every compositor measurement, including an unchanged one, so
+    /// a resync can require a frame that rendered after it.
+    pub fn measure_epoch(&self) -> u64 {
+        self.measure_epoch.load(Ordering::Acquire)
     }
 
     #[must_use]
