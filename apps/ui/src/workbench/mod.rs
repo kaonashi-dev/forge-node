@@ -79,8 +79,10 @@ pub enum Panel {
     #[default]
     Projects,
     Files,
+    History,
     PullRequests,
     Git,
+    Processes,
 }
 
 /// A read the worker should make for the current workspace.
@@ -267,7 +269,11 @@ impl Workbench {
                     self.queue(Read::File(path));
                 }
             }
-            Panel::Projects | Panel::PullRequests | Panel::Git => {}
+            Panel::Projects
+            | Panel::History
+            | Panel::PullRequests
+            | Panel::Git
+            | Panel::Processes => {}
         }
     }
 

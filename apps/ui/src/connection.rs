@@ -145,7 +145,10 @@ pub enum Command {
         initial_prompt: Option<String>,
         /// In the provider's own review mode: a launch that may not write.
         read_only: bool,
+        /// The provider's own id of a conversation to re-enter.
+        resume: Option<String>,
     },
+    RestartSession(SessionId),
     CreateWorktree {
         project_id: domain::ProjectId,
         branch: String,
@@ -377,7 +380,31 @@ impl ConnectionHandle {
             profile_id,
             initial_prompt,
             read_only,
+            resume: None,
         })
+    }
+
+    /// Re-enters a recorded conversation: the ordinary agent launch, told
+    /// which one, under the account that recorded it.
+    pub fn resume_agent(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        resume: String,
+    ) -> Result<(), String> {
+        self.send(Command::CreateAgent {
+            workspace_id,
+            provider_id,
+            profile_id,
+            initial_prompt: None,
+            read_only: false,
+            resume: Some(resume),
+        })
+    }
+
+    pub fn restart_session(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::RestartSession(session_id))
     }
 
     pub fn draft_commit(&self, workspace_id: WorkspaceId) -> Result<(), String> {
@@ -926,6 +953,7 @@ fn handle_fixture_command(
         | Command::Usage { .. }
         | Command::Paths { .. }
         | Command::KillSession(_)
+        | Command::RestartSession(_)
         | Command::CloseSession(_)
         | Command::RebaseStep { .. }
         | Command::RunAction { .. }
@@ -1497,6 +1525,7 @@ fn handle_live_command(
             profile_id,
             initial_prompt,
             read_only,
+            resume,
         } => {
             metrics.note_socket_op();
             // A provider with no review mode is refused by the daemon, never
@@ -1508,7 +1537,7 @@ fn handle_live_command(
                     profile_id,
                     None,
                     domain::SessionRole::Generic,
-                    None,
+                    resume,
                     initial_prompt,
                     read_only,
                 )
@@ -1658,6 +1687,14 @@ fn handle_live_command(
                 result: state.map(Box::new),
             }]);
             live_result(generation, label, result, sink, metrics, started);
+        }
+        Command::RestartSession(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .restart_session(session_id)
+                .map(|()| "restarting".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "RestartSession", result, sink, metrics, started);
         }
         Command::KillSession(session_id) => {
             metrics.note_socket_op();
@@ -1885,6 +1922,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::Usage { .. } => "GetUsageAnalytics",
         Command::Paths { .. } => "GetPaths",
         Command::KillSession(_) => "KillSession",
+        Command::RestartSession(_) => "RestartSession",
         Command::CloseSession(_) => "CloseSession",
         Command::RebaseStep { .. } => "RebaseStep",
         Command::RunAction { .. } => "RunAction",

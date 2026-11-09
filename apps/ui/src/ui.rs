@@ -116,8 +116,10 @@ fn sidebar(s: &AppState, k: &Kit) -> El {
     let panel = match s.workbench.panel {
         Panel::Projects => crate::projects::view(s, k),
         Panel::Files => crate::workbench::view::files_panel(s, k),
+        Panel::History => crate::history::view(s, k),
         Panel::PullRequests => crate::pr_review::view(s, k),
         Panel::Git => crate::workbench::view::git_panel(s, k),
+        Panel::Processes => crate::processes::view(s, k),
     };
     col()
         .key("sidebar")

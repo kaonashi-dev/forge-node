@@ -15,12 +15,29 @@ const TAB_H: f32 = 30.0;
 /// A tab never grows past this, as `.session-tab-wrap { max-width: 280px }`.
 const TAB_MAX_W: f32 = 240.0;
 
-/// The sidebar's views, in Tauri's order.
-pub const VIEWS: [(Panel, &str, &Icon); 4] = [
-    (Panel::Projects, "Projects", &glyphs::PROJECTS),
-    (Panel::Files, "Files", &glyphs::FILES),
-    (Panel::PullRequests, "PR", &glyphs::PULL_REQUEST),
-    (Panel::Git, "Git", &glyphs::GIT),
+/// The sidebar's views, in Tauri's order: panel, name, element key, glyph.
+pub const VIEWS: [(Panel, &str, &str, &Icon); 6] = [
+    (
+        Panel::Projects,
+        "Projects",
+        "view-projects",
+        &glyphs::PROJECTS,
+    ),
+    (Panel::Files, "Files", "view-files", &glyphs::FILES),
+    (Panel::History, "History", "view-history", &glyphs::HISTORY),
+    (
+        Panel::PullRequests,
+        "Pull Requests",
+        "view-pr",
+        &glyphs::PULL_REQUEST,
+    ),
+    (Panel::Git, "Git", "view-git", &glyphs::GIT),
+    (
+        Panel::Processes,
+        "Processes",
+        "view-processes",
+        &glyphs::ACTIVITY,
+    ),
 ];
 
 fn icon_button(
@@ -213,17 +230,16 @@ pub fn views(s: &AppState, k: &Kit) -> El {
         .w_full()
         .gap(2.0)
         .padding(3.0);
-    for (panel, label, glyph) in VIEWS {
+    for (panel, label, key, glyph) in VIEWS {
         let shown = s.workbench.panel == panel;
         bar = bar.child(
-            col()
-                .key(format!("view-{}", label.to_ascii_lowercase()))
+            row()
+                .key(key)
                 .role("tab")
                 .label(label.to_string())
                 .checked(shown)
                 .grow(1.0)
-                .h(40.0)
-                .gap(3.0)
+                .h(32.0)
                 .radius(6.0)
                 .center()
                 .fill(if shown {
@@ -233,16 +249,13 @@ pub fn views(s: &AppState, k: &Kit) -> El {
                 })
                 .hover(k.c.hover)
                 .on_press(move |s: &mut AppState| s.show_panel(panel))
-                .child(icon(glyph, 15.0).color(if shown {
+                // Six views share 300 pt, so the glyph stands alone; the name
+                // is what assistive tech and the panel's heading say.
+                .child(icon(glyph, 16.0).color(if shown {
                     k.c.icon_accent
                 } else {
                     k.c.icon_muted
-                }))
-                .child(
-                    text(label.to_string())
-                        .font(k.ty.text_xsmall)
-                        .color(if shown { k.c.text_base } else { k.c.text_muted }),
-                ),
+                })),
         );
     }
     bar

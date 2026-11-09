@@ -134,6 +134,9 @@ pub struct AppState {
     pub review: Option<crate::pr_review::ReviewDialog>,
     pub usage: crate::usage::Usage,
     pub storage: crate::storage::Storage,
+    pub history: crate::history::History,
+    /// Action runs grouped for the Processes panel, rebuilt with the store.
+    pub processes: Vec<crate::processes::ProcessGroup>,
     /// Each checkout's last status mark, so Git re-reads when it moves.
     pub checkout_marks: HashMap<WorkspaceId, crate::workbench::CheckoutMark>,
     pub theme_editor: crate::appearance::ThemeEditor,
@@ -207,6 +210,8 @@ impl AppState {
             review: None,
             usage: crate::usage::Usage::default(),
             storage: crate::storage::Storage::default(),
+            history: crate::history::History::default(),
+            processes: Vec::new(),
             checkout_marks: HashMap::new(),
             theme_editor: crate::appearance::ThemeEditor::default(),
             sync: crate::sync::Sync::default(),
@@ -321,6 +326,9 @@ impl AppState {
         self.theme_pref = store
             .app_state_value(crate::theme::THEME_KEY)
             .map(str::to_string);
+        self.history.index = crate::history::index(&store.external_agents);
+        self.processes =
+            crate::processes::group(&store.sessions, &store.workspaces, &store.projects);
         self.store = Some(store);
         self.terminal.set_fixture_titles(
             self.fixture_titles
@@ -500,7 +508,7 @@ impl AppState {
     /// Providers the daemon found installed, for the palette's agent entries.
     /// Installed agents the person has not hidden in Settings › Agents, as
     /// Tauri's launch lists offer them.
-    fn installed_agents(&self) -> Vec<(domain::AgentProviderId, String)> {
+    pub(crate) fn installed_agents(&self) -> Vec<(domain::AgentProviderId, String)> {
         let Some(store) = &self.store else {
             return Vec::new();
         };
@@ -786,6 +794,33 @@ impl AppState {
                 self.workbench.show(CenterMode::Session);
             }
             None => self.worker_not_ready("CreateShellSession"),
+        }
+    }
+
+    /// Shows a session from a list outside the tab strip (Processes), with
+    /// the window pointed at its checkout.
+    pub fn focus_session(&mut self, id: SessionId) {
+        let workspace = self
+            .rows
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| row.workspace_id);
+        self.select(id);
+        if workspace.is_some() {
+            self.chosen_workspace = workspace;
+        }
+        self.show_mode(CenterMode::Session);
+    }
+
+    pub fn restart_session(&mut self, id: SessionId) {
+        if let Some(connection) = &self.connection {
+            let _ = connection.restart_session(id);
+        }
+    }
+
+    pub fn kill_session(&mut self, id: SessionId) {
+        if let Some(connection) = &self.connection {
+            let _ = connection.kill_session(id);
         }
     }
 

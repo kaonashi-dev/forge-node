@@ -74,3 +74,28 @@ glyph!(
     "forge-arrow-left",
     r#"<path d="M12.6 8H3.4M7 4.4L3.4 8 7 11.6"/>"#
 );
+glyph!(
+    HISTORY,
+    "forge-history",
+    r#"<circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.3 1.6"/>"#
+);
+glyph!(
+    ACTIVITY,
+    "forge-activity",
+    r#"<path d="M1.8 8.4h2.6l1.8-4.6 3.4 8.6 1.8-4h2.8"/>"#
+);
+glyph!(
+    REFRESH,
+    "forge-refresh",
+    r#"<path d="M12.9 4.7A5.4 5.4 0 0 0 3.5 6.1M13.2 2.7v2.6h-2.6M3.1 11.3a5.4 5.4 0 0 0 9.4-1.4M2.8 13.3v-2.6h2.6"/>"#
+);
+glyph!(
+    STOP,
+    "forge-stop",
+    r#"<path d="M4.6 3.6h6.8a1 1 0 0 1 1 1v6.8a1 1 0 0 1-1 1H4.6a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1z"/>"#
+);
+glyph!(
+    GLOBE,
+    "forge-globe",
+    r#"<path d="M2.4 8a5.6 5.6 0 1 0 11.2 0 5.6 5.6 0 1 0-11.2 0zM8 2.4c-1.7 1.6-2.5 3.5-2.5 5.6s.8 4 2.5 5.6c1.7-1.6 2.5-3.5 2.5-5.6S9.7 4 8 2.4zM2.6 8h10.8"/>"#
+);
