@@ -169,6 +169,35 @@ pub fn strip(s: &AppState, k: &Kit) -> El {
                     .color(k.c.text_base),
             );
     }
+    let view_name = match s.workbench.mode {
+        CenterMode::Compare => Some("Preview PR"),
+        CenterMode::PrDetail => Some("Pull request"),
+        CenterMode::PrCompose => Some("Open a pull request"),
+        _ => None,
+    };
+    if let Some(name) = view_name {
+        return row()
+            .key("center-crumbs")
+            .role("navigation")
+            .label("Location")
+            .gap(8.0)
+            .px(8.0)
+            .center_y()
+            .child(
+                text(name)
+                    .role("heading")
+                    .font(k.ty.small_medium)
+                    .color(k.c.text_base),
+            )
+            .child(el().grow(1.0))
+            .child(icon_button(
+                k,
+                "close-center",
+                "Close this view (⌘W)",
+                &glyphs::CLOSE,
+                |s: &mut AppState| s.close_center(),
+            ));
+    }
     let tabs = s.tab_rows();
     let mut strip = row()
         .key("session-tabs")

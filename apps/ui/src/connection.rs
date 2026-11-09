@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use client::{Client, Store};
 use domain::{
-    AgentActivity, Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle,
-    TerminalId, Timestamp, WorkspaceId,
+    AgentActivity, BranchCompare, BranchRef, CommitLine, DiffFile, DiffStatus, PullRequestDraft,
+    RefScope, Remote, Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle,
+    TerminalId, Timestamp, WorkspaceDiff, WorkspaceId,
 };
 use flume::{Receiver, Selector, Sender};
 use protocol::{DaemonEvent, Request};
@@ -129,6 +130,15 @@ pub enum Command {
         body: String,
         /// Commit everything uncommitted with this message first.
         commit: Option<String>,
+    },
+    /// Commit everything once, on `branch` when the checkout is on its default,
+    /// then push and open. The compose view's submit.
+    CommitAndOpenPullRequest {
+        workspace_id: WorkspaceId,
+        title: String,
+        body: String,
+        message: String,
+        branch: Option<String>,
     },
     RefreshPullRequests,
     DraftCommit {
@@ -301,6 +311,12 @@ pub enum UiEvent {
         generation: u64,
         scope: crate::workbench::Scope,
         result: Result<Box<domain::WorkspaceDiff>, String>,
+    },
+    Compare {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        requested: Option<String>,
+        result: Result<Box<domain::BranchCompare>, String>,
     },
     Directory {
         generation: u64,
@@ -610,6 +626,23 @@ impl ConnectionHandle {
             title,
             body,
             commit,
+        })
+    }
+
+    pub fn commit_and_open_pull_request(
+        &self,
+        workspace_id: WorkspaceId,
+        title: String,
+        body: String,
+        message: String,
+        branch: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::CommitAndOpenPullRequest {
+            workspace_id,
+            title,
+            body,
+            message,
+            branch,
         })
     }
 
@@ -1318,10 +1351,88 @@ fn handle_fixture_command(
             );
             fixture_result(generation, label, result, sink, metrics, started);
         }
+        Command::Read { scope, read, .. } => {
+            let event = match read {
+                crate::workbench::Read::Diff => Some(UiEvent::Diff {
+                    generation,
+                    scope,
+                    result: Ok(Box::new(fixture_diff(scope.workspace))),
+                }),
+                crate::workbench::Read::Compare(base) => Some(UiEvent::Compare {
+                    generation,
+                    scope,
+                    requested: base.clone(),
+                    result: Ok(Box::new(fixture_compare(scope.workspace, base))),
+                }),
+                crate::workbench::Read::Rebase => Some(UiEvent::Rebase {
+                    generation,
+                    scope,
+                    result: Ok(Box::new(domain::RebaseState::idle(scope.workspace))),
+                }),
+                _ => None,
+            };
+            if let Some(event) = event {
+                sink(vec![event]);
+            }
+        }
+        Command::CreateAgent {
+            workspace_id,
+            initial_prompt: Some(prompt),
+            ..
+        } if prompt.contains("`pr_draft`") => {
+            let session = link
+                .store
+                .sessions
+                .first()
+                .map(|session| session.id)
+                .unwrap_or_default();
+            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+            sink(vec![
+                UiEvent::CommandResult {
+                    generation,
+                    label: "CreateAgentSession",
+                    ok: true,
+                    message: "started fixture agent".to_string(),
+                    took_us: started.elapsed().as_micros() as u64,
+                },
+                UiEvent::Daemon {
+                    generation,
+                    event: Box::new(DaemonEvent::PullRequestDraftReady {
+                        workspace_id,
+                        session_id: session,
+                        draft: PullRequestDraft {
+                            title: "Compare branches before opening a pull request".into(),
+                            body: "Drafts the compare view, a split patch layout and the pull-request panel.\n\n## Test plan\n\n- Compare two branches\n- Open the draft on another view".into(),
+                            branch: "fixture/compare-view".into(),
+                            commit_message: "Add branch compare and pull-request depth".into(),
+                        },
+                    }),
+                },
+            ]);
+        }
+        Command::CommitAndOpenPullRequest { workspace_id, .. } => {
+            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+            sink(vec![
+                UiEvent::CommandResult {
+                    generation,
+                    label: "CommitAndOpenPullRequest",
+                    ok: true,
+                    message: "pushing".to_string(),
+                    took_us: started.elapsed().as_micros() as u64,
+                },
+                UiEvent::Daemon {
+                    generation,
+                    event: Box::new(DaemonEvent::PullRequestOpened {
+                        workspace_id,
+                        url: Some("https://github.com/forge/forge/pull/42".into()),
+                        error: None,
+                    }),
+                },
+            ]);
+        }
         Command::OpenEditor { .. }
         | Command::EditorView { .. }
         | Command::EditorInput { .. }
-        | Command::Read { .. }
         | Command::SetAppState { .. }
         | Command::AddProject(_)
         | Command::Usage { .. }
@@ -1358,10 +1469,13 @@ fn handle_fixture_command(
         | Command::OpenEditorAt { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
         Command::Project(op) => {
-            let reply = crate::project_ops::Reply {
-                op,
-                result: Err("the recorded snapshot has no daemon to ask".to_string()),
+            let result = match &op {
+                crate::project_ops::Op::ListBranches(_) => {
+                    Ok(crate::project_ops::Answer::Branches(fixture_branches()))
+                }
+                _ => Err("the recorded snapshot has no daemon to ask".to_string()),
             };
+            let reply = crate::project_ops::Reply { op, result };
             sink(vec![UiEvent::Project {
                 generation,
                 reply: Box::new(reply),
@@ -1502,6 +1616,133 @@ fn fixture_rename(
         format!("renamed {} to “{title}”", short_id(&session_id)),
         Some(DaemonEvent::SessionUpdated(session.clone())),
     ))
+}
+
+/// The fixture's branches: enough for the compare picker and a worktree to
+/// exercise without a repository on disk.
+fn fixture_branches() -> client::Branches {
+    client::Branches {
+        branches: vec![
+            BranchRef {
+                name: "main".into(),
+                scope: RefScope::Local,
+                upstream: Some("origin/main".into()),
+                committed_at: None,
+                subject: Some("Merge the Rune editor chrome".into()),
+                checked_out_in: None,
+            },
+            BranchRef {
+                name: "compare-view".into(),
+                scope: RefScope::Local,
+                upstream: None,
+                committed_at: None,
+                subject: Some("Add branch compare".into()),
+                checked_out_in: None,
+            },
+            BranchRef {
+                name: "main".into(),
+                scope: RefScope::Remote {
+                    remote: "origin".into(),
+                },
+                upstream: None,
+                committed_at: None,
+                subject: None,
+                checked_out_in: None,
+            },
+            BranchRef {
+                name: "release".into(),
+                scope: RefScope::Remote {
+                    remote: "origin".into(),
+                },
+                upstream: None,
+                committed_at: None,
+                subject: None,
+                checked_out_in: None,
+            },
+        ],
+        remotes: vec![Remote {
+            name: "origin".into(),
+            url: "git@github.com:forge/forge.git".into(),
+        }],
+        default_branch: Some("main".into()),
+    }
+}
+
+fn fixture_patch() -> String {
+    concat!(
+        "diff --git a/src/main.rs b/src/main.rs\n",
+        "index 1111111..2222222 100644\n",
+        "--- a/src/main.rs\n",
+        "+++ b/src/main.rs\n",
+        "@@ -1,4 +1,5 @@\n",
+        " fn main() {\n",
+        "-    println!(\"hello\");\n",
+        "+    println!(\"hello, forge\");\n",
+        "+    println!(\"compare\");\n",
+        " }\n",
+    )
+    .to_string()
+}
+
+/// A working tree with two changes, so Changes, the compose summary and the
+/// split layout all have something to draw.
+fn fixture_diff(workspace_id: WorkspaceId) -> WorkspaceDiff {
+    WorkspaceDiff {
+        workspace_id,
+        branch: Some("main".into()),
+        files: vec![
+            DiffFile {
+                path: "src/main.rs".into(),
+                status: DiffStatus::Modified,
+                additions: 2,
+                deletions: 1,
+                patch: fixture_patch(),
+                binary: false,
+                truncated: false,
+            },
+            DiffFile {
+                path: "README.md".into(),
+                status: DiffStatus::Added,
+                additions: 3,
+                deletions: 0,
+                patch: concat!(
+                    "diff --git a/README.md b/README.md\n",
+                    "new file mode 100644\n",
+                    "--- /dev/null\n",
+                    "+++ b/README.md\n",
+                    "@@ -0,0 +1,3 @@\n",
+                    "+Forge Node\n",
+                    "+\n",
+                    "+The Rune client.\n",
+                )
+                .into(),
+                binary: false,
+                truncated: false,
+            },
+        ],
+        truncated: false,
+    }
+}
+
+fn fixture_compare(workspace_id: WorkspaceId, base: Option<String>) -> BranchCompare {
+    let diff = fixture_diff(workspace_id);
+    BranchCompare {
+        workspace_id,
+        base_ref: Some(base.unwrap_or_else(|| "origin/main".into())),
+        merge_base: Some("4f2b1ac".into()),
+        commits: vec![
+            CommitLine {
+                short_id: "a92e268".into(),
+                subject: "Merge the Rune editor chrome into rune-ui".into(),
+            },
+            CommitLine {
+                short_id: "f704783".into(),
+                subject: "Merge the terminal splits, links and gestures".into(),
+            },
+        ],
+        commit_count: 2,
+        diff,
+    }
 }
 
 struct LiveCtx<'a> {
@@ -1963,6 +2204,15 @@ fn handle_live_command(
                         .map(Box::new)
                         .map_err(|error| error.to_string()),
                 },
+                crate::workbench::Read::Compare(base) => UiEvent::Compare {
+                    generation,
+                    scope,
+                    requested: base.clone(),
+                    result: client
+                        .branch_compare(workspace_id, base, None)
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                },
                 crate::workbench::Read::File(path) => UiEvent::File {
                     generation,
                     scope,
@@ -2089,6 +2339,32 @@ fn handle_live_command(
             live_result(
                 generation,
                 "CreatePullRequest",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::CommitAndOpenPullRequest {
+            workspace_id,
+            title,
+            body,
+            message,
+            branch,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .commit_and_open_pull_request(
+                    workspace_id,
+                    domain::CommitPlan { branch, message },
+                    &title,
+                    &body,
+                )
+                .map(|()| "pushing".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CommitAndOpenPullRequest",
                 result,
                 sink,
                 metrics,
@@ -2829,6 +3105,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::RunAction { .. } => "RunAction",
         Command::Fetch { .. } => "FetchRemote",
         Command::OpenPullRequest { .. } => "CreatePullRequest",
+        Command::CommitAndOpenPullRequest { .. } => "CommitAndOpenPullRequest",
         Command::RefreshPullRequests => "RefreshPullRequests",
         Command::DraftCommit { .. } => "DraftWithJuva",
         Command::Commit { .. } => "CreateCommit",

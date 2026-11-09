@@ -6,7 +6,7 @@
 use client::ProviderInfo;
 use domain::{AgentProviderId, ProjectId, PullRequest, Workspace, WorkspaceId, WorkspaceKind};
 use rune::{El, ScrollSpec, TextEdit, col, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
+use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextInput};
 
 use crate::app::AppState;
 
@@ -97,108 +97,236 @@ impl ReviewDialog {
     }
 }
 
-fn pr_line(pr: &PullRequest) -> String {
-    format!(
-        "{} · {} · +{} −{}",
-        pr.author, pr.head_ref, pr.additions, pr.deletions
-    )
+fn tone_ink(k: &Kit, tone: crate::pr_filters::Tone) -> rune::Color {
+    let roles = crate::theme::roles(k);
+    match tone {
+        crate::pr_filters::Tone::Neutral => k.c.text_muted,
+        crate::pr_filters::Tone::Good => roles.git.added,
+        crate::pr_filters::Tone::Warn => k.c.warning.fg,
+        crate::pr_filters::Tone::Bad => k.c.danger.fg,
+    }
 }
 
 pub fn view(s: &AppState, k: &Kit) -> El {
+    use crate::pr_filters::{self, Scope};
     let refresh = Button::new("Refresh")
         .variant(ButtonVariant::GhostMuted)
         .control_size(ControlSize::Small)
         .on_press(|s: &mut AppState| s.refresh_pull_requests())
         .build(k)
         .key("prs-refresh");
-    let mut list = col().key("pr-list").w_full().gap(6.0);
+    let compose = Button::new("New pull request…")
+        .variant(ButtonVariant::Outline)
+        .control_size(ControlSize::Small)
+        .on_press(|s: &mut AppState| {
+            if let Some(workspace) = s.workbench.workspace {
+                s.open_pr_compose(workspace);
+            }
+        })
+        .build(k)
+        .key("pr-compose-open");
     let state = s.store.as_ref().map(|store| &store.pull_requests);
-    if let Some(error) = state.and_then(|state| state.error.as_ref()) {
-        list = list.child(text(error.clone()).font(k.ty.small).color(k.c.warning.fg));
-    }
+    let scope = Scope::parse(s.pref(pr_filters::PR_SCOPE_KEY));
+    let project = s.workbench.workspace.and_then(|workspace| {
+        s.store
+            .as_ref()?
+            .workspaces
+            .iter()
+            .find(|row| row.id == workspace)
+            .map(|row| row.project_id)
+    });
     let pulls = state.map_or(&[][..], |state| state.pull_requests.as_slice());
-    if pulls.is_empty() {
-        list = list.child(
-            text(if state.is_some_and(|state| state.refreshed_at.is_some()) {
-                "No open pull requests."
+    let (mine, others) =
+        s.workbench
+            .pr_index
+            .filter(pulls, scope, s.pr_query.text.as_str(), project);
+    let selected = s.workbench.pr_detail.as_deref();
+    let card = |pr: &PullRequest| {
+        let key = pr_filters::key(pr);
+        let chosen = selected == Some(key.as_str());
+        let repository = crate::pr_detail::split_repository(&pr.repository)
+            .1
+            .to_string();
+        let decision = pr_filters::decision_label(pr.review_decision.clone());
+        let mut meta = row().gap(6.0).items_center().child(
+            text(repository)
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .truncate()
+                .min_w(0.0),
+        );
+        if pr.is_draft {
+            meta = meta.child(
+                text("Draft".to_string())
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_muted),
+            );
+        } else if let Some((label, tone)) = decision {
+            meta = meta.child(
+                text(label.to_string())
+                    .font(k.ty.text_xsmall)
+                    .color(tone_ink(k, tone)),
+            );
+        }
+        let open = key.clone();
+        col()
+            .key(format!("pr-row-{key}"))
+            .role("button")
+            .label(format!("Open pull request #{}: {}", pr.number, pr.title))
+            .w_full()
+            .gap(4.0)
+            .px(8.0)
+            .py(6.0)
+            .radius(6.0)
+            .fill(if chosen {
+                k.c.surface_hover
             } else {
-                "Not read yet. Refresh to ask the forge."
+                rune::Color::TRANSPARENT
             })
-            .font(k.ty.small)
-            .color(k.c.text_faint),
-        );
-    }
-    for pr in pulls {
-        let (repository, number) = (pr.repository.clone(), pr.number);
+            .hover(k.c.hover)
+            .on_press(move |s: &mut AppState| s.open_pr_detail(open.clone()))
+            .child(
+                row()
+                    .gap(7.0)
+                    .items_center()
+                    .w_full()
+                    .child(
+                        text(format!("#{}", pr.number))
+                            .font(k.ty.mono)
+                            .color(k.c.text_faint),
+                    )
+                    .child(
+                        text(pr.title.clone())
+                            .font(k.ty.small)
+                            .color(k.c.text_base)
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .truncate(),
+                    ),
+            )
+            .child(meta)
+    };
+    let mut list = col().key("pr-list").w_full().gap(4.0);
+    if state.is_some_and(|state| state.refreshed_at.is_none()) {
         list = list.child(
-            row()
-                .key(format!("pr-{}-{}", pr.repository, pr.number))
-                .role("group")
-                .label(crate::projects::pr_label(pr))
-                .w_full()
-                .gap(10.0)
-                .px(10.0)
-                .py(6.0)
-                .radius(6.0)
-                .fill(k.c.surface_hover)
-                .items_center()
-                .child(
-                    col()
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .child(
-                            text(crate::projects::pr_label(pr))
-                                .font(k.ty.small)
-                                .color(k.c.text_base)
-                                .truncate(),
-                        )
-                        .child(
-                            text(pr_line(pr))
-                                .font(k.ty.text_xsmall)
-                                .color(k.c.text_faint)
-                                .truncate(),
-                        ),
-                )
-                .child(
-                    Button::new("Review…")
-                        .variant(ButtonVariant::Outline)
-                        .control_size(ControlSize::Small)
-                        .on_press(move |s: &mut AppState| s.open_review(&repository, number))
-                        .build(k)
-                        .key(format!("review-{}-{}", pr.repository, pr.number)),
-                ),
+            text("Not read yet. Refresh to ask the forge.".to_string())
+                .font(k.ty.small)
+                .color(k.c.text_faint),
         );
     }
-    col()
+    if mine.is_empty() && others.is_empty() {
+        list = list.child(
+            text(scope.empty_copy().to_string())
+                .key("prs-empty")
+                .font(k.ty.small)
+                .color(k.c.text_faint),
+        );
+    }
+    for pr in &mine {
+        list = list.child(card(pr));
+    }
+    if !mine.is_empty() && !others.is_empty() {
+        list = list.child(
+            text("Others".to_string())
+                .key("prs-others")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .pt(6.0),
+        );
+    }
+    for pr in &others {
+        list = list.child(card(pr));
+    }
+    let mut scopes = row()
+        .key("pr-scopes")
+        .role("radiogroup")
+        .label("Which pull requests")
+        .w_full()
+        .gap(3.0)
+        .flex_wrap();
+    for candidate in Scope::ALL {
+        let chosen = candidate == scope;
+        scopes = scopes.child(
+            Button::new(candidate.label())
+                .variant(if chosen {
+                    ButtonVariant::Outline
+                } else {
+                    ButtonVariant::GhostMuted
+                })
+                .control_size(ControlSize::Small)
+                .on_press(move |s: &mut AppState| {
+                    s.write_pref(pr_filters::PR_SCOPE_KEY, candidate.value());
+                })
+                .build(k)
+                .key(format!("pr-scope-{}", candidate.value())),
+        );
+    }
+    let filter = TextInput::new(&s.pr_query)
+        .placeholder("Filter pull requests…")
+        .label("Filter pull requests")
+        .leading_icon(k.glyph.search)
+        .clear_button()
+        .on_edit(|s: &mut AppState| &mut s.pr_query)
+        .build(k)
+        .key("pr-filter");
+    let mut panel = col()
         .key("pull-requests")
         .w_full()
         .h_full()
         .min_h(0.0)
+        .gap(8.0)
         .child(
             row()
                 .key("prs-bar")
                 .w_full()
                 .h(30.0)
                 .items_center()
+                .gap(6.0)
                 .child(
                     text("Pull Requests")
                         .font(k.ty.small_medium)
                         .color(k.c.text_base)
                         .grow(1.0),
                 )
+                .child(compose)
                 .child(refresh),
         )
-        .child(
-            col()
-                .key("prs-scroll")
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                .child(list),
-        )
+        .child(filter)
+        .child(scopes);
+    if let Some(state) = state {
+        for (index, failure) in state.failures.iter().enumerate() {
+            panel = panel.child(
+                text(pr_filters::failure_copy(failure))
+                    .key(format!("pr-failure-{index}"))
+                    .role("status")
+                    .description(failure.message.clone())
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.warning.fg),
+            );
+        }
+        if state.failures.is_empty()
+            && let Some(error) = &state.error
+        {
+            panel = panel.child(
+                text(error.clone())
+                    .key("prs-error")
+                    .role("status")
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.warning.fg),
+            );
+        }
+    }
+    panel.child(
+        col()
+            .key("prs-scroll")
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .child(list),
+    )
 }
 
 pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {

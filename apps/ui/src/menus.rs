@@ -156,8 +156,6 @@ pub fn icon(glyph: &Glyph) -> Option<&'static Icon> {
 /// place and left out by `ported`, so porting one is a change to its `Act`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unported {
-    PreviewPr,
-    OpenPrWithAgent,
     ContinueInNewSession,
     SpawnChild,
     SendContext,
@@ -177,6 +175,8 @@ pub enum Act {
     NewTerminal(WorkspaceId),
     NewAgent(WorkspaceId, AgentProviderId, Option<domain::AgentProfileId>),
     CommitWithJuva(WorkspaceId),
+    PreviewPr(WorkspaceId),
+    OpenPrWithAgent(WorkspaceId),
     NewWorktree(ProjectId),
     RefreshStatus(WorkspaceId),
     RefreshProject(ProjectId),
@@ -651,12 +651,12 @@ fn checkout_items(s: &AppState, workspace_id: WorkspaceId) -> Vec<Entry> {
         item(
             "Preview PR",
             Glyph::PullRequest,
-            Act::Unported(Unported::PreviewPr),
+            Act::PreviewPr(workspace_id),
         ),
         item(
             "Open PR with agent…",
             Glyph::Agent(None),
-            Act::Unported(Unported::OpenPrWithAgent),
+            Act::OpenPrWithAgent(workspace_id),
         ),
         Entry::Rule,
         Entry::Heading("Workspace"),
@@ -1452,6 +1452,11 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
             s.focus_checkout(workspace);
             s.show_panel(Panel::Git);
             s.draft_commit();
+        }
+        Act::PreviewPr(workspace) => s.open_compare(workspace),
+        Act::OpenPrWithAgent(workspace) => {
+            s.focus_checkout(workspace);
+            s.open_pr_compose(workspace);
         }
         Act::NewWorktree(project) => crate::branch_picker::open(s, project),
         Act::RefreshStatus(workspace) => {
@@ -2377,8 +2382,12 @@ mod tests {
             [
                 "New Terminal",
                 "—",
+                "Claude Code",
+                "—",
                 "# Juva & Git",
                 "Commit with Juva…",
+                "Preview PR",
+                "Open PR with agent…",
                 "—",
                 "# Workspace",
                 "Shared files…",

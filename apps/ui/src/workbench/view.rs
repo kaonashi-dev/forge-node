@@ -4,8 +4,8 @@ use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, rich, row, text};
 use rune_kit::diff::DiffView;
 use rune_kit::syntax::SyntaxTheme;
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, FileNode, Kit, Markdown, TextInput, Tree, TreeItem,
-    TreeStyle,
+    Button, ButtonVariant, ControlSize, FileNode, Kit, Markdown, SegmentedControl, TextInput, Tree,
+    TreeItem, TreeStyle,
 };
 
 use super::decorations::Tone;
@@ -204,14 +204,23 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
             .key("changes-fetch"),
     );
     if changes.loaded && changes.error.is_none() {
-        actions = actions.child(
-            Button::new("Preview PR")
-                .variant(ButtonVariant::Outline)
-                .control_size(ControlSize::Small)
-                .on_press(|s: &mut AppState| s.open_pr_dialog())
-                .build(k)
-                .key("changes-open-pr"),
-        );
+        actions = actions
+            .child(
+                Button::new("Preview PR")
+                    .variant(ButtonVariant::Outline)
+                    .control_size(ControlSize::Small)
+                    .on_press(|s: &mut AppState| s.open_compare_current())
+                    .build(k)
+                    .key("changes-preview-pr"),
+            )
+            .child(
+                Button::new("Open PR…")
+                    .variant(ButtonVariant::GhostMuted)
+                    .control_size(ControlSize::Small)
+                    .on_press(|s: &mut AppState| s.open_pr_dialog())
+                    .build(k)
+                    .key("changes-open-pr"),
+            );
     }
     let mut head = col().key("git-head").w_full().gap(4.0).child(
         row()
@@ -316,14 +325,23 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
             "Pick a changed file in Git to see its diff.".into(),
         ),
     };
-    let mut view = col()
-        .key("changes")
-        .w_full()
-        .h_full()
-        .min_h(0.0)
-        .child(bar(k, title, detail));
+    let mut view = col().key("changes").w_full().h_full().min_h(0.0).child(
+        bar(k, title, detail).child(
+            SegmentedControl::new(
+                &["Unified", "Split"],
+                Some(if s.diff_split { 1 } else { 0 }),
+            )
+            .label("Patch layout")
+            .width(Some(150.0))
+            .on_pick(|s: &mut AppState, index, _| s.set_diff_split(index == 1))
+            .build(k),
+        ),
+    );
     if let Some(state) = &changes.rebase {
         view = view.child(stopped(state, changes.rebase_error.as_deref(), k));
+        if !state.conflicts.is_empty() {
+            return view.child(conflict_view(s, k));
+        }
     }
     view.child(patch)
 }
@@ -742,42 +760,6 @@ fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
                         .key("rebase-resolve-ai"),
                 ),
         );
-    for conflict in &state.conflicts {
-        let path = conflict.path.clone();
-        panel = panel.child(
-            row()
-                .key(format!("conflict-{}", conflict.path))
-                .gap(8.0)
-                .items_center()
-                .child(
-                    text(conflict.code.clone())
-                        .font(k.ty.mono)
-                        .color(k.c.warning.fg)
-                        .w(28.0),
-                )
-                .child(
-                    text(conflict.path.clone())
-                        .font(k.ty.small)
-                        .color(k.c.text_base)
-                        .grow(1.0),
-                )
-                .child(
-                    text(conflict.label())
-                        .font(k.ty.text_xsmall)
-                        .color(k.c.text_faint),
-                )
-                .child(
-                    Button::new("Mark resolved")
-                        .variant(ButtonVariant::GhostMuted)
-                        .control_size(ControlSize::Small)
-                        .on_press(move |s: &mut AppState| {
-                            s.rebase_step(RebaseStep::Resolve(vec![path.clone()]));
-                        })
-                        .build(k)
-                        .key(format!("resolve-{}", conflict.path)),
-                ),
-        );
-    }
     if state.truncated {
         panel = panel.child(
             text("More unmerged paths than are listed.")
@@ -795,6 +777,403 @@ fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
         );
     }
     panel
+}
+
+/// One conflicted path at a time, read three ways.
+///
+/// The regions come from the working-tree patch, so what shows is what is on
+/// disk now. Once no markers are left, whoever resolved the file — the person
+/// or an agent — has only proposed a resolution: staging is what accepts it.
+fn conflict_view(s: &AppState, k: &Kit) -> El {
+    use crate::workbench::RebaseStep;
+    use domain::conflict_prompt::{conflict_label, conflict_sides};
+    let changes = &s.workbench.changes;
+    let Some(state) = &changes.rebase else {
+        return el();
+    };
+    let Some(focus) = changes.conflict_focus.as_deref() else {
+        return el();
+    };
+    let index = state
+        .conflicts
+        .iter()
+        .position(|conflict| conflict.path == focus)
+        .unwrap_or(0);
+    let conflict = &state.conflicts[index];
+    let (ours, theirs) = conflict_sides(state);
+    let path = conflict.path.clone();
+    let blocks = changes.conflict_blocks.len();
+    let open_path = path.clone();
+    let open = Button::new("Open in editor")
+        .variant(ButtonVariant::GhostMuted)
+        .control_size(ControlSize::Small)
+        .on_press(move |s: &mut AppState| s.open_file(&open_path, None))
+        .build(k)
+        .key("conflict-open");
+    let mut hand = row()
+        .key("conflict-hand")
+        .w_full()
+        .gap(8.0)
+        .items_center()
+        .child(
+            text(path.clone())
+                .font(k.ty.small_medium)
+                .color(k.c.text_base)
+                .grow(1.0)
+                .min_w(0.0)
+                .truncate(),
+        );
+    if blocks > 0 {
+        hand = hand.child(
+            row()
+                .key("conflict-state")
+                .gap(5.0)
+                .items_center()
+                .px(6.0)
+                .h(18.0)
+                .radius(4.0)
+                .fill(k.c.warning.bg)
+                .child(el().size(6.0, 6.0).radius(3.0).fill(k.c.warning.fg))
+                .child(
+                    text(format!(
+                        "{blocks} conflict{}",
+                        if blocks == 1 { "" } else { "s" }
+                    ))
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.warning.fg),
+                ),
+        );
+    } else if changes.conflict_readable {
+        hand = hand.child(
+            text("no markers left".to_string())
+                .key("conflict-no-markers")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_muted),
+        );
+    } else {
+        hand = hand.child(
+            text(conflict_label(&conflict.code).to_string())
+                .key("conflict-label")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_muted),
+        );
+    }
+    hand = hand.child(open);
+    if state.conflicts.len() > 1 {
+        hand = hand
+            .child(
+                Button::new("Previous file")
+                    .variant(ButtonVariant::GhostMuted)
+                    .control_size(ControlSize::Small)
+                    .on_press(|s: &mut AppState| s.workbench.changes.step_conflict(-1))
+                    .build(k)
+                    .key("conflict-prev"),
+            )
+            .child(
+                Button::new("Next file")
+                    .variant(ButtonVariant::GhostMuted)
+                    .control_size(ControlSize::Small)
+                    .on_press(|s: &mut AppState| s.workbench.changes.step_conflict(1))
+                    .build(k)
+                    .key("conflict-next"),
+            );
+    }
+    if blocks > 1 {
+        hand = hand.child(
+            Button::new("Next conflict")
+                .variant(ButtonVariant::Outline)
+                .control_size(ControlSize::Small)
+                .on_press_tx(|s: &mut AppState, tx| {
+                    if let Some(index) = s.workbench.changes.next_conflict_region() {
+                        tx.scroll_into_view(format!("conflict-region-{index}"));
+                    }
+                })
+                .build(k)
+                .key("conflict-region-next"),
+        );
+    }
+    let sides = if blocks > 0 {
+        row()
+            .key("conflict-sides")
+            .w_full()
+            .gap(8.0)
+            .child(side_head(k, "ours", &format!("Ours {ours}")))
+            .child(side_head(k, "base", "Base"))
+            .child(side_head(k, "theirs", &format!("Theirs {theirs}")))
+    } else {
+        row()
+    };
+    let mut regions = col().key("conflict-regions").w_full().gap(10.0);
+    for (at, block) in changes.conflict_blocks.iter().enumerate() {
+        let mut head = row()
+            .gap(8.0)
+            .items_center()
+            .child(el().size(6.0, 6.0).radius(3.0).fill(k.c.warning.fg))
+            .child(
+                text(format!("Conflict {} of {blocks}", at + 1))
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_muted),
+            );
+        if let Some(line) = block.line {
+            head = head.child(
+                text(format!("line {line}"))
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_faint),
+            );
+        }
+        let open_path = path.clone();
+        let line = block.line;
+        head = head.child(el().grow(1.0)).child(
+            Button::new("Resolve in editor")
+                .variant(ButtonVariant::GhostMuted)
+                .control_size(ControlSize::Small)
+                .on_press(move |s: &mut AppState| {
+                    s.open_file(&open_path, line);
+                })
+                .build(k)
+                .key(format!("conflict-resolve-{at}")),
+        );
+        let mut sides = row().w_full().gap(8.0);
+        sides = sides
+            .child(side_column(k, at, "ours", &block.ours))
+            .child(if let Some(base) = &block.base {
+                side_column(k, at, "base", base)
+            } else {
+                col()
+                    .w(0.0)
+                    .grow(1.0)
+                    .gap(3.0)
+                    .padding(6.0)
+                    .fill(k.c.surface_weak)
+                    .child(
+                        text(
+                            "No base recorded. Git wrote this conflict without diff3 markers."
+                                .to_string(),
+                        )
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint),
+                    )
+            })
+            .child(side_column(k, at, "theirs", &block.theirs));
+        let mut article = col()
+            .key(format!("conflict-region-{at}"))
+            .role("group")
+            .label(format!("Conflict {} of {blocks}", at + 1))
+            .w_full()
+            .gap(6.0)
+            .child(head)
+            .child(sides);
+        if !block.complete {
+            article = article.child(
+                text(
+                    "Part of this region is outside the patch's context. Open it in the editor to \
+                     read all of it.",
+                )
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint),
+            );
+        }
+        regions = regions.child(article);
+    }
+    if blocks == 0 && changes.conflict_readable {
+        regions = regions.child(
+            col()
+                .key("conflict-proposal")
+                .w_full()
+                .gap(6.0)
+                .padding(8.0)
+                .radius(6.0)
+                .fill(k.c.surface_weak)
+                .child(
+                    text("Proposed resolution · not staged · you stage it".to_string())
+                        .font(k.ty.small_medium)
+                        .color(k.c.text_base),
+                )
+                .child(
+                    text(
+                        "No conflict markers are left in this file. Read the change below: staging \
+                         it is what accepts it, whether you or an agent wrote it.",
+                    )
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_muted),
+                )
+                .child(conflict_patch(s, k)),
+        );
+    }
+    if !changes.conflict_readable {
+        regions = regions.child(
+            text(
+                "There is no patch to read for this path: it is binary, over budget, or gone \
+                 from one side. Resolve it in the editor or a terminal, then stage it.",
+            )
+            .key("conflict-unreadable")
+            .font(k.ty.text_xsmall)
+            .color(k.c.text_faint),
+        );
+    }
+    let stage = Button::new("Stage file")
+        .variant(ButtonVariant::Contrast)
+        .control_size(ControlSize::Small)
+        .on_press(move |s: &mut AppState| {
+            s.rebase_step(RebaseStep::Resolve(vec![path.clone()]));
+        })
+        .build(k)
+        .key("conflict-stage");
+    let footer = row()
+        .key("conflict-foot")
+        .w_full()
+        .gap(8.0)
+        .items_center()
+        .child(
+            text(format!(
+                "Conflict file {} of {} left in the replay",
+                index + 1,
+                state.conflicts.len()
+            ))
+            .font(k.ty.text_xsmall)
+            .color(k.c.text_faint)
+            .grow(1.0),
+        )
+        .child(stage);
+    col()
+        .key("conflict-view")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .gap(8.0)
+        .padding(10.0)
+        .fill(k.c.surface_weak)
+        .child(hand)
+        .child(sides)
+        .child(
+            col()
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(regions),
+        )
+        .child(footer)
+}
+
+fn side_head(k: &Kit, side: &'static str, label: &str) -> El {
+    row()
+        .key(format!("conflict-side-head-{side}"))
+        .w(0.0)
+        .grow(1.0)
+        .h(20.0)
+        .px(6.0)
+        .gap(5.0)
+        .items_center()
+        .radius(4.0)
+        .fill(k.c.surface_hover)
+        .child(el().size(6.0, 6.0).radius(3.0).fill(match side {
+            "ours" => k.c.text_muted,
+            "base" => k.c.text_faint,
+            _ => k.c.icon_accent,
+        }))
+        .child(
+            text(label.to_string())
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_muted)
+                .truncate()
+                .min_w(0.0),
+        )
+}
+
+fn side_column(k: &Kit, region: usize, side: &'static str, lines: &[String]) -> El {
+    let mut column = col()
+        .key(format!("conflict-side-{region}-{side}"))
+        .w(0.0)
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(1.0)
+        .padding(6.0)
+        .radius(4.0)
+        .fill(k.c.bg_base);
+    if lines.is_empty() {
+        return column.child(
+            text("Empty on this side.".to_string())
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint),
+        );
+    }
+    for (at, line) in lines.iter().enumerate() {
+        column = column.child(
+            row()
+                .key(format!("conflict-line-{region}-{side}-{at}"))
+                .w_full()
+                .child(
+                    text(if line.is_empty() {
+                        " ".to_string()
+                    } else {
+                        line.clone()
+                    })
+                    .font(k.ty.mono)
+                    .color(k.c.text_base)
+                    .truncate()
+                    .min_w(0.0),
+                ),
+        );
+    }
+    column
+}
+
+/// The proposed resolution as plain patch rows: no syntax colours, because
+/// the point here is which lines are gone and which arrived.
+fn conflict_patch(s: &AppState, k: &Kit) -> El {
+    let changes = &s.workbench.changes;
+    if changes.conflict_rows.is_empty() {
+        return text("Nothing to show.".to_string())
+            .font(k.ty.text_xsmall)
+            .color(k.c.text_faint);
+    }
+    let mut rows = col().key("conflict-patch").w_full().gap(0.5);
+    for (at, patch_row) in changes.conflict_rows.iter().enumerate() {
+        let ink = match patch_row.kind {
+            crate::workbench::patch::Kind::Added => crate::theme::roles(k).git.added,
+            crate::workbench::patch::Kind::Removed => crate::theme::roles(k).git.deleted,
+            crate::workbench::patch::Kind::Hunk => k.c.text_faint,
+            crate::workbench::patch::Kind::Meta => k.c.text_faint,
+            _ => k.c.text_base,
+        };
+        rows = rows.child(
+            row()
+                .key(format!("conflict-patch-{at}"))
+                .w_full()
+                .h(18.0)
+                .child(
+                    text(
+                        patch_row
+                            .before
+                            .map_or_else(String::new, |line| line.to_string()),
+                    )
+                    .font(k.ty.mono)
+                    .color(k.c.text_faint)
+                    .w(40.0),
+                )
+                .child(
+                    text(
+                        patch_row
+                            .after
+                            .map_or_else(String::new, |line| line.to_string()),
+                    )
+                    .font(k.ty.mono)
+                    .color(k.c.text_faint)
+                    .w(40.0),
+                )
+                .child(
+                    text(patch_row.text.clone())
+                        .font(k.ty.mono)
+                        .color(ink)
+                        .truncate()
+                        .min_w(0.0),
+                ),
+        );
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -981,5 +1360,92 @@ mod tests {
         assert_eq!(operation_name(Some(SequencerOp::CherryPick)), "Cherry-pick");
         assert_eq!(operation_name(Some(SequencerOp::Merge)), "Merge");
         assert_eq!(operation_name(None), "Rebase");
+    }
+
+    fn conflicted(workspace: domain::WorkspaceId, patch: &str) -> domain::WorkspaceDiff {
+        domain::WorkspaceDiff {
+            workspace_id: workspace,
+            branch: Some("feature/x".into()),
+            files: vec![domain::DiffFile {
+                path: "src/a.rs".into(),
+                status: domain::DiffStatus::Conflicted,
+                additions: 3,
+                deletions: 0,
+                patch: patch.into(),
+                binary: false,
+                truncated: false,
+            }],
+            truncated: false,
+        }
+    }
+
+    fn stopped(workspace: domain::WorkspaceId) -> domain::RebaseState {
+        domain::RebaseState {
+            workspace_id: workspace,
+            operation: Some(domain::SequencerOp::Merge),
+            branch: Some("feature/x".into()),
+            conflicts: vec![domain::ConflictFile {
+                path: "src/a.rs".into(),
+                code: "UU".into(),
+            }],
+            ..domain::RebaseState::default()
+        }
+    }
+
+    #[test]
+    fn a_stopped_operation_reads_its_markers_and_a_resolved_file_is_staged() {
+        let store =
+            fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
+                .expect("fixture snapshot decodes");
+        let mut state =
+            AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
+        state.show_mode(crate::workbench::CenterMode::Changes);
+        let workspace = state.workbench.workspace.expect("a workspace");
+        let markers = concat!(
+            "@@ -1,7 +1,7 @@\n",
+            " <<<<<<< HEAD\n",
+            " ours\n",
+            " ||||||| 4f2b1ac\n",
+            " base\n",
+            " =======\n",
+            " theirs\n",
+            " >>>>>>> feature\n",
+        );
+        let mut rt = Runtime::new(
+            state,
+            crate::ui::view,
+            (1180.0, 760.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.update(|s, _| {
+            let scope = s.workbench.scope().expect("a scope");
+            s.workbench.apply_rebase(scope, Ok(stopped(workspace)));
+            s.workbench
+                .apply_diff(scope, Ok(conflicted(workspace, markers)));
+            s.workbench.show(crate::workbench::CenterMode::Changes);
+        });
+        rt.frame(0.1);
+        let keys: Vec<String> = rt.elements().into_iter().filter_map(|e| e.key).collect();
+        assert!(keys.iter().any(|key| key == "conflict-view"), "{keys:?}");
+        assert!(keys.iter().any(|key| key == "conflict-region-0"));
+        assert!(keys.iter().any(|key| key == "conflict-stage"));
+        assert!(!keys.iter().any(|key| key == "conflict-no-markers"));
+        let resolved = "@@ -1,2 +1,2 @@\n context\n-old\n+new\n";
+        rt.update(|s, _| {
+            let scope = s.workbench.scope().expect("a scope");
+            s.workbench
+                .apply_diff(scope, Ok(conflicted(workspace, resolved)));
+        });
+        rt.frame(0.2);
+        let keys: Vec<String> = rt.elements().into_iter().filter_map(|e| e.key).collect();
+        assert!(
+            keys.iter().any(|key| key == "conflict-no-markers"),
+            "a resolved file says so before it is staged: {keys:?}"
+        );
+        assert!(keys.iter().any(|key| key == "conflict-proposal"));
+        assert!(keys.iter().any(|key| key == "conflict-stage"));
     }
 }

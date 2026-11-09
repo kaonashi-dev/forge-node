@@ -135,6 +135,11 @@ pub struct AppState {
     pub projects: crate::projects::Projects,
     pub commit: crate::commit::CommitBox,
     pub review: Option<crate::pr_review::ReviewDialog>,
+    pub compose: crate::pr_compose::Compose,
+    /// The pull-request filter field, shared by the panel across switches.
+    pub pr_query: rune::TextEdit,
+    /// `ui.diff.split` as this window last read or wrote it.
+    pub diff_split: bool,
     pub usage: crate::usage::Usage,
     pub storage: crate::storage::Storage,
     pub history: crate::history::History,
@@ -216,6 +221,9 @@ impl AppState {
             projects: crate::projects::Projects::default(),
             commit: crate::commit::CommitBox::default(),
             review: None,
+            compose: crate::pr_compose::Compose::default(),
+            pr_query: rune::TextEdit::new(""),
+            diff_split: false,
             usage: crate::usage::Usage::default(),
             storage: crate::storage::Storage::default(),
             history: crate::history::History::default(),
@@ -352,7 +360,10 @@ impl AppState {
         self.history.index = crate::history::index(&store.external_agents);
         self.processes =
             crate::processes::group(&store.sessions, &store.workspaces, &store.projects);
+        self.diff_split =
+            store.app_state_value(crate::workbench::patch::DIFF_SPLIT_KEY) == Some("true");
         self.store = Some(store);
+        self.workbench.set_split(self.diff_split);
         self.terminal.set_fixture_titles(
             self.fixture_titles
                 .iter()
@@ -495,7 +506,12 @@ impl AppState {
             }
             Action::NewShell => self.request_create(),
             Action::CloseSession => {
-                if let Some(active) = self.active
+                if matches!(
+                    self.workbench.mode,
+                    CenterMode::Compare | CenterMode::PrDetail | CenterMode::PrCompose
+                ) {
+                    self.close_center();
+                } else if let Some(active) = self.active
                     && closes_session(self.workbench.mode)
                 {
                     self.request_close(active);
@@ -951,6 +967,67 @@ impl AppState {
         }
     }
 
+    /// Opens the branch compare for `workspace`, reading its branches for the
+    /// base picker on the way.
+    pub fn open_compare(&mut self, workspace: WorkspaceId) {
+        self.chosen_workspace = Some(workspace);
+        self.sync_workbench_workspace();
+        self.show_mode(CenterMode::Compare);
+        self.request_compare_branches();
+    }
+
+    pub fn open_compare_current(&mut self) {
+        if let Some(workspace) = self.workbench.workspace {
+            self.open_compare(workspace);
+        }
+    }
+
+    fn request_compare_branches(&mut self) {
+        let project = self.workbench.workspace.and_then(|workspace| {
+            self.store
+                .as_ref()?
+                .workspaces
+                .iter()
+                .find(|row| row.id == workspace)
+                .map(|row| row.project_id)
+        });
+        if let Some(project) = project
+            && self.workbench.request_branches(project)
+        {
+            crate::project_ops::send(self, crate::project_ops::Op::ListBranches(project));
+        }
+    }
+
+    pub fn choose_compare_base(&mut self, base: &str) {
+        self.workbench.compare.request(Some(base.to_string()));
+        self.workbench.mode = CenterMode::Compare;
+    }
+
+    /// One preference for both diffs; changing it is a redraw, never a read.
+    pub fn set_diff_split(&mut self, split: bool) {
+        if self.diff_split == split {
+            return;
+        }
+        self.diff_split = split;
+        self.write_pref(
+            crate::workbench::patch::DIFF_SPLIT_KEY,
+            if split { "true" } else { "false" },
+        );
+        self.workbench.set_split(split);
+    }
+
+    pub fn open_pr_detail(&mut self, key: String) {
+        self.workbench.open_pr_detail(key);
+        self.sidebar.set_open(true);
+    }
+
+    pub fn close_center(&mut self) {
+        if self.workbench.mode == CenterMode::PrDetail {
+            self.workbench.pr_detail = None;
+        }
+        self.workbench.show(CenterMode::Session);
+    }
+
     /// Launches the review: read-only, in the checkout `review_workspace`
     /// picks, with the recipe's prompt.
     pub fn start_review(&mut self) {
@@ -1124,6 +1201,10 @@ impl AppState {
         self.sync_usage();
         self.sync_storage();
         self.commit.follow(self.workbench.workspace);
+        self.compose.follow(self.workbench.workspace);
+        if let Some(store) = &self.store {
+            self.workbench.pr_index.sync(&store.pull_requests);
+        }
         if let Some(query) = self.palette.take_search() {
             self.sync_workbench_workspace();
             if let (Some(connection), Some(scope)) = (&self.connection, self.workbench.scope()) {
@@ -1293,6 +1374,8 @@ impl AppState {
                     } => {
                         self.sync
                             .pr_opened(*workspace_id, url.clone(), error.clone());
+                        self.compose
+                            .pr_opened(*workspace_id, url.clone(), error.clone());
                         return true;
                     }
                     protocol::DaemonEvent::PullRequestsUpdated { .. } => return true,
@@ -1309,6 +1392,22 @@ impl AppState {
                 } = event.as_ref()
                 {
                     self.commit.apply_draft(*workspace_id, draft, *fell_back);
+                    return true;
+                }
+                if let protocol::DaemonEvent::PullRequestDraftReady {
+                    workspace_id,
+                    session_id,
+                    draft,
+                } = event.as_ref()
+                {
+                    self.chosen_workspace = Some(*workspace_id);
+                    self.sync_workbench_workspace();
+                    self.compose.receive(crate::pr_compose::ReceivedDraft {
+                        workspace: *workspace_id,
+                        session: *session_id,
+                        draft: draft.clone(),
+                    });
+                    self.workbench.show(CenterMode::PrCompose);
                     return true;
                 }
                 let reset = matches!(event.as_ref(), protocol::DaemonEvent::FactoryReset);
@@ -1363,6 +1462,19 @@ impl AppState {
                     return false;
                 }
                 self.workbench.apply_diff(scope, result.map(|diff| *diff));
+                true
+            }
+            UiEvent::Compare {
+                generation,
+                scope,
+                requested,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.workbench
+                    .apply_compare(scope, requested, result.map(|data| *data));
                 true
             }
             UiEvent::Directory {
@@ -1486,11 +1598,14 @@ impl AppState {
                 if !self.accept_generation(generation) {
                     return false;
                 }
-                let finished = self.workbench.changes.rebase.is_some()
-                    && result.as_ref().is_ok_and(|state| state.operation.is_none());
+                let before = self.workbench.changes.rebase.clone();
+                let after = result.as_ref().ok().map(|state| (**state).clone());
                 self.workbench
                     .apply_rebase(scope, result.map(|state| *state));
-                if finished {
+                // A step's answer differs from what was on screen; an ordinary
+                // read answers what the panel already had. Refreshing only on a
+                // step keeps the read from re-arming itself.
+                if before.is_some() && before != after {
                     self.workbench.refresh();
                 }
                 true
@@ -1536,6 +1651,14 @@ impl AppState {
                     } else {
                         self.commit.error = Some(message.clone());
                     }
+                }
+                if label == "CreateAgentSession" && !ok && self.compose.launching {
+                    self.compose.launching = false;
+                    self.compose.error = Some(message.clone());
+                }
+                if label == "CommitAndOpenPullRequest" && !ok {
+                    self.compose.opening = false;
+                    self.compose.error = Some(message.clone());
                 }
                 if label == "CreatePullRequest"
                     && !ok
@@ -2987,6 +3110,9 @@ mod tests {
             CenterMode::Changes,
             CenterMode::Files,
             CenterMode::Projects,
+            CenterMode::Compare,
+            CenterMode::PrDetail,
+            CenterMode::PrCompose,
         ] {
             assert!(!super::closes_session(mode), "{mode:?}");
         }
