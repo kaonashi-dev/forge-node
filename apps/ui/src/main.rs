@@ -42,9 +42,23 @@ static INITIAL: OnceLock<Option<Store>> = OnceLock::new();
 static OPEN: OnceLock<Option<String>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BenchMode {
+    Switch,
+    All,
+    Terminal,
+    Editor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BenchRequest {
+    mode: BenchMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Run,
-    Bench(usize),
+    Bench(BenchRequest),
+    Startup,
     Probe,
 }
 
@@ -56,6 +70,9 @@ struct Options {
     socket: Option<PathBuf>,
     daemon_bin: Option<PathBuf>,
     action: Action,
+    bench_iterations: Option<usize>,
+    bench_frames: Option<usize>,
+    bench_report: Option<PathBuf>,
     open: Option<String>,
     rest: Vec<String>,
 }
@@ -70,6 +87,9 @@ impl Options {
             socket: std::env::var_os("FORGE_SOCKET").map(PathBuf::from),
             daemon_bin: std::env::var_os("FORGE_DAEMON_BIN").map(PathBuf::from),
             action: Action::Run,
+            bench_iterations: None,
+            bench_frames: None,
+            bench_report: None,
             open: None,
             rest: Vec::new(),
         };
@@ -103,16 +123,40 @@ impl Options {
                 }
                 "--bench" => {
                     let value = args.next_if(|next| !next.starts_with("--"));
-                    let iterations = value
-                        .map(|value| {
-                            value
+                    let mode = match value.as_deref() {
+                        None | Some("switch") => BenchMode::Switch,
+                        Some("all") => BenchMode::All,
+                        Some("terminal") | Some("terminal-125") => BenchMode::Terminal,
+                        Some("editor") => BenchMode::Editor,
+                        Some(value) => {
+                            let iterations: usize = value
                                 .parse()
-                                .map_err(|_| format!("invalid --bench {value}"))
-                        })
-                        .transpose()?
-                        .unwrap_or(500);
-                    options.action = Action::Bench(iterations);
+                                .map_err(|_| format!("invalid --bench {value}"))?;
+                            options.bench_iterations = Some(iterations);
+                            BenchMode::Switch
+                        }
+                    };
+                    options.action = Action::Bench(BenchRequest { mode });
                 }
+                "--bench-iterations" => {
+                    let value = args.next().ok_or("--bench-iterations needs a count")?;
+                    let count: usize = value
+                        .parse()
+                        .map_err(|_| format!("invalid --bench-iterations {value}"))?;
+                    options.bench_iterations = Some(count);
+                }
+                "--bench-frames" => {
+                    let value = args.next().ok_or("--bench-frames needs a count")?;
+                    let count: usize = value
+                        .parse()
+                        .map_err(|_| format!("invalid --bench-frames {value}"))?;
+                    options.bench_frames = Some(count);
+                }
+                "--bench-report" => {
+                    let value = args.next().ok_or("--bench-report needs a path")?;
+                    options.bench_report = Some(PathBuf::from(value));
+                }
+                "--bench-startup" => options.action = Action::Startup,
                 "--probe" => options.action = Action::Probe,
                 "--open" => {
                     let value = args.next().ok_or("--open needs a path")?;
@@ -165,13 +209,43 @@ fn run() -> Result<(), String> {
 
     if options.fixture {
         let store = connection::fixture_store(&options.fixture_path)?;
-        if let Action::Bench(iterations) = options.action {
-            let report = bench::run(store, iterations);
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
-            );
-            return Ok(());
+        match options.action {
+            Action::Bench(request) => {
+                let iterations = options.bench_iterations.unwrap_or(500);
+                let frames = options.bench_frames.unwrap_or_else(|| match request.mode {
+                    BenchMode::Terminal | BenchMode::Editor => {
+                        options.bench_iterations.unwrap_or(300)
+                    }
+                    _ => 300,
+                });
+                let value = match request.mode {
+                    BenchMode::Switch => json(&bench::run(store, iterations))?,
+                    BenchMode::Terminal => json(&bench::terminal_125(store, frames))?,
+                    BenchMode::Editor => json(&bench::editor(store, frames))?,
+                    BenchMode::All => json(&bench::all(store, iterations, frames))?,
+                };
+                if let Some(path) = &options.bench_report {
+                    bench::write_json(path, &value)?;
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?
+                );
+                return Ok(());
+            }
+            Action::Startup => {
+                let mode = Mode::Fixture {
+                    snapshot: Arc::new(store.clone()),
+                    reconnect_after: None,
+                };
+                let boot = Arc::new(Boot {
+                    mode,
+                    metrics: Arc::clone(&metrics),
+                    terminal: SharedTerminal::new(),
+                });
+                return run_app(boot, Some(store), true, options.rest, true);
+            }
+            _ => {}
         }
         let mode = Mode::Fixture {
             snapshot: Arc::new(store.clone()),
@@ -182,12 +256,11 @@ fn run() -> Result<(), String> {
             metrics: Arc::clone(&metrics),
             terminal: SharedTerminal::new(),
         });
-        run_app(boot, Some(store), true, options.rest);
-        return Ok(());
+        return run_app(boot, Some(store), true, options.rest, false);
     }
 
-    if matches!(options.action, Action::Bench(_)) {
-        return Err("--bench is fixture-only; omit --daemon".to_string());
+    if matches!(options.action, Action::Bench(_) | Action::Startup) {
+        return Err("--bench and --bench-startup are fixture-only; omit --daemon".to_string());
     }
     let _ = OPEN.set(options.open);
     let socket = resolve_socket(options.socket)?;
@@ -201,8 +274,11 @@ fn run() -> Result<(), String> {
         metrics: Arc::clone(&metrics),
         terminal: SharedTerminal::new(),
     });
-    run_app(boot, None, false, options.rest);
-    Ok(())
+    run_app(boot, None, false, options.rest, false)
+}
+
+fn json<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, String> {
+    serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
 fn resolve_socket(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -278,7 +354,13 @@ fn ime(s: &mut AppState, ev: &rune::Ime, tx: &mut rune::Tx) -> bool {
     taken
 }
 
-fn run_app(boot: Arc<Boot>, initial: Option<Store>, fixture: bool, rest: Vec<String>) {
+fn run_app(
+    boot: Arc<Boot>,
+    initial: Option<Store>,
+    fixture: bool,
+    rest: Vec<String>,
+    startup_marker: bool,
+) -> Result<(), String> {
     let stats = Arc::new(std::sync::Mutex::new(Stats::with_capacity(1 << 16)));
     let _ = BOOT.set(Arc::clone(&boot));
     let _ = INITIAL.set(initial);
@@ -313,7 +395,8 @@ fn run_app(boot: Arc<Boot>, initial: Option<Store>, fixture: bool, rest: Vec<Str
     let connection = connection::spawn(Arc::clone(&boot), sink, wake);
     handle.update(move |state, _| state.connection = Some(connection));
     let compositor = terminal::renderer::Terminal::new(Arc::clone(&boot.terminal), stats);
-    app.init(init)
+    let app = app
+        .init(init)
         .on_ime(ime)
         .on_focus(window_focus)
         .compositor(compositor)
@@ -322,8 +405,30 @@ fn run_app(boot: Arc<Boot>, initial: Option<Store>, fixture: bool, rest: Vec<Str
             traffic_lights: Some((16.0, 25.0)),
             drag_regions: true,
         })
-        .args(rest)
-        .run();
+        .args(rest);
+    if startup_marker {
+        // The wrapper times launch → this line and samples RSS while the event loop stays up.
+        let mut announced = false;
+        let app = app.on_frame_encoded(move |frame| {
+            if announced || frame.outcome() != rune::FrameOutcome::Drawn {
+                return;
+            }
+            announced = true;
+            let marker = serde_json::json!({
+                "pid": std::process::id(),
+                "seq": frame.seq(),
+                "refresh_hz": frame.refresh_hz(),
+                "update_ms": frame.update_ms(),
+                "encode_ms": frame.encode_ms(),
+            });
+            eprintln!("forge-ui-first-frame {marker}");
+        });
+        app.try_run()
+            .map_err(|error| format!("startup window: {error}"))
+    } else {
+        app.run();
+        Ok(())
+    }
 }
 
 fn print_help() {
@@ -343,7 +448,12 @@ Options:
   --no-reconnect            keep the fixture connection up
   --probe                   connect, snapshot, add a project and attach a terminal
   --open PATH               open PATH (relative to the first workspace) in an editor; implies --daemon
-  --bench [N]               headless session-switch + terminal-echo benchmark
+  --bench [N|switch|all|terminal-125|editor]
+                            headless measurements; `all` runs every section
+  --bench-iterations N      session-switch iterations (default 500)
+  --bench-frames N          terminal/editor frames at 125 Hz (default 300)
+  --bench-report PATH       also write the benchmark JSON to PATH
+  --bench-startup           run the fixture app and mark the first drawn frame
   -h, --help                this help
 
 Rune's own --snap/--tree/--script/--trace flags pass through.
@@ -352,6 +462,7 @@ Examples:
   forge-ui
   forge-ui --daemon --socket /tmp/forge-ui/daemon.sock
   forge-ui --fixture --bench 300
+  forge-ui --fixture --bench all --bench-report /tmp/perf.json
   forge-ui --fixture --script scripts/session-switch.json --tree /tmp/tree.json --at 4
   forge-ui --fixture --snap /tmp/forge-ui.png --at 1"
     );
