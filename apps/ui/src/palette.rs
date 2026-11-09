@@ -18,6 +18,7 @@ pub enum Command {
     /// `None` follows the system.
     Theme(Option<String>),
     NewAgent(domain::AgentProviderId),
+    RunAction(domain::ProjectActionId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +46,8 @@ pub struct Palette {
     files: Vec<String>,
     /// Installed agent providers when the palette opened: (id, name).
     agents: Vec<(domain::AgentProviderId, String)>,
+    /// The active workspace's approved actions when the palette opened.
+    actions: Vec<(domain::ProjectActionId, String)>,
     /// The query `files` answers, so a late answer to an older query is dropped.
     files_for: String,
     asked: Option<String>,
@@ -59,6 +62,7 @@ impl Default for Palette {
             selected: 0,
             files: Vec::new(),
             agents: Vec::new(),
+            actions: Vec::new(),
             files_for: String::new(),
             asked: None,
         }
@@ -132,6 +136,10 @@ impl Palette {
         self.asked = None;
     }
 
+    pub fn set_actions(&mut self, actions: Vec<(domain::ProjectActionId, String)>) {
+        self.actions = actions;
+    }
+
     pub fn close(&mut self) {
         self.open = false;
         self.edit.focused = false;
@@ -156,6 +164,10 @@ impl Palette {
                     label: format!("New agent: {name}"),
                     command: Command::NewAgent(id.clone()),
                 })
+                .chain(self.actions.iter().map(|(id, label)| Entry::Command {
+                    label: format!("Run: {label}"),
+                    command: Command::RunAction(*id),
+                }))
                 .chain(commands())
                 .filter(|entry| subsequence(entry.label(), query))
                 .collect()

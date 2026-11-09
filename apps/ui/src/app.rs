@@ -391,7 +391,9 @@ impl AppState {
         match action {
             Action::CommandPalette => {
                 let agents = self.installed_agents();
+                let actions = self.palette_actions();
                 self.palette.show_with(false, "", agents);
+                self.palette.set_actions(actions);
             }
             Action::FilePalette => self.palette.show(true),
             Action::NewShell => self.request_create(),
@@ -404,6 +406,18 @@ impl AppState {
             Action::PreviousSession => self.step_session(-1),
         }
         true
+    }
+
+    /// The active workspace's approved actions, for the palette: (id, label).
+    fn palette_actions(&mut self) -> Vec<(domain::ProjectActionId, String)> {
+        self.sync_workbench_workspace();
+        let Some(workspace) = self.workbench.workspace else {
+            return Vec::new();
+        };
+        self.actions_for(workspace)
+            .into_iter()
+            .map(|action| (action.id, action.label.clone()))
+            .collect()
     }
 
     /// Providers the daemon found installed, for the palette's agent entries.
@@ -470,6 +484,12 @@ impl AppState {
                 Command::Reconnect => self.request_reconnect(),
                 Command::Show(mode) => self.show_mode(mode),
                 Command::Theme(base) => self.choose_theme(base),
+                Command::RunAction(action) => {
+                    self.sync_workbench_workspace();
+                    if let Some(workspace) = self.workbench.workspace {
+                        self.run_action(workspace, action);
+                    }
+                }
                 Command::NewAgent(provider) => {
                     self.sync_workbench_workspace();
                     if let (Some(connection), Some(workspace)) =
@@ -572,6 +592,53 @@ impl AppState {
         if let Some(connection) = &self.connection {
             let _ = connection.refresh_pull_requests();
         }
+    }
+
+    pub fn run_action(&mut self, workspace: WorkspaceId, action: domain::ProjectActionId) {
+        match &self.connection {
+            Some(connection) => {
+                if connection.run_action(workspace, action).is_ok() {
+                    self.workbench.show(CenterMode::Session);
+                }
+            }
+            None => self.worker_not_ready("RunAction"),
+        }
+    }
+
+    /// The approved actions of the project `workspace` belongs to.
+    #[must_use]
+    pub fn actions_for(&self, workspace: WorkspaceId) -> Vec<&domain::ProjectAction> {
+        let Some(store) = &self.store else {
+            return Vec::new();
+        };
+        let Some(project) = store
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .map(|found| found.project_id)
+        else {
+            return Vec::new();
+        };
+        store
+            .project_actions
+            .iter()
+            .filter(|action| action.project_id == project)
+            .collect()
+    }
+
+    /// Whether `action` has a live session in `workspace`.
+    #[must_use]
+    pub fn action_running(&self, workspace: WorkspaceId, action: &domain::ProjectActionId) -> bool {
+        self.store.as_ref().is_some_and(|store| {
+            store.sessions.iter().any(|session| {
+                session.workspace_id == workspace
+                    && session.state.is_active()
+                    && session
+                        .action
+                        .as_ref()
+                        .is_some_and(|run| &run.action_id == action)
+            })
+        })
     }
 
     pub fn add_project(&mut self, path: std::path::PathBuf) {

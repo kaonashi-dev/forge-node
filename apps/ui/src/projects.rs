@@ -215,6 +215,28 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                 s.inspect(id, CenterMode::Files);
             },
         ));
+    // Pinned actions are the ones a checkout keeps in reach; the rest are in
+    // the palette ("Run: …").
+    for action in s.actions_for(id).into_iter().filter(|action| action.pinned) {
+        let running = s.action_running(id, &action.id);
+        let action_id = action.id;
+        actions = actions.child(
+            Button::new(if running {
+                format!("● {}", action.label)
+            } else {
+                action.label.clone()
+            })
+            .variant(if running {
+                ButtonVariant::Outline
+            } else {
+                ButtonVariant::GhostMuted
+            })
+            .control_size(ControlSize::Small)
+            .on_press(move |s: &mut AppState| s.run_action(id, action_id))
+            .build(k)
+            .key(format!("action-{id}-{}", action.id)),
+        );
+    }
     if workspace.kind == WorkspaceKind::GitWorktree {
         let confirming = s.projects.confirm_remove == Some(id);
         let label = if confirming {
@@ -352,5 +374,74 @@ mod tests {
             status_line(&workspace(status)),
             "uncommitted changes · ↑2 ↓0"
         );
+    }
+
+    /// A pinned action is a chip on its checkout, marked while a session runs it.
+    #[test]
+    fn a_pinned_action_is_a_chip_and_shows_when_it_runs() {
+        use std::path::Path;
+        use std::sync::Arc;
+
+        use domain::{
+            ActionKind, ActionReady, ActionRun, ActionSource, ProjectAction, ProjectActionId,
+        };
+        use rune::{Env, Runtime};
+
+        use crate::connection::{Metrics, fixture_store};
+        use crate::terminal::SharedTerminal;
+
+        let mut store =
+            fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
+                .expect("fixture snapshot decodes");
+        let workspace = store.workspaces[0].clone();
+        let action = ProjectAction {
+            id: ProjectActionId::new(),
+            project_id: workspace.project_id,
+            label: "dev".into(),
+            command: "npm run dev".into(),
+            kind: ActionKind::Dev,
+            cwd: None,
+            single_instance: true,
+            pinned: true,
+            ready: ActionReady::None,
+            port: None,
+            depends_on: Vec::new(),
+            source: ActionSource::Manual,
+            position: 0,
+            created_at: domain::Timestamp::now(),
+        };
+        let chip = format!("action-{}-{}", workspace.id, action.id);
+        store.project_actions.push(action.clone());
+        let running = store
+            .sessions
+            .iter_mut()
+            .find(|session| session.workspace_id == workspace.id && session.state.is_active())
+            .expect("a live session in the first workspace");
+        running.action = Some(Box::new(ActionRun {
+            action_id: action.id,
+            label: "dev".into(),
+            port: None,
+            readiness: domain::ActionReadiness::Probing,
+            started_at: None,
+        }));
+        let mut state =
+            AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
+        state.show_mode(crate::workbench::CenterMode::Projects);
+        assert!(state.action_running(workspace.id, &action.id));
+        let mut rt = Runtime::new(
+            state,
+            crate::ui::view,
+            (1180.0, 760.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.frame(0.1);
+        let found = rt
+            .elements()
+            .into_iter()
+            .find(|element| element.key.as_deref() == Some(chip.as_str()));
+        assert!(found.is_some(), "the pinned action is on its checkout");
     }
 }

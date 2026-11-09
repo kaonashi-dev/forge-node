@@ -99,6 +99,10 @@ pub enum Command {
     },
     SavePrefs(crate::prefs::Prefs),
     AddProject(std::path::PathBuf),
+    RunAction {
+        workspace_id: WorkspaceId,
+        action_id: domain::ProjectActionId,
+    },
     Fetch {
         project_id: domain::ProjectId,
     },
@@ -364,6 +368,17 @@ impl ConnectionHandle {
 
     pub fn refresh_pull_requests(&self) -> Result<(), String> {
         self.send(Command::RefreshPullRequests)
+    }
+
+    pub fn run_action(
+        &self,
+        workspace_id: WorkspaceId,
+        action_id: domain::ProjectActionId,
+    ) -> Result<(), String> {
+        self.send(Command::RunAction {
+            workspace_id,
+            action_id,
+        })
     }
 
     pub fn add_project(&self, path: std::path::PathBuf) -> Result<(), String> {
@@ -840,6 +855,7 @@ fn handle_fixture_command(
         | Command::Read { .. }
         | Command::SavePrefs(_)
         | Command::AddProject(_)
+        | Command::RunAction { .. }
         | Command::Fetch { .. }
         | Command::OpenPullRequest { .. }
         | Command::RefreshPullRequests
@@ -1479,6 +1495,32 @@ fn handle_live_command(
                 started,
             );
         }
+        Command::RunAction {
+            workspace_id,
+            action_id,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .run_action(workspace_id, action_id)
+                .map(|launch| {
+                    // Started, queued behind a dependency, or already live: each
+                    // names the session to show.
+                    let (session_id, said) = match launch {
+                        client::ActionLaunch::Started { session_id, .. } => (session_id, "started"),
+                        client::ActionLaunch::Queued { session_id } => (session_id, "queued"),
+                        client::ActionLaunch::AlreadyRunning { session_id } => {
+                            (session_id, "already running")
+                        }
+                    };
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    said.to_string()
+                })
+                .map_err(|error| error.to_string());
+            live_result(generation, "RunAction", result, sink, metrics, started);
+        }
         Command::AddProject(path) => {
             metrics.note_socket_op();
             let result = client
@@ -1656,6 +1698,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::Read { .. } => "WorkspaceRead",
         Command::SavePrefs(_) => "SavePrefs",
         Command::AddProject(_) => "AddProject",
+        Command::RunAction { .. } => "RunAction",
         Command::Fetch { .. } => "FetchRemote",
         Command::OpenPullRequest { .. } => "CreatePullRequest",
         Command::RefreshPullRequests => "RefreshPullRequests",
