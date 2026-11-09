@@ -18,7 +18,7 @@ pub enum Command {
     NewWorktree,
     /// A base, or `"system"`.
     Theme(String),
-    NewAgent(domain::AgentProviderId),
+    NewAgent(domain::AgentProviderId, Option<domain::AgentProfileId>),
     RunAction(domain::ProjectActionId),
     Settings(crate::settings::Section),
     FindInFiles,
@@ -67,8 +67,8 @@ pub struct Palette {
     pub edit: TextEdit,
     pub selected: usize,
     files: Vec<String>,
-    /// Installed agent providers when the palette opened: (id, name).
-    agents: Vec<(domain::AgentProviderId, String)>,
+    /// Installed agent launch rows when the palette opened.
+    agents: Vec<crate::agent_ops::Choice>,
     /// The active workspace's approved actions when the palette opened.
     actions: Vec<(domain::ProjectActionId, String)>,
     /// What ⌘P lists before anything is typed, set when it opens.
@@ -157,7 +157,7 @@ impl Palette {
         &mut self,
         files_only: bool,
         query: &str,
-        agents: Vec<(domain::AgentProviderId, String)>,
+        agents: Vec<crate::agent_ops::Choice>,
     ) {
         self.agents = agents;
         self.open = true;
@@ -177,7 +177,7 @@ impl Palette {
         self.recent = recent;
     }
 
-    pub fn show_launch(&mut self, agents: Vec<(domain::AgentProviderId, String)>) {
+    pub fn show_launch(&mut self, agents: Vec<crate::agent_ops::Choice>) {
         self.show_with(false, "", agents);
         self.launch = true;
     }
@@ -226,9 +226,9 @@ impl Palette {
             let commands: Vec<Entry> = self
                 .agents
                 .iter()
-                .map(|(id, name)| Entry::Command {
-                    label: format!("New {name}"),
-                    command: Command::NewAgent(id.clone()),
+                .map(|row| Entry::Command {
+                    label: format!("New {}", row.label),
+                    command: Command::NewAgent(row.provider.clone(), row.profile),
                 })
                 .chain(self.actions.iter().map(|(id, label)| Entry::Command {
                     label: format!("Run: {label}"),
@@ -240,7 +240,7 @@ impl Palette {
                         || matches!(
                             entry,
                             Entry::Command {
-                                command: Command::NewShell | Command::NewAgent(_),
+                                command: Command::NewShell | Command::NewAgent(..),
                                 ..
                             }
                         )
@@ -460,15 +460,29 @@ mod tests {
     }
 
     #[test]
-    fn installed_agents_are_offered_first() {
+    fn installed_agents_and_profiles_are_offered_first() {
         let mut palette = Palette::default();
         let claude = domain::AgentProviderId::new("claude");
-        palette.show_launch(vec![(claude.clone(), "Claude Code".into())]);
+        let profile = domain::AgentProfileId::new();
+        palette.show_launch(vec![
+            crate::agent_ops::Choice {
+                key: format!("provider:{claude}"),
+                label: "Claude Code".into(),
+                provider: claude.clone(),
+                profile: None,
+            },
+            crate::agent_ops::Choice {
+                key: format!("profile:{profile}"),
+                label: "Claude Work".into(),
+                provider: claude.clone(),
+                profile: Some(profile),
+            },
+        ]);
         assert_eq!(
             palette.chosen(),
             Some(Entry::Command {
                 label: "New Claude Code".into(),
-                command: Command::NewAgent(claude),
+                command: Command::NewAgent(claude, None),
             })
         );
         let labels: Vec<String> = palette
@@ -478,7 +492,12 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            vec!["New Claude Code".to_string(), "New Terminal".to_string()]
+            vec![
+                "New Claude Code".to_string(),
+                "New Claude Work".to_string(),
+                "New Terminal".to_string()
+            ],
+            "a profile is launchable by name"
         );
         assert_eq!(palette.placeholder(), "Start a terminal or an agent…");
     }

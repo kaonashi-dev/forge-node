@@ -1,0 +1,8 @@
+[
+  { "t": 0.4, "type": "secondary-click", "key": "session-row-2" },
+  { "t": 0.8, "key": "context-item2" },
+  { "t": 1.4, "key": "spawn-child-close" },
+  { "t": 1.8, "type": "secondary-click", "key": "session-row-2" },
+  { "t": 2.2, "key": "context-item1" },
+  { "t": 3.0, "key": "handoff-close" }
+]

@@ -92,6 +92,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::sync::dialog(s, &k, &mut overlays);
     rename_dialog(s, &k, &mut overlays);
     crate::pr_review::dialog(s, &k, &mut overlays);
+    crate::agent_ops::dialogs(s, &k, &mut overlays);
     close_dialog(s, &k, &mut overlays);
     crate::history::delete_dialog(s, &k, &mut overlays);
     crate::settings::dialogs(s, &k, &mut overlays);
@@ -283,6 +284,10 @@ fn center(s: &AppState, k: &Kit) -> El {
         crate::workbench::search_view::view(s, k)
     } else if s.workbench.mode == CenterMode::Settings {
         crate::settings::page(s, k)
+    } else if s.workbench.mode == CenterMode::SessionChanges {
+        crate::session_changes::view(s, k)
+    } else if s.workbench.mode == CenterMode::Review {
+        crate::code_review::view(s, k)
     } else if !in_checkout {
         empty_center(s, k)
     } else if s.active_line_editor().is_some() {

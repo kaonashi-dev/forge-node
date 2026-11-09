@@ -35,6 +35,10 @@ pub enum CenterMode {
     Settings,
     /// Project content search, ⇧⌘F.
     Search,
+    /// One session's changes since its baseline.
+    SessionChanges,
+    /// A structured Forge Review of the focused checkout.
+    Review,
 }
 
 /// The rendered surface a file opens on instead of the editor.
@@ -343,7 +347,10 @@ impl Workbench {
                 self.search.edit.focused = true;
                 self.mode = CenterMode::Search;
             }
-            CenterMode::Session | CenterMode::Settings => self.mode = mode,
+            CenterMode::SessionChanges
+            | CenterMode::Review
+            | CenterMode::Session
+            | CenterMode::Settings => self.mode = mode,
         }
     }
 
